@@ -796,6 +796,7 @@ class AwsWorker(
                 val archive = bucket?.let { "s3://$it/${AwsBuildCache.BUILDS}/$sha.tar.zst" }
                 AwsBuildCache.worktree(worktree, host.cores, archive, aws.region).forEach(::appendLine)
                 finishWorktree(worktree, job.experiment?.profileCli == true).forEach(::appendLine)
+                appendLine("validate_lab_provenance ${quote(worktree)}")
             }
             if (bucket != null) {
                 appendLine("if [ ${'$'}built = 1 ]; then publish_lab_cache s3://$bucket/$GRADLE_ARCHIVE ~ ${aws.region} .gradle/caches/modules-2 .gradle/wrapper; fi")
