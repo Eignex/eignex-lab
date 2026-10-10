@@ -252,9 +252,9 @@ object Experiments {
     internal fun captureProvenance(worktree: String): String {
         val bench = quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")
         val manifest = quote("$worktree/klause-bench/build/provenance.json")
-        return "(cd ${quote("$worktree/klause-bench")} && rm -f $manifest && " +
+        return "(cd ${quote("$worktree/klause-bench")} && test -x $bench && rm -f $manifest && " +
             "help=\$($bench --help 2>&1 || true) && case \"\$help\" in " +
-            "*'bench provenance out=<file>'*) $bench provenance ${quote("out=$worktree/klause-bench/build/provenance.json")};; " +
+            "*'bench provenance out=<file>'*) $bench provenance ${quote("out=$worktree/klause-bench/build/provenance.json")} && test -s $manifest;; " +
             "*) echo 'bench revision has no provenance manifest support';; esac)"
     }
 

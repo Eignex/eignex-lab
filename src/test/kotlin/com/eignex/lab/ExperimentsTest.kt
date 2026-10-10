@@ -12,6 +12,29 @@ import java.nio.file.Files
 
 class ExperimentsTest {
     @Test
+    fun `a missing bench launcher cannot be mistaken for legacy provenance support`() {
+        val root = Files.createTempDirectory("missing bench ").toFile()
+        try {
+            root.resolve("klause-bench").mkdirs()
+            val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path)).start()
+            assertNotEquals(0, process.waitFor())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun `successful capture without a manifest fails setup`() {
+        val root = Files.createTempDirectory("empty manifest ").toFile()
+        try {
+            val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
+            bench.parentFile.mkdirs()
+            bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo 'bench provenance out=<file>'; exit 1;; provenance) exit 0;; esac\n")
+            bench.setExecutable(true)
+            val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path)).start()
+            assertNotEquals(0, process.waitFor())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
     fun `setup captures manifests for supported revisions and keeps older revisions runnable`() {
         for (supported in listOf(true, false)) {
             val root = Files.createTempDirectory("provenance path ").toFile()
