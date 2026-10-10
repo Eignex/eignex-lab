@@ -775,6 +775,7 @@ class AwsWorker(
         runner.log(job.id, "${host.instance}: booted; building ${shas.joinToString { it.take(SHA_LOG) }}")
         val script = buildString {
             appendLine("set -euo pipefail; ${AwsHost.ENV}")
+            appendLine(AwsBuildCache.functions)
             appendLine("mkdir -p ~/work ~/job/cases ~/corpus")
             // The corpus comes down from the bucket while the build runs; a failed sync only means fetching upstream.
             aws.corpusBucket?.let { appendLine("(${s3Sync("s3://$it/corpus", "~/corpus")} || true) > ~/corpus-sync.log 2>&1 & sync=${'$'}!") }
@@ -785,36 +786,27 @@ class AwsWorker(
             // fresh instance downloads nothing from Maven Central or the Gradle site.
             if (bucket != null) {
                 appendLine("if aws s3 ls s3://$bucket/$GRADLE_ARCHIVE --region ${aws.region} >/dev/null 2>&1; then")
-                appendLine("  aws s3 cp s3://$bucket/$GRADLE_ARCHIVE - --region ${aws.region} | zstd -dcq | tar -x -C ~ || true")
+                appendLine("  restore_lab_cache s3://$bucket/$GRADLE_ARCHIVE ~ gradle ${aws.region} || true")
                 appendLine("fi")
             }
             appendLine("built=0")
             for (sha in shas) {
                 val worktree = host.worktree(sha)
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
-                val build = "(cd $worktree && ./gradlew :klause-cli:installJvmDist :klause-bench:installDist -q --max-workers=${host.cores})"
-                if (bucket == null) {
-                    appendLine(build)
-                } else {
-                    // A commit's built distributions are kept by commit: a commit any instance built before is not built again.
-                    val archive = "s3://$bucket/builds/$sha.tar.zst"
-                    appendLine("if aws s3 ls $archive --region ${aws.region} >/dev/null 2>&1 && aws s3 cp $archive - --region ${aws.region} | zstd -dcq | tar -x -C $worktree; then")
-                    appendLine("  echo 'reused the cached build of ${sha.take(SHA_LOG)}'")
-                    appendLine("else")
-                    appendLine("  echo '${sha.take(SHA_LOG)} is not cached: building'")
-                    appendLine("  $build && built=1")
-                    appendLine("  tar -C $worktree -c klause-cli/build/install klause-bench/build/install | zstd -q -T0 | aws s3 cp - $archive --region ${aws.region} --only-show-errors || true")
-                    appendLine("fi")
-                }
+                val archive = bucket?.let { "s3://$it/${AwsBuildCache.BUILDS}/$sha.tar.zst" }
+                AwsBuildCache.worktree(worktree, host.cores, archive, aws.region).forEach(::appendLine)
                 finishWorktree(worktree, job.experiment?.profileCli == true).forEach(::appendLine)
             }
             if (bucket != null) {
-                appendLine("if [ ${'$'}built = 1 ]; then tar -C ~ -c .gradle/caches/modules-2 .gradle/wrapper 2>/dev/null | zstd -q -T0 | aws s3 cp - s3://$bucket/$GRADLE_ARCHIVE --region ${aws.region} --only-show-errors || true; fi")
+                appendLine("if [ ${'$'}built = 1 ]; then publish_lab_cache s3://$bucket/$GRADLE_ARCHIVE ~ ${aws.region} .gradle/caches/modules-2 .gradle/wrapper; fi")
                 appendLine("wait ${'$'}sync || true")
             }
         }
-        val out = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) { host.ssh.run(script, BUILD_TIMEOUT_SEC) }
-        log.appendText("[${host.instance}] $out\n")
+        runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) {
+            val (exit, out) = host.ssh.exec(script, BUILD_TIMEOUT_SEC)
+            log.appendText("[${host.instance}] $out\n")
+            check(exit == 0) { "build on ${host.instance} failed (exit $exit); see setup.log" }
+        }
         runner.log(job.id, "${host.instance}: built")
     }
 
@@ -876,7 +868,7 @@ class AwsWorker(
         private val CAPACITY = Regex("VcpuLimitExceeded|InstanceLimitExceeded|InsufficientInstanceCapacity|MaxSpotInstanceCountExceeded")
         private const val S3_PUSH_TIMEOUT_SEC = 3600L
         /** Gradle's dependency cache and wrapper distribution, as one archive in the corpus bucket. */
-        private const val GRADLE_ARCHIVE = "gradle/home.tar.zst"
+        private const val GRADLE_ARCHIVE = AwsBuildCache.GRADLE
         private const val BUILD_TIMEOUT_SEC = 3600L
         private const val MINUTES_PER_HOUR = 60
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */

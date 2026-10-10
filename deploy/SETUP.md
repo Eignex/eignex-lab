@@ -233,8 +233,14 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
   the role `klause-lab-instance`, which may read and write only that bucket.
 - The bucket also holds Gradle's dependency cache and wrapper distribution as one archive, restored before every build
-  and refreshed after one, and each commit's built distributions (`builds/<sha>.tar.zst`): an instance that finds its
+  and refreshed after one, and each commit's built distributions (`builds/verified-v1/<sha>.tar.zst`): an instance that finds its
   commit there unpacks it instead of building, so a commit is built once across every job and instance.
+- Build and Gradle archives use a verified cache namespace; older archives are left intact and are not reused.
+  Downloads and extraction are staged. Failed transfers, truncated archives, missing bootstrap classes, missing
+  launchers/main classes, corrupt JARs or incomplete launcher classpaths reject the cache without contaminating
+  the target. A failed build stops setup and records its output in `setup.log`; no cases start and no build cache
+  is published. Supported provenance capture must succeed and write a nonempty manifest. Publication packs a
+  complete local archive before uploading, so a failed tar cannot stream an incomplete installation into S3.
 - The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
   claims the next `aws` job when the vCPUs for one instance are free and gives it `machines` instances (default
   `maxInstances`), or as many as the account's `vcpuQuota` of on-demand vCPUs leaves, each job on its own thread.
