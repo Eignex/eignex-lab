@@ -31,7 +31,7 @@ class AwsBuildCacheTest {
     fun `complete solver installs restore but a corrupt library does not`() = fixture { root ->
         val content = root.resolve("content").apply { mkdirs() }
         for ((relative, name, main) in listOf(
-            Triple("klause-cli/build/install/klause-cli-jvm", "klause-cli-jvm", "com/eignex/klause/cli/MainKt.class"),
+            Triple("klause-cli/build/install/klause-cli-jvm", "klause-cli", "com/eignex/klause/cli/MainKt.class"),
             Triple("klause-bench/build/install/klause-bench", "klause-bench", "com/eignex/klause/bench/target/BenchCli.class"),
         )) {
             val dist = content.resolve(relative)
@@ -87,6 +87,13 @@ class AwsBuildCacheTest {
         val target = root.resolve("target").apply { mkdirs() }
         assertTrue(run(root, "restore_lab_cache s3://bucket/cache ${quote(target.path)} gradle region") != 0)
         assertFalse(target.resolve(".gradle").exists())
+    }
+
+    @Test
+    fun `invalid provenance cannot pass setup`() = fixture { root ->
+        val directory = root.resolve("klause-bench/build").apply { mkdirs() }
+        directory.resolve("provenance.json").writeText("not json")
+        assertTrue(run(root, "validate_lab_provenance ${quote(root.path)}") != 0)
     }
 
     private fun fixture(block: (java.io.File) -> Unit) {

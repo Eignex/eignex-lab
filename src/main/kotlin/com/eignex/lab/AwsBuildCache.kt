@@ -17,6 +17,7 @@ internal object AwsBuildCache {
             "  $build",
             "  $validate",
             "  ${Experiments.captureProvenance(path)}",
+            "  validate_lab_provenance ${quote(path)}",
             "  built=1",
             "  publish_lab_cache ${quote(archive)} ${quote(path)} ${quote(region)} klause-cli/build/install klause-bench/build/install",
             "fi",

@@ -4,11 +4,12 @@ validate_lab_cache() {
 import pathlib, re, sys, zipfile
 root, kind = pathlib.Path(sys.argv[1]), sys.argv[2]
 if kind == 'install':
-    distributions = [('klause-cli/build/install/klause-cli-jvm', 'klause-cli-jvm', 'com/eignex/klause/cli/MainKt.class'),
-                     ('klause-bench/build/install/klause-bench', 'klause-bench', 'com/eignex/klause/bench/target/BenchCli.class')]
-    for relative, name, main in distributions:
-        dist = root / relative
-        launcher = dist / 'bin' / name
+    distributions = [(['klause-cli/build/install/klause-cli-jvm', 'klause-cli/build/install/klause-cli'], ['klause-cli', 'klause-cli-jvm'], 'com/eignex/klause/cli/MainKt.class'),
+                     (['klause-bench/build/install/klause-bench'], ['klause-bench'], 'com/eignex/klause/bench/target/BenchCli.class')]
+    for relatives, names, main in distributions:
+        launchers = [root / relative / 'bin' / name for relative in relatives for name in names]
+        launcher = next((p for p in launchers if p.is_file()), launchers[0])
+        dist = launcher.parent.parent
         assert launcher.is_file() and launcher.stat().st_mode & 0o111, f'missing executable: {launcher}'
         jars = list((dist / 'lib').glob('*.jar'))
         assert jars, f'missing libraries: {dist}'
@@ -63,4 +64,23 @@ publish_lab_cache() {
         echo "cache packing failed; not published: $1" >&2
     fi
     rm -f "$cache_archive"
+}
+
+validate_lab_provenance() {
+    python3 - "$1" <<'PYCODE'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+manifest = root / 'klause-bench/build/provenance.json'
+if manifest.exists():
+    data = json.loads(manifest.read_text())
+    assert data.get('version', 1) == 1
+    launcher = pathlib.Path(data['launcher']).resolve()
+    assert launcher.is_relative_to(root / 'klause-cli/build/install') and launcher.is_file()
+    distribution = data['provenance']['distribution']
+    assert distribution, 'empty installed provenance'
+    for name, digest in distribution.items():
+        file = (launcher.parent.parent / name).resolve()
+        assert file.is_relative_to(launcher.parent.parent) and file.is_file()
+        assert hashlib.sha256(file.read_bytes()).hexdigest() == digest, f'provenance hash mismatch: {name}'
+PYCODE
 }
