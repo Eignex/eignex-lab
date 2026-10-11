@@ -817,15 +817,18 @@ internal fun referencesPage(
 
 /** A klause run against every reference solver: a row per group, a cell per solver, each cell klause's Borda share. */
 private fun scoreboardSection(view: ScoreboardView): String = buildString {
-    append("<h2>Against the references <small>pairwise Borda, the MiniZinc Challenge rule; equal results split by time ")
-    append("when the run had the reference's budget on one core, evenly otherwise</small></h2>")
+    append("<h2>Against the references <small>pairwise Borda by the MiniZinc Challenge rule: ")
+    append(if (view.scoring == Scoring.INCOMPLETE) "local-search class, proofs ignored and equal results split evenly"
+        else "complete class, proofs first and equal results split by time when the run had the reference's budget on one core")
+    append("</small></h2>")
     val job = view.job
     if (job == null) {
         append("<p class=\"muted\">No finished scheduled run to score yet.</p>")
         return@buildString
     }
     fun link(vararg changes: Pair<String, String?>): String {
-        val current = linkedMapOf<String, String?>("job" to job.id.toString(), "arm" to view.arm, "by" to view.by.name.lowercase())
+        val current = linkedMapOf<String, String?>("job" to job.id.toString(), "arm" to view.arm, "by" to view.by.name.lowercase(),
+            "scoring" to "incomplete".takeIf { view.scoring == Scoring.INCOMPLETE })
         for ((d, v) in view.filters) current[d.name.lowercase()] = v
         for ((k, v) in changes) current[k] = v
         return "/references${query(*current.entries.map { it.key to it.value }.toTypedArray())}"
@@ -839,6 +842,9 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
         val values = view.options[d].orEmpty()
         if (values.size > 1) append(select(d.name.lowercase(), "any ${d.label}", values.map { it to it }, view.filters[d]))
     }
+    append("<label><input type=\"checkbox\" name=\"scoring\" value=\"incomplete\"")
+    if (view.scoring == Scoring.INCOMPLETE) append(" checked")
+    append("> local-search scoring</label>")
     append("<button>show</button>")
     if (view.filters.isNotEmpty()) append("<a class=\"chip\" href=\"${link(*Dimension.entries.map { it.name.lowercase() to null }.toTypedArray())}\">clear filters</a>")
     append("</form>")

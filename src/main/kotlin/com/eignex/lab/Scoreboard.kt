@@ -12,6 +12,13 @@ data class ProblemFeatures(
     val logic: String? = null,
 )
 
+/**
+ * The MiniZinc Challenge's two scoring classes. [COMPLETE] (its free, fixed, parallel and open classes) ranks a proof
+ * above an unproven result and splits an equal one by time; [INCOMPLETE] (its local-search class) ignores proofs,
+ * compares solutions and objectives alone, and splits an equal result evenly.
+ */
+enum class Scoring { COMPLETE, INCOMPLETE }
+
 /** A way to split problems into groups on the scoreboard, and to filter them. */
 enum class Dimension(val label: String) {
     THEME("theme"),
@@ -91,8 +98,9 @@ object Scoreboard {
         features: Map<Pair<String, String>, ProblemFeatures>,
         groupBy: Dimension,
         filters: Map<Dimension, String> = emptyMap(),
+        scoring: Scoring = Scoring.COMPLETE,
     ): Board {
-        val scored = scoredProblems(cases, arm, references, features, filters)
+        val scored = scoredProblems(cases, arm, references, features, filters, scoring)
         val named = scored.flatMap { it.second.keys }.filter { it != BEST }.distinct().sorted()
         val solvers = listOfNotNull(BEST.takeIf { scored.any { BEST in it.second } }) + named
         fun row(group: String, members: List<Pair<Problem, Map<String, ScoreProblem>>>) = ScoreRow(
@@ -124,7 +132,8 @@ object Scoreboard {
         group: String?,
         solver: String,
         filters: Map<Dimension, String> = emptyMap(),
-    ): List<ScoreProblem> = scoredProblems(cases, arm, references, features, filters)
+        scoring: Scoring = Scoring.COMPLETE,
+    ): List<ScoreProblem> = scoredProblems(cases, arm, references, features, filters, scoring)
         .filter { (problem, _) ->
             val key = problem.collection to problem.problem
             group == null || group == "all" || group in values(groupBy, problem, features[key], references[key].orEmpty())
@@ -139,20 +148,21 @@ object Scoreboard {
         references: Map<Pair<String, String>, List<Reference>>,
         features: Map<Pair<String, String>, ProblemFeatures>,
         filters: Map<Dimension, String>,
+        scoring: Scoring,
     ): List<Pair<Problem, Map<String, ScoreProblem>>> = outcomes(cases).mapNotNull { (problem, runs) ->
         val key = problem.collection to problem.problem
         val rows = References.trusted(references[key].orEmpty())
         if (rows.isEmpty()) return@mapNotNull null
         val passes = filters.all { (dimension, value) -> value in values(dimension, problem, features[key], references[key].orEmpty()) }
         if (!passes) return@mapNotNull null
-        val bySolver = rows.associateBy { it.solver }.mapValues { (solver, row) -> score(problem, solver, runs, row, arm) }
-        val best = strongest(rows)?.let { score(problem, BEST, runs, it, arm) }
+        val bySolver = rows.associateBy { it.solver }.mapValues { (solver, row) -> score(problem, solver, runs, row, arm, scoring) }
+        val best = strongest(rows)?.let { score(problem, BEST, runs, it, arm, scoring) }
         problem to (bySolver + listOfNotNull(best?.let { BEST to it }))
     }
 
     /** The arm's [runs] of [problem] against [reference]: each side's points averaged over the runs. */
-    private fun score(problem: Problem, solver: String, runs: List<Outcome>, reference: Reference, arm: Arm): ScoreProblem {
-        val timed = arm.timeoutMs == reference.budgetMs && arm.cores == 1
+    private fun score(problem: Problem, solver: String, runs: List<Outcome>, reference: Reference, arm: Arm, scoring: Scoring): ScoreProblem {
+        val timed = scoring == Scoring.COMPLETE && arm.timeoutMs == reference.budgetMs && arm.cores == 1
         val theirs = runs.map { mine ->
             Outcome(
                 optimize = mine.optimize,
@@ -169,23 +179,28 @@ object Scoreboard {
         return ScoreProblem(
             problem = problem,
             solver = solver,
-            klause = pairs.map { (mine, ref) -> points(mine, ref, timed) }.average(),
-            reference = pairs.map { (mine, ref) -> points(ref, mine, timed) }.average(),
+            klause = pairs.map { (mine, ref) -> points(mine, ref, timed, scoring) }.average(),
+            reference = pairs.map { (mine, ref) -> points(ref, mine, timed, scoring) }.average(),
             timed = timed,
         )
     }
 
     /**
-     * Points [a] earns against [b] by [Compare.points]' rule, objectives compared within [References.same] since a
-     * reference prints its objective with noise. An equal result is split by time when the two were [timed] alike,
-     * evenly otherwise.
+     * Points [a] earns against [b] by the MiniZinc Challenge rule of [scoring], as klause-bench's `compare_records.py`
+     * scores it: solved (a solution or an infeasibility) over unsolved; under [Scoring.COMPLETE] a proof (an optimum,
+     * an infeasibility, a solved satisfaction problem) over none; then the better objective, within [References.same]
+     * since a reference prints its objective with noise. An equal result splits by time when the two were [timed] alike
+     * under [Scoring.COMPLETE], evenly otherwise; two unsolved score nothing.
      */
-    internal fun points(a: Outcome, b: Outcome, timed: Boolean): Double {
-        if (a.rank != b.rank) return if (a.rank > b.rank) 1.0 else 0.0
-        if (a.rank == 0) return 0.0
+    internal fun points(a: Outcome, b: Outcome, timed: Boolean, scoring: Scoring = Scoring.COMPLETE): Double {
+        val solvedA = a.rank > 0
+        val solvedB = b.rank > 0
+        if (solvedA != solvedB) return if (solvedA) 1.0 else 0.0
+        if (!solvedA) return 0.0
+        if (scoring == Scoring.COMPLETE && a.rank != b.rank) return if (a.rank > b.rank) 1.0 else 0.0
         val (oa, ob) = a.objective to b.objective
         if (a.optimize && oa != null && ob != null && !References.same(oa, ob)) return if ((oa > ob) == a.maximize) 1.0 else 0.0
-        if (!timed) return HALF
+        if (!timed || scoring == Scoring.INCOMPLETE) return HALF
         val close = kotlin.math.abs(a.timeMs - b.timeMs) <= maxOf(Compare.TIE_MS, (Compare.TIE_SHARE * maxOf(a.timeMs, b.timeMs)).toLong())
         return if (close) HALF else b.timeMs.toDouble() / (a.timeMs + b.timeMs)
     }

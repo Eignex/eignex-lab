@@ -469,6 +469,7 @@ internal class ScoreboardView(
     val arm: String?,
     val by: Dimension,
     val filters: Map<Dimension, String>,
+    val scoring: Scoring,
     /** Every value each dimension takes over the run's problems, for the filters. */
     val options: Map<Dimension, List<String>>,
     val board: Board?,
@@ -488,11 +489,12 @@ internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): Scor
         ?: runs.firstOrNull { it.name.startsWith("klause-reference@") } ?: runs.firstOrNull()
     val by = params["by"]?.let { v -> Dimension.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } } ?: Dimension.THEME
     val filters = Dimension.entries.mapNotNull { d -> params[d.name.lowercase()]?.takeIf { it.isNotBlank() }?.let { d to it } }.toMap()
-    if (job == null) return ScoreboardView(runs, null, emptyList(), null, by, filters, emptyMap(), null, null, emptyList())
+    val scoring = if (params["scoring"].equals("incomplete", ignoreCase = true)) Scoring.INCOMPLETE else Scoring.COMPLETE
+    if (job == null) return ScoreboardView(runs, null, emptyList(), null, by, filters, scoring, emptyMap(), null, null, emptyList())
     val planned = store.arms(job.id)
     val label = params["arm"]?.takeIf { a -> planned.any { it.arm.label == a } } ?: planned.firstOrNull()?.arm?.label
     val arm = planned.firstOrNull { it.arm.label == label }?.arm
-        ?: return ScoreboardView(runs, job, emptyList(), null, by, filters, emptyMap(), null, null, emptyList())
+        ?: return ScoreboardView(runs, job, emptyList(), null, by, filters, scoring, emptyMap(), null, null, emptyList())
     val cases = store.cases(job.id).filter { it.arm == label }
     val keys = cases.map { it.problem.collection to it.problem.problem }.distinct()
     val references = store.currentReferenceRows(keys)
@@ -502,8 +504,8 @@ internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): Scor
         problems.flatMap { p -> Scoreboard.values(d, p, features[p.collection to p.problem], references[p.collection to p.problem].orEmpty()) }
             .distinct().sorted()
     }
-    val board = Scoreboard.board(cases, arm, references, features, by, filters)
+    val board = Scoreboard.board(cases, arm, references, features, by, filters, scoring)
     val cell = params["against"]?.let { against -> (params["group"] ?: "all") to against }
-    val opened = cell?.let { (group, against) -> Scoreboard.problems(cases, arm, references, features, by, group, against, filters) }.orEmpty()
-    return ScoreboardView(runs, job, planned.map { it.arm.label }, label, by, filters, options, board, cell, opened)
+    val opened = cell?.let { (group, against) -> Scoreboard.problems(cases, arm, references, features, by, group, against, filters, scoring) }.orEmpty()
+    return ScoreboardView(runs, job, planned.map { it.arm.label }, label, by, filters, scoring, options, board, cell, opened)
 }

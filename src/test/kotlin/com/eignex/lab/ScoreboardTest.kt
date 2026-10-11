@@ -61,4 +61,15 @@ class ScoreboardTest {
 
         assertEquals(1, board.total.problems)
     }
+
+    @Test
+    fun `local-search scoring ignores proofs and splits an equal result evenly, whatever the times`() {
+        val proven = Outcome.of(Json.parseToJsonElement(solved(10.0, 1_000, proven = true)))!!
+        val unproven = proven.copy(proven = false, timeToBestMs = 5_000)
+
+        assertEquals(listOf(1.0, 0.5), listOf(
+            Scoreboard.points(proven, unproven, timed = true, Scoring.COMPLETE),
+            Scoreboard.points(proven, unproven, timed = true, Scoring.INCOMPLETE),
+        ))
+    }
 }
