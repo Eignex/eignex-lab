@@ -279,7 +279,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   paused job launches that many next; a running one grows to a raised count as the quota allows, and keeps the
   instances it has when the count is lowered.
 - The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
-  instances.
+  instances. While an update waits, the worker starts no new AWS job and running ones launch no more instances, so the
+  running jobs drain and the update lands; the queued ones start after the restart.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
   ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
   `aws` job left running and terminates every lab-tagged instance no running job owns.

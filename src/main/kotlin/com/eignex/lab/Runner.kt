@@ -236,6 +236,9 @@ class Runner(private val config: Config, private val store: Store) {
     /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
     private fun updateDue(jobId: Long): Boolean = !awsActive() && updater.due().also { if (it) log(jobId, "yielding for a lab update") }
 
+    /** Whether a lab update waits: the AWS worker then starts no new job, so the running ones drain and it can land. */
+    internal fun updateWaiting(): Boolean = updater.due()
+
     /** Whether an AWS job is running, which holds a lab update back. */
     private var awsActive: () -> Boolean = { false }
 

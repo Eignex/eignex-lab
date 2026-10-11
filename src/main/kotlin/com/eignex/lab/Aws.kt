@@ -466,6 +466,8 @@ class AwsWorker(
      * ([AwsConfig.sizeFor]), as many as it asks for or the quota leaves, at least one.
      */
     private fun claim() {
+        // A waiting update needs every AWS job to have ended; starting another would hold it back indefinitely.
+        if (runner.updateWaiting()) return
         val next = store.queueOrder(Experiments.AWS_HOST).firstOrNull()?.let(store::job) ?: return
         val spec = checkNotNull(next.experiment)
         val cores = Experiments.arms(spec).maxOf { it.cores }
@@ -672,7 +674,8 @@ class AwsWorker(
             if (problems.isEmpty() || store.cancelRequested(job.id)) return false
             val current = store.job(job.id) ?: return false
             val wanted = current.experiment?.machines ?: aws.maxInstances
-            return !current.paused && instances.size < wanted && store.queueOrder(Experiments.AWS_HOST).isEmpty()
+            return !current.paused && instances.size < wanted && store.queueOrder(Experiments.AWS_HOST).isEmpty() &&
+                !runner.updateWaiting()
         }
 
         /** Launch, set up and start one more instance on the reservation just made; false when it did not join. */
