@@ -128,7 +128,12 @@ internal fun jobPage(
         append("<a href=\"/compare?jobs=$previous,${job.id}\">compare with it</a> · ")
         append("<a href=\"/trend${query("name" to job.name.substringBefore('@'))}\">trend</a></p>")
     }
-    if (job.experiment != null) append(experimentSection(config, job.id, arms, cases, references))
+    val spec = job.experiment
+    if (spec != null && spec.isScript) {
+        append(scriptSection(config, job, spec))
+    } else if (spec != null) {
+        append(experimentSection(config, job.id, arms, cases, references))
+    }
     if (!showCommands) {
         append("<p><a href=\"/jobs/${job.id}?commands\">every case's command</a></p></div>")
         append(SCRIPT)
@@ -815,6 +820,24 @@ internal fun referencesPage(
     append("</body></html>")
 }
 
+/** A script job: its script, its exit, and what it left in `$OUT`, each readable with the job's files. */
+private fun scriptSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
+    append("<h2>Script</h2>")
+    spec.scriptFile?.takeIf { it.isNotBlank() }?.let { append("<p>Runs <code>${esc(it)}</code> from the repository at the job's commit.</p>") }
+    spec.script?.takeIf { it.isNotBlank() }?.let { append("<pre class=\"script\">${esc(it)}</pre>") }
+    val dir = config.jobDir(job.id).toFile()
+    val exit = dir.resolve("0.exit").takeIf { it.isFile }?.readText()?.trim()
+    append("<p>")
+    append(if (exit == null) "<span class=\"muted\">not finished</span>" else "exit <b>${esc(exit)}</b>")
+    append(" · <a href=\"/jobs/${job.id}/files/0.out\">stdout</a> · <a href=\"/jobs/${job.id}/files/0.err\">stderr</a>")
+    val out = dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList()
+    if (out.isNotEmpty()) {
+        append(" · <b>${"$"}OUT</b>: ")
+        append(out.joinToString(", ") { "<a href=\"/jobs/${job.id}/files/$it\"><code>${esc(it.removePrefix("cases/0/out/"))}</code></a>" })
+    }
+    append("</p>")
+}
+
 /** A klause run against every reference solver: a row per group, a cell per solver, each cell klause's Borda share. */
 private fun scoreboardSection(view: ScoreboardView): String = buildString {
     append("<h2>Against the references <small>pairwise Borda by the MiniZinc Challenge rule: ")
@@ -1233,7 +1256,7 @@ code{font-size:12px;word-break:break-all}
 .bar i{display:block}.bar .ok{background:var(--ok)}.bar .bad{background:var(--bad)}.bar .run{background:var(--run)}
 .tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.tools input{font:inherit;padding:3px 6px;min-width:200px}
 button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--soft);color:var(--fg);cursor:pointer}
-table.board tr.total td{font-weight:600;border-bottom:2px solid var(--line)}.chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
+pre.script{background:var(--soft);padding:8px;overflow-x:auto;max-width:120ch}table.board tr.total td{font-weight:600;border-bottom:2px solid var(--line)}.chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
 .actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}.actions input{width:4em;font:inherit}
 dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0}dl.meta dt{color:var(--muted)}dl.meta dd{margin:0}
 table.grid{width:auto}table.grid td{min-width:110px}

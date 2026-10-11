@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
+#   lab script <file> <ref> <description> [aws|lab] [timeout-sec]
+#                                                            queue a script job: <file> run once in a build of <ref>, on AWS
+#                                                            by default; for measurements experiments cannot express, NOT
+#                                                            for running tests, lint or other gates (CI runs those)
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
@@ -36,6 +40,14 @@ corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
 run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
+script)
+  [[ $# -ge 3 ]] || { echo "usage: lab script <file> <ref> <description> [aws|lab] [timeout-sec]" >&2; exit 2; }
+  name="script-$(basename "${1%.*}")"
+  jq -n --rawfile script "$1" --arg name "$name" --arg ref "$2" --arg description "$3" --arg host "${4:-}" \
+    --arg timeout "$(( ${5:-3600} * 1000 ))" \
+    '{name: $name, description: $description, script: $script, base: {ref: $ref, timeout: $timeout}}
+      + (if $host == "" then {} else {host: $host} end)' |
+    curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 cases) curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
       (.seed // "-"), (if .record == null then "-" else
         "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv' ;;

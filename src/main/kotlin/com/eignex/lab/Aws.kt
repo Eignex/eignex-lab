@@ -284,6 +284,8 @@ class AwsHost(
     override val cores: Int,
     private val solveJavaOpts: String,
     private val profileCli: Boolean = false,
+    /** A script job: its output and its `$OUT` directory come back whatever its exit. */
+    private val scriptJob: Boolean = false,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val corpus = "$HOME/corpus"
@@ -368,7 +370,8 @@ class AwsHost(
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
         // Its output, for a case whose record cannot explain what happened: two more SSH round trips each, a cost every
         // case of a job would pay for nothing when it ran cleanly.
-        if (keepsOutput(result, record.isNotEmpty(), profileCli)) for (suffix in listOf("out", "err")) {
+        if (scriptJob) fetchScriptOutput(i, dir)
+        if (keepsOutput(result, record.isNotEmpty(), profileCli || scriptJob)) for (suffix in listOf("out", "err")) {
             runCatching { ssh.download("$HOME/job/$i.$suffix", dir.resolve("$i.$suffix"), ARTIFACT_TRANSFER_SEC) }
                 .onFailure { error ->
                     dir.resolve("$i.$suffix.transfer-error").toFile()
@@ -387,6 +390,21 @@ class AwsHost(
             for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
         }
         return result
+    }
+
+    /** A script case's `$OUT` directory, packed on the instance and unpacked under its case in the job directory. */
+    private fun fetchScriptOutput(i: Int, dir: Path) {
+        val case = dir.resolve("cases/$i").createDirectories()
+        val archive = case.resolve("out.tar")
+        runCatching {
+            receiveFile(ssh.start("tar -C ${quote("$HOME/job/cases/$i")} -c out", mergeErrors = false), archive, ARTIFACT_TRANSFER_SEC, cancelled)
+            val unpack = ProcessBuilder("tar", "-x", "-f", archive.toString(), "-C", case.toString()).redirectErrorStream(true).start()
+            val output = unpack.inputStream.bufferedReader().readText()
+            check(unpack.waitFor() == 0) { "unpacking failed: $output" }
+            Files.deleteIfExists(archive)
+        }.onFailure { error ->
+            case.resolve("out.transfer-error").toFile().writeText("${error.message ?: error::class.simpleName}\n")
+        }
     }
 
     companion object {
@@ -752,7 +770,7 @@ class AwsWorker(
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
             AwsHost(id, Ssh(id, ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
-                job.experiment?.profileCli == true) {
+                job.experiment?.profileCli == true, job.experiment?.isScript == true) {
                 store.cancelRequested(job.id)
             }
         }

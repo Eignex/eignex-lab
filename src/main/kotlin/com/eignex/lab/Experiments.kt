@@ -51,7 +51,18 @@ data class ExperimentSpec(
     val description: String = "",
     /** AWS-only whole-CLI JFR and physical resource measurements, returned with each case's files. */
     val profileCli: Boolean = false,
+    /**
+     * A script job: this bash script, run once in the worktree of the base `ref` after the build, instead of
+     * problems and arms. For measurements and checks the experiments cannot express; not for running the build's
+     * tests or lint gates, which CI runs. See [isScript].
+     */
+    val script: String? = null,
+    /** A script job's script as a path in the repository at the base `ref`, instead of [script]. */
+    val scriptFile: String? = null,
 )
+
+/** Whether [this] is a script job rather than an experiment over problems. */
+val ExperimentSpec.isScript: Boolean get() = !script.isNullOrBlank() || !scriptFile.isNullOrBlank()
 
 /** One configuration of an experiment: its [label] and the solve arguments, `ref` included. */
 @Serializable
@@ -141,6 +152,16 @@ object Experiments {
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
+        if (spec.isScript) {
+            require(spec.script.isNullOrBlank() != spec.scriptFile.isNullOrBlank()) { "a script job names one of script and scriptFile" }
+            require(spec.problems.isEmpty() && spec.problemList.isEmpty()) { "a script job selects no problems" }
+            require(spec.configs.size == 1 && spec.grid.isEmpty() && spec.seeds.isEmpty() && spec.repeats == 1) {
+                "a script job runs its script once: no configs, grid, seeds or repeats"
+            }
+            require(!spec.profileCli) { "profileCli is for experiments" }
+            arms(spec).single().let { require(it.cores <= cores) { "the script asks for ${it.cores} processors; the lab has $cores cores" } }
+            return
+        }
         require(!spec.profileCli || spec.host == AWS_HOST) { "profileCli requires host=aws" }
         require(!spec.profileCli || spec.parallel == 1) { "profileCli requires parallel=1" }
         require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
@@ -261,6 +282,25 @@ object Experiments {
     /** How long a case may run: the solver's own budget, the bench's hard kill at twice it, and room for the JVMs. */
     fun caseTimeoutSec(arm: Arm): Long = arm.timeoutMs * 2 / 1000 + CASE_OVERHEAD_SEC
 
+    /** How long a script job's script may run: its `timeout` (an hour unless it says), plus the room a case gets. */
+    fun scriptTimeoutSec(arm: Arm): Long = (arm.values["timeout"]?.toLongOrNull() ?: SCRIPT_TIMEOUT_MS) / 1000 + CASE_OVERHEAD_SEC
+
+    /** The problem a script job's single case stands for: it runs no problem, and contributes no reference row. */
+    fun scriptProblem(spec: ExperimentSpec) = Problem("script", spec.name)
+
+    /**
+     * The command of a script job's case: [spec]'s script in [worktree], with `$OUT` (where files it keeps go, read
+     * back with the job's files), the corpus cache, and the built CLI and bench, as `$KLAUSE_CLI` and `$KLAUSE_BENCH`.
+     */
+    fun scriptCommand(worktree: String, spec: ExperimentSpec, index: Int, corpus: String): String {
+        val run = spec.scriptFile?.takeIf { it.isNotBlank() }?.let { "bash ${quote("$worktree/$it")}" }
+            ?: "bash -c ${quote(checkNotNull(spec.script))}"
+        return "cd ${quote(worktree)} && export OUT=\"\$JOB_DIR/cases/$index/out\" KLAUSE_CORPUS=${quote(corpus)} " +
+            "KLAUSE_CLI=${quote("$worktree/klause-cli/build/install/klause-cli-jvm/bin/klause-cli")} " +
+            "KLAUSE_BENCH=${quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")} && " +
+            "mkdir -p \"\$OUT\" && exec $run"
+    }
+
     /** Hours [cases] take, each using its full budget, run [parallel] at once within [cores]: the cost of a run where
      *  nothing solves early. The tighter of the two limits sets it. */
     fun estimateHours(cases: List<Case>, arms: List<Arm>, parallel: Int, cores: Int = Int.MAX_VALUE): Double {
@@ -279,6 +319,7 @@ object Experiments {
     private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact")
     private const val CASE_OVERHEAD_SEC = 120L
+    private const val SCRIPT_TIMEOUT_MS = 3_600_000L
     private const val FINGERPRINT_BYTES = 6
     private const val MAX_REPEATS = 100
     private const val MS_PER_HOUR = 3_600_000.0

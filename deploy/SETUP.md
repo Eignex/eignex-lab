@@ -64,6 +64,31 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   baseline revision are unchanged. Killing the timer kills its CLI child through Linux's parent-death signal.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
+### Script jobs
+
+A script job runs one bash script, once, in a build of a commit: for a measurement or check the experiments cannot
+express, such as timing a component on captured inputs or inspecting a JFR recording. It is not for running the
+build's tests, lint or other gates: CI runs those on every push. Instead of `problems` and arms, its spec names the
+script inline (`script`) or as a path in the repository at the commit (`scriptFile`), and `base` gives the commit
+(`ref`), the time it may take (`timeout` in ms, an hour by default) and its cores (`processors`):
+
+```json
+{
+  "name": "factor-timing-2513",
+  "description": "Time the dense factor build on the captured bases at the PR head",
+  "script": "bash tools/factor-timing.sh > \"$OUT/timing.json\"",
+  "base": {"ref": "codex/windowed-ger", "timeout": "1800000"}
+}
+```
+
+The lab builds the commit as for an experiment (on AWS, from the build cache when it holds it) and runs the script
+in the worktree with `$OUT`, a directory whose files are kept with the job, the corpus cache as `$KLAUSE_CORPUS`, and
+the built CLI and bench as `$KLAUSE_CLI` and `$KLAUSE_BENCH`. Its stdout, stderr, exit and `$OUT` come back to the
+job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch` and listed on the job page. It
+queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says `"host": "lab"`; on the Mac
+it runs alone, as every job does, so it neither disturbs the lab's cases nor is disturbed by them.
+`lab script <file> <ref> <description> [aws|lab] [timeout-sec]` queues one from a script file.
+
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
 command per case: a `klause-bench solve-one` of one problem in one arm's worktree. Every arm of a problem runs back to
@@ -518,6 +543,7 @@ deploy/lab tail 7             # the last 8 kB of the job's log: planning, comman
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
+deploy/lab script time.sh main "time X on the captured inputs"   # a script job on AWS; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab ssh 7 0 uptime     # a command on instance 0 of a running AWS job; no command opens a shell

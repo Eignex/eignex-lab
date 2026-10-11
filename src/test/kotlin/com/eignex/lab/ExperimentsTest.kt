@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
+import kotlin.test.assertTrue
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -338,5 +339,47 @@ class ExperimentsTest {
         val sweep = spec(base = mapOf("timeout" to "10000"))
 
         assertEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(description = "the status sweep")))
+    }
+
+    @Test
+    fun `a script job names one script and no problems, configs, seeds or repeats`() {
+        val script = ExperimentSpec("s", emptyList(), script = "echo hi", description = "d")
+
+        Experiments.validate(script, maxParallel = 4)
+        Experiments.validate(script.copy(script = null, scriptFile = "tools/bench.sh"), maxParallel = 4)
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(scriptFile = "tools/bench.sh"), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> {
+            Experiments.validate(script.copy(problems = listOf(mapOf("suite" to "s"))), maxParallel = 4)
+        }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(repeats = 2), maxParallel = 4) }
+    }
+
+    @Test
+    fun `a script runs in its worktree with OUT and the built tools named, and keeps what it writes to OUT`() {
+        val root = Files.createTempDirectory("script job").toFile()
+        try {
+            val worktree = root.resolve("work").apply { mkdirs() }
+            val jobDir = root.resolve("job").apply { mkdirs() }
+            val spec = ExperimentSpec("s", emptyList(), script = "pwd > \"\$OUT/where\"; echo \"\$KLAUSE_CLI\" > \"\$OUT/cli\"", description = "d")
+            val builder = ProcessBuilder("bash", "-c", Experiments.scriptCommand(worktree.path, spec, 0, "/corpus")).redirectErrorStream(true)
+            builder.environment()["JOB_DIR"] = jobDir.path
+
+            val process = builder.start()
+            process.inputStream.bufferedReader().readText()
+
+            assertEquals(0, process.waitFor())
+            assertEquals(worktree.canonicalPath, jobDir.resolve("cases/0/out/where").readText().trim())
+            assertTrue(jobDir.resolve("cases/0/out/cli").readText().trim().endsWith("klause-cli/build/install/klause-cli-jvm/bin/klause-cli"))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a script job gets an hour unless it gives a timeout`() {
+        assertEquals(listOf(3_720L, 720L), listOf(
+            Experiments.scriptTimeoutSec(Arm("a", emptyMap())),
+            Experiments.scriptTimeoutSec(Arm("a", mapOf("timeout" to "600000"))),
+        ))
     }
 }

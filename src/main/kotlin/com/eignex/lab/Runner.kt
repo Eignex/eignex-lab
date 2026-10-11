@@ -347,6 +347,10 @@ class Runner(private val config: Config, private val store: Store) {
         // Each selection is capped on its own; a problem two selections share is solved once.
         // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
         val budgetMs = arms.maxOf { it.timeoutMs }
+        if (spec.isScript) {
+            planCases(job, spec, arms, shas, listOf(Experiments.scriptProblem(spec)), host)
+            return
+        }
         val problems = spec.problemList.ifEmpty { selectProblems(job, spec, host.worktree(primary), budgetMs, dir, host) }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
         classify(job, problems, host.worktree(primary), host)
@@ -406,8 +410,13 @@ class Runner(private val config: Config, private val store: Store) {
         }
         val commands = cases.mapIndexed { index, case ->
             val arm = arms[case.arm]
-            Experiments.command(host.worktree(shas.getValue(arm.ref)), problems[case.problem], arm, case.seed, index, host.corpus) to
-                Experiments.caseTimeoutSec(arm) to arm.cores
+            val worktree = host.worktree(shas.getValue(arm.ref))
+            if (spec.isScript) {
+                Experiments.scriptCommand(worktree, spec, index, host.corpus) to Experiments.scriptTimeoutSec(arm) to arm.cores
+            } else {
+                Experiments.command(worktree, problems[case.problem], arm, case.seed, index, host.corpus) to
+                    Experiments.caseTimeoutSec(arm) to arm.cores
+            }
         }.map { (command, cores) -> CaseCommand(command.first, command.second, cores) }
         store.planCommands(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
         log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
