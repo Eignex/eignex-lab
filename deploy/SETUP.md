@@ -269,8 +269,11 @@ source hashes, raw stdout and stderr/exit/timeout diagnostics remain in the benc
 case artifacts. Solver parse/exit errors count as errors and do not become trusted
 reference rows; UNKNOWN and timeout remain undecided references. Z3 agreement is
 reference evidence; independently checked source witnesses and proof certificates
-have separate authority. This reference setup does not add NRA to Klause regression
-schedules or establish completion of the nonlinear implementation.
+have separate authority. `reference-qfnra-sweep.json` adds Z3 and cvc5 at 60 s, the budget
+of the klause-reference schedules, over the frozen suites and up to 100 per family of the
+archive. Those schedules include the archive (3 per family, at most 60) and the frozen
+core, and the status sweep reaches QF_NRA through the `nonlinear-real` set, drawn like the
+other theme sets from problems the classifier tags `nonlinear-real`.
 
 An arm can name which reference solver runs with `solver`: `kissat` beside clasp for CNF, `cvc5` beside z3 for
 SMT-LIB, `highs` beside SCIP for MPS, or any MiniZinc solver such as `chuffed` beside cp-sat. When every arm names the

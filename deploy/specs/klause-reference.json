@@ -22,6 +22,8 @@
     {"suite": "smtlib-qfidl", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "smtlib-qfrdl", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "smtlib-qflira", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qfnra", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "smtlib-qfnra-core-v1", "per-family": "1000000"},
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
   ],
   "base": {"timeout": "60000"},
