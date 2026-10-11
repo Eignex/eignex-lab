@@ -45,3 +45,9 @@ tasks.register("printJavaHome") {
         .map { it.metadata.installationPath.asFile.absolutePath }
     doLast { println(home.get()) }
 }
+
+val campaignEvidenceTest by tasks.registering(Exec::class) {
+    commandLine("python3", "-m", "unittest", "discover", "-s", "deploy/tests", "-p", "test_campaign_evidence.py")
+    environment("PYTHONDONTWRITEBYTECODE", "1")
+}
+tasks.check { dependsOn(campaignEvidenceTest) }

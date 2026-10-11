@@ -106,6 +106,103 @@ problems paired by suite and name. A scheduled run's page links to the compariso
 `lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as the bench writes
 `output/<config>.csv`, for `bench credit` and the `output/` scripts.
 
+## Active campaign evidence
+
+Active campaigns publish reviewed snapshots as assets on a prerelease in this public
+repository, tagged `active-evidence-<campaign>`. The release page is the stable reviewer
+link; its download URLs require no lab access or signed URL. Assets remain available until
+explicitly retired, independently of CI artifact expiry and lab job/instance deletion.
+These are campaign data releases, not server distributions. Keep one release per active
+campaign and use `--latest=false` so it does not replace the latest server release.
+
+Stage only needed evidence under the shared external
+`klause-evidence/campaigns/<campaign>/publication/`, outside every repository. Review
+redistribution permissions and exclude credentials before publishing. Include experiment
+specifications and actual selection, raw records/stdout/profiles, executed source and
+installed-build/runtime hashes, validation provenance, and separately generated summaries
+with their analyzer and execution identity. Preserve original bytes and retained hash
+manifests. A requested revision alone does not identify the executed binary. Record missing
+captures and unsupported checks explicitly; packaging does not strengthen solver claims.
+
+Add `catalog.json` to the staged tree. It describes the current reason for retaining the
+bundle, links its owning issues/PRs, and names evidence files relative to that tree:
+
+```json
+{
+  "campaign": "lp-ceiling",
+  "purpose": "Retain the evidence needed to review the active LP ceiling change.",
+  "references": ["https://github.com/Eignex/klause/issues/123"],
+  "limitations": ["Paired recorded outcomes do not independently certify proofs."],
+  "roles": {
+    "specifications": ["experiment.json", "selection.jsonl"],
+    "raw": ["cases.json", "cases/0/record.json"],
+    "profiles": [],
+    "provenance": ["result-provenance.json"],
+    "summaries": ["result-summary.json"],
+    "validation": ["source-checks.json", "analysis-execution.json"]
+  },
+  "omissions": {"profiles": "This uninstrumented experiment collected no profiles."}
+}
+```
+
+Role lists identify entry points, not every file; all staged files are included. Empty
+roles require an omission reason. For multiple experiments, list each one's entry points
+and explain coverage in the bundle. `deploy/campaign-evidence.py` uses Python 3.11+ standard
+library only. It packages regular files deterministically, rejects symlinks and output
+inside the input tree, hashes every file, and verifies the completed archive. Run from this
+checkout (no solver build or measurement is involved):
+
+```sh
+python3 deploy/campaign-evidence.py pack /absolute/path/to/publication /absolute/path/to/assets
+```
+
+The command prints two paths: `<campaign>-<archive-sha256>.tar.gz` and its
+`.manifest.json`. The manifest includes the catalog, archive identity and every member's
+size/SHA-256. Snapshot names cannot be overwritten. Hash verification establishes byte
+identity and completeness against the reviewed manifest, not authenticity or numerical
+correctness; pin the manifest's own SHA-256 in the review alongside its download link.
+
+Publish the two generated paths with `gh`, targeting the reviewed lab tooling commit.
+Write release notes outside the repository describing scope, analyzer/source-check
+provenance and limitations, with the manifest SHA-256 and owning review links:
+
+```sh
+gh release create active-evidence-lp-ceiling /absolute/path/to/assets/lp-ceiling-<sha>.tar.gz \
+  /absolute/path/to/assets/lp-ceiling-<sha>.manifest.json --repo Eignex/klause-lab \
+  --target <lab-commit> --prerelease --latest=false --title 'Active evidence: LP ceiling' \
+  --notes-file /absolute/path/to/release-notes.md
+```
+
+Before claiming acceptance, download both assets from the release's public
+`https://github.com/Eignex/klause-lab/releases/download/<tag>/<asset>` URLs with `curl -fL`
+without credentials into a fresh external directory. Compare the downloaded manifest's
+SHA-256 with the review's pinned value, then verify **before extracting**:
+
+```sh
+python3 deploy/campaign-evidence.py verify /absolute/path/to/download/<campaign>-<sha>.tar.gz \
+  /absolute/path/to/download/<campaign>-<sha>.manifest.json
+```
+
+Verification streams every member without extraction and rejects altered bytes, missing
+or extra files, duplicate paths, traversal paths and nonregular members. Only a verified
+archive should be extracted to an empty external directory for the retained analyzers.
+Numerical/source rechecking runs on a separate analysis host with the retained dependencies;
+keep its execution identity and reports with the active evidence. Storage checks can run
+locally with `python3 -m unittest discover -s deploy/tests -p test_campaign_evidence.py`;
+the existing build gate also runs these tests.
+
+For an updated snapshot, upload new content-addressed assets with `gh release upload`
+without `--clobber`, verify their anonymous downloads, and update the release notes and
+review links. Remove superseded assets only after confirming no active review still needs
+them. Keep the release mutable: immutable releases would prevent required retirement.
+When all owning work has promoted its useful conclusions, reusable tools or regression
+fixtures, update issue/PR links to those durable results and delete the obsolete release
+and tag with `gh release delete <tag> --repo Eignex/klause-lab --cleanup-tag --yes`.
+Delete its external staging/download copies and ended lab jobs with `deploy/lab rm <id>`
+after checking their remaining consumers. Do not delete a shared job another active
+campaign needs. Do not move retired bundles into a historical archive. No raw/generated
+campaign data or measurement workflows belong in either repository.
+
 ## Reference results
 
 The lab keeps reference solvers' verdicts on problems in its own database, one row per (collection, problem,
