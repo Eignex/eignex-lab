@@ -198,7 +198,10 @@ them. Keep the release mutable: immutable releases would prevent required retire
 When all owning work has promoted its useful conclusions, reusable tools or regression
 fixtures, update issue/PR links to those durable results and delete the obsolete release
 and tag with `gh release delete <tag> --repo Eignex/klause-lab --cleanup-tag --yes`.
-Delete its external staging/download copies and ended lab jobs with `deploy/lab rm <id>`
+Confirm the release and tag are absent through the GitHub API. Cached redirects and
+already-issued downloads can remain accessible after deletion; a fresh asset request
+can be checked with a unique query string. Deletion does not promise immediate download
+revocation. Delete its external staging/download copies and ended lab jobs with `deploy/lab rm <id>`
 after checking their remaining consumers. Do not delete a shared job another active
 campaign needs. Do not move retired bundles into a historical archive. No raw/generated
 campaign data or measurement workflows belong in either repository.
