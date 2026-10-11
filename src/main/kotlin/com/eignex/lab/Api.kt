@@ -151,7 +151,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             )
             val (found, total) = if (filter.isEmpty) emptyList<Pair<Pair<String, String>, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
             if (call.wantsHtml()) {
-                val page = referencesPage(store.referenceCoverage(), filter, found, total, store.referenceConflicts())
+                val board = scoreboardView(store, call.parameters)
+                val page = referencesPage(store.referenceCoverage(), filter, found, total, store.referenceConflicts(), board)
                 call.respondText(page, ContentType.Text.Html)
             } else {
                 call.respond(found.map { (key, r) -> ReferenceHit(key.first, key.second, r) })
@@ -457,4 +458,52 @@ private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").
     val buffer = ByteArray((raf.length() - start).toInt())
     raf.readFully(buffer)
     String(buffer)
+}
+
+/** The reference scoreboard the Reference tab leads with: a run, how its problems are grouped and filtered, and its board. */
+internal class ScoreboardView(
+    /** The latest finished run of each schedule, the run picker's choices. */
+    val runs: List<Job>,
+    val job: Job?,
+    val arms: List<String>,
+    val arm: String?,
+    val by: Dimension,
+    val filters: Map<Dimension, String>,
+    /** Every value each dimension takes over the run's problems, for the filters. */
+    val options: Map<Dimension, List<String>>,
+    val board: Board?,
+    /** A cell's problems, when one was opened: its group and reference solver, and the problems worst first. */
+    val cell: Pair<String, String>?,
+    val problems: List<ScoreProblem>,
+)
+
+/** The scoreboard for [params]: `job` (default the latest klause-reference run), `arm`, `by`, a filter per dimension
+ *  named by it, and `group` with `against` to open a cell. */
+internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): ScoreboardView {
+    val schedules = store.schedules().filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
+    val runs = schedules.mapNotNull { schedule ->
+        store.jobs(limit = 20, name = schedule.name).firstOrNull { it.name.startsWith("${schedule.name}@") && it.status == Status.DONE }
+    }
+    val job = params["job"]?.toLongOrNull()?.let(store::job)
+        ?: runs.firstOrNull { it.name.startsWith("klause-reference@") } ?: runs.firstOrNull()
+    val by = params["by"]?.let { v -> Dimension.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } } ?: Dimension.THEME
+    val filters = Dimension.entries.mapNotNull { d -> params[d.name.lowercase()]?.takeIf { it.isNotBlank() }?.let { d to it } }.toMap()
+    if (job == null) return ScoreboardView(runs, null, emptyList(), null, by, filters, emptyMap(), null, null, emptyList())
+    val planned = store.arms(job.id)
+    val label = params["arm"]?.takeIf { a -> planned.any { it.arm.label == a } } ?: planned.firstOrNull()?.arm?.label
+    val arm = planned.firstOrNull { it.arm.label == label }?.arm
+        ?: return ScoreboardView(runs, job, emptyList(), null, by, filters, emptyMap(), null, null, emptyList())
+    val cases = store.cases(job.id).filter { it.arm == label }
+    val keys = cases.map { it.problem.collection to it.problem.problem }.distinct()
+    val references = store.currentReferenceRows(keys)
+    val features = store.features(keys)
+    val problems = cases.map { it.problem }.distinct()
+    val options = Dimension.entries.associateWith { d ->
+        problems.flatMap { p -> Scoreboard.values(d, p, features[p.collection to p.problem], references[p.collection to p.problem].orEmpty()) }
+            .distinct().sorted()
+    }
+    val board = Scoreboard.board(cases, arm, references, features, by, filters)
+    val cell = params["against"]?.let { against -> (params["group"] ?: "all") to against }
+    val opened = cell?.let { (group, against) -> Scoreboard.problems(cases, arm, references, features, by, group, against, filters) }.orEmpty()
+    return ScoreboardView(runs, job, planned.map { it.arm.label }, label, by, filters, options, board, cell, opened)
 }

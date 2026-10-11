@@ -746,12 +746,16 @@ internal fun referencesPage(
     total: Int,
     /** Problems two reference solvers contradict each other on. */
     conflicts: List<Disagreement> = emptyList(),
+    /** A klause run against the references, which the tab leads with. */
+    scoreboard: ScoreboardView? = null,
 ): String = buildString {
     val visible = coverage.filter { c -> HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) } }
     append(head("reference · klause lab", live = false, tab = Tab.REFERENCE))
     append("<header><h1>Reference</h1><p class=\"muted\">${visible.sumOf { it.rows }} results from ")
     append("${visible.map { it.solver }.distinct().size} solvers over ${visible.map { it.collection }.distinct().size} collections")
     append("</p></header>")
+    scoreboard?.let { append(scoreboardSection(it)) }
+    append("<h2>Search</h2>")
     append("<form method=\"get\" action=\"/references\" class=\"tools filters\">")
     append("<input name=\"q\" type=\"search\" placeholder=\"problem or collection contains\" value=\"${esc(filter.text.orEmpty())}\">")
     append(select("solver", "every solver", coverage.map { it.solver }.distinct().sorted().map { it to it }, filter.solver))
@@ -810,6 +814,80 @@ internal fun referencesPage(
     append(SCRIPT)
     append("</body></html>")
 }
+
+/** A klause run against every reference solver: a row per group, a cell per solver, each cell klause's Borda share. */
+private fun scoreboardSection(view: ScoreboardView): String = buildString {
+    append("<h2>Against the references <small>pairwise Borda, the MiniZinc Challenge rule; equal results split by time ")
+    append("when the run had the reference's budget on one core, evenly otherwise</small></h2>")
+    val job = view.job
+    if (job == null) {
+        append("<p class=\"muted\">No finished scheduled run to score yet.</p>")
+        return@buildString
+    }
+    fun link(vararg changes: Pair<String, String?>): String {
+        val current = linkedMapOf<String, String?>("job" to job.id.toString(), "arm" to view.arm, "by" to view.by.name.lowercase())
+        for ((d, v) in view.filters) current[d.name.lowercase()] = v
+        for ((k, v) in changes) current[k] = v
+        return "/references${query(*current.entries.map { it.key to it.value }.toTypedArray())}"
+    }
+    append("<form method=\"get\" action=\"/references\" class=\"tools filters\">")
+    val runChoices = (view.runs + job).distinctBy { it.id }.map { it.id.toString() to it.name }
+    append(select("job", "run", runChoices, job.id.toString()))
+    if (view.arms.size > 1) append(select("arm", "arm", view.arms.map { it to it }, view.arm))
+    append(select("by", "group by", Dimension.entries.map { it.name.lowercase() to "by ${it.label}" }, view.by.name.lowercase()))
+    for (d in Dimension.entries) {
+        val values = view.options[d].orEmpty()
+        if (values.size > 1) append(select(d.name.lowercase(), "any ${d.label}", values.map { it to it }, view.filters[d]))
+    }
+    append("<button>show</button>")
+    if (view.filters.isNotEmpty()) append("<a class=\"chip\" href=\"${link(*Dimension.entries.map { it.name.lowercase() to null }.toTypedArray())}\">clear filters</a>")
+    append("</form>")
+    val board = view.board ?: return@buildString
+    if (board.total.problems == 0) {
+        append("<p class=\"muted\">None of this run's problems has a reference verdict${if (view.filters.isEmpty()) "" else " under these filters"}.</p>")
+        return@buildString
+    }
+    append("<div class=\"scroll\"><table class=\"board\"><tr><th>${esc(view.by.label)}</th><th class=\"num\">problems</th>")
+    for (solver in board.solvers) append("<th class=\"num\">${esc(solver)}</th>")
+    append("</tr>")
+    for (row in listOf(board.total) + board.rows) {
+        append("<tr${if (row === board.total) " class=\"total\"" else ""}><td>${esc(row.group)}</td><td class=\"num\">${row.problems}</td>")
+        for (solver in board.solvers) append(scoreCell(row.cells[solver], link("group" to row.group, "against" to solver)))
+        append("</tr>")
+    }
+    append("</table></div>")
+    append("<p class=\"muted\">Each cell is klause's share of the points against that solver over the problems both have a ")
+    append("result for; green above one half, red below. <i>best</i> takes the strongest trusted reference verdict on each problem. ")
+    append("Open a cell for its problems, klause's losses first.</p>")
+    val (group, against) = view.cell ?: return@buildString
+    append("<h3>${esc(group)} against ${esc(against)} <small>${view.problems.size} problems · ")
+    append("<a href=\"${link("group" to null, "against" to null)}\">close</a></small></h3>")
+    append("<div class=\"scroll\"><table><tr><th>problem</th><th class=\"num\">klause</th><th class=\"num\">${esc(against)}</th><th>timed</th></tr>")
+    for (p in view.problems) {
+        val cls = when {
+            p.klause > p.reference -> "DONE"
+            p.klause < p.reference -> "FAILED"
+            else -> "muted"
+        }
+        append("<tr><td><a class=\"plain\" href=\"${problemLink(p.problem.collection, p.problem.problem)}\"><code>${esc(p.problem.collection)}/")
+        append("${esc(p.problem.problem)}</code></a></td><td class=\"num $cls\">${"%.2f".format(p.klause)}</td>")
+        append("<td class=\"num\">${"%.2f".format(p.reference)}</td><td class=\"muted\">${if (p.timed) "yes" else "no"}</td></tr>")
+    }
+    append("</table></div>")
+}
+
+/** One scoreboard cell: klause's share, tinted green above one half and red below, the stronger the further off. */
+private fun scoreCell(cell: ScoreCell?, href: String): String {
+    val share = cell?.share ?: return "<td class=\"num muted\">${if (cell == null || cell.problems == 0) "" else "–"}</td>"
+    val strength = (kotlin.math.abs(share - HALF_SHARE) * 2 * MAX_TINT).toInt()
+    val tint = "background:color-mix(in srgb, var(--${if (share >= HALF_SHARE) "ok" else "bad"}) $strength%, transparent)"
+    return "<td class=\"num\" style=\"$tint\"><a class=\"plain\" href=\"$href\" title=\"klause ${"%.1f".format(cell.klause)} " +
+        "against ${"%.1f".format(cell.reference)} over ${cell.problems} problems\">${"%.2f".format(share)} " +
+        "<small class=\"muted\">${cell.problems}</small></a></td>"
+}
+
+private const val HALF_SHARE = 0.5
+private const val MAX_TINT = 45
 
 internal const val SEARCH_LIMIT = 200
 
@@ -1149,7 +1227,7 @@ code{font-size:12px;word-break:break-all}
 .bar i{display:block}.bar .ok{background:var(--ok)}.bar .bad{background:var(--bad)}.bar .run{background:var(--run)}
 .tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.tools input{font:inherit;padding:3px 6px;min-width:200px}
 button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--soft);color:var(--fg);cursor:pointer}
-.chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
+table.board tr.total td{font-weight:600;border-bottom:2px solid var(--line)}.chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
 .actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}.actions input{width:4em;font:inherit}
 dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0}dl.meta dt{color:var(--muted)}dl.meta dd{margin:0}
 table.grid{width:auto}table.grid td{min-width:110px}

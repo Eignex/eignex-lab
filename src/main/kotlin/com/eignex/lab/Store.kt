@@ -159,6 +159,11 @@ class Store(file: Path) {
                     version TEXT NOT NULL DEFAULT '', validation TEXT, dual_bound REAL, stale INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (collection, problem, solver))""",
             )
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS problem_features (
+                    collection TEXT NOT NULL, problem TEXT NOT NULL, themes TEXT NOT NULL, structure TEXT, logic TEXT,
+                    PRIMARY KEY (collection, problem))""",
+            )
             val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("version" !in columns) {
                 it.execute("ALTER TABLE reference_rows ADD COLUMN version TEXT NOT NULL DEFAULT ''")
@@ -645,6 +650,50 @@ class Store(file: Path) {
     }.groupBy({ it.first }, { it.second }).flatMap { (key, rows) ->
         References.conflicts(rows).map { Disagreement(Problem("", key.second, collection = key.first), it) }
     }
+
+    /** Keep the classifier's [features] of each problem, keyed by (collection, problem); a later classification wins. */
+    @Synchronized
+    fun putFeatures(features: List<ProblemFeatures>) = transaction {
+        connection.prepareStatement(
+            "INSERT OR REPLACE INTO problem_features (collection, problem, themes, structure, logic) VALUES (?, ?, ?, ?, ?)",
+        ).use { upsert ->
+            for (f in features) {
+                upsert.setString(1, f.collection)
+                upsert.setString(2, f.problem)
+                upsert.setString(3, Json.encodeToString(f.themes))
+                upsert.setString(4, f.structure)
+                upsert.setString(5, f.logic)
+                upsert.executeUpdate()
+            }
+        }
+    }
+
+    /** The classifier's features of each of [keys] that has them, keyed by (collection, problem). */
+    @Synchronized
+    fun features(keys: Collection<Pair<String, String>>): Map<Pair<String, String>, ProblemFeatures> =
+        connection.prepareStatement("SELECT * FROM problem_features WHERE collection = ? AND problem = ?").use { statement ->
+            keys.distinct().mapNotNull { key ->
+                statement.setString(1, key.first)
+                statement.setString(2, key.second)
+                statement.executeQuery().use { r ->
+                    if (!r.next()) return@use null
+                    key to ProblemFeatures(key.first, key.second, Json.decodeFromString(r.getString("themes")),
+                        r.getString("structure"), r.getString("logic"))
+                }
+            }.toMap()
+        }
+
+    /** Every current (not stale) reference row of each of [keys], by solver, keyed by (collection, problem). */
+    @Synchronized
+    fun currentReferenceRows(keys: Collection<Pair<String, String>>): Map<Pair<String, String>, List<Reference>> =
+        connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND stale = 0").use { statement ->
+            keys.distinct().mapNotNull { key ->
+                statement.setString(1, key.first)
+                statement.setString(2, key.second)
+                val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
+                rows.takeIf { it.isNotEmpty() }?.let { key to it }
+            }.toMap()
+        }
 
     /** When any reference row last changed: what tells a cached comparison against the references that it is stale. */
     @Synchronized

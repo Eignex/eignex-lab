@@ -349,7 +349,27 @@ class Runner(private val config: Config, private val store: Store) {
         val budgetMs = arms.maxOf { it.timeoutMs }
         val problems = spec.problemList.ifEmpty { selectProblems(job, spec, host.worktree(primary), budgetMs, dir, host) }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
+        classify(job, problems, host.worktree(primary), host)
         planCases(job, spec, arms, shas, problems, host)
+    }
+
+    /**
+     * Keep the classifier's features (themes, structure, logic) of the planned [problems] the lab has none for yet,
+     * which the reference scoreboard groups problems by. Asked by name, one suite at a time, so only those are
+     * classified; a failure only leaves them unclassified.
+     */
+    private fun classify(job: Job, problems: List<Problem>, worktree: String, host: ExecutionHost) {
+        val known = store.features(problems.map { it.collection to it.problem }).keys
+        val missing = problems.filter { (it.collection to it.problem) !in known && it.problem.none { c -> c in GLOB_CHARS } }
+        for ((suite, group) in missing.groupBy { it.suite }) {
+            runCatching {
+                val asked = mapOf("suite" to suite, "name" to group.joinToString(",") { it.problem }, "per-family" to "1000000",
+                    "features" to "true")
+                val features = host.select(worktree, Experiments.selectArgs(asked)).filter { it.startsWith("{") }
+                    .map { lenient.decodeFromString<ProblemFeatures>(it) }.filter { it.themes.isNotEmpty() }
+                store.putFeatures(features)
+            }.onFailure { log(job.id, "classifying $suite's problems failed, they stay unclassified: ${it.message}") }
+        }
     }
 
     /** The problems [spec]'s selections pick, each selection asked of the bench at [worktree] and filtered and capped. */
@@ -732,3 +752,6 @@ internal fun Path.writeAtomically(text: String) {
 }
 
 internal enum class Dispatched { FINISHED, CANCELLED, YIELDED }
+
+/** Characters a `name=` selection reads as a glob, so a problem named with one cannot be asked for exactly. */
+private val GLOB_CHARS = setOf('*', '?', '[', ',')
