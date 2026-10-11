@@ -248,6 +248,26 @@ to the reference results as it finishes, keyed by collection and problem; a stro
 `{"problems": {"suite": "satlib"}, "base": {"backend": "reference", "timeout": "60000"}}` fills in clasp's verdicts
 on all of SATLIB.
 
+`deploy/specs/reference-qfnra.json` runs all frozen `qfnra-core-v1` and
+`qfnra-holdout-v1` polynomial-real inputs with Z3 at ten seconds/P1 and three
+repeats. `reference-qfnra-extensions.json` separately runs the five extension
+controls. Both use `reference=any`, so UNKNOWN, timeouts, absent references and
+Klause frontend declines cannot change the planned membership. These specs require
+a Klause revision containing the QF_NRA catalog; pin `base.ref` to an immutable
+commit in a saved execution spec. The generic reference and cvc5 declarations
+also include the fetched, unclassified `smtlib-qfnra` archive; its logic tag alone
+does not prove polynomial membership.
+
+The ordinary reference arm stores QF_NRA rows and binary/options identity just as
+other SMT inputs. Frozen QF_NRA benchmark collections appear in Reference coverage
+and collection selection despite living beside fixtures. Exact `root-obj` models,
+source hashes, raw stdout and stderr/exit/timeout diagnostics remain in the bench
+case artifacts. Solver parse/exit errors count as errors and do not become trusted
+reference rows; UNKNOWN and timeout remain undecided references. Z3 agreement is
+reference evidence; independently checked source witnesses and proof certificates
+have separate authority. This reference setup does not add NRA to Klause regression
+schedules or establish completion of the nonlinear implementation.
+
 An arm can name which reference solver runs with `solver`: `kissat` beside clasp for CNF, `cvc5` beside z3 for
 SMT-LIB, `highs` beside SCIP for MPS, or any MiniZinc solver such as `chuffed` beside cp-sat. When every arm names the
 same solver, a selection's `reference` filter reads only that solver's results, so `"reference": "missing"` with

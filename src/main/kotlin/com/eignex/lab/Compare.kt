@@ -65,7 +65,7 @@ data class Outcome(
                 proven = !rejected && !approximation && (field("proven")?.booleanOrNull ?: false),
                 timeToBestMs = if (rejected) null else field("timeToBestMs")?.longOrNull,
                 budgetMs = field("budgetMs")?.longOrNull ?: 0,
-                error = field("command")?.content == "ERROR",
+                error = field("command")?.content == "ERROR" || stat(fields, "referenceError") != null,
                 unsupported = stat(fields, "unsupported"),
                 loadError = stat(fields, "loadError"),
                 sourceValidation = validation,

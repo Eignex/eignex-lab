@@ -4,6 +4,7 @@
   "problems": [
     {"suite": "smtlib-qflia", "per-family": "1000000", "reference": "missing"},
     {"suite": "smtlib-qflra", "per-family": "1000000", "reference": "missing"},
+    {"suite": "smtlib-qfnra", "per-family": "1000000", "reference": "missing"},
     {"suite": "smtlib-qfidl", "per-family": "1000000", "reference": "missing"},
     {"suite": "smtlib-qfrdl", "per-family": "1000000", "reference": "missing"},
     {"suite": "smtlib-qflira", "per-family": "1000000", "reference": "missing"}

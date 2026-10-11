@@ -19,6 +19,7 @@
     {"suite": "maxsat-weighted", "per-family": "1000000", "reference": "unsettled"},
     {"suite": "smtlib-qflia", "per-family": "1000000", "reference": "unsettled"},
     {"suite": "smtlib-qflra", "per-family": "1000000", "reference": "unsettled"},
+    {"suite": "smtlib-qfnra", "per-family": "1000000", "reference": "unsettled"},
     {"suite": "smtlib-qfidl", "per-family": "1000000", "reference": "unsettled"},
     {"suite": "smtlib-qfrdl", "per-family": "1000000", "reference": "unsettled"},
     {"suite": "smtlib-qflira", "per-family": "1000000", "reference": "unsettled"},
