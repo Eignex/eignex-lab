@@ -250,10 +250,14 @@ on all of SATLIB.
 
 `deploy/specs/reference-qfnra.json` runs all frozen `qfnra-core-v1` and
 `qfnra-holdout-v1` polynomial-real inputs with Z3 at ten seconds/P1 and three
-repeats. `reference-qfnra-extensions.json` separately runs the five extension
-controls. Both use `reference=any`, so UNKNOWN, timeouts, absent references and
+repeats. `reference-qfnra-source-canonical.json` separately runs both canonical
+negative-constant variants with the same policy. Their versioned identities do not
+replace frozen originals or suppress original dedicated-source load declines.
+`reference-qfnra-extensions.json` separately runs the five extension
+controls. All use `reference=any`, so UNKNOWN, timeouts, absent references and
 Klause frontend declines cannot change the planned membership. These specs require
-a Klause revision containing the QF_NRA catalog; pin `base.ref` to an immutable
+a Klause revision containing the selected QF_NRA catalog (canonical variants
+require bf1ecb126b43ff37f4c9a885186771cf68fc5b1f or its merged successor); pin `base.ref` to an immutable
 commit in a saved execution spec. The generic reference and cvc5 declarations
 also include the fetched, unclassified `smtlib-qfnra` archive; its logic tag alone
 does not prove polynomial membership.
