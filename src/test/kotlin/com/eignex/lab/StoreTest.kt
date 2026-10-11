@@ -325,4 +325,19 @@ class StoreTest {
 
         assertEquals(null to waiting.runMs, waiting.runningSince to waiting.elapsedMs(now() + 3_600_000))
     }
+
+    @Test
+    fun `a launch asked for makes a schedule due and lasts until its run is queued`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = store.createSchedule("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "s")), description = "d"), 3600)
+        store.scheduleChecked(id, 1_000)
+
+        val launched = store.launchNow(id)
+        val asked = store.schedules().single()
+        store.scheduleRan(id, "abc", 7)
+        val ran = store.schedules().single()
+
+        assertEquals(listOf(true, true, null), listOf(launched, asked.launchRequested, asked.checkedAt))
+        assertEquals(false, ran.launchRequested)
+    }
 }

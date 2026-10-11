@@ -19,6 +19,7 @@
 #                                                            change a schedule's experiment, interval or next check
 #   lab schedules | lab unschedule <id>
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
+#   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab host <id> lab|aws [machines]                        move a queued, unplanned experiment to the Mac or AWS
@@ -93,6 +94,7 @@ compare) echo "$url/compare?jobs=$(IFS=,; echo "$*")" ;;
 schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
       "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv' ;;
 check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
+launch) curl -sS -X POST "$url/schedules/$1/launch"; echo ;;
 update) curl -sS -X POST "$url/update"; echo ;;
 host) jq -n --arg host "$2" --argjson machines "${3:-null}" '{host: $host, machines: $machines}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/host"; echo ;;

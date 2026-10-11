@@ -1093,7 +1093,7 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
 
 private fun schedulesTable(schedules: List<Schedule>): String = buildString {
     append("<div class=\"scroll\"><table><tr><th>name</th><th>ref</th><th>every</th><th>arms</th>")
-    append("<th>last run</th><th>checked</th><th>next check</th></tr>")
+    append("<th>last run</th><th>checked</th><th>next check</th><th></th></tr>")
     for (schedule in schedules) {
         append("<tr><td><a class=\"plain\" href=\"/${query("name" to schedule.name)}\">${esc(schedule.name)}</a>")
         append(" <small><a href=\"/trend${query("name" to schedule.name)}\">trend</a></small>")
@@ -1109,6 +1109,12 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
         append("</td><td>${ago(schedule.checkedAt)}</td><td>")
         val next = schedule.checkedAt?.let { it + schedule.intervalSec * 1000 - now() } ?: 0
         append(if (next <= 0) "due" else "in ${span(next / 1000)}")
+        append("</td><td>")
+        if (schedule.launchRequested) {
+            append("<span class=\"muted\">launching</span>")
+        } else {
+            append("<button onclick=\"act('/schedules/${schedule.id}/launch', null, 'Queue a run of ${esc(schedule.name)} now?')\">launch now</button>")
+        }
         append("</td></tr>")
     }
     append("</table></div>")

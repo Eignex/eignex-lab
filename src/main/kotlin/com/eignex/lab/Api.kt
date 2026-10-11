@@ -337,6 +337,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val found = store.checkNow(call.parameters["id"]!!.toLong())
             call.respond(if (found) HttpStatusCode.Accepted else HttpStatusCode.NotFound, if (found) "checking" else "no such schedule")
         }
+        // A run now, even at a commit the schedule already ran: what a rerun of an unmoved branch needs.
+        post("/schedules/{id}/launch") {
+            val found = store.launchNow(call.parameters["id"]!!.toLong())
+            call.respond(if (found) HttpStatusCode.Accepted else HttpStatusCode.NotFound, if (found) "launching" else "no such schedule")
+        }
         post("/schedules/{id}/delete") {
             val deleted = store.deleteSchedule(call.parameters["id"]!!.toLong())
             call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")

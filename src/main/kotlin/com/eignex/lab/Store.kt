@@ -98,6 +98,8 @@ data class Schedule(
     val lastSha: String? = null,
     val lastJob: Long? = null,
     val checkedAt: Long? = null,
+    /** A run was asked for now: the next check queues one at the ref's commit even if that commit already ran. */
+    val launchRequested: Boolean = false,
 )
 
 /**
@@ -164,6 +166,8 @@ class Store(file: Path) {
                     collection TEXT NOT NULL, problem TEXT NOT NULL, themes TEXT NOT NULL, structure TEXT, logic TEXT,
                     PRIMARY KEY (collection, problem))""",
             )
+            val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
+            if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("version" !in columns) {
                 it.execute("ALTER TABLE reference_rows ADD COLUMN version TEXT NOT NULL DEFAULT ''")
@@ -495,7 +499,7 @@ class Store(file: Path) {
                     Json.decodeFromString<ExperimentSpec>(rows.getString("experiment")),
                     rows.getInt("parallel"), rows.getInt("priority"),
                     rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
-                    rows.longOrNull("checked_at"),
+                    rows.longOrNull("checked_at"), rows.getInt("launch") == 1,
                 )
             }.toList()
         }
@@ -762,12 +766,16 @@ class Store(file: Path) {
     @Synchronized
     fun checkNow(id: Long): Boolean = update("UPDATE schedules SET checked_at = NULL WHERE id = ?", id) == 1
 
+    /** Ask schedule [id] for a run now, at its ref's commit whether or not that commit ran; false when there is none. */
+    @Synchronized
+    fun launchNow(id: Long): Boolean = update("UPDATE schedules SET launch = 1, checked_at = NULL WHERE id = ?", id) == 1
+
     @Synchronized
     fun scheduleChecked(id: Long, at: Long) = update("UPDATE schedules SET checked_at = ? WHERE id = ?", at, id)
 
     @Synchronized
     fun scheduleRan(id: Long, sha: String, jobId: Long) =
-        update("UPDATE schedules SET last_sha = ?, last_job = ? WHERE id = ?", sha, jobId, id)
+        update("UPDATE schedules SET last_sha = ?, last_job = ?, launch = 0 WHERE id = ?", sha, jobId, id)
 
     @Synchronized
     fun setPriority(jobId: Long, priority: Int): Boolean =

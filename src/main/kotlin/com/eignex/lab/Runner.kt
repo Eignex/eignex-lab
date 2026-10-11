@@ -256,9 +256,10 @@ class Runner(private val config: Config, private val store: Store) {
         val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
         for (schedule in due) {
             store.scheduleChecked(schedule.id, now())
+            // A launch asked for while the last run is still going waits for it rather than queueing a second.
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
             val advertised = advertised(schedule.ref)
-            if (advertised != null && advertised == schedule.lastSha) continue
+            if (!schedule.launchRequested && advertised != null && advertised == schedule.lastSha) continue
             val fetched = runCatching {
                 withRetry(null, "schedule ${schedule.name}: fetching") {
                     synchronized(mirrorLock) {
@@ -279,7 +280,7 @@ class Runner(private val config: Config, private val store: Store) {
             val sha = runCatching {
                 synchronized(mirrorLock) { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}") }
             }.getOrNull() ?: continue
-            if (sha == schedule.lastSha) continue
+            if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
             val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha))
             val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
