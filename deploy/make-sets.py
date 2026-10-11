@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Draw klause-bench's named problem sets from classified problems and the lab's reference results.
 
-    make-sets.py <features-dir> <references.csv> <sets-dir>
+    make-sets.py <features-dir> <references.csv> <sets-dir> [set,…]
 
 <features-dir> holds `klause-bench select suite=<s> per-family=1000000 features=true` output, one <suite>.jsonl per
 suite. <references.csv> is the lab's reference_rows as `collection,problem,feasible,proven,elapsed_ms` (feasible
 blank when undecided). Each focused set takes its SIZES count of problems of one theme, mixing difficulties by how fast the
 reference proved them, spread over suites and families; a problem the reference did not prove is left out. A
-problem goes in the first set that takes it, so `sweep`, which includes them all, holds each once.
+problem goes in the first set that takes it, so `sweep`, which includes them all, holds each once. Naming sets draws
+only those and leaves the other set files as they are: a new theme joins `sweep` without redrawing the rest.
 """
 import csv
 import json
@@ -18,13 +19,14 @@ from datetime import date
 from pathlib import Path
 
 # Focused sets in the order they draw, each the theme it covers.
-SETS = ["open-int", "linear-real", "mip", "scheduling", "routing", "packing", "globals", "sat", "maxsat", "pb"]
+SETS = ["open-int", "linear-real", "nonlinear-real", "mip", "scheduling", "routing", "packing", "globals", "sat", "maxsat",
+        "pb"]
 # Formats a set leaves out: MPS models with continuous columns are covered by `mip`, so `linear-real` is SMT and
 # MiniZinc, where they would otherwise outnumber the SMT-LIB logics it is for.
 EXCLUDED_FORMATS = {"linear-real": {"MPS"}}
-# Each set's size: CSP/COP and SMT weigh more than MPS, SAT and PB. 250 in all.
+# Each set's size: CSP/COP and SMT weigh more than MPS, SAT and PB. 275 in all.
 SIZES = {"globals": 30, "scheduling": 25, "routing": 20, "packing": 20, "open-int": 35, "linear-real": 35,
-         "mip": 25, "sat": 20, "pb": 20, "maxsat": 20}
+         "nonlinear-real": 25, "mip": 25, "sat": 20, "pb": 20, "maxsat": 20}
 # The most of a set's picks in a tier one suite may take: hakank's many small models would otherwise fill the MiniZinc
 # share of every set it has a theme in.
 SUITE_SHARE = {"hakank": 0.15}
@@ -44,6 +46,7 @@ def tier_of(elapsed_ms):
 
 def main():
     features_dir, references_csv, sets_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+    only = set(sys.argv[4].split(",")) if len(sys.argv) > 4 else set(SETS)
 
     # Each problem's tier by how fast the reference proved it, over every reference solver.
     fastest = {}
@@ -72,6 +75,8 @@ def main():
     taken = set()
     sets_dir.mkdir(parents=True, exist_ok=True)
     for name in SETS:
+        if name not in only:
+            continue
         easy = round(SIZES[name] * EASY_SHARE)
         quotas = {"easy": easy, "hard": HARD, "medium": SIZES[name] - easy - HARD}
         picked = {}
