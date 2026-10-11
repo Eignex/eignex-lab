@@ -755,7 +755,7 @@ internal fun referencesPage(
     scoreboard: ScoreboardView? = null,
 ): String = buildString {
     val visible = coverage.filter { c ->
-        c.collection.startsWith(QFNRA_BENCHMARKS) || HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) }
+        QFNRA_BENCHMARKS.any { c.collection.startsWith(it) } || HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) }
     }
     append(head("reference · klause lab", live = false, tab = Tab.REFERENCE))
     append("<header><h1>Reference</h1><p class=\"muted\">${visible.sumOf { it.rows }} results from ")
@@ -922,14 +922,17 @@ private const val MAX_TINT = 45
 
 internal const val SEARCH_LIMIT = 200
 
+private val QFNRA_BENCHMARKS = listOf(
+    "klause-bench/smoke-corpus/qfnra-v1/",
+    "klause-bench/smoke-corpus/qfnra-source-canonical-v1/",
+)
 /** Test fixtures, not benchmarks: kept in the store, left out of the coverage view. */
-private const val QFNRA_BENCHMARKS = "klause-bench/smoke-corpus/qfnra-v1/"
 private val HIDDEN_COLLECTIONS = listOf("klause-bench/smoke-corpus/", "klause-mzn-lib/")
 
 /** Families of collections that coverage folds into one expandable row: a name and which collections it holds. */
 private val FAMILIES: List<Pair<String, (String) -> Boolean>> = listOf(
     "satlib" to { it.startsWith("satlib-") },
-    "qfnra" to { it.startsWith(QFNRA_BENCHMARKS) || it == "smtlib-qf_nra" },
+    "qfnra" to { collection -> QFNRA_BENCHMARKS.any { collection.startsWith(it) } || collection == "smtlib-qf_nra" },
     "smtlib" to { it.startsWith("smtlib-") },
     "pb" to { it.startsWith("pb-") || it.startsWith("pb07-") },
     "orlib" to { it.startsWith("orlib-") },

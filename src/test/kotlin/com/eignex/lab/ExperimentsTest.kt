@@ -17,6 +17,7 @@ class ExperimentsTest {
         for ((file, set) in listOf(
             "reference-qfnra.json" to "qfnra-core-v1,qfnra-holdout-v1",
             "reference-qfnra-extensions.json" to "qfnra-extensions-v1",
+            "reference-qfnra-source-canonical.json" to "qfnra-source-canonical-v1",
         )) {
             val spec = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
 
