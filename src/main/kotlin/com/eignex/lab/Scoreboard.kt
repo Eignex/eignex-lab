@@ -21,6 +21,11 @@ enum class Scoring { COMPLETE, INCOMPLETE }
 
 /** A way to split problems into groups on the scoreboard, and to filter them. */
 enum class Dimension(val label: String) {
+    /** klause's own profile of the model it built ([profile]): its problem class. */
+    CLASS("class"),
+    /** The profile's cross-cutting traits: resource or placement constraints, values past 32 bits. */
+    TRAIT("trait"),
+    /** The source-text classifier's themes, which match the named sets. */
     THEME("theme"),
     FORMAT("format"),
     KIND("kind"),
@@ -62,17 +67,43 @@ data class Board(val solvers: List<String>, val rows: List<ScoreRow>, val total:
 object Scoreboard {
     const val BEST = "best"
 
+    /**
+     * klause's profile of a model, as its `profile` statistic reports it: `<class> optimizing=… wide=… scheduling=…`,
+     * the class one of Sat, PseudoBoolean, FiniteCp, MixedInteger, Continuous and Open.
+     */
+    data class Profile(val problemClass: String, val wide: Boolean, val scheduling: Boolean) {
+        companion object {
+            fun of(text: String?): Profile? {
+                val words = text?.trim()?.split(Regex("\\s+"))?.filter { it.isNotEmpty() } ?: return null
+                val flags = words.drop(1).associate { it.substringBefore('=') to it.substringAfter('=') }
+                return words.firstOrNull()?.let { Profile(it, flags["wide"] == "true", flags["scheduling"] == "true") }
+            }
+        }
+    }
+
+    /** Each problem's profile, from the first of its runs that reports one. */
+    fun profiles(cases: List<CaseResult>): Map<Problem, Profile> = cases.groupBy { it.problem }.mapNotNull { (problem, runs) ->
+        runs.firstNotNullOfOrNull { case ->
+            ((case.record as? kotlinx.serialization.json.JsonObject)?.get("stats") as? kotlinx.serialization.json.JsonObject)
+                ?.get("profile")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }?.let(Profile::of)
+        }?.let { problem to it }
+    }.toMap()
+
     /** Each problem of [cases] with its runs' outcomes. */
     private fun outcomes(cases: List<CaseResult>): Map<Problem, List<Outcome>> =
         cases.mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }.groupBy({ it.first }, { it.second })
 
-    /** The values [problem] takes in [dimension]: several themes at once, one value otherwise. */
+    /** The values [problem] takes in [dimension]: several themes or traits at once, one value otherwise. */
     fun values(
         dimension: Dimension,
         problem: Problem,
         features: ProblemFeatures?,
         references: List<Reference>,
+        profile: Profile? = null,
     ): List<String> = when (dimension) {
+        Dimension.CLASS -> listOf(profile?.problemClass ?: UNPROFILED)
+        Dimension.TRAIT -> profile?.let { p -> listOfNotNull("scheduling".takeIf { p.scheduling }, "wide domains".takeIf { p.wide }).ifEmpty { listOf("neither") } }
+            ?: listOf(UNPROFILED)
         Dimension.THEME -> features?.themes?.takeIf { it.isNotEmpty() } ?: listOf(UNCLASSIFIED)
         Dimension.FORMAT -> listOf(problem.format.ifEmpty { UNKNOWN }.lowercase())
         Dimension.KIND -> listOf(problem.category.ifEmpty { UNKNOWN }.lowercase())
@@ -101,6 +132,7 @@ object Scoreboard {
         scoring: Scoring = Scoring.COMPLETE,
     ): Board {
         val scored = scoredProblems(cases, arm, references, features, filters, scoring)
+        val profiles = profiles(cases)
         val named = scored.flatMap { it.second.keys }.filter { it != BEST }.distinct().sorted()
         val solvers = listOfNotNull(BEST.takeIf { scored.any { BEST in it.second } }) + named
         fun row(group: String, members: List<Pair<Problem, Map<String, ScoreProblem>>>) = ScoreRow(
@@ -113,7 +145,7 @@ object Scoreboard {
         )
         val groups = scored.flatMap { entry ->
             val key = entry.first.collection to entry.first.problem
-            values(groupBy, entry.first, features[key], references[key].orEmpty()).map { it to entry }
+            values(groupBy, entry.first, features[key], references[key].orEmpty(), profiles[entry.first]).map { it to entry }
         }.groupBy({ it.first }, { it.second })
         return Board(
             solvers,
@@ -133,13 +165,16 @@ object Scoreboard {
         solver: String,
         filters: Map<Dimension, String> = emptyMap(),
         scoring: Scoring = Scoring.COMPLETE,
-    ): List<ScoreProblem> = scoredProblems(cases, arm, references, features, filters, scoring)
-        .filter { (problem, _) ->
-            val key = problem.collection to problem.problem
-            group == null || group == "all" || group in values(groupBy, problem, features[key], references[key].orEmpty())
-        }
-        .mapNotNull { it.second[solver] }
-        .sortedBy { it.klause - it.reference }
+    ): List<ScoreProblem> {
+        val profiles = profiles(cases)
+        return scoredProblems(cases, arm, references, features, filters, scoring)
+            .filter { (problem, _) ->
+                val key = problem.collection to problem.problem
+                group == null || group == "all" || group in values(groupBy, problem, features[key], references[key].orEmpty(), profiles[problem])
+            }
+            .mapNotNull { it.second[solver] }
+            .sortedBy { it.klause - it.reference }
+    }
 
     /** Each problem that passes [filters] and has a reference, with its points against each solver and the best. */
     private fun scoredProblems(
@@ -149,15 +184,20 @@ object Scoreboard {
         features: Map<Pair<String, String>, ProblemFeatures>,
         filters: Map<Dimension, String>,
         scoring: Scoring,
-    ): List<Pair<Problem, Map<String, ScoreProblem>>> = outcomes(cases).mapNotNull { (problem, runs) ->
-        val key = problem.collection to problem.problem
-        val rows = References.trusted(references[key].orEmpty())
-        if (rows.isEmpty()) return@mapNotNull null
-        val passes = filters.all { (dimension, value) -> value in values(dimension, problem, features[key], references[key].orEmpty()) }
-        if (!passes) return@mapNotNull null
-        val bySolver = rows.associateBy { it.solver }.mapValues { (solver, row) -> score(problem, solver, runs, row, arm, scoring) }
-        val best = strongest(rows)?.let { score(problem, BEST, runs, it, arm, scoring) }
-        problem to (bySolver + listOfNotNull(best?.let { BEST to it }))
+    ): List<Pair<Problem, Map<String, ScoreProblem>>> {
+        val profiles = profiles(cases)
+        return outcomes(cases).mapNotNull { (problem, runs) ->
+            val key = problem.collection to problem.problem
+            val rows = References.trusted(references[key].orEmpty())
+            if (rows.isEmpty()) return@mapNotNull null
+            val passes = filters.all { (dimension, value) ->
+                value in values(dimension, problem, features[key], references[key].orEmpty(), profiles[problem])
+            }
+            if (!passes) return@mapNotNull null
+            val bySolver = rows.associateBy { it.solver }.mapValues { (solver, row) -> score(problem, solver, runs, row, arm, scoring) }
+            val best = strongest(rows)?.let { score(problem, BEST, runs, it, arm, scoring) }
+            problem to (bySolver + listOfNotNull(best?.let { BEST to it }))
+        }
     }
 
     /** The arm's [runs] of [problem] against [reference]: each side's points averaged over the runs. */
@@ -208,6 +248,7 @@ object Scoreboard {
     private fun strongest(rows: List<Reference>): Reference? = rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }
 
     private const val UNCLASSIFIED = "unclassified"
+    private const val UNPROFILED = "not profiled"
     private const val UNKNOWN = "unknown"
     private const val SECOND = 1_000L
     private const val TEN_SECONDS = 10_000L

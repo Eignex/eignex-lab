@@ -487,7 +487,7 @@ internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): Scor
     }
     val job = params["job"]?.toLongOrNull()?.let(store::job)
         ?: runs.firstOrNull { it.name.startsWith("klause-reference@") } ?: runs.firstOrNull()
-    val by = params["by"]?.let { v -> Dimension.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } } ?: Dimension.THEME
+    val by = params["by"]?.let { v -> Dimension.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } } ?: Dimension.CLASS
     val filters = Dimension.entries.mapNotNull { d -> params[d.name.lowercase()]?.takeIf { it.isNotBlank() }?.let { d to it } }.toMap()
     val scoring = if (params["scoring"].equals("incomplete", ignoreCase = true)) Scoring.INCOMPLETE else Scoring.COMPLETE
     if (job == null) return ScoreboardView(runs, null, emptyList(), null, by, filters, scoring, emptyMap(), null, null, emptyList())
@@ -500,8 +500,9 @@ internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): Scor
     val references = store.currentReferenceRows(keys)
     val features = store.features(keys)
     val problems = cases.map { it.problem }.distinct()
+    val profiles = Scoreboard.profiles(cases)
     val options = Dimension.entries.associateWith { d ->
-        problems.flatMap { p -> Scoreboard.values(d, p, features[p.collection to p.problem], references[p.collection to p.problem].orEmpty()) }
+        problems.flatMap { p -> Scoreboard.values(d, p, features[p.collection to p.problem], references[p.collection to p.problem].orEmpty(), profiles[p]) }
             .distinct().sorted()
     }
     val board = Scoreboard.board(cases, arm, references, features, by, filters, scoring)

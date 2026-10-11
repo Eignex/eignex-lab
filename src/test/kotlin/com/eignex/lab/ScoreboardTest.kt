@@ -72,4 +72,18 @@ class ScoreboardTest {
             Scoreboard.points(proven, unproven, timed = true, Scoring.INCOMPLETE),
         ))
     }
+
+    @Test
+    fun `problems group by the class and traits of klause's own profile of the model`() {
+        val record = """{"kind":"optimize","maximize":false,"feasible":true,"objective":1,"proven":false,"timeToBestMs":5,"budgetMs":60000,""" +
+            """"stats":{"profile":"FiniteCp optimizing=true wide=false scheduling=true"}}"""
+        val cases = listOf(case("p1", record), case("p2", solved(2.0, 5)))
+        val references = mapOf(("c" to "p1") to listOf(ref("cp-sat", 1.0, 5)), ("c" to "p2") to listOf(ref("cp-sat", 2.0, 5)))
+
+        val byClass = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.CLASS).rows.map { it.group }.sorted()
+        val byTrait = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.TRAIT).rows.map { it.group }.sorted()
+
+        assertEquals(listOf("FiniteCp", "not profiled"), byClass)
+        assertEquals(listOf("not profiled", "scheduling"), byTrait)
+    }
 }
