@@ -382,4 +382,14 @@ class ExperimentsTest {
             Experiments.scriptTimeoutSec(Arm("a", mapOf("timeout" to "600000"))),
         ))
     }
+
+    @Test
+    fun `a script job's spec reads from JSON without problems`() {
+        val spec = Json.decodeFromString<ExperimentSpec>(
+            """{"name":"s","description":"d","script":"echo hi","base":{"ref":"main","timeout":"300000"}}""",
+        )
+
+        Experiments.validate(spec, maxParallel = 4)
+        assertTrue(spec.isScript && spec.problems.isEmpty())
+    }
 }

@@ -24,8 +24,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable
 data class ExperimentSpec(
     val name: String,
+    /** The problem selections; none for a script job. */
     @Serializable(with = SelectionsSerializer::class)
-    val problems: List<Map<String, String>>,
+    val problems: List<Map<String, String>> = emptyList(),
     val base: Map<String, String> = emptyMap(),
     val configs: List<Map<String, String>> = listOf(emptyMap()),
     val grid: Map<String, List<String>> = emptyMap(),
