@@ -417,6 +417,8 @@ deploy/lab cases 7            # each case: status, arm, problem, result
 deploy/lab tail 7             # the last 8 kB of the job's log: planning, commands, exits
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
+deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
+deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab ssh 7 0 uptime     # a command on instance 0 of a running AWS job; no command opens a shell
 deploy/lab cancel 7

@@ -22,6 +22,8 @@
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
+#   lab files <id>                                           list a job's files: its log, setup log, records, case output
+#   lab cat <id> <path> [tail-bytes]                         print one of them (job.log, setup.log, cases/<n>/record.json…)
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
 #   lab ssh <id> [n] [command...]                            a shell (or command) on instance n (default 0) of a running
@@ -94,6 +96,8 @@ resume) curl -sS -X POST "$url/jobs/$1/resume"; echo ;;
 tail)
   if [[ -z "${2:-}" ]]; then curl -fsS "$url/jobs/$1/files/job.log?tail=${TAIL_BYTES:-8000}"
   else curl -fsS "$url/jobs/$1/files/$2.${3:-out}?tail=${TAIL_BYTES:-8000}"; fi ;;
+files) curl -fsS "$url/jobs/$1/files" | jq -r '.[] | "\(.bytes)\t\(.path)"' ;;
+cat) curl -fsS "$url/jobs/$1/files/$2${3:+?tail=$3}" ;;
 fetch)
   dest="${2:-lab-jobs/$1}"; mkdir -p "$dest"
   curl -fsS "$url/jobs/$1/files" | jq -r '.[] | "\(.path)\t\(.bytes)"' | while IFS=$'\t' read -r path bytes; do
