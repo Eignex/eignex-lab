@@ -87,7 +87,7 @@ class TrendTest {
     }
 
     @Test
-    fun `a finished run's point is reused until the references change and the point has aged`() {
+    fun `a finished run's point stays fresh until the references change and the point has aged`() {
         var now = 0L
         val cache = TrendCache(maxReferenceLagMs = 1000) { now }
         val run = TrendRun(job = 1, sha = "a", spec = "s", at = 0, finished = true, cases = 1, problems = 1,
@@ -96,11 +96,26 @@ class TrendTest {
         cache.put(1, stamp = 5, run)
 
         now = 500
-        val fresh = listOf(cache.get(1, stamp = 5), cache.get(1, stamp = 6))
+        val young = listOf(cache.lookup(1, stamp = 5), cache.lookup(1, stamp = 6)).map { it?.fresh }
         now = 2000
-        val aged = listOf(cache.get(1, stamp = 5), cache.get(1, stamp = 6))
+        val aged = listOf(cache.lookup(1, stamp = 5), cache.lookup(1, stamp = 6)).map { it?.fresh }
 
-        assertEquals(listOf(run, run), fresh)
-        assertEquals(listOf(run, null), aged)
+        assertEquals(listOf(true, true), young)
+        assertEquals(listOf(true, false), aged)
+        assertEquals(run, cache.lookup(1, stamp = 6)?.run)
+    }
+
+    @Test
+    fun `a schedule is refreshed once however many loads find it stale`() {
+        val cache = TrendCache()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val ran = java.util.concurrent.atomic.AtomicInteger()
+
+        repeat(3) { cache.refreshLater("sweep") { ran.incrementAndGet(); gate.await() } }
+        gate.countDown()
+        cache.refreshLater("other") {}
+        Thread.sleep(200)
+
+        assertEquals(1, ran.get())
     }
 }

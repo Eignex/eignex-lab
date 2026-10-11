@@ -80,6 +80,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         exception<IllegalArgumentException> { call, e -> call.respondText(e.message ?: "bad request", status = HttpStatusCode.BadRequest) }
     }
     val trendCache = TrendCache()
+    // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
+    for (schedule in store.schedules()) {
+        val experiment = Experiments.fingerprint(schedule.experiment)
+        trendCache.refreshLater("${schedule.name}/$experiment") { Trend.runs(store, schedule.name, trendCache, experiment = experiment) }
+    }
     routing {
         get("/") {
             val before = call.parameters["before"]?.toLong()
@@ -120,16 +125,17 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val schedules = store.schedules()
                 .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
-            val runs = name?.let { Trend.runs(store, it, trendCache) }.orEmpty()
-            // By default only the runs of the schedule's current experiment: a run of an earlier one measured
-            // something else, and plotted alongside reads as a regression.
+            // By default only the runs of the schedule's current experiment, and only those are read: a run of an
+            // earlier one measured something else, and plotted alongside reads as a regression.
             val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(it.experiment) }
             val all = call.parameters["all"] != null || current == null
+            val runs = name?.let { Trend.runs(store, it, trendCache, experiment = current.takeUnless { all }) }.orEmpty()
             // The problems the latest run of that spec planned: a set redrawn since is another line, as an edit is.
             val latest = runs.lastOrNull { it.experiment == current }?.spec
             val shown = if (all) runs else runs.filter { it.spec == latest }
+            val total = if (all) runs.size else name?.let { Trend.scheduled(store, it).size } ?: 0
             if (call.wantsHtml()) {
-                call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, runs.size - shown.size, all),
+                call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, maxOf(0, total - shown.size), all),
                     ContentType.Text.Html)
             } else {
                 call.respond(shown)

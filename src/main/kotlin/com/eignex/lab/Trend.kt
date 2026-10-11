@@ -64,10 +64,17 @@ object Trend {
      * disagreement and shortfall counts read, so a cached point is recomputed once those rows changed and it is older
      * than [TrendCache.maxReferenceLagMs]. A confirmation's counts are read afresh, since it can end after its run.
      */
-    fun runs(store: Store, name: String, cache: TrendCache? = null): List<TrendRun> {
-        val jobs = store.jobs(limit = MAX_RUNS, name = name)
-            .filter { it.experiment != null && it.name.startsWith("$name@") && it.status != Status.CANCELLED }
-            .sortedBy { it.id }
+    fun runs(
+        store: Store,
+        name: String,
+        cache: TrendCache? = null,
+        refreshing: Boolean = false,
+        /** Only the runs of this experiment ([Experiments.fingerprint]); null for every run. */
+        experiment: String? = null,
+    ): List<TrendRun> {
+        // Filtered by experiment before any case is read: a run's experiment is its spec's alone.
+        val jobs = scheduled(store, name)
+            .filter { job -> experiment == null || job.experiment?.let(Experiments::fingerprint) == experiment }
         val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX)
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
             .associateBy { it.name }
@@ -79,9 +86,13 @@ object Trend {
             val label = store.arms(job).firstOrNull()?.arm?.label
             store.cases(job).filter { it.arm == label }
         }
-        return jobs.mapNotNull { job ->
+        var stale = false
+        val runs = jobs.mapNotNull { job ->
             val finished = job.status !in ACTIVE
-            val base = cache?.takeIf { finished }?.get(job.id, stamp) ?: run {
+            // A stale point is still served, and refreshed off the request (see [TrendCache]); a refresh recomputes it.
+            val cached = cache?.takeIf { finished }?.lookup(job.id, stamp)?.takeIf { it.fresh || !refreshing }
+            if (cached?.fresh == false) stale = true
+            val base = cached?.run ?: run {
                 val arms = store.arms(job.id)
                 val cases = store.cases(job.id)
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
@@ -107,7 +118,16 @@ object Trend {
                 confirmedObjectiveGained = confirmed?.objectiveGained?.size,
             )
         }
+        if (stale && cache != null) {
+            cache.refreshLater("$name/${experiment.orEmpty()}") { runs(store, name, cache, refreshing = true, experiment = experiment) }
+        }
+        return runs
     }
+
+    /** Every run a schedule named [name] queued and did not cancel, oldest first, none of them read. */
+    fun scheduled(store: Store, name: String): List<Job> = store.jobs(limit = MAX_RUNS, name = name)
+        .filter { it.experiment != null && it.name.startsWith("$name@") && it.status != Status.CANCELLED }
+        .sortedBy { it.id }
 
     fun run(
         job: Job,
@@ -154,21 +174,44 @@ object Trend {
 
 /**
  * Finished runs' trend points, kept between requests: a schedule's trend reads every run it has, and recomputing a
- * hundred finished runs on each page load, the page reloading itself while a run is going, kept the API busy.
+ * hundred finished runs on a page load took seconds. A point whose reference rows changed since it was computed, and
+ * which is older than [maxReferenceLagMs], is stale: still served, and recomputed off the request on one background
+ * thread, so no page load waits on a recompute and a schedule is refreshed once however many loads find it stale.
  */
 class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private val clock: () -> Long = System::currentTimeMillis) {
+    /** A cached point and whether it is fresh. */
+    class Cached(val run: TrendRun, val fresh: Boolean)
+
     private class Entry(val stamp: Long?, val at: Long, val run: TrendRun)
 
     private val entries = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
+    private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val background = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "trend-refresh").apply { isDaemon = true }
+    }
 
-    /** [job]'s point, unless the reference rows changed since ([stamp]) and it is older than [maxReferenceLagMs]. */
-    fun get(job: Long, stamp: Long?): TrendRun? {
+    /** [job]'s point, fresh unless the reference rows changed since ([stamp]) and it is older than [maxReferenceLagMs]. */
+    fun lookup(job: Long, stamp: Long?): Cached? {
         val entry = entries[job] ?: return null
-        return entry.run.takeIf { entry.stamp == stamp || clock() - entry.at <= maxReferenceLagMs }
+        return Cached(entry.run, entry.stamp == stamp || clock() - entry.at <= maxReferenceLagMs)
     }
 
     fun put(job: Long, stamp: Long?, run: TrendRun) {
         entries[job] = Entry(stamp, clock(), run)
+    }
+
+    /** Run [refresh] of [key] on the background thread, unless a refresh of it is already waiting or running. */
+    fun refreshLater(key: String, refresh: () -> Unit) {
+        if (!refreshing.add(key)) return
+        background.execute {
+            try {
+                refresh()
+            } catch (e: Exception) {
+                println("trend refresh of $key failed: ${e.message}")
+            } finally {
+                refreshing.remove(key)
+            }
+        }
     }
 
     private companion object {
