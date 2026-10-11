@@ -142,6 +142,7 @@ object References {
         val proven = field("proven")?.booleanOrNull ?: false
         val stats = fields["stats"] as? JsonObject
         fun stat(name: String) = (stats?.get(name) as? JsonPrimitive)?.content
+        if (stat("referenceError") != null) return null
         val solveMs = stat("solveTime")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
         // Without a solve time, as when MiniZinc refutes a model while flattening, the solve's wall-clock time.
         val wallMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 }

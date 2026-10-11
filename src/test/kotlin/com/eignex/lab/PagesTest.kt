@@ -42,6 +42,21 @@ class PagesTest {
     }
 
     @Test
+    fun `frozen polynomial real benchmarks are selectable in reference coverage`() {
+        val collection = "klause-bench/smoke-corpus/qfnra-v1/core/algebraic"
+        val coverage = listOf(
+            ReferenceCoverage(collection, "z3", 5, 5, 5, 1, 0),
+            ReferenceCoverage("klause-bench/smoke-corpus/smtlib", "z3", 1, 1, 1, 0, 0),
+        )
+
+        val page = referencesPage(coverage, ReferenceFilter(), emptyList(), 0)
+
+        assertContains(page, "5 results from")
+        assertContains(page, "value=\"$collection\"")
+        assertFalse(page.contains("value=\"klause-bench/smoke-corpus/smtlib\""))
+    }
+
+    @Test
     fun `a commit links to github only for a github repository`() {
         assertEquals(
             "https://github.com/Eignex/klause/commit/abc",

@@ -137,6 +137,17 @@ class CompareTest {
     }
 
     @Test
+    fun `reference parser errors count as errors rather than unknown solves`() {
+        val record = """{"solver":"z3","kind":"satisfy","budgetMs":10000,"feasible":null,"proven":false,
+            "command":"z3 input.smt2","stats":{"referenceStatus":"error","referenceError":"unsupported assertion"}}"""
+
+        val arm = Compare.compare(listOf("z3"), listOf(case("z3", "transcendental", record))).arms.single()
+
+        assertEquals(1, arm.errors)
+        assertEquals(0, arm.solved)
+    }
+
+    @Test
     fun `a proof of infeasibility is timed by its solve time and not the budget`() {
         val record = """{"kind":"satisfy","feasible":false,"proven":true,"budgetMs":30000,"stats":{"solveTime":"0.09"}}"""
 

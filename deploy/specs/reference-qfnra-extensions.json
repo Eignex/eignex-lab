@@ -1,0 +1,17 @@
+{
+  "name": "reference-qfnra-extensions",
+  "description": "Separate frozen nonpolynomial, mixed-sort and multi-query controls: retain all Z3 outcomes including unsupported syntax and errors without crediting polynomial capability.",
+  "problems": {
+    "set": "qfnra-extensions-v1",
+    "reference": "any"
+  },
+  "base": {
+    "backend": "reference",
+    "solver": "z3",
+    "timeout": "10000",
+    "processors": "1"
+  },
+  "host": "lab",
+  "parallel": 1,
+  "priority": -2
+}

@@ -110,6 +110,30 @@ class ReferencesTest {
         assertEquals(listOf(Reference("clasp", false, null, true, true, 250, 10000), null), rows)
     }
 
+    @Test
+    fun `polynomial real references persist with their binary identity and enter ordinary comparisons`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "klause-bench/smoke-corpus/qfnra-v1/core/algebraic" to "algebraic/irrational-tower"
+        val record = Json.parseToJsonElement("""{"solver":"z3","kind":"satisfy","feasible":true,"proven":true,
+            "budgetMs":10000,"command":"z3 -model input.smt2","stats":{"solveTime":"0.006",
+            "referenceVersion":"Z3 pinned|sha256=abc|smt-reference-v2","referenceStatus":"sat"}}""")
+        val row = requireNotNull(References.of(record))
+
+        store.putReferences(listOf(key to row), "lab:1")
+        val stored = store.references(listOf(key), "z3")
+
+        assertEquals(row, stored[key])
+        assertEquals("Z3 pinned|sha256=abc|smt-reference-v2", store.referenceRows(key.first, key.second).single().version)
+    }
+
+    @Test
+    fun `reference parser errors do not become trusted reference rows`() {
+        val record = Json.parseToJsonElement("""{"solver":"z3","kind":"satisfy","budgetMs":10000,
+            "command":"z3 input.smt2","stats":{"referenceError":"unsupported assertion"}}""")
+
+        assertEquals(null, References.of(record))
+    }
+
     private fun mps(solver: String, feasible: Boolean?, objective: Double?, proven: Boolean, version: String = "$solver|mps-validate-1", dualBound: Double? = null) =
         Reference(solver, maximize = false, objective = objective, feasible = feasible, proven = proven, elapsedMs = 10,
             budgetMs = 60_000, version = version, dualBound = dualBound, stale = version.isEmpty())

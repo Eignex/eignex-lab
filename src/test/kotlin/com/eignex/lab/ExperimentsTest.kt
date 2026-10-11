@@ -13,6 +13,25 @@ import java.nio.file.Files
 
 class ExperimentsTest {
     @Test
+    fun `maintained nonlinear reference specs preserve whole frozen memberships`() {
+        for ((file, set) in listOf(
+            "reference-qfnra.json" to "qfnra-core-v1,qfnra-holdout-v1",
+            "reference-qfnra-extensions.json" to "qfnra-extensions-v1",
+        )) {
+            val spec = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
+
+            Experiments.validate(spec, maxParallel = 4)
+
+            assertEquals(listOf(mapOf("set" to set, "reference" to "any")), spec.problems)
+            assertEquals("z3", spec.base["solver"])
+            assertEquals("reference", spec.base["backend"])
+            assertEquals("10000", spec.base["timeout"])
+            assertEquals("1", spec.base["processors"])
+            assertEquals(1, spec.parallel)
+        }
+    }
+
+    @Test
     fun `a missing bench launcher cannot be mistaken for legacy provenance support`() {
         val root = Files.createTempDirectory("missing bench ").toFile()
         try {
