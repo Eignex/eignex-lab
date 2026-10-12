@@ -166,6 +166,26 @@ class StoreTest {
     }
 
     @Test
+    fun `scoring cases keep what scoring reads and drop provenance, witnesses and unread stats`() {
+        val store = store()
+        val problems = listOf(Problem("s", "a"), Problem("s", "b"))
+        val id = store.create("e", "main", emptyList(), experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s"))))
+        store.next()
+        store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(2, 1, emptyList()), problems.map { "true" to 1L })
+        store.caseRecord(id, 0, """{"kind":"optimize","objective":3,"proven":true,"buildFingerprint":"f","buildProvenance":{"x":1},""" +
+            """"finalWitness":[1,2],"attribution":{"y":2},"stats":{"profile":"Sat","loadError":"none","nodes":"99"}}""")
+        store.caseRecord(id, 1, """{"kind":"satisfy","conTimeout""")
+
+        val records = store.scoringCases(id).map { it.record as? kotlinx.serialization.json.JsonObject }
+        val first = records[0]!!
+
+        assertEquals(setOf("kind", "objective", "proven", "buildFingerprint", "stats"), first.keys)
+        assertEquals(setOf("profile", "loadError"), (first["stats"] as kotlinx.serialization.json.JsonObject).keys)
+        assertEquals(Outcome.of(store.cases(id)[0].record), Outcome.of(first))
+        assertEquals(null, records[1])
+    }
+
+    @Test
     fun `the highest priority queued job is taken first`() {
         val store = store()
         store.create("low", "main", listOf("true" to 10L))

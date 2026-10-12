@@ -166,6 +166,8 @@ class Store(file: Path) {
                     collection TEXT NOT NULL, problem TEXT NOT NULL, themes TEXT NOT NULL, structure TEXT, logic TEXT,
                     PRIMARY KEY (collection, problem))""",
             )
+            // [referencesStamp] reads the newest row on every reference and trend page load.
+            it.execute("CREATE INDEX IF NOT EXISTS reference_rows_updated ON reference_rows (updated_at)")
             val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
@@ -339,8 +341,37 @@ class Store(file: Path) {
 
     /** Every case of an experiment in command order, with its problem, arm, status and record. */
     @Synchronized
-    fun cases(jobId: Long): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, c.record, c.repeat FROM cases c
+    fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId)
+
+    /**
+     * [cases] with each record cut to what scoring and the trend read: its stats only [SCORING_STATS], and none of its
+     * build provenance, final witness or attribution. A record runs to tens of kilobytes, nearly all of it provenance,
+     * so SQLite cuts it before it is parsed here. A finished job's are kept between calls ([SCORING_JOBS] of them), its
+     * cases being final until it is queued again, which changes its finish time.
+     */
+    fun scoringCases(jobId: Long): List<CaseResult> {
+        val (status, finishedAt) = jobState(jobId) ?: return emptyList()
+        val final = status !in ACTIVE
+        if (final) synchronized(scoring) { scoring[jobId]?.takeIf { it.first == finishedAt }?.let { return it.second } }
+        val cases = casesWith(SCORING_RECORD, jobId)
+        if (final) synchronized(scoring) { scoring[jobId] = finishedAt to cases }
+        return cases
+    }
+
+    private val scoring = object : LinkedHashMap<Long, Pair<Long?, List<CaseResult>>>(SCORING_JOBS, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Pair<Long?, List<CaseResult>>>) = size > SCORING_JOBS
+    }
+
+    @Synchronized
+    private fun jobState(jobId: Long): Pair<Status, Long?>? =
+        connection.prepareStatement("SELECT status, finished_at FROM jobs WHERE id = ?").use { statement ->
+            statement.setLong(1, jobId)
+            statement.executeQuery().use { r -> if (r.next()) Status.valueOf(r.getString(1)) to r.longOrNull("finished_at") else null }
+        }
+
+    @Synchronized
+    private fun casesWith(record: String, jobId: Long): List<CaseResult> = connection.prepareStatement(
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -360,22 +391,23 @@ class Store(file: Path) {
     }
 
     /** The newest jobs first, older than [before] when given. A [name] keeps that name's jobs and the ones its
-     *  schedule queued as `name@sha`. */
+     *  schedule queued as `name@sha`. Without [withCommands] their commands are left out, which a view of many
+     *  jobs' outcomes never reads and which run to hundreds per job. */
     @Synchronized
-    fun jobs(limit: Int = 200, before: Long? = null, name: String? = null): List<Job> = jobsWhere(
+    fun jobs(limit: Int = 200, before: Long? = null, name: String? = null, withCommands: Boolean = true): List<Job> = jobsWhere(
         "id < ? AND (? IS NULL OR name = ? OR name LIKE ? ESCAPE '\\') ORDER BY id DESC LIMIT ?",
-        before ?: Long.MAX_VALUE, name, name, name?.let { likeEscape(it) + "@%" }, limit,
+        before ?: Long.MAX_VALUE, name, name, name?.let { likeEscape(it) + "@%" }, limit, withCommands = withCommands,
     )
 
     /** Every queued or running job, oldest first. */
     @Synchronized
     fun active(): List<Job> = jobsWhere("status IN (?, ?) ORDER BY id", Status.QUEUED.name, Status.RUNNING.name)
 
-    private fun jobsWhere(where: String, vararg values: Any?): List<Job> =
+    private fun jobsWhere(where: String, vararg values: Any?, withCommands: Boolean = true): List<Job> =
         connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
             values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
             statement.executeQuery().use { rows -> generateSequence { if (rows.next()) job(rows) else null }.toList() }
-        }.map { it.copy(commands = commands(it.id)) }
+        }.let { jobs -> if (withCommands) jobs.map { it.copy(commands = commands(it.id)) } else jobs }
 
     private fun likeEscape(text: String) = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -712,6 +744,12 @@ class Store(file: Path) {
         statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
     }
 
+    /** When a job last finished: what tells a cached view of finished runs that a newer one may belong in it. */
+    @Synchronized
+    fun lastFinished(): Long? = connection.prepareStatement("SELECT MAX(finished_at) FROM jobs").use { statement ->
+        statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
+    }
+
     /** Per collection and solver: rows, decided, proven, infeasible, and when last updated. */
     @Synchronized
     fun referenceCoverage(): List<ReferenceCoverage> = connection.prepareStatement(
@@ -975,3 +1013,19 @@ private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()
+
+/** The stats scoring, the trend and the scoreboard read from a case record ([Outcome.of], [Scoreboard.profiles]). */
+internal val SCORING_STATS = listOf(
+    "sourceValidation", "sourceValidationReason", "floatApproximation", "referenceError", "unsupported", "loadError",
+    "solveTime", "profile", "solvePipeline", "referenceVersion", "validation", "dualBound",
+)
+
+/** A case record as [Store.scoringCases] reads it: cut down in SQLite, and left whole when it is not valid JSON. */
+private val SCORING_RECORD = """CASE WHEN c.record IS NULL OR NOT json_valid(c.record) THEN c.record ELSE
+    json_set(json_remove(c.record, '$.buildProvenance', '$.finalWitness', '$.attribution'), '$.stats',
+        json((SELECT json_group_object(key, value) FROM json_each(c.record, '$.stats')
+              WHERE key IN (${SCORING_STATS.joinToString(", ") { "'$it'" }})))) END"""
+
+/** How many finished jobs' scoring cases [Store.scoringCases] keeps. */
+private const val SCORING_JOBS = 48
+private const val LOAD_FACTOR = 0.75f

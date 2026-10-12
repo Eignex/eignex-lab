@@ -80,6 +80,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         exception<IllegalArgumentException> { call, e -> call.respondText(e.message ?: "bad request", status = HttpStatusCode.BadRequest) }
     }
     val trendCache = TrendCache()
+    val referenceCache = ReferenceCache(store)
+    referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
     for (schedule in store.schedules()) {
         val experiment = Experiments.fingerprint(schedule.experiment)
@@ -151,8 +153,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             )
             val (found, total) = if (filter.isEmpty) emptyList<Pair<Pair<String, String>, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
             if (call.wantsHtml()) {
-                val board = scoreboardView(store, call.parameters)
-                val page = referencesPage(store.referenceCoverage(), filter, found, total, store.referenceConflicts(), board)
+                val board = referenceCache.scoreboard(call.parameters)
+                val page = referencesPage(referenceCache.coverage(), filter, found, total, referenceCache.conflicts(), board)
                 call.respondText(page, ContentType.Text.Html)
             } else {
                 call.respond(found.map { (key, r) -> ReferenceHit(key.first, key.second, r) })
@@ -466,6 +468,99 @@ private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").
 }
 
 /** The reference scoreboard the Reference tab leads with: a run, how its problems are grouped and filtered, and its board. */
+/**
+ * The reference page's reads, kept between loads: the coverage and conflict tables scan every reference row, and a
+ * scoreboard scores its run's every case. Once a reference row changes or a job finishes, a kept read is still served
+ * and recomputed on one background thread, so a page load never waits on a recompute it has an answer for. A
+ * scoreboard of a run still going is not kept.
+ */
+internal class ReferenceCache(private val store: Store) {
+    private class Kept<T>(val version: String, val value: T)
+
+    private class Tables(val coverage: List<ReferenceCoverage>, val conflicts: List<Disagreement>)
+
+    @Volatile private var tables: Kept<Tables>? = null
+
+    private val boards = object : LinkedHashMap<String, Kept<ScoreboardView>>(BOARDS, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Kept<ScoreboardView>>) = size > BOARDS
+    }
+
+    private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val background = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "reference-refresh").apply { isDaemon = true }
+    }
+
+    private fun version() = "${store.referencesStamp()}/${store.lastFinished()}"
+
+    private fun later(key: String, work: () -> Unit) {
+        if (!refreshing.add(key)) return
+        background.execute {
+            try {
+                work()
+            } catch (e: Exception) {
+                println("reference refresh of $key failed: ${e.message}")
+            } finally {
+                refreshing.remove(key)
+            }
+        }
+    }
+
+    private fun computeTables(version: String) = Kept(version, Tables(store.referenceCoverage(), store.referenceConflicts())).also { tables = it }
+
+    private fun tables(): Tables {
+        val version = version()
+        val kept = tables ?: return computeTables(version).value
+        if (kept.version != version) later("tables") { computeTables(version()) }
+        return kept.value
+    }
+
+    fun coverage(): List<ReferenceCoverage> = tables().coverage
+
+    fun conflicts(): List<Disagreement> = tables().conflicts
+
+    /** [scoreboardView] of [params], kept per [params] and served stale while it is recomputed. */
+    fun scoreboard(params: io.ktor.http.Parameters): ScoreboardView {
+        val key = params.entries().sortedBy { it.key }.joinToString("&") { (k, v) -> "$k=${v.joinToString(",")}" }
+        val version = version()
+        val kept = synchronized(boards) { boards[key] }
+        if (kept != null) {
+            if (kept.version != version) later("board $key") { board(key, params, version()) }
+            return kept.value
+        }
+        return board(key, params, version)
+    }
+
+    private val inputs = object : LinkedHashMap<String, Kept<ScoreInputs>>(INPUTS, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Kept<ScoreInputs>>) = size > INPUTS
+    }
+
+    /** A finished run's [ScoreInputs], kept until a reference row changes: a new filter or grouping then only regroups. */
+    private fun inputs(job: Job, label: String?): ScoreInputs {
+        if (job.status in ACTIVE) return scoreInputs(store, job.id, label)
+        val key = "${job.id}/$label/${job.finishedAt}"
+        val stamp = store.referencesStamp().toString()
+        synchronized(inputs) { inputs[key]?.takeIf { it.version == stamp }?.let { return it.value } }
+        return scoreInputs(store, job.id, label).also { synchronized(inputs) { inputs[key] = Kept(stamp, it) } }
+    }
+
+    private fun board(key: String, params: io.ktor.http.Parameters, version: String): ScoreboardView =
+        scoreboardView(store, params, ::inputs).also { view ->
+            if (view.job?.status !in ACTIVE) synchronized(boards) { boards[key] = Kept(version, view) }
+        }
+
+    /** The default page's reads, computed before anyone asks so the first load after a restart is quick too. */
+    fun warm() = later("warm") {
+        computeTables(version())
+        board("", io.ktor.http.Parameters.Empty, version())
+    }
+
+    private companion object {
+        const val BOARDS = 64
+        const val INPUTS = 8
+        const val LOAD_FACTOR = 0.75f
+    }
+}
+
 internal class ScoreboardView(
     /** The latest finished run of each schedule, the run picker's choices. */
     val runs: List<Job>,
@@ -485,10 +580,27 @@ internal class ScoreboardView(
 
 /** The scoreboard for [params]: `job` (default the latest klause-reference run), `arm`, `by`, a filter per dimension
  *  named by it, and `group` with `against` to open a cell. */
-internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): ScoreboardView {
+/** What a scoreboard of one arm of a run reads: its cases, and their problems' reference rows and features. */
+internal class ScoreInputs(
+    val cases: List<CaseResult>,
+    val references: Map<Pair<String, String>, List<Reference>>,
+    val features: Map<Pair<String, String>, ProblemFeatures>,
+)
+
+internal fun scoreInputs(store: Store, job: Long, label: String?): ScoreInputs {
+    val cases = store.scoringCases(job).filter { it.arm == label }
+    val keys = cases.map { it.problem.collection to it.problem.problem }.distinct()
+    return ScoreInputs(cases, store.currentReferenceRows(keys), store.features(keys))
+}
+
+internal fun scoreboardView(
+    store: Store,
+    params: io.ktor.http.Parameters,
+    inputs: (Job, String?) -> ScoreInputs = { job, label -> scoreInputs(store, job.id, label) },
+): ScoreboardView {
     val schedules = store.schedules().filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
     val runs = schedules.mapNotNull { schedule ->
-        store.jobs(limit = 20, name = schedule.name).firstOrNull { it.name.startsWith("${schedule.name}@") && it.status == Status.DONE }
+        store.jobs(limit = 20, name = schedule.name, withCommands = false).firstOrNull { it.name.startsWith("${schedule.name}@") && it.status == Status.DONE }
     }
     val job = params["job"]?.toLongOrNull()?.let(store::job)
         ?: runs.firstOrNull { it.name.startsWith("klause-reference@") } ?: runs.firstOrNull()
@@ -500,10 +612,7 @@ internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): Scor
     val label = params["arm"]?.takeIf { a -> planned.any { it.arm.label == a } } ?: planned.firstOrNull()?.arm?.label
     val arm = planned.firstOrNull { it.arm.label == label }?.arm
         ?: return ScoreboardView(runs, job, emptyList(), null, by, filters, scoring, emptyMap(), null, null, emptyList())
-    val cases = store.cases(job.id).filter { it.arm == label }
-    val keys = cases.map { it.problem.collection to it.problem.problem }.distinct()
-    val references = store.currentReferenceRows(keys)
-    val features = store.features(keys)
+    val (cases, references, features) = inputs(job, label).let { Triple(it.cases, it.references, it.features) }
     val problems = cases.map { it.problem }.distinct()
     val profiles = Scoreboard.profiles(cases, features)
     val options = Dimension.entries.associateWith { d ->
