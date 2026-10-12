@@ -93,7 +93,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
             val queues = listOf(Experiments.LAB_HOST, Experiments.AWS_HOST).associateWith { store.queueOrder(it) }
-            val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name, queues)
+            val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name, queues)
             call.respondText(page, ContentType.Text.Html)
         }
         get("/health") {

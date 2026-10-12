@@ -1077,6 +1077,7 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
         append("<td><a href=\"/jobs/${job.id}\">${job.id}</a></td>")
         val base = job.name.substringBefore('@')
         append("<td><a class=\"plain\" href=\"/${query("name" to base)}\" title=\"all runs of ${esc(base)}\">${esc(job.name)}</a>")
+        append(" <span class=\"kind\">${kindOf(job)}</span>")
         job.experiment?.description?.takeIf { it.isNotBlank() }?.let {
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
@@ -1085,18 +1086,28 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
         append("<td>${progress(job)}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
-        val running = job.commands.filter { it.status == Status.RUNNING }
-        if (running.isNotEmpty() && !filterable) {
-            append("<tr class=\"sub\"><td></td><td colspan=\"8\">")
-            for (command in running) {
-                append("<div><code>${esc(command.cmd.take(200))}</code> ${duration(command.startedAt, null)} ")
-                append("<a href=\"/jobs/${job.id}/files/${command.index}.out?tail=$TAIL_BYTES\">out</a> ")
-                append("<a href=\"/jobs/${job.id}/files/${command.index}.err?tail=$TAIL_BYTES\">err</a></div>")
-            }
-            append("</td></tr>")
-        }
     }
     append("</table></div>")
+}
+
+/**
+ * What kind of job [job] is, in a word, which a queue row shows instead of its commands: `custom` for a script,
+ * `a/b` for an experiment of several arms, `sweep` and `reference` for those schedules' runs, `confirm` for a
+ * confirmation, `reference solve` for a run of the reference solvers, `run` for any other experiment.
+ */
+internal fun kindOf(job: Job): String {
+    val spec = job.experiment ?: return "commands"
+    if (spec.isScript) return "custom"
+    if (Confirm.SUFFIX in job.name) return "confirm"
+    val arms = runCatching { Experiments.arms(spec) }.getOrDefault(emptyList())
+    val base = job.name.substringBefore('@')
+    return when {
+        arms.any { it.values["backend"] == REFERENCE_BACKEND } -> "reference solve"
+        base.startsWith("status-sweep") -> "sweep"
+        base.startsWith("klause-reference") -> "reference"
+        arms.size > 1 -> "a/b"
+        else -> "run"
+    }
 }
 
 private fun schedulesTable(schedules: List<Schedule>): String = buildString {
@@ -1273,7 +1284,7 @@ code{font-size:12px;word-break:break-all}
 .RUNNING{color:var(--run)}.DONE{color:var(--ok)}.PARTIAL{color:var(--warn)}.FAILED{color:var(--bad)}.CANCELLED,.QUEUED{color:var(--off)}
 .PARTIAL a{color:inherit}
 .badge{background:var(--warn);color:var(--bg);border-radius:3px;padding:0 4px}
-.where{border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.where.aws{border-color:var(--link);color:var(--link)}
+.where{border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.kind{font-size:.8em;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.where.aws{border-color:var(--link);color:var(--link)}
 .bar{display:flex;width:90px;height:6px;margin:6px 0 2px;background:var(--soft);border-radius:3px;overflow:hidden}
 .bar i{display:block}.bar .ok{background:var(--ok)}.bar .bad{background:var(--bad)}.bar .run{background:var(--run)}
 .tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.tools input{font:inherit;padding:3px 6px;min-width:200px}

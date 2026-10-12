@@ -407,9 +407,10 @@ class Store(file: Path) {
         before ?: Long.MAX_VALUE, name, name, name?.let { likeEscape(it) + "@%" }, limit, withCommands = withCommands,
     )
 
-    /** Every queued or running job, oldest first. */
+    /** Every queued or running job, oldest first; without [withCommands], with their [Job.counts] instead. */
     @Synchronized
-    fun active(): List<Job> = jobsWhere("status IN (?, ?) ORDER BY id", Status.QUEUED.name, Status.RUNNING.name)
+    fun active(withCommands: Boolean = true): List<Job> =
+        jobsWhere("status IN (?, ?) ORDER BY id", Status.QUEUED.name, Status.RUNNING.name, withCommands = withCommands)
 
     private fun jobsWhere(where: String, vararg values: Any?, withCommands: Boolean = true): List<Job> =
         connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
