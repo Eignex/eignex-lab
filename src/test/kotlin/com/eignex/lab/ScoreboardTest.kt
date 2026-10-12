@@ -83,7 +83,23 @@ class ScoreboardTest {
         val byClass = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.CLASS).rows.map { it.group }.sorted()
         val byTrait = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.TRAIT).rows.map { it.group }.sorted()
 
-        assertEquals(listOf("FiniteCp", "not profiled"), byClass)
-        assertEquals(listOf("not profiled", "scheduling"), byTrait)
+        assertEquals(listOf("finite-domain CP", "unknown class"), byClass)
+        assertEquals(listOf("scheduling", "unknown"), byTrait)
+    }
+
+    @Test
+    fun `a run klause did not profile takes its class from the logic, then the pipeline, then a failed load`() {
+        fun record(stats: String) = """{"kind":"satisfy","maximize":false,"feasible":true,"objective":null,"proven":true,"timeToBestMs":5,"budgetMs":60000,"stats":{$stats}}"""
+        val cases = listOf(
+            case("nra", record(""""solvePipeline":"refuted"""")),
+            case("poly", record(""""solvePipeline":"polynomial-theory"""")),
+            case("bad", record(""""loadError":"no such file"""")),
+        )
+        val features = mapOf(("c" to "nra") to ProblemFeatures("c", "nra", logic = "QF_NRA"))
+
+        val profiles = Scoreboard.profiles(cases, features).mapKeys { it.key.problem }
+
+        assertEquals(mapOf("nra" to "Nonlinear", "poly" to "Nonlinear", "bad" to "did not load"), profiles.mapValues { it.value.problemClass })
+        assertEquals(listOf("unknown"), Scoreboard.values(Dimension.TRAIT, cases[0].problem, null, emptyList(), profiles["nra"]))
     }
 }

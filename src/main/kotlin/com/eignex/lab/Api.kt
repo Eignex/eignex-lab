@@ -505,7 +505,7 @@ internal fun scoreboardView(store: Store, params: io.ktor.http.Parameters): Scor
     val references = store.currentReferenceRows(keys)
     val features = store.features(keys)
     val problems = cases.map { it.problem }.distinct()
-    val profiles = Scoreboard.profiles(cases)
+    val profiles = Scoreboard.profiles(cases, features)
     val options = Dimension.entries.associateWith { d ->
         problems.flatMap { p -> Scoreboard.values(d, p, features[p.collection to p.problem], references[p.collection to p.problem].orEmpty(), profiles[p]) }
             .distinct().sorted()

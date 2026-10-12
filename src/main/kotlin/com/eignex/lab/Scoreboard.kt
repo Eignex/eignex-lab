@@ -1,6 +1,8 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** What the classifier says about a problem's source: its themes (`scheduling`, `mip`, …), structure and logic. */
 @Serializable
@@ -69,9 +71,10 @@ object Scoreboard {
 
     /**
      * klause's profile of a model, as its `profile` statistic reports it: `<class> optimizing=… wide=… scheduling=…`,
-     * the class one of Sat, PseudoBoolean, FiniteCp, MixedInteger, Continuous and Open.
+     * the class one of Sat, PseudoBoolean, FiniteCp, MixedInteger, Continuous and Open. A [derived] profile is the lab's
+     * guess for a run that reported none, from how klause solved it or the source's logic; its traits are unknown.
      */
-    data class Profile(val problemClass: String, val wide: Boolean, val scheduling: Boolean) {
+    data class Profile(val problemClass: String, val wide: Boolean, val scheduling: Boolean, val derived: Boolean = false) {
         companion object {
             fun of(text: String?): Profile? {
                 val words = text?.trim()?.split(Regex("\\s+"))?.filter { it.isNotEmpty() } ?: return null
@@ -81,13 +84,24 @@ object Scoreboard {
         }
     }
 
-    /** Each problem's profile, from the first of its runs that reports one. */
-    fun profiles(cases: List<CaseResult>): Map<Problem, Profile> = cases.groupBy { it.problem }.mapNotNull { (problem, runs) ->
-        runs.firstNotNullOfOrNull { case ->
-            ((case.record as? kotlinx.serialization.json.JsonObject)?.get("stats") as? kotlinx.serialization.json.JsonObject)
-                ?.get("profile")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }?.let(Profile::of)
-        }?.let { problem to it }
-    }.toMap()
+    /**
+     * Each problem's profile, from the first of its runs that reports one. klause profiles the model only on its main
+     * pipelines: a run on another (the polynomial theory solver for nonlinear reals, an early refutation) or one that
+     * failed to load reports none, and gets a [Profile.derived] class from its pipeline or [features]' logic instead.
+     */
+    fun profiles(cases: List<CaseResult>, features: Map<Pair<String, String>, ProblemFeatures> = emptyMap()): Map<Problem, Profile> =
+        cases.groupBy { it.problem }.mapNotNull { (problem, runs) ->
+            val stats = runs.map { ((it.record as? JsonObject)?.get("stats") as? JsonObject).orEmpty() }
+            fun stat(name: String) = stats.firstNotNullOfOrNull { (it[name] as? JsonPrimitive)?.content }
+            val profile = stat("profile")?.let(Profile::of)
+                ?: derivedClass(stat("solvePipeline"), features[problem.collection to problem.problem]?.logic, stat("loadError") != null)
+                    ?.let { Profile(it, wide = false, scheduling = false, derived = true) }
+            profile?.let { problem to it }
+        }.toMap()
+
+    /** The class of a run klause did not profile: by its logic, else by its pipeline, else that it did not load. */
+    private fun derivedClass(pipeline: String?, logic: String?, loadFailed: Boolean): String? =
+        LOGIC_CLASSES[logic?.uppercase()] ?: PIPELINE_CLASSES[pipeline] ?: LOAD_FAILED.takeIf { loadFailed }
 
     /** Each problem of [cases] with its runs' outcomes. */
     private fun outcomes(cases: List<CaseResult>): Map<Problem, List<Outcome>> =
@@ -101,9 +115,9 @@ object Scoreboard {
         references: List<Reference>,
         profile: Profile? = null,
     ): List<String> = when (dimension) {
-        Dimension.CLASS -> listOf(profile?.problemClass ?: UNPROFILED)
-        Dimension.TRAIT -> profile?.let { p -> listOfNotNull("scheduling".takeIf { p.scheduling }, "wide domains".takeIf { p.wide }).ifEmpty { listOf("neither") } }
-            ?: listOf(UNPROFILED)
+        Dimension.CLASS -> listOf(profile?.problemClass?.let { CLASS_LABELS[it] ?: it } ?: UNPROFILED)
+        Dimension.TRAIT -> profile?.takeUnless { it.derived }?.let { p -> listOfNotNull("scheduling".takeIf { p.scheduling }, "wide domains".takeIf { p.wide }).ifEmpty { listOf("neither") } }
+            ?: listOf(UNKNOWN)
         Dimension.THEME -> features?.themes?.takeIf { it.isNotEmpty() } ?: listOf(UNCLASSIFIED)
         Dimension.FORMAT -> listOf(problem.format.ifEmpty { UNKNOWN }.lowercase())
         Dimension.KIND -> listOf(problem.category.ifEmpty { UNKNOWN }.lowercase())
@@ -132,7 +146,7 @@ object Scoreboard {
         scoring: Scoring = Scoring.COMPLETE,
     ): Board {
         val scored = scoredProblems(cases, arm, references, features, filters, scoring)
-        val profiles = profiles(cases)
+        val profiles = profiles(cases, features)
         val named = scored.flatMap { it.second.keys }.filter { it != BEST }.distinct().sorted()
         val solvers = listOfNotNull(BEST.takeIf { scored.any { BEST in it.second } }) + named
         fun row(group: String, members: List<Pair<Problem, Map<String, ScoreProblem>>>) = ScoreRow(
@@ -149,7 +163,7 @@ object Scoreboard {
         }.groupBy({ it.first }, { it.second })
         return Board(
             solvers,
-            groups.map { (group, members) -> row(group, members) }.sortedByDescending { it.problems },
+            groups.map { (group, members) -> row(group, members) }.sortedWith(compareBy<ScoreRow> { it.group in CATCH_ALL }.thenByDescending { it.problems }),
             row("all", scored),
         )
     }
@@ -166,7 +180,7 @@ object Scoreboard {
         filters: Map<Dimension, String> = emptyMap(),
         scoring: Scoring = Scoring.COMPLETE,
     ): List<ScoreProblem> {
-        val profiles = profiles(cases)
+        val profiles = profiles(cases, features)
         return scoredProblems(cases, arm, references, features, filters, scoring)
             .filter { (problem, _) ->
                 val key = problem.collection to problem.problem
@@ -185,7 +199,7 @@ object Scoreboard {
         filters: Map<Dimension, String>,
         scoring: Scoring,
     ): List<Pair<Problem, Map<String, ScoreProblem>>> {
-        val profiles = profiles(cases)
+        val profiles = profiles(cases, features)
         return outcomes(cases).mapNotNull { (problem, runs) ->
             val key = problem.collection to problem.problem
             val rows = References.trusted(references[key].orEmpty())
@@ -248,8 +262,23 @@ object Scoreboard {
     private fun strongest(rows: List<Reference>): Reference? = rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }
 
     private const val UNCLASSIFIED = "unclassified"
-    private const val UNPROFILED = "not profiled"
+    private const val UNPROFILED = "unknown class"
     private const val UNKNOWN = "unknown"
+    private const val LOAD_FAILED = "did not load"
+    /** klause's class names as the scoreboard shows them. */
+    private val CLASS_LABELS = mapOf(
+        "Sat" to "SAT", "PseudoBoolean" to "pseudo-Boolean", "FiniteCp" to "finite-domain CP", "MixedInteger" to "mixed integer",
+        "Continuous" to "continuous", "Open" to "open-domain integer", "Nonlinear" to "nonlinear real",
+    )
+    /** The class an SMT logic's problems take when klause did not profile them. */
+    private val LOGIC_CLASSES = mapOf(
+        "QF_NRA" to "Nonlinear", "QF_LRA" to "Continuous", "QF_RDL" to "Continuous",
+        "QF_LIA" to "Open", "QF_IDL" to "Open", "QF_LIRA" to "Open",
+    )
+    /** The class klause's solve pipeline implies, for a run it did not profile. */
+    private val PIPELINE_CLASSES = mapOf("polynomial-theory" to "Nonlinear", "open-theory" to "Open", "finite-cp" to "FiniteCp")
+    /** Groups that hold what could not be placed: listed after the real ones. */
+    private val CATCH_ALL = setOf(UNPROFILED, UNCLASSIFIED, UNKNOWN, LOAD_FAILED, "no reference", "undecided by reference")
     private const val SECOND = 1_000L
     private const val TEN_SECONDS = 10_000L
     private const val HALF = 0.5

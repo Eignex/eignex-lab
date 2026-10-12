@@ -889,6 +889,7 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
     append("</table></div>")
     append("<p class=\"muted\">Each cell is klause's share of the points against that solver over the problems both have a ")
     append("result for; green above one half, red below. <i>best</i> takes the strongest trusted reference verdict on each problem. ")
+    if (view.by == Dimension.CLASS) append("The class is klause's own profile of the model; a run that reported none takes one from the source's logic or the pipeline that solved it. ")
     append("Open a cell for its problems, klause's losses first.</p>")
     val (group, against) = view.cell ?: return@buildString
     append("<h3>${esc(group)} against ${esc(against)} <small>${view.problems.size} problems · ")
@@ -1292,7 +1293,7 @@ nav.tabs a:hover{color:var(--fg)}nav.tabs a.on{color:var(--fg);border-bottom-col
 nav.tabs a.brand{color:var(--fg);font-weight:700;padding-left:0;margin-right:12px}
 a.chip{text-decoration:none;display:inline-block}
 tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
-.filters{align-items:center}.filters select{font:inherit;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
+.filters{align-items:center}.filters input[type=checkbox]{min-width:0;margin:0 4px 0 0}.filters label{display:inline-flex;align-items:center;white-space:nowrap}.filters select{font:inherit;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
 .chart svg,.multiple svg{display:block}.chart{width:100%}
 .grid{stroke:var(--line);stroke-width:1}.tick{fill:var(--muted);font-size:11px}.tick.mono{font-family:ui-monospace,monospace}
 .endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}
