@@ -768,9 +768,10 @@ class AwsWorker(
     /**
      * One instance: spot when [AwsConfig.spot], and on demand when AWS has no spot capacity or quota for it, or the
      * account cannot launch spot at all, and [AwsConfig.spotFallback] allows; other failures propagate as they would on demand.
+     * A script job is always on demand: its one case cannot resume, so a reclaim would rerun it from the start.
      */
     private fun launchOne(job: Job, name: String, userData: File, type: String): String {
-        if (!aws.spot) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        if (!aws.spot || job.experiment?.isScript == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         return runCatching { cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.getOrElse { e ->
             val reason = (CAPACITY.find(e.message.orEmpty()) ?: NO_SPOT.find(e.message.orEmpty()))?.value
             if (!aws.spotFallback || reason == null) throw e

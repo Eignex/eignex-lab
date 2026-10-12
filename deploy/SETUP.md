@@ -47,6 +47,9 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
+  On AWS spot instances, which share hosts with other tenants and can be taken back mid-problem (its remaining runs
+  then move to another instance), timing is noisier than on the Mac: use `repeats` of 3 or more for an A/B whose
+  answer rests on time, and more when the paired difference is small.
 - `host`: `aws` or `lab` (see Running on AWS), and for `aws`, `machines`: how many instances to split it over. Left out,
   an experiment runs on AWS when the lab has AWS settings and AWS can run it (klause arms only, selected problems,
   cores within the largest instance), and on the lab machine otherwise; a schedule's runs default to the lab machine.
@@ -88,6 +91,9 @@ job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch`
 queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says `"host": "lab"`; on the Mac
 it runs alone, as every job does, so it neither disturbs the lab's cases nor is disturbed by them.
 `lab script <file> <ref> <description> [aws|lab] [timeout-sec]` queues one from a script file.
+On AWS a script job always runs on an on-demand instance, never spot: AWS can take a spot instance back at two
+minutes' notice, and a script cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs
+resume after a reclaim and run on spot.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
@@ -438,7 +444,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
 - The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
   instances. While an update waits, the worker starts no new AWS job and running ones launch no more instances, so the
   running jobs drain and the update lands; the queued ones start after the restart.
-- Instances are spot capacity by default: the same hardware at a fraction of the on-demand price, which AWS can take
+- Instances of experiments and reference A/Bs are spot capacity by default (script jobs are always on demand; see
+  Script jobs): the same hardware at a fraction of the on-demand price, which AWS can take
   back at two minutes' notice. When it does, the lab finds the instance gone at its next dropped connection and puts
   the cases it was running, and the problems it had taken, back in the job's queue; the job's other instances take
   them, and it launches a replacement as the quota allows. A job left with work and no instances is queued again
@@ -447,7 +454,7 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   from `vcpuQuota`) is used up, or the account lacks the spot service-linked role that `aws-setup.sh` creates, that
   instance launches on demand. `market=on-demand` in `aws.properties` buys every
   instance on demand, and `spotFallback=false` waits for spot capacity instead of falling back. The job page counts
-  a job's spot instances.
+  a job's spot instances. Spot timing is noisier than the Mac's, so give a timing A/B on AWS more `repeats`.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
   ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
   `aws` job left running and terminates every lab-tagged instance no running job owns.

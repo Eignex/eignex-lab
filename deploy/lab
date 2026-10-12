@@ -3,7 +3,7 @@
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
 #   lab script <file> <ref> <description> [aws|lab] [timeout-sec]
 #                                                            queue a script job: <file> run once in a build of <ref>, on AWS
-#                                                            by default; for measurements experiments cannot express, NOT
+#                                                            by default (on demand, never spot); for measurements experiments cannot express, NOT
 #                                                            for running tests, lint or other gates (CI runs those)
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
