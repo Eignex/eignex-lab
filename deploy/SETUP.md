@@ -377,6 +377,9 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
   creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
   launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
+  The admin session is the CLI's default profile unless `ADMIN_PROFILE` names another; the lab itself only ever uses
+  the Mac's `klause-lab` profile. The script also creates EC2's spot service-linked role, which spot launches need and
+  the `klause-lab` user may not create.
   It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
   `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` and `vcpuQuota`, now 8 and the account's 128 on-demand vCPUs, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
@@ -441,7 +444,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   them, and it launches a replacement as the quota allows. A job left with work and no instances is queued again
   rather than failed, and resumes on new ones. Cases that finished keep their records, so a reclaim costs only the
   cases in flight. When AWS has no spot capacity of the type, or the account's spot quota (a quota of its own, apart
-  from `vcpuQuota`) is used up, that instance launches on demand. `market=on-demand` in `aws.properties` buys every
+  from `vcpuQuota`) is used up, or the account lacks the spot service-linked role that `aws-setup.sh` creates, that
+  instance launches on demand. `market=on-demand` in `aws.properties` buys every
   instance on demand, and `spotFallback=false` waits for spot capacity instead of falling back. The job page counts
   a job's spot instances.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new

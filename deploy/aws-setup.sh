@@ -15,6 +15,8 @@
 #     current address to the group (its address can change); its access key goes into the Mac's `klause-lab` profile;
 #   - an S3 bucket `klause-lab-corpus-<account>-<region>` holding a copy of the corpus cache, and an instance role
 #     `klause-lab-instance` that may read and write only that bucket, which the IAM user may pass to its instances;
+#   - EC2's spot service-linked role `AWSServiceRoleForEC2Spot`, which the account needs before any spot launch and
+#     which the lab's IAM user may not create;
 #   - `$LAB_DATA/aws/aws.properties` on the Mac, which the lab reads: no service needs reinstalling.
 set -euo pipefail
 host="${1:-rasmusros@192.168.50.104}"
@@ -90,6 +92,10 @@ if ! "${admin[@]}" iam get-instance-profile --instance-profile-name "$role" >/de
   "${admin[@]}" iam add-role-to-instance-profile --instance-profile-name "$role" --role-name "$role"
 fi
 echo "corpus bucket $bucket, instance role $role"
+
+# Spot launches need the account's spot service-linked role, which only an admin may create.
+"${admin[@]}" iam get-role --role-name AWSServiceRoleForEC2Spot >/dev/null 2>&1 ||
+  "${admin[@]}" iam create-service-linked-role --aws-service-name spot.amazonaws.com >/dev/null
 
 # IAM user with the narrowest policy that lets the lab do its job.
 cat > "$work/policy.json" <<EOF
