@@ -91,7 +91,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/") {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
-            val history = store.jobs(PAGE_SIZE, before, name)
+            val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
             val queues = listOf(Experiments.LAB_HOST, Experiments.AWS_HOST).associateWith { store.queueOrder(it) }
             val page = indexPage(config, host, store.active(), store.schedules(), history, PAGE_SIZE, before, name, queues)
             call.respondText(page, ContentType.Text.Html)
@@ -103,7 +103,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(Health(true, queued, running, freeBytes(config.dataDir), host))
         }
         get("/jobs") {
-            call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: 200, call.parameters["before"]?.toLong(), call.parameters["name"]))
+            // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds.
+            call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: PAGE_SIZE, call.parameters["before"]?.toLong(), call.parameters["name"],
+                withCommands = call.parameters["commands"] == "true"))
         }
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
@@ -375,7 +377,8 @@ private const val DEFAULT_WAIT_SEC = 600L
 private const val MAX_WAIT_SEC = 3600L
 private const val WAIT_POLL_MS = 2000L
 private const val MIN_SCHEDULE_SEC = 60L
-private const val PAGE_SIZE = 200
+/** Jobs a page of the history, and a `/jobs` list by default, shows. */
+private const val PAGE_SIZE = 50
 private const val MAX_COMPARED = 6
 
 /** The worktrees job [id] built, its own and those of its other commits; the mirror forgets them at its next prune. */
@@ -423,7 +426,7 @@ private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
 
 /** The latest finished experiment queued by the same schedule before [job], whose name is `<schedule>@<sha>`. */
 private fun previousRun(store: Store, job: Job): Long? =
-    store.jobs(limit = PAGE_SIZE, before = job.id, name = job.name.substringBefore('@'))
+    store.jobs(limit = PAGE_SIZE, before = job.id, name = job.name.substringBefore('@'), withCommands = false)
         .firstOrNull { it.experiment != null && it.status == Status.DONE && '@' in it.name }?.id
 private const val LS_REMOTE_SEC = 15L
 private val TEXT_FILES = setOf("", "out", "err", "log", "txt", "sha", "pid")

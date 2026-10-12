@@ -29,6 +29,10 @@ data class Command(
 /** A command as planned: what runs, how long it may, and how many cores it holds. */
 data class CaseCommand(val cmd: String, val timeoutSec: Long, val cores: Int = 1)
 
+/** How many of a job's commands there are, and how many finished, failed and are running: its progress, without them. */
+@Serializable
+data class CommandCounts(val total: Int, val done: Int, val failed: Int, val running: Int)
+
 @Serializable
 data class Job(
     val id: Long,
@@ -55,12 +59,16 @@ data class Job(
     val runMs: Long = 0,
     /** When the current running stretch began; null while the job waits. */
     val runningSince: Long? = null,
+    /** Set instead of [commands] by a list that leaves them out ([Store.jobs]). */
+    val counts: CommandCounts? = null,
 ) {
     /** Time the job has spent running, so far or in all; waiting in the queue, paused or yielded, does not count. */
     fun elapsedMs(now: Long): Long = runMs + (runningSince?.let { now - it } ?: 0)
 
-    val done: Int get() = commands.count { it.status == Status.DONE || it.status == Status.FAILED }
-    val failed: Int get() = commands.count { it.status == Status.FAILED }
+    val total: Int get() = counts?.total ?: commands.size
+    val done: Int get() = counts?.done ?: commands.count { it.status == Status.DONE || it.status == Status.FAILED }
+    val failed: Int get() = counts?.failed ?: commands.count { it.status == Status.FAILED }
+    val running: Int get() = counts?.running ?: commands.count { it.status == Status.RUNNING }
 }
 
 enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
@@ -391,8 +399,8 @@ class Store(file: Path) {
     }
 
     /** The newest jobs first, older than [before] when given. A [name] keeps that name's jobs and the ones its
-     *  schedule queued as `name@sha`. Without [withCommands] their commands are left out, which a view of many
-     *  jobs' outcomes never reads and which run to hundreds per job. */
+     *  schedule queued as `name@sha`. Without [withCommands] their commands are left out for their [Job.counts]: a
+     *  list of many jobs needs their progress, not their hundreds of commands each. */
     @Synchronized
     fun jobs(limit: Int = 200, before: Long? = null, name: String? = null, withCommands: Boolean = true): List<Job> = jobsWhere(
         "id < ? AND (? IS NULL OR name = ? OR name LIKE ? ESCAPE '\\') ORDER BY id DESC LIMIT ?",
@@ -407,7 +415,22 @@ class Store(file: Path) {
         connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
             values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
             statement.executeQuery().use { rows -> generateSequence { if (rows.next()) job(rows) else null }.toList() }
-        }.let { jobs -> if (withCommands) jobs.map { it.copy(commands = commands(it.id)) } else jobs }
+        }.let { jobs ->
+            if (withCommands) return@let jobs.map { it.copy(commands = commands(it.id)) }
+            val counts = commandCounts(jobs.map { it.id })
+            jobs.map { it.copy(counts = counts[it.id] ?: CommandCounts(0, 0, 0, 0)) }
+        }
+
+    private fun commandCounts(ids: List<Long>): Map<Long, CommandCounts> = if (ids.isEmpty()) emptyMap() else
+        connection.prepareStatement(
+            "SELECT job_id, COUNT(*), SUM(status IN ('DONE', 'FAILED')), SUM(status = 'FAILED'), SUM(status = 'RUNNING') " +
+                "FROM commands WHERE job_id IN (${ids.joinToString(",") { "?" }}) GROUP BY job_id",
+        ).use { statement ->
+            ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
+            statement.executeQuery().use { r ->
+                generateSequence { if (r.next()) r.getLong(1) to CommandCounts(r.getInt(2), r.getInt(3), r.getInt(4), r.getInt(5)) else null }.toMap()
+            }
+        }
 
     private fun likeEscape(text: String) = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 

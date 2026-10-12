@@ -1181,12 +1181,12 @@ private fun refText(config: Config, job: Job): String {
 }
 
 private fun progress(job: Job): String {
-    val total = job.commands.size.coerceAtLeast(1)
-    val running = job.commands.count { it.status == Status.RUNNING }
+    val total = job.total.coerceAtLeast(1)
+    val running = job.running
     fun part(cls: String, count: Int) = if (count == 0) "" else "<i class=\"$cls\" style=\"width:${100.0 * count / total}%\"></i>"
     val bar = "<span class=\"bar\">${part("ok", job.done - job.failed)}${part("bad", job.failed)}${part("run", running)}</span>"
     val parallel = if (job.parallel > 1) " ×${job.parallel}" else ""
-    return "$bar<small>${job.done}/${job.commands.size}$parallel</small>"
+    return "$bar<small>${job.done}/${job.total}$parallel</small>"
 }
 
 private fun output(jobId: Long, dir: File, name: String, running: Boolean): String {

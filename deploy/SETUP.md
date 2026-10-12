@@ -610,7 +610,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 
 | method | path | |
 | --- | --- | --- |
-| `GET` | `/jobs`, `/jobs/{id}` | job and case-command states; `/jobs` takes `?limit`, `?before=<id>` and `?name` |
+| `GET` | `/jobs`, `/jobs/{id}` | job and case-command states; `/jobs` lists 50 by default, each with its command `counts` instead of its commands (`?commands=true` for them), and takes `?limit`, `?before=<id>` and `?name` |
 | `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its cases' process trees killed |
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
