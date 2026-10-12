@@ -97,7 +97,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(page, ContentType.Text.Html)
         }
         get("/health") {
-            val jobs = store.jobs()
+            val jobs = store.active(withCommands = false)
             val queued = jobs.count { it.status == Status.QUEUED }
             val running = jobs.count { it.status == Status.RUNNING }
             call.respond(Health(true, queued, running, freeBytes(config.dataDir), host))
