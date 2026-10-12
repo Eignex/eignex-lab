@@ -766,14 +766,15 @@ class AwsWorker(
     }
 
     /**
-     * One instance: spot when [AwsConfig.spot], and on demand when AWS has no spot capacity or quota for it and
-     * [AwsConfig.spotFallback] allows; other failures propagate as they would on demand.
+     * One instance: spot when [AwsConfig.spot], and on demand when AWS has no spot capacity or quota for it, or the
+     * account cannot launch spot at all, and [AwsConfig.spotFallback] allows; other failures propagate as they would on demand.
      */
     private fun launchOne(job: Job, name: String, userData: File, type: String): String {
         if (!aws.spot) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         return runCatching { cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.getOrElse { e ->
-            if (!aws.spotFallback || !CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
-            runner.log(job.id, "no spot capacity for $type (${CAPACITY.find(e.message.orEmpty())?.value}): launching on demand")
+            val reason = (CAPACITY.find(e.message.orEmpty()) ?: NO_SPOT.find(e.message.orEmpty()))?.value
+            if (!aws.spotFallback || reason == null) throw e
+            runner.log(job.id, "no spot for $type ($reason): launching on demand")
             cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         }
     }
@@ -939,6 +940,9 @@ class AwsWorker(
         private const val SHA_LOG = 9
         /** The errors AWS refuses an instance with for a quota or a lack of capacity, rather than for a fault. */
         private val CAPACITY = Regex("VcpuLimitExceeded|InstanceLimitExceeded|InsufficientInstanceCapacity|MaxSpotInstanceCountExceeded")
+        /** The errors AWS refuses every spot launch with until the account is set up for spot, such as a missing
+         *  service-linked role the lab's credentials may not create. */
+        private val NO_SPOT = Regex("ServiceLinkedRoleCreationNotPermitted")
         private const val S3_PUSH_TIMEOUT_SEC = 3600L
         /** Gradle's dependency cache and wrapper distribution, as one archive in the corpus bucket. */
         private const val GRADLE_ARCHIVE = AwsBuildCache.GRADLE
