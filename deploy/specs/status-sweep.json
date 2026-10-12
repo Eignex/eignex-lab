@@ -1,6 +1,6 @@
 {
   "name": "status-sweep",
-  "description": "Per-commit regression check: the default engine on the curated sweep set (100 easy, 140 medium, 10 hard by reference proof time) at 10 s.",
+  "description": "Per-commit regression check: the default engine on the sweep set (275 problems over 11 themes, mixed easy, medium and hard by reference proof time) at 10 s.",
   "problems": [{"set": "sweep"}],
   "base": {"timeout": "10000"},
   "priority": -1
