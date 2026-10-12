@@ -34,3 +34,9 @@ interface ExecutionHost {
      *  `<dir>/cases/<index>/`. */
     fun run(command: Command, dir: Path): Int
 }
+
+/**
+ * The host went away under a running job: a spot instance AWS reclaimed. Its cases did not fail; they go back to the
+ * job's queue for another host to run ([Runner.dispatch]).
+ */
+class HostLost(message: String) : Exception(message)

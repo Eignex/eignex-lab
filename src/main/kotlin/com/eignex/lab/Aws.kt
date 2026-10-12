@@ -46,6 +46,11 @@ data class AwsConfig(
     val corpusBucket: String? = null,
     /** The instance profile whose role may read and write [corpusBucket]. */
     val instanceProfile: String? = null,
+    /** Launch instances as spot capacity, far cheaper and reclaimable at two minutes' notice ([AwsWorker] requeues
+     *  a reclaimed instance's cases), unless this is false: on demand. */
+    val spot: Boolean = true,
+    /** When AWS has no spot capacity of the type or quota for it, launch that instance on demand rather than wait. */
+    val spotFallback: Boolean = true,
 ) {
     /** The sizes a job can get, smallest first: [instanceType] and the larger sizes of its family the quota allows. */
     val sizes: List<InstanceSize>
@@ -85,6 +90,8 @@ data class AwsConfig(
                 ami = get("ami"),
                 corpusBucket = get("corpusBucket"),
                 instanceProfile = get("instanceProfile"),
+                spot = get("market", "spot") != "on-demand",
+                spotFallback = get("spotFallback", "true")!!.toBoolean(),
             )
         }
     }
@@ -108,8 +115,10 @@ class AwsCli(private val aws: AwsConfig) {
     fun image(): String = aws.ami ?: call("ssm", "get-parameter", "--name", UBUNTU_IMAGE, "--query", "Parameter.Value")
 
     /** Launch one instance for job [jobId], tagged as the lab's, terminating itself when it powers off. */
-    fun launch(jobId: Long, name: String, userData: File, type: String): String = call(
+    fun launch(jobId: Long, name: String, userData: File, type: String, spot: Boolean = false): String = call(
         "ec2", "run-instances",
+        // A one-time request that terminates when AWS reclaims the capacity, its price capped at on demand.
+        *(if (spot) arrayOf("--instance-market-options", "MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}") else emptyArray()),
         "--image-id", image(),
         "--instance-type", type,
         "--key-name", aws.keyName,
@@ -141,6 +150,12 @@ class AwsCli(private val aws: AwsConfig) {
     fun awaitRunning(id: String) {
         call("ec2", "wait", "instance-running", "--instance-ids", id)
     }
+
+    /** [id]'s state (`running`, `shutting-down`, `terminated`, …) and the reason AWS gives for it. */
+    fun state(id: String): Pair<String, String> = call(
+        "ec2", "describe-instances", "--instance-ids", id,
+        "--query", "Reservations[0].Instances[0].[State.Name, StateReason.Code]",
+    ).trim().split(Regex("\\s+")).let { (it.getOrElse(0) { "unknown" }) to (it.getOrElse(1) { "" }) }
 
     fun publicIp(id: String): String =
         call("ec2", "describe-instances", "--instance-ids", id, "--query", "Reservations[0].Instances[0].PublicIpAddress")
@@ -286,6 +301,8 @@ class AwsHost(
     private val profileCli: Boolean = false,
     /** A script job: its output and its `$OUT` directory come back whatever its exit. */
     private val scriptJob: Boolean = false,
+    /** Why the instance is gone, when AWS reports it shut down or terminated; null while it runs. */
+    private val gone: () -> String? = { null },
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val corpus = "$HOME/corpus"
@@ -316,6 +333,8 @@ class AwsHost(
             try {
                 return runOnce(command, dir, attempt)
             } catch (e: SshDropped) {
+                // A dropped connection to an instance AWS has taken back is no network trouble to wait out.
+                runCatching(gone).getOrNull()?.let { reason -> throw HostLost("$instance is gone ($reason)") }
                 if (attempt >= SSH_RETRY.attempts || cancelled()) throw IllegalStateException(e.message, e)
                 val until = System.currentTimeMillis() + SSH_RETRY.delayAfter(attempt)
                 while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
@@ -458,6 +477,8 @@ class AwsWorker(
     private val busy = AtomicInteger()
     /** Numbers the instances' names. */
     private val launched = AtomicInteger()
+    /** How each running instance was bought, `spot` or `on-demand`, for the job page. */
+    private val markets = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /** Whether any AWS job is running: the runner holds off updating itself until none is, since a restart would end
      *  its thread and, with it, the job's instances. */
@@ -606,6 +627,11 @@ class AwsWorker(
                     store.requeue(job.id)
                     runner.log(job.id, "job paused between commands; its instances are terminated and launched again on resume")
                 }
+                // Instances taken back with work left and none launched in their place: the job waits for capacity.
+                Dispatched.LOST in outcomes && checkNotNull(store.job(job.id)).commands.any { it.status == Status.QUEUED } -> {
+                    store.requeue(job.id)
+                    runner.log(job.id, "instances were taken back by AWS with cases left: queued again, to finish on new instances")
+                }
                 else -> {
                     store.finish(job.id, Status.DONE)
                     runner.log(job.id, "job finished")
@@ -682,8 +708,15 @@ class AwsWorker(
 
         private fun start(host: AwsHost) {
             dispatches += pool.submit<Dispatched> {
-                val outcome = runner.dispatch(checkNotNull(store.job(job.id)), dir, host, problems::take)
-                if (outcome == Dispatched.FINISHED) retire(host.instance, "has no problems left to take")
+                val outcome = runner.dispatch(checkNotNull(store.job(job.id)), dir, host, problems::take) { held ->
+                    problems.giveBack(held)
+                }
+                when (outcome) {
+                    Dispatched.FINISHED -> retire(host.instance, "has no problems left to take")
+                    // Growing then replaces it, or the job's other instances take its problems.
+                    Dispatched.LOST -> retire(host.instance, "was taken back by AWS")
+                    else -> Unit
+                }
                 outcome
             }
         }
@@ -728,7 +761,21 @@ class AwsWorker(
 
     private fun writeInstances(job: Job, instances: List<String>, size: InstanceSize) {
         val ids = synchronized(instances) { instances.toList() }
-        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile().writeText(ids.joinToString("\n", postfix = "\n") { "$it ${size.type}" })
+        config.jobDir(job.id).resolve(INSTANCES_FILE).toFile()
+            .writeText(ids.joinToString("\n", postfix = "\n") { "$it ${size.type} ${markets[it] ?: "on-demand"}" })
+    }
+
+    /**
+     * One instance: spot when [AwsConfig.spot], and on demand when AWS has no spot capacity or quota for it and
+     * [AwsConfig.spotFallback] allows; other failures propagate as they would on demand.
+     */
+    private fun launchOne(job: Job, name: String, userData: File, type: String): String {
+        if (!aws.spot) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        return runCatching { cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.getOrElse { e ->
+            if (!aws.spotFallback || !CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
+            runner.log(job.id, "no spot capacity for $type (${CAPACITY.find(e.message.orEmpty())?.value}): launching on demand")
+            cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        }
     }
 
     /** Launch [machines] instances for [job], recording each in [instances] at once so that it is terminated whatever
@@ -748,14 +795,14 @@ class AwsWorker(
                 // AWS refusing more for a quota or a lack of capacity is not a reason to fail a job that already has
                 // instances: it runs on those. Without any, the launch is retried like any other step.
                 val id = runCatching {
-                    if (waitForCapacity) launchWhenCapacity(job, name, userData, size.type) else cli.launch(job.id, name, userData, size.type)
+                    if (waitForCapacity) launchWhenCapacity(job, name, userData, size.type) else launchOne(job, name, userData, size.type)
                 }.getOrElse { e ->
                     if (instances.isNotEmpty() && CAPACITY.containsMatchIn(e.message.orEmpty())) {
                         runner.log(job.id, "AWS gave no more instances (${CAPACITY.find(e.message.orEmpty())?.value}); running on ${instances.size}")
                         refused = true
                         return@repeat
                     }
-                    runner.withRetry(job.id, "launching an instance") { cli.launch(job.id, name, userData, size.type) }
+                    runner.withRetry(job.id, "launching an instance") { launchOne(job, name, userData, size.type) }
                 }
                 new += id
                 instances += id
@@ -770,7 +817,9 @@ class AwsWorker(
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
             AwsHost(id, Ssh(id, ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
-                job.experiment?.profileCli == true, job.experiment?.isScript == true) {
+                job.experiment?.profileCli == true, job.experiment?.isScript == true,
+                gone = { cli.state(id).takeIf { (state, _) -> state in GONE }?.let { (state, reason) -> "$state, $reason".trimEnd(',', ' ') } },
+            ) {
                 store.cancelRequested(job.id)
             }
         }
@@ -786,7 +835,7 @@ class AwsWorker(
             onRetry = { _, wait, e -> if (!CAPACITY.containsMatchIn(e.message.orEmpty())) throw e
                 runner.log(job.id, "AWS refused another instance (${CAPACITY.find(e.message.orEmpty())?.value}); trying again in ${wait / MS_PER_SEC} s") },
             sleep = { wait -> check(!store.cancelRequested(job.id)) { "cancelled" }; Thread.sleep(wait) },
-        ) { cli.launch(job.id, name, userData, type) }
+        ) { launchOne(job, name, userData, type) }
 
     /** Wait for [host]'s bootstrap, then clone the repository and build each of [shas] on it. */
     private fun setup(job: Job, host: AwsHost, shas: List<String>, log: File) {
@@ -880,6 +929,8 @@ class AwsWorker(
         const val INSTANCES_FILE = "aws-instances"
 
         private const val POLL_MS = 10_000L
+        /** The states of an instance that will not run a case again. */
+        private val GONE = setOf("shutting-down", "terminated", "stopping", "stopped")
         /** How often a running job looks for room to add an instance, and how long it waits after an attempt failed. */
         private const val GROW_POLL_MS = 10_000L
         private const val GROW_RETRY_MS = 120_000L
@@ -915,4 +966,10 @@ internal class ProblemQueue(cases: List<CaseResult>) {
 
     @Synchronized
     fun isEmpty(): Boolean = left.isEmpty()
+
+    /** Cases a lost host held, back at the front: the next host with room takes them first. */
+    @Synchronized
+    fun giveBack(indices: Collection<Int>) {
+        if (indices.isNotEmpty()) left.addFirst(indices.sorted())
+    }
 }

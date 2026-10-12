@@ -432,6 +432,13 @@ class Store(file: Path) {
     @Synchronized
     fun setup(jobId: Long, sha: String) = update("UPDATE jobs SET sha = ?, setup_done = 1 WHERE id = ?", sha, jobId)
 
+    /** Put [indices] of [jobId] that started back to queued: their host went away before they finished. */
+    @Synchronized
+    fun requeueCommands(jobId: Long, indices: Collection<Int>) = indices.forEach { index ->
+        update("UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND idx = ? AND status = ?",
+            Status.QUEUED.name, jobId, index, Status.RUNNING.name)
+    }
+
     @Synchronized
     fun commandStarted(jobId: Long, index: Int) = update(
         "UPDATE commands SET status = ?, started_at = ?, exit_code = NULL WHERE job_id = ? AND idx = ?",

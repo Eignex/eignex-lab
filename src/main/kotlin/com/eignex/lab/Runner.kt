@@ -108,6 +108,8 @@ class Runner(private val config: Config, private val store: Store) {
                 return
             }
             Dispatched.FINISHED -> Unit
+            // Only an AWS instance is lost; this dispatch asks for no `lost` callback, so a lost host stays an error.
+            Dispatched.LOST -> error("the lab machine dispatched as a lost host")
         }
         // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
         // that could not run, so a sweep with a few refused instances does not read as a broken job.
@@ -133,8 +135,12 @@ class Runner(private val config: Config, private val store: Store) {
          * when this host has room for another case, null once every problem is taken. Null runs every queued case.
          */
         next: (() -> Collection<Int>?)? = null,
+        /** Told the cases this host held, started or not, when the host went away ([HostLost]): they go back to the
+         *  queue [next] reads, and the dispatch ends [Dispatched.LOST] rather than failing the job. */
+        lost: ((Collection<Int>) -> Unit)? = null,
     ): Dispatched {
-        val queued = job.commands.filter { it.status == Status.QUEUED }.associateBy { it.index }
+        // [next] hands out only cases left to run, which a host that started earlier can hold as running.
+        val queued = job.commands.filter { it.status == Status.QUEUED || next != null }.associateBy { it.index }
         val pending = ArrayDeque(if (next == null) queued.values else emptyList())
         // Cases already started elsewhere, or finished, are not in [queued]: a problem with none left is skipped.
         fun take() {
@@ -150,7 +156,9 @@ class Runner(private val config: Config, private val store: Store) {
                 // Shutdown kills the commands and leaves them RUNNING to rerun; nothing here may record them.
                 while (stopping) Thread.sleep(CANCEL_POLL_MS)
                 for (index in active.filterValues { it.isDone }.keys) {
-                    val exit = active.remove(index)!!.get()
+                    // Read before removed: a case whose host was lost is still held, and goes back to the queue.
+                    val exit = active.getValue(index).get()
+                    active.remove(index)
                     if (exit == CANCELLED_EXIT) {
                         cancelled = true
                     } else {
@@ -184,6 +192,13 @@ class Runner(private val config: Config, private val store: Store) {
             }
             return Dispatched.FINISHED
         } catch (e: ExecutionException) {
+            if (e.cause is HostLost && lost != null) {
+                val held = active.keys + pending.map { it.index }
+                store.requeueCommands(job.id, active.keys)
+                lost(held)
+                log(job.id, "${e.cause?.message}: cases ${held.sorted().joinToString()} go back to the queue")
+                return Dispatched.LOST
+            }
             // One command's failure to run fails the job, which must not leave its siblings running past it.
             running.forEach(::killTree)
             throw e.cause ?: e
@@ -761,7 +776,7 @@ internal fun Path.writeAtomically(text: String) {
     Files.move(temp, this, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
 }
 
-internal enum class Dispatched { FINISHED, CANCELLED, YIELDED }
+internal enum class Dispatched { FINISHED, CANCELLED, YIELDED, LOST }
 
 /** Characters a `name=` selection reads as a glob, so a problem named with one cannot be asked for exactly. */
 private val GLOB_CHARS = setOf('*', '?', '[', ',')

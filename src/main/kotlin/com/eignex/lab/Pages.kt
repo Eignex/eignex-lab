@@ -1133,9 +1133,17 @@ private fun hostCell(config: Config, job: Job): String {
     if (spec?.host != Experiments.AWS_HOST) return "<span class=\"where\">Mac</span>"
     val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
-    val type = instances.firstOrNull()?.substringAfter(' ', "")?.takeIf { it.isNotEmpty() }
+    // Each line: instance, type, and how it was bought (spot or on-demand; absent before spot was offered).
+    val fields = instances.map { it.split(' ') }
+    val type = fields.firstOrNull()?.getOrNull(1)
+    val spot = fields.count { it.getOrNull(2) == "spot" }
+    val market = when (spot) {
+        0 -> ""
+        instances.size -> " spot"
+        else -> " ($spot spot)"
+    }
     val detail = when {
-        instances.isNotEmpty() -> "${instances.size} × ${type ?: "instance"}, ${job.parallel} cases each"
+        instances.isNotEmpty() -> "${instances.size} × ${type ?: "instance"}$market, ${job.parallel} cases each"
         job.status in ACTIVE -> spec.machines?.let { "asks for $it" } ?: "as many as are free"
         else -> null
     }

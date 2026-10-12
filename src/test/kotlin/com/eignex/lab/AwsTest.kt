@@ -48,6 +48,40 @@ class AwsTest {
         assertTrue(byHost[0].intersect(byHost[1]).isEmpty())
     }
 
+    @Test
+    fun `a host AWS takes back hands its cases back to the queue instead of failing the job`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = store.create("e", "main", List(4) { "true" to 1_000L }, parallel = 2)
+        val problems = ProblemQueue((0 until 4).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 2}"), "a") })
+        val handedBack = mutableListOf<Int>()
+        val lost = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue()) {
+            override fun run(command: Command, dir: Path): Int = throw HostLost("i-1 is gone (terminated, Server.SpotInstanceTermination)")
+        }
+
+        val outcome = Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id), lost, problems::take) { held ->
+            handedBack += held
+            problems.giveBack(held)
+        }
+
+        assertEquals(Dispatched.LOST, outcome)
+        assertEquals(listOf(0, 1), handedBack.sorted())
+        assertEquals(listOf(0, 1), problems.take())
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+    }
+
+    @Test
+    fun `instances launch as spot unless the settings say on demand`() {
+        val dir = Files.createTempDirectory("aws")
+        val file = dir.resolve("aws.properties")
+        file.toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val spot = AwsConfig.load(file)!!
+        file.toFile().appendText("market=on-demand\nspotFallback=false\n")
+        val onDemand = AwsConfig.load(file)!!
+
+        assertEquals(listOf(true, true, false, false), listOf(spot.spot, spot.spotFallback, onDemand.spot, onDemand.spotFallback))
+    }
+
     private class FakeHost(private val log: java.util.Queue<Int>) : ExecutionHost {
         override val cores = 4
         override val maxParallel = 4
