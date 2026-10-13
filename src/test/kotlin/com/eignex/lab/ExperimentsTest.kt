@@ -362,54 +362,78 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `a script job names one script and no problems, configs, seeds or repeats`() {
+    fun `a script job is refused, inline or from a file`() {
         val script = ExperimentSpec("s", emptyList(), script = "echo hi", description = "d")
 
-        Experiments.validate(script, maxParallel = 4)
-        Experiments.validate(script.copy(script = null, scriptFile = "tools/bench.sh"), maxParallel = 4)
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(scriptFile = "tools/bench.sh"), maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(script.copy(problems = listOf(mapOf("suite" to "s"))), maxParallel = 4)
-        }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(repeats = 2), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(script, maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(script = null, scriptFile = "tools/bench.sh"), maxParallel = 4) }
     }
 
     @Test
-    fun `a script runs in its worktree with OUT and the built tools named, and keeps what it writes to OUT`() {
-        val root = Files.createTempDirectory("script job").toFile()
+    fun `a profile job names a klause main and no problems, configs, seeds or repeats`() {
+        val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.klause.bench.tools.Timing", listOf("a=1")), description = "d")
+
+        Experiments.validate(profile, maxParallel = 4)
+        for (main in listOf("java.lang.Runtime", "com.eignex.klause", "com.eignex.klause.X; rm -rf /", "com.eignex.klause..X")) {
+            assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main)), maxParallel = 4) }
+        }
+        assertFailsWith<IllegalArgumentException> {
+            Experiments.validate(profile.copy(problems = listOf(mapOf("suite" to "s"))), maxParallel = 4)
+        }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(repeats = 2), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(profileCli = true), maxParallel = 4) }
+    }
+
+    @Test
+    fun `a profile runs its main under JFR in its worktree, each argument passed as it is, with OUT made`() {
+        val root = Files.createTempDirectory("profile job").toFile()
         try {
             val worktree = root.resolve("work").apply { mkdirs() }
             val jobDir = root.resolve("job").apply { mkdirs() }
-            val spec = ExperimentSpec("s", emptyList(), script = "pwd > \"\$OUT/where\"; echo \"\$KLAUSE_CLI\" > \"\$OUT/cli\"", description = "d")
-            val builder = ProcessBuilder("bash", "-c", Experiments.scriptCommand(worktree.path, spec, 0, "/corpus")).redirectErrorStream(true)
+            // A stand-in java that records where it ran and what it was given, one argument a line.
+            val javaHome = root.resolve("jdk").apply { resolve("bin").mkdirs() }
+            javaHome.resolve("bin/java").apply {
+                writeText("#!/usr/bin/env bash\npwd > \"\$OUT/where\"\nprintf '%s\\n' \"\$@\" > \"\$OUT/argv\"\n")
+                setExecutable(true)
+            }
+            val args = listOf("plain", "with space", "\$(touch pwned)", "it's")
+            val command = Experiments.profileCommand(worktree.path, ProfileMain("com.eignex.klause.bench.Tool", args), 0, "/corpus")
+            val builder = ProcessBuilder("bash", "-c", command).directory(root).redirectErrorStream(true)
             builder.environment()["JOB_DIR"] = jobDir.path
+            builder.environment()["JAVA_HOME"] = javaHome.path
 
             val process = builder.start()
             process.inputStream.bufferedReader().readText()
 
             assertEquals(0, process.waitFor())
-            assertEquals(worktree.canonicalPath, jobDir.resolve("cases/0/out/where").readText().trim())
-            assertTrue(jobDir.resolve("cases/0/out/cli").readText().trim().endsWith("klause-cli/build/install/klause-cli-jvm/bin/klause-cli"))
+            val out = jobDir.resolve("cases/0/out")
+            assertEquals(worktree.canonicalPath, out.resolve("where").readText().trim())
+            val argv = out.resolve("argv").readLines()
+            assertTrue(argv.first().startsWith("-XX:StartFlightRecording=filename=${out.path}/profile.jfr"))
+            assertEquals(listOf("com.eignex.klause.bench.Tool") + args, argv.takeLast(args.size + 1))
+            assertTrue(root.walkTopDown().none { it.name == "pwned" })
         } finally {
             root.deleteRecursively()
         }
     }
 
     @Test
-    fun `a script job gets an hour unless it gives a timeout`() {
+    fun `a profile job gets an hour unless it gives a timeout`() {
         assertEquals(listOf(3_720L, 720L), listOf(
-            Experiments.scriptTimeoutSec(Arm("a", emptyMap())),
-            Experiments.scriptTimeoutSec(Arm("a", mapOf("timeout" to "600000"))),
+            Experiments.profileTimeoutSec(Arm("a", emptyMap())),
+            Experiments.profileTimeoutSec(Arm("a", mapOf("timeout" to "600000"))),
         ))
     }
 
     @Test
-    fun `a script job's spec reads from JSON without problems`() {
+    fun `a profile job's spec reads from JSON without problems, and a retired script job's still reads`() {
         val spec = Json.decodeFromString<ExperimentSpec>(
-            """{"name":"s","description":"d","script":"echo hi","base":{"ref":"main","timeout":"300000"}}""",
+            """{"name":"p","description":"d","profile":{"main":"com.eignex.klause.bench.Tool","args":["x"]},"base":{"ref":"main"}}""",
         )
+        val old = Json.decodeFromString<ExperimentSpec>("""{"name":"s","description":"d","script":"echo hi","base":{"ref":"main"}}""")
 
         Experiments.validate(spec, maxParallel = 4)
-        assertTrue(spec.isScript && spec.problems.isEmpty())
+        assertTrue(spec.isProfile && spec.problems.isEmpty())
+        assertTrue(old.isScript && !old.isProfile)
     }
 }

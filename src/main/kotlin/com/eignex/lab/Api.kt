@@ -81,6 +81,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     }
     val trendCache = TrendCache()
     val referenceCache = ReferenceCache(store)
+    // Only branches are asked about here, from GitHub; the runner checks each commit on its mirror when it plans.
+    val trust = Trust(config.trustedUsers, config.repoUrl, git = { 1 to "" },
+        github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
     referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
     for (schedule in store.schedules()) {
@@ -119,7 +122,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) Int.MAX_VALUE else config.maxParallel,
                 if (spec.host == Experiments.AWS_HOST) Int.MAX_VALUE else config.cores)
             val arms = Experiments.arms(spec)
-            for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config)
+            for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config, trust)
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
@@ -322,7 +325,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             validateScheduled(spec.experiment, config)
-            requireRef(spec.ref, config)
+            requireRef(spec.ref, config, trust)
             val id = store.createSchedule(spec.name, spec.ref, spec.experiment, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
@@ -439,8 +442,14 @@ private fun ApplicationCall.wantsHtml() = "json" !in parameters && request.accep
  * hash or a ref expression cannot be checked without fetching, and an origin that does not answer proves nothing:
  * those pass, and the runner reports them when it resolves the ref.
  */
-private suspend fun requireRef(ref: String, config: Config) {
+/**
+ * Fail unless [ref] names a branch or tag on origin, and, for a branch, unless only trusted users pushed to it
+ * ([Trust.requireBranch]): a refused branch is refused before it queues. A commit named by its sha is checked when
+ * the job is planned, as every commit is, and so is a branch when GitHub cannot be asked now.
+ */
+private suspend fun requireRef(ref: String, config: Config, trust: Trust) {
     if (!Regex("[A-Za-z0-9._/-]+").matches(ref) || Regex("[0-9a-f]{7,40}").matches(ref)) return
+    var branch = false
     val known = withContext(Dispatchers.IO) {
         val process = ProcessBuilder("git", "ls-remote", config.repoUrl, "refs/heads/$ref", "refs/tags/$ref")
             .redirectError(ProcessBuilder.Redirect.DISCARD)
@@ -452,10 +461,15 @@ private suspend fun requireRef(ref: String, config: Config) {
             process.destroyForcibly()
             true
         } else {
-            process.exitValue() != 0 || process.inputStream.bufferedReader().readText().isNotBlank()
+            val listed = process.inputStream.bufferedReader().readText()
+            branch = listed.lines().any { it.endsWith("refs/heads/$ref") }
+            process.exitValue() != 0 || listed.isNotBlank()
         }
     }
     require(known) { "unknown ref: $ref (no such branch or tag on origin; is it pushed?)" }
+    if (!branch) return
+    val refusal = withContext(Dispatchers.IO) { runCatching { trust.requireBranch(ref) }.exceptionOrNull() }
+    if (refusal is UntrustedCommit) throw refusal
 }
 
 private fun requireParallel(parallel: Int, config: Config) =

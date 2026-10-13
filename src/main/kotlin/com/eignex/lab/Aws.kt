@@ -299,8 +299,8 @@ class AwsHost(
     override val cores: Int,
     private val solveJavaOpts: String,
     private val profileCli: Boolean = false,
-    /** A script job: its output and its `$OUT` directory come back whatever its exit. */
-    private val scriptJob: Boolean = false,
+    /** A profile job: its output and its `$OUT` directory come back whatever its exit. */
+    private val profileJob: Boolean = false,
     /** Why the instance is gone, when AWS reports it shut down or terminated; null while it runs. */
     private val gone: () -> String? = { null },
     private val cancelled: () -> Boolean,
@@ -389,8 +389,8 @@ class AwsHost(
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
         // Its output, for a case whose record cannot explain what happened: two more SSH round trips each, a cost every
         // case of a job would pay for nothing when it ran cleanly.
-        if (scriptJob) fetchScriptOutput(i, dir)
-        if (keepsOutput(result, record.isNotEmpty(), profileCli || scriptJob)) for (suffix in listOf("out", "err")) {
+        if (profileJob) fetchOutDir(i, dir)
+        if (keepsOutput(result, record.isNotEmpty(), profileCli || profileJob)) for (suffix in listOf("out", "err")) {
             runCatching { ssh.download("$HOME/job/$i.$suffix", dir.resolve("$i.$suffix"), ARTIFACT_TRANSFER_SEC) }
                 .onFailure { error ->
                     dir.resolve("$i.$suffix.transfer-error").toFile()
@@ -411,8 +411,8 @@ class AwsHost(
         return result
     }
 
-    /** A script case's `$OUT` directory, packed on the instance and unpacked under its case in the job directory. */
-    private fun fetchScriptOutput(i: Int, dir: Path) {
+    /** A profile case's `$OUT` directory, packed on the instance and unpacked under its case in the job directory. */
+    private fun fetchOutDir(i: Int, dir: Path) {
         val case = dir.resolve("cases/$i").createDirectories()
         val archive = case.resolve("out.tar")
         runCatching {
@@ -768,10 +768,10 @@ class AwsWorker(
     /**
      * One instance: spot when [AwsConfig.spot], and on demand when AWS has no spot capacity or quota for it, or the
      * account cannot launch spot at all, and [AwsConfig.spotFallback] allows; other failures propagate as they would on demand.
-     * A script job is always on demand: its one case cannot resume, so a reclaim would rerun it from the start.
+     * A profile job is always on demand: its one case cannot resume, so a reclaim would rerun it from the start.
      */
     private fun launchOne(job: Job, name: String, userData: File, type: String): String {
-        if (!aws.spot || job.experiment?.isScript == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        if (!aws.spot || job.experiment?.isProfile == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         return runCatching { cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.getOrElse { e ->
             val reason = (CAPACITY.find(e.message.orEmpty()) ?: NO_SPOT.find(e.message.orEmpty()))?.value
             if (!aws.spotFallback || reason == null) throw e
@@ -819,7 +819,7 @@ class AwsWorker(
             runner.withRetry(job.id, "waiting for $id") { cli.awaitRunning(id) }
             val ip = runner.withRetry(job.id, "reading $id's address") { cli.publicIp(id).also { check(it != "None") { "no public address yet" } } }
             AwsHost(id, Ssh(id, ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
-                job.experiment?.profileCli == true, job.experiment?.isScript == true,
+                job.experiment?.profileCli == true, job.experiment?.isProfile == true,
                 gone = { cli.state(id).takeIf { (state, _) -> state in GONE }?.let { (state, reason) -> "$state, $reason".trimEnd(',', ' ') } },
             ) {
                 store.cancelRequested(job.id)

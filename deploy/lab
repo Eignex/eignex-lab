@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
-#   lab script <file> <ref> <description> [aws|lab] [timeout-sec]
-#                                                            queue a script job: <file> run once in a build of <ref>, on AWS
-#                                                            by default (on demand, never spot); for measurements experiments cannot express, NOT
-#                                                            for running tests, lint or other gates (CI runs those)
+#   lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]
+#                                                            queue a profile job: the class <main> (under com.eignex.klause)
+#                                                            run once with [arg...] in a build of <ref>, under JFR, on AWS
+#                                                            by default (on demand, never spot); for measurements experiments
+#                                                            cannot express, NOT for running tests, lint or other gates (CI
+#                                                            runs those). <ref> must be main or a branch only trusted users
+#                                                            pushed to
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
@@ -41,14 +44,17 @@ corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
 run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
-script)
-  [[ $# -ge 3 ]] || { echo "usage: lab script <file> <ref> <description> [aws|lab] [timeout-sec]" >&2; exit 2; }
-  name="script-$(basename "${1%.*}")"
-  jq -n --rawfile script "$1" --arg name "$name" --arg ref "$2" --arg description "$3" --arg host "${4:-}" \
-    --arg timeout "$(( ${5:-3600} * 1000 ))" \
-    '{name: $name, description: $description, script: $script, base: {ref: $ref, timeout: $timeout}}
-      + (if $host == "" then {} else {host: $host} end)' |
+profile)
+  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]" >&2; exit 2; }
+  main="$1" ref="$2" description="$3" host="${4:-}" timeout="${5:-3600}"
+  shift $(( $# < 5 ? $# : 5 ))
+  name="profile-$(echo "${main##*.}" | tr '[:upper:]' '[:lower:]')"
+  jq -n --arg name "$name" --arg main "$main" --arg ref "$ref" --arg description "$description" --arg host "$host" \
+    --arg timeout "$(( timeout * 1000 ))" --args \
+    '{name: $name, description: $description, profile: {main: $main, args: $ARGS.positional}, base: {ref: $ref, timeout: $timeout}}
+      + (if $host == "" then {} else {host: $host} end)' "$@" |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
+script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;
 cases) curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
       (.seed // "-"), (if .record == null then "-" else
         "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv' ;;

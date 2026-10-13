@@ -37,6 +37,14 @@ class Runner(private val config: Config, private val store: Store) {
     /** Held over every git operation on the shared mirror, which the schedule thread and job setup both touch. */
     private val mirrorLock = Any()
 
+    /** Which commits a job may build: checked on the mirror and against GitHub's record of who pushed what. */
+    internal val trust = Trust(
+        config.trustedUsers,
+        config.repoUrl,
+        git = { args -> synchronized(mirrorLock) { gitIn(config.mirror.toFile(), args) } },
+        github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) },
+    )
+
     private val updater by lazy {
         SelfUpdater(
             config.sourceDir.takeIf { config.updateCheckSec > 0 },
@@ -356,6 +364,8 @@ class Runner(private val config: Config, private val store: Store) {
         val shas = synchronized(mirrorLock) {
             planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
         }
+        // Before anything is built: a job runs only code a trusted user pushed ([Trust]).
+        for ((ref, sha) in shas) withRetry(job.id, "checking who pushed $ref") { trust.requireCommit(sha, ref) }
         return arms to shas
     }
 
@@ -363,8 +373,9 @@ class Runner(private val config: Config, private val store: Store) {
         // Each selection is capped on its own; a problem two selections share is solved once.
         // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
         val budgetMs = arms.maxOf { it.timeoutMs }
-        if (spec.isScript) {
-            planCases(job, spec, arms, shas, listOf(Experiments.scriptProblem(spec)), host)
+        require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; resubmit as a profile job" }
+        if (spec.isProfile) {
+            planCases(job, spec, arms, shas, listOf(Experiments.profileProblem(spec)), host)
             return
         }
         val problems = spec.problemList.ifEmpty { selectProblems(job, spec, host.worktree(primary), budgetMs, dir, host) }
@@ -427,8 +438,9 @@ class Runner(private val config: Config, private val store: Store) {
         val commands = cases.mapIndexed { index, case ->
             val arm = arms[case.arm]
             val worktree = host.worktree(shas.getValue(arm.ref))
-            if (spec.isScript) {
-                Experiments.scriptCommand(worktree, spec, index, host.corpus) to Experiments.scriptTimeoutSec(arm) to arm.cores
+            val profile = spec.profile
+            if (profile != null) {
+                Experiments.profileCommand(worktree, profile, index, host.corpus) to Experiments.profileTimeoutSec(arm) to arm.cores
             } else {
                 Experiments.command(worktree, problems[case.problem], arm, case.seed, index, host.corpus) to
                     Experiments.caseTimeoutSec(arm) to arm.cores
@@ -765,6 +777,14 @@ internal fun deleteTree(root: Path) {
         return
     }
     Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+}
+
+/** Run git with [args] in [dir], no shell between: its exit and its output. */
+internal fun gitIn(dir: File, args: List<String>): Pair<Int, String> {
+    val process = ProcessBuilder(listOf("git") + args).directory(dir).redirectErrorStream(true)
+        .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" }.start()
+    val out = process.inputStream.bufferedReader().readText()
+    return process.waitFor() to out
 }
 
 internal fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"

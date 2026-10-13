@@ -9,6 +9,8 @@ data class Config(
     val dataDir: Path = Path(env("LAB_DATA", "${System.getProperty("user.home")}/klause-lab-data")),
     /** The klause repository to fetch refs from. */
     val repoUrl: String = env("LAB_REPO", "https://github.com/Eignex/klause.git"),
+    /** The GitHub users whose branches the lab builds, besides `main` ([Trust]). */
+    val trustedUsers: Set<String> = env("LAB_TRUSTED_USERS", "rasros").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
     val corpusDir: Path = Path(env("LAB_CORPUS", "${System.getProperty("user.home")}/.cache/klause-bench/corpus")),
     val port: Int = env("LAB_PORT", "8420").toInt(),
@@ -63,6 +65,9 @@ data class Config(
 
     val sharedDir: Path get() = dataDir.resolve("shared")
     val database: Path get() = dataDir.resolve("lab.db")
+    /** A GitHub token the trust check reads the repository's activity with, when the file exists: without one GitHub
+     *  allows 60 calls an hour. Read on each use, so adding it needs no reinstall. */
+    val githubTokenFile: Path get() = dataDir.resolve("github-token")
     val mirror: Path get() = dataDir.resolve("repo.git")
     /** Written by `lab update`: the runner checks for a lab update at once instead of at its interval. */
     val updateRequest: Path get() = dataDir.resolve("update-requested")

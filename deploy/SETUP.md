@@ -67,33 +67,48 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   baseline revision are unchanged. Killing the timer kills its CLI child through Linux's parent-death signal.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
-### Script jobs
+### Profile jobs
 
-A script job runs one bash script, once, in a build of a commit: for a measurement or check the experiments cannot
-express, such as timing a component on captured inputs or inspecting a JFR recording. It is not for running the
-build's tests, lint or other gates: CI runs those on every push. Instead of `problems` and arms, its spec names the
-script inline (`script`) or as a path in the repository at the commit (`scriptFile`), and `base` gives the commit
-(`ref`), the time it may take (`timeout` in ms, an hour by default) and its cores (`processors`):
+A profile job runs one `main` of klause's build, once, at a commit: for a measurement the experiments cannot express,
+such as timing a component on captured inputs. It is not for running the build's tests, lint or other gates: CI runs
+those on every push. The lab runs no shell scripts or commands a job supplies; the code a profile job runs is the
+class it names, from the commit it names, which must pass the trust check below. Instead of `problems` and arms, its
+spec names the class under `com.eignex.klause` and its arguments (`profile`), and `base` gives the commit (`ref`), the
+time it may take (`timeout` in ms, an hour by default) and its cores (`processors`):
 
 ```json
 {
   "name": "factor-timing-2513",
   "description": "Time the dense factor build on the captured bases at the PR head",
-  "script": "bash tools/factor-timing.sh > \"$OUT/timing.json\"",
+  "profile": {"main": "com.eignex.klause.bench.tools.FactorTiming", "args": ["bases=captured", "repeats=5"]},
   "base": {"ref": "codex/windowed-ger", "timeout": "1800000"}
 }
 ```
 
-The lab builds the commit as for an experiment (on AWS, from the build cache when it holds it) and runs the script
-in the worktree with `$OUT`, a directory whose files are kept with the job, the corpus cache as `$KLAUSE_CORPUS`, and
-the built CLI and bench as `$KLAUSE_CLI` and `$KLAUSE_BENCH`. Its stdout, stderr, exit and `$OUT` come back to the
-job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch` and listed on the job page. It
-queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says `"host": "lab"`; on the Mac
-it runs alone, as every job does, so it neither disturbs the lab's cases nor is disturbed by them.
-`lab script <file> <ref> <description> [aws|lab] [timeout-sec]` queues one from a script file.
-On AWS a script job always runs on an on-demand instance, never spot: AWS can take a spot instance back at two
-minutes' notice, and a script cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs
-resume after a reclaim and run on spot.
+The lab builds the commit as for an experiment (on AWS, from the build cache when it holds it) and runs the class on
+the bench's classpath with each argument passed as it is, no shell between, under a JFR recording written to
+`$OUT/profile.jfr`. `$OUT` is a directory whose files are kept with the job; the corpus cache is `$KLAUSE_CORPUS`, and
+the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to read. Its stdout, stderr, exit and
+`$OUT` come back to the job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch` and listed on
+the job page. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
+`"host": "lab"`; on the Mac it runs alone, as every job does.
+`lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]` queues one.
+On AWS a profile job always runs on an on-demand instance, never spot: AWS can take a spot instance back at two
+minutes' notice, and a profile cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs
+resume after a reclaim and run on spot. The script jobs that came before (`script`, `scriptFile`) are retired: a spec
+naming one is refused, and one still queued fails when it is planned.
+
+### Which commits run
+
+Every commit a job builds, in any arm, a schedule's run and a confirmation included, must be on `main` or on a branch
+that only trusted GitHub users pushed to: `LAB_TRUSTED_USERS`, `rasros` unless set. Who pushed is read from GitHub's
+repository activity, which records the actor of every branch creation, push, force push and merge; a commit's author
+and committer are whatever its maker typed, so they prove nothing. The runner checks each commit when it plans the job,
+after resolving its ref on the mirror, so a branch moved after the job was queued is checked as it is then; a commit
+on several branches passes when one of them passes. Submitting an experiment or schedule on a branch checks that
+branch at once, so a refused one never queues. The check fails closed: a branch GitHub has no activity for, or
+GitHub not answering through the retries, fails the job. GitHub allows 60 unauthenticated calls an hour; a token in
+`$LAB_DATA/github-token` (read-only, public repository access) lifts that, read on each use.
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
@@ -444,8 +459,8 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
 - The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
   instances. While an update waits, the worker starts no new AWS job and running ones launch no more instances, so the
   running jobs drain and the update lands; the queued ones start after the restart.
-- Instances of experiments and reference A/Bs are spot capacity by default (script jobs are always on demand; see
-  Script jobs): the same hardware at a fraction of the on-demand price, which AWS can take
+- Instances of experiments and reference A/Bs are spot capacity by default (profile jobs are always on demand; see
+  Profile jobs): the same hardware at a fraction of the on-demand price, which AWS can take
   back at two minutes' notice. When it does, the lab finds the instance gone at its next dropped connection and puts
   the cases it was running, and the problems it had taken, back in the job's queue; the job's other instances take
   them, and it launches a replacement as the quota allows. A job left with work and no instances is queued again
@@ -592,7 +607,7 @@ deploy/lab tail 7             # the last 8 kB of the job's log: planning, comman
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
-deploy/lab script time.sh main "time X on the captured inputs"   # a script job on AWS; not for gates
+deploy/lab profile com.eignex.klause.bench.tools.Timing main "time X on the captured inputs"   # a profile job on AWS; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab ssh 7 0 uptime     # a command on instance 0 of a running AWS job; no command opens a shell

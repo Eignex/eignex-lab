@@ -129,8 +129,8 @@ internal fun jobPage(
         append("<a href=\"/trend${query("name" to job.name.substringBefore('@'))}\">trend</a></p>")
     }
     val spec = job.experiment
-    if (spec != null && spec.isScript) {
-        append(scriptSection(config, job, spec))
+    if (spec != null && (spec.isProfile || spec.isScript)) {
+        append(singleCaseSection(config, job, spec))
     } else if (spec != null) {
         append(experimentSection(config, job.id, arms, cases, references))
     }
@@ -822,9 +822,16 @@ internal fun referencesPage(
     append("</body></html>")
 }
 
-/** A script job: its script, its exit, and what it left in `$OUT`, each readable with the job's files. */
-private fun scriptSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
-    append("<h2>Script</h2>")
+/** A profile job, or a retired script job: what it ran, its exit, and what it left in `$OUT`, each readable with the job's files. */
+private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
+    val profile = spec.profile
+    if (profile != null) {
+        append("<h2>Profile</h2><p>Runs <code>${esc(profile.main)}</code>")
+        if (profile.args.isNotEmpty()) append(" with <code>${esc(profile.args.joinToString(" "))}</code>")
+        append(" from the build at the job's commit, recording JFR to <code>profile.jfr</code> in <code>${"$"}OUT</code>.</p>")
+    } else {
+        append("<h2>Script</h2><p class=\"muted\">A retired script job: the lab no longer runs these.</p>")
+    }
     spec.scriptFile?.takeIf { it.isNotBlank() }?.let { append("<p>Runs <code>${esc(it)}</code> from the repository at the job's commit.</p>") }
     spec.script?.takeIf { it.isNotBlank() }?.let { append("<pre class=\"script\">${esc(it)}</pre>") }
     val dir = config.jobDir(job.id).toFile()
@@ -1091,12 +1098,14 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
 }
 
 /**
- * What kind of job [job] is, in a word, which a queue row shows instead of its commands: `custom` for a script,
+ * What kind of job [job] is, in a word, which a queue row shows instead of its commands: `profile` for a profile job,
+ * `custom` for one of the retired script jobs,
  * `a/b` for an experiment of several arms, `sweep` and `reference` for those schedules' runs, `confirm` for a
  * confirmation, `reference solve` for a run of the reference solvers, `run` for any other experiment.
  */
 internal fun kindOf(job: Job): String {
     val spec = job.experiment ?: return "commands"
+    if (spec.isProfile) return "profile"
     if (spec.isScript) return "custom"
     if (Confirm.SUFFIX in job.name) return "confirm"
     val arms = runCatching { Experiments.arms(spec) }.getOrDefault(emptyList())
