@@ -42,6 +42,105 @@ class CliMeasurementsTest {
     }
 
     @Test
+    fun `retrying a dropped transfer preserves bytes until complete output arrives`() {
+        val dir = Files.createTempDirectory("measurement")
+        val target = dir.resolve("output.tar")
+        val old = byteArrayOf(4, 5, 6)
+        Files.write(target, old)
+        val failures = ArrayList<Pair<Int, Int?>>()
+        var calls = 0
+
+        val attempt = retryFileTransfer(Backoff(3, 0, 0), { false },
+            onFailure = { number, error -> failures += number to error.exit }) {
+            calls++
+            if (calls == 1) {
+                receiveFile(ProcessBuilder("sh", "-c", "printf partial; exit 255").start(), target, 5) { false }
+            } else {
+                assertContentEquals(old, Files.readAllBytes(target))
+                receiveFile(ProcessBuilder("sh", "-c", "printf complete").start(), target, 5) { false }
+            }
+        }
+
+        assertEquals(2, attempt)
+        assertEquals(listOf(1 to 255), failures)
+        assertContentEquals("complete".toByteArray(), Files.readAllBytes(target))
+        assertFalse(Files.exists(dir.resolve("output.tar.part")))
+    }
+
+    @Test
+    fun `permanent transfer errors do not reopen result retrieval`() {
+        var calls = 0
+        val waits = ArrayList<Long>()
+
+        val failure = assertFailsWith<FileTransferFailure> {
+            retryFileTransfer(Backoff(3, 1, 1), { false }, sleep = { waits += it }) {
+                calls++
+                throw FileTransferFailure(1, "remote file unavailable")
+            }
+        }
+
+        assertEquals(1, calls)
+        assertEquals(1, failure.exit)
+        assertTrue(waits.isEmpty())
+    }
+
+    @Test
+    fun `file retrieval exhausts its bounded transport attempts and retains every failure`() {
+        val failures = ArrayList<Int>()
+        var calls = 0
+
+        val failure = assertFailsWith<FileTransferFailure> {
+            retryFileTransfer(Backoff(3, 0, 0), { false },
+                onFailure = { number, _ -> failures += number }) {
+                calls++
+                throw FileTransferFailure(255, "dropped $calls")
+            }
+        }
+
+        assertEquals(3, calls)
+        assertEquals(listOf(1, 2, 3), failures)
+        assertEquals("dropped 3", failure.message)
+    }
+
+    @Test
+    fun `cancellation during transfer backoff starts no further retrieval`() {
+        var cancelled = false
+        var calls = 0
+
+        val failure = assertFailsWith<IllegalStateException> {
+            retryFileTransfer(Backoff(3, 1_000, 1_000), { cancelled }, sleep = { cancelled = true }) {
+                calls++
+                throw FileTransferFailure(255, "dropped")
+            }
+        }
+
+        assertEquals(1, calls)
+        assertEquals("file transfer cancelled", failure.message)
+    }
+
+    @Test
+    fun `uncleared cleanup or failure reporting prevents another transfer`() {
+        for (cleanup in listOf(false, true)) {
+            val failure = FileTransferFailure(255, "dropped")
+            val secondary = IllegalStateException(if (cleanup) "cleanup" else "receipt")
+            if (cleanup) failure.addSuppressed(secondary)
+            var calls = 0
+
+            val observed = assertFailsWith<FileTransferFailure> {
+                retryFileTransfer(Backoff(3, 0, 0), { false },
+                    onFailure = { _, _ -> if (!cleanup) throw secondary }) {
+                    calls++
+                    throw failure
+                }
+            }
+
+            assertEquals(1, calls)
+            assertTrue(observed === failure)
+            assertTrue(observed.suppressed.single() === secondary)
+        }
+    }
+
+    @Test
     fun `a complete binary transfer preserves every byte`() {
         val dir = Files.createTempDirectory("measurement")
         val source = dir.resolve("source")

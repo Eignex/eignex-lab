@@ -260,20 +260,16 @@ class Ssh(
     }
 
     fun download(remote: String, destination: Path, timeoutSec: Long) {
-        var attempt = 1
-        while (true) {
-            try {
-                receiveFile(start("cat -- ${quote(remote)}", mergeErrors = false), destination, timeoutSec, cancelled)
-                return
-            } catch (error: FileTransferFailure) {
-                if ((error.exit != null && error.exit != SSH_FAILED) || attempt >= NETWORK_RETRY.attempts || cancelled()) {
-                    throw error
-                }
-                val until = System.currentTimeMillis() + NETWORK_RETRY.delayAfter(attempt)
-                while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
-                attempt++
-            }
-        }
+        downloadStream("cat -- ${quote(remote)}", destination, timeoutSec)
+    }
+
+    internal fun downloadStream(
+        script: String,
+        destination: Path,
+        timeoutSec: Long,
+        onFailure: (Int, FileTransferFailure) -> Unit = { _, _ -> },
+    ): Int = retryFileTransfer(NETWORK_RETRY, cancelled, onFailure) {
+        receiveFile(start(script, mergeErrors = false), destination, timeoutSec, cancelled)
     }
 
     companion object {
@@ -288,6 +284,27 @@ class Ssh(
         private const val MS_PER_SEC = 1000L
         private const val OUTPUT_CHARS = 3000
     }
+}
+
+internal fun recordOutputTransferFailure(
+    case: Path,
+    stage: String,
+    primary: Throwable,
+    write: (Path, String) -> Unit = { path, text -> path.toFile().writeText(text) },
+) {
+    var reportFailed = false
+    for ((name, text) in listOf(
+        "out.transfer-status" to "incomplete\tstage=$stage\n",
+        "out.transfer-error" to "${primary.message ?: primary::class.simpleName}\n",
+    )) {
+        try {
+            write(case.resolve(name), text)
+        } catch (report: Throwable) {
+            reportFailed = true
+            if (report !== primary) primary.addSuppressed(report)
+        }
+    }
+    if (reportFailed) throw primary
 }
 
 /**
@@ -421,14 +438,21 @@ class AwsHost(
     private fun fetchOutDir(i: Int, dir: Path) {
         val case = dir.resolve("cases/$i").createDirectories()
         val archive = case.resolve("out.tar")
+        var stage = "transfer"
         runCatching {
-            receiveFile(ssh.start(packOut("$HOME/job/cases/$i", OUT_CAP_BYTES), mergeErrors = false), archive, ARTIFACT_TRANSFER_SEC, cancelled)
-            val unpack = ProcessBuilder("tar", "-x", "-f", archive.toString(), "-C", case.toString()).redirectErrorStream(true).start()
-            val output = unpack.inputStream.bufferedReader().readText()
-            check(unpack.waitFor() == 0) { "unpacking failed: $output" }
+            val attempt = ssh.downloadStream(packOut("$HOME/job/cases/$i", OUT_CAP_BYTES), archive,
+                ARTIFACT_TRANSFER_SEC) { number, error ->
+                case.resolve("out.transfer-attempts.tsv").toFile().appendText(
+                    "$number\t${error.exit ?: "timeout"}\tfailed\n")
+            }
+            stage = "unpack"
+            val unpack = ProcessBuilder("tar", "-x", "-f", archive.toString(), "-C", case.toString())
+                .redirectErrorStream(true).start()
+            receiveFile(unpack, case.resolve("out.unpack.log"), ARTIFACT_TRANSFER_SEC, cancelled)
             Files.deleteIfExists(archive)
+            case.resolve("out.transfer-status").toFile().writeText("complete\tattempt=$attempt\n")
         }.onFailure { error ->
-            case.resolve("out.transfer-error").toFile().writeText("${error.message ?: error::class.simpleName}\n")
+            recordOutputTransferFailure(case, stage, error)
         }
     }
 
