@@ -28,5 +28,6 @@ class DiskGuardTest {
 
         assertEquals(listOf("job files", "data: stray", "job worktrees"), ours.map { it.label })
         assertTrue(ours.first().bytes!! >= 200_000)
+        assertEquals(listOf(1L), report.largestJobs.map { it.first })
     }
 }

@@ -13,7 +13,13 @@ import kotlin.io.path.Path
 data class DiskPlace(val label: String, val path: String, val bytes: Long?)
 
 @Serializable
-data class DiskReport(val at: Long, val freeBytes: Long, val places: List<DiskPlace>)
+data class DiskReport(
+    val at: Long,
+    val freeBytes: Long,
+    val places: List<DiskPlace>,
+    /** The largest job directories, [TOP_JOBS] of them, largest first: job id and bytes. */
+    val largestJobs: List<Pair<Long, Long>> = emptyList(),
+)
 
 /**
  * What takes the lab machine's disk: the lab's own data, part by part, and the caches and tools beside it that grow as
@@ -62,9 +68,24 @@ class DiskUsage(private val config: Config) {
         val adjusted = places.map { p ->
             if (p.label == "other caches" && config.corpusDir.startsWith(Path(p.path))) p.copy(bytes = p.bytes?.let { maxOf(0, it - corpus) }) else p
         }
-        return DiskReport(System.currentTimeMillis(), freeBytes(config.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 })
+        return DiskReport(System.currentTimeMillis(), freeBytes(config.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 }, largestJobs())
             .also { latest = it }
     }
+
+    /** Each job directory's size in one `du` over them all, the [TOP_JOBS] largest. */
+    private fun largestJobs(): List<Pair<Long, Long>> = runCatching {
+        val jobs = config.dataDir.resolve("jobs").toFile()
+        val dirs = jobs.listFiles { f -> f.isDirectory && f.name.toLongOrNull() != null }.orEmpty().map { it.path }
+        if (dirs.isEmpty()) return@runCatching emptyList()
+        val process = ProcessBuilder(Background.prefix + listOf("du", "-sk") + dirs).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val lines = process.inputStream.bufferedReader().readLines()
+        process.waitFor()
+        lines.mapNotNull { line ->
+            val (kib, path) = line.split('\t', limit = 2).takeIf { it.size == 2 } ?: return@mapNotNull null
+            val id = path.substringAfterLast('/').toLongOrNull() ?: return@mapNotNull null
+            kib.trim().toLongOrNull()?.let { id to it * KIB }
+        }.sortedByDescending { it.second }.take(TOP_JOBS)
+    }.getOrDefault(emptyList())
 
     /** Measure now and then every [INTERVAL_MIN] minutes, on a daemon thread. */
     fun start() {
@@ -82,6 +103,7 @@ class DiskUsage(private val config: Config) {
 
     private companion object {
         const val INTERVAL_MIN = 30L
+        const val TOP_JOBS = 30
         const val KIB = 1024L
     }
 }

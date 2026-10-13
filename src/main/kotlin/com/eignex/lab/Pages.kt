@@ -1040,7 +1040,15 @@ internal fun diskPage(report: DiskReport?): String = buildString {
         append("<tr><td>${esc(place.label)}</td><td><code>${esc(place.path)}</code></td>")
         append("<td class=\"num\">${place.bytes?.let(::size) ?: "?"}</td></tr>")
     }
-    append("</table></div></body></html>")
+    append("</table></div>")
+    if (report.largestJobs.isNotEmpty()) {
+        append("<h2>Largest jobs</h2><div class=\"scroll\"><table><tr><th>job</th><th class=\"num\">size</th></tr>")
+        for ((id, bytes) in report.largestJobs) {
+            append("<tr><td><a href=\"/jobs/$id/files\">$id</a></td><td class=\"num\">${size(bytes)}</td></tr>")
+        }
+        append("</table></div>")
+    }
+    append("</body></html>")
 }
 
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
