@@ -2,7 +2,7 @@
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
 #   lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]
-#                                                            queue a profile job: the class <main> (under com.eignex.klause)
+#                                                            queue a profile job: the class <main> (in com.eignex.klause.bench.profile)
 #                                                            run once with [arg...] in a build of <ref>, under JFR, on AWS
 #                                                            by default (on demand, never spot); for measurements experiments
 #                                                            cannot express, NOT for running tests, lint or other gates (CI

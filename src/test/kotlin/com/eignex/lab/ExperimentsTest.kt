@@ -371,10 +371,11 @@ class ExperimentsTest {
 
     @Test
     fun `a profile job names a klause main and no problems, configs, seeds or repeats`() {
-        val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.klause.bench.tools.Timing", listOf("a=1")), description = "d")
+        val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.klause.bench.profile.Timing", listOf("a=1")), description = "d")
 
         Experiments.validate(profile, maxParallel = 4)
-        for (main in listOf("java.lang.Runtime", "com.eignex.klause", "com.eignex.klause.X; rm -rf /", "com.eignex.klause..X")) {
+        for (main in listOf("java.lang.Runtime", "com.eignex.klause.bench.target.BenchCli", "com.eignex.klause.bench.profile",
+            "com.eignex.klause.bench.profile.X; rm -rf /", "com.eignex.klause.bench.profile.a.B")) {
             assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main)), maxParallel = 4) }
         }
         assertFailsWith<IllegalArgumentException> {
@@ -428,12 +429,25 @@ class ExperimentsTest {
     @Test
     fun `a profile job's spec reads from JSON without problems, and a retired script job's still reads`() {
         val spec = Json.decodeFromString<ExperimentSpec>(
-            """{"name":"p","description":"d","profile":{"main":"com.eignex.klause.bench.Tool","args":["x"]},"base":{"ref":"main"}}""",
+            """{"name":"p","description":"d","profile":{"main":"com.eignex.klause.bench.profile.Tool","args":["x"]},"base":{"ref":"main"}}""",
         )
         val old = Json.decodeFromString<ExperimentSpec>("""{"name":"s","description":"d","script":"echo hi","base":{"ref":"main"}}""")
 
         Experiments.validate(spec, maxParallel = 4)
         assertTrue(spec.isProfile && spec.problems.isEmpty())
         assertTrue(old.isScript && !old.isProfile)
+    }
+
+    @Test
+    fun `an experiment may not set what a case solves or where it writes, nor odd option names`() {
+        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("engine" to "cp"), description = "d")
+
+        Experiments.validate(spec, maxParallel = 4)
+        for (base in listOf(mapOf("out" to "/tmp/x"), mapOf("problem" to "p"), mapOf("suite" to "s"), mapOf("a b" to "1"), mapOf("x" to "a\nb"))) {
+            assertFailsWith<IllegalArgumentException>(base.toString()) { Experiments.validate(spec.copy(base = base), maxParallel = 4) }
+        }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(configs = listOf(mapOf("out" to "/x"))), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(grid = mapOf("out" to listOf("/x"))), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(problems = listOf(mapOf("suite" to "s", "out" to "/x"))), maxParallel = 4) }
     }
 }

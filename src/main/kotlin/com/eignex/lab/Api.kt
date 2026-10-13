@@ -15,6 +15,7 @@ import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.accept
+import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
@@ -81,18 +82,26 @@ fun serveApi(config: Config, store: Store, host: HostReport) {
 fun Application.api(config: Config, store: Store, host: HostReport) {
     install(ContentNegotiation) { json() }
     // Every page and call needs the password, as HTTP Basic with any user name; browsers ask for it once and resend it.
-    config.passwordHash?.let { hash ->
-        val gate = PasswordGate(hash)
-        install(io.ktor.server.application.createApplicationPlugin("Password") {
-            onCall { call ->
-                if (!gate.allows(call.request.headers[HttpHeaders.Authorization])) {
+    // A write a page of another site made the browser send is refused first, password or not ([sameSite]).
+    val gate = config.passwordHash?.let { PasswordGate(it) }
+    install(io.ktor.server.application.createApplicationPlugin("Password") {
+        onCall { call ->
+            val headers = call.request.headers
+            // A handled call is not routed on.
+            if (!sameSite(call.request.httpMethod.value, headers["Sec-Fetch-Site"], headers[HttpHeaders.Origin], headers[HttpHeaders.Host])) {
+                call.respondText("cross-site request refused", status = HttpStatusCode.Forbidden)
+                return@onCall
+            }
+            when (gate?.check(headers[HttpHeaders.Authorization], client(call)) ?: Admission.ADMIT) {
+                Admission.ADMIT -> Unit
+                Admission.THROTTLE -> call.respondText("too many failed passwords; try again in a minute", status = HttpStatusCode.TooManyRequests)
+                Admission.REFUSE -> {
                     call.response.headers.append(HttpHeaders.WWWAuthenticate, "Basic realm=\"klause lab\", charset=\"UTF-8\"")
-                    // A handled call is not routed on.
                     call.respondText("password required", status = HttpStatusCode.Unauthorized)
                 }
             }
-        })
-    }
+        }
+    })
     install(StatusPages) {
         exception<IllegalArgumentException> { call, e -> call.respondText(e.message ?: "bad request", status = HttpStatusCode.BadRequest) }
     }
@@ -493,6 +502,16 @@ private suspend fun requireRef(ref: String, config: Config, trust: Trust) {
 
 private fun requireParallel(parallel: Int, config: Config) =
     require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }
+
+/**
+ * Who sent [call], for the password gate's failure limits: the peer's address, or, for a request the relay forwarded
+ * from this machine's loopback, the last address in `X-Forwarded-For`, which the relay itself appended.
+ */
+private fun client(call: ApplicationCall): String {
+    val peer = call.request.local.remoteAddress
+    val forwarded = call.request.headers["X-Forwarded-For"]?.split(',')?.lastOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+    return if (forwarded != null && (peer == "127.0.0.1" || peer == "::1" || peer == "0:0:0:0:0:0:0:1" || peer == "localhost")) forwarded else peer
+}
 
 /** The job the `{id}` parameter names; a malformed id is answered 400 and an unknown job 404, and both give null. */
 private suspend fun ApplicationCall.jobId(store: Store): Long? {

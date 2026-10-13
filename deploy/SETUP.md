@@ -73,14 +73,14 @@ A profile job runs one `main` of klause's build, once, at a commit: for a measur
 such as timing a component on captured inputs. It is not for running the build's tests, lint or other gates: CI runs
 those on every push. The lab runs no shell scripts or commands a job supplies; the code a profile job runs is the
 class it names, from the commit it names, which must pass the trust check below. Instead of `problems` and arms, its
-spec names the class under `com.eignex.klause` and its arguments (`profile`), and `base` gives the commit (`ref`), the
+spec names a class in `com.eignex.klause.bench.profile` (klause-bench's package for them) and its arguments (`profile`), and `base` gives the commit (`ref`), the
 time it may take (`timeout` in ms, an hour by default) and its cores (`processors`):
 
 ```json
 {
   "name": "factor-timing-2513",
   "description": "Time the dense factor build on the captured bases at the PR head",
-  "profile": {"main": "com.eignex.klause.bench.tools.FactorTiming", "args": ["bases=captured", "repeats=5"]},
+  "profile": {"main": "com.eignex.klause.bench.profile.FactorTiming", "args": ["bases=captured", "repeats=5"]},
   "base": {"ref": "codex/windowed-ger", "timeout": "1800000"}
 }
 ```
@@ -102,12 +102,18 @@ naming one is refused, and one still queued fails when it is planned.
 
 Every page and API call, `/health` included, needs the lab's password, sent as HTTP Basic with any user name or none:
 a browser asks for it once (leave the user name empty), `curl -u :<password>` sends it, and `lab` sends it from
-`LAB_PASSWORD` or `~/.config/klause-lab/password`. The lab keeps only a salted PBKDF2-SHA256 hash of it, committed in
+`LAB_PASSWORD` or `~/.config/klause-lab/password`. The lab keeps only a salted SHA-256 hash of it, committed in
 `src/main/resources/lab-password` and safe to publish, since the password is 32 random bytes no one can guess from it;
-`LAB_PASSWORD_HASH` overrides it. To change it, run `klause-lab password` (the installed binary, or
-`./gradlew run --args=password`), commit the hash it prints, and hand the password it prints to the clients; the
-lab takes the new one when it updates. A header that passed is remembered by its digest, so the slow hash runs once
-per client.
+a slow hash would add nothing for such a secret, and every wrong password a stranger sends would cost the lab
+machine CPU its cases' timings would feel. `LAB_PASSWORD_HASH` overrides it. To change it, run `klause-lab password`
+(the installed binary, or `./gradlew run --args=password`), commit the hash it prints, and hand the password it
+prints to the clients; the lab takes the new one when it updates. A header that passed is remembered by its digest;
+failed passwords are limited to 10 a minute from one client and 60 a minute in all, past which a request gets 429
+without being checked. A request from the public address is counted by the address the relay forwards.
+
+A request that changes something (any method but GET, HEAD and OPTIONS) is refused when the browser says another
+site made it (`Sec-Fetch-Site`, else `Origin` against `Host`): once a browser holds the password it would send it
+with a form any other page submitted. Clients that send neither header, such as `curl` and `lab`, are unaffected.
 
 ### Which commits run
 
@@ -618,7 +624,7 @@ deploy/lab tail 7             # the last 8 kB of the job's log: planning, comman
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
-deploy/lab profile com.eignex.klause.bench.tools.Timing main "time X on the captured inputs"   # a profile job on AWS; not for gates
+deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job on AWS; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab ssh 7 0 uptime     # a command on instance 0 of a running AWS job; no command opens a shell

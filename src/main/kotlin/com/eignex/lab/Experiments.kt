@@ -164,9 +164,10 @@ object Experiments {
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
+        requireOptions(spec)
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
         spec.profile?.let { profile ->
-            require(MAIN.matches(profile.main)) { "profile.main must be a class under com.eignex.klause, not '${profile.main}'" }
+            require(MAIN.matches(profile.main)) { "profile.main must be a class in com.eignex.klause.bench.profile, not '${profile.main}'" }
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
             require(spec.problems.isEmpty() && spec.problemList.isEmpty()) { "a profile job selects no problems" }
             require(spec.configs.size == 1 && spec.grid.isEmpty() && spec.seeds.isEmpty() && spec.repeats == 1) {
@@ -341,7 +342,29 @@ object Experiments {
     private const val CASE_OVERHEAD_SEC = 120L
     private const val PROFILE_TIMEOUT_MS = 3_600_000L
     /** A class under klause's package: what a profile job may name as its main. */
-    private val MAIN = Regex("com\\.eignex\\.klause(\\.[A-Za-z_][A-Za-z0-9_]*)+")
+    private val MAIN = Regex("com\\.eignex\\.klause\\.bench\\.profile\\.[A-Za-z_][A-Za-z0-9_]*")
+    /** An option's name as the bench reads it. */
+    private val OPTION = Regex("[A-Za-z][A-Za-z0-9._-]*")
+    /** Options the lab sets for each case itself, which an arm or a selection may not: what to solve and where its
+     *  record goes. */
+    private val RESERVED = setOf("suite", "problem", "out", "solver-seed")
+
+    /**
+     * Refuse options the bench should not take from a spec: a name that is not plain, one the lab sets itself
+     * ([RESERVED]), or a value with a control character. They reach the bench quoted, so no shell sees them; this keeps
+     * a spec from choosing what a case solves or where it writes.
+     */
+    private fun requireOptions(spec: ExperimentSpec) {
+        val arms = listOf(spec.base) + spec.configs + spec.grid.keys.map { mapOf(it to "") } + spec.grid.values.flatten().map { mapOf("value" to it) }
+        for ((key, value) in arms.flatMap { it.entries }) {
+            require(OPTION.matches(key) && key !in RESERVED) { "option '$key' is not one an experiment may set" }
+            require(value.none { it.isISOControl() }) { "option '$key' has a control character" }
+        }
+        for ((key, value) in spec.problems.flatMap { it.entries }) {
+            require(OPTION.matches(key) && key != "out") { "selection key '$key' is not one an experiment may set" }
+            require(value.none { it.isISOControl() }) { "selection key '$key' has a control character" }
+        }
+    }
     private const val FINGERPRINT_BYTES = 6
     private const val MAX_REPEATS = 100
     private const val MS_PER_HOUR = 3_600_000.0

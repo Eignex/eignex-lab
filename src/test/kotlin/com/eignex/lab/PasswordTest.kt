@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
@@ -20,7 +21,7 @@ class PasswordTest {
     @Test
     fun `a hash verifies its password and no other, and tells nothing from a malformed one`() {
         val password = Password.generate()
-        val hash = Password.hash(password, iterations = 1_000)
+        val hash = Password.hash(password)
 
         assertTrue(password.length >= 43)
         assertTrue(Password.verify(password, hash))
@@ -31,12 +32,51 @@ class PasswordTest {
 
     @Test
     fun `the lab ships a hash, not a password`() {
-        assertTrue(Password.bundled().startsWith("pbkdf2-sha256\$210000\$"))
+        assertTrue(Password.bundled().startsWith("sha256\$"))
+    }
+
+    @Test
+    fun `an older PBKDF2 hash still verifies`() {
+        val salt = Base64.getEncoder().encodeToString(ByteArray(16) { it.toByte() })
+        val derived = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            .generateSecret(javax.crypto.spec.PBEKeySpec("secret".toCharArray(), ByteArray(16) { it.toByte() }, 1_000, 256)).encoded
+        val stored = "pbkdf2-sha256\$1000\$$salt\$${Base64.getEncoder().encodeToString(derived)}"
+
+        assertTrue(Password.verify("secret", stored))
+        assertFalse(Password.verify("other", stored))
+    }
+
+    @Test
+    fun `failed passwords are throttled per client and in all, and a known one still passes`() {
+        var now = 0L
+        val gate = PasswordGate(Password.hash("secret")) { now }
+        assertTrue(gate.allows(basic("", "secret"), "me"))
+
+        repeat(10) { assertEquals(Admission.REFUSE, gate.check(basic("", "guess$it"), "attacker")) }
+        // Throttled without being checked, even with the right password, unless the header already passed.
+        assertEquals(Admission.THROTTLE, gate.check(basic("attacker", "secret"), "attacker"))
+        assertEquals(Admission.ADMIT, gate.check(basic("", "secret"), "attacker"))
+        repeat(50) { gate.check(basic("", "guess$it"), "client$it") }
+        assertEquals(Admission.THROTTLE, gate.check(basic("newcomer", "secret"), "newcomer"))
+        assertEquals(Admission.ADMIT, gate.check(basic("", "secret"), "me"))
+        now += 60_000
+        assertEquals(Admission.ADMIT, gate.check(basic("newcomer", "secret"), "newcomer"))
+    }
+
+    @Test
+    fun `a write another site made a browser send is refused, and reads and plain clients pass`() {
+        assertTrue(sameSite("GET", "cross-site", "https://evil.example", "lab.eignex.com"))
+        assertFalse(sameSite("POST", "cross-site", "https://evil.example", "lab.eignex.com"))
+        assertFalse(sameSite("POST", "same-site", null, "lab.eignex.com"))
+        assertTrue(sameSite("POST", "same-origin", "https://lab.eignex.com", "lab.eignex.com"))
+        assertFalse(sameSite("POST", null, "https://evil.example", "lab.eignex.com"))
+        assertTrue(sameSite("POST", null, "http://192.168.50.104:8420", "192.168.50.104:8420"))
+        assertTrue(sameSite("POST", null, null, "lab.eignex.com"))
     }
 
     @Test
     fun `the gate takes the password under any user name, or none`() {
-        val gate = PasswordGate(Password.hash("secret", iterations = 1_000))
+        val gate = PasswordGate(Password.hash("secret"))
 
         assertTrue(gate.allows(basic("", "secret")))
         assertTrue(gate.allows(basic("anyone", "secret")))
@@ -48,7 +88,7 @@ class PasswordTest {
 
     @Test
     fun `every page and call, health included, needs the password`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = Password.hash("secret", iterations = 1_000))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = Password.hash("secret"))
         val store = Store(config.database)
         testApplication {
             application { api(config, store, host) }
@@ -60,6 +100,10 @@ class PasswordTest {
                 assertEquals(HttpStatusCode.Unauthorized, client.get(path) { header(HttpHeaders.Authorization, basic("", "wrong")) }.status, path)
             }
             assertEquals(HttpStatusCode.OK, client.get("/health") { header(HttpHeaders.Authorization, basic("", "secret")) }.status)
+            assertEquals(HttpStatusCode.Forbidden, client.post("/update") {
+                header(HttpHeaders.Authorization, basic("", "secret"))
+                header(HttpHeaders.Origin, "https://evil.example")
+            }.status)
             assertEquals(HttpStatusCode.OK, client.get("/") {
                 header(HttpHeaders.Authorization, basic("", "secret"))
                 header(HttpHeaders.Accept, "text/html")
