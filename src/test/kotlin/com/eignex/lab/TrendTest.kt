@@ -118,4 +118,23 @@ class TrendTest {
 
         assertEquals(1, ran.get())
     }
+
+    @Test
+    fun `a page load leaves an uncached finished run to the background and shows it once computed`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val done = run(store, "sweep@aaa", listOf(true, false))
+        val going = run(store, "sweep@bbb", listOf(true), finish = false)
+        val cache = TrendCache()
+        val missing = ArrayList<Long>()
+
+        val first = Trend.runs(store, "sweep", cache, missing = missing)
+
+        assertEquals(listOf(going), first.map { it.job })
+        assertEquals(listOf(done), missing)
+        val deadline = System.currentTimeMillis() + 10_000
+        while (cache.lookup(done, store.referencesStamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        val later = ArrayList<Long>()
+        assertEquals(listOf(done, going), Trend.runs(store, "sweep", cache, missing = later).map { it.job })
+        assertEquals(emptyList(), later)
+    }
 }

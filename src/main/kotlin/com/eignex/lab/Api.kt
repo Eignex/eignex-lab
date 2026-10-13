@@ -162,13 +162,15 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // earlier one measured something else, and plotted alongside reads as a regression.
             val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(it.experiment) }
             val all = call.parameters["all"] != null || current == null
-            val runs = name?.let { Trend.runs(store, it, trendCache, experiment = current.takeUnless { all }) }.orEmpty()
+            val computing = ArrayList<Long>()
+            val runs = name?.let { Trend.runs(store, it, trendCache, experiment = current.takeUnless { all }, missing = computing) }.orEmpty()
             // The problems the latest run of that spec planned: a set redrawn since is another line, as an edit is.
             val latest = runs.lastOrNull { it.experiment == current }?.spec
             val shown = if (all) runs else runs.filter { it.spec == latest }
             val total = if (all) runs.size else name?.let { Trend.scheduled(store, it).size } ?: 0
             if (call.wantsHtml()) {
-                call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, maxOf(0, total - shown.size), all),
+                call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, maxOf(0, total - shown.size - computing.size), all,
+                    computing.size),
                     ContentType.Text.Html)
             } else {
                 call.respond(shown)

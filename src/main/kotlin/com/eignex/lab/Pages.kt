@@ -450,8 +450,10 @@ internal fun trendPage(
     /** Runs left out because they ran an earlier experiment than the schedule's current one. */
     earlier: Int = 0,
     all: Boolean = false,
+    /** Finished runs whose points are still being computed in the background, left out until they are. */
+    computing: Int = 0,
 ): String = buildString {
-    append(head("${name ?: "regression"} · klause lab", live = runs.any { !it.finished }, tab = Tab.REGRESSION))
+    append(head("${name ?: "regression"} · klause lab", live = computing > 0 || runs.any { !it.finished }, tab = Tab.REGRESSION))
     if (name == null) {
         append("<header><h1>Regression</h1></header><p class=\"muted\">No schedule yet: <code>lab schedule</code> sets one up, ")
         append("and its runs chart here, one point per commit.</p></body></html>")
@@ -466,6 +468,7 @@ internal fun trendPage(
         append("</div>")
     }
     append("<p class=\"muted\">${runs.size} runs · <a href=\"/${query("name" to name)}\">its jobs</a>")
+    if (computing > 0) append(" · $computing more being computed, shown as they are ready")
     if (earlier > 0) {
         append(" · $earlier earlier runs of a different experiment left out: <a href=\"/trend${query("name" to name, "all" to "1")}\">show them</a>")
     }

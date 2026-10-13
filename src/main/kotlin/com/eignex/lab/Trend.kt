@@ -71,6 +71,12 @@ object Trend {
         refreshing: Boolean = false,
         /** Only the runs of this experiment ([Experiments.fingerprint]); null for every run. */
         experiment: String? = null,
+        /**
+         * For a page load: a finished run [cache] has no point for yet is not computed here but added to this, left out,
+         * and computed on the cache's background thread, so no load waits on it, however many runs a restart left
+         * uncached. Null computes every run.
+         */
+        missing: MutableList<Long>? = null,
     ): List<TrendRun> {
         // Filtered by experiment before any case is read: a run's experiment is its spec's alone.
         val jobs = scheduled(store, name)
@@ -94,6 +100,11 @@ object Trend {
             // finds it older is served it while it is recomputed.
             val cached = cache?.let { if (finished) it.lookup(job.id, stamp) else it.lookupLive(job.id) }?.takeIf { it.fresh || !refreshing }
             if (cached?.fresh == false) stale = true
+            if (cached == null && finished && missing != null && cache != null) {
+                missing += job.id
+                stale = true
+                return@mapNotNull null
+            }
             val base = cached?.run ?: run {
                 val arms = store.arms(job.id)
                 val cases = store.scoringCases(job.id)
