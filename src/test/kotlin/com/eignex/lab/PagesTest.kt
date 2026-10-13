@@ -23,7 +23,7 @@ class PagesTest {
 
     @Test
     fun `arm pages show mixed provenance and missing legacy identities`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val cases = listOf(
             """{"buildFingerprint":"build-a","validationPolicy":"source-v1"}""",
             """{"buildFingerprint":"build-b","validationPolicy":"reported-v1"}""",
@@ -79,7 +79,7 @@ class PagesTest {
 
     @Test
     fun `a browser gets pages and an api client gets json`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.database)
         val done = store.create("sweep", "main", listOf("true" to 10L, "false" to 10L))
         store.next()
@@ -110,7 +110,7 @@ class PagesTest {
 
     @Test
     fun `an experiment's page compares its arms problem by problem`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.database)
         val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")))
         val id = store.create("ab", "main", emptyList(), experiment = spec)
@@ -130,7 +130,7 @@ class PagesTest {
 
     @Test
     fun `two experiments compare side by side with each arm named by its job`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.database)
         val ids = listOf("a", "b").map { sha ->
             val id = store.create("sweep@$sha", sha, emptyList(), experiment = ExperimentSpec("sweep@$sha", listOf(mapOf("suite" to "s"))))
@@ -148,7 +148,7 @@ class PagesTest {
 
     @Test
     fun `deleting an ended job removes it and its files but a running one stays`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.database)
         val ended = store.create("old", "main", listOf("true" to 1L))
         store.next()

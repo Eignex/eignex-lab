@@ -10,8 +10,15 @@ import kotlin.system.exitProcess
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
+    if (mode == "password") {
+        // A new password and the hash to commit as src/main/resources/lab-password; the password goes to the clients.
+        val password = Password.generate()
+        println("password: $password")
+        println("hash:     ${Password.hash(password)}")
+        return
+    }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: klause-lab api|runner|check")
+        System.err.println("usage: klause-lab api|runner|check|password")
         exitProcess(2)
     }
     val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->

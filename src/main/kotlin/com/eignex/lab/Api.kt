@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.DefaultJson
 import io.ktor.serialization.kotlinx.json.json
@@ -76,6 +77,19 @@ fun serveApi(config: Config, store: Store, host: HostReport) {
 
 fun Application.api(config: Config, store: Store, host: HostReport) {
     install(ContentNegotiation) { json() }
+    // Every page and call needs the password, as HTTP Basic with any user name; browsers ask for it once and resend it.
+    config.passwordHash?.let { hash ->
+        val gate = PasswordGate(hash)
+        install(io.ktor.server.application.createApplicationPlugin("Password") {
+            onCall { call ->
+                if (!gate.allows(call.request.headers[HttpHeaders.Authorization])) {
+                    call.response.headers.append(HttpHeaders.WWWAuthenticate, "Basic realm=\"klause lab\", charset=\"UTF-8\"")
+                    // A handled call is not routed on.
+                    call.respondText("password required", status = HttpStatusCode.Unauthorized)
+                }
+            }
+        })
+    }
     install(StatusPages) {
         exception<IllegalArgumentException> { call, e -> call.respondText(e.message ?: "bad request", status = HttpStatusCode.BadRequest) }
     }

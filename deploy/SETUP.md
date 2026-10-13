@@ -98,6 +98,17 @@ minutes' notice, and a profile cannot pick up where it stopped, so it would star
 resume after a reclaim and run on spot. The script jobs that came before (`script`, `scriptFile`) are retired: a spec
 naming one is refused, and one still queued fails when it is planned.
 
+### Password
+
+Every page and API call, `/health` included, needs the lab's password, sent as HTTP Basic with any user name or none:
+a browser asks for it once (leave the user name empty), `curl -u :<password>` sends it, and `lab` sends it from
+`LAB_PASSWORD` or `~/.config/klause-lab/password`. The lab keeps only a salted PBKDF2-SHA256 hash of it, committed in
+`src/main/resources/lab-password` and safe to publish, since the password is 32 random bytes no one can guess from it;
+`LAB_PASSWORD_HASH` overrides it. To change it, run `klause-lab password` (the installed binary, or
+`./gradlew run --args=password`), commit the hash it prints, and hand the password it prints to the clients; the
+lab takes the new one when it updates. A header that passed is remembered by its digest, so the slow hash runs once
+per client.
+
 ### Which commits run
 
 Every commit a job builds, in any arm, a schedule's run and a confirmation included, must be on `main` or on a branch

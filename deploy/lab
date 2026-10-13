@@ -34,11 +34,24 @@
 #   lab cat <id> <path> [tail-bytes]                         print one of them (job.log, setup.log, cases/<n>/record.json…)
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
+# The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
 #   lab ssh <id> [n] [command...]                            a shell (or command) on instance n (default 0) of a running
 #                                                            AWS job, through the server with the lab's own key and host keys
 set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"
+# Every call carries the lab's password (HTTP Basic, no user name): LAB_PASSWORD, else the file LAB_PASSWORD_FILE,
+# ~/.config/klause-lab/password by default. It reaches curl through a private config file, never its command line.
+password="${LAB_PASSWORD:-$(cat "${LAB_PASSWORD_FILE:-$HOME/.config/klause-lab/password}" 2>/dev/null || true)}"
+curl() {
+  [[ -n "$password" ]] || { echo "no lab password: set LAB_PASSWORD or put it in ~/.config/klause-lab/password" >&2; exit 2; }
+  local auth status=0
+  auth="$(umask 077; mktemp)"
+  printf 'user = ":%s"\n' "$password" > "$auth"
+  command curl -K "$auth" "$@" || status=$?
+  rm -f "$auth"
+  return "$status"
+}
 data="${LAB_REMOTE_DATA:-klause-lab-data}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
 cmd="${1:-ls}"; shift || true
