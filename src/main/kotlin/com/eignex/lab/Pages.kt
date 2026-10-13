@@ -1026,6 +1026,23 @@ private fun select(name: String, any: String, options: List<Pair<String, String>
     append("</select>")
 }
 
+/** What takes the lab machine's disk, largest first, as [DiskUsage] last measured it. */
+internal fun diskPage(report: DiskReport?): String = buildString {
+    append(head("disk · klause lab", live = false))
+    append("<header><h1>Disk</h1></header>")
+    if (report == null) {
+        append("<p class=\"muted\">Not measured yet: the first measurement runs at startup and takes a few minutes.</p></body></html>")
+        return@buildString
+    }
+    append("<p class=\"muted\">${size(report.freeBytes)} free · measured ${ago(report.at)}, every 30 minutes</p>")
+    append("<div class=\"scroll\"><table><tr><th>what</th><th>path</th><th class=\"num\">size</th></tr>")
+    for (place in report.places) {
+        append("<tr><td>${esc(place.label)}</td><td><code>${esc(place.path)}</code></td>")
+        append("<td class=\"num\">${place.bytes?.let(::size) ?: "?"}</td></tr>")
+    }
+    append("</table></div></body></html>")
+}
+
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
     append(head("$jobId files · klause lab", live = false))
     append("<header><h1><a href=\"/jobs/$jobId\">$jobId</a> / files</h1></header>")
@@ -1054,7 +1071,8 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
     val running = active.count { it.status == Status.RUNNING }
     val queued = active.count { it.status == Status.QUEUED }
     val free = freeBytes(config.dataDir)
-    val disk = if (free < config.minFreeBytes) "<span class=\"FAILED\">${size(free)} free: queue held</span>" else "${size(free)} free"
+    val disk = (if (free < config.minFreeBytes) "<span class=\"FAILED\">${size(free)} free: queue held</span>" else "${size(free)} free") +
+        " (<a href=\"/disk\">what uses it</a>)"
     val accel = listOfNotNull(host.vendor, "simd".takeIf { host.simd }).joinToString(", ")
     return "$running running · $queued queued · $disk · ${esc(host.host)}, ${host.cores} cores" +
         if (accel.isEmpty()) "" else ", ${esc(accel)}"

@@ -107,6 +107,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     }
     val trendCache = TrendCache()
     val referenceCache = ReferenceCache(store)
+    val disk = DiskUsage(config).also { it.start() }
     // Only branches are asked about here, from GitHub; the runner checks each commit on its mirror when it plans.
     val trust = Trust(config.trustedUsers, config.repoUrl, git = { 1 to "" },
         github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
@@ -124,6 +125,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val queues = listOf(Experiments.LAB_HOST, Experiments.AWS_HOST).associateWith { store.queueOrder(it) }
             val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name, queues)
             call.respondText(page, ContentType.Text.Html)
+        }
+        get("/disk") {
+            if (call.wantsHtml()) call.respondText(diskPage(disk.latest), ContentType.Text.Html) else call.respond(disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList()))
         }
         get("/health") {
             val jobs = store.active(withCommands = false)
