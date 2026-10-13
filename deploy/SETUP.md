@@ -491,6 +491,29 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
   `aws` job left running and terminates every lab-tagged instance no running job owns.
 
+## Public access
+
+The lab answers at `https://lab.eignex.com` from anywhere, and only with its password (see Password). The home
+network sits behind the ISP's carrier-grade NAT, so nothing can connect in to it, router forwarding included; the Mac
+connects out to a relay instead:
+
+- The relay is an EC2 instance `klause-relay` (t4g.micro, eu-north-1) with the Elastic IP `klause-relay`, a security
+  group open to 22, 80 and 443, and Caddy, which serves the domain with a Let's Encrypt certificate it renews itself
+  and passes every request to `127.0.0.1:8420`. Its `tunnel` user can hold that one reverse forward and nothing else:
+  no shell, no command, no other port.
+- The Mac holds the tunnel: the launchd daemon `com.eignex.klause-relay` runs `ssh -N -R 127.0.0.1:8420:...` to the
+  relay as the lab's user with `~/.ssh/klause-lab-relay`, starts at boot and reconnects after a drop. Its errors go
+  to `$LAB_DATA/logs/relay.log`.
+- DNS for `eignex.com` is hosted at DigitalOcean (the registrar only points there); the `lab` A record names the
+  Elastic IP.
+
+`deploy/relay/create.sh [domain] [user@lab-host]` builds all of it from an admin AWS session, reusing what exists:
+the Elastic IP carries over to a rebuilt relay, so DNS stays put, and with a DigitalOcean token in
+`~/.config/digitalocean/token` it sets the A record too. It ends by printing the one step left, on the Mac:
+`sudo deploy/relay/install-tunnel.sh <relay-ip>`, which installs the daemon and forgets the old relay's host key. The
+relay is tagged only `Name=klause-relay`, never `klause-lab`, so the AWS worker's cleanup of its own instances leaves
+it alone. Expose the lab only while its password check is live: a request without it must get 401.
+
 ## Crash safety
 
 - `api` and `runner` are separate processes that share one SQLite database (WAL, `synchronous=FULL`). A solve
