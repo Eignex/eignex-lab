@@ -62,7 +62,7 @@ class CliMeasurementsTest {
         }
 
         assertEquals(2, attempt)
-        assertEquals(listOf(1 to 255), failures)
+        assertEquals(listOf<Pair<Int, Int?>>(1 to 255), failures)
         assertContentEquals("complete".toByteArray(), Files.readAllBytes(target))
         assertFalse(Files.exists(dir.resolve("output.tar.part")))
     }
