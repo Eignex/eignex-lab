@@ -71,15 +71,15 @@ class AwsTest {
     }
 
     @Test
-    fun `instances launch as spot unless the settings say on demand`() {
+    fun `instances launch on demand unless the settings say spot`() {
         val dir = Files.createTempDirectory("aws")
         val file = dir.resolve("aws.properties")
         file.toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val default = AwsConfig.load(file)!!
+        file.toFile().appendText("market=spot\nspotFallback=false\n")
         val spot = AwsConfig.load(file)!!
-        file.toFile().appendText("market=on-demand\nspotFallback=false\n")
-        val onDemand = AwsConfig.load(file)!!
 
-        assertEquals(listOf(true, true, false, false), listOf(spot.spot, spot.spotFallback, onDemand.spot, onDemand.spotFallback))
+        assertEquals(listOf(false, true, true, false), listOf(default.spot, default.spotFallback, spot.spot, spot.spotFallback))
     }
 
     private class FakeHost(private val log: java.util.Queue<Int>) : ExecutionHost {

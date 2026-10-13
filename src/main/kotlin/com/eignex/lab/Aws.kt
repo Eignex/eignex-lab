@@ -46,9 +46,10 @@ data class AwsConfig(
     val corpusBucket: String? = null,
     /** The instance profile whose role may read and write [corpusBucket]. */
     val instanceProfile: String? = null,
-    /** Launch instances as spot capacity, far cheaper and reclaimable at two minutes' notice ([AwsWorker] requeues
-     *  a reclaimed instance's cases), unless this is false: on demand. */
-    val spot: Boolean = true,
+    /** Launch instances as spot capacity (`market=spot`), far cheaper and reclaimable at two minutes' notice
+     *  ([AwsWorker] requeues a reclaimed instance's cases); on demand otherwise, the default, since spot's reclaims
+     *  and quota waits held jobs up for too long. */
+    val spot: Boolean = false,
     /** When AWS has no spot capacity of the type or quota for it, launch that instance on demand rather than wait. */
     val spotFallback: Boolean = true,
 ) {
@@ -90,7 +91,7 @@ data class AwsConfig(
                 ami = get("ami"),
                 corpusBucket = get("corpusBucket"),
                 instanceProfile = get("instanceProfile"),
-                spot = get("market", "spot") != "on-demand",
+                spot = get("market", "on-demand") == "spot",
                 spotFallback = get("spotFallback", "true")!!.toBoolean(),
             )
         }

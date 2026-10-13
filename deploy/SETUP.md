@@ -477,16 +477,16 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
 - The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
   instances. While an update waits, the worker starts no new AWS job and running ones launch no more instances, so the
   running jobs drain and the update lands; the queued ones start after the restart.
-- Instances of experiments and reference A/Bs are spot capacity by default (profile jobs are always on demand; see
-  Profile jobs): the same hardware at a fraction of the on-demand price, which AWS can take
-  back at two minutes' notice. When it does, the lab finds the instance gone at its next dropped connection and puts
+- Instances are on demand by default. `market=spot` in `aws.properties` makes those of experiments and reference A/Bs
+  spot capacity instead (profile jobs stay on demand; see Profile jobs): the same hardware at a fraction of the
+  on-demand price, which AWS can take back at two minutes' notice, and which held jobs up too long to stay the
+  default. When AWS takes one back, the lab finds the instance gone at its next dropped connection and puts
   the cases it was running, and the problems it had taken, back in the job's queue; the job's other instances take
   them, and it launches a replacement as the quota allows. A job left with work and no instances is queued again
   rather than failed, and resumes on new ones. Cases that finished keep their records, so a reclaim costs only the
   cases in flight. When AWS has no spot capacity of the type, or the account's spot quota (a quota of its own, apart
   from `vcpuQuota`) is used up, or the account lacks the spot service-linked role that `aws-setup.sh` creates, that
-  instance launches on demand. `market=on-demand` in `aws.properties` buys every
-  instance on demand, and `spotFallback=false` waits for spot capacity instead of falling back. The job page counts
+  instance launches on demand; `spotFallback=false` waits for spot capacity instead of falling back. The job page counts
   a job's spot instances. Spot timing is noisier than the Mac's, so give a timing A/B on AWS more `repeats`.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
   ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
