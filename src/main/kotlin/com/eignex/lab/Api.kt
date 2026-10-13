@@ -29,6 +29,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -368,18 +371,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")
         }
         get("/jobs/{id}/files") {
-            val id = call.parameters["id"]!!.toLong()
-            val root = config.jobDir(id).toFile()
-            val files = root.walkTopDown().filter { it.isFile }.map { FileEntry(it.relativeTo(root).path, it.length()) }.sortedBy { it.path }.toList()
+            val id = call.jobId(store) ?: return@get
+            val files = jobFiles(config.jobDir(id))
             if (call.wantsHtml()) call.respondText(filesPage(id, files), ContentType.Text.Html) else call.respond(files)
         }
         get("/jobs/{id}/files/{path...}") {
-            val root = config.jobDir(call.parameters["id"]!!.toLong()).toFile().canonicalFile
-            val file = File(root, call.parameters.getAll("path")!!.joinToString("/")).canonicalFile
-            require(file.toPath().startsWith(root.toPath())) { "path escapes the job directory" }
-            val tail = call.parameters["tail"]?.toLong()
+            val id = call.jobId(store) ?: return@get
+            val tail = call.parameters["tail"]?.let {
+                requireNotNull(it.toLongOrNull()?.takeIf { bytes -> bytes in 0..MAX_TAIL_BYTES }) { "tail must be 0 to $MAX_TAIL_BYTES bytes" }
+            }
+            val file = jobFile(config.jobDir(id), call.parameters.getAll("path").orEmpty())?.toFile()
             when {
-                !file.isFile -> call.respond(HttpStatusCode.NotFound, "no such file")
+                file == null -> call.respond(HttpStatusCode.NotFound, "no such file")
                 tail != null -> call.respondText(tail(file, tail), ContentType.Text.Plain)
                 // Logs and command output open in the browser instead of downloading.
                 file.extension in TEXT_FILES -> call.respond(LocalFileContent(file, ContentType.Text.Plain.withCharset(Charsets.UTF_8)))
@@ -397,6 +400,8 @@ private const val MIN_SCHEDULE_SEC = 60L
 /** Jobs a page of the history, and a `/jobs` list by default, shows. */
 private const val PAGE_SIZE = 50
 private const val MAX_COMPARED = 6
+/** The most a `?tail=` read returns, so one request cannot pull a whole large file into memory. */
+private const val MAX_TAIL_BYTES = 16L * 1024 * 1024
 
 /** The worktrees job [id] built, its own and those of its other commits; the mirror forgets them at its next prune. */
 private fun worktrees(config: Config, id: Long): List<File> =
@@ -488,6 +493,44 @@ private suspend fun requireRef(ref: String, config: Config, trust: Trust) {
 
 private fun requireParallel(parallel: Int, config: Config) =
     require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }
+
+/** The job the `{id}` parameter names; a malformed id is answered 400 and an unknown job 404, and both give null. */
+private suspend fun ApplicationCall.jobId(store: Store): Long? {
+    val id = parameters["id"]?.toLongOrNull()
+    when {
+        id == null -> respond(HttpStatusCode.BadRequest, "job id must be a number")
+        store.job(id) == null -> respond(HttpStatusCode.NotFound, "no such job")
+        else -> return id
+    }
+    return null
+}
+
+/**
+ * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a
+ * job's files are what it wrote there, and a link could lead anywhere on the machine.
+ */
+internal fun jobFiles(root: Path): List<FileEntry> {
+    if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return emptyList()
+    return Files.walk(root).use { paths ->
+        paths.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
+            .map { FileEntry(root.relativize(it).joinToString("/"), Files.size(it)) }
+            .toList()
+    }.sortedBy { it.path }
+}
+
+/**
+ * The regular file [segments] name under job directory [root], or null when there is none. A segment that is empty,
+ * `.` or `..`, or holds a slash, a backslash or a NUL fails as a bad request, whether it came plain or
+ * percent-encoded. A file reached through a symbolic link is served only when the link resolves inside [root] too.
+ */
+internal fun jobFile(root: Path, segments: List<String>): Path? {
+    require(segments.isNotEmpty() && segments.none { it in setOf("", ".", "..") || it.any { c -> c in "/\\\u0000" } }) {
+        "bad file path"
+    }
+    val realRoot = runCatching { root.toRealPath() }.getOrNull() ?: return null
+    val file = runCatching { realRoot.resolve(segments.joinToString("/")).toRealPath() }.getOrNull() ?: return null
+    return file.takeIf { it.startsWith(realRoot) && Files.isRegularFile(it) }
+}
 
 /** The last [bytes] of a file that may still be growing. */
 private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").use { raf ->
