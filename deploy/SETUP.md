@@ -93,6 +93,19 @@ the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to 
 the job page. From AWS, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
 in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
 `"host": "lab"`; on the Mac it runs alone, as every job does.
+After a profile command reports its exit, AWS output retrieval retries only the result stream when SSH drops or
+its transfer times out. It uses the file-transfer policy: at most eight 120-second attempts, with cancellable
+backoff from 15 seconds to 5 minutes. It does not restart the completed profile command. Transfer failures remain
+in `cases/<n>/out.transfer-attempts.tsv`; cleanup or failure-reporting errors prevent another attempt.
+`out.transfer-status` distinguishes complete and incomplete retrieval,
+and terminal failure also leaves `out.transfer-error`. Both terminal receipt writes are attempted independently.
+When both writes succeed the original command exit is preserved; if either receipt cannot be written, the original
+transfer error propagates with reporting failures suppressed, without retrying transfer or restarting the command.
+A command exit or a DONE job does not establish output
+custody. The instance is retained through these attempts and is still terminated after terminal transfer failure;
+files not returned are unavailable, and the file API serves only files already retained on the lab machine.
+Local archive unpacking runs once, with the same 120-second timeout and cancellation handling, and retains
+`out.unpack.log` when successful. A terminal status identifies whether transfer or unpacking was incomplete.
 `lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]` queues one.
 On AWS a profile job always runs on an on-demand instance, never spot: AWS can take a spot instance back at two
 minutes' notice, and a profile cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs

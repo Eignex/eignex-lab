@@ -71,6 +71,41 @@ internal data class CliMeasurementManifest(
 
 internal class FileTransferFailure(val exit: Int?, message: String) : IllegalStateException(message)
 
+internal fun retryFileTransfer(
+    backoff: Backoff,
+    cancelled: () -> Boolean,
+    onFailure: (Int, FileTransferFailure) -> Unit = { _, _ -> },
+    sleep: (Long) -> Unit = Thread::sleep,
+    transfer: () -> Unit,
+): Int {
+    var attempt = 1
+    while (true) {
+        check(!cancelled()) { "file transfer cancelled" }
+        try {
+            transfer()
+            return attempt
+        } catch (error: FileTransferFailure) {
+            try {
+                onFailure(attempt, error)
+            } catch (report: Throwable) {
+                if (report !== error) error.addSuppressed(report)
+                throw error
+            }
+            if (error.suppressed.isNotEmpty() || error.exit != null && error.exit != 255 ||
+                attempt >= backoff.attempts || cancelled()
+            ) throw error
+            var remaining = backoff.delayAfter(attempt)
+            while (remaining > 0L && !cancelled()) {
+                val slice = minOf(remaining, 1_000L)
+                sleep(slice)
+                remaining -= slice
+            }
+            check(!cancelled()) { "file transfer cancelled" }
+            attempt++
+        }
+    }
+}
+
 // Publish only complete, successful transfers. Failed SSH output must not masquerade as a usable recording.
 internal fun receiveFile(process: Process, destination: Path, timeoutSec: Long, cancelled: () -> Boolean) {
     require(timeoutSec > 0)
@@ -106,6 +141,7 @@ internal fun receiveFile(process: Process, destination: Path, timeoutSec: Long, 
         for (action in listOf<() -> Unit>(
             { if (process.isAlive) process.destroyForcibly() },
             { process.inputStream.close() },
+            { check(process.waitFor(5, TimeUnit.SECONDS)) { "file transfer process did not stop" } },
             { reader.join(5_000); check(!reader.isAlive) { "file transfer reader did not stop" } },
             { Files.deleteIfExists(temporary) },
         )) {

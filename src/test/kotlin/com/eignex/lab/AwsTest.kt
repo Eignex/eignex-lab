@@ -1,14 +1,58 @@
 package com.eignex.lab
 
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class AwsTest {
+    @Test
+    fun `terminal output transfer receipts record incomplete custody without changing command exit`() {
+        val dir = Files.createTempDirectory("aws-transfer")
+        val case = dir.resolve("cases/0")
+        Files.createDirectories(case)
+        Files.writeString(dir.resolve("0.exit"), "0\n")
+
+        recordOutputTransferFailure(case, "transfer", FileTransferFailure(255, "dropped"))
+
+        assertEquals("incomplete\tstage=transfer\n", Files.readString(case.resolve("out.transfer-status")))
+        assertEquals("dropped\n", Files.readString(case.resolve("out.transfer-error")))
+        assertEquals("0\n", Files.readString(dir.resolve("0.exit")))
+    }
+
+    @Test
+    fun `terminal receipt failures attempt both writes and preserve the primary transfer error`() {
+        val names = listOf("out.transfer-status", "out.transfer-error")
+        for (failed in listOf(listOf(names.first()), listOf(names.last()), names)) {
+            val case = Files.createTempDirectory("aws-transfer")
+            val primary = FileTransferFailure(255, "dropped")
+            val reports = failed.associateWith { IOException("cannot write $it") }
+            val attempted = ArrayList<String>()
+
+            val observed = assertFailsWith<FileTransferFailure> {
+                recordOutputTransferFailure(case, "unpack", primary) { path, text ->
+                    val name = path.fileName.toString()
+                    attempted += name
+                    reports[name]?.let { throw it }
+                    Files.writeString(path, text)
+                }
+            }
+
+            assertSame(primary, observed)
+            assertEquals(names, attempted)
+            assertEquals(failed.map(reports::getValue), observed.suppressed.toList())
+            for (name in names - failed.toSet()) {
+                assertTrue(Files.isRegularFile(case.resolve(name)))
+            }
+        }
+    }
+
     @Test
     fun `aws settings load with their defaults, and there are none without the file`() {
         val dir = Files.createTempDirectory("aws")
