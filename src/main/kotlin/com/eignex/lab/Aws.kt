@@ -411,12 +411,17 @@ class AwsHost(
         return result
     }
 
-    /** A profile case's `$OUT` directory, packed on the instance and unpacked under its case in the job directory. */
+    /**
+     * A profile case's `$OUT` directory, packed on the instance and unpacked under its case in the job directory, up to
+     * [OUT_CAP_BYTES]: files go smallest first until the next would pass it, and the rest are listed with their sizes in
+     * `out/omitted.tsv` instead, so one job's reports cannot fill the lab machine's disk. The instance is terminated
+     * after, so an omitted file is gone; a job that needs it writes less, or summarises.
+     */
     private fun fetchOutDir(i: Int, dir: Path) {
         val case = dir.resolve("cases/$i").createDirectories()
         val archive = case.resolve("out.tar")
         runCatching {
-            receiveFile(ssh.start("tar -C ${quote("$HOME/job/cases/$i")} -c out", mergeErrors = false), archive, ARTIFACT_TRANSFER_SEC, cancelled)
+            receiveFile(ssh.start(packOut("$HOME/job/cases/$i", OUT_CAP_BYTES), mergeErrors = false), archive, ARTIFACT_TRANSFER_SEC, cancelled)
             val unpack = ProcessBuilder("tar", "-x", "-f", archive.toString(), "-C", case.toString()).redirectErrorStream(true).start()
             val output = unpack.inputStream.bufferedReader().readText()
             check(unpack.waitFor() == 0) { "unpacking failed: $output" }
@@ -427,6 +432,19 @@ class AwsHost(
     }
 
     companion object {
+        /** The most of a profile case's `$OUT` that comes back from its instance. */
+        const val OUT_CAP_BYTES = 1L shl 30
+
+        /**
+         * The shell step that writes `out` under [caseDir] to stdout as a tar of at most [cap] bytes of files, smallest
+         * first, with `out/omitted.tsv` (size, path) listing the files left out when any are.
+         */
+        internal fun packOut(caseDir: String, cap: Long): String =
+            "cd ${quote(caseDir)} && rm -f out/omitted.tsv .out-keep && touch .out-keep && " +
+                "find out -type f -printf '%s\\t%p\\n' | sort -n | " +
+                "awk -F'\\t' -v cap=$cap '{ t += \$1; if (t <= cap) print \$2 > \".out-keep\"; else print > \"out/omitted.tsv\" }' && " +
+                "{ test -f out/omitted.tsv && echo out/omitted.tsv >> .out-keep; true; } && tar -c -T .out-keep"
+
         /** Whether a case's stdout and stderr come back from its instance: when it failed, timed out or left no
          *  record, and for every case of a profiling job. */
         internal fun keepsOutput(result: Int, recorded: Boolean, profileCli: Boolean): Boolean =

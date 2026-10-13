@@ -90,7 +90,8 @@ the bench's classpath with each argument passed as it is, no shell between, unde
 `$OUT/profile.jfr`. `$OUT` is a directory whose files are kept with the job; the corpus cache is `$KLAUSE_CORPUS`, and
 the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to read. Its stdout, stderr, exit and
 `$OUT` come back to the job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch` and listed on
-the job page. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
+the job page. From AWS, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
+in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
 `"host": "lab"`; on the Mac it runs alone, as every job does.
 `lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]` queues one.
 On AWS a profile job always runs on an on-demand instance, never spot: AWS can take a spot instance back at two

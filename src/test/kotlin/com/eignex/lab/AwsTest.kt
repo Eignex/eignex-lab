@@ -167,4 +167,21 @@ class AwsTest {
 
         assertEquals(listOf(true, 3, false), listOf(store.setMachines(queued, 3), store.job(queued)?.experiment?.machines, store.setMachines(onLab, 3)))
     }
+
+    @Test
+    fun `a profile's OUT comes back smallest first up to the cap, the rest listed as omitted`() {
+        val case = Files.createTempDirectory("case").toFile()
+        val out = case.resolve("out").apply { mkdirs() }
+        out.resolve("small.json").writeText("x".repeat(10))
+        out.resolve("sub").mkdirs()
+        out.resolve("sub/medium.xml").writeText("y".repeat(50))
+        out.resolve("huge.json").writeText("z".repeat(500))
+        val process = ProcessBuilder("bash", "-c", AwsHost.packOut(case.path, 100) + " | tar -t").redirectErrorStream(true).start()
+        val listed = process.inputStream.bufferedReader().readLines().toSet()
+
+        assertEquals(0, process.waitFor())
+        assertEquals(setOf("out/small.json", "out/sub/medium.xml", "out/omitted.tsv"), listed)
+        assertEquals("500\tout/huge.json", out.resolve("omitted.tsv").readText().trim())
+        case.deleteRecursively()
+    }
 }
