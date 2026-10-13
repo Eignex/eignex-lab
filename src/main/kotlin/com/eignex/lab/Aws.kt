@@ -518,7 +518,7 @@ class AwsWorker(
         }
         // Reserved before the job is claimed, since a running job may take the same vCPUs to grow.
         val held = Reservation(size)
-        val machines = ((spec.machines ?: aws.maxInstances).coerceAtLeast(1) downTo 1).firstOrNull { held.reserve(it) } ?: return
+        val machines = (wantedMachines(spec).coerceAtLeast(1) downTo 1).firstOrNull { held.reserve(it) } ?: return
         val job = store.next(Experiments.AWS_HOST)
         if (job?.id != next.id) {
             held.releaseAll()
@@ -724,7 +724,7 @@ class AwsWorker(
         private fun wantsMore(): Boolean {
             if (problems.isEmpty() || store.cancelRequested(job.id)) return false
             val current = store.job(job.id) ?: return false
-            val wanted = current.experiment?.machines ?: aws.maxInstances
+            val wanted = current.experiment?.let(::wantedMachines) ?: aws.maxInstances
             return !current.paused && instances.size < wanted && store.queueOrder(Experiments.AWS_HOST).isEmpty() &&
                 !runner.updateWaiting()
         }
@@ -779,6 +779,9 @@ class AwsWorker(
             cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         }
     }
+
+    /** How many instances [spec] asks for: its `machines`, else as many as allowed; a profile job's one case needs one. */
+    private fun wantedMachines(spec: ExperimentSpec): Int = if (spec.isProfile) 1 else spec.machines ?: aws.maxInstances
 
     /** Launch [machines] instances for [job], recording each in [instances] at once so that it is terminated whatever
      *  happens next, and return the new ones. [waitForCapacity] retries a while when AWS refuses for its quota. */
