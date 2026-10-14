@@ -976,7 +976,7 @@ internal fun problemPage(report: ProblemReport, repoUrl: String): String = build
         val trusted = current.zip(References.trusted(current)).toMap()
         for (r in report.references) {
             val trust = when {
-                r.stale -> "stale: from before its solution was checked"
+                r.stale -> "stale: unregistered importer or unchecked legacy policy"
                 trusted[r] != r -> "proof set aside: another solver's solution contradicts it"
                 else -> r.validation?.let { "solution $it" } ?: ""
             }

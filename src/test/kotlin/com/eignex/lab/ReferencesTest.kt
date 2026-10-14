@@ -218,6 +218,69 @@ class ReferencesTest {
     }
 
     @Test
+    fun `retired XCSP reference proofs cannot replace a registered undecided row`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "xcsp3-cop-22to25" to "case"
+        val image = "klause-xcsp3-cpsat:source-preserving-v2@sha256:${"0".repeat(64)}"
+        val current = ref(null).copy(version = "$image|${References.XCSP_POLICY}")
+        store.putReferences(listOf(key to current), "current")
+        val legacy = ref(false, proven = true).copy(version = "$image|xcsp3-matrix-row-major-v1")
+
+        val changed = store.putReferences(listOf(key to legacy), "legacy")
+
+        assertEquals(0, changed)
+        assertEquals(current, store.referenceRows(key.first, key.second).single())
+    }
+
+    @Test
+    fun `XCSP identities without a pinned image remain stale`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "xcsp3-csp-22to25" to "case"
+        val incomplete = ref(false, proven = true).copy(version = References.XCSP_POLICY)
+
+        store.putReferences(listOf(key to incomplete), "incomplete")
+
+        assertEquals(true, store.referenceRows(key.first, key.second).single().stale)
+        assertEquals(emptyMap(), store.references(listOf(key)))
+    }
+
+    @Test
+    fun `opening a database retires legacy XCSP claims while preserving their facts`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val old = "xcsp3-cop-22to25" to "legacy"
+        val current = "xcsp3-cop-22to25" to "current"
+        val unversioned = "xcsp3-csp-22to25" to "unversioned"
+        val minizinc = "hakank" to "minizinc"
+        val image = "klause-xcsp3-cpsat:source-preserving-v2@sha256:${"0".repeat(64)}"
+        val legacy = ref(false, proven = true).copy(version = "$image|xcsp3-matrix-row-major-v1")
+        val checked = ref(true, 5.0).copy(version = "$image|${References.XCSP_POLICY}")
+        store.putReferences(listOf(old to legacy, current to checked, unversioned to ref(false, proven = true),
+            minizinc to ref(true)), "preserved")
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { connection ->
+            connection.createStatement().use { it.execute("UPDATE reference_rows SET stale = 0") }
+        }
+
+        val reopened = Store(file)
+
+        assertEquals(legacy.copy(stale = true), reopened.referenceRows(old.first, old.second).single())
+        assertEquals(setOf(current, minizinc), reopened.references(listOf(old, current, unversioned, minizinc)).keys)
+    }
+
+    @Test
+    fun `retired XCSP records arrive stale without changing their verdict`() {
+        val record = Json.parseToJsonElement(
+            """{"solver":"cp-sat","budgetMs":60000,"feasible":false,"proven":true,"stats":{"referenceVersion":"klause-xcsp3-cpsat:latest@sha256:${"0".repeat(64)}|xcsp3-matrix-row-major-v1"}}""",
+        )
+
+        val captured = References.of(record)!!
+
+        assertEquals(true, captured.stale)
+        assertEquals(false, captured.feasible)
+        assertEquals(true, captured.proven)
+    }
+
+    @Test
     fun `a proof without a solve time is timed by the wall clock, and a rerun of it refreshes the stored row`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val key = "hakank" to "building_a_house_model"
