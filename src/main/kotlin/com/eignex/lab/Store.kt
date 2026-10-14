@@ -189,6 +189,44 @@ class Store(file: Path) {
                 it.execute("UPDATE reference_rows SET stale = 1 WHERE solver IN ${References.UNCHECKED_SOLVERS.joinToString(",", "(", ")") { s -> "'$s'" }}")
             }
         }
+        retireReferences(this)
+    }
+
+    private fun retireReferences(database: Connection) {
+        database.autoCommit = false
+        try {
+            val retired = database.createStatement().use { statement ->
+                statement.executeQuery("SELECT collection, problem, solver, version FROM reference_rows WHERE stale = 0").use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            val collection = rows.getString("collection")
+                            val solver = rows.getString("solver")
+                            if (References.stale(solver, rows.getString("version"), collection)) {
+                                add(Triple(collection, rows.getString("problem"), solver))
+                            }
+                        }
+                    }
+                }
+            }
+            database.prepareStatement(
+                "UPDATE reference_rows SET stale = 1, updated_at = ? WHERE collection = ? AND problem = ? AND solver = ?",
+            ).use { update ->
+                val at = now()
+                for ((collection, problem, solver) in retired) {
+                    update.setLong(1, at)
+                    update.setString(2, collection)
+                    update.setString(3, problem)
+                    update.setString(4, solver)
+                    update.executeUpdate()
+                }
+            }
+            database.commit()
+        } catch (error: Throwable) {
+            database.rollback()
+            throw error
+        } finally {
+            database.autoCommit = true
+        }
     }
 
     @Synchronized
@@ -629,7 +667,9 @@ class Store(file: Path) {
         )
         select.use {
             upsert.use {
-                for ((key, row) in rows) {
+                for ((key, captured) in rows) {
+                    val row = captured.copy(stale = captured.stale ||
+                        References.stale(captured.solver, captured.version, key.first))
                     select.setString(1, key.first)
                     select.setString(2, key.second)
                     select.setString(3, row.solver)

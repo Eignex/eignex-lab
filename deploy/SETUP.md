@@ -349,6 +349,17 @@ evidence, never used by comparisons or filters, and replaced by the next checked
 never replace a checked one. `lab references <text> [solver] [verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
 with every solver's verdict and every lab run of it.
 
+XCSP3 cp-sat rows require an image SHA-256 and a registered importer policy in
+`References.XCSP_POLICY`; the active policy is `xcsp3-source-preserving-v2`.
+Unversioned or unregistered XCSP rows remain visible as stale evidence and cannot
+influence comparisons, selection or replacement of current rows. Startup retires
+stored legacy policies without changing their verdict, objective, version or
+source; it updates the trust flag and reference timestamp so cached comparisons
+refresh. Imports apply the same rule. MiniZinc cp-sat identities retain their own
+admission policy. Register an importer policy with its source-preserving adapter
+change before refreshing reference rows through ordinary reference experiments.
+
+
 The lab has three tabs: Queue (experiments, their pages and comparisons), Regression (a schedule's trend) and
 Reference.
 

@@ -162,14 +162,21 @@ object References {
             version = stat("referenceVersion").orEmpty(),
             validation = stat("validation"),
             dualBound = stat("dualBound")?.toDoubleOrNull(),
-            // A bench from before MPS claims were checked still reports them unchecked.
-            stale = solver in UNCHECKED_SOLVERS && stat("referenceVersion").isNullOrEmpty(),
+            stale = stale(solver, stat("referenceVersion").orEmpty()),
         )
     }
 
     /** The solvers whose rows from before [Reference.version] was kept are stale: MPS references, whose solutions
      *  were not checked against the model. */
     val UNCHECKED_SOLVERS = listOf("scip", "highs")
+
+    internal const val XCSP_POLICY = "xcsp3-source-preserving-v2"
+    private val xcspIdentity = Regex("klause-xcsp3-cpsat:[^@|]+@sha256:[0-9a-f]{64}\\|$XCSP_POLICY")
+
+    internal fun stale(solver: String, version: String, collection: String = ""): Boolean =
+        solver in UNCHECKED_SOLVERS && version.isEmpty() ||
+            solver == "cp-sat" && (collection.startsWith("xcsp3-") || version.contains("xcsp3-")) &&
+            !xcspIdentity.matches(version)
 
     /** Whether [incoming] takes the place of the same solver's [stored] row: a current row always over a stale one and
      *  never the other way, then one produced another way, so a proof the old way judged wrongly never outlives its
