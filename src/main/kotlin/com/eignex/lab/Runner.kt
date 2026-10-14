@@ -63,6 +63,8 @@ class Runner(private val config: Config, private val store: Store) {
             awsActive = { worker.active }
             thread(isDaemon = true, name = "aws") { worker.loop() }
         }
+        // Ended jobs' bulk goes after a week, or sooner when the disk runs low ([JobTrim]).
+        JobTrim(config.dataDir.resolve("jobs"), store::ended, { freeBytes(config.dataDir) }, ::log).start()
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
         // priorities then decide when it runs.
         thread(isDaemon = true, name = "schedules") {

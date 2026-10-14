@@ -558,6 +558,18 @@ it alone. Expose the lab only while its password check is live: a request withou
   daemons on macOS, systemd user units with lingering on Linux. On macOS the runner also runs under
   `caffeinate -i`, which keeps the machine awake while it lives.
 
+## Disk
+
+- Below `LAB_MIN_FREE_GB` (10) free on the data directory's disk, the Mac's queue is held until there is room again;
+  AWS jobs go on. `/disk` shows what takes the disk, measured every 30 minutes, with the largest job directories.
+- From AWS, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
+- An ended job is trimmed a week after it ended, and sooner, largest first, while the disk has under 25 GB free: its
+  `job.log`, `setup.log`, `sha`, commands' `.exit` files, `selection-*.jsonl` and each case's record (the `.json` in
+  `cases/<i>`) stay, and everything else goes: raw solver output, case stdout and stderr, profiles, `$OUT`. Every
+  case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
+  `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are
+  never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within a week.
+
 ## What a case runs in
 
 A case runs `klause-bench solve-one` in its arm's worktree, with this environment:

@@ -407,6 +407,15 @@ class Store(file: Path) {
         before ?: Long.MAX_VALUE, name, name, name?.let { likeEscape(it) + "@%" }, limit, withCommands = withCommands,
     )
 
+    /** Every job that ended (done, failed or cancelled): its id and when it ended. */
+    @Synchronized
+    fun ended(): List<Pair<Long, Long>> = connection.prepareStatement(
+        "SELECT id, finished_at FROM jobs WHERE status IN (?, ?, ?) AND finished_at IS NOT NULL",
+    ).use { statement ->
+        listOf(Status.DONE, Status.FAILED, Status.CANCELLED).forEachIndexed { i, s -> statement.setString(i + 1, s.name) }
+        statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) to r.getLong(2) else null }.toList() }
+    }
+
     /** Every queued or running job, oldest first; without [withCommands], with their [Job.counts] instead. */
     @Synchronized
     fun active(withCommands: Boolean = true): List<Job> =
