@@ -21,6 +21,13 @@ data class Flips(
 ) {
     val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained).distinctBy { it.suite to it.problem }
 
+    /**
+     * The flips a confirmation reruns: a solution or a proof gained or lost. An unproven objective that moved is left
+     * out: at a sweep's budget it moves with the machine's timing, both ways about equally, run after run, and
+     * rerunning dozens of them each sweep took as long as the sweep while confirming nothing.
+     */
+    val confirmable: List<Problem> get() = (lost + gained + proofLost + proofGained).distinctBy { it.suite to it.problem }
+
     /** Two-sided sign test on the flips: how likely so lopsided a split is if each flip goes either way at random. */
     val pValue: Double get() = Confirm.signTest(lost.size, gained.size)
 }
@@ -156,9 +163,10 @@ object Confirm {
             description = "Confirms run $job's flips against the run before it at ${before.take(SHA_LENGTH)}: " +
                 "${flips.lost.size} feasibility lost and ${flips.gained.size} gained; " +
                 "${flips.proofLost.size} proof lost and ${flips.proofGained.size} gained; " +
-                "${flips.objectiveLost.size} objective worse and ${flips.objectiveGained.size} better, rerun $REPEATS times on both commits.",
+                "rerun $REPEATS times on both commits (${flips.objectiveLost.size} objective worse and " +
+                "${flips.objectiveGained.size} better are not rerun).",
             problems = emptyList(),
-            problemList = flips.problems.take(MAX_PROBLEMS),
+            problemList = flips.confirmable.take(MAX_PROBLEMS),
             base = spec.base - "ref",
             configs = listOf(config + mapOf("label" to BEFORE, "ref" to before), config + mapOf("label" to AFTER, "ref" to after)),
             seeds = spec.seeds,

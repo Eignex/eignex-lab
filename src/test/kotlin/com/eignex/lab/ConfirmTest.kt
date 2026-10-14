@@ -30,7 +30,7 @@ class ConfirmTest {
         assertTrue(loss.lost.isEmpty())
         assertEquals(listOf("opt"), loss.proofLost.map { it.problem })
         assertEquals(loss.proofLost, Confirm.flips(after, before).proofGained)
-        assertEquals(loss.problems, Confirm.spec("s", ExperimentSpec("s", emptyList()), "a", "b", loss, 1).problemList)
+        assertEquals(loss.confirmable, Confirm.spec("s", ExperimentSpec("s", emptyList()), "a", "b", loss, 1).problemList)
     }
 
     @Test
@@ -166,5 +166,16 @@ class ConfirmTest {
         assertEquals(listOf(3, 2, -1), listOf(spec.repeats, spec.problemList.size, spec.priority))
         assertEquals(10_000L, arms.first().timeoutMs)
         Experiments.validate(spec, maxParallel = 6)
+    }
+
+    @Test
+    fun `an objective that moved without a proof is not rerun, a lost solution or proof is`() {
+        val worse = Confirm.flips(listOf(optimization("3")), listOf(optimization("5")))
+
+        assertTrue(worse.objectiveLost.isNotEmpty() || worse.objectiveGained.isNotEmpty())
+        assertTrue(worse.confirmable.isEmpty())
+        assertTrue(Confirm.spec("s", ExperimentSpec("s", emptyList()), "a", "b", worse, 1).problemList.isEmpty())
+        val proofLost = Confirm.flips(listOf(optimization("3", proven = true)), listOf(optimization("3")))
+        assertEquals(proofLost.proofLost, proofLost.confirmable)
     }
 }

@@ -394,7 +394,9 @@ runs against each other problem by problem, not just by its totals:
   Proof and quality confirmations require a strict majority of matched seed/repeat blocks; missing, duplicate or
   invalid blocks cannot vote, and missing blocks stay in the denominator. Timing differences never select a transition.
   These are confirmations of recorded solver claims, not independent proof certification.
-- A finished run that changed feasibility, proof or objective queues a confirmation job, `<schedule>~confirm@<sha>-<run>`: the deduplicated union of those problems (at
+- A finished run that gained or lost a solution or a proof queues a confirmation job, `<schedule>~confirm@<sha>-<run>`;
+  an unproven objective that moved is shown but not rerun, since at a sweep's budget it moves with the machine's timing,
+  both ways about equally, dozens of problems each run. The job reruns the deduplicated union of those problems (at
   most 40), on both commits, alternating case by case so both see the same machine, three times each. A flip counts
   only when the repeats agree with it; the trend shows `confirmed −lost +gained`, linking the job, whose page compares
   the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.

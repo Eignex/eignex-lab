@@ -232,7 +232,7 @@ class Runner(private val config: Config, private val store: Store) {
         val after = checkNotNull(store.job(job.id)?.sha)
         if (before == after) return
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
-        if (flips.problems.isEmpty()) return
+        if (flips.confirmable.isEmpty()) return
         val confirmation = Confirm.spec(series, spec, before, after, flips, job.id)
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
         log(job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
