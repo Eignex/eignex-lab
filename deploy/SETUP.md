@@ -399,7 +399,7 @@ runs against each other problem by problem, not just by its totals:
   both ways about equally, dozens of problems each run. The job reruns the deduplicated union of those problems (at
   most 40), on both commits, alternating case by case so both see the same machine, three times each. A flip counts
   only when the repeats agree with it; the trend shows `confirmed −lost +gained`, linking the job, whose page compares
-  the two commits. It runs at the schedule's priority and, never having run, ahead of the schedule's next run.
+  the two commits. It runs one priority above its schedule, so it goes ahead of the schedule's next run.
 - Experiments run 4 cases at a time by default, one per performance core (see What a case runs in), and the lab never updates
   itself while a case runs (see Updating).
 - The lab's own work beside the cases runs in the background, which on macOS confines it to the efficiency cores:

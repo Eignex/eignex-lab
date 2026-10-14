@@ -163,7 +163,7 @@ class ConfirmTest {
 
         assertEquals("status-sweep~confirm@bbb222222-7", spec.name)
         assertEquals(listOf("before" to "aaa111111111", "after" to "bbb222222222"), arms.map { it.label to it.ref })
-        assertEquals(listOf(3, 2, -1), listOf(spec.repeats, spec.problemList.size, spec.priority))
+        assertEquals(listOf(3, 2, 0), listOf(spec.repeats, spec.problemList.size, spec.priority))
         assertEquals(10_000L, arms.first().timeoutMs)
         Experiments.validate(spec, maxParallel = 6)
     }
@@ -177,5 +177,11 @@ class ConfirmTest {
         assertTrue(Confirm.spec("s", ExperimentSpec("s", emptyList()), "a", "b", worse, 1).problemList.isEmpty())
         val proofLost = Confirm.flips(listOf(optimization("3", proven = true)), listOf(optimization("3")))
         assertEquals(proofLost.proofLost, proofLost.confirmable)
+    }
+
+    @Test
+    fun `a confirmation runs one priority above its schedule`() {
+        val flips = Confirm.flips(listOf(optimization("3", proven = true)), listOf(optimization("3")))
+        assertEquals(-1, Confirm.spec("s", ExperimentSpec("s", emptyList(), priority = -2), "a", "b", flips, 1).priority)
     }
 }

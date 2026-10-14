@@ -27,6 +27,6 @@
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
   ],
   "base": {"timeout": "60000", "engine": "mixed", "processors": "4"},
-  "priority": -3,
+  "priority": -4,
   "confirm": true
 }
