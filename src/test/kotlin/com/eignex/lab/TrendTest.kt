@@ -137,4 +137,18 @@ class TrendTest {
         assertEquals(listOf(done, going), Trend.runs(store, "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)
     }
+
+    @Test
+    fun `a run's solved problems are counted by class as the reference view names them`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = run(store, "sweep@aaa", listOf(true, false))
+        store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"timeToBestMs":5,"budgetMs":1000,"stats":{"profile":"Sat"}}""")
+        store.caseRecord(id, 1, """{"kind":"satisfy","budgetMs":1000,"stats":{"profile":"FiniteCp"}}""")
+
+        val classes = Trend.runs(store, "sweep").single().classes
+
+        assertEquals(setOf("SAT", "finite-domain CP"), classes.keys)
+        assertEquals(1.0, classes.getValue("SAT").solved)
+        assertEquals(0.0, classes.getValue("finite-domain CP").solved)
+    }
 }

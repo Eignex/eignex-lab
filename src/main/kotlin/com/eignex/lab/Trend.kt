@@ -33,6 +33,8 @@ data class TrendRun(
     val disagreements: Int = 0,
     /** [disagreements] by the suite of the problem each is on, so a suite's chart marks only its own. */
     val disagreementsBySuite: Map<String, Int> = emptyMap(),
+    /** [disagreements] by the class of the problem each is on ([classes]). */
+    val disagreementsByClass: Map<String, Int> = emptyMap(),
     /** Problems the run solved to a worse objective than the reference. */
     val worse: Int = 0,
     /** Against the run before it of the same experiment: problems lost and gained, and the sign test on them. Null for
@@ -55,6 +57,8 @@ data class TrendRun(
     /** Mean PAR-2 seconds. */
     val par2: Estimate,
     val suites: Map<String, SuiteShare>,
+    /** Solved shares by problem class, as the reference scoreboard groups problems ([Dimension.CLASS]). */
+    val classes: Map<String, SuiteShare> = emptyMap(),
 )
 
 object Trend {
@@ -109,7 +113,8 @@ object Trend {
                 val arms = store.arms(job.id)
                 val cases = store.scoringCases(job.id)
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
-                val trend = run(job, arms, cases, store.references(cases.map { it.problem.collection to it.problem.problem }))
+                val keys = cases.map { it.problem.collection to it.problem.problem }
+                val trend = run(job, arms, cases, store.references(keys), store.features(keys.distinct()))
                     ?: return@mapNotNull null
                 val flips = previous?.takeIf { it.first == trend.spec && job.status == Status.DONE }
                     ?.let { Confirm.flips(own(it.second), own(job.id)) }
@@ -149,6 +154,8 @@ object Trend {
         arms: List<PlannedArm>,
         cases: List<CaseResult>,
         references: Map<Pair<String, String>, Reference> = emptyMap(),
+        /** The classifier's features of the run's problems, which place a problem klause did not profile in a class. */
+        features: Map<Pair<String, String>, ProblemFeatures> = emptyMap(),
     ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
         val own = cases.filter { it.arm == label }
@@ -156,12 +163,17 @@ object Trend {
         if (stats.problems == 0) return null
         val summary = Compare.compare(listOf(label), own).arms.single()
         val n = stats.problems.toDouble()
-        val suites = own.mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }
-            .groupBy({ it.first }, { it.second })
-            .entries.groupBy { it.key.suite.ifEmpty { "(none)" } }
+        val outcomes = own.mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }.groupBy({ it.first }, { it.second })
+        fun shares(group: (Problem) -> String) = outcomes.entries.groupBy { group(it.key) }
             .mapValues { (_, problems) ->
                 SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average())
             }.toSortedMap()
+        val profiles = Scoreboard.profiles(own, features)
+        val classOf = outcomes.keys.associate { p ->
+            (p.collection to p.problem) to Scoreboard.values(Dimension.CLASS, p, features[p.collection to p.problem], emptyList(), profiles[p]).first()
+        }
+        val suites = shares { it.suite.ifEmpty { "(none)" } }
+        val classes = shares { classOf.getValue(it.collection to it.problem) }
         val comparison = References.compare(listOf(label), own, references)
         return TrendRun(
             job = job.id,
@@ -178,9 +190,11 @@ object Trend {
             errors = summary.errors,
             disagreements = comparison.disagreements.size,
             disagreementsBySuite = comparison.disagreements.groupingBy { it.problem.suite.ifEmpty { "(none)" } }.eachCount(),
+            disagreementsByClass = comparison.disagreements.groupingBy { classOf[it.problem.collection to it.problem.problem] ?: "(none)" }.eachCount(),
             worse = comparison.shortfalls.size,
             par2 = stats.par2,
             suites = suites,
+            classes = classes,
         )
     }
 

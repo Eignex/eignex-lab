@@ -483,7 +483,7 @@ internal fun trendPage(
     }
     append("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">x-axis</span>")
     append("<button class=\"chip on\" data-x=\"commit\">commit</button><button class=\"chip\" data-x=\"date\">date</button></div>")
-    append("<h2>Solved and proven <small>% of the problems each run ran; band: 95% interval of solved</small></h2>")
+    append("<h2>Solved and proven <small>problems out of those each run ran (a problem's seeds and repeats averaged); band: 95% interval of solved</small></h2>")
     append("<div class=\"legend\"><span><i style=\"background:var(--series-1)\"></i>solved</span>")
     append("<span><i style=\"background:var(--series-2)\"></i>proven</span>")
     append("<span><i class=\"hollow\"></i>run still going</span>")
@@ -491,7 +491,7 @@ internal fun trendPage(
     append("<div class=\"chart\" id=\"chart-solved\"></div>")
     append("<h2>PAR-2 time <small>mean seconds per problem, an unsolved one charged twice its budget; lower is better</small></h2>")
     append("<div class=\"chart\" id=\"chart-par2\"></div>")
-    append("<h2>Solved by suite <small>% of each suite's problems</small></h2><div class=\"multiples\" id=\"suites\"></div>")
+    append("<h2>Solved by class <small>problems solved of each class, as the reference view groups them; axis up to the class's size</small></h2><div class=\"multiples\" id=\"suites\"></div>")
     append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
     append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
     append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>")
@@ -559,7 +559,8 @@ private const val TREND_SCRIPT = """<script>
   const NS = 'http://www.w3.org/2000/svg';
   let xMode = 'commit';
   try { xMode = localStorage.getItem('trend-x') || 'commit'; } catch (e) {}
-  const suites = Array.from(new Set(runs.flatMap(function (r) { return Object.keys(r.suites); }))).sort();
+  // The small multiples are by problem class, as the reference scoreboard groups problems.
+  const classes = Array.from(new Set(runs.flatMap(function (r) { return Object.keys(r.classes || {}); }))).sort();
 
   function el(name, attrs, parent) {
     const node = document.createElementNS(NS, name);
@@ -681,8 +682,8 @@ private const val TREND_SCRIPT = """<script>
   function show(r, evt, suite) {
     const rows = [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
-      ['solved', pct(r.solved.value) + ' (' + pct(r.solved.low) + '–' + pct(r.solved.high) + ')'],
-      ['proven', pct(r.proven)], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
+      ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')'],
+      ['proven', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
       ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['worse incumbent', r.worse], ['problems', r.problems],
       ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
       ['proof vs previous', r.proofLost == null ? '–' : '−' + r.proofLost + ' +' + r.proofGained],
@@ -691,7 +692,8 @@ private const val TREND_SCRIPT = """<script>
       ['confirmed objective', r.confirmedObjectiveLost == null ? '–' : '−' + r.confirmedObjectiveLost + ' +' + r.confirmedObjectiveGained],
       ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];
-    if (suite && r.suites[suite]) rows.unshift([suite, pct(r.suites[suite].solved) + ' of ' + r.suites[suite].problems]);
+    const group = suite && (r.classes || {})[suite];
+    if (group) rows.unshift([suite, Math.round(group.solved * group.problems) + ' of ' + group.problems + ' (' + pct(group.solved) + ')']);
     tip.innerHTML = rows.map(function (kv) { return '<div><span>' + kv[0] + '</span><b>' + kv[1] + '</b></div>'; }).join('');
     tip.hidden = false;
     const w = tip.offsetWidth, h = tip.offsetHeight;
@@ -702,12 +704,19 @@ private const val TREND_SCRIPT = """<script>
   }
 
   function render() {
-    const percentAxis = {max: 1, ticks: [0, 0.25, 0.5, 0.75, 1], fmt: function (v) { return Math.round(v * 100) + '%'; }};
+    // Counts, not shares: a share of a handful of problems swings by a fifth on one flip, and hides how many moved.
+    function countAxis(max) {
+      const m = Math.max(1, max);
+      const ticks = m <= 4 ? Array.from({length: m + 1}, function (_, i) { return i; })
+        : [0, Math.round(m / 4), Math.round(m / 2), Math.round(3 * m / 4), m];
+      return {max: m, ticks: Array.from(new Set(ticks)), fmt: function (v) { return String(Math.round(v)); }};
+    }
+    const most = Math.max.apply(null, runs.map(function (r) { return r.problems; }));
     draw(document.getElementById('chart-solved'), [
-      {name: 'solved', color: 'var(--series-1)', value: function (r) { return r.solved.value; },
-        band: function (r) { return [r.solved.low, r.solved.high]; }},
-      {name: 'proven', color: 'var(--series-2)', value: function (r) { return r.proven; }},
-    ], percentAxis, {height: 260, endLabels: true, title: 'Solved and proven share per run',
+      {name: 'solved', color: 'var(--series-1)', value: function (r) { return r.solved.value * r.problems; },
+        band: function (r) { return [r.solved.low * r.problems, r.solved.high * r.problems]; }},
+      {name: 'proven', color: 'var(--series-2)', value: function (r) { return r.proven * r.problems; }},
+    ], countAxis(most), {height: 260, endLabels: true, title: 'Problems solved and proven per run',
       flagged: function (r) { return r.disagreements > 0; }});
     const top = niceMax(Math.max.apply(null, runs.map(function (r) { return r.par2.high; })));
     draw(document.getElementById('chart-par2'), [
@@ -717,17 +726,18 @@ private const val TREND_SCRIPT = """<script>
       {height: 220, endLabels: false, title: 'PAR-2 seconds per run'});
     const grid = document.getElementById('suites');
     grid.innerHTML = '';
-    for (const s of suites) {
+    for (const s of classes) {
       const cell = document.createElement('div');
       cell.className = 'multiple';
       cell.innerHTML = '<div class="mtitle">' + s + '</div>';
       const plot = document.createElement('div');
       cell.appendChild(plot);
       grid.appendChild(cell);
-      draw(plot, [{name: s, color: 'var(--series-1)', value: function (r) { return r.suites[s] ? r.suites[s].solved : null; }}],
-        {max: 1, ticks: [0, 0.5, 1], fmt: function (v) { return Math.round(v * 100) + '%'; }},
-        {height: 130, endLabels: false, title: s + ' solved share per run', suite: s,
-          flagged: function (r) { return ((r.disagreementsBySuite || {})[s] || 0) > 0; }});
+      const size = Math.max.apply(null, runs.map(function (r) { return (r.classes || {})[s] ? r.classes[s].problems : 0; }));
+      draw(plot, [{name: s, color: 'var(--series-1)', value: function (r) { const g = (r.classes || {})[s]; return g ? g.solved * g.problems : null; }}],
+        countAxis(size),
+        {height: 130, endLabels: false, title: s + ' problems solved per run', suite: s,
+          flagged: function (r) { return ((r.disagreementsByClass || {})[s] || 0) > 0; }});
     }
   }
 
