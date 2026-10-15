@@ -139,16 +139,15 @@ class TrendTest {
     }
 
     @Test
-    fun `a run's solved problems are counted by class as the reference view names them`() {
+    fun `a run's solved problems are counted by theme, a problem of several themes in each`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val id = run(store, "sweep@aaa", listOf(true, false))
-        store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"timeToBestMs":5,"budgetMs":1000,"stats":{"profile":"Sat"}}""")
-        store.caseRecord(id, 1, """{"kind":"satisfy","budgetMs":1000,"stats":{"profile":"FiniteCp"}}""")
+        run(store, "sweep@aaa", listOf(true, false))
+        store.putFeatures(listOf(ProblemFeatures("", "p0", listOf("sat", "pb")), ProblemFeatures("", "p1", listOf("sat"))))
 
-        val classes = Trend.runs(store, "sweep").single().classes
+        val themes = Trend.runs(store, "sweep").single().themes
 
-        assertEquals(setOf("SAT", "finite-domain CP"), classes.keys)
-        assertEquals(1.0, classes.getValue("SAT").solved)
-        assertEquals(0.0, classes.getValue("finite-domain CP").solved)
+        assertEquals(setOf("pb", "sat"), themes.keys)
+        assertEquals(1.0, themes.getValue("pb").solved)
+        assertEquals(listOf(2, 1), listOf(themes.getValue("sat").problems, themes.getValue("pb").problems))
     }
 }

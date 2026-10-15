@@ -33,8 +33,8 @@ data class TrendRun(
     val disagreements: Int = 0,
     /** [disagreements] by the suite of the problem each is on, so a suite's chart marks only its own. */
     val disagreementsBySuite: Map<String, Int> = emptyMap(),
-    /** [disagreements] by the class of the problem each is on ([classes]). */
-    val disagreementsByClass: Map<String, Int> = emptyMap(),
+    /** [disagreements] by the themes of the problem each is on ([themes]). */
+    val disagreementsByTheme: Map<String, Int> = emptyMap(),
     /** Problems the run solved to a worse objective than the reference. */
     val worse: Int = 0,
     /** Against the run before it of the same experiment: problems lost and gained, and the sign test on them. Null for
@@ -57,8 +57,11 @@ data class TrendRun(
     /** Mean PAR-2 seconds. */
     val par2: Estimate,
     val suites: Map<String, SuiteShare>,
-    /** Solved shares by problem class, as the reference scoreboard groups problems ([Dimension.CLASS]). */
-    val classes: Map<String, SuiteShare> = emptyMap(),
+    /**
+     * Solved shares by theme, as the classifier names what a problem asks of klause ([Dimension.THEME]): the themes the
+     * sweep set was drawn by, so each holds a fair share of it. A problem of several themes counts in each.
+     */
+    val themes: Map<String, SuiteShare> = emptyMap(),
 )
 
 object Trend {
@@ -164,16 +167,16 @@ object Trend {
         val summary = Compare.compare(listOf(label), own).arms.single()
         val n = stats.problems.toDouble()
         val outcomes = own.mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }.groupBy({ it.first }, { it.second })
-        fun shares(group: (Problem) -> String) = outcomes.entries.groupBy { group(it.key) }
+        fun shares(group: (Problem) -> List<String>) = outcomes.entries.flatMap { e -> group(e.key).map { it to e } }
+            .groupBy({ it.first }, { it.second })
             .mapValues { (_, problems) ->
                 SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average())
             }.toSortedMap()
-        val profiles = Scoreboard.profiles(own, features)
-        val classOf = outcomes.keys.associate { p ->
-            (p.collection to p.problem) to Scoreboard.values(Dimension.CLASS, p, features[p.collection to p.problem], emptyList(), profiles[p]).first()
+        val themesOf = outcomes.keys.associate { p ->
+            (p.collection to p.problem) to Scoreboard.values(Dimension.THEME, p, features[p.collection to p.problem], emptyList())
         }
-        val suites = shares { it.suite.ifEmpty { "(none)" } }
-        val classes = shares { classOf.getValue(it.collection to it.problem) }
+        val suites = shares { listOf(it.suite.ifEmpty { "(none)" }) }
+        val themes = shares { themesOf.getValue(it.collection to it.problem) }
         val comparison = References.compare(listOf(label), own, references)
         return TrendRun(
             job = job.id,
@@ -190,11 +193,12 @@ object Trend {
             errors = summary.errors,
             disagreements = comparison.disagreements.size,
             disagreementsBySuite = comparison.disagreements.groupingBy { it.problem.suite.ifEmpty { "(none)" } }.eachCount(),
-            disagreementsByClass = comparison.disagreements.groupingBy { classOf[it.problem.collection to it.problem.problem] ?: "(none)" }.eachCount(),
+            disagreementsByTheme = comparison.disagreements.flatMap { themesOf[it.problem.collection to it.problem.problem].orEmpty() }
+                .groupingBy { it }.eachCount(),
             worse = comparison.shortfalls.size,
             par2 = stats.par2,
             suites = suites,
-            classes = classes,
+            themes = themes,
         )
     }
 
