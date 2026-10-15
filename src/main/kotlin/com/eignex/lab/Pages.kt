@@ -491,7 +491,7 @@ internal fun trendPage(
     append("<div class=\"chart\" id=\"chart-solved\"></div>")
     append("<h2>PAR-2 time <small>mean seconds per problem, an unsolved one charged twice its budget; lower is better</small></h2>")
     append("<div class=\"chart\" id=\"chart-par2\"></div>")
-    append("<h2>Solved by class <small>problems solved of each class, as the reference view groups them; axis up to the class's size</small></h2><div class=\"multiples\" id=\"suites\"></div>")
+    append("<h2>Solved by class <small>problems solved in each class, as the reference view groups them; each axis spans its own counts</small></h2><div class=\"multiples\" id=\"suites\"></div>")
     append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
     append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
     append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>")
@@ -598,7 +598,13 @@ private const val TREND_SCRIPT = """<script>
     // Lines join runs left to right: by time on the date axis, where runs need not have ended in job order.
     const order = runs.map(function (r, i) { return i; });
     if (xMode === 'date') order.sort(function (a, b) { return runs[a].at - runs[b].at; });
-    function yy(v) { return m.t + ph - Math.min(v, y.max) / y.max * ph; }
+    // An axis may start above zero ([min]), so a small chart's few problems of movement fill its height.
+    const lo = y.min || 0;
+    function yy(v) { return m.t + ph - (Math.max(lo, Math.min(v, y.max)) - lo) / ((y.max - lo) || 1) * ph; }
+    // Dots shrink as runs crowd together, and lose their outline, which would cut the line into beads.
+    const spacing = runs.length > 1 ? pw / (runs.length - 1) : pw;
+    const dot = Math.max(1.5, Math.min(4, spacing / 3));
+    const outline = spacing >= 10 ? 2 : 0;
     for (const t of y.ticks) {
       el('line', {x1: m.l, x2: m.l + pw, y1: yy(t), y2: yy(t), class: 'grid'}, svg);
       el('text', {x: m.l - 6, y: yy(t) + 4, 'text-anchor': 'end', class: 'tick'}, svg).textContent = y.fmt(t);
@@ -645,8 +651,8 @@ private const val TREND_SCRIPT = """<script>
           'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
       }
       for (const p of pts) {
-        el('circle', {cx: p[0], cy: p[1], r: 4, fill: p[2].finished ? s.color : 'var(--bg)', stroke: p[2].finished ? 'var(--bg)' : s.color,
-          'stroke-width': 2}, svg);
+        el('circle', {cx: p[0], cy: p[1], r: dot, fill: p[2].finished ? s.color : 'var(--bg)',
+          stroke: p[2].finished ? (outline ? 'var(--bg)' : 'none') : s.color, 'stroke-width': outline || 1}, svg);
       }
       // A run that contradicts the reference is ringed where it does: on the solved chart, and on the chart of the
       // suite its disagreeing problems are in, never on every chart.
@@ -711,6 +717,14 @@ private const val TREND_SCRIPT = """<script>
         : [0, Math.round(m / 4), Math.round(m / 2), Math.round(3 * m / 4), m];
       return {max: m, ticks: Array.from(new Set(ticks)), fmt: function (v) { return String(Math.round(v)); }};
     }
+    // A small chart's axis spans the counts it shows, a little either side, in whole problems.
+    function rangeAxis(values) {
+      if (!values.length) return countAxis(1);
+      let min = Math.floor(Math.min.apply(null, values)), max = Math.ceil(Math.max.apply(null, values));
+      if (max - min < 2) { min = Math.max(0, min - 1); max = max + 1; }
+      const mid = Math.round((min + max) / 2);
+      return {min: min, max: max, ticks: Array.from(new Set([min, mid, max])), fmt: function (v) { return String(Math.round(v)); }};
+    }
     const most = Math.max.apply(null, runs.map(function (r) { return r.problems; }));
     draw(document.getElementById('chart-solved'), [
       {name: 'solved', color: 'var(--series-1)', value: function (r) { return r.solved.value * r.problems; },
@@ -733,9 +747,9 @@ private const val TREND_SCRIPT = """<script>
       const plot = document.createElement('div');
       cell.appendChild(plot);
       grid.appendChild(cell);
-      const size = Math.max.apply(null, runs.map(function (r) { return (r.classes || {})[s] ? r.classes[s].problems : 0; }));
-      draw(plot, [{name: s, color: 'var(--series-1)', value: function (r) { const g = (r.classes || {})[s]; return g ? g.solved * g.problems : null; }}],
-        countAxis(size),
+      const value = function (r) { const g = (r.classes || {})[s]; return g ? g.solved * g.problems : null; };
+      const seen = runs.map(value).filter(function (v) { return v != null; });
+      draw(plot, [{name: s, color: 'var(--series-1)', value: value}], rangeAxis(seen),
         {height: 130, endLabels: false, title: s + ' problems solved per run', suite: s,
           flagged: function (r) { return ((r.disagreementsByClass || {})[s] || 0) > 0; }});
     }
