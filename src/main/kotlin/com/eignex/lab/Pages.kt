@@ -554,7 +554,11 @@ private fun percent(share: Double) = "%.1f%%".format(share * 100)
 /** Draws the trend charts from the embedded runs, and redraws them when the x-axis or the width changes. */
 private const val TREND_SCRIPT = """<script>
 (function () {
-  const runs = JSON.parse(document.getElementById('trend-data').textContent);
+  // A run still going is charted only once it ends: its counts so far would drop every line at the right edge. The
+  // table below lists it as it goes.
+  const all = JSON.parse(document.getElementById('trend-data').textContent);
+  const done = all.filter(function (r) { return r.finished; });
+  const runs = done.length ? done : all;
   const tip = document.getElementById('tip');
   const NS = 'http://www.w3.org/2000/svg';
   let xMode = 'commit';
