@@ -554,11 +554,21 @@ private fun percent(share: Double) = "%.1f%%".format(share * 100)
 /** Draws the trend charts from the embedded runs, and redraws them when the x-axis or the width changes. */
 private const val TREND_SCRIPT = """<script>
 (function () {
-  // A run still going is charted only once it ends: its counts so far would drop every line at the right edge. The
-  // table below lists it as it goes.
+  // A run still going is charted as projected: its shares so far, of the problems the last finished run of the same
+  // problems ran, overall and per theme, so its counts sit beside the others' instead of dropping every line. Without
+  // such a run to scale by, it is charted only once it ends. The table below lists it as it goes.
   const all = JSON.parse(document.getElementById('trend-data').textContent);
-  const done = all.filter(function (r) { return r.finished; });
-  const runs = done.length ? done : all;
+  const runs = all.map(function (r, i) {
+    if (r.finished) return r;
+    const base = all.slice(0, i).reverse().find(function (p) { return p.finished && p.spec === r.spec; });
+    if (!base) return null;
+    const themes = {};
+    for (const t of Object.keys(base.themes || {})) {
+      const own = (r.themes || {})[t];
+      if (own) themes[t] = {problems: base.themes[t].problems, solved: own.solved};
+    }
+    return Object.assign({}, r, {problems: base.problems, themes: themes, projectedFrom: r.problems});
+  }).filter(Boolean);
   const tip = document.getElementById('tip');
   const NS = 'http://www.w3.org/2000/svg';
   let xMode = 'commit';
@@ -692,7 +702,8 @@ private const val TREND_SCRIPT = """<script>
   function show(r, evt, suite) {
     const rows = [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
-      ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')'],
+      ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
+        (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
       ['proven', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
       ['unsupported', r.unsupported], ['errors', r.errors], ['disagreements', r.disagreements], ['worse incumbent', r.worse], ['problems', r.problems],
       ['vs previous', r.lost == null ? '–' : '−' + r.lost + ' +' + r.gained + (r.flipP != null ? ' (p=' + r.flipP.toFixed(3) + ')' : '')],
