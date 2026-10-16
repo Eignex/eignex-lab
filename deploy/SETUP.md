@@ -50,9 +50,11 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   On AWS spot instances, which share hosts with other tenants and can be taken back mid-problem (its remaining runs
   then move to another instance), timing is noisier than on the Mac: use `repeats` of 3 or more for an A/B whose
   answer rests on time, and more when the paired difference is small.
-- `host`: `aws` or `lab` (see Running on AWS), and for `aws`, `machines`: how many instances to split it over. Left out,
-  an experiment runs on AWS when the lab has AWS settings and AWS can run it (klause arms only, selected problems,
-  cores within the largest instance), and on the lab machine otherwise; a schedule's runs default to the lab machine.
+- `host`: `auto`, `aws` or `lab` (see Running on AWS), and for `auto` and `aws`, `machines`: how many instances to split
+  it over. Leave it out: an experiment is then `auto`, the Mac when it is free and AWS otherwise, spot first, whenever
+  AWS could run it (klause arms only, selected problems, cores within the largest instance), and `lab` otherwise; a
+  schedule's runs default to the lab machine. Name `aws` or `lab` only when the host matters to what is measured, such
+  as timings to compare with earlier jobs on that host.
 - `profileCli: true` (AWS only, with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings
   and measures its physical peak RSS and user/system CPU with GNU time. Each case returns `cli.jfr`, `resources.txt`
   and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page or `lab fetch`.
@@ -507,7 +509,7 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   `maxInstances`.
 - The queue and history show where each job runs (Mac or AWS, and a running AWS job's instance count), and a queued
   job's place in its own host's queue. A queued job that has not been planned can move between the Mac and AWS from
-  its page, or with `lab host <id> lab|aws [machines]`; once planned, its commands name paths on its host.
+  its page, or with `lab host <id> auto|lab|aws [machines]`; once planned, its commands name paths on its host.
   An AWS job's instance count can change until it ends, on its page or with `lab machines <id> [n]`: a queued or
   paused job launches that many next; a running one grows to a raised count as the quota allows, and keeps the
   instances it has when the count is lowered.
