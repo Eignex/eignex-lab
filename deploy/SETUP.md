@@ -439,6 +439,17 @@ it again one interval later, so staggered schedules stay a day apart; `lab resch
 An experiment with `"host": "aws"` runs on EC2 instances the lab launches for it, on demand: nothing runs on AWS while
 no such job is queued. Only klause arms go there; reference runs stay on the Mac, which has the reference solvers.
 
+`"host": "auto"`, what a submitted experiment gets when it names no host and could run on AWS, lets the lab choose:
+
+- The Mac takes it when it is free, that is when nothing is running there and nothing queued for it, and it then
+  stays on the Mac. There it gives way, between its cases, to any job queued for the Mac itself, whatever their
+  priorities, so the sweeps and reference runs are never held up by it.
+- Otherwise AWS takes it once it has waited a minute, which gives a free Mac the first chance. It asks for spot
+  instances, whatever `market` says, and asks again every 30 s while AWS has no spot capacity or quota; after
+  `spotWaitMin` minutes (5) it buys on demand instead. A profile job is never spot, and `profileCli` jobs are `aws`.
+- Once taken, its `host` is where it went and `auto` is set on it, which the queue shows; `lab host <id> auto` makes a
+  queued, unplanned job `auto` again.
+
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
   creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
   launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.

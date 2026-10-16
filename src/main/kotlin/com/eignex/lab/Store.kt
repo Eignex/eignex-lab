@@ -510,7 +510,15 @@ class Store(file: Path) {
             it.setString(1, Status.QUEUED.name)
             it.setString(2, host)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
-        }?.also { claimed ->
+        } ?: nextAuto(host)?.also { claimed ->
+            // Taken where it goes: from now on it is that host's job, resumed there after a pause or a restart.
+            connection.prepareStatement("UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', json('true')) WHERE id = ?").use {
+                it.setString(1, host)
+                it.setLong(2, claimed)
+                it.executeUpdate()
+            }
+        }
+        id?.also { claimed ->
             connection.prepareStatement(
                 "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ? WHERE id = ?",
             ).use {
@@ -524,6 +532,19 @@ class Store(file: Path) {
         }
         id
     }?.let(::job)
+
+    /**
+     * The `auto` job [host] takes when nothing is queued for it: the lab machine any, at once, being free whenever it
+     * asks; AWS only one queued at least [AUTO_GRACE_MS], so that a free lab machine takes it first.
+     */
+    private fun nextAuto(host: String): Long? = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? AND created_at <= ? $QUEUE_ORDER LIMIT 1",
+    ).use {
+        it.setString(1, Status.QUEUED.name)
+        it.setString(2, Experiments.AUTO_HOST)
+        it.setLong(3, if (host == Experiments.LAB_HOST) Long.MAX_VALUE else now() - AUTO_GRACE_MS)
+        it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
+    }
 
     /** A command a crashed runner left RUNNING is rerun from the start: its partial output is not a result. */
     @Synchronized
@@ -909,14 +930,18 @@ class Store(file: Path) {
     /** Whether running [jobId] should stop starting commands: it was paused, or a job it must give way to waits. */
     @Synchronized
     fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
+        // An auto job the machine took gives way to any job queued for the machine itself, whatever its priority.
         "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE status = ? " +
             "AND cancel_requested = 0 AND paused = 0 AND $HOST = (SELECT $HOST FROM jobs WHERE id = ?) " +
-            "AND priority > (SELECT priority FROM jobs WHERE id = ?))",
+            "AND (priority > (SELECT priority FROM jobs WHERE id = ?) OR " +
+            "COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) = 1 AND " +
+            "COALESCE(json_extract(experiment, '\$.auto'), 0) = 0))",
     ).use {
         it.setLong(1, jobId)
         it.setString(2, Status.QUEUED.name)
         it.setLong(3, jobId)
         it.setLong(4, jobId)
+        it.setLong(5, jobId)
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
@@ -970,7 +995,7 @@ class Store(file: Path) {
         val spec = job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
         require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli requires host=aws" }
-        val moved = spec.copy(host = host, machines = machines.takeIf { host == Experiments.AWS_HOST })
+        val moved = spec.copy(host = host, auto = false, machines = machines.takeIf { host != Experiments.LAB_HOST })
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
     }
 
@@ -1083,6 +1108,9 @@ private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
+
+/** How long a queued `auto` job waits for the lab machine before AWS may take it. */
+internal const val AUTO_GRACE_MS = 60_000L
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()

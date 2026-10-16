@@ -360,4 +360,48 @@ class StoreTest {
         assertEquals(listOf(true, true, null), listOf(launched, asked.launchRequested, asked.checkedAt))
         assertEquals(false, ran.launchRequested)
     }
+
+    private fun autoJob(store: Store, name: String, priority: Int = 0) =
+        store.create(name, "main", emptyList(), priority = priority,
+            experiment = ExperimentSpec(name, listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
+
+    @Test
+    fun `a free lab machine takes an auto job at once and keeps it`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val id = autoJob(store, "a")
+
+        assertEquals(null, store.next(Experiments.AWS_HOST))
+        val taken = store.next()!!
+        assertEquals(id, taken.id)
+        assertEquals(listOf(Experiments.LAB_HOST, "true"), listOf(taken.experiment!!.host, taken.experiment!!.auto.toString()))
+    }
+
+    @Test
+    fun `a job queued for the lab machine goes before an auto job there, and an auto job running there gives way to it`() {
+        val store = store()
+        val auto = autoJob(store, "a", priority = 5)
+        assertEquals(auto, store.next()?.id)
+        assertEquals(false, store.shouldYield(auto))
+        store.create("sweep", "main", listOf("true" to 10L), priority = -2)
+
+        assertEquals(true, store.shouldYield(auto))
+    }
+
+    @Test
+    fun `AWS takes an auto job only once it has waited for the lab machine`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val id = autoJob(store, "a")
+        assertEquals(null, store.next(Experiments.AWS_HOST))
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = created_at - ${AUTO_GRACE_MS + 1}") }
+        }
+
+        val taken = store.next(Experiments.AWS_HOST)!!
+
+        assertEquals(id, taken.id)
+        assertEquals(Experiments.AWS_HOST, taken.experiment!!.host)
+        assertEquals(true, taken.experiment!!.auto)
+    }
 }

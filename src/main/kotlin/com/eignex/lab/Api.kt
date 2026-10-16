@@ -122,7 +122,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
-            val queues = listOf(Experiments.LAB_HOST, Experiments.AWS_HOST).associateWith { store.queueOrder(it) }
+            val queues = listOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST).associateWith { store.queueOrder(it) }
             val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name, queues)
             call.respondText(page, ContentType.Text.Html)
         }
@@ -314,7 +314,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = call.receive<HostSpec>()
             val job = store.job(id)
             val experiment = requireNotNull(job?.experiment) { "no such experiment" }
-            requireHost(experiment.copy(host = spec.host, machines = spec.machines.takeIf { spec.host == Experiments.AWS_HOST }), config)
+            requireHost(experiment.copy(host = spec.host, machines = spec.machines.takeIf { spec.host != Experiments.LAB_HOST }), config)
             val moved = store.setHost(id, spec.host, spec.machines)
             call.respond(
                 if (moved) HttpStatusCode.OK else HttpStatusCode.Conflict,
@@ -424,7 +424,9 @@ private fun worktrees(config: Config, id: Long): List<File> =
 
 /** An AWS experiment needs the lab's AWS settings, runs klause only, and fits its instances. */
 private fun requireHost(spec: ExperimentSpec, config: Config) {
-    require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST)) { "host must be lab or aws" }
+    require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be lab, aws or auto" }
+    // An `auto` job may go to AWS, so it must be one AWS could run.
+    if (spec.host == Experiments.AUTO_HOST) return requireHost(spec.copy(host = Experiments.AWS_HOST), config)
     if (spec.host != Experiments.AWS_HOST) {
         require(spec.machines == null) { "machines is for host aws" }
         return
@@ -442,10 +444,10 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
     spec.machines?.let { require(it in 1..most) { "machines must be between 1 and $most for ${size.type} within the quota" } }
 }
 
-/** AWS when [spec] could run there, see [requireHost]; the lab machine otherwise. */
+/** `auto` when [spec] could run on AWS, see [requireHost]; the lab machine otherwise. */
 private fun defaultHost(spec: ExperimentSpec, config: Config): String =
     runCatching { requireHost(spec.copy(host = Experiments.AWS_HOST), config) }
-        .fold({ Experiments.AWS_HOST }, { Experiments.LAB_HOST })
+        .fold({ if (spec.profileCli) Experiments.AWS_HOST else Experiments.AUTO_HOST }, { Experiments.LAB_HOST })
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */
 private fun requireDescription(spec: ExperimentSpec) = require(spec.description.isNotBlank()) {

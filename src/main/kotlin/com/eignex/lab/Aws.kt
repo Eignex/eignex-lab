@@ -52,6 +52,8 @@ data class AwsConfig(
     val spot: Boolean = false,
     /** When AWS has no spot capacity of the type or quota for it, launch that instance on demand rather than wait. */
     val spotFallback: Boolean = true,
+    /** How long an `auto` job keeps asking for spot before it buys on demand. */
+    val spotWaitMin: Long = 5,
 ) {
     /** The sizes a job can get, smallest first: [instanceType] and the larger sizes of its family the quota allows. */
     val sizes: List<InstanceSize>
@@ -93,6 +95,7 @@ data class AwsConfig(
                 instanceProfile = get("instanceProfile"),
                 spot = get("market", "on-demand") == "spot",
                 spotFallback = get("spotFallback", "true")!!.toBoolean(),
+                spotWaitMin = get("spotWaitMin", "5")!!.toLong(),
             )
         }
     }
@@ -814,7 +817,9 @@ class AwsWorker(
      * A profile job is always on demand: its one case cannot resume, so a reclaim would rerun it from the start.
      */
     private fun launchOne(job: Job, name: String, userData: File, type: String): String {
-        if (!aws.spot || job.experiment?.isProfile == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        if (job.experiment?.isProfile == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        if (job.experiment?.auto == true) return launchSpotFirst(job, name, userData, type)
+        if (!aws.spot) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         return runCatching { cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.getOrElse { e ->
             val reason = (CAPACITY.find(e.message.orEmpty()) ?: NO_SPOT.find(e.message.orEmpty()))?.value
             if (!aws.spotFallback || reason == null) throw e
@@ -822,6 +827,31 @@ class AwsWorker(
             cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         }
     }
+
+    /**
+     * An `auto` job's instance: spot, whatever [AwsConfig.spot] says, tried again while AWS has no spot capacity or
+     * quota for it, and on demand once [AwsConfig.spotWaitMin] minutes have passed since the job first asked; at once
+     * when the account cannot launch spot at all.
+     */
+    private fun launchSpotFirst(job: Job, name: String, userData: File, type: String): String {
+        val since = spotSince.getOrPut(job.id) { System.currentTimeMillis() }
+        while (true) {
+            val e = runCatching { return cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.exceptionOrNull()!!
+            val capacity = CAPACITY.find(e.message.orEmpty())?.value
+            val waited = System.currentTimeMillis() - since
+            if (NO_SPOT.containsMatchIn(e.message.orEmpty()) || capacity != null && waited >= aws.spotWaitMin * MS_PER_MIN) {
+                runner.log(job.id, "no spot for $type (${capacity ?: "spot not set up"}) after ${waited / MS_PER_SEC} s: launching on demand")
+                return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+            }
+            if (capacity == null) throw e
+            runner.log(job.id, "no spot for $type yet ($capacity); trying spot again in ${SPOT_RETRY_MS / MS_PER_SEC} s")
+            check(!store.cancelRequested(job.id)) { "cancelled" }
+            Thread.sleep(SPOT_RETRY_MS)
+        }
+    }
+
+    /** When each `auto` job first asked for spot, so its wait counts from then however many instances it launches. */
+    private val spotSince = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
     /** How many instances [spec] asks for: its `machines`, else as many as allowed; a profile job's one case needs one. */
     private fun wantedMachines(spec: ExperimentSpec): Int = if (spec.isProfile) 1 else spec.machines ?: aws.maxInstances
@@ -998,6 +1028,8 @@ class AwsWorker(
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */
         /** Retries of a launch AWS refused for capacity: every 30 s for about two minutes. */
         private val CAPACITY_WAIT = Backoff(attempts = 5, baseMs = 30_000, maxMs = 30_000)
+        private const val SPOT_RETRY_MS = 30_000L
+        private const val MS_PER_MIN = 60_000L
         private const val MS_PER_SEC = 1000L
 
         private val BOOT_WAIT = Backoff(attempts = 45, baseMs = 20_000, maxMs = 20_000)

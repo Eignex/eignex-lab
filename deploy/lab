@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
-#   lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]
+#   lab profile <main> <ref> <description> [auto|aws|lab] [timeout-sec] [arg...]
 #                                                            queue a profile job: the class <main> (in com.eignex.klause.bench.profile)
 #                                                            run once with [arg...] in a build of <ref>, under JFR, on AWS
 #                                                            by default (on demand, never spot); for measurements experiments
@@ -25,7 +25,7 @@
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #   lab update                                              update the lab now: between the running job's cases, not during one
-#   lab host <id> lab|aws [machines]                        move a queued, unplanned experiment to the Mac or AWS
+#   lab host <id> auto|lab|aws [machines]                   move a queued, unplanned experiment to auto, the Mac or AWS
 #   lab machines <id> [n]                                    set an AWS job's instance count (none: as many as free)
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
@@ -58,7 +58,7 @@ cmd="${1:-ls}"; shift || true
 case "$cmd" in
 run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
 profile)
-  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]" >&2; exit 2; }
+  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [auto|aws|lab] [timeout-sec] [arg...]" >&2; exit 2; }
   main="$1" ref="$2" description="$3" host="${4:-}" timeout="${5:-3600}"
   shift $(( $# < 5 ? $# : 5 ))
   name="profile-$(echo "${main##*.}" | tr '[:upper:]' '[:lower:]')"

@@ -40,10 +40,14 @@ data class ExperimentSpec(
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
     /**
-     * Where the cases run: `lab`, the lab machine, or `aws`, EC2 instances the lab launches for the job. A submitted
-     * experiment that leaves it out runs on AWS when it can there; a schedule's runs stay on the lab machine.
+     * Where the cases run: `lab`, the lab machine, `aws`, EC2 instances the lab launches for the job, or `auto`: the
+     * lab machine when it is free, else AWS, spot first ([auto]). A submitted experiment that leaves it out is `auto`
+     * when it could run on AWS and `lab` otherwise; a schedule's runs stay on the lab machine.
      */
     val host: String = Experiments.LAB_HOST,
+    /** Set when an `auto` job is taken: its [host] is then where it went. On the lab machine it gives way to any job
+     *  queued for the machine itself; on AWS it tries spot for a while before buying on demand. */
+    val auto: Boolean = false,
     /** For `aws`: how many instances to split the job over, by problem; unset, as many as are free. */
     val machines: Int? = null,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
@@ -103,6 +107,7 @@ data class Case(val problem: Int, val arm: Int, val seed: Long?, val repeat: Int
 object Experiments {
     const val LAB_HOST = "lab"
     const val AWS_HOST = "aws"
+    const val AUTO_HOST = "auto"
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
      * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule

@@ -1219,7 +1219,9 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
 /** Where a job runs: the lab Mac, or AWS with the instances it has while it runs and asks for while it waits. */
 private fun hostCell(config: Config, job: Job): String {
     val spec = job.experiment
-    if (spec?.host != Experiments.AWS_HOST) return "<span class=\"where\">Mac</span>"
+    if (spec?.host == Experiments.AUTO_HOST) return "<span class=\"where\" title=\"the Mac when it is free, else AWS, spot first\">auto</span>"
+    val chosen = if (spec?.auto == true) " <small class=\"muted\">auto</small>" else ""
+    if (spec?.host != Experiments.AWS_HOST) return "<span class=\"where\">Mac</span>$chosen"
     val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     // Each line: instance, type, and how it was bought (spot or on-demand; absent before spot was offered).
@@ -1236,7 +1238,7 @@ private fun hostCell(config: Config, job: Job): String {
         job.status in ACTIVE -> spec.machines?.let { "asks for $it" } ?: "as many as are free"
         else -> null
     }
-    return "<span class=\"where aws\">AWS</span>" + (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">$it</small>" } ?: "")
+    return "<span class=\"where aws\">AWS</span>$chosen" + (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">$it</small>" } ?: "")
 }
 
 private fun statusCell(job: Job, position: Int?): String {
@@ -1249,7 +1251,8 @@ private fun statusCell(job: Job, position: Int?): String {
     val notes = listOfNotNull(
         "cancelling".takeIf { job.cancelRequested && job.status in ACTIVE },
         "<span class=\"badge\">paused</span>".takeIf { job.paused && job.status in ACTIVE },
-        "#$position in the ${if (job.experiment?.host == Experiments.AWS_HOST) "AWS" else "Mac"} queue".takeIf { position != null },
+        "#$position in the ${when (job.experiment?.host) { Experiments.AWS_HOST -> "AWS"; Experiments.AUTO_HOST -> "auto"; else -> "Mac" }} queue"
+            .takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
         job.error?.let { "<span title=\"${esc(it)}\">${esc(shortError(it))}</span>" },
     )
