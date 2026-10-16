@@ -491,7 +491,7 @@ internal fun trendPage(
     append("<div class=\"chart\" id=\"chart-solved\"></div>")
     append("<h2>PAR-2 time <small>mean seconds per problem, an unsolved one charged twice its budget; lower is better</small></h2>")
     append("<div class=\"chart\" id=\"chart-par2\"></div>")
-    append("<h2>Solved by theme <small>problems solved in each theme the sweep set was drawn by (a problem of several themes counts in each); each axis spans its own counts</small></h2><div class=\"multiples\" id=\"suites\"></div>")
+    append("<h2>Solved by theme <small>problems solved in each theme the sweep set was drawn by (a problem of several themes counts in each); each axis tops out at the theme's size</small></h2><div class=\"multiples\" id=\"suites\"></div>")
     append("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>")
     append("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>")
     append("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>")
@@ -732,11 +732,12 @@ private const val TREND_SCRIPT = """<script>
         : [0, Math.round(m / 4), Math.round(m / 2), Math.round(3 * m / 4), m];
       return {max: m, ticks: Array.from(new Set(ticks)), fmt: function (v) { return String(Math.round(v)); }};
     }
-    // A small chart's axis spans the counts it shows, a little either side, in whole problems.
-    function rangeAxis(values) {
-      if (!values.length) return countAxis(1);
-      let min = Math.floor(Math.min.apply(null, values)), max = Math.ceil(Math.max.apply(null, values));
-      if (max - min < 2) { min = Math.max(0, min - 1); max = max + 1; }
+    // A small chart's axis tops out at the theme's size, so it reads as solved out of how many, and starts a problem
+    // below the fewest it ever solved, so a single flip still shows.
+    function rangeAxis(values, size) {
+      if (!values.length) return countAxis(size || 1);
+      const max = Math.max(size, Math.ceil(Math.max.apply(null, values)));
+      const min = Math.max(0, Math.min(max - 2, Math.floor(Math.min.apply(null, values)) - 1));
       const mid = Math.round((min + max) / 2);
       return {min: min, max: max, ticks: Array.from(new Set([min, mid, max])), fmt: function (v) { return String(Math.round(v)); }};
     }
@@ -764,7 +765,8 @@ private const val TREND_SCRIPT = """<script>
       grid.appendChild(cell);
       const value = function (r) { const g = (r.themes || {})[s]; return g ? g.solved * g.problems : null; };
       const seen = runs.map(value).filter(function (v) { return v != null; });
-      draw(plot, [{name: s, color: 'var(--series-1)', value: value}], rangeAxis(seen),
+      const size = Math.max.apply(null, runs.map(function (r) { const g = (r.themes || {})[s]; return g ? g.problems : 0; }));
+      draw(plot, [{name: s, color: 'var(--series-1)', value: value}], rangeAxis(seen, size),
         {height: 130, endLabels: false, title: s + ' problems solved per run', suite: s,
           flagged: function (r) { return ((r.disagreementsByTheme || {})[s] || 0) > 0; }});
     }
