@@ -448,7 +448,7 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   priorities, so the sweeps and reference runs are never held up by it.
 - Otherwise AWS takes it once it has waited a minute, which gives a free Mac the first chance. It asks for spot
   instances, whatever `market` says, and asks again every 30 s while AWS has no spot capacity or quota; after
-  `spotWaitMin` minutes (5) it buys on demand instead. A profile job is never spot, and `profileCli` jobs are `aws`.
+  `spotWaitMin` minutes (15) it buys on demand instead. A profile job is never spot, and `profileCli` jobs are `aws`.
 - Once taken, its `host` is where it went and `auto` is set on it, which the queue shows; `lab host <id> auto` makes a
   queued, unplanned job `auto` again.
 

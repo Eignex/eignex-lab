@@ -53,7 +53,7 @@ data class AwsConfig(
     /** When AWS has no spot capacity of the type or quota for it, launch that instance on demand rather than wait. */
     val spotFallback: Boolean = true,
     /** How long an `auto` job keeps asking for spot before it buys on demand. */
-    val spotWaitMin: Long = 5,
+    val spotWaitMin: Long = 15,
 ) {
     /** The sizes a job can get, smallest first: [instanceType] and the larger sizes of its family the quota allows. */
     val sizes: List<InstanceSize>
@@ -95,7 +95,7 @@ data class AwsConfig(
                 instanceProfile = get("instanceProfile"),
                 spot = get("market", "on-demand") == "spot",
                 spotFallback = get("spotFallback", "true")!!.toBoolean(),
-                spotWaitMin = get("spotWaitMin", "5")!!.toLong(),
+                spotWaitMin = get("spotWaitMin", "15")!!.toLong(),
             )
         }
     }
