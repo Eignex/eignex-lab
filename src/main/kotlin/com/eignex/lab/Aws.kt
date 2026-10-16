@@ -650,7 +650,7 @@ class AwsWorker(
                 val bench = "${hosts.first().worktree(primary)}/klause-bench"
                 val compress = "${AwsHost.ENV}; cd ${quote(bench)} && JAVA_OPTS='-Dklause.workspace.root=${hosts.first().worktree(primary)}' " +
                     "./build/install/klause-bench/bin/klause-bench corpus compress ~/corpus > ~/corpus-compress.log 2>&1"
-                runCatching { hosts.first().ssh.run("$compress; ${s3Sync("~/corpus", "s3://$bucket/corpus")}", S3_PUSH_TIMEOUT_SEC) }
+                runCatching { hosts.first().ssh.run("${AwsBuildCache.functions}\n$compress; push_lab_corpus $bucket ${aws.region} ~/corpus", S3_PUSH_TIMEOUT_SEC) }
                     .onFailure { runner.log(job.id, "corpus push failed, the other instances fetch upstream: ${it.message}") }
             }
             if (hosts.size > 1) runner.log(job.id, "fetching the corpora on the other instances")
@@ -710,7 +710,7 @@ class AwsWorker(
     /** Each instance has the corpora its cases read before they start, so cases that share a collection never fetch
      *  it side by side: from the bucket first, then whatever a selection still lacks. */
     private fun fetchCorpora(host: AwsHost, primary: String, selections: List<String>) {
-        aws.corpusBucket?.let { bucket -> runCatching { host.ssh.run(s3Sync("s3://$bucket/corpus", "~/corpus"), S3_PUSH_TIMEOUT_SEC) } }
+        aws.corpusBucket?.let { bucket -> runCatching { host.ssh.run("${AwsBuildCache.functions}\npull_lab_corpus $bucket ${aws.region} ~/corpus", S3_PUSH_TIMEOUT_SEC) } }
         selections.forEach { host.select(host.worktree(primary), it) }
     }
 
@@ -926,7 +926,7 @@ class AwsWorker(
             appendLine(AwsBuildCache.functions)
             appendLine("mkdir -p ~/work ~/job/cases ~/corpus")
             // The corpus comes down from the bucket while the build runs; a failed sync only means fetching upstream.
-            aws.corpusBucket?.let { appendLine("(${s3Sync("s3://$it/corpus", "~/corpus")} || true) > ~/corpus-sync.log 2>&1 & sync=${'$'}!") }
+            aws.corpusBucket?.let { appendLine("(pull_lab_corpus $it ${aws.region} ~/corpus || true) > ~/corpus-sync.log 2>&1 & sync=${'$'}!") }
             appendLine("[ -d ~/repo/.git ] || git clone -q --filter=blob:none --no-checkout ${quote(config.repoUrl)} ~/repo")
             appendLine("git -C ~/repo fetch -q origin ${shas.joinToString(" ")} || git -C ~/repo fetch -q origin")
             val bucket = aws.corpusBucket
@@ -958,10 +958,6 @@ class AwsWorker(
         }
         runner.log(job.id, "${host.instance}: built")
     }
-
-    /** `aws s3 sync` with the instance role, leaving out the bench's staging copies of compressed instances. */
-    private fun s3Sync(from: String, to: String) =
-        "aws s3 sync $from $to --region ${aws.region} --only-show-errors --exclude '.plain/*' --exclude '*/.plain/*'"
 
     private fun <T, R> parallelOn(items: List<T>, block: (T) -> R): List<R> {
         if (items.isEmpty()) return emptyList()

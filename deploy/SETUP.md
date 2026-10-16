@@ -525,6 +525,12 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
   from `vcpuQuota`) is used up, or the account lacks the spot service-linked role that `aws-setup.sh` creates, that
   instance launches on demand; `spotFallback=false` waits for spot capacity instead of falling back. The job page counts
   a job's spot instances. Spot timing is noisier than the Mac's, so give a timing A/B on AWS more `repeats`.
+- The corpus is kept in the bucket as one tar per collection, `corpus-packs/<collection>.tar`, with an index of each
+  pack's signature (a digest of its files' names and sizes) in `corpus-packs/index.tsv`. An instance pulls the index
+  and the packs that differ from what it holds while it builds, and the first instance of a job pushes, after
+  planning, a pack of each collection it changed. That is a few dozen requests an instance; the files one by one,
+  as they were kept in `corpus/` before, were over fifty thousand, which cost more in S3 requests than the instances
+  did. Until a push has written the first packs, an instance still pulls `corpus/` file by file.
 - The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
   ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
   `aws` job left running and terminates every lab-tagged instance no running job owns.

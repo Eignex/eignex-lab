@@ -84,3 +84,65 @@ if manifest.exists():
         assert hashlib.sha256(file.read_bytes()).hexdigest() == digest, f'provenance hash mismatch: {name}'
 PYCODE
 }
+
+# The corpus in the bucket as one tar per collection (`corpus-packs/<collection>.tar`) and an index of each one's
+# signature (`corpus-packs/index.tsv`): a few dozen requests an instance instead of one per file, of which there are
+# tens of thousands. A collection's signature is a digest of its files' names and sizes; `.plain` staging copies are
+# left out of both. An instance keeps the signature of each pack it holds in `<corpus>/.packs/<collection>`.
+lab_corpus_signature() {
+    (cd "$1" && find "$2" -type f ! -path '*/.plain/*' -printf '%s %p\n' | LC_ALL=C sort | sha256sum | cut -c1-16)
+}
+
+# pull_lab_corpus <bucket> <region> <corpus>: the packs that differ from what the instance holds. Before the first
+# push wrote any packs, the files one by one, as they were kept before.
+pull_lab_corpus() {
+    local index name sig
+    mkdir -p "$3/.packs"
+    index=$(mktemp) || return 1
+    if ! aws s3 cp "s3://$1/corpus-packs/index.tsv" "$index" --region "$2" --only-show-errors 2>/dev/null; then
+        rm -f "$index"
+        aws s3 sync "s3://$1/corpus" "$3" --region "$2" --only-show-errors --exclude '.plain/*' --exclude '*/.plain/*' --exclude '.packs/*'
+        return
+    fi
+    while IFS=$'\t' read -r name sig; do
+        [ -n "$name" ] || continue
+        [ "$(cat "$3/.packs/$name" 2>/dev/null)" = "$sig" ] && continue
+        if aws s3 cp "s3://$1/corpus-packs/$name.tar" - --region "$2" --only-show-errors | tar -x -C "$3"; then
+            printf '%s\n' "$sig" > "$3/.packs/$name"
+        else
+            echo "corpus pack download failed: $name" >&2
+        fi
+    done < "$index"
+    rm -f "$index"
+}
+
+# push_lab_corpus <bucket> <region> <corpus>: a pack of each collection whose files changed since the index was
+# written, then the index. A pack that fails to upload keeps its old index line, so no instance pulls a pack it lacks.
+push_lab_corpus() {
+    local index next pack name sig old changed=0
+    index=$(mktemp) && next=$(mktemp) && pack=$(mktemp) || return 1
+    aws s3 cp "s3://$1/corpus-packs/index.tsv" "$index" --region "$2" --only-show-errors 2>/dev/null || : > "$index"
+    mkdir -p "$3/.packs"
+    for dir in "$3"/*/; do
+        [ -d "$dir" ] || continue
+        name=$(basename "$dir")
+        sig=$(lab_corpus_signature "$3" "$name")
+        old=$(awk -F'\t' -v n="$name" '$1 == n { print $2 }' "$index")
+        if [ "$old" != "$sig" ]; then
+            if tar -c -C "$3" --exclude='.plain' "$name" > "$pack" &&
+               aws s3 cp "$pack" "s3://$1/corpus-packs/$name.tar" --region "$2" --only-show-errors; then
+                changed=1
+            else
+                echo "corpus pack upload failed: $name" >&2
+                sig=$old
+            fi
+        fi
+        [ -n "$sig" ] && printf '%s\t%s\n' "$name" "$sig" >> "$next" && printf '%s\n' "$sig" > "$3/.packs/$name"
+    done
+    # Collections this instance does not hold keep their lines.
+    awk -F'\t' 'NR == FNR { held[$1] = 1; next } !($1 in held)' "$next" "$index" > "$pack" && cat "$pack" >> "$next"
+    if [ "$changed" = 1 ]; then
+        aws s3 cp "$next" "s3://$1/corpus-packs/index.tsv" --region "$2" --only-show-errors || echo "corpus index upload failed" >&2
+    fi
+    rm -f "$index" "$next" "$pack"
+}

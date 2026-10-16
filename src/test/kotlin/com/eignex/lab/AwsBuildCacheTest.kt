@@ -122,4 +122,63 @@ class AwsBuildCacheTest {
         val output = process.inputStream.bufferedReader().readText()
         return process.waitFor().also { if (it != 0) println(output) }
     }
+
+    /** Runs [command] with an `aws` that keeps the bucket in `root/s3` and counts its requests in `root/requests`. */
+    private fun withBucket(root: java.io.File, command: String): Int {
+        val bin = root.resolve("bin").apply { mkdirs() }
+        val s3 = root.resolve("s3").apply { mkdirs() }
+        bin.resolve("aws").apply {
+            writeText("""#!/bin/bash
+                |echo "${'$'}2 ${'$'}3" >> ${quote(root.resolve("requests").path)}
+                |local() { echo ${quote(s3.path)}/"${'$'}{1#s3://}"; }
+                |case "${'$'}2" in
+                |  cp) if [[ "${'$'}3" == s3://* ]]; then src=${'$'}(local "${'$'}3"); [ -f "${'$'}src" ] || exit 1
+                |        if [ "${'$'}4" = - ]; then cat "${'$'}src"; else cp "${'$'}src" "${'$'}4"; fi
+                |      else dst=${'$'}(local "${'$'}4"); mkdir -p "${'$'}(dirname "${'$'}dst")"; cp "${'$'}3" "${'$'}dst"; fi ;;
+                |  sync) src=${'$'}(local "${'$'}3"); [ -d "${'$'}src" ] && cp -r "${'$'}src/." "${'$'}4" ;;
+                |esac
+                |""".trimMargin())
+            setExecutable(true)
+        }
+        val script = "set -euo pipefail\n" + AwsBuildCache.functions + "\n" + command
+        val process = ProcessBuilder("bash", "-c", script).redirectErrorStream(true).apply {
+            environment()["PATH"] = bin.path + ":" + System.getenv("PATH")
+        }.start()
+        val output = process.inputStream.bufferedReader().readText()
+        return process.waitFor().also { if (it != 0) println(output) }
+    }
+
+    @Test
+    fun `the corpus moves as one pack per collection, and only a changed one moves again`() = fixture { root ->
+        val first = root.resolve("first").apply { mkdirs() }
+        first.resolve("suite-a/x").mkdirs(); first.resolve("suite-a/x/p1.zst").writeText("one")
+        first.resolve("suite-a/.plain").mkdirs(); first.resolve("suite-a/.plain/p1").writeText("staging")
+        first.resolve("suite-b").mkdirs(); first.resolve("suite-b/p2.zst").writeText("two")
+        assertEquals(0, withBucket(root, "push_lab_corpus bucket region ${quote(first.path)}"))
+        assertTrue(root.resolve("s3/bucket/corpus-packs/suite-a.tar").isFile())
+
+        val second = root.resolve("second").apply { mkdirs() }
+        assertEquals(0, withBucket(root, "pull_lab_corpus bucket region ${quote(second.path)}"))
+        assertEquals("one", second.resolve("suite-a/x/p1.zst").readText())
+        assertEquals("two", second.resolve("suite-b/p2.zst").readText())
+        assertFalse(second.resolve("suite-a/.plain").exists())
+
+        first.resolve("suite-b/p3.zst").writeText("three")
+        assertEquals(0, withBucket(root, "push_lab_corpus bucket region ${quote(first.path)}"))
+        root.resolve("requests").delete()
+        assertEquals(0, withBucket(root, "pull_lab_corpus bucket region ${quote(second.path)}"))
+        // The index, then only suite-b's pack: suite-a is unchanged.
+        assertEquals(listOf("cp s3://bucket/corpus-packs/index.tsv", "cp s3://bucket/corpus-packs/suite-b.tar"),
+            root.resolve("requests").readLines())
+        assertEquals("three", second.resolve("suite-b/p3.zst").readText())
+    }
+
+    @Test
+    fun `before any pack exists the corpus comes down file by file`() = fixture { root ->
+        root.resolve("s3/bucket/corpus/suite-a").mkdirs()
+        root.resolve("s3/bucket/corpus/suite-a/p.zst").writeText("old")
+        val target = root.resolve("target").apply { mkdirs() }
+        assertEquals(0, withBucket(root, "pull_lab_corpus bucket region ${quote(target.path)}"))
+        assertEquals("old", target.resolve("suite-a/p.zst").readText())
+    }
 }
