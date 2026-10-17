@@ -539,15 +539,32 @@ class Store(file: Path) {
 
     /**
      * The `auto` job [host] takes when nothing is queued for it: the lab machine any, at once, being free whenever it
-     * asks; AWS only one queued at least [AUTO_GRACE_MS], so that a free lab machine takes it first.
+     * asks; AWS only one that has waited [autoGraceMs], so that the lab machine gets the first chance.
      */
     private fun nextAuto(host: String): Long? = connection.prepareStatement(
         "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? AND created_at <= ? $QUEUE_ORDER LIMIT 1",
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.setString(2, Experiments.AUTO_HOST)
-        it.setLong(3, if (host == Experiments.LAB_HOST) Long.MAX_VALUE else now() - AUTO_GRACE_MS)
+        it.setLong(3, if (host == Experiments.LAB_HOST) Long.MAX_VALUE else now() - autoGraceMs())
         it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
+    }
+
+    /**
+     * How long an `auto` job waits for the lab machine before AWS may take it: [AUTO_GRACE_MS] shared out over the jobs
+     * waiting for the machine, its own queue's and the `auto` ones, and never under [AUTO_GRACE_MIN_MS]. The longer the
+     * line, the longer the machine would take to reach a job anyway, so the sooner AWS takes it.
+     */
+    private fun autoGraceMs(): Long {
+        val waiting = connection.prepareStatement(
+            "SELECT COUNT(*) FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?)",
+        ).use {
+            it.setString(1, Status.QUEUED.name)
+            it.setString(2, Experiments.LAB_HOST)
+            it.setString(3, Experiments.AUTO_HOST)
+            it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else 0 }
+        }
+        return maxOf(AUTO_GRACE_MIN_MS, AUTO_GRACE_MS / maxOf(1, waiting))
     }
 
     /** A command a crashed runner left RUNNING is rerun from the start: its partial output is not a result. */
@@ -934,18 +951,21 @@ class Store(file: Path) {
     /** Whether running [jobId] should stop starting commands: it was paused, or a job it must give way to waits. */
     @Synchronized
     fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
-        // An auto job the machine took gives way to any job queued for the machine itself, whatever its priority.
+        // A job queued for the host outranks any auto job the host took, whatever their priorities: an auto job gives
+        // way to it, and it never gives way to one. Among jobs of one kind the higher priority goes first.
         "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE status = ? " +
-            "AND cancel_requested = 0 AND paused = 0 AND $HOST = (SELECT $HOST FROM jobs WHERE id = ?) " +
-            "AND (priority > (SELECT priority FROM jobs WHERE id = ?) OR " +
-            "COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) = 1 AND " +
-            "COALESCE(json_extract(experiment, '\$.auto'), 0) = 0))",
+            "AND cancel_requested = 0 AND paused = 0 AND $HOST = (SELECT $HOST FROM jobs WHERE id = ?) AND (" +
+            "(COALESCE(json_extract(experiment, '\$.auto'), 0) = COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) " +
+            "AND priority > (SELECT priority FROM jobs WHERE id = ?)) OR " +
+            "(COALESCE(json_extract(experiment, '\$.auto'), 0) = 0 AND " +
+            "COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) = 1)))",
     ).use {
         it.setLong(1, jobId)
         it.setString(2, Status.QUEUED.name)
         it.setLong(3, jobId)
         it.setLong(4, jobId)
         it.setLong(5, jobId)
+        it.setLong(6, jobId)
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
@@ -1107,14 +1127,18 @@ private const val SERIES_J = "CASE WHEN instr(jobs.name, '@') > 0 THEN substr(jo
 private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.name, 1, instr(r.name, '@') - 1) ELSE r.name END"
 
 /** How [Store.next] orders queued jobs: by priority, then the series that last finished a run longest ago, then age. */
-private const val QUEUE_ORDER = "ORDER BY priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+// A job queued for its host goes before an `auto` job the host took, whatever their priorities: an `auto` job only
+// fills a host that has nothing of its own to run.
+private const val QUEUE_ORDER = "ORDER BY COALESCE(json_extract(jobs.experiment, '\$.auto'), 0), priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
     "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
 
-/** How long a queued `auto` job waits for the lab machine before AWS may take it. */
-internal const val AUTO_GRACE_MS = 60_000L
+/** How long a queued `auto` job waits for the lab machine before AWS may take it, when it is the only job waiting
+ *  for the machine; with more waiting it is shared out over them ([Store.autoGraceMs]), down to [AUTO_GRACE_MIN_MS]. */
+internal const val AUTO_GRACE_MS = 15 * 60_000L
+internal const val AUTO_GRACE_MIN_MS = 60_000L
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()

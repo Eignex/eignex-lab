@@ -444,9 +444,11 @@ no such job is queued. Only klause arms go there; reference runs stay on the Mac
 `"host": "auto"`, what a submitted experiment gets when it names no host and could run on AWS, lets the lab choose:
 
 - The Mac takes it when it is free, that is when nothing is running there and nothing queued for it, and it then
-  stays on the Mac. There it gives way, between its cases, to any job queued for the Mac itself, whatever their
-  priorities, so the sweeps and reference runs are never held up by it.
-- Otherwise AWS takes it once it has waited a minute, which gives a free Mac the first chance. It asks for spot
+  stays on the Mac. A job queued for the Mac itself always goes before it, whatever their priorities: it gives way
+  between its cases to such a job, never the other way round, so the sweeps and reference runs are never held up by it.
+- Otherwise AWS takes it once it has waited 15 minutes divided by the number of jobs waiting for the Mac (its own and
+  the `auto` ones), at least a minute: 15 minutes alone, 5 behind two others, a minute in a long line, which gives the
+  Mac the first chance without leaving a backlog for it. It asks for spot
   instances, whatever `market` says, and asks again every 30 s while AWS has no spot capacity or quota; after
   `spotWaitMin` minutes (15) it buys on demand instead. A profile job is never spot, and `profileCli` jobs are `aws`.
 - Once taken, its `host` is where it went and `auto` is set on it, which the queue shows; `lab host <id> auto` makes a

@@ -420,4 +420,32 @@ class StoreTest {
         assertEquals(id, store.next(Experiments.AWS_HOST)?.id)
         assertEquals(null, store.peek(Experiments.AWS_HOST))
     }
+
+    @Test
+    fun `a Mac job never gives way to an auto job the Mac took, and goes before it in the queue`() {
+        val store = store()
+        val auto = autoJob(store, "a", priority = 5)
+        assertEquals(auto, store.next()?.id)
+        store.requeue(auto)
+        val sweep = store.create("sweep@abc", "main", listOf("true" to 10L), priority = -2)
+
+        assertEquals(sweep, store.next()?.id)
+        assertEquals(false, store.shouldYield(sweep))
+        assertEquals(listOf(auto), store.queueOrder())
+    }
+
+    @Test
+    fun `the longer the line for the Mac, the sooner AWS takes an auto job`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val ids = (1..5).map { autoJob(store, "a$it") }
+        fun age(ms: Long) = java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = ${now()} - $ms") }
+        }
+        // Five waiting: three minutes each, not fifteen.
+        age(AUTO_GRACE_MS / 5 - 10_000)
+        assertEquals(null, store.peek(Experiments.AWS_HOST))
+        age(AUTO_GRACE_MS / 5 + 10_000)
+        assertEquals(ids.first(), store.peek(Experiments.AWS_HOST))
+    }
 }
