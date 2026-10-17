@@ -404,4 +404,20 @@ class StoreTest {
         assertEquals(Experiments.AWS_HOST, taken.experiment!!.host)
         assertEquals(true, taken.experiment!!.auto)
     }
+
+    @Test
+    fun `AWS sees an auto job the lab machine left waiting, as it would take it`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val id = autoJob(store, "a")
+        assertEquals(id, store.peek(Experiments.LAB_HOST))
+        assertEquals(null, store.peek(Experiments.AWS_HOST))
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = created_at - ${AUTO_GRACE_MS + 1}") }
+        }
+
+        assertEquals(id, store.peek(Experiments.AWS_HOST))
+        assertEquals(id, store.next(Experiments.AWS_HOST)?.id)
+        assertEquals(null, store.peek(Experiments.AWS_HOST))
+    }
 }

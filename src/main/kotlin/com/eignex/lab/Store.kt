@@ -533,6 +533,10 @@ class Store(file: Path) {
         id
     }?.let(::job)
 
+    /** The job [next] would take for [host] now, without taking it: its own queue's first, else an `auto` job ([nextAuto]). */
+    @Synchronized
+    fun peek(host: String): Long? = queueOrder(host).firstOrNull() ?: nextAuto(host)
+
     /**
      * The `auto` job [host] takes when nothing is queued for it: the lab machine any, at once, being free whenever it
      * asks; AWS only one queued at least [AUTO_GRACE_MS], so that a free lab machine takes it first.
