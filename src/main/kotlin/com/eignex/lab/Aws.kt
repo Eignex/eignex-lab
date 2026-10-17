@@ -54,6 +54,12 @@ data class AwsConfig(
     val spotFallback: Boolean = true,
     /** How long an `auto` job keeps asking for spot before it buys on demand. */
     val spotWaitMin: Long = 15,
+    /**
+     * Whether the lab buys on-demand instances at all (`onDemand=true`). Off, every instance is spot and a launch waits
+     * for spot capacity instead of buying on demand, and AWS takes no profile job, which is never spot: those run on
+     * the lab machine.
+     */
+    val onDemand: Boolean = false,
 ) {
     /** The sizes a job can get, smallest first: [instanceType] and the larger sizes of its family the quota allows. */
     val sizes: List<InstanceSize>
@@ -96,6 +102,7 @@ data class AwsConfig(
                 spot = get("market", "on-demand") == "spot",
                 spotFallback = get("spotFallback", "true")!!.toBoolean(),
                 spotWaitMin = get("spotWaitMin", "15")!!.toLong(),
+                onDemand = get("onDemand", "false")!!.toBoolean(),
             )
         }
     }
@@ -554,19 +561,19 @@ class AwsWorker(
         // A waiting update needs every AWS job to have ended; starting another would hold it back indefinitely.
         if (runner.updateWaiting()) return
         // Its own queue first, then an `auto` job the lab machine has left waiting (Store.peek, as Store.next takes them).
-        val next = store.peek(Experiments.AWS_HOST)?.let(store::job) ?: return
+        val next = store.peek(Experiments.AWS_HOST, aws.onDemand)?.let(store::job) ?: return
         val spec = checkNotNull(next.experiment)
         val cores = Experiments.arms(spec).maxOf { it.cores }
         val size = aws.sizeFor(cores)
         if (size == null) {
-            val job = store.next(Experiments.AWS_HOST) ?: return
+            val job = store.next(Experiments.AWS_HOST, aws.onDemand) ?: return
             store.finish(job.id, Status.FAILED, "its cases need $cores cores, more than an instance within the ${aws.vcpuQuota}-vCPU quota has")
             return
         }
         // Reserved before the job is claimed, since a running job may take the same vCPUs to grow.
         val held = Reservation(size)
         val machines = (wantedMachines(spec).coerceAtLeast(1) downTo 1).firstOrNull { held.reserve(it) } ?: return
-        val job = store.next(Experiments.AWS_HOST)
+        val job = store.next(Experiments.AWS_HOST, aws.onDemand)
         if (job?.id != next.id) {
             held.releaseAll()
             check(job == null) { "claimed ${job?.id}, expected ${next.id}" }
@@ -772,7 +779,7 @@ class AwsWorker(
             if (problems.isEmpty() || store.cancelRequested(job.id)) return false
             val current = store.job(job.id) ?: return false
             val wanted = current.experiment?.let(::wantedMachines) ?: aws.maxInstances
-            return !current.paused && instances.size < wanted && store.peek(Experiments.AWS_HOST) == null &&
+            return !current.paused && instances.size < wanted && store.peek(Experiments.AWS_HOST, aws.onDemand) == null &&
                 !runner.updateWaiting()
         }
 
@@ -818,6 +825,7 @@ class AwsWorker(
      * A profile job is always on demand: its one case cannot resume, so a reclaim would rerun it from the start.
      */
     private fun launchOne(job: Job, name: String, userData: File, type: String): String {
+        if (!aws.onDemand) return launchSpotOnly(job, name, userData, type)
         if (job.experiment?.isProfile == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         if (job.experiment?.auto == true) return launchSpotFirst(job, name, userData, type)
         if (!aws.spot) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
@@ -846,6 +854,18 @@ class AwsWorker(
             }
             if (capacity == null) throw e
             runner.log(job.id, "no spot for $type yet ($capacity); trying spot again in ${SPOT_RETRY_MS / MS_PER_SEC} s")
+            check(!store.cancelRequested(job.id)) { "cancelled" }
+            Thread.sleep(SPOT_RETRY_MS)
+        }
+    }
+
+    /** A spot instance, asked for again every [SPOT_RETRY_MS] while AWS has no spot capacity or quota for it: with
+     *  on demand off ([AwsConfig.onDemand]) there is nothing else to buy. */
+    private fun launchSpotOnly(job: Job, name: String, userData: File, type: String): String {
+        while (true) {
+            val e = runCatching { return cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.exceptionOrNull()!!
+            val capacity = CAPACITY.find(e.message.orEmpty())?.value ?: throw e
+            runner.log(job.id, "no spot for $type yet ($capacity); on demand is off, so trying spot again in ${SPOT_RETRY_MS / MS_PER_SEC} s")
             check(!store.cancelRequested(job.id)) { "cancelled" }
             Thread.sleep(SPOT_RETRY_MS)
         }

@@ -448,4 +448,21 @@ class StoreTest {
         age(AUTO_GRACE_MS / 5 + 10_000)
         assertEquals(ids.first(), store.peek(Experiments.AWS_HOST))
     }
+
+    @Test
+    fun `with on demand off AWS passes over profile jobs, its own and auto ones alike`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val profile = ProfileMain("com.eignex.klause.bench.profile.Timing")
+        store.create("p", "main", emptyList(), experiment = ExperimentSpec("p", emptyList(), host = Experiments.AWS_HOST, profile = profile))
+        store.create("ap", "main", emptyList(), experiment = ExperimentSpec("ap", emptyList(), host = Experiments.AUTO_HOST, profile = profile))
+        val plain = autoJob(store, "a")
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = created_at - ${AUTO_GRACE_MS + 1}") }
+        }
+
+        assertEquals(plain, store.peek(Experiments.AWS_HOST, profiles = false))
+        assertEquals(plain, store.next(Experiments.AWS_HOST, profiles = false)?.id)
+        assertEquals(null, store.next(Experiments.AWS_HOST, profiles = false))
+    }
 }

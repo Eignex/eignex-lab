@@ -495,7 +495,7 @@ class Store(file: Path) {
      * waited. A series is a schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
      */
     @Synchronized
-    fun next(host: String = Experiments.LAB_HOST): Job? = transaction {
+    fun next(host: String = Experiments.LAB_HOST, profiles: Boolean = true): Job? = transaction {
         // SQLite sorts NULL first ascending: a series that never finished a run goes before one that has.
         val running = if (host != Experiments.LAB_HOST) null else connection.prepareStatement(
             "SELECT id FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1",
@@ -505,12 +505,12 @@ class Store(file: Path) {
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
         val id = running ?: connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER LIMIT 1",
+            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? ${noProfiles(profiles)} $QUEUE_ORDER LIMIT 1",
         ).use {
             it.setString(1, Status.QUEUED.name)
             it.setString(2, host)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
-        } ?: nextAuto(host)?.also { claimed ->
+        } ?: nextAuto(host, profiles)?.also { claimed ->
             // Taken where it goes: from now on it is that host's job, resumed there after a pause or a restart.
             connection.prepareStatement("UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', json('true')) WHERE id = ?").use {
                 it.setString(1, host)
@@ -535,14 +535,15 @@ class Store(file: Path) {
 
     /** The job [next] would take for [host] now, without taking it: its own queue's first, else an `auto` job ([nextAuto]). */
     @Synchronized
-    fun peek(host: String): Long? = queueOrder(host).firstOrNull() ?: nextAuto(host)
+    fun peek(host: String, profiles: Boolean = true): Long? = queueOrder(host, profiles).firstOrNull() ?: nextAuto(host, profiles)
 
     /**
      * The `auto` job [host] takes when nothing is queued for it: the lab machine any, at once, being free whenever it
      * asks; AWS only one that has waited [autoGraceMs], so that the lab machine gets the first chance.
      */
-    private fun nextAuto(host: String): Long? = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? AND created_at <= ? $QUEUE_ORDER LIMIT 1",
+    private fun nextAuto(host: String, profiles: Boolean = true): Long? = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? AND created_at <= ? " +
+            "${noProfiles(profiles)} $QUEUE_ORDER LIMIT 1",
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.setString(2, Experiments.AUTO_HOST)
@@ -971,8 +972,8 @@ class Store(file: Path) {
 
     /** The queued, unpaused jobs for [host] in the order [next] takes them. */
     @Synchronized
-    fun queueOrder(host: String = Experiments.LAB_HOST): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER",
+    fun queueOrder(host: String = Experiments.LAB_HOST, profiles: Boolean = true): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? ${noProfiles(profiles)} $QUEUE_ORDER",
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.setString(2, host)
@@ -1134,6 +1135,9 @@ private const val QUEUE_ORDER = "ORDER BY COALESCE(json_extract(jobs.experiment,
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
+
+/** A queue query's filter that, without [profiles], leaves profile jobs out: what a host that cannot run them passes over. */
+private fun noProfiles(profiles: Boolean) = if (profiles) "" else "AND json_extract(experiment, '\$.profile') IS NULL"
 
 /** How long a queued `auto` job waits for the lab machine before AWS may take it, when it is the only job waiting
  *  for the machine; with more waiting it is shared out over them ([Store.autoGraceMs]), down to [AUTO_GRACE_MIN_MS]. */
