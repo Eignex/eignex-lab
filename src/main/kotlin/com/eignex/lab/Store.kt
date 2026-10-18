@@ -519,14 +519,19 @@ class Store(file: Path) {
             }
         }
         id?.also { claimed ->
+            val previous = job(claimed)
+            val at = now()
+            val interruptedRun = if (running == claimed && previous?.experiment?.profile?.runTimeoutSec != null) {
+                previous.runningSince?.let { (at - it).coerceAtLeast(0) } ?: 0
+            } else 0
             connection.prepareStatement(
-                "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ? WHERE id = ?",
+                "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ?, run_ms = run_ms + ? WHERE id = ?",
             ).use {
-                val at = now()
                 it.setString(1, Status.RUNNING.name)
                 it.setLong(2, at)
                 it.setLong(3, at)
-                it.setLong(4, claimed)
+                it.setLong(4, interruptedRun)
+                it.setLong(5, claimed)
                 it.executeUpdate()
             }
         }
