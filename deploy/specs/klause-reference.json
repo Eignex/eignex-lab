@@ -3,7 +3,7 @@
   "description": "Daily broad check: the default sequential portfolio on up to 3 per family and 60 per suite of every benchmark suite, at 60 s.",
   "problems": [
     {"suite": "hakank", "per-family": "3", "max": "60", "seed": "1"},
-    {"suite": "mzn-bench", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "mzn-bench-compatible-v1", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "xcsp3-cop", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "xcsp3-csp", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "miplib2017", "per-family": "3", "max": "60", "seed": "1"},
@@ -24,6 +24,7 @@
     {"suite": "smtlib-qflira", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "smtlib-qfnra", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "smtlib-qfnra-core-v1", "per-family": "1000000"},
+    {"suite": "smtlib-qfnra-source-canonical-v1", "per-family": "1000000", "reference": "any"},
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
   ],
   "base": {"timeout": "60000"},
