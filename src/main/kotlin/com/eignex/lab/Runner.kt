@@ -768,6 +768,7 @@ class Runner(private val config: Config, private val store: Store) {
     }
 
     private fun sh(log: File, dir: File, cmd: String) {
+        ProfileRunDeadline.checkActive()
         log.appendText("$ $cmd\n")
         val builder = ProcessBuilder(inSession("bash", "-c", cmd)).directory(dir)
             .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log))
@@ -806,6 +807,7 @@ class Runner(private val config: Config, private val store: Store) {
     }
 
     internal fun log(jobId: Long, message: String) {
+        ProfileRunDeadline.checkActive()
         println("[job $jobId] $message")
         runCatching { config.jobDir(jobId).createDirectories().resolve("job.log").toFile().appendText("${now()} $message\n") }
     }
@@ -866,7 +868,7 @@ internal fun deleteTree(root: Path) {
         Files.deleteIfExists(root)
         return
     }
-    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { path ->
+    Files.walk(root).use { paths -> paths.peek { ProfileRunDeadline.checkActive() }.sorted(Comparator.reverseOrder()).forEach { path ->
         ProfileRunDeadline.checkActive()
         Files.delete(path)
     } }
