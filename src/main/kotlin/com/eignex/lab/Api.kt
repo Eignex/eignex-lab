@@ -145,9 +145,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // An experiment that names no host runs on AWS whenever it can there, and on the lab machine otherwise.
             val body = call.receive<JsonObject>()
             val given = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body)
-            val chosen = if ("host" in body) given else given.copy(host = defaultHost(given, config))
-            // A profile job is never spot, so with on demand off it runs on the lab machine, wherever it asked to.
-            val spec = if (chosen.isProfile && config.aws?.onDemand != true) chosen.copy(host = Experiments.LAB_HOST, machines = null) else chosen
+            val spec = if ("host" in body) given else given.copy(host = defaultHost(given, config))
             requireDescription(spec)
             requireHost(spec, config)
             // An AWS job's cores are checked against the instance sizes, in requireHost; parallel there is per instance.

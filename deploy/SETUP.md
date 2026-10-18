@@ -441,10 +441,10 @@ it again one interval later, so staggered schedules stay a day apart; `lab resch
 An experiment with `"host": "aws"` runs on EC2 instances the lab launches for it, on demand: nothing runs on AWS while
 no such job is queued. Only klause arms go there; reference runs stay on the Mac, which has the reference solvers.
 
-On demand is off unless `aws.properties` says `onDemand=true`: every instance is then spot, a launch AWS has no spot
-capacity for is asked again every 30 s rather than bought on demand, and the `market`, `spotFallback` and
-`spotWaitMin` settings below apply only once it is on. A profile job, which never runs on spot, then runs on the Mac:
-one submitted for `auto` or `aws` is queued for the Mac instead, and AWS passes over any already queued.
+On demand is off unless `aws.properties` says `onDemand=true`, except for profile jobs, which never run on spot and
+are always bought on demand: every other instance is then spot, a launch AWS has no spot capacity for is asked again
+every 30 s rather than bought on demand, and the `market`, `spotFallback` and `spotWaitMin` settings below apply only
+once it is on.
 
 `"host": "auto"`, what a submitted experiment gets when it names no host and could run on AWS, lets the lab choose:
 

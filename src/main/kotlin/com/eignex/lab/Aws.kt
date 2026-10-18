@@ -55,9 +55,9 @@ data class AwsConfig(
     /** How long an `auto` job keeps asking for spot before it buys on demand. */
     val spotWaitMin: Long = 15,
     /**
-     * Whether the lab buys on-demand instances at all (`onDemand=true`). Off, every instance is spot and a launch waits
-     * for spot capacity instead of buying on demand, and AWS takes no profile job, which is never spot: those run on
-     * the lab machine.
+     * Whether the lab buys on-demand instances for jobs other than profile jobs (`onDemand=true`). Off, every such
+     * instance is spot and a launch waits for spot capacity instead of buying on demand. A profile job is on demand
+     * either way, since it is never spot.
      */
     val onDemand: Boolean = false,
 ) {
@@ -561,19 +561,19 @@ class AwsWorker(
         // A waiting update needs every AWS job to have ended; starting another would hold it back indefinitely.
         if (runner.updateWaiting()) return
         // Its own queue first, then an `auto` job the lab machine has left waiting (Store.peek, as Store.next takes them).
-        val next = store.peek(Experiments.AWS_HOST, aws.onDemand)?.let(store::job) ?: return
+        val next = store.peek(Experiments.AWS_HOST)?.let(store::job) ?: return
         val spec = checkNotNull(next.experiment)
         val cores = Experiments.arms(spec).maxOf { it.cores }
         val size = aws.sizeFor(cores)
         if (size == null) {
-            val job = store.next(Experiments.AWS_HOST, aws.onDemand) ?: return
+            val job = store.next(Experiments.AWS_HOST) ?: return
             store.finish(job.id, Status.FAILED, "its cases need $cores cores, more than an instance within the ${aws.vcpuQuota}-vCPU quota has")
             return
         }
         // Reserved before the job is claimed, since a running job may take the same vCPUs to grow.
         val held = Reservation(size)
         val machines = (wantedMachines(spec).coerceAtLeast(1) downTo 1).firstOrNull { held.reserve(it) } ?: return
-        val job = store.next(Experiments.AWS_HOST, aws.onDemand)
+        val job = store.next(Experiments.AWS_HOST)
         if (job?.id != next.id) {
             held.releaseAll()
             check(job == null) { "claimed ${job?.id}, expected ${next.id}" }
@@ -779,7 +779,7 @@ class AwsWorker(
             if (problems.isEmpty() || store.cancelRequested(job.id)) return false
             val current = store.job(job.id) ?: return false
             val wanted = current.experiment?.let(::wantedMachines) ?: aws.maxInstances
-            return !current.paused && instances.size < wanted && store.peek(Experiments.AWS_HOST, aws.onDemand) == null &&
+            return !current.paused && instances.size < wanted && store.peek(Experiments.AWS_HOST) == null &&
                 !runner.updateWaiting()
         }
 
@@ -825,8 +825,9 @@ class AwsWorker(
      * A profile job is always on demand: its one case cannot resume, so a reclaim would rerun it from the start.
      */
     private fun launchOne(job: Job, name: String, userData: File, type: String): String {
-        if (!aws.onDemand) return launchSpotOnly(job, name, userData, type)
+        // A profile job is always on demand, [AwsConfig.onDemand] or not: a reclaim would restart its one case.
         if (job.experiment?.isProfile == true) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
+        if (!aws.onDemand) return launchSpotOnly(job, name, userData, type)
         if (job.experiment?.auto == true) return launchSpotFirst(job, name, userData, type)
         if (!aws.spot) return cli.launch(job.id, name, userData, type).also { markets[it] = "on-demand" }
         return runCatching { cli.launch(job.id, name, userData, type, spot = true).also { markets[it] = "spot" } }.getOrElse { e ->
