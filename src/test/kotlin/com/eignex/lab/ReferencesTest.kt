@@ -325,7 +325,7 @@ class ReferencesTest {
     }
 
     @Test
-    fun `a proven optimum on another model is no disagreement, shortfall or coverage, and an unbound one only meets an unbound run`() {
+    fun `a proven optimum on another model is no disagreement, shortfall or coverage, and an unbound one still meets any run`() {
         val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, sourceIdentity = identity("bacp-9"))
         val unbound = bacp9.copy(sourceIdentity = null)
 
@@ -334,8 +334,10 @@ class ReferencesTest {
         val same = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-9")), mapOf(("c" to "bacp") to bacp9))
         val neither = References.compare(listOf("a"), listOf(sourced("bacp", 30, null)), mapOf(("c" to "bacp") to unbound))
 
-        assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.summaries.single().covered })
-        assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.disagreements.size })
+        // An unbound row is from before sources were kept: it counts until a row bound to other files shows the name
+        // has changed meaning, which the lab learns by binding its own runs' rows (Store.bindLabReferenceSources).
+        assertEquals(listOf(0, 1, 1, 1), listOf(other, legacy, same, neither).map { it.summaries.single().covered })
+        assertEquals(listOf(0, 1, 1, 1), listOf(other, legacy, same, neither).map { it.disagreements.size })
     }
 
     @Test
@@ -377,5 +379,37 @@ class ReferencesTest {
 
         assertEquals(listOf(1, 0), listOf(replaced, kept))
         assertEquals(listOf(rebound), store.referenceRows(key.first, key.second))
+    }
+
+    @Test
+    fun `an unbound row speaks for a run unless a row bound to other files shows the name changed meaning`() {
+        val unbound = ref(true, 5.0, proven = true)
+        val nine = unbound.copy(solver = "chuffed", sourceIdentity = "bacp-9")
+        val twentyFour = unbound.copy(solver = "chuffed", sourceIdentity = "bacp-24")
+
+        assertEquals(listOf(unbound), References.applicable(listOf(unbound), "bacp-24"))
+        assertEquals(listOf(twentyFour, unbound), References.applicable(listOf(twentyFour, unbound), "bacp-24"))
+        assertEquals(emptyList(), References.applicable(listOf(nine, unbound), "bacp-24"))
+        assertEquals(listOf(unbound), References.applicable(listOf(nine, unbound), null))
+        assertEquals(emptyList(), References.applicable(listOf(unbound), References.MIXED_SOURCES))
+    }
+
+    @Test
+    fun `rows a lab run made learn the source files its cases recorded`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val problem = Problem("s", "p", collection = "c")
+        val id = store.create("ref", "main", emptyList(), experiment = ExperimentSpec("ref", listOf(mapOf("suite" to "s"))))
+        store.next()
+        store.plan(id, listOf(PlannedArm(Arm("cp-sat", emptyMap()), "sha")), listOf(problem), Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+        store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"sourceHashes":{"model":"m1"}}""")
+        store.finish(id, Status.DONE)
+        store.putReferences(listOf(("c" to "p") to ref(true, proven = true)), "lab:$id")
+        store.putReferences(listOf(("c" to "q") to ref(true, proven = true).copy(solver = "z3")), "import")
+
+        assertEquals(1, store.bindLabReferenceSources())
+        val identity = References.identity(Json.parseToJsonElement("""{"sourceHashes":{"model":"m1"}}"""))
+        assertEquals(identity, store.currentReferenceRows(listOf("c" to "p")).getValue("c" to "p").single().sourceIdentity)
+        assertEquals(null, store.currentReferenceRows(listOf("c" to "q")).getValue("c" to "q").single().sourceIdentity)
+        assertEquals(0, store.bindLabReferenceSources())
     }
 }

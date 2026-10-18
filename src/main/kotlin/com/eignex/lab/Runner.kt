@@ -69,6 +69,12 @@ class Runner(private val config: Config, private val store: Store) {
             awsActive = { worker.active }
             thread(isDaemon = true, name = "aws") { worker.loop() }
         }
+        // Reference rows lab runs made before sources were kept learn them from those runs' records, off the loop.
+        thread(isDaemon = true, name = "bind-references") {
+            runCatching { store.bindLabReferenceSources() }
+                .onSuccess { if (it > 0) println("bound $it reference rows to their runs' source files") }
+                .onFailure { println("binding reference rows failed: ${it.message}") }
+        }
         // Ended jobs' bulk goes after a week, or sooner when the disk runs low ([JobTrim]).
         JobTrim(config.dataDir.resolve("jobs"), store::ended, { freeBytes(config.dataDir) }, ::log).start()
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's

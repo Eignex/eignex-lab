@@ -825,9 +825,9 @@ class Store(file: Path) {
      * left out, and across solvers a proof another solver's solution contradicts set aside ([References.trusted]).
      * With [solver], that solver's own current row, whatever the others say: what its backfill needs to know.
      *
-     * Only rows on one source count ([Reference.sourceIdentity]): with [sources] ([References.sources]), the one each
-     * problem's cases ran on, an unbound problem matching only unbound rows. Without, as when selecting problems
-     * before any ran, the source of the newest bound row, else the unbound rows: the problem's name as it now stands.
+     * Only rows that speak for one source count ([References.applicable]): with [sources] ([References.sources]), the
+     * one each problem's cases ran on. Without, as when selecting problems before any ran, the source of the newest
+     * bound row, else the unbound rows: the problem's name as it now stands.
      */
     @Synchronized
     fun references(
@@ -848,11 +848,47 @@ class Store(file: Path) {
                 }.filter { !it.first.stale }
                 val source = if (sources != null) sources[key]
                 else current.filter { it.first.sourceIdentity != null }.maxByOrNull { it.second }?.first?.sourceIdentity
-                val rows = current.map { it.first }.filter { it.sourceIdentity == source }
+                val rows = References.applicable(current.map { it.first }, source)
                     .let { if (solver == null) References.trusted(it) else it }
                 rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
             }.toMap()
         }
+
+    /**
+     * Bind the unbound reference rows a lab run made (`source` `lab:<job>`) to the source files that run's cases
+     * recorded ([References.identity]), so that rows from before sources were kept stop counting as unbound. A row
+     * whose run recorded none, or one imported from elsewhere, stays unbound. Returns how many rows it bound.
+     */
+    fun bindLabReferenceSources(): Int {
+        val jobs = synchronized(this) {
+            connection.prepareStatement(
+                "SELECT DISTINCT source FROM reference_rows WHERE source_identity IS NULL AND source LIKE 'lab:%'",
+            ).use { statement ->
+                statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getString(1) else null }.toList() }
+            }.mapNotNull { it.removePrefix("lab:").toLongOrNull() }
+        }
+        var bound = 0
+        for (job in jobs) {
+            val identities = References.sources(scoringCases(job)).filterValues { it != null && it != References.MIXED_SOURCES }
+            if (identities.isEmpty()) continue
+            synchronized(this) {
+                transaction {
+                    connection.prepareStatement(
+                        "UPDATE reference_rows SET source_identity = ? WHERE collection = ? AND problem = ? AND source = ? AND source_identity IS NULL",
+                    ).use { update ->
+                        for ((key, identity) in identities) {
+                            update.setString(1, identity)
+                            update.setString(2, key.first)
+                            update.setString(3, key.second)
+                            update.setString(4, "lab:$job")
+                            bound += update.executeUpdate()
+                        }
+                    }
+                }
+            }
+        }
+        return bound
+    }
 
     /** Every problem two reference solvers' current rows contradict each other on, with why ([References.conflicts]). */
     @Synchronized

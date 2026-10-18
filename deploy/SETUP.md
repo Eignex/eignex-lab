@@ -375,9 +375,11 @@ A problem's name can come to mean other source files (MiniZinc Challenge `2011/b
 same identity: comparisons, shortfalls, disagreements and the scoreboard take each problem's identity from the run's
 cases, and two solvers' rows only contradict each other or set each other's proofs aside on the same identity. A row
 bound to new files replaces that solver's row on others whatever its strength. Rows from before identities were kept
-are unbound: they still show, and count only against runs that recorded no source either, so a current run (which
-records one) is not judged by them until a reference run rebinds them. Selecting problems, before anything ran, reads
-the rows on the identity of the newest bound row, else the unbound ones.
+are unbound. A row a lab run made (`source` `lab:<job>`) is bound when the runner starts, to the identity that run's
+cases recorded. One that stays unbound, imported or from a bench too old to record sources, counts against any run
+unless a row bound to other files shows the name has meant something else, when it could be from either and is left
+out; a run that recorded no source reads the unbound rows, else the bound ones. Selecting problems, before anything
+ran, reads the rows for the identity of the newest bound row, else the unbound ones.
 
 XCSP3 cp-sat rows require an image SHA-256 and a registered importer policy in
 `References.XCSP_POLICY`; the active policy is `xcsp3-source-preserving-v2`.
