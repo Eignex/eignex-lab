@@ -9,8 +9,8 @@ import kotlin.io.path.name
 
 /**
  * Trims ended jobs' directories down to what is worth keeping once their bulk is no longer looked at: a job's logs,
- * its commands' exits, its selections and each case's record (a `.json` file in `cases/<i>`) stay, and everything else goes,
- * raw solver output, case stdout and stderr, profiles and `$OUT` among it. The results stay readable either way, since
+ * its commands' exits and termination reasons ([Termination]), its selections and each case's record (a `.json` file in
+ * `cases/<i>`) stay, and everything else goes, raw solver output, case stdout and stderr, profiles and `$OUT` among it. The results stay readable either way, since
  * every case's record is in the database too. A job is trimmed [MAX_AGE_MS] after it ended, and sooner, largest
  * first, whenever the disk has less than [TARGET_FREE_BYTES] free. A trimmed job gets a `trimmed` file saying when and
  * how much, and is never trimmed again; its log says so too. Queued and running jobs are never touched.
@@ -81,7 +81,7 @@ class JobTrim(
         fun keeps(relative: Path): Boolean {
             val name = relative.name
             return when (relative.nameCount) {
-                1 -> name in setOf("job.log", "setup.log", "sha", MARKER) || name.endsWith(".exit") ||
+                1 -> name in setOf("job.log", "setup.log", "sha", MARKER) || name.endsWith(".exit") || name.endsWith(".termination") ||
                     (name.startsWith("selection-") && name.endsWith(".jsonl"))
                 3 -> relative.getName(0).toString() == "cases" && name.endsWith(".json")
                 else -> false

@@ -249,7 +249,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
-                else -> call.respond(job)
+                else -> {
+                    val dir = config.jobDir(job.id)
+                    call.respond(job.copy(commands = job.commands.map { it.copy(terminations = Termination.read(dir, it.index)) }))
+                }
             }
         }
         // A long poll: the answer comes when the job ends, or after timeoutSec with the job as it stands, so a

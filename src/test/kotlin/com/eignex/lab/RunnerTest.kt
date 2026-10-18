@@ -1,7 +1,9 @@
 package com.eignex.lab
 
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.writeText
@@ -28,6 +30,8 @@ class RunnerTest {
         assertTrue(job.error!!.contains("whole-run deadline"))
         assertTrue(config.jobDir(id).resolve("0.out").toFile().readText().contains("captured"))
         assertFalse(config.worktree(id).exists())
+        // The case thread records the kill once it sees its process gone, which can trail the job's end a little.
+        assertTrue(eventually { Termination.read(config.jobDir(id), 0).any { "deadline:" in it } })
     }
 
     @Test
@@ -86,5 +90,74 @@ class RunnerTest {
             root.resolve("collected/config/p.json").exists() &&
                 !Files.exists(root.resolve("collected/cache"), java.nio.file.LinkOption.NOFOLLOW_LINKS),
         )
+    }
+
+    /** A runner over a fresh lab, its store and a job of [commands] taken and set up, ready for [Runner.dispatch]. */
+    private class Dispatchable(vararg commands: Pair<String, Long>) {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = store.create("kills", "main", commands.toList())
+        val dir: Path = config.jobDir(id).createDirectories()
+        val runner = Runner(config, store)
+
+        init {
+            config.worktree(id).createDirectories()
+            store.next()
+            store.setup(id, "head")
+        }
+
+        fun dispatch(): Dispatched = runner.dispatch(checkNotNull(store.job(id)), dir)
+
+        fun reasons(index: Int): List<String> = Termination.read(dir, index).map { it.substringAfter(' ') }
+    }
+
+    private fun eventually(check: () -> Boolean): Boolean {
+        val until = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < until) {
+            if (check()) return true
+            Thread.sleep(50)
+        }
+        return check()
+    }
+
+    @Test
+    fun `a timeout kill says so, a SIGKILL the lab did not send is external, and an ordinary failure says nothing`() {
+        val lab = Dispatchable("sleep 30" to 1L, "kill -9 \$\$" to 60L, "exit 3" to 60L)
+
+        assertEquals(Dispatched.FINISHED, lab.dispatch())
+
+        assertEquals(listOf(Termination.timeout(1)), lab.reasons(0))
+        assertEquals("137", lab.dir.resolve("1.exit").toFile().readText().trim())
+        assertEquals(listOf(Termination.external(137)), lab.reasons(1))
+        assertTrue(lab.reasons(2).isEmpty())
+    }
+
+    @Test
+    fun `a cancelled case says it was cancelled`() {
+        val lab = Dispatchable("sleep 30" to 60L)
+        val canceller = thread {
+            eventually { lab.dir.resolve("0.pid").exists() }
+            lab.store.requestCancel(lab.id)
+        }
+
+        assertEquals(Dispatched.CANCELLED, lab.dispatch())
+        canceller.join()
+
+        assertEquals(listOf(Termination.CANCEL), lab.reasons(0))
+    }
+
+    @Test
+    fun `a runner shutdown says why it killed the case and records no exit, so the case reruns`() {
+        val lab = Dispatchable("sleep 30" to 60L)
+        // It never returns: a stopping runner waits for its own end with the case left RUNNING.
+        thread(isDaemon = true) { lab.dispatch() }
+        assertTrue(eventually { lab.dir.resolve("0.pid").exists() })
+
+        lab.runner.stop()
+
+        assertEquals(listOf(Termination.SHUTDOWN), lab.reasons(0))
+        Thread.sleep(500)
+        assertFalse(lab.dir.resolve("0.exit").exists())
+        assertEquals(Status.RUNNING, lab.store.job(lab.id)!!.commands.single().status)
     }
 }

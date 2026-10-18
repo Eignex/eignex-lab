@@ -616,6 +616,15 @@ it alone. Expose the lab only while its password check is live: a request withou
     start time keeps a reused pid from being taken for the case.
 - A case's `<n>.exit` file is written atomically once it ends: an exit code, or `timeout`.
 - A service shutdown, such as a reboot, kills the running cases but does not record them, so they rerun after boot.
+- Whenever the lab kills a case's processes it first appends why to `<n>.termination`, one line each, the time in
+  epoch milliseconds and then the reason: `shutdown:` (the runner stopped; the case reruns), `orphan:` (a stopped
+  runner left it running; killed before the rerun), `cancel:`, `timeout:`, `deadline:` (a profile job's whole-run
+  limit), `sibling:` (another case could not run, which failed the job) or `host-lost:` (AWS took the instance back;
+  the case goes back to the queue). A pause or a yield kills nothing: the job stops only between cases. A case that
+  exits 137 (SIGKILL) or 143 (SIGTERM) with no such line gets an `external:` one, which says only that the lab did not
+  send the signal; on AWS it adds the instance's kernel log lines about killed processes, or says there were none, and
+  a kill once the case's limit has passed is `timeout`'s own. The job page shows the lines under each case's exit, and
+  `GET /jobs/{id}` as each command's `terminations`.
 - Setup steps that can fail for a passing reason are retried with exponential backoff before a job fails:
   - fetching the mirror and adding a worktree: up to `LAB_RETRY_ATTEMPTS` tries (default 6), waiting
     `LAB_RETRY_BASE_SEC` (15) after the first failure and doubling to at most `LAB_RETRY_MAX_SEC` (300), so a network
@@ -646,7 +655,7 @@ fetches the dependencies into the new home once.
   AWS jobs go on. `/disk` shows what takes the disk, measured every 30 minutes, with the largest job directories.
 - From AWS, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
 - An ended job is trimmed a week after it ended, and sooner, largest first, while the disk has under 25 GB free: its
-  `job.log`, `setup.log`, `sha`, commands' `.exit` files, `selection-*.jsonl` and each case's record (the `.json` in
+  `job.log`, `setup.log`, `sha`, commands' `.exit` and `.termination` files, `selection-*.jsonl` and each case's record (the `.json` in
   `cases/<i>`) stay, and everything else goes: raw solver output, case stdout and stderr, profiles, `$OUT`. Every
   case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
   `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are

@@ -26,6 +26,9 @@ data class Command(
     val cores: Int = 1,
     /** What the lab is doing with it while it runs on AWS; null when it does not run or runs on the lab machine. */
     val phase: CasePhase? = null,
+    /** Why the lab, or something else, ended its processes ([Termination]), each line with when; read from the job's
+     *  directory for a single job's JSON, empty elsewhere. */
+    val terminations: List<String> = emptyList(),
 )
 
 /**

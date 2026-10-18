@@ -1,6 +1,9 @@
 package com.eignex.lab
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -105,6 +108,29 @@ class PagesTest {
             assertFalse(failed.contains("<code>true</code>"))
             assertTrue(json.contentType()?.match(ContentType.Application.Json) == true)
             assertContains(index, "/jobs/$queued")
+        }
+    }
+
+    @Test
+    fun `a case's termination reasons show under its exit and in the job's JSON`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.database)
+        val id = store.create("kills", "main", listOf("sleep 1" to 60L))
+        store.commandFinished(id, 0, 137)
+        val dir = Files.createDirectories(config.jobDir(id))
+        Termination.record(Termination.file(dir, 0), Termination.SHUTDOWN, at = 1)
+        Termination.record(Termination.file(dir, 0), Termination.external(137)!!, at = 2)
+        testApplication {
+            application { api(config, store, host) }
+
+            val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+            val json = client.get("/jobs/$id").bodyAsText()
+
+            assertContains(page, "exit 137</small><br><small class=\"muted\" title=\"1970-01-01T00:00:00.001Z\">shutdown:")
+            assertContains(page, "external: exit 137 is a SIGKILL the lab did not send")
+            val terminations = Json.parseToJsonElement(json).jsonObject.getValue("commands").jsonArray.single()
+                .jsonObject.getValue("terminations").jsonArray.map { it.jsonPrimitive.content }
+            assertEquals(listOf("1 ${Termination.SHUTDOWN}", "2 ${Termination.external(137)}"), terminations)
         }
     }
 
