@@ -4,8 +4,10 @@ import java.util.concurrent.Callable
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** One local profile's active-time allowance, including its setup and worktree cleanup. */
 internal class ProfileRunDeadline(
@@ -18,6 +20,10 @@ internal class ProfileRunDeadline(
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "profile-run-deadline").apply { isDaemon = true }
     }
+    private val cancellationChecks = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "profile-cancellation").apply { isDaemon = true }
+    }
+    private val cancellationSeen = AtomicBoolean()
 
     fun remainingMillis(cleanup: Boolean = false): Long {
         val elapsed = TimeUnit.NANOSECONDS.toMillis(nanoTime() - startedAt)
@@ -33,13 +39,18 @@ internal class ProfileRunDeadline(
     private fun <T> execute(cleanup: Boolean, action: () -> T): T {
         remainingMillis(cleanup)
         val execution = Execution {
-            if (!cleanup && cancelled()) throw CancellationException("Profile job cancelled")
+            if (!cleanup && cancellationSeen.get()) throw CancellationException("Profile job cancelled")
             remainingMillis(cleanup)
         }
         val future = worker.submit<T> { within(execution) { checkActive(); action().also { checkActive() } } }
+        var cancellation: Future<Boolean>? = if (cleanup) null else cancellationChecks.submit<Boolean> { cancelled() }
         var failure: Throwable? = null
         try {
             while (true) {
+                cancellation?.takeIf { it.isDone }?.let { check ->
+                    if (check.get()) cancellationSeen.set(true)
+                    cancellation = cancellationChecks.submit<Boolean> { cancelled() }
+                }
                 execution.checkActive()
                 try {
                     return future.get(minOf(remainingMillis(cleanup), 100), TimeUnit.MILLISECONDS)
@@ -55,6 +66,7 @@ internal class ProfileRunDeadline(
             failure = error
             throw error
         } finally {
+            cancellation?.cancel(true)
             future.cancel(true)
             try {
                 execution.close()
@@ -66,6 +78,7 @@ internal class ProfileRunDeadline(
 
     override fun close() {
         worker.shutdownNow()
+        cancellationChecks.shutdownNow()
     }
 
     private class Execution(private val remainingMillis: () -> Long) : AutoCloseable {

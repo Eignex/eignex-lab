@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -12,6 +13,26 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class ProfileRunDeadlineTest {
+    @Test
+    fun `a blocked cancellation read cannot extend the deadline`() {
+        val blocked = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        try {
+            ProfileRunDeadline(2_000, cancelled = {
+                blocked.countDown()
+                release.await()
+                false
+            }).use { deadline ->
+                assertFailsWith<ProfileRunTimeout> {
+                    deadline.work { blocked.await(); CountDownLatch(1).await() }
+                }
+                assertEquals("cleaned", deadline.cleanup { "cleaned" })
+            }
+        } finally {
+            release.countDown()
+        }
+    }
+
     @Test
     fun `work stages share their allowance and preserve cleanup time`() {
         var nanos = 0L
