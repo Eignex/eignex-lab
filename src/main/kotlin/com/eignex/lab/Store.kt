@@ -24,7 +24,31 @@ data class Command(
     val finishedAt: Long? = null,
     /** Cores the command keeps busy: its arm's `processors`; the runner's core budget counts these. */
     val cores: Int = 1,
+    /** What the lab is doing with it while it runs on AWS; null when it does not run or runs on the lab machine. */
+    val phase: CasePhase? = null,
 )
+
+/**
+ * What the lab is doing with a running AWS case, so a long RUNNING case tells the solver's work apart from the lab's:
+ * the case [EXECUTING][Phase.EXECUTING] over SSH, its output coming back, a wait before running it again after SSH
+ * dropped, or its tree being killed after a timeout or a cancel.
+ */
+@Serializable
+data class CasePhase(
+    val phase: Phase,
+    /** When it entered [phase]. */
+    val since: Long,
+    /** Which run of the case this is, counting from 1, of at most [attempts]. */
+    val attempt: Int = 1,
+    val attempts: Int = 1,
+    /** When the next run starts, during a [Phase.RETRY_BACKOFF]. */
+    val retryAt: Long? = null,
+    /** The solve's own time from the case's record, once it came back. */
+    val elapsedMs: Long? = null,
+) {
+    @Serializable
+    enum class Phase { EXECUTING, TRANSFERRING_OUTPUT, RETRY_BACKOFF, TERMINATING }
+}
 
 /** A command as planned: what runs, how long it may, and how many cores it holds. */
 data class CaseCommand(val cmd: String, val timeoutSec: Long, val cores: Int = 1)
@@ -138,7 +162,7 @@ class Store(file: Path) {
                 """CREATE TABLE IF NOT EXISTS commands (
                     job_id INTEGER NOT NULL, idx INTEGER NOT NULL, cmd TEXT NOT NULL, timeout_sec INTEGER NOT NULL,
                     status TEXT NOT NULL, exit_code INTEGER, started_at INTEGER, finished_at INTEGER,
-                    cores INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (job_id, idx))""",
+                    cores INTEGER NOT NULL DEFAULT 1, phase TEXT, PRIMARY KEY (job_id, idx))""",
             )
             it.execute(
                 """CREATE TABLE IF NOT EXISTS schedules (
@@ -178,6 +202,8 @@ class Store(file: Path) {
             it.execute("CREATE INDEX IF NOT EXISTS reference_rows_updated ON reference_rows (updated_at)")
             val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
+            val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
+            if ("phase" !in commandColumns) it.execute("ALTER TABLE commands ADD COLUMN phase TEXT")
             val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("version" !in columns) {
                 it.execute("ALTER TABLE reference_rows ADD COLUMN version TEXT NOT NULL DEFAULT ''")
@@ -592,14 +618,21 @@ class Store(file: Path) {
 
     @Synchronized
     fun commandStarted(jobId: Long, index: Int) = update(
-        "UPDATE commands SET status = ?, started_at = ?, exit_code = NULL WHERE job_id = ? AND idx = ?",
+        "UPDATE commands SET status = ?, started_at = ?, exit_code = NULL, phase = NULL WHERE job_id = ? AND idx = ?",
         Status.RUNNING.name, now(), jobId, index,
     )
 
     @Synchronized
     fun commandFinished(jobId: Long, index: Int, exitCode: Int) = update(
-        "UPDATE commands SET status = ?, exit_code = ?, finished_at = ? WHERE job_id = ? AND idx = ?",
+        "UPDATE commands SET status = ?, exit_code = ?, finished_at = ?, phase = NULL WHERE job_id = ? AND idx = ?",
         if (exitCode == 0) Status.DONE.name else Status.FAILED.name, exitCode, now(), jobId, index,
+    )
+
+    /** Record what the lab is doing with [jobId]'s running command [index]; written only as the phase changes. */
+    @Synchronized
+    fun commandPhase(jobId: Long, index: Int, phase: CasePhase) = update(
+        "UPDATE commands SET phase = ? WHERE job_id = ? AND idx = ? AND status = ?",
+        Json.encodeToString(phase), jobId, index, Status.RUNNING.name,
     )
 
     @Synchronized
@@ -1088,6 +1121,9 @@ class Store(file: Path) {
                         rows.getInt("idx"), rows.getString("cmd"), rows.getLong("timeout_sec"),
                         Status.valueOf(rows.getString("status")), rows.intOrNull("exit_code"),
                         rows.longOrNull("started_at"), rows.longOrNull("finished_at"), rows.getInt("cores"),
+                        // A phase is the running command's only: one a requeue or a cancel left behind is stale.
+                        rows.getString("phase")?.takeIf { rows.getString("status") == Status.RUNNING.name }
+                            ?.let { runCatching { Json.decodeFromString<CasePhase>(it) }.getOrNull() },
                     )
                 }
             }.toList()

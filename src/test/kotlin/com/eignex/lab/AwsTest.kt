@@ -228,4 +228,33 @@ class AwsTest {
         assertEquals("500\tout/huge.json", out.resolve("omitted.tsv").readText().trim())
         case.deleteRecursively()
     }
+
+    @Test
+    fun `an AWS case reports executing, its retry backoff after SSH dropped, and its output transfer`() {
+        val dir = Files.createTempDirectory("aws")
+        dir.resolve("aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val replies = ArrayDeque(listOf("Connection reset", "exit=1\n----klause-lab-record----\n{\"elapsedMs\":10175}", ""))
+        val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
+            override fun start(script: String, mergeErrors: Boolean): Process =
+                ProcessBuilder("printf", "%s\n", replies.removeFirstOrNull().orEmpty()).start()
+        }
+        val phases = ArrayList<CasePhase>()
+        val host = AwsHost("i-1", ssh, 4, "", onPhase = { _, phase -> phases += phase },
+            retry = Backoff(attempts = 3, baseMs = 0, maxMs = 0)) { false }
+
+        val exit = host.run(Command(7, "solve", 10, Status.RUNNING), dir)
+
+        assertEquals(1, exit)
+        assertEquals(
+            listOf(
+                CasePhase.Phase.EXECUTING to 1, CasePhase.Phase.RETRY_BACKOFF to 1,
+                CasePhase.Phase.EXECUTING to 2, CasePhase.Phase.TRANSFERRING_OUTPUT to 2,
+            ),
+            phases.map { it.phase to it.attempt },
+        )
+        assertEquals(3, phases[1].attempts)
+        assertTrue(phases[1].retryAt != null)
+        assertEquals(10175L, phases.last().elapsedMs)
+        dir.toFile().deleteRecursively()
+    }
 }
