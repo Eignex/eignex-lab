@@ -160,7 +160,7 @@ internal fun jobPage(
         val exit = command.exitCode?.takeIf { it != 0 }?.let { "<br><small>exit $it</small>" } ?: ""
         append("<tr><td>${command.index}</td><td><code>${esc(command.cmd)}</code></td>")
         val phase = command.phase?.let { "<br><small>${esc(phaseText(it, now()))}</small>" } ?: ""
-        append("<td class=\"${command.status}\">${command.status}$exit$phase</td>")
+        append("<td class=\"${command.status}\">${command.status}$exit$phase${terminations(dir, command.index)}</td>")
         append("<td>${ago(command.startedAt)}</td><td>${duration(command.startedAt, command.finishedAt)}</td><td>")
         if (command.status != Status.QUEUED) {
             append(output(job.id, dir, "${command.index}.out", command.status == Status.RUNNING))
@@ -891,6 +891,7 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
     val exit = dir.resolve("0.exit").takeIf { it.isFile }?.readText()?.trim()
     append("<p>")
     append(if (exit == null) "<span class=\"muted\">not finished</span>" else "exit <b>${esc(exit)}</b>")
+    append(terminations(dir, 0))
     append(" · <a href=\"/jobs/${job.id}/files/0.out\">stdout</a> · <a href=\"/jobs/${job.id}/files/0.err\">stderr</a>")
     val out = dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList()
     if (out.isNotEmpty()) {
@@ -1291,6 +1292,13 @@ private fun progress(job: Job): String {
     val bar = "<span class=\"bar\">${part("ok", job.done - job.failed)}${part("bad", job.failed)}${part("run", running)}</span>"
     val parallel = if (job.parallel > 1) " ×${job.parallel}" else ""
     return "$bar<small>${job.done}/${job.total}$parallel</small>"
+}
+
+/** Why case [index]'s processes were ended ([Termination]), a line each, with when it happened on hover. */
+private fun terminations(dir: File, index: Int): String = Termination.read(dir.toPath(), index).joinToString("") { line ->
+    val at = line.substringBefore(' ').toLongOrNull()
+    val title = at?.let { " title=\"${java.time.Instant.ofEpochMilli(it)}\"" }.orEmpty()
+    "<br><small class=\"muted\"$title>${esc(if (at == null) line else line.substringAfter(' '))}</small>"
 }
 
 private fun output(jobId: Long, dir: File, name: String, running: Boolean): String {

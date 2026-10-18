@@ -24,8 +24,8 @@ class JobTrimTest {
     }
 
     @Test
-    fun `a trim keeps logs, exits, selections and records, and nothing else`() {
-        for (kept in listOf("job.log", "setup.log", "sha", "3.exit", "selection-1.jsonl", "cases/4/record.json", "trimmed")) {
+    fun `a trim keeps logs, exits, termination reasons, selections and records, and nothing else`() {
+        for (kept in listOf("job.log", "setup.log", "sha", "3.exit", "3.termination", "selection-1.jsonl", "cases/4/record.json", "trimmed")) {
             assertTrue(JobTrim.keeps(Path(kept)), kept)
         }
         for (gone in listOf("0.out", "0.err", "0.pid", "cases/0/p.sol", "cases/0/out/timings.json", "cases/0/out/a/b.json", "aws-instances")) {

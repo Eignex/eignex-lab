@@ -29,6 +29,12 @@ class Runner(private val config: Config, private val store: Store) {
     /** Every process the runner has started and not yet seen exit, so cancel and shutdown can reach them all. */
     private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
 
+    /** The `<n>.termination` file ([Termination]) of each running case's process, where a kill says why first. */
+    private val terminations = ConcurrentHashMap<Process, Path>()
+
+    /** The running cases' processes the lab has killed, whose signal exit is then no outside kill. */
+    private val killed: MutableSet<Process> = ConcurrentHashMap.newKeySet()
+
     @Volatile
     private var stopping = false
 
@@ -147,7 +153,9 @@ class Runner(private val config: Config, private val store: Store) {
     private fun executeWork(claimed: Job): Dispatched {
         val dir = config.jobDir(claimed.id).createDirectories()
         killOrphan(dir.resolve("setup.pid"))
-        claimed.commands.filter { it.status == Status.RUNNING }.forEach { killOrphan(dir.resolve("${it.index}.pid")) }
+        claimed.commands.filter { it.status == Status.RUNNING }.forEach {
+            killOrphan(dir.resolve("${it.index}.pid"), Termination.file(dir, it.index))
+        }
         store.requeueInterrupted(claimed.id)
         var job = checkNotNull(store.job(claimed.id))
         if (!job.setupDone || !config.worktree(job.id).exists()) {
@@ -263,7 +271,7 @@ class Runner(private val config: Config, private val store: Store) {
                 return Dispatched.LOST
             }
             // One command's failure to run fails the job, which must not leave its siblings running past it.
-            if (!ProfileRunDeadline.isActive()) running.forEach(::killTree)
+            if (!ProfileRunDeadline.isActive()) running.forEach { kill(it, Termination.SIBLING) }
             throw e.cause ?: e
         } finally {
             pool.shutdown()
@@ -617,10 +625,13 @@ class Runner(private val config: Config, private val store: Store) {
         }
         log(job.id, "command ${command.index}: ${command.cmd}")
         val process = start(builder, dir.resolve("${command.index}.pid"))
+        terminations[process] = Termination.file(dir, command.index)
         try {
             return await(job, command, dir, process)
         } finally {
             running.remove(process)
+            terminations.remove(process)
+            killed.remove(process)
         }
     }
 
@@ -628,11 +639,11 @@ class Runner(private val config: Config, private val store: Store) {
         val deadline = now() + command.timeoutSec * 1000
         while (!process.waitFor(CANCEL_POLL_MS, TimeUnit.MILLISECONDS)) {
             if (!stopping && store.cancelRequested(job.id)) {
-                killTree(process)
+                kill(process, Termination.CANCEL)
                 return CANCELLED_EXIT
             }
             if (now() > deadline) {
-                killTree(process)
+                kill(process, Termination.timeout(command.timeoutSec))
                 dir.resolve("${command.index}.exit").writeAtomically("timeout\n")
                 return TIMEOUT_EXIT
             }
@@ -642,6 +653,17 @@ class Runner(private val config: Config, private val store: Store) {
         while (stopping) Thread.sleep(CANCEL_POLL_MS)
         val exit = process.exitValue()
         dir.resolve("${command.index}.exit").writeAtomically("$exit\n")
+        if (process !in killed && Termination.signal(exit) != null) {
+            // A profile job's deadline kills its processes from its own thread ([ProfileRunDeadline]), which then
+            // no longer lets this one act; a cancel of the job ends the same way.
+            val ended = ProfileRunDeadline.isActive() && runCatching { ProfileRunDeadline.checkActive() }.isFailure
+            val reason = when {
+                ended && store.cancelRequested(job.id) -> Termination.CANCEL
+                ended -> Termination.DEADLINE
+                else -> Termination.external(exit)
+            }
+            Termination.record(Termination.file(dir, command.index), checkNotNull(reason))
+        }
         return exit
     }
 
@@ -660,7 +682,7 @@ class Runner(private val config: Config, private val store: Store) {
      * leader still means the group is killed; a live process under that pid with another start time is a reused
      * pid, and its group is left alone.
      */
-    private fun killOrphan(pidFile: Path) {
+    private fun killOrphan(pidFile: Path, termination: Path? = null) {
         if (!pidFile.exists()) return
         val (pid, started) = pidFile.toFile().readText().trim().split(" ").map { it.toLong() }
         val leader = ProcessHandle.of(pid)
@@ -669,6 +691,7 @@ class Runner(private val config: Config, private val store: Store) {
         }.orElse(false)
         if (reused) return
         println("killing orphaned process group $pid from ${pidFile.fileName}")
+        termination?.let { Termination.record(it, Termination.ORPHAN) }
         killGroup(pid)
         leader.ifPresent { it.onExit().get(KILL_WAIT_SEC, TimeUnit.SECONDS) }
     }
@@ -688,12 +711,13 @@ class Runner(private val config: Config, private val store: Store) {
 
     /** Kill the running command's tree when the service manager stops the runner. */
     fun installShutdownHook() {
-        Runtime.getRuntime().addShutdownHook(
-            Thread {
-                stopping = true
-                running.forEach(::killTree)
-            },
-        )
+        Runtime.getRuntime().addShutdownHook(Thread { stop() })
+    }
+
+    /** Kill every running process, saying why for each case, and record nothing more: the cases rerun. */
+    internal fun stop() {
+        stopping = true
+        running.forEach { kill(it, Termination.SHUTDOWN) }
     }
 
     internal fun cancel(jobId: Long) {
@@ -797,6 +821,15 @@ class Runner(private val config: Config, private val store: Store) {
         val out = process.inputStream.bufferedReader().readText().trim()
         check(process.waitFor() == 0) { "failed: $cmd: $out" }
         return out
+    }
+
+    /** Kill [process]'s tree, first recording [reason] when it runs a case. */
+    private fun kill(process: Process, reason: String) {
+        terminations[process]?.let { file ->
+            killed.add(process)
+            Termination.record(file, reason)
+        }
+        killTree(process)
     }
 
     private fun killTree(process: Process) {

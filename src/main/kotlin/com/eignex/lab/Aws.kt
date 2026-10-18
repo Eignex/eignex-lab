@@ -369,7 +369,10 @@ class AwsHost(
                 return runOnce(command, dir, attempt)
             } catch (e: SshDropped) {
                 // A dropped connection to an instance AWS has taken back is no network trouble to wait out.
-                runCatching(gone).getOrNull()?.let { reason -> throw HostLost("$instance is gone ($reason)") }
+                runCatching(gone).getOrNull()?.let { reason ->
+                    Termination.record(Termination.file(dir, command.index), Termination.hostLost("$instance is gone ($reason)"))
+                    throw HostLost("$instance is gone ($reason)")
+                }
                 if (attempt >= retry.attempts || cancelled()) throw IllegalStateException(e.message, e)
                 val until = System.currentTimeMillis() + retry.delayAfter(attempt)
                 report(command, CasePhase.Phase.RETRY_BACKOFF, attempt, retryAt = until)
@@ -399,10 +402,15 @@ class AwsHost(
             mkdir -p ${'$'}JOB_DIR/cases
             ${profile?.let { "mkdir -p ${quote(it)}; export KLAUSE_LAB_PROFILE_DIR=${quote(it)}" }.orEmpty()}
             timeout -k 30 ${command.timeoutSec} bash -c ${quote(command.cmd)} > ${'$'}JOB_DIR/$i.out 2> ${'$'}JOB_DIR/$i.err
-            echo "exit=${'$'}?"
+            e=${'$'}?
+            echo "exit=${'$'}e"
+            if [ ${'$'}e -eq 137 ] || [ ${'$'}e -eq 143 ]; then
+              sudo -n dmesg -T 2>/dev/null | grep -iE 'killed process|out of memory' | tail -n 3 | sed 's/^/$KERNEL/'
+            fi
             echo "$RECORD"
             cat ${'$'}JOB_DIR/cases/$i/*.json 2>/dev/null || true
         """.trimIndent()
+        val started = System.currentTimeMillis()
         report(command, CasePhase.Phase.EXECUTING, attempt)
         val process = ssh.start(script, mergeErrors = false)
         val output = StringBuilder()
@@ -411,6 +419,8 @@ class AwsHost(
         while (!process.waitFor(POLL_MS, TimeUnit.MILLISECONDS)) {
             if (cancelled() || System.currentTimeMillis() > deadline) {
                 report(command, CasePhase.Phase.TERMINATING, attempt)
+                Termination.record(Termination.file(dir, i),
+                    if (cancelled()) Termination.CANCEL else Termination.timeout(command.timeoutSec))
                 process.destroyForcibly()
                 ssh.exec("pkill -f -- 'cases/$i([^0-9]|${'$'})' || true", KILL_TIMEOUT_SEC)
                 return if (cancelled()) CANCELLED else TIMEOUT
@@ -430,6 +440,9 @@ class AwsHost(
         }
         val result = if (exit == TIMEOUT_EXIT_CODE) TIMEOUT else exit
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
+        val kernel = text.substringBefore("$RECORD\n").lines().filter { it.startsWith(KERNEL) }.map { it.removePrefix(KERNEL) }
+        Termination.remote(exit, System.currentTimeMillis() - started, command.timeoutSec, kernel)
+            ?.let { Termination.record(Termination.file(dir, i), it) }
         val keepsOutput = keepsOutput(result, record.isNotEmpty(), profileCli || profileJob)
         if (profileJob || keepsOutput || profile != null) {
             val elapsedMs = runCatching { Json.parseToJsonElement(record).jsonObject["elapsedMs"]?.jsonPrimitive?.longOrNull }.getOrNull()
@@ -509,6 +522,8 @@ class AwsHost(
         const val ENV = "export JAVA_HOME=/opt/jdk PATH=/opt/jdk/bin:/usr/local/bin:${'$'}PATH"
         private const val SHA_DIR = 12
         private const val RECORD = "----klause-lab-record----"
+        /** Marks the instance's kernel log lines about killed processes, sent back for a case that ended by signal. */
+        private const val KERNEL = "kernel-log: "
         private const val SELECT_TIMEOUT_SEC = 3600L
         private const val SSH_GRACE_SEC = 120L
         private const val KILL_TIMEOUT_SEC = 30L
