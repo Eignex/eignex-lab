@@ -3,7 +3,7 @@
   "description": "Every 3 days: local search only on the broad selection at 60 s, to track the LS engine on its own.",
   "problems": [
     {"suite": "hakank", "per-family": "3", "max": "60", "seed": "1"},
-    {"suite": "mzn-bench", "per-family": "3", "max": "60", "seed": "1"},
+    {"suite": "mzn-bench-compatible-v1", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "xcsp3-cop", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "xcsp3-csp", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "miplib2017", "per-family": "3", "max": "60", "seed": "1"},
