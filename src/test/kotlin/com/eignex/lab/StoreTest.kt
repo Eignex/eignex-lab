@@ -486,4 +486,41 @@ class StoreTest {
         assertEquals(plain, store.next(Experiments.AWS_HOST, profiles = false)?.id)
         assertEquals(null, store.next(Experiments.AWS_HOST, profiles = false))
     }
+
+    @Test
+    fun `a running command keeps the phase the lab reports until it finishes`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L, "true" to 10L))
+        store.next()
+        val backoff = CasePhase(CasePhase.Phase.RETRY_BACKOFF, 5, attempt = 2, attempts = 8, retryAt = 30_005)
+        store.commandPhase(id, 0, backoff)
+        store.commandStarted(id, 1)
+        store.commandPhase(id, 1, backoff)
+
+        assertEquals(listOf(null, backoff), store.job(id)!!.commands.map { it.phase })
+        store.commandFinished(id, 1, 0)
+        assertEquals(listOf(null, null), store.job(id)!!.commands.map { it.phase })
+    }
+
+    @Test
+    fun `a database from before case phases gains the column`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        DriverManager.getConnection("jdbc:sqlite:$file").use { connection ->
+            connection.createStatement().use {
+                it.execute(
+                    """CREATE TABLE commands (
+                        job_id INTEGER NOT NULL, idx INTEGER NOT NULL, cmd TEXT NOT NULL, timeout_sec INTEGER NOT NULL,
+                        status TEXT NOT NULL, exit_code INTEGER, started_at INTEGER, finished_at INTEGER,
+                        cores INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (job_id, idx))""",
+                )
+            }
+        }
+        val store = Store(file)
+        val id = store.create("a", "main", listOf("true" to 10L))
+        store.next()
+        store.commandStarted(id, 0)
+        store.commandPhase(id, 0, CasePhase(CasePhase.Phase.EXECUTING, 1))
+
+        assertEquals(CasePhase.Phase.EXECUTING, store.job(id)!!.commands.single().phase?.phase)
+    }
 }

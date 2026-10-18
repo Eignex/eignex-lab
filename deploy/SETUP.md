@@ -529,6 +529,11 @@ once it is on.
   runs `parallel` cases at once (default one per two physical cores) over SSH under
   `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
   local job.
+- A running AWS case carries its phase, so a case RUNNING past its `timeoutSec` shows whether the solver or the lab
+  holds it: `EXECUTING`, `TRANSFERRING_OUTPUT` (with the record's `elapsedMs`), `RETRY_BACKOFF` after SSH dropped
+  (attempt n of m and when the next starts) or `TERMINATING` after a timeout or cancel. The job page lists it under
+  `running` and beside the case's status; `GET /jobs/{id}` has it as each command's `phase` (`phase`, `since`,
+  `attempt`, `attempts`, `retryAt`, `elapsedMs`), null once the case ends and for cases on the Mac.
 - Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per two physical cores, is the
   controlled setting: each case is a bench JVM driving a solver JVM, whose JIT compiler and garbage collector threads
   need the second core, and a problem's arms run on the same instance, so a comparison never spans machines.

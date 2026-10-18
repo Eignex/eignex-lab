@@ -177,4 +177,13 @@ class PagesTest {
 
         assertContains(page, "\"disagreementsBySuite\":{}")
     }
+
+    @Test
+    fun `a running AWS case's phase reads as what the lab is doing`() {
+        val backoff = CasePhase(CasePhase.Phase.RETRY_BACKOFF, 0, attempt = 2, attempts = 8, retryAt = 90_000)
+        val transfer = CasePhase(CasePhase.Phase.TRANSFERRING_OUTPUT, 0, elapsedMs = 10_175)
+
+        assertEquals("SSH dropped, waiting to retry for 1m, attempt 2 of 8 failed, next in 30s", phaseText(backoff, 60_000))
+        assertEquals("transferring output for 5s, solve took 10s", phaseText(transfer, 5_000))
+    }
 }

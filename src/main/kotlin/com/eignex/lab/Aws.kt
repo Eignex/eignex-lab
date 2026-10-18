@@ -1,6 +1,9 @@
 package com.eignex.lab
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -195,7 +198,7 @@ class AwsCli(private val aws: AwsConfig) {
 }
 
 /** An instance as the lab reaches it: SSH as `ubuntu`, with the lab's key, in the background. */
-class Ssh(
+open class Ssh(
     private val instance: String,
     private val ip: String,
     private val aws: AwsConfig,
@@ -220,7 +223,7 @@ class Ssh(
 
     /** Start [script]; with [mergeErrors] off, SSH's own messages and the remote shell's stderr are left out of the
      *  output, as a case's record must be: a "Timeout, server not responding" once landed in the middle of one. */
-    fun start(script: String, mergeErrors: Boolean = true): Process = ProcessBuilder(command(script))
+    open fun start(script: String, mergeErrors: Boolean = true): Process = ProcessBuilder(command(script))
         .apply { if (mergeErrors) redirectErrorStream(true) else redirectError(ProcessBuilder.Redirect.DISCARD) }
         .start()
 
@@ -331,6 +334,10 @@ class AwsHost(
     private val profileJob: Boolean = false,
     /** Why the instance is gone, when AWS reports it shut down or terminated; null while it runs. */
     private val gone: () -> String? = { null },
+    /** Told each case's [CasePhase] as it changes, for the job's page and its JSON. */
+    private val onPhase: (Int, CasePhase) -> Unit = { _, _ -> },
+    /** How often and how long a case whose SSH connection dropped is run again. */
+    private val retry: Backoff = SSH_RETRY,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val corpus = "$HOME/corpus"
@@ -363,8 +370,9 @@ class AwsHost(
             } catch (e: SshDropped) {
                 // A dropped connection to an instance AWS has taken back is no network trouble to wait out.
                 runCatching(gone).getOrNull()?.let { reason -> throw HostLost("$instance is gone ($reason)") }
-                if (attempt >= SSH_RETRY.attempts || cancelled()) throw IllegalStateException(e.message, e)
-                val until = System.currentTimeMillis() + SSH_RETRY.delayAfter(attempt)
+                if (attempt >= retry.attempts || cancelled()) throw IllegalStateException(e.message, e)
+                val until = System.currentTimeMillis() + retry.delayAfter(attempt)
+                report(command, CasePhase.Phase.RETRY_BACKOFF, attempt, retryAt = until)
                 while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
                 attempt++
             }
@@ -372,6 +380,11 @@ class AwsHost(
     }
 
     private class SshDropped(message: String) : Exception(message)
+
+    private fun report(command: Command, phase: CasePhase.Phase, attempt: Int, retryAt: Long? = null, elapsedMs: Long? = null) {
+        val now = System.currentTimeMillis()
+        runCatching { onPhase(command.index, CasePhase(phase, now, attempt, retry.attempts, retryAt, elapsedMs)) }
+    }
 
     private fun runOnce(command: Command, dir: Path, attempt: Int): Int {
         val i = command.index
@@ -390,12 +403,14 @@ class AwsHost(
             echo "$RECORD"
             cat ${'$'}JOB_DIR/cases/$i/*.json 2>/dev/null || true
         """.trimIndent()
+        report(command, CasePhase.Phase.EXECUTING, attempt)
         val process = ssh.start(script, mergeErrors = false)
         val output = StringBuilder()
         val reader = thread(isDaemon = true) { output.append(process.inputStream.bufferedReader().readText()) }
         val deadline = System.currentTimeMillis() + (command.timeoutSec + SSH_GRACE_SEC) * MS_PER_SEC
         while (!process.waitFor(POLL_MS, TimeUnit.MILLISECONDS)) {
             if (cancelled() || System.currentTimeMillis() > deadline) {
+                report(command, CasePhase.Phase.TERMINATING, attempt)
                 process.destroyForcibly()
                 ssh.exec("pkill -f -- 'cases/$i([^0-9]|${'$'})' || true", KILL_TIMEOUT_SEC)
                 return if (cancelled()) CANCELLED else TIMEOUT
@@ -415,10 +430,15 @@ class AwsHost(
         }
         val result = if (exit == TIMEOUT_EXIT_CODE) TIMEOUT else exit
         dir.resolve("$i.exit").toFile().writeText(if (result == TIMEOUT) "timeout\n" else "$exit\n")
+        val keepsOutput = keepsOutput(result, record.isNotEmpty(), profileCli || profileJob)
+        if (profileJob || keepsOutput || profile != null) {
+            val elapsedMs = runCatching { Json.parseToJsonElement(record).jsonObject["elapsedMs"]?.jsonPrimitive?.longOrNull }.getOrNull()
+            report(command, CasePhase.Phase.TRANSFERRING_OUTPUT, attempt, elapsedMs = elapsedMs)
+        }
         // Its output, for a case whose record cannot explain what happened: two more SSH round trips each, a cost every
         // case of a job would pay for nothing when it ran cleanly.
         if (profileJob) fetchOutDir(i, dir)
-        if (keepsOutput(result, record.isNotEmpty(), profileCli || profileJob)) for (suffix in listOf("out", "err")) {
+        if (keepsOutput) for (suffix in listOf("out", "err")) {
             runCatching { ssh.download("$HOME/job/$i.$suffix", dir.resolve("$i.$suffix"), ARTIFACT_TRANSFER_SEC) }
                 .onFailure { error ->
                     dir.resolve("$i.$suffix.transfer-error").toFile()
@@ -498,7 +518,7 @@ class AwsHost(
         private const val MS_PER_SEC = 1000L
         private const val ERROR_CHARS = 2000
         private const val TIMEOUT_EXIT_CODE = 124
-        private val SSH_RETRY = Backoff(attempts = 8, baseMs = 15_000, maxMs = 300_000)
+        internal val SSH_RETRY = Backoff(attempts = 8, baseMs = 15_000, maxMs = 300_000)
 
         /** The runner's exits for a case cut off by a cancel or by its timeout. */
         const val CANCELLED = -1000
@@ -919,6 +939,7 @@ class AwsWorker(
             AwsHost(id, Ssh(id, ip, aws, knownHosts) { store.cancelRequested(job.id) }, size.cores, config.solveJavaOpts,
                 job.experiment?.profileCli == true, job.experiment?.isProfile == true,
                 gone = { cli.state(id).takeIf { (state, _) -> state in GONE }?.let { (state, reason) -> "$state, $reason".trimEnd(',', ' ') } },
+                onPhase = { index, phase -> store.commandPhase(job.id, index, phase) },
             ) {
                 store.cancelRequested(job.id)
             }
