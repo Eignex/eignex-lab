@@ -13,6 +13,45 @@ import java.nio.file.Files
 
 class ExperimentsTest {
     @Test
+    fun `a local profile can opt into a whole run deadline`() {
+        val spec = Json.decodeFromString<ExperimentSpec>(
+            """{"name":"bounded","host":"lab","profile":{"main":"com.eignex.klause.bench.profile.Tool","runTimeoutSec":180}}""",
+        )
+
+        Experiments.validate(spec, maxParallel = 4)
+
+        assertEquals(180L, spec.profile?.runTimeoutSec)
+    }
+
+    @Test
+    fun `whole run deadlines reject nonpositive and overflowing limits`() {
+        for (limit in listOf(0L, -1L, Long.MAX_VALUE)) {
+            val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = limit))
+
+            assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
+        }
+    }
+
+    @Test
+    fun `a whole run deadline cannot be routed to AWS`() {
+        for (host in listOf(Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
+            val spec = ExperimentSpec("bounded", host = host,
+                profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 180))
+
+            assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
+        }
+    }
+
+    @Test
+    fun `profile deadlines do not change the measurement fingerprint`() {
+        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+
+        assertEquals(Experiments.fingerprint(spec), Experiments.fingerprint(
+            spec.copy(profile = spec.profile!!.copy(runTimeoutSec = 180)),
+        ))
+    }
+
+    @Test
     fun `maintained nonlinear reference specs preserve whole frozen memberships`() {
         for ((file, set) in listOf(
             "reference-qfnra.json" to "qfnra-core-v1,qfnra-holdout-v1",

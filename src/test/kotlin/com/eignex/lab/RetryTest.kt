@@ -3,8 +3,31 @@ package com.eignex.lab
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import java.util.concurrent.CancellationException
 
 class RetryTest {
+    @Test
+    fun `an exhausted profile deadline is not retried`() {
+        var tries = 0
+
+        assertFailsWith<ProfileRunTimeout> {
+            retrying(Backoff(3, 1, 1), sleep = {}) { tries++; throw ProfileRunTimeout() }
+        }
+
+        assertEquals(1, tries)
+    }
+
+    @Test
+    fun `a cancelled operation is not retried`() {
+        var tries = 0
+
+        assertFailsWith<CancellationException> {
+            retrying(Backoff(3, 1, 1), sleep = {}) { tries++; throw CancellationException() }
+        }
+
+        assertEquals(1, tries)
+    }
+
     @Test
     fun `waits double from the base and stop at the cap`() {
         val backoff = Backoff(attempts = 6, baseMs = 15_000, maxMs = 300_000)
