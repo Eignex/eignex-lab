@@ -198,10 +198,24 @@ object References {
             if (identities.size > 1) MIXED_SOURCES else identities.firstOrNull()
         }
 
-    /** The rows of each problem of [cases] on the source its cases ran on ([sources]), any other left out. */
+    /** The rows of each problem of [cases] that speak for the source its cases ran on ([sources], [applicable]). */
     fun matching(rows: Map<Pair<String, String>, List<Reference>>, cases: List<CaseResult>): Map<Pair<String, String>, List<Reference>> {
         val sources = sources(cases)
-        return rows.mapValues { (key, list) -> list.filter { it.sourceIdentity == sources[key] } }.filterValues { it.isNotEmpty() }
+        return rows.mapValues { (key, list) -> applicable(list, sources[key]) }.filterValues { it.isNotEmpty() }
+    }
+
+    /**
+     * The rows of one problem that speak for a run on [source]. A row bound to that source does. An unbound row, from
+     * before sources were kept, does too unless a row bound to another source shows the name has meant other files,
+     * when it could be from either and is left out. A run on [MIXED_SOURCES] matches nothing, and a run that recorded
+     * no source takes the unbound rows, else the bound ones.
+     */
+    fun applicable(rows: List<Reference>, source: String?): List<Reference> {
+        if (source == MIXED_SOURCES) return emptyList()
+        val (bound, unbound) = rows.partition { it.sourceIdentity != null }
+        if (source == null) return unbound.ifEmpty { bound }
+        val (same, other) = bound.partition { it.sourceIdentity == source }
+        return if (other.isEmpty()) same + unbound else same
     }
 
     /** The solvers whose rows from before [Reference.version] was kept are stale: MPS references, whose solutions
@@ -285,7 +299,7 @@ object References {
             val gaps = ArrayList<Double>()
             for ((problem, runs) in byProblem) {
                 val key = problem.collection to problem.problem
-                val reference = references[key]?.takeIf { it.sourceIdentity == sources[key] } ?: continue
+                val reference = references[key]?.takeIf { applicable(listOf(it), sources[key]).isNotEmpty() } ?: continue
                 covered++
                 val solved = runs.any { it.rank > 0 }
                 val refSolved = reference.feasible != null

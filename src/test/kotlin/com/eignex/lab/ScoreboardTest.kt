@@ -58,14 +58,16 @@ class ScoreboardTest {
         val identity = References.identity(Json.parseToJsonElement(record))
         val cases = listOf(case("p1", record), case("p2", solved(20.0, 1_000)))
         val references = mapOf(
-            ("c" to "p1") to listOf(ref("chuffed", 38.0, 500, proven = true), ref("cp-sat", 30.0, 1_000).copy(sourceIdentity = identity)),
+            ("c" to "p1") to listOf(ref("chuffed", 38.0, 500, proven = true).copy(sourceIdentity = "bacp-9"),
+                ref("cp-sat", 30.0, 1_000).copy(sourceIdentity = identity)),
             ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500).copy(sourceIdentity = identity)),
         )
 
         val board = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.FORMAT)
 
         assertEquals(listOf("best", "cp-sat"), board.solvers)
-        assertEquals(ScoreCell(0.5, 0.5, 1), board.total.cells["cp-sat"])
+        // p1 on its own files' row only; p2's run recorded no files, so its bound row still counts.
+        assertEquals(ScoreCell(0.5, 1.5, 2), board.total.cells["cp-sat"])
     }
 
     @Test
