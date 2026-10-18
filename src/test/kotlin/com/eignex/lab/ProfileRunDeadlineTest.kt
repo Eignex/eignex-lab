@@ -75,6 +75,7 @@ class ProfileRunDeadlineTest {
     fun `a timed out setup kills its child process`() {
         val child = AtomicLong()
         var process: Process? = null
+        val started = System.nanoTime()
         try {
             ProfileRunDeadline(2_000).use { deadline ->
                 assertFailsWith<ProfileRunTimeout> {
@@ -87,6 +88,7 @@ class ProfileRunDeadlineTest {
                 }
             }
 
+            assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started) < 10)
             assertTrue(child.get() > 0)
             ProcessHandle.of(child.get()).ifPresent { it.onExit().get(5, TimeUnit.SECONDS) }
             assertFalse(process!!.isAlive)

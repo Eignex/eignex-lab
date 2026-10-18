@@ -12,6 +12,27 @@ class StoreTest {
     private fun store() = Store(Files.createTempDirectory("lab").resolve("lab.db"))
 
     @Test
+    fun `reclaiming a bounded profile retains its interrupted running allowance`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 10))
+        val id = store.create("bounded", "main", listOf("true" to 1L), experiment = spec)
+        store.next()
+        DriverManager.getConnection("jdbc:sqlite:$file").use { connection ->
+            connection.prepareStatement("UPDATE jobs SET run_ms = 2000, running_since = ? WHERE id = ?").use { statement ->
+                statement.setLong(1, now() - 1000)
+                statement.setLong(2, id)
+                statement.executeUpdate()
+            }
+        }
+
+        val reclaimed = store.next()!!
+
+        assertEquals(id, reclaimed.id)
+        assertTrue(reclaimed.runMs >= 3000)
+    }
+
+    @Test
     fun `a cancel from a second process lands while the other one keeps writing`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val runner = Store(file)

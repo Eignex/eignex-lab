@@ -102,6 +102,8 @@ and worktree cleanup. Queue and paused time do not count; resumed and explicitly
 time already recorded for that job. `base.timeout` remains the separate command allowance, including its existing
 two-minute overhead. A whole-run deadline is optional; jobs without it retain their existing timeout policy. AWS
 and auto routing reject it.
+Reclaiming an interrupted bounded profile conservatively includes the interval until the runner reclaims it,
+including runner downtime, so a restart cannot replenish its allowance.
 
 Up to thirty seconds, or ten percent of a shorter allowance, is reserved for cleanup. Setup uses an owned
 single-use Gradle process with Kotlin compilation in that process, so expiry can stop it without stopping a shared
