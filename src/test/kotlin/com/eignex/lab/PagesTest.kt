@@ -25,6 +25,27 @@ class PagesTest {
     private val host = HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")
 
     @Test
+    fun `a profile stopped at its time limit says so and still lists what it left in OUT`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("p", base = mapOf("timeout" to "36000000"),
+            profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+        val id = store.create("p", "main", listOf("true" to 60L), experiment = spec)
+        val dir = config.jobDir(id)
+        dir.resolve("cases/0/out").toFile().mkdirs()
+        dir.resolve("cases/0/out/profile.jfr").toFile().writeText("jfr")
+        dir.resolve("0.exit").toFile().writeText("timeout\n")
+        Termination.record(Termination.file(dir, 0), Termination.timeoutGraceful(7_320, 30_000))
+
+        val page = jobPage(config, store.job(id)!!, failedOnly = false)
+
+        assertContains(page, "Time limit: 2 h")
+        assertContains(page, "Capped: a timeout of 10 h was asked, capped at 2 h.")
+        assertContains(page, "stopped at its time limit")
+        assertContains(page, "/jobs/$id/files/cases/0/out/profile.jfr")
+    }
+
+    @Test
     fun `arm pages show mixed provenance and missing legacy identities`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val cases = listOf(

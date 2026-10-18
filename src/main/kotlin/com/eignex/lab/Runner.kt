@@ -23,9 +23,18 @@ import kotlinx.serialization.json.Json
  * or reboot resumes the job at its first unfinished command; a command cut off mid-run is rerun from scratch.
  *
  * Every process the runner starts leads its own session, so killing that process group reaches everything the
- * command spawned, including children whose parent shell has already died.
+ * command spawned, including children whose parent shell has already died. A case that reaches its time limit, or a
+ * profile whose whole-run limit runs out, is stopped gracefully: SIGTERM to its group, [stopGraceMs] for it to flush
+ * and exit (a JVM runs its shutdown hooks, JFR dumps its recording), then SIGKILL to what is left. A cancel or a
+ * shutdown still kills at once: a cancelled case's results are not wanted, and a case cut off by a shutdown reruns
+ * from scratch, while the service manager gives the runner only seconds to stop.
  */
-class Runner(private val config: Config, private val store: Store) {
+class Runner(
+    private val config: Config,
+    private val store: Store,
+    /** How long a case stopped at its limit has between SIGTERM and SIGKILL; shorter only in tests. */
+    private val stopGraceMs: Long = Experiments.STOP_GRACE_SEC * 1000,
+) {
     /** Every process the runner has started and not yet seen exit, so cancel and shutdown can reach them all. */
     private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
 
@@ -119,8 +128,8 @@ class Runner(private val config: Config, private val store: Store) {
     }
 
     internal fun workWithDeadline(job: Job) {
-        val limit = checkNotNull(job.experiment?.profile?.runTimeoutSec) * MS_PER_SEC
-        ProfileRunDeadline(limit - job.elapsedMs(now()), cancelled = { store.cancelRequested(job.id) }).use { deadline ->
+        val limit = checkNotNull(job.experiment?.profile?.let(Experiments::profileRunTimeoutSec)) * MS_PER_SEC
+        ProfileRunDeadline(limit - job.elapsedMs(now()), cancelled = { store.cancelRequested(job.id) }, graceMillis = stopGraceMs).use { deadline ->
             var outcome: Dispatched? = null
             var failure: Throwable? = null
             try {
@@ -526,6 +535,10 @@ class Runner(private val config: Config, private val store: Store) {
             }
         }.map { (command, cores) -> CaseCommand(command.first, command.second, cores) }
         store.planCommands(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
+        if (spec.profile != null) {
+            log(job.id, "profile time limit: ${Experiments.profileLimitText(spec)}; SIGTERM at it, SIGKILL ${Experiments.STOP_GRACE_SEC} s later")
+            Experiments.profileCaps(spec).forEach { log(job.id, "capped: $it") }
+        }
         log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
     }
 
@@ -643,13 +656,23 @@ class Runner(private val config: Config, private val store: Store) {
 
     private fun await(job: Job, command: Command, dir: Path, process: Process): Int {
         val deadline = now() + command.timeoutSec * 1000
+        // A profile job's whole-run limit stops its processes from its own thread ([ProfileRunDeadline]), gracefully;
+        // this one only says so, once, and whether the grace ran out.
+        val graceMs = ProfileRunDeadline.graceMillis()
+        var deadlineStop = false
+        fun ended() = ProfileRunDeadline.isActive() && runCatching { ProfileRunDeadline.checkActive() }.isFailure
         while (!process.waitFor(CANCEL_POLL_MS, TimeUnit.MILLISECONDS)) {
             if (!stopping && store.cancelRequested(job.id)) {
                 kill(process, Termination.CANCEL)
                 return CANCELLED_EXIT
             }
-            if (now() > deadline) {
-                kill(process, Termination.timeout(command.timeoutSec))
+            if (!stopping && process !in killed && ended()) {
+                killed.add(process)
+                deadlineStop = true
+                Termination.record(Termination.file(dir, command.index), Termination.deadline(graceMs))
+            }
+            if (!deadlineStop && now() > deadline) {
+                stopGracefully(process, Termination.timeoutGraceful(command.timeoutSec, stopGraceMs), "timeout")
                 dir.resolve("${command.index}.exit").writeAtomically("timeout\n")
                 return TIMEOUT_EXIT
             }
@@ -659,17 +682,19 @@ class Runner(private val config: Config, private val store: Store) {
         while (stopping) Thread.sleep(CANCEL_POLL_MS)
         val exit = process.exitValue()
         dir.resolve("${command.index}.exit").writeAtomically("$exit\n")
-        if (process !in killed && Termination.signal(exit) != null) {
-            // A profile job's deadline kills its processes from its own thread ([ProfileRunDeadline]), which then
-            // no longer lets this one act; a cancel of the job ends the same way.
-            val ended = ProfileRunDeadline.isActive() && runCatching { ProfileRunDeadline.checkActive() }.isFailure
+        val termination = Termination.file(dir, command.index)
+        // The case can end on the deadline's SIGTERM before the loop above sees the deadline, with any exit when it
+        // traps the signal; a cancel of the job ends the same way.
+        val ended = process !in killed && ended()
+        if (process !in killed && (ended || Termination.signal(exit) != null)) {
             val reason = when {
                 ended && store.cancelRequested(job.id) -> Termination.CANCEL
-                ended -> Termination.DEADLINE
+                ended -> Termination.deadline(graceMs).also { deadlineStop = true }
                 else -> Termination.external(exit)
             }
-            Termination.record(Termination.file(dir, command.index), checkNotNull(reason))
+            Termination.record(termination, checkNotNull(reason))
         }
+        if (deadlineStop && exit == Termination.SIGKILL_EXIT) Termination.record(termination, Termination.graceExpired("deadline", graceMs))
         return exit
     }
 
@@ -838,6 +863,20 @@ class Runner(private val config: Config, private val store: Store) {
         killTree(process)
     }
 
+    /**
+     * Stop [process]'s case gracefully, first recording [reason]: SIGTERM to its process group, up to [stopGraceMs] for
+     * the group to be gone, then SIGKILL to what is left, recorded as a [kind] line of its own.
+     */
+    private fun stopGracefully(process: Process, reason: String, kind: String) {
+        val file = terminations[process]
+        file?.let {
+            killed.add(process)
+            Termination.record(it, reason)
+        }
+        stopGroups(listOf(process.pid()), stopGraceMs) { file?.let { Termination.record(it, Termination.graceExpired(kind, stopGraceMs)) } }
+        killTree(process)
+    }
+
     private fun killTree(process: Process) {
         killGroup(process.pid())
         process.descendants().forEach { it.destroyForcibly() }
@@ -881,9 +920,57 @@ internal fun inSession(vararg command: String): List<String> =
 
 /** SIGKILL every process in the group that [leader] leads. */
 internal fun killGroup(leader: Long) {
-    ProcessBuilder("kill", "-KILL", "--", "-$leader").redirectErrorStream(true)
-        .redirectOutput(ProcessBuilder.Redirect.DISCARD).start().waitFor()
+    signalGroups("KILL", listOf(leader))
 }
+
+/**
+ * Send [signal] (a name such as TERM or KILL, or 0 to send none) to every process in the groups [leaders] lead: whether
+ * any process was there to take it.
+ */
+internal fun signalGroups(signal: String, leaders: Collection<Long>): Boolean {
+    val kill = ProcessBuilder(listOf("kill", "-$signal", "--") + leaders.map { "-$it" }).redirectErrorStream(true)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+    if (!kill.waitFor(SIGNAL_WAIT_SEC, TimeUnit.SECONDS)) {
+        kill.destroyForcibly()
+        return true
+    }
+    return kill.exitValue() == 0
+}
+
+/**
+ * Stop the process groups [leaders] lead: SIGTERM, up to [graceMs] for every process in them to exit, then SIGKILL to
+ * any group with one left, after calling [beforeKill]. With no grace, straight to SIGKILL. Whether SIGKILL was needed.
+ */
+internal fun stopGroups(leaders: Collection<Long>, graceMs: Long, beforeKill: () -> Unit = {}): Boolean {
+    var left = leaders.toList()
+    var interrupted = false
+    if (graceMs > 0) {
+        signalGroups("TERM", left)
+        val until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(graceMs)
+        try {
+            while (true) {
+                left = left.filter { signalGroups("0", listOf(it)) }
+                val remaining = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime())
+                if (left.isEmpty() || remaining <= 0) break
+                Thread.sleep(remaining.coerceAtMost(GROUP_POLL_MS))
+            }
+        } catch (_: InterruptedException) {
+            // Interrupted mid-grace: kill now, and leave the interrupt for the caller to see once that is done.
+            interrupted = true
+        }
+    }
+    try {
+        if (left.isEmpty()) return false
+        beforeKill()
+        signalGroups("KILL", left)
+        return true
+    } finally {
+        if (interrupted) Thread.currentThread().interrupt()
+    }
+}
+
+private const val SIGNAL_WAIT_SEC = 1L
+private const val GROUP_POLL_MS = 100L
 
 /** Copy the tree at [source] to [target], replacing files already there. Links are not followed, nor copied. */
 internal fun copyTree(source: Path, target: Path) {

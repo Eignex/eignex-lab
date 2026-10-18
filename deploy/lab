@@ -7,7 +7,10 @@
 #                                                            by default (on demand, never spot); for measurements experiments
 #                                                            cannot express, NOT for running tests, lint or other gates (CI
 #                                                            runs those). <ref> must be main or a branch only trusted users
-#                                                            pushed to
+#                                                            pushed to. [timeout-sec] is its time limit: 600 (10 min) when
+#                                                            empty or left out, capped at 7200 (2 h); at it the main gets
+#                                                            SIGTERM, then SIGKILL 30 s later, so it should write results
+#                                                            as it goes or flush them on shutdown
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
@@ -58,13 +61,16 @@ cmd="${1:-ls}"; shift || true
 case "$cmd" in
 run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
 profile)
-  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [auto|aws|lab] [timeout-sec] [arg...]" >&2; exit 2; }
-  main="$1" ref="$2" description="$3" host="${4:-}" timeout="${5:-3600}"
+  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [auto|aws|lab] [timeout-sec, default 600, at most 7200] [arg...]" >&2; exit 2; }
+  main="$1" ref="$2" description="$3" host="${4:-}" timeout="${5:-}"
   shift $(( $# < 5 ? $# : 5 ))
+  [[ -z "$timeout" || "$timeout" =~ ^[1-9][0-9]*$ ]] || { echo "timeout-sec must be a positive number of seconds (default 600, at most 7200)" >&2; exit 2; }
   name="profile-$(echo "${main##*.}" | tr '[:upper:]' '[:lower:]')"
+  # No timeout leaves the lab's default, 10 min; the lab caps any limit at 2 h.
   jq -n --arg name "$name" --arg main "$main" --arg ref "$ref" --arg description "$description" --arg host "$host" \
-    --arg timeout "$(( timeout * 1000 ))" --args \
-    '{name: $name, description: $description, profile: {main: $main, args: $ARGS.positional}, base: {ref: $ref, timeout: $timeout}}
+    --arg timeout "${timeout:+$(( timeout * 1000 ))}" --args \
+    '{name: $name, description: $description, profile: {main: $main, args: $ARGS.positional},
+      base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))}
       + (if $host == "" then {} else {host: $host} end)' "$@" |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;

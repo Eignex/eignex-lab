@@ -76,7 +76,7 @@ such as timing a component on captured inputs. It is not for running the build's
 those on every push. The lab runs no shell scripts or commands a job supplies; the code a profile job runs is the
 class it names, from the commit it names, which must pass the trust check below. Instead of `problems` and arms, its
 spec names a class in `com.eignex.klause.bench.profile` (klause-bench's package for them) and its arguments (`profile`), and `base` gives the commit (`ref`), the
-time it may take (`timeout` in ms, an hour by default) and its cores (`processors`):
+time it may take (`timeout` in ms: **10 minutes by default, at most 2 hours**) and its cores (`processors`):
 
 ```json
 {
@@ -96,18 +96,34 @@ the job page. From AWS, at most 1 GiB of `$OUT` comes back, smallest files first
 in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
 `"host": "lab"`; on the Mac it runs alone, as every job does.
 
+Every profile job is time-boxed. With no `timeout` it gets 10 minutes (`lab profile` sends none unless given its
+`timeout-sec`); a `timeout` over 2 hours is cut to 2 hours, which the job log, the job page and the submit response
+(`notes`) say. The case then runs for that limit plus two minutes for the JVM's start, the room every case gets. At
+the limit its process group gets SIGTERM, and whatever is still running 30 seconds later gets SIGKILL: on AWS by
+`timeout -k 30`, on the Mac by the runner, which does the same (a case of any job stopped at its limit gets this
+grace; a cancel or a runner shutdown still kills at once, since a cancelled case's results are not wanted and a case
+cut off by a shutdown reruns from scratch). SIGTERM runs the JVM's shutdown hooks, so JFR writes `profile.jfr` (its
+recording is started with `dumponexit=true`) and the main can flush what it has. A profile main should therefore
+write its results as it goes, or flush them in a shutdown hook within those 30 seconds; whatever it has written to
+`$OUT`, and its stdout and stderr, stay with the job (from AWS, `$OUT` is fetched back whatever the exit). The case's
+exit reads `timeout`, its `.termination` file has a `timeout:` line saying SIGTERM was sent, and a second line when
+SIGKILL was needed; the job page says it was stopped at its time limit and lists `$OUT` as for any other exit.
+
 For a local profile, `"profile": {"main": "com.eignex.klause.bench.profile.Tool", "runTimeoutSec": 180}`
 with explicit `"host": "lab"` opts into one active-time deadline across setup, build retries, the profile command,
 and worktree cleanup. Queue and paused time do not count; resumed and explicitly retried work retains the active
 time already recorded for that job. `base.timeout` remains the separate command allowance, including its existing
-two-minute overhead. A whole-run deadline is optional; jobs without it retain their existing timeout policy. AWS
-and auto routing reject it.
+two-minute overhead. `runTimeoutSec` is capped at 7200 (2 hours) as `timeout` is. A whole-run deadline is
+optional; jobs without it retain their existing timeout policy. AWS and auto routing reject it.
 Reclaiming an interrupted bounded profile conservatively includes the interval until the runner reclaims it,
 including runner downtime, so a restart cannot replenish its allowance.
 
 Up to thirty seconds, or ten percent of a shorter allowance, is reserved for cleanup. Setup uses an owned
 single-use Gradle process with Kotlin compilation in that process, so expiry can stop it without stopping a shared
-daemon. Expiry interrupts the current stage, kills its owned process groups and descendants, and fails the job;
+daemon. Expiry interrupts the current stage and stops its owned process groups and descendants, SIGTERM first and
+SIGKILL after a grace of 30 seconds (or a tenth of a shorter allowance, reserved from the work's share so cleanup
+keeps its own), so a profile cut off mid-command still dumps its JFR and flushes; the case's `.termination` says
+`deadline:`. It fails the job;
 an explicit cancel records cancellation. The job keeps output and timeout/error diagnostics. Cleanup uses only
 the remainder of the same deadline; incomplete cleanup is logged and the job is not reported successful. These
 profiles do not repair shared Gradle transform caches. The deadline manages OS processes, not independently

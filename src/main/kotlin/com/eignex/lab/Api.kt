@@ -63,8 +63,9 @@ data class ScheduleSpec(
 @Serializable
 data class ScheduleUpdate(val experiment: ExperimentSpec? = null, val intervalSec: Long? = null, val nextCheckInSec: Long? = null)
 
+/** A queued job's [id], with [notes] on what the lab made of its spec, such as a profile's time limit; none for most. */
 @Serializable
-data class Created(val id: Long)
+data class Created(val id: Long, val notes: List<String>? = null)
 
 @Serializable
 data class ReferenceHit(val collection: String, val problem: String, val reference: Reference)
@@ -154,7 +155,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config, trust)
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
-            call.respond(HttpStatusCode.Created, Created(id))
+            val notes = if (spec.isProfile) {
+                listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
+                    Experiments.profileCaps(spec).map { "capped: $it" }
+            } else null
+            call.respond(HttpStatusCode.Created, Created(id, notes))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {

@@ -9,14 +9,23 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** One local profile's active-time allowance, including its setup and worktree cleanup. */
+/**
+ * One local profile's active-time allowance, including its setup and worktree cleanup. When it runs out during a
+ * stage, the stage's process groups get SIGTERM and up to [graceMillis] (at most a tenth of the allowance, reserved
+ * from the work's share) to exit, so a profile's JVM can run its shutdown hooks and JFR can dump its recording, before
+ * SIGKILL ends what is left. A cancel, or any other failure, kills them outright.
+ */
 internal class ProfileRunDeadline(
     private val durationMillis: Long,
     private val nanoTime: () -> Long = System::nanoTime,
     private val cancelled: () -> Boolean = { false },
+    graceMillis: Long = 0,
 ) : AutoCloseable {
     private val startedAt = nanoTime()
     private val cleanupReserveMillis = minOf(30_000, durationMillis.coerceAtLeast(0) / 10)
+
+    /** How long a stage's processes get between SIGTERM and SIGKILL when the allowance runs out. */
+    val graceMillis = minOf(graceMillis.coerceAtLeast(0), durationMillis.coerceAtLeast(0) / 10)
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "profile-run-deadline").apply { isDaemon = true }
     }
@@ -27,7 +36,7 @@ internal class ProfileRunDeadline(
 
     fun remainingMillis(cleanup: Boolean = false): Long {
         val elapsed = TimeUnit.NANOSECONDS.toMillis(nanoTime() - startedAt)
-        val remaining = durationMillis - elapsed - if (cleanup) 0 else cleanupReserveMillis
+        val remaining = durationMillis - elapsed - if (cleanup) 0 else cleanupReserveMillis + graceMillis
         if (remaining <= 0) throw ProfileRunTimeout()
         return remaining
     }
@@ -38,7 +47,7 @@ internal class ProfileRunDeadline(
 
     private fun <T> execute(cleanup: Boolean, action: () -> T): T {
         remainingMillis(cleanup)
-        val execution = Execution {
+        val execution = Execution(if (cleanup) 0 else graceMillis) {
             if (!cleanup && cancellationSeen.get()) throw CancellationException("Profile job cancelled")
             remainingMillis(cleanup)
         }
@@ -69,7 +78,7 @@ internal class ProfileRunDeadline(
             cancellation?.cancel(true)
             future.cancel(true)
             try {
-                execution.close()
+                execution.close(graceful = failure is ProfileRunTimeout)
             } catch (cleanupFailure: Throwable) {
                 if (failure == null) throw cleanupFailure else failure.addSuppressed(cleanupFailure)
             }
@@ -81,7 +90,7 @@ internal class ProfileRunDeadline(
         cancellationChecks.shutdownNow()
     }
 
-    private class Execution(private val remainingMillis: () -> Long) : AutoCloseable {
+    private class Execution(val graceMillis: Long, private val remainingMillis: () -> Long) : AutoCloseable {
         private data class Owned(val process: Process, val startedAt: java.time.Instant?)
         private val processes = mutableListOf<Owned>()
         private var closed = false
@@ -98,7 +107,10 @@ internal class ProfileRunDeadline(
             return builder.start().also { processes.add(Owned(it, it.info().startInstant().orElse(null))) }
         }
 
-        override fun close() {
+        override fun close() = close(graceful = false)
+
+        /** End every process the stage started: [graceful]ly, SIGTERM first and SIGKILL after [graceMillis]. */
+        fun close(graceful: Boolean) {
             val owned = synchronized(this) {
                 closed = true
                 processes.toList()
@@ -109,12 +121,8 @@ internal class ProfileRunDeadline(
                 val current = ProcessHandle.of(entry.process.pid())
                 !current.isPresent || entry.startedAt != null &&
                     current.get().info().startInstant().orElse(null) == entry.startedAt
-            }.map { "-${it.process.pid()}" }
-            if (groups.isNotEmpty()) {
-                val signal = ProcessBuilder(listOf("kill", "-KILL", "--") + groups)
-                    .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
-                if (!signal.waitFor(1, TimeUnit.SECONDS)) signal.destroyForcibly()
-            }
+            }.map { it.process.pid() }
+            if (groups.isNotEmpty()) stopGroups(groups, if (graceful) graceMillis else 0)
             descendants.asReversed().forEach { it.destroyForcibly() }
             for ((process) in owned.asReversed()) {
                 if (process.isAlive) process.destroyForcibly()
@@ -130,6 +138,9 @@ internal class ProfileRunDeadline(
         }
 
         fun isActive(): Boolean = current.get() != null
+
+        /** The grace the current stage's processes get between SIGTERM and SIGKILL when its allowance runs out. */
+        fun graceMillis(): Long = current.get()?.graceMillis ?: 0
 
         fun start(builder: ProcessBuilder, alreadyInSession: Boolean = false): Process {
             val execution = current.get() ?: return builder.start()

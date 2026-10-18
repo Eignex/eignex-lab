@@ -881,7 +881,10 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
         append("<h2>Profile</h2><p>Runs <code>${esc(profile.main)}</code>")
         if (profile.args.isNotEmpty()) append(" with <code>${esc(profile.args.joinToString(" "))}</code>")
         append(" from the build at the job's commit, recording JFR to <code>profile.jfr</code> in <code>${"$"}OUT</code>.</p>")
-        profile.runTimeoutSec?.let { append("<p>Whole-job active-time limit: $it seconds, including setup and cleanup.</p>") }
+        append("<p>Time limit: ${esc(Experiments.profileLimitText(spec))} (${Experiments.duration(Experiments.PROFILE_TIMEOUT_MS)} unless the spec's ")
+        append("<code>timeout</code> says, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}); at it the main gets SIGTERM, and SIGKILL ${Experiments.STOP_GRACE_SEC} s later if still running.</p>")
+        Experiments.profileRunTimeoutSec(profile)?.let { append("<p>Whole-job active-time limit: $it seconds, including setup and cleanup.</p>") }
+        Experiments.profileCaps(spec).forEach { append("<p class=\"muted\">Capped: ${esc(it)}.</p>") }
     } else {
         append("<h2>Script</h2><p class=\"muted\">A retired script job: the lab no longer runs these.</p>")
     }
@@ -891,6 +894,10 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
     val exit = dir.resolve("0.exit").takeIf { it.isFile }?.readText()?.trim()
     append("<p>")
     append(if (exit == null) "<span class=\"muted\">not finished</span>" else "exit <b>${esc(exit)}</b>")
+    val limited = exit == "timeout" || Termination.read(dir.toPath(), 0).any { line ->
+        line.substringAfter(' ').let { it.startsWith("timeout:") || it.startsWith("deadline:") }
+    }
+    if (limited) append(" · <b>stopped at its time limit</b>; what it wrote before then is kept")
     append(terminations(dir, 0))
     append(" · <a href=\"/jobs/${job.id}/files/0.out\">stdout</a> · <a href=\"/jobs/${job.id}/files/0.err\">stderr</a>")
     val out = dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList()
