@@ -191,7 +191,7 @@ class Store(file: Path) {
                     objective REAL, feasible INTEGER, proven INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL,
                     budget_ms INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
                     version TEXT NOT NULL DEFAULT '', validation TEXT, dual_bound REAL, stale INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (collection, problem, solver))""",
+                    source_identity TEXT, PRIMARY KEY (collection, problem, solver))""",
             )
             it.execute(
                 """CREATE TABLE IF NOT EXISTS problem_features (
@@ -214,6 +214,8 @@ class Store(file: Path) {
                 // no longer trusted, and replaced by the next run of each solver ([References.stale]).
                 it.execute("UPDATE reference_rows SET stale = 1 WHERE solver IN ${References.UNCHECKED_SOLVERS.joinToString(",", "(", ")") { s -> "'$s'" }}")
             }
+            // The rows from before the source files were kept stay unbound ([Reference.sourceIdentity]).
+            if ("source_identity" !in columns) it.execute("ALTER TABLE reference_rows ADD COLUMN source_identity TEXT")
         }
         retireReferences(this)
     }
@@ -743,8 +745,8 @@ class Store(file: Path) {
         val select = connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND solver = ?")
         val upsert = connection.prepareStatement(
             "INSERT OR REPLACE INTO reference_rows (collection, problem, solver, maximize, objective, feasible, proven, " +
-                "elapsed_ms, budget_ms, source, updated_at, version, validation, dual_bound, stale) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "elapsed_ms, budget_ms, source, updated_at, version, validation, dual_bound, stale, source_identity) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         select.use {
             upsert.use {
@@ -771,6 +773,7 @@ class Store(file: Path) {
                     upsert.setString(13, row.validation)
                     upsert.setObject(14, row.dualBound)
                     upsert.setInt(15, if (row.stale) 1 else 0)
+                    upsert.setString(16, row.sourceIdentity)
                     upsert.executeUpdate()
                     changed++
                 }
@@ -818,9 +821,17 @@ class Store(file: Path) {
      * The strongest trusted reference row of each of [keys] that has any, keyed by (collection, problem): stale rows
      * left out, and across solvers a proof another solver's solution contradicts set aside ([References.trusted]).
      * With [solver], that solver's own current row, whatever the others say: what its backfill needs to know.
+     *
+     * Only rows on one source count ([Reference.sourceIdentity]): with [sources] ([References.sources]), the one each
+     * problem's cases ran on, an unbound problem matching only unbound rows. Without, as when selecting problems
+     * before any ran, the source of the newest bound row, else the unbound rows: the problem's name as it now stands.
      */
     @Synchronized
-    fun references(keys: Collection<Pair<String, String>>, solver: String? = null): Map<Pair<String, String>, Reference> =
+    fun references(
+        keys: Collection<Pair<String, String>>,
+        solver: String? = null,
+        sources: Map<Pair<String, String>, String?>? = null,
+    ): Map<Pair<String, String>, Reference> =
         connection.prepareStatement(
             "SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND (? IS NULL OR solver = ?)",
         ).use { statement ->
@@ -829,8 +840,13 @@ class Store(file: Path) {
                 statement.setString(2, key.second)
                 statement.setString(3, solver)
                 statement.setString(4, solver)
-                val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
-                    .filter { !it.stale }.let { if (solver == null) References.trusted(it) else it }
+                val current = statement.executeQuery().use { r ->
+                    generateSequence { if (r.next()) reference(r) to r.getLong("updated_at") else null }.toList()
+                }.filter { !it.first.stale }
+                val source = if (sources != null) sources[key]
+                else current.filter { it.first.sourceIdentity != null }.maxByOrNull { it.second }?.first?.sourceIdentity
+                val rows = current.map { it.first }.filter { it.sourceIdentity == source }
+                    .let { if (solver == null) References.trusted(it) else it }
                 rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
             }.toMap()
         }
@@ -959,6 +975,7 @@ class Store(file: Path) {
         validation = r.getString("validation"),
         dualBound = r.getDouble("dual_bound").takeUnless { r.wasNull() },
         stale = r.getInt("stale") == 1,
+        sourceIdentity = r.getString("source_identity"),
     )
 
     /** Make schedule [id] due, so the runner checks it at once; false when there is no such schedule. */

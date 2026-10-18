@@ -64,7 +64,8 @@ data class Board(val solvers: List<String>, val rows: List<ScoreRow>, val total:
  * An arm against every reference solver by the MiniZinc Challenge's pairwise Borda rule ([Compare.points]), one row per
  * group of problems. A run whose budget and single core match a reference's has equal results split by time; any other
  * run is compared on quality alone, an equal result splitting the point, since its times measure something else.
- * Proofs another solver contradicts are set aside first ([References.trusted]).
+ * Proofs another solver contradicts are set aside first ([References.trusted]), and only reference rows on the source
+ * files the arm's runs used count ([References.matching]).
  */
 object Scoreboard {
     const val BEST = "best"
@@ -145,7 +146,8 @@ object Scoreboard {
         filters: Map<Dimension, String> = emptyMap(),
         scoring: Scoring = Scoring.COMPLETE,
     ): Board {
-        val scored = scoredProblems(cases, arm, references, features, filters, scoring)
+        val matched = References.matching(references, cases)
+        val scored = scoredProblems(cases, arm, matched, features, filters, scoring)
         val profiles = profiles(cases, features)
         val named = scored.flatMap { it.second.keys }.filter { it != BEST }.distinct().sorted()
         val solvers = listOfNotNull(BEST.takeIf { scored.any { BEST in it.second } }) + named
@@ -159,7 +161,7 @@ object Scoreboard {
         )
         val groups = scored.flatMap { entry ->
             val key = entry.first.collection to entry.first.problem
-            values(groupBy, entry.first, features[key], references[key].orEmpty(), profiles[entry.first]).map { it to entry }
+            values(groupBy, entry.first, features[key], matched[key].orEmpty(), profiles[entry.first]).map { it to entry }
         }.groupBy({ it.first }, { it.second })
         return Board(
             solvers,
@@ -181,10 +183,11 @@ object Scoreboard {
         scoring: Scoring = Scoring.COMPLETE,
     ): List<ScoreProblem> {
         val profiles = profiles(cases, features)
-        return scoredProblems(cases, arm, references, features, filters, scoring)
+        val matched = References.matching(references, cases)
+        return scoredProblems(cases, arm, matched, features, filters, scoring)
             .filter { (problem, _) ->
                 val key = problem.collection to problem.problem
-                group == null || group == "all" || group in values(groupBy, problem, features[key], references[key].orEmpty(), profiles[problem])
+                group == null || group == "all" || group in values(groupBy, problem, features[key], matched[key].orEmpty(), profiles[problem])
             }
             .mapNotNull { it.second[solver] }
             .sortedBy { it.klause - it.reference }

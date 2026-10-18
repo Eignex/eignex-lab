@@ -1020,7 +1020,7 @@ internal fun problemPage(report: ProblemReport, repoUrl: String): String = build
         append("<p class=\"muted\">No reference result for this problem.</p>")
     } else {
         append("<div class=\"scroll\"><table><tr><th>solver</th><th>verdict</th><th class=\"num\">objective</th>")
-        append("<th class=\"num\">dual bound</th><th class=\"num\">time</th><th class=\"num\">budget</th><th>trust</th></tr>")
+        append("<th class=\"num\">dual bound</th><th class=\"num\">time</th><th class=\"num\">budget</th><th>source</th><th>trust</th></tr>")
         // What the lab's comparisons take from each row: a stale one nothing, a disputed proof only its solution.
         val current = report.references.filter { !it.stale }
         val trusted = current.zip(References.trusted(current)).toMap()
@@ -1033,6 +1033,8 @@ internal fun problemPage(report: ProblemReport, repoUrl: String): String = build
             append("<tr><td>${esc(r.solver)}</td><td>${verdictWord(r)}</td><td class=\"num\">${r.objective?.let(::number) ?: "–"}</td>")
             append("<td class=\"num\">${r.dualBound?.let(::number) ?: "–"}</td>")
             append("<td class=\"num\">${"%.2f".format(r.elapsedMs / 1000.0)}s</td><td class=\"num\">${r.budgetMs / 1000}s</td>")
+            // An unbound row counts only against runs that recorded no source either ([Reference.sourceIdentity]).
+            append("<td>${r.sourceIdentity?.let { "<code title=\"${esc(it)}\">${esc(it.take(12))}</code>" } ?: "<span class=\"muted\">unbound</span>"}</td>")
             append("<td class=\"muted\">${esc(trust)}</td></tr>")
         }
         append("</table></div>")

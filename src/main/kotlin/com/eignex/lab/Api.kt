@@ -206,7 +206,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/experiments/{id}/reference") {
             val id = call.parameters["id"]!!.toLong()
             val cases = store.cases(id)
-            val references = store.references(cases.map { it.problem.collection to it.problem.problem })
+            val references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases))
             call.respond(References.compare(store.arms(id).map { it.arm.label }, cases, references))
         }
         get("/compare") {
@@ -216,7 +216,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // Arms are named by their job, so the same arm of two runs stays two columns.
             val arms = jobs.flatMap { job -> store.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
             val cases = jobs.flatMap { job -> store.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
-            val references = store.references(cases.map { it.problem.collection to it.problem.problem })
+            val references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases))
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
@@ -243,7 +243,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         config, job, "failed" in call.parameters,
                         arms = if (experiment) store.arms(job.id) else emptyList(),
                         cases = cases,
-                        references = store.references(cases.map { it.problem.collection to it.problem.problem }),
+                        references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases)),
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                     )
@@ -691,7 +691,7 @@ internal class ScoreInputs(
 internal fun scoreInputs(store: Store, job: Long, label: String?): ScoreInputs {
     val cases = store.scoringCases(job).filter { it.arm == label }
     val keys = cases.map { it.problem.collection to it.problem.problem }.distinct()
-    return ScoreInputs(cases, store.currentReferenceRows(keys), store.features(keys))
+    return ScoreInputs(cases, References.matching(store.currentReferenceRows(keys), cases), store.features(keys))
 }
 
 internal fun scoreboardView(
