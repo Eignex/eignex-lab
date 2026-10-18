@@ -95,6 +95,22 @@ the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to 
 the job page. From AWS, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
 in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
 `"host": "lab"`; on the Mac it runs alone, as every job does.
+
+For a local profile, `"profile": {"main": "com.eignex.klause.bench.profile.Tool", "runTimeoutSec": 180}`
+with explicit `"host": "lab"` opts into one active-time deadline across setup, build retries, the profile command,
+and worktree cleanup. Queue and paused time do not count; resumed and explicitly retried work retains the active
+time already recorded for that job. `base.timeout` remains the separate command allowance, including its existing
+two-minute overhead. A whole-run deadline is optional; jobs without it retain their existing timeout policy. AWS
+and auto routing reject it.
+
+Up to thirty seconds, or ten percent of a shorter allowance, is reserved for cleanup. Setup uses an owned
+single-use Gradle process with Kotlin compilation in that process, so expiry can stop it without stopping a shared
+daemon. Expiry interrupts the current stage, kills its owned process groups and descendants, and fails the job;
+an explicit cancel records cancellation. The job keeps output and timeout/error diagnostics. Cleanup uses only
+the remainder of the same deadline; incomplete cleanup is logged and the job is not reported successful. These
+profiles do not repair shared Gradle transform caches. The deadline manages OS processes, not independently
+created container/service resources, whose cleanup remains the profile's responsibility.
+
 After a profile command reports its exit, AWS output retrieval retries only the result stream when SSH drops or
 its transfer times out. It uses the file-transfer policy: at most eight 120-second attempts, with cancellable
 backoff from 15 seconds to 5 minutes. It does not restart the completed profile command. Transfer failures remain

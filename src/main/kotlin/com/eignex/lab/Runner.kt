@@ -86,6 +86,10 @@ class Runner(private val config: Config, private val store: Store) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
+            if (job.experiment?.profile?.runTimeoutSec != null) {
+                workWithDeadline(job)
+                continue
+            }
             runCatching { work(job) }.onFailure { e ->
                 if (stopping) return
                 // A cancel that lands while a setup step waits to retry ends the wait; it is a cancel, not a failure.
@@ -99,6 +103,48 @@ class Runner(private val config: Config, private val store: Store) {
     }
 
     private fun work(claimed: Job) {
+        finishWork(claimed, executeWork(claimed))
+    }
+
+    internal fun workWithDeadline(job: Job) {
+        val limit = checkNotNull(job.experiment?.profile?.runTimeoutSec) * MS_PER_SEC
+        ProfileRunDeadline(limit - job.elapsedMs(now()), cancelled = { store.cancelRequested(job.id) }).use { deadline ->
+            var outcome: Dispatched? = null
+            var failure: Throwable? = null
+            try {
+                outcome = deadline.work { executeWork(job) }
+            } catch (error: Throwable) {
+                if (stopping) return
+                failure = error
+            }
+            if (outcome == Dispatched.YIELDED && failure == null) {
+                store.requeue(job.id)
+                log(job.id, "job paused between commands")
+                return
+            }
+            try {
+                deadline.cleanup { removeWorktree(job.id) }
+            } catch (cleanup: Throwable) {
+                if (failure == null) failure = cleanup else failure.addSuppressed(cleanup)
+                log(job.id, "worktree cleanup incomplete: ${cleanup.message}")
+            }
+            if (store.cancelRequested(job.id) || outcome == Dispatched.CANCELLED) {
+                store.cancelRemaining(job.id)
+                store.finish(job.id, Status.CANCELLED)
+                log(job.id, "job cancelled")
+            } else if (failure != null || outcome != Dispatched.FINISHED) {
+                store.cancelRemaining(job.id)
+                val error = failure?.message ?: "profile did not finish"
+                store.finish(job.id, Status.FAILED, error)
+                log(job.id, "job failed: $error")
+            } else {
+                store.finish(job.id, Status.DONE)
+                log(job.id, "job finished")
+            }
+        }
+    }
+
+    private fun executeWork(claimed: Job): Dispatched {
         val dir = config.jobDir(claimed.id).createDirectories()
         killOrphan(dir.resolve("setup.pid"))
         claimed.commands.filter { it.status == Status.RUNNING }.forEach { killOrphan(dir.resolve("${it.index}.pid")) }
@@ -106,10 +152,15 @@ class Runner(private val config: Config, private val store: Store) {
         var job = checkNotNull(store.job(claimed.id))
         if (!job.setupDone || !config.worktree(job.id).exists()) {
             val sha = setupExperiment(job, dir)
+            ProfileRunDeadline.checkActive()
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
-        when (dispatch(job, dir)) {
+        return dispatch(job, dir)
+    }
+
+    private fun finishWork(job: Job, outcome: Dispatched) {
+        when (outcome) {
             Dispatched.CANCELLED -> return cancel(job.id)
             // Its worktree and finished commands stay, so the job resumes at its next command when picked again.
             Dispatched.YIELDED -> {
@@ -163,6 +214,7 @@ class Runner(private val config: Config, private val store: Store) {
         var yielding = false
         try {
             while (pending.isNotEmpty() || active.isNotEmpty()) {
+                ProfileRunDeadline.checkActive()
                 // Shutdown kills the commands and leaves them RUNNING to rerun; nothing here may record them.
                 while (stopping) Thread.sleep(CANCEL_POLL_MS)
                 for (index in active.filterValues { it.isDone }.keys) {
@@ -194,8 +246,9 @@ class Runner(private val config: Config, private val store: Store) {
                         (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
                     ) {
                         val command = pending.removeFirst()
+                        ProfileRunDeadline.checkActive()
                         store.commandStarted(job.id, command.index)
-                        active[command.index] = pool.submit<Int> { host.run(command, dir) }
+                        active[command.index] = pool.submit(ProfileRunDeadline.task { host.run(command, dir) })
                     }
                 }
                 Thread.sleep(DISPATCH_POLL_MS)
@@ -210,7 +263,7 @@ class Runner(private val config: Config, private val store: Store) {
                 return Dispatched.LOST
             }
             // One command's failure to run fails the job, which must not leave its siblings running past it.
-            running.forEach(::killTree)
+            if (!ProfileRunDeadline.isActive()) running.forEach(::killTree)
             throw e.cause ?: e
         } finally {
             pool.shutdown()
@@ -350,9 +403,10 @@ class Runner(private val config: Config, private val store: Store) {
                 val start = log.length()
                 runCatching {
                     sh(log, path.toFile(),
-                        "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+                        "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q" +
+                            if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
                 }.onFailure { e ->
-                    if (brokenTransforms(log, start)) {
+                    if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
                         log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
                         clearTransforms(path.toFile())
                     }
@@ -529,6 +583,7 @@ class Runner(private val config: Config, private val store: Store) {
      */
     private fun linkShared(worktree: Path) {
         for (relative in config.sharedPaths) {
+            ProfileRunDeadline.checkActive()
             val target = config.sharedDir.resolve(relative).createDirectories()
             val link = worktree.resolve(relative)
             link.parent.createDirectories()
@@ -592,7 +647,7 @@ class Runner(private val config: Config, private val store: Store) {
 
     /** Start a process that leads its own session, and record its pid and start time in [pidFile]. */
     private fun start(builder: ProcessBuilder, pidFile: Path): Process {
-        val process = builder.start()
+        val process = ProfileRunDeadline.start(builder, alreadyInSession = true)
         running.add(process)
         val handle = process.toHandle()
         pidFile.writeAtomically("${handle.pid()} ${handle.info().startInstant().map { it.toEpochMilli() }.orElse(0)}\n")
@@ -659,6 +714,7 @@ class Runner(private val config: Config, private val store: Store) {
     private fun removeTree(path: Path) {
         // Unlink the shared directories first, so that nothing below can reach the data they point at.
         for (relative in config.sharedPaths) {
+            ProfileRunDeadline.checkActive()
             val link = path.resolve(relative)
             if (link.isSymbolicLink()) Files.delete(link)
         }
@@ -684,12 +740,13 @@ class Runner(private val config: Config, private val store: Store) {
         sleep = { waitMs ->
             val until = now() + waitMs
             while (now() < until) {
+                ProfileRunDeadline.checkActive()
                 while (stopping) Thread.sleep(CANCEL_POLL_MS)
                 check(jobId == null || !store.cancelRequested(jobId)) { "cancelled while waiting to retry $what" }
                 Thread.sleep((until - now()).coerceIn(1, CANCEL_POLL_MS))
             }
         },
-        step = step,
+        step = { ProfileRunDeadline.checkActive(); step().also { ProfileRunDeadline.checkActive() } },
     )
 
     /** Whether the build output [log] wrote after [from] says a Gradle transform's file is missing: a cache whose
@@ -733,7 +790,9 @@ class Runner(private val config: Config, private val store: Store) {
     /** Run a git command the runner needs beside the cases (a schedule's check, removing a worktree) in the
      *  background, off the solves' cores. Setup steps, which run alone, go through [sh] at full speed. */
     private fun capture(dir: File, cmd: String): String {
-        val process = ProcessBuilder(Background.prefix + listOf("bash", "-c", cmd)).directory(dir).redirectErrorStream(true).start()
+        val process = ProfileRunDeadline.start(
+            ProcessBuilder(Background.prefix + listOf("bash", "-c", cmd)).directory(dir).redirectErrorStream(true),
+        )
         val out = process.inputStream.bufferedReader().readText().trim()
         check(process.waitFor() == 0) { "failed: $cmd: $out" }
         return out
@@ -802,17 +861,21 @@ internal fun copyTree(source: Path, target: Path) {
 
 /** Delete [root] and everything under it without following symbolic links, which are removed as links. */
 internal fun deleteTree(root: Path) {
+    ProfileRunDeadline.checkActive()
     if (root.isSymbolicLink() || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
         Files.deleteIfExists(root)
         return
     }
-    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { path ->
+        ProfileRunDeadline.checkActive()
+        Files.delete(path)
+    } }
 }
 
 /** Run git with [args] in [dir], no shell between: its exit and its output. */
 internal fun gitIn(dir: File, args: List<String>): Pair<Int, String> {
-    val process = ProcessBuilder(listOf("git") + args).directory(dir).redirectErrorStream(true)
-        .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" }.start()
+    val process = ProfileRunDeadline.start(ProcessBuilder(listOf("git") + args).directory(dir).redirectErrorStream(true)
+        .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" })
     val out = process.inputStream.bufferedReader().readText()
     return process.waitFor() to out
 }

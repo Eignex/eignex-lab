@@ -8,8 +8,44 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 
 class RunnerTest {
+    @Test
+    fun `a whole run timeout fails the profile and preserves its output after cleanup`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 2))
+        val id = store.create("bounded", "main", listOf("echo captured; sleep 30" to 60L), experiment = spec)
+        config.worktree(id).createDirectories()
+        store.next()
+        store.setup(id, "head")
+
+        Runner(config, store).workWithDeadline(store.job(id)!!)
+
+        val job = store.job(id)!!
+        assertEquals(Status.FAILED, job.status)
+        assertTrue(job.error!!.contains("whole-run deadline"))
+        assertTrue(config.jobDir(id).resolve("0.out").toFile().readText().contains("captured"))
+        assertFalse(config.worktree(id).exists())
+    }
+
+    @Test
+    fun `a bounded profile is done after its worktree cleanup succeeds`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 5))
+        val id = store.create("bounded", "main", listOf("true" to 60L), experiment = spec)
+        config.worktree(id).createDirectories()
+        store.next()
+        store.setup(id, "head")
+
+        Runner(config, store).workWithDeadline(store.job(id)!!)
+
+        assertEquals(Status.DONE, store.job(id)!!.status)
+        assertFalse(config.worktree(id).exists())
+    }
+
     @Test
     fun `deleting a worktree removes a shared link without touching what it points at`() {
         val root = Files.createTempDirectory("lab")

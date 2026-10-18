@@ -72,7 +72,12 @@ data class ExperimentSpec(
  * they are, with no shell between. Only committed code runs, from a commit a trusted user pushed ([Trust]).
  */
 @Serializable
-data class ProfileMain(val main: String, val args: List<String> = emptyList())
+data class ProfileMain(
+    val main: String,
+    val args: List<String> = emptyList(),
+    /** Optional local active-time limit including build, retries and cleanup; queue time is excluded. */
+    val runTimeoutSec: Long? = null,
+)
 
 /** Whether [this] is a profile job rather than an experiment over problems. */
 val ExperimentSpec.isProfile: Boolean get() = profile != null
@@ -125,6 +130,7 @@ object Experiments {
             machines = null,
             priority = 0,
             confirm = false,
+            profile = spec.profile?.copy(runTimeoutSec = null),
         )
         return hash(Json.encodeToString(ExperimentSpec.serializer(), measured))
     }
@@ -172,6 +178,10 @@ object Experiments {
         requireOptions(spec)
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
         spec.profile?.let { profile ->
+            profile.runTimeoutSec?.let { timeout ->
+                require(timeout in 1..(Long.MAX_VALUE / 1_000_000_000)) { "profile.runTimeoutSec must be positive and fit a monotonic deadline" }
+                require(spec.host == LAB_HOST && !spec.auto) { "profile.runTimeoutSec requires explicit host=lab" }
+            }
             require(MAIN.matches(profile.main)) { "profile.main must be a class in com.eignex.klause.bench.profile, not '${profile.main}'" }
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
             require(spec.problems.isEmpty() && spec.problemList.isEmpty()) { "a profile job selects no problems" }

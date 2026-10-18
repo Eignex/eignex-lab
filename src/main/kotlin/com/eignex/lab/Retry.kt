@@ -1,5 +1,7 @@
 package com.eignex.lab
 
+import java.util.concurrent.CancellationException
+
 /**
  * How a step that can fail for a passing reason (the network, a busy remote, a dependency download) is retried: up
  * to [attempts] tries in all, waiting [baseMs] after the first failure and twice as long after each next one, at most
@@ -35,7 +37,7 @@ fun <T> retrying(
             return step()
         } catch (e: Exception) {
             // A refused commit stays refused: no retry changes who pushed it.
-            if (attempt >= backoff.attempts || e is UntrustedCommit) throw e
+            if (attempt >= backoff.attempts || e is UntrustedCommit || e is ProfileRunTimeout || e is CancellationException) throw e
             val wait = backoff.delayAfter(attempt)
             onRetry(attempt, wait, e)
             sleep(wait)
