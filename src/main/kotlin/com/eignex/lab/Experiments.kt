@@ -75,7 +75,10 @@ data class ExperimentSpec(
 data class ProfileMain(
     val main: String,
     val args: List<String> = emptyList(),
-    /** Optional local active-time limit including build, retries and cleanup; queue time is excluded. */
+    /**
+     * Optional local active-time limit including build, retries and cleanup; queue time is excluded. It is capped as
+     * the profile's own time limit is ([Experiments.profileRunTimeoutSec]).
+     */
     val runTimeoutSec: Long? = null,
 )
 
@@ -184,6 +187,11 @@ object Experiments {
             }
             require(MAIN.matches(profile.main)) { "profile.main must be a class in com.eignex.klause.bench.profile, not '${profile.main}'" }
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
+            val asked = arms(spec).singleOrNull()?.values?.get("timeout")
+            require(asked == null || asked.toLongOrNull()?.let { it > 0 } == true) {
+                "timeout must be a positive number of ms: a profile job's time limit, ${duration(PROFILE_TIMEOUT_MS)} " +
+                    "unless it says, capped at ${duration(PROFILE_MAX_TIMEOUT_MS)}"
+            }
             require(spec.problems.isEmpty() && spec.problemList.isEmpty()) { "a profile job selects no problems" }
             require(spec.configs.size == 1 && spec.grid.isEmpty() && spec.seeds.isEmpty() && spec.repeats == 1) {
                 "a profile job runs its main once: no configs, grid, seeds or repeats"
@@ -312,8 +320,49 @@ object Experiments {
     /** How long a case may run: the solver's own budget, the bench's hard kill at twice it, and room for the JVMs. */
     fun caseTimeoutSec(arm: Arm): Long = arm.timeoutMs * 2 / 1000 + CASE_OVERHEAD_SEC
 
-    /** How long a profile job may run: its `timeout` (an hour unless it says), plus the room a case gets. */
-    fun profileTimeoutSec(arm: Arm): Long = (arm.values["timeout"]?.toLongOrNull() ?: PROFILE_TIMEOUT_MS) / 1000 + CASE_OVERHEAD_SEC
+    /**
+     * A profile job's time limit: its `timeout`, ten minutes when it gives none, and never over two hours, whatever it
+     * asks. The one place the default and the cap are applied; [profileCaps] says when a request was cut down.
+     */
+    fun profileLimitMs(arm: Arm): Long =
+        arm.values["timeout"]?.toLongOrNull()?.coerceAtMost(PROFILE_MAX_TIMEOUT_MS) ?: PROFILE_TIMEOUT_MS
+
+    /**
+     * How long a profile job's case may run before the lab stops it: its [profileLimitMs], plus the room a case gets
+     * for its JVM. At this limit it is sent SIGTERM, and SIGKILL [STOP_GRACE_SEC] later if it is still running.
+     */
+    fun profileTimeoutSec(arm: Arm): Long = profileLimitMs(arm) / 1000 + CASE_OVERHEAD_SEC
+
+    /** A local profile's whole-run limit ([ProfileMain.runTimeoutSec]), capped as its time limit is; null without one. */
+    fun profileRunTimeoutSec(profile: ProfileMain): Long? = profile.runTimeoutSec?.coerceAtMost(PROFILE_MAX_TIMEOUT_MS / 1000)
+
+    /** A profile job's time limit in words, for its page and its log: how long, and whether it is the default. */
+    fun profileLimitText(spec: ExperimentSpec): String {
+        val arm = arms(spec).single()
+        val limit = duration(profileLimitMs(arm))
+        return if ("timeout" in arm.values) limit else "$limit, the default"
+    }
+
+    /** What [spec] asked for over the profile cap, each with what it got instead; empty when nothing was. */
+    fun profileCaps(spec: ExperimentSpec): List<String> {
+        val profile = spec.profile ?: return emptyList()
+        val asked = arms(spec).single().values["timeout"]?.toLongOrNull()
+        return listOfNotNull(
+            asked?.takeIf { it > PROFILE_MAX_TIMEOUT_MS }?.let {
+                "a timeout of ${duration(it)} was asked, capped at ${duration(PROFILE_MAX_TIMEOUT_MS)}"
+            },
+            profile.runTimeoutSec?.takeIf { it > PROFILE_MAX_TIMEOUT_MS / 1000 }?.let {
+                "a runTimeoutSec of $it s was asked, capped at ${PROFILE_MAX_TIMEOUT_MS / 1000} s"
+            },
+        )
+    }
+
+    /** [ms] in words: in hours when it is whole hours, in minutes when whole minutes, in seconds otherwise. */
+    fun duration(ms: Long): String = when {
+        ms % (MS_PER_MIN * 60) == 0L -> "${ms / (MS_PER_MIN * 60)} h"
+        ms % MS_PER_MIN == 0L -> "${ms / MS_PER_MIN} min"
+        else -> "${ms / 1000} s"
+    }
 
     /** The problem a profile job's single case stands for: it runs no problem, and contributes no reference row. */
     fun profileProblem(spec: ExperimentSpec) = Problem("profile", spec.name)
@@ -355,7 +404,16 @@ object Experiments {
     private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact")
     private const val CASE_OVERHEAD_SEC = 120L
-    private const val PROFILE_TIMEOUT_MS = 3_600_000L
+    /** A profile job's time limit when it gives no `timeout`. */
+    const val PROFILE_TIMEOUT_MS = 600_000L
+    /** The most time a profile job gets, whatever it asks, as its time limit and as its whole-run limit. */
+    const val PROFILE_MAX_TIMEOUT_MS = 7_200_000L
+    private const val MS_PER_MIN = 60_000L
+    /**
+     * How long a case the lab stops at its time limit has between SIGTERM and SIGKILL: what `timeout -k 30` gives one
+     * on AWS, and time enough for a JVM's shutdown hooks, JFR's dump on exit among them.
+     */
+    const val STOP_GRACE_SEC = 30L
     /** A class under klause's package: what a profile job may name as its main. */
     private val MAIN = Regex("com\\.eignex\\.klause\\.bench\\.profile\\.[A-Za-z_][A-Za-z0-9_]*")
     /** An option's name as the bench reads it. */

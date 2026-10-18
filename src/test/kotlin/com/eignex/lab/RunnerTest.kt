@@ -93,12 +93,12 @@ class RunnerTest {
     }
 
     /** A runner over a fresh lab, its store and a job of [commands] taken and set up, ready for [Runner.dispatch]. */
-    private class Dispatchable(vararg commands: Pair<String, Long>) {
+    private class Dispatchable(vararg commands: Pair<String, Long>, graceMs: Long = Experiments.STOP_GRACE_SEC * 1000) {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val id = store.create("kills", "main", commands.toList())
         val dir: Path = config.jobDir(id).createDirectories()
-        val runner = Runner(config, store)
+        val runner = Runner(config, store, stopGraceMs = graceMs)
 
         init {
             config.worktree(id).createDirectories()
@@ -126,10 +126,63 @@ class RunnerTest {
 
         assertEquals(Dispatched.FINISHED, lab.dispatch())
 
-        assertEquals(listOf(Termination.timeout(1)), lab.reasons(0))
+        assertEquals(listOf(Termination.timeoutGraceful(1, Experiments.STOP_GRACE_SEC * 1000)), lab.reasons(0))
         assertEquals("137", lab.dir.resolve("1.exit").toFile().readText().trim())
         assertEquals(listOf(Termination.external(137)), lab.reasons(1))
         assertTrue(lab.reasons(2).isEmpty())
+    }
+
+    @Test
+    fun `a case at its time limit gets SIGTERM and the grace to flush what it has`() {
+        val lab = Dispatchable(
+            "OUT=\"\$JOB_DIR/cases/0/out\"; mkdir -p \"\$OUT\"; trap 'echo flushed > \"\$OUT/f\"; exit 0' TERM; sleep 600" to 1L,
+            graceMs = 20_000,
+        )
+        val started = System.nanoTime()
+
+        assertEquals(Dispatched.FINISHED, lab.dispatch())
+
+        // Stopped by its own trap well inside the grace, not by SIGKILL at its end.
+        assertTrue(TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started) < 15)
+        assertEquals("flushed", lab.dir.resolve("cases/0/out/f").toFile().readText().trim())
+        assertEquals("timeout", lab.dir.resolve("0.exit").toFile().readText().trim())
+        assertEquals(listOf(Termination.timeoutGraceful(1, 20_000)), lab.reasons(0))
+    }
+
+    @Test
+    fun `a case that ignores SIGTERM is killed when its grace runs out`() {
+        val lab = Dispatchable("trap '' TERM; echo started; sleep 600" to 1L, graceMs = 500)
+
+        assertEquals(Dispatched.FINISHED, lab.dispatch())
+
+        val leader = lab.dir.resolve("0.pid").toFile().readText().trim().split(" ").first().toLong()
+        assertFalse(signalGroups("0", listOf(leader)))
+        assertEquals("timeout", lab.dir.resolve("0.exit").toFile().readText().trim())
+        assertTrue(lab.dir.resolve("0.out").toFile().readText().contains("started"))
+        assertEquals(listOf(Termination.timeoutGraceful(1, 500), Termination.graceExpired("timeout", 500)), lab.reasons(0))
+    }
+
+    @Test
+    fun `a whole run deadline during the command stops the profile gracefully, keeping what it flushed`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 5))
+        val command = "OUT=\"\$JOB_DIR/cases/0/out\"; mkdir -p \"\$OUT\"; trap 'echo flushed > \"\$OUT/f\"; exit 0' TERM; sleep 600"
+        val id = store.create("bounded", "main", listOf(command to 60L), experiment = spec)
+        config.worktree(id).createDirectories()
+        store.next()
+        store.setup(id, "head")
+
+        // The grace is at most a tenth of what is left of the allowance: just under 500 ms here.
+        Runner(config, store, stopGraceMs = 2_000).workWithDeadline(store.job(id)!!)
+
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertEquals("flushed", config.jobDir(id).resolve("cases/0/out/f").toFile().readText().trim())
+        assertTrue(eventually {
+            Termination.read(config.jobDir(id), 0).map { it.substringAfter(' ') }.let { reasons ->
+                reasons.size == 1 && reasons.single().startsWith("deadline:") && "SIGTERM" in reasons.single()
+            }
+        })
     }
 
     @Test

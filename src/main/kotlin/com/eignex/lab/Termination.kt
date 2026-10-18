@@ -22,10 +22,27 @@ internal object Termination {
     /** Another case of the same job could not be run, which fails the job, so its siblings are killed with it. */
     const val SIBLING = "sibling: another case of the job could not be run, which failed the job, so the lab killed this one"
 
-    /** A profile job's whole-run limit ran out ([ProfileRunDeadline]), which kills everything the job started. */
-    const val DEADLINE = "deadline: the profile job's whole-run limit ran out, so the lab killed the case"
+    /**
+     * A profile job's whole-run limit ran out while its command ran: the lab stops the case gracefully, SIGTERM to its
+     * process group and SIGKILL to what is left [graceMs] later, so its shutdown hooks (JFR's dump on exit) can run.
+     */
+    fun deadline(graceMs: Long) = "deadline: the profile job's whole-run limit ran out, so the lab sent the case SIGTERM, " +
+        "and SIGKILL to what is left after ${span(graceMs)}"
 
+    /** A case killed outright at its [timeoutSec] limit, as an AWS case is when its SSH session outlives `timeout`. */
     fun timeout(timeoutSec: Long) = "timeout: still running after its $timeoutSec s limit, so the lab killed the case"
+
+    /**
+     * A case still running at its [timeoutSec] limit, stopped gracefully: SIGTERM to its process group first, so it can
+     * flush what it has (a JVM runs its shutdown hooks), and SIGKILL to whatever is left [graceMs] later ([graceExpired]).
+     */
+    fun timeoutGraceful(timeoutSec: Long, graceMs: Long) =
+        "timeout: still running after its $timeoutSec s limit, so the lab sent the case SIGTERM, and SIGKILL to what is left after ${span(graceMs)}"
+
+    /** A case of [kind] (`timeout`, `deadline`) sent SIGTERM was still running when its [graceMs] grace ran out. */
+    fun graceExpired(kind: String, graceMs: Long) = "$kind: still running ${span(graceMs)} after SIGTERM, so the lab sent SIGKILL"
+
+    private fun span(ms: Long) = if (ms % MS_PER_SEC == 0L) "${ms / MS_PER_SEC} s" else "$ms ms"
 
     fun hostLost(reason: String) = "host-lost: $reason; the case goes back to the queue for another host"
 

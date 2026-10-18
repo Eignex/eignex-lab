@@ -458,11 +458,40 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `a profile job gets an hour unless it gives a timeout`() {
-        assertEquals(listOf(3_720L, 720L), listOf(
+    fun `a profile job gets ten minutes unless it gives a timeout, and never over two hours`() {
+        assertEquals(listOf(720L, 1_920L, 7_320L, 7_320L), listOf(
             Experiments.profileTimeoutSec(Arm("a", emptyMap())),
-            Experiments.profileTimeoutSec(Arm("a", mapOf("timeout" to "600000"))),
+            Experiments.profileTimeoutSec(Arm("a", mapOf("timeout" to "1800000"))),
+            Experiments.profileTimeoutSec(Arm("a", mapOf("timeout" to "7200000"))),
+            Experiments.profileTimeoutSec(Arm("a", mapOf("timeout" to "36000000"))),
         ))
+    }
+
+    @Test
+    fun `a capped profile limit says what was asked, and one within the cap says nothing`() {
+        val main = ProfileMain("com.eignex.klause.bench.profile.Tool")
+        val within = ExperimentSpec("p", base = mapOf("timeout" to "1800000"), profile = main)
+        val over = ExperimentSpec("p", host = Experiments.LAB_HOST, base = mapOf("timeout" to "36000000"),
+            profile = main.copy(runTimeoutSec = 86_400))
+
+        assertEquals("10 min, the default", Experiments.profileLimitText(ExperimentSpec("p", profile = main)))
+        assertEquals("30 min", Experiments.profileLimitText(within))
+        assertTrue(Experiments.profileCaps(within).isEmpty())
+        assertEquals(listOf("a timeout of 10 h was asked, capped at 2 h",
+            "a runTimeoutSec of 86400 s was asked, capped at 7200 s"), Experiments.profileCaps(over))
+        assertEquals(7_200L, Experiments.profileRunTimeoutSec(over.profile!!))
+        assertEquals(180L, Experiments.profileRunTimeoutSec(main.copy(runTimeoutSec = 180)))
+        Experiments.validate(over, maxParallel = 4)
+    }
+
+    @Test
+    fun `a profile timeout must be a positive number of ms`() {
+        for (timeout in listOf("0", "-5", "soon")) {
+            val spec = ExperimentSpec("p", base = mapOf("timeout" to timeout), profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+
+            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
+            assertContains(error.message!!, "10 min unless it says")
+        }
     }
 
     @Test
