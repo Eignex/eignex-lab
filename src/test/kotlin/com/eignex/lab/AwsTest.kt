@@ -115,15 +115,28 @@ class AwsTest {
     }
 
     @Test
-    fun `instances launch on demand unless the settings say spot`() {
+    fun `the node pool's settings have their defaults, and the file can change them`() {
         val dir = Files.createTempDirectory("aws")
         val file = dir.resolve("aws.properties")
-        file.toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        file.toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nmarket=spot\nspotFallback=false\n")
         val default = AwsConfig.load(file)!!
-        file.toFile().appendText("market=spot\nspotFallback=false\n")
-        val spot = AwsConfig.load(file)!!
+        file.toFile().appendText("onDemand=true\nnodeIdleMin=2\nnodeMinPriority=1\nnodeLaunchCoreHours=4.5\nnodeSustainMin=1\nnodeCooldownMin=9\nnodeMaxVcpus=32\n")
+        val set = AwsConfig.load(file)!!
 
-        assertEquals(listOf(false, true, true, false), listOf(default.spot, default.spotFallback, spot.spot, spot.spotFallback))
+        assertEquals(listOf<Any>(false, 15L, 5L, 0, 1.0, 3L, 5L, 16),
+            with(default) { listOf(onDemand, spotWaitMin, nodeIdleMin, nodeMinPriority, nodeLaunchCoreHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+        assertEquals(listOf<Any>(true, 2L, 1, 4.5, 1L, 9L, 32),
+            with(set) { listOf(onDemand, nodeIdleMin, nodeMinPriority, nodeLaunchCoreHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+    }
+
+    @Test
+    fun `a node runs its own share of cases unless the job says how many, within its cores`() {
+        val ssh = Ssh("i-1", "10.0.0.1", AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null),
+            Files.createTempDirectory("aws").resolve("known"))
+        val unset = AwsHost("i-1", ssh, 8, "", parallel = 4) { false }
+        val explicit = AwsHost("i-1", ssh, 8, "") { false }
+
+        assertEquals(listOf(4, 4, 2, 8), listOf(unset.parallel(1), unset.parallel(6), explicit.parallel(2), explicit.parallel(20)))
     }
 
     private class FakeHost(private val log: java.util.Queue<Int>) : ExecutionHost {
@@ -142,27 +155,16 @@ class AwsTest {
     }
 
     @Test
-    fun `the lab runner and the AWS worker each take only their own host's jobs`() {
+    fun `the Mac never takes an aws job, and a node never a lab one`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d")
         val onAws = store.create("aws", "main", emptyList(), experiment = spec.copy(host = Experiments.AWS_HOST), priority = 5)
         val onLab = store.create("lab", "main", emptyList(), experiment = spec)
 
-        assertEquals(listOf(listOf(onLab), listOf(onAws)), listOf(store.queueOrder(), store.queueOrder(Experiments.AWS_HOST)))
-        assertEquals(listOf(onLab, onAws), listOf(store.next()?.id, store.next(Experiments.AWS_HOST)?.id))
-    }
-
-    @Test
-    fun `a queued job moves to AWS until it is planned`() {
-        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val id = store.create("e", "main", emptyList(), experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d"))
-
-        val moved = store.setHost(id, Experiments.AWS_HOST, 2)
-        val spec = store.job(id)?.experiment
-        val planned = store.create("p", "main", listOf("true" to 10L), experiment = ExperimentSpec("p", listOf(mapOf("suite" to "s"))))
-
-        assertEquals(listOf(true, Experiments.AWS_HOST, 2), listOf(moved, spec?.host, spec?.machines))
-        assertEquals(false, store.setHost(planned, Experiments.AWS_HOST, null))
+        assertEquals(listOf(listOf(onLab), listOf(onAws)), listOf(store.queueOrder(), store.nodeQueue().map { it.id }))
+        assertEquals(null, store.claimForNode(onLab))
+        assertEquals(listOf(onLab, onAws), listOf(store.next()?.id, store.claimForNode(onAws)?.id))
+        assertEquals(null, store.peek())
     }
 
     @Test
@@ -203,13 +205,14 @@ class AwsTest {
     }
 
     @Test
-    fun `an AWS job's machine count changes until it ends`() {
-        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, description = "d")
-        val queued = store.create("e", "main", emptyList(), experiment = spec)
-        val onLab = store.create("l", "main", emptyList(), experiment = spec.copy(host = Experiments.LAB_HOST))
+    fun `a job's problem queue counts the cases left and empties when the job fails`() {
+        val problems = ProblemQueue((0 until 5).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 2}"), "a") })
 
-        assertEquals(listOf(true, 3, false), listOf(store.setMachines(queued, 3), store.job(queued)?.experiment?.machines, store.setMachines(onLab, 3)))
+        assertEquals(listOf(3, 5), listOf(problems.size, problems.cases))
+        problems.take()
+        assertEquals(3, problems.cases)
+        problems.clear()
+        assertEquals(listOf(true, null), listOf(problems.isEmpty(), problems.take()))
     }
 
     @Test

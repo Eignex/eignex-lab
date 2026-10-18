@@ -122,7 +122,7 @@ class PagesTest {
             val failed = client.get("/jobs/$done?failed") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
             val json = client.get("/jobs/$done")
 
-            assertContains(index, "#1 in the Mac queue")
+            assertContains(index, "#1 in the queue")
             assertContains(index, "/jobs/$done?failed\">1 failed</a>")
             assertContains(index, "https://github.com/Eignex/klause/commit/0123456789abcdef")
             assertContains(job.bodyAsText(), "<code>false</code>")
@@ -232,5 +232,53 @@ class PagesTest {
 
         assertEquals("SSH dropped, waiting to retry for 1m, attempt 2 of 8 failed, next in 30s", phaseText(backoff, 60_000))
         assertEquals("transferring output for 5s, solve took 10s", phaseText(transfer, 5_000))
+    }
+
+    @Test
+    fun `a submitted host and machine count are not followed, and the lab says it placed the job`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = 8)
+        config.dataDir.resolve("aws").toFile().mkdirs()
+        config.dataDir.resolve("aws/aws.properties").toFile()
+            .writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nvcpuQuota=32\n")
+        val store = Store(config.database)
+        testApplication {
+            application { api(config, store, host) }
+
+            val created = client.post("/experiments") {
+                header(HttpHeaders.ContentType, "application/json")
+                setBody("""{"name": "e", "description": "d", "problems": {"suite": "s"}, "base": {"ref": "0123456789abcdef"},
+                    "host": "lab", "machines": 3}""")
+            }
+            val body = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val spec = store.job(body["id"]!!.jsonPrimitive.content.toLong())!!.experiment!!
+
+            assertEquals(HttpStatusCode.Created, created.status)
+            assertEquals(listOf(Experiments.AUTO_HOST, null), listOf(spec.host, spec.machines))
+            assertContains(body["placement"]!!.jsonPrimitive.content, "host and machines ignored: the lab places jobs")
+            assertContains(client.post("/jobs/1/machines") {
+                header(HttpHeaders.ContentType, "application/json")
+                setBody("""{"machines": 2}""")
+            }.bodyAsText(), "ignored")
+        }
+    }
+
+    @Test
+    fun `the queue's summary shows the AWS nodes, their sizes, markets and what each does`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        config.dataDir.resolve("aws").toFile().mkdirs()
+        config.dataDir.resolve("aws/aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        assertEquals(null, nodesLine(config))
+        val report = NodePoolReport(1, 3.25, 1, listOf(
+            NodeReport("i-1", "c7i.2xlarge", "spot", "running job 7", 7),
+            NodeReport("i-2", "c7i.4xlarge", "on-demand", "idle"),
+        ))
+        config.dataDir.resolve("aws/nodes.json").toFile().writeText(Json.encodeToString(NodePoolReport.serializer(), report))
+
+        val line = nodesLine(config)!!
+
+        assertContains(line, "AWS nodes: 2, 1 launching")
+        assertContains(line, "2xlarge spot</span> running <a href=\"/jobs/7\">job 7</a>")
+        assertContains(line, "4xlarge on-demand</span> idle")
+        assertContains(line, "pressure 3.3 core-h")
     }
 }

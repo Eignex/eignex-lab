@@ -73,6 +73,10 @@ class Runner(
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
+        // Jobs queued before the lab placed them itself may name a host their submitter chose: placed again by the rules.
+        runCatching { Placement.replaceQueued(store, config) }
+            .onSuccess { if (it.isNotEmpty()) println("placed queued jobs again by the lab's rules: $it") }
+            .onFailure { println("placing queued jobs failed: ${it.message}") }
         config.aws?.let { aws ->
             val worker = AwsWorker(this, store, config, aws)
             awsActive = { worker.active }
@@ -253,7 +257,7 @@ class Runner(
                 }
                 // Another problem only once this host has room for a case of it, so the problems left go to whichever
                 // host frees up first, a host added later included.
-                if (!cancelled && !yielding && active.size < store.parallel(job.id).coerceIn(1, host.maxParallel)) take()
+                if (!cancelled && !yielding && active.size < host.parallel(store.parallel(job.id))) take()
                 // Each running command sees the request and kills its own tree; the job ends once they have.
                 if (!cancelled && store.cancelRequested(job.id)) cancelled = true
                 if (cancelled) {
@@ -264,7 +268,7 @@ class Runner(
                 } else {
                     // Within the job's case limit and the lab's core budget, in order: a case too big for the cores
                     // left waits for room rather than letting smaller later ones jump it. One case always may run.
-                    val limit = store.parallel(job.id).coerceIn(1, host.maxParallel)
+                    val limit = host.parallel(store.parallel(job.id))
                     while (pending.isNotEmpty() && active.size < limit &&
                         (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
                     ) {
@@ -383,7 +387,9 @@ class Runner(
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
-            val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha))
+            // A schedule's runs stay on the Mac ([Placement.macOnly]), whatever host its experiment once named.
+            val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha),
+                host = Experiments.LAB_HOST, auto = false, machines = null)
             val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")

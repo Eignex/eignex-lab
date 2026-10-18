@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
-#   lab profile <main> <ref> <description> [auto|aws|lab] [timeout-sec] [arg...]
+#   lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]
 #                                                            queue a profile job: the class <main> (in com.eignex.klause.bench.profile)
-#                                                            run once with [arg...] in a build of <ref>, under JFR, on AWS
-#                                                            by default (on demand, never spot); for measurements experiments
+#                                                            run once with [arg...] in a build of <ref>, under JFR, on the Mac
+#                                                            or an AWS node (on demand, never spot); [host] is ignored, the lab
+#                                                            places jobs (pass - to skip it); for measurements experiments
 #                                                            cannot express, NOT for running tests, lint or other gates (CI
 #                                                            runs those). <ref> must be main or a branch only trusted users
 #                                                            pushed to. [timeout-sec] is its time limit: 600 (10 min) when
@@ -28,8 +29,9 @@
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #   lab update                                              update the lab now: between the running job's cases, not during one
-#   lab host <id> auto|lab|aws [machines]                   move a queued, unplanned experiment to auto, the Mac or AWS
-#   lab machines <id> [n]                                    set an AWS job's instance count (none: as many as free)
+#   lab host <id> auto|lab|aws                              operators only: override where a queued, unplanned job may run
+#                                                            (the lab places every job itself; agents need not)
+#   lab machines <id> [n]                                    retired: the AWS node pool sizes itself; the lab ignores it
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
@@ -38,8 +40,8 @@
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP
 #   lab corpus                                               rsync the local bench corpus to the server
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
-#   lab ssh <id> [n] [command...]                            a shell (or command) on instance n (default 0) of a running
-#                                                            AWS job, through the server with the lab's own key and host keys
+#   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
+#                                                            running AWS job, through the server with the lab's own key and host keys
 set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"
@@ -61,17 +63,17 @@ cmd="${1:-ls}"; shift || true
 case "$cmd" in
 run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
 profile)
-  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [auto|aws|lab] [timeout-sec, default 600, at most 7200] [arg...]" >&2; exit 2; }
-  main="$1" ref="$2" description="$3" host="${4:-}" timeout="${5:-}"
+  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [host, ignored] [timeout-sec, default 600, at most 7200] [arg...]" >&2; exit 2; }
+  main="$1" ref="$2" description="$3" timeout="${5:-}"
   shift $(( $# < 5 ? $# : 5 ))
   [[ -z "$timeout" || "$timeout" =~ ^[1-9][0-9]*$ ]] || { echo "timeout-sec must be a positive number of seconds (default 600, at most 7200)" >&2; exit 2; }
   name="profile-$(echo "${main##*.}" | tr '[:upper:]' '[:lower:]')"
-  # No timeout leaves the lab's default, 10 min; the lab caps any limit at 2 h.
-  jq -n --arg name "$name" --arg main "$main" --arg ref "$ref" --arg description "$description" --arg host "$host" \
+  # No timeout leaves the lab's default, 10 min; the lab caps any limit at 2 h. [host] is read for older callers and
+  # not sent: the lab places every job itself.
+  jq -n --arg name "$name" --arg main "$main" --arg ref "$ref" --arg description "$description" \
     --arg timeout "${timeout:+$(( timeout * 1000 ))}" --args \
     '{name: $name, description: $description, profile: {main: $main, args: $ARGS.positional},
-      base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))}
-      + (if $host == "" then {} else {host: $host} end)' "$@" |
+      base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))}' "$@" |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;
 cases) curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
@@ -120,7 +122,7 @@ schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \
 check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
 launch) curl -sS -X POST "$url/schedules/$1/launch"; echo ;;
 update) curl -sS -X POST "$url/update"; echo ;;
-host) jq -n --arg host "$2" --argjson machines "${3:-null}" '{host: $host, machines: $machines}' |
+host) jq -n --arg host "$2" '{host: $host}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/host"; echo ;;
 machines) jq -n --argjson machines "${2:-null}" '{machines: $machines}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/machines"; echo ;;

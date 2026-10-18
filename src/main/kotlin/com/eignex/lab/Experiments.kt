@@ -40,15 +40,15 @@ data class ExperimentSpec(
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
     /**
-     * Where the cases run: `lab`, the lab machine, `aws`, EC2 instances the lab launches for the job, or `auto`: the
-     * lab machine when it is free, else AWS, spot first ([auto]). A submitted experiment that leaves it out is `auto`
-     * when it could run on AWS and `lab` otherwise; a schedule's runs stay on the lab machine.
+     * Where the cases may run, as the lab placed the job ([Placement]); a submitted value is ignored. `lab`, the Mac
+     * alone; `aws`, an AWS node alone ([AwsWorker]); `auto`, whichever of the Mac and a node is free first. Once
+     * taken it is where the job went.
      */
     val host: String = Experiments.LAB_HOST,
-    /** Set when an `auto` job is taken: its [host] is then where it went. On the lab machine it gives way to any job
-     *  queued for the machine itself; on AWS it tries spot for a while before buying on demand. */
+    /** Set when an `auto` job is taken: its [host] is then where it went. On the Mac it gives way to any job placed on
+     *  the Mac alone. */
     val auto: Boolean = false,
-    /** For `aws`: how many instances to split the job over, by problem; unset, as many as are free. */
+    /** Retired: the AWS node pool decides how many nodes work on a job. Read so older specs still parse; ignored. */
     val machines: Int? = null,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),

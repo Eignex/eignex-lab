@@ -50,17 +50,15 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   On AWS spot instances, which share hosts with other tenants and can be taken back mid-problem (its remaining runs
   then move to another instance), timing is noisier than on the Mac: use `repeats` of 3 or more for an A/B whose
   answer rests on time, and more when the paired difference is small.
-- `host`: `auto`, `aws` or `lab` (see Running on AWS), and for `auto` and `aws`, `machines`: how many instances to split
-  it over. Leave it out: an experiment is then `auto`, the Mac when it is free and AWS otherwise, spot first, whenever
-  AWS could run it (klause arms only, selected problems, cores within the largest instance), and `lab` otherwise; a
-  schedule's runs default to the lab machine. Name `aws` or `lab` only when the host matters to what is measured, such
-  as timings to compare with earlier jobs on that host.
+- `host` and `machines` are no longer followed: the lab places every job itself (see Running on AWS). They are still
+  accepted, so older specs and clients work, and the reply's `placement` says where the job went and that they were
+  ignored.
 - `profileCli: true` (AWS only, with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings
   and measures its physical peak RSS and user/system CPU with GNU time. Each case returns `cli.jfr`, `resources.txt`
   and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page or `lab fetch`.
   Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
   command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
-  A profiling job stays on AWS with a parallel limit of one when it is edited through the client or API.
+  A profiling job runs only on an AWS node, with a parallel limit of one, however it is edited through the client or API.
   These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
   at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
   RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted
@@ -93,8 +91,8 @@ the bench's classpath with each argument passed as it is, no shell between, unde
 the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to read. Its stdout, stderr, exit and
 `$OUT` come back to the job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch` and listed on
 the job page. From AWS, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
-in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and runs on AWS unless it says
-`"host": "lab"`; on the Mac it runs alone, as every job does.
+in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and goes
+Mac first like every job: the Mac when it is free, else an on-demand AWS node. On the Mac it runs alone, as every job does.
 
 Every profile job is time-boxed. With no `timeout` it gets 10 minutes (`lab profile` sends none unless given its
 `timeout-sec`); a `timeout` over 2 hours is cut to 2 hours, which the job log, the job page and the submit response
@@ -109,12 +107,13 @@ write its results as it goes, or flush them in a shutdown hook within those 30 s
 exit reads `timeout`, its `.termination` file has a `timeout:` line saying SIGTERM was sent, and a second line when
 SIGKILL was needed; the job page says it was stopped at its time limit and lists `$OUT` as for any other exit.
 
-For a local profile, `"profile": {"main": "com.eignex.klause.bench.profile.Tool", "runTimeoutSec": 180}`
-with explicit `"host": "lab"` opts into one active-time deadline across setup, build retries, the profile command,
+`"profile": {"main": "com.eignex.klause.bench.profile.Tool", "runTimeoutSec": 180}` keeps the profile on the Mac
+and opts into one active-time deadline across setup, build retries, the profile command,
 and worktree cleanup. Queue and paused time do not count; resumed and explicitly retried work retains the active
 time already recorded for that job. `base.timeout` remains the separate command allowance, including its existing
 two-minute overhead. `runTimeoutSec` is capped at 7200 (2 hours) as `timeout` is. A whole-run deadline is
-optional; jobs without it retain their existing timeout policy. AWS and auto routing reject it.
+optional; jobs without it retain their existing timeout policy. A profile with one is placed on the Mac only,
+since the Mac enforces the deadline on its own processes.
 Reclaiming an interrupted bounded profile conservatively includes the interval until the runner reclaims it,
 including runner downtime, so a restart cannot replenish its allowance.
 
@@ -142,8 +141,8 @@ custody. The instance is retained through these attempts and is still terminated
 files not returned are unavailable, and the file API serves only files already retained on the lab machine.
 Local archive unpacking runs once, with the same 120-second timeout and cancellation handling, and retains
 `out.unpack.log` when successful. A terminal status identifies whether transfer or unpacking was incomplete.
-`lab profile <main> <ref> <description> [aws|lab] [timeout-sec] [arg...]` queues one.
-On AWS a profile job always runs on an on-demand instance, never spot: AWS can take a spot instance back at two
+`lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]` queues one; `[host]` is ignored.
+On AWS a profile job always runs on an on-demand node, never spot: AWS can take a spot instance back at two
 minutes' notice, and a profile cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs
 resume after a reclaim and run on spot. The script jobs that came before (`script`, `scriptFile`) are retired: a spec
 naming one is refused, and one still queued fails when it is planned.
@@ -488,26 +487,67 @@ it again one interval later, so staggered schedules stay a day apart; `lab resch
 
 ## Running on AWS
 
-An experiment with `"host": "aws"` runs on EC2 instances the lab launches for it, on demand: nothing runs on AWS while
-no such job is queued. Only klause arms go there; reference runs stay on the Mac, which has the reference solvers.
+The lab places every job itself; whoever submits one does not choose. Every job goes Mac first, then an AWS spot
+node, then an on-demand node, with fixed exceptions:
 
-On demand is off unless `aws.properties` says `onDemand=true`, except for profile jobs, which never run on spot and
-are always bought on demand: every other instance is then spot, a launch AWS has no spot capacity for is asked again
-every 30 s rather than bought on demand, and the `market`, `spotFallback` and `spotWaitMin` settings below apply only
-once it is on.
+- Scheduled runs (`<schedule>@<sha>`) and their confirmations (`~confirm`), reference runs (an arm with
+  `backend=reference`), exact problem lists and profiles with a `runTimeoutSec` stay on the Mac only.
+- `profileCli` jobs, and jobs whose cases need more cores than the Mac has (or a `parallel` over its limit), run on AWS
+  only. A job no node size within the quota could hold stays on the Mac.
+- Profile jobs never run on spot: Mac, then an on-demand node.
 
-`"host": "auto"`, what a submitted experiment gets when it names no host and could run on AWS, lets the lab choose:
+A job's `host` records the placement: `lab` (the Mac only), `aws` (a node only) or `auto` (whichever is free first).
+The queue shows them as `Mac only`, `AWS` and `Mac or AWS`, in one queue ordered by priority, series and age. The Mac
+takes the next job it may run when it is free: jobs placed on the Mac first, then `auto` jobs in queue order. A job
+placed on the Mac always goes before an `auto` job there, whatever their priorities, and an `auto` job the Mac took
+gives way to one between its cases, never the other way round, so sweeps and reference runs are never held up. An
+`auto` job is taken by whichever comes first, the free Mac or a free node (a node leaves the free Mac's next job to
+it); once taken its `host` is where it went, since a planned job's commands name paths on the host that planned it.
+When the runner starts, it places every queued job that has not been planned again by these rules, so a job queued
+under the old model with an explicit `aws` or `lab` becomes `auto` unless an exception applies; planned ones keep
+their host. `lab host <id> auto|lab|aws` (`POST /jobs/{id}/host`) remains as an operator override for a queued,
+unplanned job; agents never need it. `lab machines` and `POST /jobs/{id}/machines` are retired and ignored.
 
-- The Mac takes it when it is free, that is when nothing is running there and nothing queued for it, and it then
-  stays on the Mac. A job queued for the Mac itself always goes before it, whatever their priorities: it gives way
-  between its cases to such a job, never the other way round, so the sweeps and reference runs are never held up by it.
-- Otherwise AWS takes it once it has waited 15 minutes divided by the number of jobs waiting for the Mac (its own and
-  the `auto` ones), at least a minute: 15 minutes alone, 5 behind two others, a minute in a long line, which gives the
-  Mac the first chance without leaving a backlog for it. It asks for spot
-  instances, whatever `market` says, and asks again every 30 s while AWS has no spot capacity or quota; after
-  `spotWaitMin` minutes (15) it buys on demand instead. A profile job is never spot, and `profileCli` jobs are `aws`.
-- Once taken, its `host` is where it went and `auto` is set on it, which the queue shows; `lab host <id> auto` makes a
-  queued, unplanned job `auto` again.
+AWS work runs on a pool of nodes. A node is an EC2 instance that, once booted, takes work until there is none for it:
+first it joins a job already running on AWS that still has problems no node has taken (building that job's commits
+first), otherwise it claims the next queued job it may run (not Mac-only, its cases fit the node's cores, a profile job
+only on an on-demand node, priority order). A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
+and at once when a lab update waits. It stops taking problems an hour before its `maxHours` power-off. A job's
+instances are the nodes working on it right now; its page lists them with their sizes and markets, and the queue's
+summary has a line on the whole pool: each node's size, market and what it is doing, and the pressure.
+
+Nodes launch on pressure, with damping:
+
+- Pressure is the estimated core-hours of the work waiting for AWS: queued `auto` jobs at priority `nodeMinPriority`
+  (0) or above and every queued `aws` job, less the job the Mac takes next when it is free, plus the unclaimed problems
+  of jobs running on AWS. A job's core-hours are its cases times each arm's `timeout` times its `processors`: a planned
+  job counts its queued cases; an unplanned one is estimated from its selections (`max`, else `per-family` times 10
+  families, else 20 problems per selection, the smaller when both are set) times arms, seeds and repeats; a profile
+  job is one case of its allowance. Work below `nodeMinPriority` that the Mac can run waits for the Mac: no node
+  launches for it or takes it. Mac-only work never counts.
+- The first node launches once pressure has stayed at or above `nodeLaunchCoreHours` (1.0) for `nodeSustainMin`
+  minutes (3). Another launches only while pressure is at least twice that per node already up or launching, again
+  for `nodeSustainMin`, and `nodeCooldownMin` minutes (5) after the last launch; at most `maxInstances` nodes, within
+  the `vcpuQuota`. While a lab update waits, no node launches.
+- Each launch asks for spot and asks again every 30 s while AWS has no spot capacity or quota; after `spotWaitMin`
+  minutes (15) it buys on demand, or at once if the account cannot launch spot at all, but only with `onDemand=true`.
+  With `onDemand=false`, the default, a launch never falls back to on demand and gives up once the pressure is gone.
+  A node launched while a profile job waits and no on-demand node is up is bought on demand directly. A spot node
+  idle beside a profile job it may not run retires after `nodeIdleMin`, and an on-demand node then launches. A short
+  profile alone (10 minutes by default, about 0.2 core-hours) is under the threshold and waits for the Mac or an
+  on-demand node already up; a profile worth a node is one of an hour or more.
+- Node size is chosen at launch and kept small: the smallest size of the family (`instanceType`, then `4xlarge`,
+  `8xlarge`, …) that has the cores the largest waiting case needs (its `processors`) and covers this node's share of
+  the pressure (pressure over the nodes up plus this one) within two hours, at most `nodeMaxVcpus` (16, a
+  `c7i.4xlarge`) unless a case itself needs more. More pressure is met by another node later, through the damping,
+  rather than one large node up front. So a few core-hours get a `c7i.2xlarge`, a larger backlog a `c7i.4xlarge`, and
+  a backlog beyond that a second node.
+- A node runs one case per two physical cores unless the job sets `parallel`, which on AWS counts per node, within
+  its cores: single-core arms run 2 cases on a c7i.2xlarge and 4 on a c7i.4xlarge.
+
+`aws.properties` keys for the pool, all optional and reread on every poll: `maxInstances`, `vcpuQuota`, `onDemand`,
+`spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchCoreHours`, `nodeSustainMin`, `nodeCooldownMin`,
+`nodeMaxVcpus`. `market` and `spotFallback` are no longer read.
 
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
   creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
@@ -519,7 +559,7 @@ once it is on.
   `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` and `vcpuQuota`, now 8 and the account's 128 on-demand vCPUs, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
   start the AWS worker. After that the worker rereads it on every poll, so a raised `vcpuQuota` or a new
-  `maxInstances` applies to the next job without a restart.
+  `maxInstances` applies to the next launch without a restart.
 - The corpus cache lives in a private S3 bucket in the same region, `klause-lab-corpus-<account>-<region>`. An instance
   syncs it down while it builds (fast and free within the region) and, after planning, pushes back any collection it
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
@@ -533,71 +573,47 @@ once it is on.
   the target. A failed build stops setup and records its output in `setup.log`; no cases start and no build cache
   is published. Supported provenance capture must succeed and write a nonempty manifest. Publication packs a
   complete local archive before uploading, so a failed tar cannot stream an incomplete installation into S3.
-- The Mac runner takes only `lab` jobs and the AWS worker only `aws` ones, each queue in the usual order. The worker
-  claims the next `aws` job when the vCPUs for one instance are free and gives it `machines` instances (default
-  `maxInstances`), or as many as the account's `vcpuQuota` of on-demand vCPUs leaves, each job on its own thread.
-  A job that started with fewer grows while it runs: whenever no `aws` job waits in the queue and the quota has room,
-  it launches another instance, up to its `machines`, as long as it has problems no instance has taken. An instance
-  with no problem left to take is terminated at once, so its vCPUs go to the jobs still running or waiting.
-- An instance's size follows the job's arms: the smallest size of the family (`c7i.2xlarge`, `4xlarge`, `8xlarge`)
-  with as many physical cores as the arm with the most `processors` needs for one case. Each instance runs one case
-  per two physical cores, a case holding its `processors` of them, unless the spec sets `parallel`, which on AWS
-  counts per instance. So single-core arms run 2 cases on each c7i.2xlarge, and a 4-core portfolio gets a
-  c7i.2xlarge running one case, or 8 cores per case a c7i.4xlarge. The job page shows its shape, e.g.
-  `4 × c7i.2xlarge, 2 cases each`.
-- A job's instances boot Ubuntu 24.04 with a JDK 25 and MiniZinc, clone klause and build every commit its arms name.
+- A node boots Ubuntu 24.04 with a JDK 25 and MiniZinc, clones klause and builds every commit its job's arms name.
   SSH remembers each host key by region and EC2 instance ID, since AWS reuses public addresses after termination.
   A new instance at a reused address may enroll its key; a changed key on the same instance is refused. So a plain
   `ssh ubuntu@<address>` with the lab's `known_hosts` finds no key for the address and refuses in batch mode; reach a
-  running job's instance with `lab ssh <id> [n] [command]`, which connects through the server the way the lab does.
-  It plans on the first, and the others fetch the same corpora before cases start. The instances share the job's
-  problems: each takes the next one in plan order whenever it has room for a case, and a problem's arms, seeds and
-  repeats all run on the instance that took it, so each comparison is made on one machine and no instance idles while
-  another has a backlog. An instance added later builds and fetches the same way, then takes problems too. Each instance
-  runs `parallel` cases at once (default one per two physical cores) over SSH under
-  `timeout`, and each record is copied back as its case ends, so the job page, comparisons and CSVs work as for a
-  local job.
+  node working on a running job with `lab ssh <id> [n] [command]`, which connects through the server the way the lab
+  does. The node that claims a job plans it, and nodes that join fetch the same corpora before their cases start. The
+  nodes share the job's problems: each takes the next one in plan order whenever it has room for a case, and a
+  problem's arms, seeds and repeats all run on the node that took it, so each comparison is made on one machine and no
+  node idles while another has a backlog. Each node keeps a job's case files in `~/jobs/<id>`, removed when it moves
+  on. Cases run over SSH under `timeout`, and each record is copied back as its case ends, so the job page,
+  comparisons and CSVs work as for a local job.
 - A running AWS case carries its phase, so a case RUNNING past its `timeoutSec` shows whether the solver or the lab
   holds it: `EXECUTING`, `TRANSFERRING_OUTPUT` (with the record's `elapsedMs`), `RETRY_BACKOFF` after SSH dropped
   (attempt n of m and when the next starts) or `TERMINATING` after a timeout or cancel. The job page lists it under
   `running` and beside the case's status; `GET /jobs/{id}` has it as each command's `phase` (`phase`, `since`,
   `attempt`, `attempts`, `retryAt`, `elapsedMs`), null once the case ends and for cases on the Mac.
-- Leave `parallel` unset on AWS, and size a job with `machines`. The default, one case per two physical cores, is the
-  controlled setting: each case is a bench JVM driving a solver JVM, whose JIT compiler and garbage collector threads
-  need the second core, and a problem's arms run on the same instance, so a comparison never spans machines.
-  `parallel=1` does not make an experiment more controlled; it only leaves half the instance idle and takes twice as
-  long. Set it lower only for an arm that needs more memory per case than half the instance. Likewise, don't keep `machines` low to spare the quota: the worker shares it between jobs on its own,
-  and a job waits for vCPUs rather than failing. Use as many instances as the job has problems to spread over, up to
-  `maxInstances`.
-- The queue and history show where each job runs (Mac or AWS, and a running AWS job's instance count), and a queued
-  job's place in its own host's queue. A queued job that has not been planned can move between the Mac and AWS from
-  its page, or with `lab host <id> auto|lab|aws [machines]`; once planned, its commands name paths on its host.
-  An AWS job's instance count can change until it ends, on its page or with `lab machines <id> [n]`: a queued or
-  paused job launches that many next; a running one grows to a raised count as the quota allows, and keeps the
-  instances it has when the count is lowered.
-- The lab does not update itself while an AWS job runs: the restart would end the worker thread, and with it the job's
-  instances. While an update waits, the worker starts no new AWS job and running ones launch no more instances, so the
-  running jobs drain and the update lands; the queued ones start after the restart.
-- Instances are on demand by default. `market=spot` in `aws.properties` makes those of experiments and reference A/Bs
-  spot capacity instead (profile jobs stay on demand; see Profile jobs): the same hardware at a fraction of the
-  on-demand price, which AWS can take back at two minutes' notice, and which held jobs up too long to stay the
-  default. When AWS takes one back, the lab finds the instance gone at its next dropped connection and puts
-  the cases it was running, and the problems it had taken, back in the job's queue; the job's other instances take
-  them, and it launches a replacement as the quota allows. A job left with work and no instances is queued again
-  rather than failed, and resumes on new ones. Cases that finished keep their records, so a reclaim costs only the
-  cases in flight. When AWS has no spot capacity of the type, or the account's spot quota (a quota of its own, apart
-  from `vcpuQuota`) is used up, or the account lacks the spot service-linked role that `aws-setup.sh` creates, that
-  instance launches on demand; `spotFallback=false` waits for spot capacity instead of falling back. The job page counts
-  a job's spot instances. Spot timing is noisier than the Mac's, so give a timing A/B on AWS more `repeats`.
+- Leave `parallel` unset on AWS. The default, one case per two physical cores, is the controlled setting: each case is
+  a bench JVM driving a solver JVM, whose JIT compiler and garbage collector threads need the second core, and a
+  problem's arms run on the same node, so a comparison never spans machines. `parallel=1` does not make an experiment
+  more controlled; it only leaves half the node idle and takes twice as long. Set it lower only for an arm that needs
+  more memory per case than half the node.
+- The lab does not update itself while any node is up: the restart would end the threads that drive them. While an
+  update waits, no node launches or claims a new job, nodes only join jobs already running, and an idle node retires
+  at once, so the pool drains and the update lands; queued jobs start after the restart.
+- Spot nodes are the same hardware at a fraction of the on-demand price, and AWS can take one back at two minutes'
+  notice. When it does, the lab finds the node gone at its next dropped connection and puts the cases it was running,
+  and the problems it had taken, back in the job's queue; the job's other nodes take them, or a free node joins. A job
+  left with work and no node is queued again rather than failed, and the next free node takes it up. Cases that
+  finished keep their records, so a reclaim costs only the cases in flight. The account's spot quota is a quota of its
+  own, apart from `vcpuQuota`, and spot launches need the service-linked role `aws-setup.sh` creates. Spot timing is
+  noisier than the Mac's, so give a timing A/B on AWS more `repeats`.
 - The corpus is kept in the bucket as one tar per collection, `corpus-packs/<collection>.tar`, with an index of each
-  pack's signature (a digest of its files' names and sizes) in `corpus-packs/index.tsv`. An instance pulls the index
-  and the packs that differ from what it holds while it builds, and the first instance of a job pushes, after
+  pack's signature (a digest of its files' names and sizes) in `corpus-packs/index.tsv`. A node pulls the index
+  and the packs that differ from what it holds while it builds, and the node that plans a job pushes, after
   planning, a pack of each collection it changed. That is a few dozen requests an instance; the files one by one,
   as they were kept in `corpus/` before, were over fifty thousand, which cost more in S3 requests than the instances
   did. Until a push has written the first packs, an instance still pulls `corpus/` file by file.
-- The instances are terminated when the job ends, whatever way; a pause terminates them too and a resume launches new
-  ones. An instance powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
-  `aws` job left running and terminates every lab-tagged instance no running job owns.
+- A paused job goes back to the queue once its nodes finish their cases in flight, and a node takes it up again on
+  resume. A node powers itself off, which terminates it, after `maxHours`. When the runner starts, it requeues any
+  `aws` job left running and terminates every lab-tagged instance, none of which is a node of the new runner; the
+  sweep every five minutes terminates any lab instance that is not a node.
 
 ## Public access
 
@@ -784,10 +800,10 @@ deploy/lab tail 7             # the last 8 kB of the job's log: planning, comman
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
-deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job on AWS; not for gates
+deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, Mac first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
-deploy/lab ssh 7 0 uptime     # a command on instance 0 of a running AWS job; no command opens a shell
+deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running AWS job; no command opens a shell
 deploy/lab cancel 7
 ```
 
@@ -807,7 +823,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id"}`; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement"}`, where the lab placed it; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
