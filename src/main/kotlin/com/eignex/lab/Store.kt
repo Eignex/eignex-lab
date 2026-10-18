@@ -519,7 +519,7 @@ class Store(file: Path) {
             }
         }
         id?.also { claimed ->
-            val previous = job(claimed)
+            val previous = if (running == claimed) job(claimed) else null
             val at = now()
             val interruptedRun = if (running == claimed && previous?.experiment?.profile?.runTimeoutSec != null) {
                 previous.runningSince?.let { (at - it).coerceAtLeast(0) } ?: 0
