@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
+import java.security.MessageDigest
 
 /** A reference solver's verdict on one problem, as `klause-bench/reference/<solver>.csv` records it. */
 @Serializable
@@ -29,6 +30,9 @@ data class Reference(
     val dualBound: Double? = null,
     /** From before the solver's claims were checked: kept as evidence, never trusted. */
     val stale: Boolean = false,
+    /** Which source files the verdict is on, as [References.identity] digests a record's `sourceHashes`: null for an
+     *  unbound row, from before the lab kept it, which only counts where the source is unknown too. */
+    val sourceIdentity: String? = null,
 )
 
 /** One collection's rows from one reference solver. */
@@ -163,7 +167,41 @@ object References {
             validation = stat("validation"),
             dualBound = stat("dualBound")?.toDoubleOrNull(),
             stale = stale(solver, stat("referenceVersion").orEmpty()),
+            sourceIdentity = identity(record),
         )
+    }
+
+    /**
+     * The identity of the source files a case [record] ran on: a digest of its `sourceHashes` (the model's and the
+     * data's SHA-256), sorted by name. Null when the record has none, as from a bench too old to record them. A problem
+     * name can come to mean another model or data file, so a verdict only speaks for runs on the same identity.
+     */
+    fun identity(record: JsonElement?): String? {
+        val hashes = (record as? JsonObject)?.get("sourceHashes") as? JsonObject ?: return null
+        if (hashes.isEmpty()) return null
+        val canonical = hashes.entries.sortedBy { it.key }
+            .joinToString("\n") { (name, hash) -> "$name=${(hash as? JsonPrimitive)?.content ?: hash}" }
+        return MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
+
+    /** What [sources] gives a problem whose cases ran on different source files: no reference row matches it. */
+    const val MIXED_SOURCES = "mixed"
+
+    /**
+     * The source identity of each problem of [cases], keyed by (collection, problem): the one its cases ran on, null
+     * when none recorded one (an unbound run, which only unbound reference rows match), or [MIXED_SOURCES] when they
+     * disagree. A case that recorded none beside others that did, such as one that failed early, does not count.
+     */
+    fun sources(cases: List<CaseResult>): Map<Pair<String, String>, String?> =
+        cases.groupBy { it.problem.collection to it.problem.problem }.mapValues { (_, group) ->
+            val identities = group.mapNotNull { identity(it.record) }.distinct()
+            if (identities.size > 1) MIXED_SOURCES else identities.firstOrNull()
+        }
+
+    /** The rows of each problem of [cases] on the source its cases ran on ([sources]), any other left out. */
+    fun matching(rows: Map<Pair<String, String>, List<Reference>>, cases: List<CaseResult>): Map<Pair<String, String>, List<Reference>> {
+        val sources = sources(cases)
+        return rows.mapValues { (key, list) -> list.filter { it.sourceIdentity == sources[key] } }.filterValues { it.isNotEmpty() }
     }
 
     /** The solvers whose rows from before [Reference.version] was kept are stale: MPS references, whose solutions
@@ -179,10 +217,12 @@ object References {
             !xcspIdentity.matches(version)
 
     /** Whether [incoming] takes the place of the same solver's [stored] row: a current row always over a stale one and
-     *  never the other way, then one produced another way, so a proof the old way judged wrongly never outlives its
-     *  correction, then any verdict at least as strong. */
+     *  never the other way, then a row bound to other source files, since the problem's name now means those (an
+     *  unbound row never displaces a bound one), then one produced another way, so a proof the old way judged wrongly
+     *  never outlives its correction, then any verdict at least as strong. */
     fun replaces(incoming: Reference, stored: Reference): Boolean = when {
         incoming.stale != stored.stale -> stored.stale
+        incoming.sourceIdentity != stored.sourceIdentity -> incoming.sourceIdentity != null
         incoming.version != stored.version -> true
         // An equally strong verdict refreshes the row, so a rerun corrects how it was timed or recorded.
         else -> incoming != stored && !stronger(stored, incoming)
@@ -192,12 +232,12 @@ object References {
      * [rows] of one problem as far as they can be trusted. A proof another solver's solution contradicts is set aside,
      * whichever solver made it: an infeasibility proof against a solution becomes undecided, and an optimum beaten by
      * a better solution, or whose dual bound excludes one, keeps its solution but loses its proof. The rows themselves
-     * stay as they were, as evidence of the contradiction ([conflicts]).
+     * stay as they were, as evidence of the contradiction ([conflicts]). Only a row on the same source can dispute one.
      */
     fun trusted(rows: List<Reference>): List<Reference> = rows.map { a ->
         val disputed = a.proven && rows.any { b ->
             val y = b.objective
-            b.solver != a.solver && b.feasible == true && (
+            b.solver != a.solver && b.sourceIdentity == a.sourceIdentity && b.feasible == true && (
                 a.feasible == false ||
                     y != null && a.objective != null && beyond(y, a.objective, a.maximize) ||
                     y != null && a.dualBound != null && beyond(y, a.dualBound, a.maximize)
@@ -224,12 +264,15 @@ object References {
     /**
      * Each arm's cases against [references]. An arm's runs of a problem (seeds, repeats) count by their best: solved
      * if any run solved, its best objective. Speed is left out on purpose: the reference ran under its own budget.
+     * A reference on other source files than the arm's runs of a problem ([sources]) does not cover it.
      */
     fun compare(labels: List<String>, cases: List<CaseResult>, references: Map<Pair<String, String>, Reference>): ReferenceComparison {
         val disagreements = ArrayList<Disagreement>()
         val shortfalls = ArrayList<Shortfall>()
         val summaries = labels.map { label ->
-            val byProblem = cases.filter { it.arm == label }
+            val own = cases.filter { it.arm == label }
+            val sources = sources(own)
+            val byProblem = own
                 .mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }
                 .groupBy({ it.first }, { it.second })
             var covered = 0
@@ -241,7 +284,8 @@ object References {
             var better = 0
             val gaps = ArrayList<Double>()
             for ((problem, runs) in byProblem) {
-                val reference = references[problem.collection to problem.problem] ?: continue
+                val key = problem.collection to problem.problem
+                val reference = references[key]?.takeIf { it.sourceIdentity == sources[key] } ?: continue
                 covered++
                 val solved = runs.any { it.rank > 0 }
                 val refSolved = reference.feasible != null
@@ -290,11 +334,12 @@ object References {
     /**
      * How the verdicts of several reference solvers on one problem contradict each other: one proving infeasible what
      * another solved, two proven optima that differ, or a solution beyond another solver's proven optimum. Any of
-     * them means one of the solvers is wrong, so neither verdict is to be trusted until it is settled.
+     * them means one of the solvers is wrong, so neither verdict is to be trusted until it is settled. Rows on different
+     * source files cannot contradict each other: they answer different problems under one name.
      */
     fun conflicts(rows: List<Reference>): List<String> = buildList {
         for (a in rows) {
-            for (b in rows.filter { it.solver != a.solver }) {
+            for (b in rows.filter { it.solver != a.solver && it.sourceIdentity == a.sourceIdentity }) {
                 if (a.feasible == false && a.proven && b.feasible == true) add("${a.solver} proves infeasible, ${b.solver} found a solution")
                 val (x, y) = a.objective to b.objective
                 if (a.solver < b.solver && a.proven && b.proven && x != null && y != null && !same(x, y)) {

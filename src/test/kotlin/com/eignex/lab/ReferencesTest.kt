@@ -305,4 +305,77 @@ class ReferencesTest {
 
         assertEquals(137L, outcome?.timeMs)
     }
+
+    private fun sourced(problem: String, objective: Int, model: String?) = CaseResult(0, Status.DONE, Problem("s", problem, collection = "c"), "a", null,
+        Json.parseToJsonElement("""{"kind":"optimize","maximize":false,"feasible":true,"objective":$objective,"timeToBestMs":5,"budgetMs":1000""" +
+            (model?.let { ""","sourceHashes":{"model":"$it"}""" } ?: "") + "}"))
+
+    private fun identity(model: String) = References.identity(Json.parseToJsonElement("""{"sourceHashes":{"model":"$model"}}"""))
+
+    @Test
+    fun `a source identity digests the sorted source hashes, and a record without any has none`() {
+        val a = References.identity(Json.parseToJsonElement("""{"sourceHashes":{"model":"m","data":"d"}}"""))
+        val b = References.identity(Json.parseToJsonElement("""{"sourceHashes":{"data":"d","model":"m"}}"""))
+
+        assertEquals(a, b)
+        assertEquals(64, a?.length)
+        assertEquals(listOf<String?>(null, null), listOf("""{"sourceHashes":{}}""", """{"sourceHashes":null}""").map { References.identity(Json.parseToJsonElement(it)) })
+        assertEquals(identity("m"), References.of(Json.parseToJsonElement(
+            """{"solver":"chuffed","budgetMs":1000,"feasible":true,"objective":3,"sourceHashes":{"model":"m"}}"""))?.sourceIdentity)
+    }
+
+    @Test
+    fun `a proven optimum on another model is no disagreement, shortfall or coverage, and an unbound one only meets an unbound run`() {
+        val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, sourceIdentity = identity("bacp-9"))
+        val unbound = bacp9.copy(sourceIdentity = null)
+
+        val other = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(("c" to "bacp") to bacp9))
+        val legacy = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(("c" to "bacp") to unbound))
+        val same = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-9")), mapOf(("c" to "bacp") to bacp9))
+        val neither = References.compare(listOf("a"), listOf(sourced("bacp", 30, null)), mapOf(("c" to "bacp") to unbound))
+
+        assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.summaries.single().covered })
+        assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.disagreements.size })
+    }
+
+    @Test
+    fun `reference rows on different models neither conflict nor set each other's proofs aside`() {
+        val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, sourceIdentity = identity("bacp-9"))
+        val bacp24 = Reference("cp-sat", false, 30.0, true, false, 5, 1000, sourceIdentity = identity("bacp-24"))
+
+        assertEquals(emptyList(), References.conflicts(listOf(bacp9, bacp24)))
+        assertEquals(listOf(bacp9, bacp24), References.trusted(listOf(bacp9, bacp24)))
+        assertEquals(1, References.conflicts(listOf(bacp9, bacp24.copy(sourceIdentity = bacp9.sourceIdentity))).size)
+    }
+
+    @Test
+    fun `the store keeps a row's source, compares by the run's source, and selects by the newest bound one`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "c" to "bacp"
+        val legacy = Reference("chuffed", false, 38.0, true, true, 5, 1000)
+        val bound = Reference("cp-sat", false, 30.0, true, true, 5, 1000, sourceIdentity = identity("bacp-24"))
+        store.putReferences(listOf(key to legacy, key to bound), "test")
+
+        assertEquals(bound, store.references(listOf(key)).getValue(key))
+        assertEquals(bound, store.references(listOf(key), sources = References.sources(listOf(sourced("bacp", 30, "bacp-24"))))[key])
+        assertEquals(legacy, store.references(listOf(key), sources = References.sources(listOf(sourced("bacp", 30, null))))[key])
+        assertEquals(null, store.references(listOf(key), sources = References.sources(listOf(sourced("bacp", 30, "bacp-19"))))[key])
+        assertEquals(emptyList(), store.referenceConflicts())
+        assertEquals(setOf(null, bound.sourceIdentity), store.referenceRows(key.first, key.second).map { it.sourceIdentity }.toSet())
+    }
+
+    @Test
+    fun `a row bound to new source files replaces a stronger one on others, and an unbound one never replaces a bound one`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "c" to "bacp"
+        val proven = Reference("chuffed", false, 38.0, true, true, 5, 1000)
+        val rebound = proven.copy(objective = 30.0, proven = false, sourceIdentity = identity("bacp-24"))
+        store.putReferences(listOf(key to proven), "old")
+
+        val replaced = store.putReferences(listOf(key to rebound), "new")
+        val kept = store.putReferences(listOf(key to proven), "old again")
+
+        assertEquals(listOf(1, 0), listOf(replaced, kept))
+        assertEquals(listOf(rebound), store.referenceRows(key.first, key.second))
+    }
 }

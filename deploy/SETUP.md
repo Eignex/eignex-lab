@@ -369,6 +369,16 @@ evidence, never used by comparisons or filters, and replaced by the next checked
 never replace a checked one. `lab references <text> [solver] [verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
 with every solver's verdict and every lab run of it.
 
+A problem's name can come to mean other source files (MiniZinc Challenge `2011/bacp` was once `bacp-9.mzn`, later
+`bacp-24.mzn`), so each row keeps the identity of the files it was solved on: a digest of the case record's
+`sourceHashes` (the model's and data's SHA-256), shown on the problem page. A verdict only counts against runs on the
+same identity: comparisons, shortfalls, disagreements and the scoreboard take each problem's identity from the run's
+cases, and two solvers' rows only contradict each other or set each other's proofs aside on the same identity. A row
+bound to new files replaces that solver's row on others whatever its strength. Rows from before identities were kept
+are unbound: they still show, and count only against runs that recorded no source either, so a current run (which
+records one) is not judged by them until a reference run rebinds them. Selecting problems, before anything ran, reads
+the rows on the identity of the newest bound row, else the unbound ones.
+
 XCSP3 cp-sat rows require an image SHA-256 and a registered importer policy in
 `References.XCSP_POLICY`; the active policy is `xcsp3-source-preserving-v2`.
 Unversioned or unregistered XCSP rows remain visible as stale evidence and cannot

@@ -53,6 +53,22 @@ class ScoreboardTest {
     }
 
     @Test
+    fun `a board scores only the reference rows on the source files the run used`() {
+        val record = solved(30.0, 1_000).dropLast(1) + ""","sourceHashes":{"model":"bacp-24"}}"""
+        val identity = References.identity(Json.parseToJsonElement(record))
+        val cases = listOf(case("p1", record), case("p2", solved(20.0, 1_000)))
+        val references = mapOf(
+            ("c" to "p1") to listOf(ref("chuffed", 38.0, 500, proven = true), ref("cp-sat", 30.0, 1_000).copy(sourceIdentity = identity)),
+            ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500).copy(sourceIdentity = identity)),
+        )
+
+        val board = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.FORMAT)
+
+        assertEquals(listOf("best", "cp-sat"), board.solvers)
+        assertEquals(ScoreCell(0.5, 0.5, 1), board.total.cells["cp-sat"])
+    }
+
+    @Test
     fun `a filter keeps only the problems that take its value`() {
         val cases = listOf(case("p1", solved(10.0, 1_000)), case("p2", solved(20.0, 1_000), format = "XCSP3"))
         val references = mapOf(("c" to "p1") to listOf(ref("cp-sat", 12.0, 500)), ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500)))

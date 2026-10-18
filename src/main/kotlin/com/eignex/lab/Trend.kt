@@ -117,7 +117,7 @@ object Trend {
                 val cases = store.scoringCases(job.id)
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
                 val keys = cases.map { it.problem.collection to it.problem.problem }
-                val trend = run(job, arms, cases, store.references(keys), store.features(keys.distinct()))
+                val trend = run(job, arms, cases, store.references(keys, sources = References.sources(cases)), store.features(keys.distinct()))
                     ?: return@mapNotNull null
                 val flips = previous?.takeIf { it.first == trend.spec && job.status == Status.DONE }
                     ?.let { Confirm.flips(own(it.second), own(job.id)) }
