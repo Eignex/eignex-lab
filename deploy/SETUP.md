@@ -595,6 +595,14 @@ it alone. Expose the lab only while its password check is live: a request withou
   daemons on macOS, systemd user units with lingering on Linux. On macOS the runner also runs under
   `caffeinate -i`, which keeps the machine awake while it lives.
 
+## Gradle
+
+The lab builds klause with its own Gradle home, `$LAB_DATA/gradle`, not `~/.gradle`: that one is shared with whatever
+else builds on the machine, and other daemons' cache cleanups left its transform records naming files they had
+deleted, which failed every build until the cache was cleared. A build that still fails on a missing transform file
+stops the lab's Gradle daemons and clears its transform caches before its next try. The first build after the switch
+fetches the dependencies into the new home once.
+
 ## Disk
 
 - Below `LAB_MIN_FREE_GB` (10) free on the data directory's disk, the Mac's queue is held until there is room again;

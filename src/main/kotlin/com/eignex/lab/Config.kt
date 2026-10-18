@@ -69,6 +69,11 @@ data class Config(
     }
 
     val sharedDir: Path get() = dataDir.resolve("shared")
+    /**
+     * The Gradle home the lab's builds use, its own: `~/.gradle` is shared with whatever else builds on the machine,
+     * whose daemons' cache cleanups have left its transform records pointing at files they deleted.
+     */
+    val gradleHome: Path get() = dataDir.resolve("gradle")
     val database: Path get() = dataDir.resolve("lab.db")
     /** A GitHub token the trust check reads the repository's activity with, when the file exists: without one GitHub
      *  allows 60 calls an hour. Read on each use, so adding it needs no reinstall. */

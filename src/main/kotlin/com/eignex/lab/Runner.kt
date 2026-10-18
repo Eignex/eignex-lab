@@ -347,8 +347,17 @@ class Runner(private val config: Config, private val store: Store) {
             }
             linkShared(path)
             withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
-                sh(log, path.toFile(),
-                    "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+                val start = log.length()
+                runCatching {
+                    sh(log, path.toFile(),
+                        "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q")
+                }.onFailure { e ->
+                    if (brokenTransforms(log, start)) {
+                        log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
+                        clearTransforms(path.toFile())
+                    }
+                    throw e
+                }
                 sh(log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
         }
@@ -683,11 +692,30 @@ class Runner(private val config: Config, private val store: Store) {
         step = step,
     )
 
+    /** Whether the build output [log] wrote after [from] says a Gradle transform's file is missing: a cache whose
+     *  records outlived the files they name, which every later build would trip on the same way. */
+    private fun brokenTransforms(log: File, from: Long): Boolean = runCatching {
+        java.io.RandomAccessFile(log, "r").use { raf ->
+            raf.seek(minOf(from, raf.length()))
+            val bytes = ByteArray((raf.length() - raf.filePointer).coerceAtMost(MAX_BUILD_LOG_SCAN).toInt())
+            raf.readFully(bytes)
+            String(bytes).let { "FileNotFoundException" in it && "/transforms/" in it }
+        }
+    }.getOrDefault(false)
+
+    /** Stop the lab's Gradle daemons and remove its transform caches, which the next build rebuilds. */
+    private fun clearTransforms(worktree: File) {
+        runCatching { sh(File.createTempFile("gradle-stop", ".log"), worktree, "./gradlew --stop -q") }
+        config.gradleHome.resolve("caches").toFile().listFiles().orEmpty()
+            .map { it.resolve("transforms") }.filter { it.isDirectory }.forEach { it.deleteRecursively() }
+    }
+
     private fun sh(log: File, dir: File, cmd: String) {
         log.appendText("$ $cmd\n")
         val builder = ProcessBuilder(inSession("bash", "-c", cmd)).directory(dir)
             .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log))
         if (config.javaHome.isNotBlank()) builder.environment()["JAVA_HOME"] = config.javaHome
+        builder.environment()["GRADLE_USER_HOME"] = config.gradleHome.toString()
         val process = start(builder, log.toPath().resolveSibling("setup.pid"))
         val finished = try {
             process.waitFor(config.setupTimeoutSec, TimeUnit.SECONDS)
@@ -788,6 +816,9 @@ internal fun gitIn(dir: File, args: List<String>): Pair<Int, String> {
     val out = process.inputStream.bufferedReader().readText()
     return process.waitFor() to out
 }
+
+/** The most of a build's output [Runner] reads to tell why it failed. */
+private const val MAX_BUILD_LOG_SCAN = 4L * 1024 * 1024
 
 internal fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
