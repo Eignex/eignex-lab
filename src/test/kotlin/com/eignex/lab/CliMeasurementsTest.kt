@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.util.concurrent.TimeUnit
 import jdk.jfr.consumer.RecordingFile
 import org.junit.jupiter.api.condition.EnabledOnOs
@@ -229,11 +230,15 @@ class CliMeasurementsTest {
             process.destroyForcibly()
             assertTrue(process.waitFor(5, TimeUnit.SECONDS))
             val status = java.nio.file.Path.of("/proc/$child/status")
+            fun childStopped(): Boolean = try {
+                Regex("(?m)^State:\\s+Z").containsMatchIn(Files.readString(status))
+            } catch (_: NoSuchFileException) {
+                true
+            }
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(250)
-            while (Files.exists(status) && !Regex("(?m)^State:\\s+Z").containsMatchIn(Files.readString(status)) &&
-                System.nanoTime() < deadline) Thread.sleep(5)
+            while (!childStopped() && System.nanoTime() < deadline) Thread.sleep(5)
 
-            assertTrue(!Files.exists(status) || Regex("(?m)^State:\\s+Z").containsMatchIn(Files.readString(status)))
+            assertTrue(childStopped())
         } finally {
             process.destroyForcibly()
             child?.let { ProcessHandle.of(it).ifPresent { handle -> handle.destroyForcibly() } }
