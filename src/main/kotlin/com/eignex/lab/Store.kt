@@ -520,31 +520,25 @@ class Store(file: Path) {
     }?.let { it.copy(commands = commands(it.id)) }
 
     /**
-     * The job to work on: one left RUNNING by a crashed runner first, else the queued, unpaused job with the highest
-     * priority, claimed. Among equals, the job whose series last finished a run longest ago goes first, one that never
-     * has before any that has, then the oldest: so a schedule that just ran cannot keep going ahead of one that has
-     * waited. A series is a schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
+     * The job the Mac works on: one left RUNNING there by a crashed runner first, else the queued, unpaused job with the
+     * highest priority among those placed on the Mac, else the first `auto` job ([nextAuto]), claimed. Among equals,
+     * the job whose series last finished a run longest ago goes first, one that never has before any that has, then
+     * the oldest: so a schedule that just ran cannot keep going ahead of one that has waited. A series is a schedule's
+     * runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
      */
     @Synchronized
-    fun next(host: String = Experiments.LAB_HOST, profiles: Boolean = true): Job? = transaction {
-        // SQLite sorts NULL first ascending: a series that never finished a run goes before one that has.
-        val running = if (host != Experiments.LAB_HOST) null else connection.prepareStatement(
+    fun next(): Job? = transaction {
+        val running = connection.prepareStatement(
             "SELECT id FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1",
         ).use {
             it.setString(1, Status.RUNNING.name)
-            it.setString(2, host)
+            it.setString(2, Experiments.LAB_HOST)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
-        val id = running ?: connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? ${noProfiles(profiles)} $QUEUE_ORDER LIMIT 1",
-        ).use {
-            it.setString(1, Status.QUEUED.name)
-            it.setString(2, host)
-            it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
-        } ?: nextAuto(host, profiles)?.also { claimed ->
-            // Taken where it goes: from now on it is that host's job, resumed there after a pause or a restart.
+        val id = running ?: queueOrder().firstOrNull() ?: nextAuto()?.also { claimed ->
+            // Taken where it goes: from now on it is the Mac's job, resumed there after a pause or a restart.
             connection.prepareStatement("UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', json('true')) WHERE id = ?").use {
-                it.setString(1, host)
+                it.setString(1, Experiments.LAB_HOST)
                 it.setLong(2, claimed)
                 it.executeUpdate()
             }
@@ -555,54 +549,75 @@ class Store(file: Path) {
             val interruptedRun = if (running == claimed && previous?.experiment?.profile?.runTimeoutSec != null) {
                 previous.runningSince?.let { (at - it).coerceAtLeast(0) } ?: 0
             } else 0
-            connection.prepareStatement(
-                "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ?, run_ms = run_ms + ? WHERE id = ?",
-            ).use {
-                it.setString(1, Status.RUNNING.name)
-                it.setLong(2, at)
-                it.setLong(3, at)
-                it.setLong(4, interruptedRun)
-                it.setLong(5, claimed)
-                it.executeUpdate()
-            }
+            markRunning(claimed, at, interruptedRun)
         }
         id
     }?.let(::job)
 
-    /** The job [next] would take for [host] now, without taking it: its own queue's first, else an `auto` job ([nextAuto]). */
-    @Synchronized
-    fun peek(host: String, profiles: Boolean = true): Long? = queueOrder(host, profiles).firstOrNull() ?: nextAuto(host, profiles)
+    private fun markRunning(id: Long, at: Long, interruptedRun: Long = 0) = connection.prepareStatement(
+        "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ?, run_ms = run_ms + ? WHERE id = ?",
+    ).use {
+        it.setString(1, Status.RUNNING.name)
+        it.setLong(2, at)
+        it.setLong(3, at)
+        it.setLong(4, interruptedRun)
+        it.setLong(5, id)
+        it.executeUpdate()
+    }
 
-    /**
-     * The `auto` job [host] takes when nothing is queued for it: the lab machine any, at once, being free whenever it
-     * asks; AWS only one that has waited [autoGraceMs], so that the lab machine gets the first chance.
-     */
-    private fun nextAuto(host: String, profiles: Boolean = true): Long? = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? AND created_at <= ? " +
-            "${noProfiles(profiles)} $QUEUE_ORDER LIMIT 1",
+    /** The job [next] would take now, without taking it: the Mac's own queue's first, else the first `auto` job. */
+    @Synchronized
+    fun peek(): Long? = queueOrder().firstOrNull() ?: nextAuto()
+
+    /** Whether the Mac is running a job. */
+    @Synchronized
+    fun macBusy(): Boolean = connection.prepareStatement("SELECT 1 FROM jobs WHERE status = ? AND $HOST = ? LIMIT 1").use {
+        it.setString(1, Status.RUNNING.name)
+        it.setString(2, Experiments.LAB_HOST)
+        it.executeQuery().use { rows -> rows.next() }
+    }
+
+    /** The first `auto` job, which the Mac takes when nothing placed on it alone waits; a node may take it first. */
+    private fun nextAuto(): Long? = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER LIMIT 1",
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.setString(2, Experiments.AUTO_HOST)
-        it.setLong(3, if (host == Experiments.LAB_HOST) Long.MAX_VALUE else now() - autoGraceMs())
         it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
     }
 
     /**
-     * How long an `auto` job waits for the lab machine before AWS may take it: [AUTO_GRACE_MS] shared out over the jobs
-     * waiting for the machine, its own queue's and the `auto` ones, and never under [AUTO_GRACE_MIN_MS]. The longer the
-     * line, the longer the machine would take to reach a job anyway, so the sooner AWS takes it.
+     * The queued, unpaused jobs an AWS node may take, `auto` and `aws` ones alike, in the order a node takes them: by
+     * priority, then series, then age, as the Mac orders its own. Without their commands, with their counts.
      */
-    private fun autoGraceMs(): Long {
-        val waiting = connection.prepareStatement(
-            "SELECT COUNT(*) FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?)",
+    @Synchronized
+    fun nodeQueue(): List<Job> = jobsWhere(
+        "status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $NODE_ORDER",
+        Status.QUEUED.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
+    )
+
+    /**
+     * Claim queued job [id] for an AWS node: it becomes an `aws` job, `auto` marking one that could have gone to the
+     * Mac. Null when it is no longer one a node may take: the Mac took it, or it was paused or cancelled meanwhile.
+     */
+    @Synchronized
+    fun claimForNode(id: Long): Job? = transaction {
+        val claimed = connection.prepareStatement(
+            "UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', " +
+                "json(CASE WHEN $HOST = ? OR COALESCE(json_extract(experiment, '\$.auto'), 0) THEN 'true' ELSE 'false' END)) " +
+                "WHERE id = ? AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?)",
         ).use {
-            it.setString(1, Status.QUEUED.name)
-            it.setString(2, Experiments.LAB_HOST)
-            it.setString(3, Experiments.AUTO_HOST)
-            it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else 0 }
+            it.setString(1, Experiments.AWS_HOST)
+            it.setString(2, Experiments.AUTO_HOST)
+            it.setLong(3, id)
+            it.setString(4, Status.QUEUED.name)
+            it.setString(5, Experiments.AUTO_HOST)
+            it.setString(6, Experiments.AWS_HOST)
+            it.executeUpdate() == 1
         }
-        return maxOf(AUTO_GRACE_MIN_MS, AUTO_GRACE_MS / maxOf(1, waiting))
-    }
+        if (claimed) markRunning(id, now())
+        claimed
+    }.let { if (it) job(id) else null }
 
     /** A command a crashed runner left RUNNING is rerun from the start: its partial output is not a result. */
     @Synchronized
@@ -1064,13 +1079,22 @@ class Store(file: Path) {
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
-    /** The queued, unpaused jobs for [host] in the order [next] takes them. */
+    /** The queued, unpaused jobs placed on the Mac alone, or taken by it, in the order [next] takes them. */
     @Synchronized
-    fun queueOrder(host: String = Experiments.LAB_HOST, profiles: Boolean = true): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? ${noProfiles(profiles)} $QUEUE_ORDER",
+    fun queueOrder(): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER",
     ).use {
         it.setString(1, Status.QUEUED.name)
-        it.setString(2, host)
+        it.setString(2, Experiments.LAB_HOST)
+        it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
+    }
+
+    /** Every queued, unpaused job, wherever it may run, by priority, series and age: the queue as the pages show it. */
+    @Synchronized
+    fun queue(): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $NODE_ORDER",
+    ).use {
+        it.setString(1, Status.QUEUED.name)
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
     }
 
@@ -1106,26 +1130,18 @@ class Store(file: Path) {
         )
     }
 
-    /** Move a queued experiment that has not been planned to [host], with [machines] for AWS; false otherwise, since a
-     *  planned job's commands name paths on the host that planned it. */
+    /**
+     * Place a queued experiment that has not been planned on [host] (`lab`, `aws` or `auto`): what [Placement] decides,
+     * or an operator overrides. False otherwise, since a planned job's commands name paths on the host that planned it.
+     */
     @Synchronized
-    fun setHost(jobId: Long, host: String, machines: Int?): Boolean {
+    fun place(jobId: Long, host: String): Boolean {
         val job = job(jobId) ?: return false
         val spec = job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
-        require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli requires host=aws" }
-        val moved = spec.copy(host = host, auto = false, machines = machines.takeIf { host != Experiments.LAB_HOST })
+        require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli runs only on AWS" }
+        val moved = spec.copy(host = host, auto = false, machines = null)
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
-    }
-
-    /** Set how many instances an AWS experiment that has not ended splits over, null for as many as are free. A running
-     *  job keeps the instances it launched: the number applies at its next launch, after a pause and resume. */
-    @Synchronized
-    fun setMachines(jobId: Long, machines: Int?): Boolean {
-        val job = job(jobId) ?: return false
-        val spec = job.experiment ?: return false
-        if (spec.host != Experiments.AWS_HOST || job.status !in ACTIVE) return false
-        return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(spec.copy(machines = machines)), jobId) == 1
     }
 
     /** Set an experiment's description; false when there is no such experiment. */
@@ -1224,22 +1240,19 @@ fun now(): Long = System.currentTimeMillis()
 private const val SERIES_J = "CASE WHEN instr(jobs.name, '@') > 0 THEN substr(jobs.name, 1, instr(jobs.name, '@') - 1) ELSE jobs.name END"
 private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.name, 1, instr(r.name, '@') - 1) ELSE r.name END"
 
-/** How [Store.next] orders queued jobs: by priority, then the series that last finished a run longest ago, then age. */
-// A job queued for its host goes before an `auto` job the host took, whatever their priorities: an `auto` job only
-// fills a host that has nothing of its own to run.
-private const val QUEUE_ORDER = "ORDER BY COALESCE(json_extract(jobs.experiment, '\$.auto'), 0), priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+/** How queued jobs are ordered: by priority, then the series that last finished a run longest ago, then age. */
+private const val PRIORITY_ORDER = "priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
     "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
+
+/** How the Mac orders its queue: a job placed on the Mac alone goes before an `auto` job the Mac took, whatever their
+ *  priorities, since an `auto` job only fills a Mac that has nothing of its own to run. */
+private const val QUEUE_ORDER = "ORDER BY COALESCE(json_extract(jobs.experiment, '\$.auto'), 0), $PRIORITY_ORDER"
+
+/** How a node orders the jobs it may take ([Store.nodeQueue]). */
+private const val NODE_ORDER = "ORDER BY $PRIORITY_ORDER"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
-
-/** A queue query's filter that, without [profiles], leaves profile jobs out: what a host that cannot run them passes over. */
-private fun noProfiles(profiles: Boolean) = if (profiles) "" else "AND json_extract(experiment, '\$.profile') IS NULL"
-
-/** How long a queued `auto` job waits for the lab machine before AWS may take it, when it is the only job waiting
- *  for the machine; with more waiting it is shared out over them ([Store.autoGraceMs]), down to [AUTO_GRACE_MIN_MS]. */
-internal const val AUTO_GRACE_MS = 15 * 60_000L
-internal const val AUTO_GRACE_MIN_MS = 60_000L
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()

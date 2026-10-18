@@ -18,8 +18,8 @@ internal fun indexPage(
     limit: Int,
     before: Long?,
     name: String?,
-    /** Each host's queued jobs in the order they are taken ([Store.queueOrder]). */
-    queueOrder: Map<String, List<Long>> = emptyMap(),
+    /** The queued jobs in queue order ([Store.queue]), wherever each may run. */
+    queueOrder: List<Long> = emptyList(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
@@ -109,22 +109,6 @@ internal fun jobPage(
         append("<button onclick=\"act('/jobs/$id/priority', {priority: +document.getElementById('priority').value})\">set</button>")
         append("<label>parallel <input id=\"parallel\" type=\"number\" min=\"1\" max=\"${config.maxParallel}\" value=\"${job.parallel}\"></label>")
         append("<button onclick=\"act('/jobs/$id/parallel', {parallel: +document.getElementById('parallel').value})\">set</button>")
-        // A job changes host only before it is planned: its commands then name paths on the host that planned it.
-        if (job.experiment?.host == Experiments.AWS_HOST) {
-            // A running job keeps the instances it launched; the count applies when it next launches.
-            val later = if (job.status == Status.RUNNING) " (applies after a pause and resume)" else ""
-            append("<label>machines$later <input id=\"machines\" type=\"number\" min=\"1\" ")
-            append("max=\"${config.aws?.let { it.vcpuQuota / it.sizes.first().vcpus } ?: 1}\" ")
-            append("value=\"${job.experiment.machines ?: ""}\" placeholder=\"all free\"></label>")
-            append("<button onclick=\"act('/jobs/$id/machines', {machines: +document.getElementById('machines').value || null})\">set</button>")
-        }
-        if (job.status == Status.QUEUED && job.commands.isEmpty() && job.experiment != null) {
-            if (job.experiment.host == Experiments.AWS_HOST) {
-                append("<button onclick=\"act('/jobs/$id/host', {host: 'lab'})\">run on the Mac</button>")
-            } else if (config.aws != null) {
-                append("<button onclick=\"act('/jobs/$id/host', {host: 'aws'}, 'Run job $id on AWS instead of the Mac?')\">run on AWS</button>")
-            }
-        }
         if (!job.cancelRequested) {
             append("<button class=\"danger\" onclick=\"act('/jobs/$id/cancel', null, 'Cancel job $id?')\">cancel</button>")
         }
@@ -1143,13 +1127,31 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
         " (<a href=\"/disk\">what uses it</a>)"
     val accel = listOfNotNull(host.vendor, "simd".takeIf { host.simd }).joinToString(", ")
     return "$running running · $queued queued · $disk · ${esc(host.host)}, ${host.cores} cores" +
-        if (accel.isEmpty()) "" else ", ${esc(accel)}"
+        (if (accel.isEmpty()) "" else ", ${esc(accel)}") + (nodesLine(config)?.let { "<br>$it" } ?: "")
 }
 
-private fun activeTable(config: Config, active: List<Job>, queueOrder: Map<String, List<Long>>): String {
+/**
+ * The AWS node pool in a line, from the worker's `aws/nodes.json` ([NodePoolReport]): how many nodes, of which sizes
+ * and markets, what each is doing, and the pressure that launches them. Null without AWS settings or a report.
+ */
+internal fun nodesLine(config: Config): String? {
+    if (config.aws == null) return null
+    val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
+    val report = runCatching { Json.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull() ?: return null
+    val pressure = "pressure %.1f core-h".format(report.pressure)
+    val launching = if (report.launching > 0) ", ${report.launching} launching" else ""
+    if (report.nodes.isEmpty()) return "AWS nodes: none$launching · $pressure"
+    val each = report.nodes.joinToString(", ") { node ->
+        val doing = node.job?.let { job -> esc(node.doing).replace("job $job", "<a href=\"/jobs/$job\">job $job</a>") } ?: esc(node.doing)
+        "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span> $doing"
+    }
+    return "AWS nodes: ${report.nodes.size}$launching ($each) · $pressure"
+}
+
+private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
-    // The order each host takes its queued jobs in, as Store.next picks them.
-    val positions = queueOrder.values.flatMap { order -> order.withIndex().map { (index, id) -> id to index + 1 } }.toMap()
+    // One queue, whatever runs each job: the Mac and the AWS nodes take from it as the lab places jobs.
+    val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
     return jobTable(config, ordered, positions, filterable = false)
 }
@@ -1237,29 +1239,35 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
     append("</table></div>")
 }
 
-/** Where a job runs: the lab Mac, or AWS with the instances it has while it runs and asks for while it waits. */
+/**
+ * Where a job runs, as the lab placed it: the Mac alone, the Mac or an AWS node (whichever is free first), AWS alone;
+ * once taken, where it went, and on AWS the nodes working on it.
+ */
 private fun hostCell(config: Config, job: Job): String {
     val spec = job.experiment
-    if (spec?.host == Experiments.AUTO_HOST) return "<span class=\"where\" title=\"the Mac when it is free, else AWS, spot first\">auto</span>"
-    val chosen = if (spec?.auto == true) " <small class=\"muted\">auto</small>" else ""
-    if (spec?.host != Experiments.AWS_HOST) return "<span class=\"where\">Mac</span>$chosen"
+    if (spec?.host == Experiments.AUTO_HOST) {
+        return "<span class=\"where\" title=\"placed by the lab: the Mac when it is free, else an AWS node\">Mac or AWS</span>"
+    }
+    if (spec?.host != Experiments.AWS_HOST) {
+        val note = when {
+            spec?.auto == true -> " <small class=\"muted\" title=\"could have gone to AWS; the Mac took it\">taken</small>"
+            spec != null && job.status == Status.QUEUED -> " <small class=\"muted\">only</small>"
+            else -> ""
+        }
+        return "<span class=\"where\">Mac</span>$note"
+    }
     val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
-    // Each line: instance, type, and how it was bought (spot or on-demand; absent before spot was offered).
-    val fields = instances.map { it.split(' ') }
-    val type = fields.firstOrNull()?.getOrNull(1)
-    val spot = fields.count { it.getOrNull(2) == "spot" }
-    val market = when (spot) {
-        0 -> ""
-        instances.size -> " spot"
-        else -> " ($spot spot)"
-    }
+    // Each line: instance, type, and how it was bought (spot or on-demand).
+    val shapes = instances.map { it.split(' ') }.groupingBy { "${it.getOrNull(1) ?: "instance"} ${it.getOrNull(2) ?: ""}".trim() }.eachCount()
     val detail = when {
-        instances.isNotEmpty() -> "${instances.size} × ${type ?: "instance"}$market, ${job.parallel} cases each"
-        job.status in ACTIVE -> spec.machines?.let { "asks for $it" } ?: "as many as are free"
+        instances.isNotEmpty() -> "${instances.size} ${if (instances.size == 1) "node" else "nodes"}: " +
+            shapes.entries.joinToString(", ") { (shape, n) -> if (n == 1) shape else "$n × $shape" }
+        job.status == Status.QUEUED -> "waiting for a node"
         else -> null
     }
-    return "<span class=\"where aws\">AWS</span>$chosen" + (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">$it</small>" } ?: "")
+    return "<span class=\"where aws\">AWS</span>" +
+        (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">${esc(it)}</small>" } ?: "")
 }
 
 private fun statusCell(job: Job, position: Int?): String {
@@ -1272,8 +1280,7 @@ private fun statusCell(job: Job, position: Int?): String {
     val notes = listOfNotNull(
         "cancelling".takeIf { job.cancelRequested && job.status in ACTIVE },
         "<span class=\"badge\">paused</span>".takeIf { job.paused && job.status in ACTIVE },
-        "#$position in the ${when (job.experiment?.host) { Experiments.AWS_HOST -> "AWS"; Experiments.AUTO_HOST -> "auto"; else -> "Mac" }} queue"
-            .takeIf { position != null },
+        "#$position in the queue".takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
         job.error?.let { "<span title=\"${esc(it)}\">${esc(shortError(it))}</span>" },
     )

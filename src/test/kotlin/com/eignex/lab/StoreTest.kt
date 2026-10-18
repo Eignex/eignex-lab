@@ -126,7 +126,7 @@ class StoreTest {
             parallel = 1, host = "aws", profileCli = true)
         val id = store.create("profile", "main", emptyList(), parallel = 1, experiment = experiment)
 
-        assertFailsWith<IllegalArgumentException> { store.setHost(id, "lab", null) }
+        assertFailsWith<IllegalArgumentException> { store.place(id, "lab") }
 
         assertEquals("aws", store.job(id)!!.experiment!!.host)
     }
@@ -382,20 +382,19 @@ class StoreTest {
         assertEquals(false, ran.launchRequested)
     }
 
-    private fun autoJob(store: Store, name: String, priority: Int = 0) =
+    private fun autoJob(store: Store, name: String, priority: Int = 0, host: String = Experiments.AUTO_HOST) =
         store.create(name, "main", emptyList(), priority = priority,
-            experiment = ExperimentSpec(name, listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
+            experiment = ExperimentSpec(name, listOf(mapOf("suite" to "s")), host = host))
 
     @Test
     fun `a free lab machine takes an auto job at once and keeps it`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        val store = Store(file)
+        val store = store()
         val id = autoJob(store, "a")
 
-        assertEquals(null, store.next(Experiments.AWS_HOST))
         val taken = store.next()!!
         assertEquals(id, taken.id)
-        assertEquals(listOf(Experiments.LAB_HOST, "true"), listOf(taken.experiment!!.host, taken.experiment!!.auto.toString()))
+        assertEquals(listOf(Experiments.LAB_HOST, "true"), listOf(taken.experiment!!.host, taken.experiment.auto.toString()))
+        assertEquals(null, store.claimForNode(id))
     }
 
     @Test
@@ -410,36 +409,45 @@ class StoreTest {
     }
 
     @Test
-    fun `AWS takes an auto job only once it has waited for the lab machine`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        val store = Store(file)
-        val id = autoJob(store, "a")
-        assertEquals(null, store.next(Experiments.AWS_HOST))
-        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
-            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = created_at - ${AUTO_GRACE_MS + 1}") }
-        }
+    fun `a node claims an auto or aws job at once, with no wait for the Mac, and the Mac then cannot`() {
+        val store = store()
+        val auto = autoJob(store, "a")
+        val aws = autoJob(store, "b", host = Experiments.AWS_HOST)
 
-        val taken = store.next(Experiments.AWS_HOST)!!
+        val taken = store.claimForNode(auto)!!
+        val other = store.claimForNode(aws)!!
 
-        assertEquals(id, taken.id)
-        assertEquals(Experiments.AWS_HOST, taken.experiment!!.host)
-        assertEquals(true, taken.experiment!!.auto)
+        assertEquals(listOf(Experiments.AWS_HOST, true, Status.RUNNING), listOf(taken.experiment!!.host, taken.experiment.auto, taken.status))
+        assertEquals(listOf(Experiments.AWS_HOST, false), listOf(other.experiment!!.host, other.experiment.auto))
+        assertEquals(null, store.next())
+        assertEquals(null, store.claimForNode(auto))
     }
 
     @Test
-    fun `AWS sees an auto job the lab machine left waiting, as it would take it`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        val store = Store(file)
-        val id = autoJob(store, "a")
-        assertEquals(id, store.peek(Experiments.LAB_HOST))
-        assertEquals(null, store.peek(Experiments.AWS_HOST))
-        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
-            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = created_at - ${AUTO_GRACE_MS + 1}") }
-        }
+    fun `a node never claims a job placed on the Mac, nor a paused one`() {
+        val store = store()
+        val mac = autoJob(store, "sweep@abc", host = Experiments.LAB_HOST)
+        val paused = autoJob(store, "p")
+        store.setPaused(paused, true)
 
-        assertEquals(id, store.peek(Experiments.AWS_HOST))
-        assertEquals(id, store.next(Experiments.AWS_HOST)?.id)
-        assertEquals(null, store.peek(Experiments.AWS_HOST))
+        assertEquals(listOf(null, null), listOf(store.claimForNode(mac), store.claimForNode(paused)))
+        assertEquals(emptyList(), store.nodeQueue().map { it.id })
+    }
+
+    @Test
+    fun `the node queue holds auto and aws jobs by priority, and the Mac's next is what it would take`() {
+        val store = store()
+        val low = autoJob(store, "low", priority = -1)
+        val aws = autoJob(store, "aws", host = Experiments.AWS_HOST)
+        val high = autoJob(store, "high", priority = 3)
+        val mac = autoJob(store, "sweep@abc", priority = -5, host = Experiments.LAB_HOST)
+
+        assertEquals(listOf(high, aws, low), store.nodeQueue().map { it.id })
+        assertEquals(mac, store.peek())
+        assertEquals(listOf(high, aws, low, mac), store.queue())
+        assertEquals(false, store.macBusy())
+        store.next()
+        assertEquals(listOf(true, high), listOf(store.macBusy(), store.peek()))
     }
 
     @Test
@@ -456,35 +464,15 @@ class StoreTest {
     }
 
     @Test
-    fun `the longer the line for the Mac, the sooner AWS takes an auto job`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        val store = Store(file)
-        val ids = (1..5).map { autoJob(store, "a$it") }
-        fun age(ms: Long) = java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
-            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = ${now()} - $ms") }
-        }
-        // Five waiting: three minutes each, not fifteen.
-        age(AUTO_GRACE_MS / 5 - 10_000)
-        assertEquals(null, store.peek(Experiments.AWS_HOST))
-        age(AUTO_GRACE_MS / 5 + 10_000)
-        assertEquals(ids.first(), store.peek(Experiments.AWS_HOST))
-    }
+    fun `placing moves only a queued job that has not been planned, and clears a machine count`() {
+        val store = store()
+        val id = store.create("e", "main", emptyList(),
+            experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, machines = 3))
+        val planned = store.create("p", "main", listOf("true" to 10L), experiment = ExperimentSpec("p", listOf(mapOf("suite" to "s"))))
 
-    @Test
-    fun `with on demand off AWS passes over profile jobs, its own and auto ones alike`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        val store = Store(file)
-        val profile = ProfileMain("com.eignex.klause.bench.profile.Timing")
-        store.create("p", "main", emptyList(), experiment = ExperimentSpec("p", emptyList(), host = Experiments.AWS_HOST, profile = profile))
-        store.create("ap", "main", emptyList(), experiment = ExperimentSpec("ap", emptyList(), host = Experiments.AUTO_HOST, profile = profile))
-        val plain = autoJob(store, "a")
-        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
-            db.createStatement().use { it.executeUpdate("UPDATE jobs SET created_at = created_at - ${AUTO_GRACE_MS + 1}") }
-        }
-
-        assertEquals(plain, store.peek(Experiments.AWS_HOST, profiles = false))
-        assertEquals(plain, store.next(Experiments.AWS_HOST, profiles = false)?.id)
-        assertEquals(null, store.next(Experiments.AWS_HOST, profiles = false))
+        assertEquals(true, store.place(id, Experiments.AUTO_HOST))
+        assertEquals(listOf(Experiments.AUTO_HOST, null), store.job(id)!!.experiment!!.let { listOf(it.host, it.machines) })
+        assertEquals(false, store.place(planned, Experiments.AUTO_HOST))
     }
 
     @Test

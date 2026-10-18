@@ -15,6 +15,9 @@ interface ExecutionHost {
     /** The most cases it runs at once, whatever a job asks for: memory bounds this on the lab machine, cores on AWS. */
     val maxParallel: Int
 
+    /** The cases it runs at once for a job that asks for [requested]: that many, within [maxParallel]. */
+    fun parallel(requested: Int): Int = requested.coerceIn(1, maxParallel)
+
     /** The corpus cache as the cases see it. */
     val corpus: String
 
