@@ -274,13 +274,13 @@ bundle, links its owning issues/PRs, and names evidence files relative to that t
 
 Role lists identify entry points, not every file; all staged files are included. Empty
 roles require an omission reason. For multiple experiments, list each one's entry points
-and explain coverage in the bundle. `deploy/campaign-evidence.py` uses Python 3.11+ standard
-library only. It packages regular files deterministically, rejects symlinks and output
+and explain coverage in the bundle. The lab's `campaign-evidence` command (`CampaignEvidence.kt`)
+needs only the lab's own build. It packages regular files deterministically, rejects symlinks and output
 inside the input tree, hashes every file, and verifies the completed archive. Run from this
 checkout (no solver build or measurement is involved):
 
 ```sh
-python3 deploy/campaign-evidence.py pack /absolute/path/to/publication /absolute/path/to/assets
+./gradlew -q run --args='campaign-evidence pack /absolute/path/to/publication /absolute/path/to/assets'
 ```
 
 The command prints two paths: `<campaign>-<archive-sha256>.tar.gz` and its
@@ -306,8 +306,8 @@ without credentials into a fresh external directory. Compare the downloaded mani
 SHA-256 with the review's pinned value, then verify **before extracting**:
 
 ```sh
-python3 deploy/campaign-evidence.py verify /absolute/path/to/download/<campaign>-<sha>.tar.gz \
-  /absolute/path/to/download/<campaign>-<sha>.manifest.json
+./gradlew -q run --args='campaign-evidence verify /absolute/path/to/download/<campaign>-<sha>.tar.gz
+  /absolute/path/to/download/<campaign>-<sha>.manifest.json'
 ```
 
 Verification streams every member without extraction and rejects altered bytes, missing
@@ -315,8 +315,8 @@ or extra files, duplicate paths, traversal paths and nonregular members. Only a 
 archive should be extracted to an empty external directory for the retained analyzers.
 Numerical/source rechecking runs on a separate analysis host with the retained dependencies;
 keep its execution identity and reports with the active evidence. Storage checks can run
-locally with `python3 -m unittest discover -s deploy/tests -p test_campaign_evidence.py`;
-the existing build gate also runs these tests.
+locally with `./gradlew test --tests com.eignex.lab.CampaignEvidenceTest`; the build gate
+also runs these tests.
 
 For an updated snapshot, upload new content-addressed assets with `gh release upload`
 without `--clobber`, verify their anonymous downloads, and update the release notes and
@@ -484,7 +484,8 @@ left unproven. A schedule of reference runs would have no Regression trend.
 
 A `set` names a fixed problem set in klause-bench's `sets/` (see its README), selected whole and, by default, not
 reference-filtered: it was drawn from the reference and is meant to stay put. The status sweep runs `set=sweep`.
-`deploy/make-sets.py` draws the sets from `select features=true` output and the reference results.
+`./gradlew -q run --args='make-sets <features-dir> <references.csv> <sets-dir> [set,…]'` (`MakeSets.kt`) draws the sets
+from `select features=true` output and the reference results; give it absolute paths, since it runs in this checkout.
 
 `deploy/specs/` holds the experiments the lab runs: `status-sweep.json` (schedule, every 120 s, the default engine
 on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection, one per engine:

@@ -6,10 +6,15 @@ import kotlin.system.exitProcess
 /**
  * `api` serves the queue over HTTP, `runner` works it, `check` only reports the host. The two services are
  * separate processes on purpose: a solve that takes the runner down leaves the queue inspectable, and the service
- * manager restarts the runner, which resumes where the store says it was.
+ * manager restarts the runner, which resumes where the store says it was. `campaign-evidence` ([CampaignEvidence]) and
+ * `make-sets` ([MakeSets]) are tools run by hand from a checkout, on any host.
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
+    when (mode) {
+        "campaign-evidence" -> exitProcess(CampaignEvidence.main(args.drop(1)))
+        "make-sets" -> exitProcess(MakeSets.main(args.drop(1)))
+    }
     if (mode == "password") {
         // A new password and the hash to commit as src/main/resources/lab-password; the password goes to the clients.
         val password = Password.generate()
@@ -18,7 +23,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: klause-lab api|runner|check|password")
+        System.err.println("usage: klause-lab api|runner|check|password|campaign-evidence|make-sets")
         exitProcess(2)
     }
     val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->
