@@ -43,43 +43,87 @@ class CliMeasurementsTest {
     }
 
     @Test
-    fun `the Linux launcher measures with GNU time and the macOS one with wait4, both valid shell`() {
+    fun `the Linux launcher measures with GNU time and the macOS one with BSD time, both valid shell, neither Python`() {
         val linux = CliMeasurements.install("/w", macOs = false)
         val mac = CliMeasurements.install("/w", macOs = true)
 
-        for (text in listOf("test -x /usr/bin/time", "/usr/bin/time --format='peakRssKiB=%M", "PR_SET_PDEATHSIG")) assertTrue(text in linux, text)
-        for (text in listOf("os.wait4(child.pid, 0)", "signal.SIGTERM", "peakRssKiB=%d", "usage.ru_maxrss // 1024")) assertTrue(text in mac, text)
-        assertFalse("/usr/bin/time" in mac || "prctl" in mac)
-        // The Python in each starts at the margin once the template is trimmed.
-        assertTrue(linux.lines().any { it.startsWith("libc = ctypes.CDLL") } && mac.lines().any { it.startsWith("child = subprocess.Popen") })
+        for (text in listOf("test -x '/usr/bin/time'", "'/usr/bin/time' --format='peakRssKiB=%M", "setpriv --pdeathsig KILL")) assertTrue(text in linux, text)
+        for (text in listOf("'/usr/bin/time' -l -o", "trap '' TERM HUP INT", "pkill -\$signal -P", "maximum resident set size")) assertTrue(text in mac, text)
+        assertFalse("setpriv" in mac || "--format" in mac)
+        assertFalse("python" in linux + mac)
         for (script in listOf(linux, mac)) {
             val check = ProcessBuilder("bash", "-n", "-c", script).redirectErrorStream(true).start()
             assertEquals(0, check.waitFor(), check.inputStream.bufferedReader().readText())
         }
     }
 
-    @Test
-    fun `the macOS launcher's measurement runs anywhere Python does, with the keys GNU time writes`() {
-        val dir = Files.createTempDirectory("measurement")
+    /** A CLI at [dir] running [script] behind the macOS launcher, timed by a stand-in for BSD `time -l -o <file>`. */
+    private fun macLauncher(dir: java.nio.file.Path, script: String): java.nio.file.Path {
+        val time = dir.resolve("bsd-time")
+        // It reports as macOS's does, the maximum resident set size in bytes, and like it ignores what it started ignoring.
+        Files.writeString(time, """
+            |#!/bin/bash
+            |[[ ${'$'}1 == -l && ${'$'}2 == -o ]] || exit 64
+            |out=${'$'}3; shift 3
+            |status=0; "${'$'}@" || status=${'$'}?
+            |printf '        1.25 real         0.50 user         0.25 sys\n%20d  maximum resident set size\n%20d  average shared memory size\n' 3145728 0 > "${'$'}out"
+            |exit ${'$'}status
+            |""".trimMargin())
+        time.toFile().setExecutable(true)
         val cli = dir.resolve(CliMeasurements.CLI)
         Files.createDirectories(cli.parent)
-        Files.writeString(cli, "#!/bin/bash\necho \"args: \$*\"\nexit 3\n")
+        Files.writeString(cli, script)
         cli.toFile().setExecutable(true)
-        val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString(), macOs = true)).start()
+        val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString(), macOs = true, time = time.toString())).start()
         assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
+        return cli
+    }
+
+    @Test
+    fun `the macOS launcher turns BSD time's report into the keys and units GNU time writes`() {
+        val dir = Files.createTempDirectory("measurement")
+        val cli = macLauncher(dir, "#!/bin/bash\necho \"args: \$*\"\nexit 3\n")
         val profile = Files.createDirectories(dir.resolve("profile"))
-        val builder = ProcessBuilder(cli.toString(), "solve", "x").redirectErrorStream(true)
+        val builder = ProcessBuilder(cli.toString(), "solve", "two words").redirectErrorStream(true)
         builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()
 
         assertEquals(3, process.waitFor(), output)
-        assertEquals("args: solve x", output.trim())
-        val resources = Files.readString(profile.resolve("resources.txt")).lines().filter { it.isNotEmpty() }
-        assertEquals(listOf("peakRssKiB", "userSeconds", "systemSeconds", "wallSeconds", "exit"), resources.map { it.substringBefore('=') })
-        assertTrue("exit=3" in resources)
-        assertTrue(Regex("peakRssKiB=[1-9][0-9]*").matches(resources.first()))
+        assertEquals("args: solve two words", output.trim())
+        assertEquals("peakRssKiB=3072\nuserSeconds=0.50\nsystemSeconds=0.25\nwallSeconds=1.25\nexit=3\n",
+            Files.readString(profile.resolve("resources.txt")))
+        assertFalse(Files.exists(profile.resolve("time.txt")))
+    }
+
+    @Test
+    fun `the macOS launcher passes SIGTERM on to the CLI and still writes its measurement`() {
+        for (group in listOf(false, true)) {
+            val dir = Files.createTempDirectory("measurement")
+            val cli = macLauncher(dir, "#!/bin/bash\ntrap 'echo stopping; exit 143' TERM\necho ready\nsleep 30 &\nwait\n")
+            val profile = Files.createDirectories(dir.resolve("profile"))
+            // In a session of its own, as the runner starts a case, so the group can be signalled as the runner does.
+            val builder = ProcessBuilder(inSession(cli.toString())).redirectErrorStream(true)
+            builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+            val process = builder.start()
+            try {
+                val output = process.inputStream.bufferedReader()
+                assertEquals("ready", output.readLine())
+                // The launcher alone, or its whole group. Process.destroy would also close the CLI's output.
+                if (group) signalGroups("TERM", listOf(process.pid()))
+                else assertEquals(0, ProcessBuilder("kill", "-TERM", process.pid().toString()).start().waitFor())
+
+                assertTrue(process.waitFor(10, TimeUnit.SECONDS), "group=$group")
+                assertEquals(143, process.exitValue(), "group=$group")
+                assertEquals("stopping", output.readLine())
+                assertTrue("exit=143" in Files.readString(profile.resolve("resources.txt")), "group=$group")
+            } finally {
+                killGroup(process.pid())
+                process.destroyForcibly()
+                dir.toFile().deleteRecursively()
+            }
+        }
     }
 
     @Test

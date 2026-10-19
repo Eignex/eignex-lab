@@ -22,24 +22,26 @@ internal object CliMeasurements {
 
     /** What `resources.txt`'s `peakRssKiB` measures on macOS ([macOs]) or Linux, for a measurement's manifest. */
     fun memory(macOs: Boolean): String =
-        if (macOs) "getrusage ru_maxrss of the CLI process (bytes on macOS, written as KiB), KiB"
+        if (macOs) "BSD time -l, getrusage ru_maxrss of the CLI process (bytes on macOS, written as KiB), KiB"
         else "GNU time peak RSS of the CLI process, KiB"
 
     /**
      * The step that installs the profiling launcher in [worktree]'s CLI: with `KLAUSE_LAB_PROFILE_DIR` set, the CLI
      * runs under a measurement that writes `resources.txt` there, with the same keys in the same units on both
      * systems (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`). On Linux, an AWS node, GNU time
-     * measures it through a guard that dies with its timer. On macOS ([macOs]), the lab Mac, which has neither GNU time
-     * nor `prctl`, a Python wrapper measures it from `wait4`'s resource usage and passes SIGTERM, SIGINT and SIGHUP on,
-     * so a case stopped at its limit still writes its JFR; the runner's kill of the case's process group reaches both.
+     * measures it, and `setpriv --pdeathsig` makes the CLI die with its timer. On macOS ([macOs]), the lab Mac, which
+     * has no GNU time, BSD `time -l` measures it and the launcher converts its report. There the timer ignores SIGTERM,
+     * SIGHUP and SIGINT, so it outlives a stop to write its report, and the launcher passes each on to the CLI, so a
+     * case stopped at its limit still writes its JFR; the runner's kill of the case's process group reaches them all.
+     * [time] is the timer, `/usr/bin/time` but in tests.
      */
     // Only generated launch scripts change. The installed solver jars, and the cached builds, stay byte-identical.
-    fun install(worktree: String, macOs: Boolean = false): String {
+    fun install(worktree: String, macOs: Boolean = false, time: String = "/usr/bin/time"): String {
         val cli = "$worktree/$CLI"
         return """
             set -euo pipefail
-            ${if (macOs) "" else "test -x /usr/bin/time"}
-            command -v python3 >/dev/null
+            test -x ${quote(time)}
+            ${if (macOs) "command -v perl >/dev/null; ${quote(time)} -l -o /dev/null true" else "command -v setpriv >/dev/null"}
             test -x ${quote(cli)}
             if ! test -f ${quote("$cli.lab-original")}; then
                 cp -p ${quote(cli)} ${quote("$cli.lab-original")}
@@ -49,7 +51,7 @@ internal object CliMeasurements {
             set -euo pipefail
             delegate="${'$'}{0}.lab-original"
             if [[ -n "${'$'}{KLAUSE_LAB_PROFILE_DIR:-}" ]]; then
-${if (macOs) MAC_MEASURE else LINUX_MEASURE}
+${if (macOs) macMeasure(time) else linuxMeasure(time)}
             fi
             exec "${'$'}delegate" "${'$'}@"
             KLAUSE_LAB_CLI_MEASUREMENT
@@ -77,40 +79,45 @@ ${if (macOs) MAC_MEASURE else LINUX_MEASURE}
     }
 }
 
-// The measurements' shell, at the launcher's indentation in [CliMeasurements.install]'s template: its Python at the
-// template's own margin, so it starts in column 0 once the template is trimmed.
+// The measurements' shell, at the launcher's indentation in [CliMeasurements.install]'s template.
 
-/** Linux: GNU time over a guard that dies with its timer. */
-private val LINUX_MEASURE = """
+/**
+ * Linux: GNU time over `setpriv --pdeathsig KILL`, so the CLI dies with its timer, then a check, once that is set, that
+ * the timer is still its parent: one killed before then would otherwise leave the CLI running.
+ */
+private fun linuxMeasure(time: String) = """
                 export KLAUSE_LAB_TIMER_PID=${'$'}${'$'}
-                guard='import ctypes, os, signal, sys
-            expected = int(os.environ["KLAUSE_LAB_TIMER_PID"])
-            libc = ctypes.CDLL(None, use_errno=True)
-            if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
-                raise OSError(ctypes.get_errno(), "PR_SET_PDEATHSIG")
-            if os.getppid() != expected:
-                os.kill(os.getpid(), signal.SIGKILL)
-            os.execv(sys.argv[1], sys.argv[1:])'
-                exec /usr/bin/time --format='peakRssKiB=%M\nuserSeconds=%U\nsystemSeconds=%S\nwallSeconds=%e\nexit=%x' \
-                    --output="${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" python3 -c "${'$'}guard" "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
+                exec ${quote(time)} --format='peakRssKiB=%M\nuserSeconds=%U\nsystemSeconds=%S\nwallSeconds=%e\nexit=%x' \
+                    --output="${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" setpriv --pdeathsig KILL -- \
+                    bash -c '[[ ${'$'}PPID == "${'$'}KLAUSE_LAB_TIMER_PID" ]] || kill -KILL ${'$'}${'$'}; exec "${'$'}@"' bash "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
 
-/** macOS: a Python wrapper reading the CLI's resource usage from `wait4`; `ru_maxrss` is bytes there, KiB on Linux. */
-private val MAC_MEASURE = """
-                measure='import os, signal, subprocess, sys, time
-            out = sys.argv[1]
-            start = time.monotonic()
-            child = subprocess.Popen(sys.argv[2:])
-            for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-                signal.signal(number, lambda n, frame: child.send_signal(n))
-            _, status, usage = os.wait4(child.pid, 0)
-            wall = time.monotonic() - start
-            code = os.waitstatus_to_exitcode(status)
-            code = code if code >= 0 else 128 - code
-            rss = usage.ru_maxrss // 1024 if sys.platform == "darwin" else usage.ru_maxrss
-            with open(out, "w") as f:
-                f.write("peakRssKiB=%d\nuserSeconds=%.2f\nsystemSeconds=%.2f\nwallSeconds=%.2f\nexit=%d\n" % (rss, usage.ru_utime, usage.ru_stime, wall, code))
-            sys.exit(code)'
-                exec python3 -c "${'$'}measure" "${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
+/**
+ * macOS: BSD `time -l`, whose report the launcher turns into `resources.txt`; its `maximum resident set size` is in
+ * bytes there. The timer starts with SIGTERM, SIGHUP and SIGINT ignored, and perl restores them for the CLI, which a
+ * shell cannot do for a signal ignored when it started. The launcher passes each on to the timer's child, the CLI.
+ */
+private fun macMeasure(time: String) = """
+                raw="${'$'}KLAUSE_LAB_PROFILE_DIR/time.txt"
+                trap '' TERM HUP INT
+                ${quote(time)} -l -o "${'$'}raw" perl -e '${'$'}SIG{${'$'}_} = "DEFAULT" for qw(TERM HUP INT); exec @ARGV or die "exec: ${'$'}!\n"' \
+                    "${'$'}delegate" "${'$'}@" &
+                timer=${'$'}!
+                for signal in TERM HUP INT; do trap "pkill -${'$'}signal -P ${'$'}timer || true" "${'$'}signal"; done
+                # A passed-on signal interrupts the wait: wait again until the timer has ended.
+                while :; do
+                    status=0
+                    wait "${'$'}timer" || status=${'$'}?
+                    kill -0 "${'$'}timer" 2>/dev/null || break
+                done
+                if [[ -f "${'$'}raw" ]]; then
+                    awk -v code="${'$'}status" '
+                        { for (i = 2; i <= NF; i++) if (${'$'}i == "real") wall = ${'$'}(i - 1); else if (${'$'}i == "user") user = ${'$'}(i - 1); else if (${'$'}i == "sys") sys = ${'$'}(i - 1) }
+                        /maximum resident set size/ { rss = ${'$'}1 }
+                        END { printf "peakRssKiB=%d\nuserSeconds=%.2f\nsystemSeconds=%.2f\nwallSeconds=%.2f\nexit=%d\n", int(rss / 1024), user, sys, wall, code }
+                    ' "${'$'}raw" > "${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt"
+                    rm -f "${'$'}raw"
+                fi
+                exit "${'$'}status"""".removePrefix("\n")
 
 @Serializable
 internal data class CliMeasurementManifest(
