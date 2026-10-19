@@ -4,8 +4,8 @@ package com.eignex.lab
  * Where a job may run, decided by the lab rather than whoever submitted it: every job goes Mac first, then an AWS
  * node ([AwsWorker]). Every job fits the Mac, its cores and `parallel` capped to it at submit ([Experiments.capToMac]):
  * AWS is overflow for the Mac's queue, launched on pressure alone. Its [ExperimentSpec.host] records the decision for
- * the queue: `lab` for a job only the Mac runs, `aws` for one only a node runs (a `profileCli` job), `auto` for one
- * whichever is free first takes; the taker then sets it to where the job went. A planned job a node gives back is
+ * the queue: `lab` for a job only the Mac runs, `auto` for one whichever is free first takes (`aws`, for one only a
+ * node runs, is left to an operator's override); the taker then sets it to where the job went. A planned job a node gives back is
  * placed again ([release]), and whichever host takes it next rewrites its queued commands for itself ([Runner.adopt]).
  */
 object Placement {
@@ -19,13 +19,10 @@ object Placement {
         '@' in name || Confirm.SUFFIX in name || spec.problemList.isNotEmpty() || spec.profile?.runTimeoutSec != null ||
             runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND }
 
-    /** The host [spec] named [name] is placed on: `lab` when only the Mac may or can run it, `aws` for a `profileCli`
-     *  job, which only a node runs, `auto` otherwise. */
-    fun host(spec: ExperimentSpec, name: String, awsFits: Boolean): String = when {
-        macOnly(spec, name) || !awsFits -> Experiments.LAB_HOST
-        spec.profileCli -> Experiments.AWS_HOST
-        else -> Experiments.AUTO_HOST
-    }
+    /** The host [spec] named [name] is placed on: `lab` when only the Mac may or can run it, `auto` otherwise, a
+     *  `profileCli` job included, which both measure alike ([CliMeasurements]). */
+    fun host(spec: ExperimentSpec, name: String, awsFits: Boolean): String =
+        if (macOnly(spec, name) || !awsFits) Experiments.LAB_HOST else Experiments.AUTO_HOST
 
     /** [host] with the lab's own limits: the AWS settings and the sizes within the quota. */
     fun host(spec: ExperimentSpec, name: String, config: Config): String = host(spec, name, awsFits(spec, config.aws))

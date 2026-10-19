@@ -441,7 +441,7 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
     require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be lab, aws or auto" }
     if (spec.host == Experiments.LAB_HOST) return
     val aws = requireNotNull(config.aws) {
-        if (spec.profileCli) "profileCli runs only on AWS, and the lab has no AWS settings" else "the lab has no AWS settings: run deploy/aws-setup.sh"
+        "the lab has no AWS settings: run deploy/aws-setup.sh"
     }
     require(Experiments.arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
         "reference runs stay on the lab machine, which has the reference solvers"

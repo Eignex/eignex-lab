@@ -43,6 +43,57 @@ class CliMeasurementsTest {
     }
 
     @Test
+    fun `the Linux launcher measures with GNU time and the macOS one with wait4, both valid shell`() {
+        val linux = CliMeasurements.install("/w", macOs = false)
+        val mac = CliMeasurements.install("/w", macOs = true)
+
+        for (text in listOf("test -x /usr/bin/time", "/usr/bin/time --format='peakRssKiB=%M", "PR_SET_PDEATHSIG")) assertTrue(text in linux, text)
+        for (text in listOf("os.wait4(child.pid, 0)", "signal.SIGTERM", "peakRssKiB=%d", "usage.ru_maxrss // 1024")) assertTrue(text in mac, text)
+        assertFalse("/usr/bin/time" in mac || "prctl" in mac)
+        // The Python in each starts at the margin once the template is trimmed.
+        assertTrue(linux.lines().any { it.startsWith("libc = ctypes.CDLL") } && mac.lines().any { it.startsWith("child = subprocess.Popen") })
+        for (script in listOf(linux, mac)) {
+            val check = ProcessBuilder("bash", "-n", "-c", script).redirectErrorStream(true).start()
+            assertEquals(0, check.waitFor(), check.inputStream.bufferedReader().readText())
+        }
+    }
+
+    @Test
+    fun `the macOS launcher's measurement runs anywhere Python does, with the keys GNU time writes`() {
+        val dir = Files.createTempDirectory("measurement")
+        val cli = dir.resolve(CliMeasurements.CLI)
+        Files.createDirectories(cli.parent)
+        Files.writeString(cli, "#!/bin/bash\necho \"args: \$*\"\nexit 3\n")
+        cli.toFile().setExecutable(true)
+        val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString(), macOs = true)).start()
+        assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
+        val profile = Files.createDirectories(dir.resolve("profile"))
+        val builder = ProcessBuilder(cli.toString(), "solve", "x").redirectErrorStream(true)
+        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+
+        val process = builder.start()
+        val output = process.inputStream.bufferedReader().readText()
+
+        assertEquals(3, process.waitFor(), output)
+        assertEquals("args: solve x", output.trim())
+        val resources = Files.readString(profile.resolve("resources.txt")).lines().filter { it.isNotEmpty() }
+        assertEquals(listOf("peakRssKiB", "userSeconds", "systemSeconds", "wallSeconds", "exit"), resources.map { it.substringBefore('=') })
+        assertTrue("exit=3" in resources)
+        assertTrue(Regex("peakRssKiB=[1-9][0-9]*").matches(resources.first()))
+    }
+
+    @Test
+    fun `a measurement's manifest keeps the record it hashed and says how memory was measured`() {
+        val dir = Files.createTempDirectory("measurement")
+
+        CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", "{}", macOs = true)
+
+        val manifest = Files.readString(dir.resolve("measurement.json"))
+        assertEquals("{}", Files.readString(dir.resolve("solve-record.json")))
+        assertTrue("getrusage" in manifest && "\"instance\":\"lab\"" in manifest && "solve-record.json" in manifest, manifest)
+    }
+
+    @Test
     fun `retrying a dropped transfer preserves bytes until complete output arrives`() {
         val dir = Files.createTempDirectory("measurement")
         val target = dir.resolve("output.tar")
