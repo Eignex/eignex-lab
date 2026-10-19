@@ -226,7 +226,9 @@ class Runner(
          */
         next: (() -> Collection<Int>?)? = null,
         /** Told the cases this host held, started or not, when the host went away ([HostLost]): they go back to the
-         *  queue [next] reads, and the dispatch ends [Dispatched.LOST] rather than failing the job. */
+         *  queue [next] reads, and the dispatch ends [Dispatched.LOST] rather than failing the job. The cases it
+         *  finished of an iteration it did not finish go back with them, to run again beside the rest of it
+         *  ([Store.requeueSplitIterations]): an iteration's arms are compared, so they run on one machine. */
         lost: ((Collection<Int>) -> Unit)? = null,
     ): Dispatched {
         // [next] hands out only cases left to run, which a host that started earlier can hold as running.
@@ -238,6 +240,7 @@ class Runner(
         }
         take()
         val active = LinkedHashMap<Int, Future<Int>>()
+        val finished = mutableSetOf<Int>()
         val pool = Executors.newCachedThreadPool()
         var cancelled = false
         var yielding = false
@@ -254,6 +257,7 @@ class Runner(
                         cancelled = true
                     } else {
                         store.commandFinished(job.id, index, exit)
+                        finished += index
                         keepRecord(job.id, index, dir)
                     }
                 }
@@ -285,8 +289,8 @@ class Runner(
             return Dispatched.FINISHED
         } catch (e: ExecutionException) {
             if (e.cause is HostLost && lost != null) {
-                val held = active.keys + pending.map { it.index }
                 store.requeueCommands(job.id, active.keys)
+                val held = active.keys + pending.map { it.index } + store.requeueSplitIterations(job.id, finished)
                 lost(held)
                 log(job.id, "${e.cause?.message}: cases ${held.sorted().joinToString()} go back to the queue")
                 return Dispatched.LOST

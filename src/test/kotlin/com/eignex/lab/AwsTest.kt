@@ -114,6 +114,77 @@ class AwsTest {
         assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
     }
 
+    /** A job of [problems] problems × two arms × [seeds], planned with a command per case that does nothing. */
+    private fun abJob(store: Store, problems: Int, seeds: List<Long> = emptyList(), parallel: Int = 2): Long {
+        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = seeds)
+        val id = store.create("ab", "main", emptyList(), parallel = parallel, experiment = spec)
+        val cases = Experiments.cases(problems, 2, seeds)
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, List(problems) { Problem("s", "p$it") }, cases,
+            cases.map { "true" to 1_000L })
+        return id
+    }
+
+    @Test
+    fun `hosts sharing an A-B experiment run every iteration's arms on one host`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = abJob(store, problems = 4, seeds = listOf(1, 2))
+        val problems = ProblemQueue(store.cases(id))
+        val runner = Runner(config, store)
+        val ran = List(2) { java.util.concurrent.ConcurrentLinkedQueue<Int>() }
+
+        ran.map { log -> thread { runner.dispatch(store.job(id)!!, config.jobDir(id), FakeHost(log), problems::take) } }.forEach { it.join() }
+
+        val hostOf = ran.withIndex().flatMap { (host, log) -> log.map { it to host } }.toMap()
+        val iterations = store.cases(id).groupBy { Triple(it.problem.problem, it.seed, it.repeat) }.values
+        assertEquals(8, iterations.size)
+        assertTrue(iterations.all { iteration -> iteration.size == 2 && iteration.map { hostOf.getValue(it.index) }.distinct().size == 1 })
+    }
+
+    @Test
+    fun `a host lost after one arm of an iteration hands the whole iteration back, its finished arm to run again`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = abJob(store, problems = 1, parallel = 1)
+        val problems = ProblemQueue(store.cases(id))
+        val handedBack = mutableListOf<Int>()
+        val lost = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue()) {
+            override fun run(command: Command, dir: Path): Int {
+                if (command.index == 1) throw HostLost("i-1 is gone (terminated, Server.SpotInstanceTermination)")
+                dir.resolve("cases/0").toFile().mkdirs()
+                dir.resolve("cases/0/record.json").toFile().writeText("{}")
+                return 0
+            }
+        }
+
+        val outcome = Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id), lost, problems::take) { held ->
+            handedBack += held
+            problems.giveBack(held)
+        }
+
+        assertEquals(Dispatched.LOST, outcome)
+        assertEquals(listOf(0, 1), handedBack.sorted())
+        assertEquals(listOf(0, 1), problems.take())
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED && it.exitCode == null })
+        assertTrue(store.cases(id).all { it.record == null })
+    }
+
+    @Test
+    fun `an iteration only part done is queued again whole, and finished ones keep their results`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = abJob(store, problems = 2)
+        for (index in listOf(0, 2, 3)) {
+            store.commandStarted(id, index)
+            store.commandFinished(id, index, if (index == 3) 1 else 0)
+            store.caseRecord(id, index, "{}")
+        }
+
+        assertEquals(emptyList(), store.requeueSplitIterations(id, among = listOf(2, 3)))
+        assertEquals(listOf(0), store.requeueSplitIterations(id))
+        assertEquals(listOf(Status.QUEUED, Status.QUEUED, Status.DONE, Status.FAILED), store.job(id)!!.commands.map { it.status })
+        assertEquals(listOf(false, false, true, true), store.cases(id).map { it.record != null })
+    }
+
     @Test
     fun `the node pool's settings have their defaults, and the file can change them`() {
         val dir = Files.createTempDirectory("aws")
