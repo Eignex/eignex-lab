@@ -146,20 +146,20 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/experiments") {
             // The lab places every job itself ([Placement]): a submitted host or machine count is read but not followed.
             val body = call.receive<JsonObject>()
-            val given = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body)
+            // Every job fits the Mac: cores and parallel over its limits are cut down to them, and the notes say so.
+            val given = Experiments.capToMac(DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList()),
+                config.cores, config.maxParallel)
             val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
             requireDescription(spec)
             requireHost(spec, config)
-            // An AWS job's cores are checked against the instance sizes, in requireHost; parallel there is per node.
-            Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) Int.MAX_VALUE else config.maxParallel,
-                if (spec.host == Experiments.AWS_HOST) Int.MAX_VALUE else config.cores)
+            Experiments.validate(spec, config.maxParallel, config.cores)
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config, trust)
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
-            val notes = if (spec.isProfile) {
+            val notes = (if (spec.isProfile) {
                 listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
                     Experiments.profileCaps(spec).map { "capped: $it" }
-            } else null
+            } else emptyList()).plus(spec.capped.map { "capped: $it" }).ifEmpty { null }
             val ignored = listOf("host", "machines").filter { it in body }
             call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host) +
                 if (ignored.isEmpty()) "" else "; ${ignored.joinToString(" and ")} ignored: the lab places jobs"))
@@ -304,8 +304,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/jobs/{id}/retry") {
             val id = call.parameters["id"]!!.toLong()
             val retried = store.retry(id)
-            // One that never planned may go anywhere again, wherever it was taken last time.
-            store.job(id)?.takeIf { retried && it.commands.isEmpty() }?.experiment?.let { store.place(id, Placement.host(it, it.name, config)) }
+            // It may go anywhere again, wherever it was taken last time: a planned one's commands are rewritten for the
+            // host that takes it.
+            store.job(id)?.takeIf { retried }?.let { job ->
+                if (job.commands.isEmpty()) job.experiment?.let { store.place(id, Placement.host(it, it.name, config)) }
+                else Placement.release(store, config, id)
+            }
             call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled job can be retried")
         }
         post("/jobs/{id}/delete") {

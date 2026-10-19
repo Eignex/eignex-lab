@@ -186,18 +186,63 @@ class AwsTest {
     }
 
     @Test
+    fun `a host taking over a planned job writes its queued commands for itself and reruns a half-done iteration`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = abJob(store, problems = 2)
+        val spec = store.job(id)!!.experiment!!
+        // What a node finished before it gave the job back: problem 0 whole, and one arm of problem 1.
+        for (index in listOf(0, 1, 2)) {
+            store.commandStarted(id, index)
+            store.commandFinished(id, index, 0)
+        }
+        val mac = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue()) {
+            override val corpus = "/mac/corpus"
+            override fun worktree(sha: String) = "/mac/work/$sha"
+        }
+
+        Runner(config, store).adopt(store.job(id)!!, spec, mac)
+
+        val commands = store.job(id)!!.commands
+        assertEquals(listOf(Status.DONE, Status.DONE, Status.QUEUED, Status.QUEUED), commands.map { it.status })
+        assertEquals(listOf(false, false, true, true), commands.map { "cd '/mac/work/sha/klause-bench'" in it.cmd && "/mac/corpus" in it.cmd })
+        assertTrue(commands.drop(2).all { "out=\"\$JOB_DIR/cases/${it.index}\"" in it.cmd })
+    }
+
+    @Test
+    fun `a planned job a node gives back goes Mac first, and its cancel ends it rather than queueing it`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        config.dataDir.resolve("aws").toFile().mkdirs()
+        config.dataDir.resolve("aws/aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val store = Store(config.database)
+        val given = abJob(store, problems = 1)
+        val cancelled = abJob(store, problems = 1)
+        for (id in listOf(given, cancelled)) {
+            store.release(id, Experiments.AWS_HOST)
+            assertEquals(id, store.claimForNode(id)?.id)
+        }
+        store.requestCancel(cancelled)
+
+        assertEquals(listOf(Status.QUEUED, Status.CANCELLED), listOf(given, cancelled).map { store.requeue(it) })
+        assertEquals(true, Placement.release(store, config, given))
+        assertEquals(Experiments.AUTO_HOST, store.job(given)!!.experiment!!.host)
+        assertEquals(given, store.next()?.id)
+        assertEquals(Experiments.LAB_HOST, store.job(given)!!.experiment!!.host)
+    }
+
+    @Test
     fun `the node pool's settings have their defaults, and the file can change them`() {
         val dir = Files.createTempDirectory("aws")
         val file = dir.resolve("aws.properties")
         file.toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nmarket=spot\nspotFallback=false\n")
         val default = AwsConfig.load(file)!!
-        file.toFile().appendText("onDemand=true\nnodeIdleMin=2\nnodeMinPriority=1\nnodeLaunchCoreHours=4.5\nnodeSustainMin=1\nnodeCooldownMin=9\nnodeMaxVcpus=32\n")
+        file.toFile().appendText("onDemand=true\nnodeIdleMin=2\nnodeMinPriority=1\nnodeLaunchMacHours=4.5\nnodeSustainMin=1\nnodeCooldownMin=9\nnodeMaxVcpus=32\n")
         val set = AwsConfig.load(file)!!
 
-        assertEquals(listOf<Any>(false, 15L, 5L, 0, 1.0, 3L, 5L, 16),
-            with(default) { listOf(onDemand, spotWaitMin, nodeIdleMin, nodeMinPriority, nodeLaunchCoreHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+        assertEquals(listOf<Any>(false, 15L, 5L, 0, 1.0, 10L, 5L, 16),
+            with(default) { listOf(onDemand, spotWaitMin, nodeIdleMin, nodeMinPriority, nodeLaunchMacHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
         assertEquals(listOf<Any>(true, 2L, 1, 4.5, 1L, 9L, 32),
-            with(set) { listOf(onDemand, nodeIdleMin, nodeMinPriority, nodeLaunchCoreHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+            with(set) { listOf(onDemand, nodeIdleMin, nodeMinPriority, nodeLaunchMacHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
     }
 
     @Test

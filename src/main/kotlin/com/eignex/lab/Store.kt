@@ -1207,12 +1207,13 @@ class Store(file: Path) {
 
     /**
      * Place a queued experiment that has not been planned on [host] (`lab`, `aws` or `auto`): what [Placement] decides,
-     * or an operator overrides. False otherwise, since a planned job's commands name paths on the host that planned it.
+     * or an operator overrides. [placed], when given, is the spec it then has: its own cut down to fit the Mac. False
+     * otherwise; a planned job a node gave back is placed with [release].
      */
     @Synchronized
-    fun place(jobId: Long, host: String): Boolean {
+    fun place(jobId: Long, host: String, placed: ExperimentSpec? = null): Boolean {
         val job = job(jobId) ?: return false
-        val spec = job.experiment ?: return false
+        val spec = placed ?: job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
         require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli runs only on AWS" }
         val moved = spec.copy(host = host, auto = false, machines = null)

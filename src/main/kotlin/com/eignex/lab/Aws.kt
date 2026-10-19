@@ -60,10 +60,11 @@ data class AwsConfig(
     val nodeIdleMin: Long = 5,
     /** Work the Mac could run, queued below this priority, waits for the Mac: it launches no node, and no node takes it. */
     val nodeMinPriority: Int = 0,
-    /** The pressure, in core-hours of waiting work, that launches the first node ([LaunchGate]). */
-    val nodeLaunchCoreHours: Double = 1.0,
+    /** The first node launches once the waiting work would keep the Mac busy this many hours: the pressure, in
+     *  core-hours, at or over the Mac's cores times this ([AwsWorker.threshold], [LaunchGate]). */
+    val nodeLaunchMacHours: Double = 1.0,
     /** How long the pressure must stay up before a node launches. */
-    val nodeSustainMin: Long = 3,
+    val nodeSustainMin: Long = 10,
     /** The least time between two launches. */
     val nodeCooldownMin: Long = 5,
     /** The largest node the pool launches, in vCPUs, unless a case itself needs more cores ([NodePool.size]). */
@@ -111,8 +112,8 @@ data class AwsConfig(
                 onDemand = get("onDemand", "false")!!.toBoolean(),
                 nodeIdleMin = get("nodeIdleMin", "5")!!.toLong(),
                 nodeMinPriority = get("nodeMinPriority", "0")!!.toInt(),
-                nodeLaunchCoreHours = get("nodeLaunchCoreHours", "1.0")!!.toDouble(),
-                nodeSustainMin = get("nodeSustainMin", "3")!!.toLong(),
+                nodeLaunchMacHours = get("nodeLaunchMacHours", "1.0")!!.toDouble(),
+                nodeSustainMin = get("nodeSustainMin", "10")!!.toLong(),
                 nodeCooldownMin = get("nodeCooldownMin", "5")!!.toLong(),
                 nodeMaxVcpus = get("nodeMaxVcpus", "16")!!.toInt(),
             )
@@ -642,6 +643,10 @@ class AwsWorker(
         return queued to running
     }
 
+    /** The pressure, in core-hours, that launches the first node: [AwsConfig.nodeLaunchMacHours] of the Mac's cores, so
+     *  a node launches only for a queue that would keep the Mac busy that long, never for a job or two. */
+    private val threshold: Double get() = NodePool.threshold(config.cores, aws.nodeLaunchMacHours)
+
     /** Launch a node when the pressure calls for one ([LaunchGate]), sized to what waits ([NodePool.size]). */
     private fun scale() {
         val (queued, running) = demands()
@@ -653,7 +658,7 @@ class AwsWorker(
             NodePool.size(aws.sizes, cores, pressure, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
         }
         val room = size != null && count < aws.maxInstances && !runner.updateWaiting()
-        val launch = gate.shouldLaunch(System.currentTimeMillis(), pressure, count, aws.nodeLaunchCoreHours, room,
+        val launch = gate.shouldLaunch(System.currentTimeMillis(), pressure, count, threshold, room,
             aws.nodeSustainMin * MS_PER_MIN, aws.nodeCooldownMin * MS_PER_MIN)
         if (!launch || size == null) return
         // A profile job runs only on an on-demand node: one is bought for it when none is up or on its way.
@@ -713,7 +718,7 @@ class AwsWorker(
                 return cli.launch(name, userData, type) to ON_DEMAND
             }
             if (capacity == null) throw e
-            check(pressure >= aws.nodeLaunchCoreHours) { "no spot for $type, and the work it was for is gone" }
+            check(pressure >= threshold) { "no spot for $type, and the work it was for is gone" }
             println("aws: no spot for $type yet ($capacity); trying again in ${SPOT_RETRY_MS / MS_PER_SEC} s")
             Thread.sleep(SPOT_RETRY_MS)
         }
@@ -856,6 +861,7 @@ class AwsWorker(
             }
         } else {
             fetchCorpora(host, primary, selections)
+            runner.adopt(current, spec, host)
         }
         store.setup(job.id, primary)
         // Unset, a job runs one case per two physical cores of each node ([AwsHost]'s limit); this is what the pages show.
@@ -907,10 +913,10 @@ class AwsWorker(
                 store.finish(job.id, Status.FAILED, failure.message ?: failure.toString())
             }
             current.paused || Dispatched.YIELDED in job.outcomes ->
-                requeue(job.id, "job paused between commands; a node takes it up again on resume")
+                requeue(job.id, "job paused between commands; taken up again on resume")
             // Its nodes were taken back by AWS or retired with cases left: the next free node takes it up again.
             current.commands.any { it.status == Status.QUEUED } ->
-                requeue(job.id, "no node left on the job with cases to run: queued again, for the next node")
+                requeue(job.id, "no node left on the job with cases to run: queued again")
             else -> {
                 store.finish(job.id, Status.DONE)
                 runner.log(job.id, "job finished")
@@ -918,10 +924,14 @@ class AwsWorker(
         }
     }
 
-    /** Put [jobId] back in the queue, saying [why]; one whose cancel was requested meanwhile ends cancelled instead. */
+    /**
+     * Put [jobId] back in the queue, saying [why], and place it again ([Placement.release]): the Mac may then take it
+     * over, before a node, as it may any job. One whose cancel was requested meanwhile ends cancelled instead.
+     */
     private fun requeue(jobId: Long, why: String) {
         if (store.requeue(jobId) == Status.CANCELLED) return runner.cancel(jobId)
         runner.log(jobId, why)
+        if (Placement.release(store, config, jobId)) runner.log(jobId, "placed again: the Mac when it is free, else a node")
     }
 
     /** [node] as a host for [job]'s cases: its files in their own directory, one case per two cores unless the job
@@ -979,7 +989,7 @@ class AwsWorker(
         for (job in store.active().filter { it.status == Status.RUNNING && it.experiment?.host == Experiments.AWS_HOST }) {
             store.requeueInterrupted(job.id)
             Files.deleteIfExists(config.jobDir(job.id).resolve(INSTANCES_FILE))
-            requeue(job.id, "the lab restarted while the job ran on AWS: queued again, for the next node")
+            requeue(job.id, "the lab restarted while the job ran on AWS: queued again")
         }
         sweep()
     }

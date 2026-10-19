@@ -62,6 +62,10 @@ object NodePool {
     fun coreHours(spec: ExperimentSpec, queuedCases: Int?): Double =
         (queuedCases ?: estimatedCases(spec)) * meanCaseCoreHours(spec)
 
+    /** The pressure, in core-hours, that launches the first node: the work that would keep the Mac's [macCores] busy
+     *  for [macHours]. A job or two the Mac clears within that never starts a node. */
+    fun threshold(macCores: Int, macHours: Double): Double = macCores * macHours
+
     /** The pressure on the pool: every demand's core-hours, the ones at [minPriority] or above. */
     fun pressure(demands: List<Demand>, minPriority: Int): Double =
         demands.filter { it.priority >= minPriority }.sumOf { it.coreHours }

@@ -451,6 +451,7 @@ class Runner(
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
+        else adopt(job, spec, LocalHost(job, primary, log))
         dir.resolve("sha").writeAtomically(primary)
         return primary
     }
@@ -537,21 +538,41 @@ class Runner(
         }
         val commands = cases.mapIndexed { index, case ->
             val arm = arms[case.arm]
-            val worktree = host.worktree(shas.getValue(arm.ref))
-            val profile = spec.profile
-            if (profile != null) {
-                Experiments.profileCommand(worktree, profile, index, host.corpus) to Experiments.profileTimeoutSec(arm) to arm.cores
-            } else {
-                Experiments.command(worktree, problems[case.problem], arm, case.seed, index, host.corpus) to
-                    Experiments.caseTimeoutSec(arm) to arm.cores
-            }
-        }.map { (command, cores) -> CaseCommand(command.first, command.second, cores) }
+            val cmd = caseCommand(spec, arm, problems[case.problem], case.seed, index, host.worktree(shas.getValue(arm.ref)), host)
+            val timeout = if (spec.profile != null) Experiments.profileTimeoutSec(arm) else Experiments.caseTimeoutSec(arm)
+            CaseCommand(cmd, timeout, arm.cores)
+        }
         store.planCommands(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
         if (spec.profile != null) {
             log(job.id, "profile time limit: ${Experiments.profileLimitText(spec)}; SIGTERM at it, SIGKILL ${Experiments.STOP_GRACE_SEC} s later")
             Experiments.profileCaps(spec).forEach { log(job.id, "capped: $it") }
         }
+        spec.capped.forEach { log(job.id, "capped to fit the Mac: $it") }
         log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
+    }
+
+    /** The command line of one case of [spec] on [host], in [worktree]: a profile's main, or a solve of [problem]. */
+    private fun caseCommand(spec: ExperimentSpec, arm: Arm, problem: Problem, seed: Long?, index: Int, worktree: String, host: ExecutionHost): String {
+        val profile = spec.profile
+        return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus)
+        else Experiments.command(worktree, problem, arm, seed, index, host.corpus)
+    }
+
+    /**
+     * Take over planned [job] on [host], which sets it up afresh: the Mac taking a job a node planned, or a node
+     * claiming one again. Every iteration left part done runs again whole here ([Store.requeueSplitIterations]), and
+     * the queued commands are written again for this host's worktrees and corpus, since the plan named the paths of
+     * the host that made it. The finished cases and their results stay.
+     */
+    internal fun adopt(job: Job, spec: ExperimentSpec, host: ExecutionHost) {
+        val again = store.requeueSplitIterations(job.id)
+        if (again.isNotEmpty()) log(job.id, "cases ${again.joinToString()} run again: their iterations were only part done elsewhere")
+        val arms = store.arms(job.id).associateBy { it.arm.label }
+        val commands = store.casePlan(job.id).filter { it.status == Status.QUEUED }.associate { case ->
+            val planned = arms.getValue(case.arm)
+            case.index to caseCommand(spec, planned.arm, case.problem, case.seed, case.index, host.worktree(planned.sha), host)
+        }
+        store.rewriteCommands(job.id, commands)
     }
 
     /** The lab machine itself: worktrees under the data directory, the shared corpus cache, the lab's core budget. */

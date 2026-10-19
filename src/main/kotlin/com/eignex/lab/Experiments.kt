@@ -65,6 +65,9 @@ data class ExperimentSpec(
     val script: String? = null,
     /** Retired with [script]. */
     val scriptFile: String? = null,
+    /** What the lab cut down to fit the Mac when it took the job ([Experiments.capToMac]), each in words; set by the
+     *  lab, not the submitter. */
+    val capped: List<String> = emptyList(),
 )
 
 /**
@@ -134,6 +137,7 @@ object Experiments {
             priority = 0,
             confirm = false,
             profile = spec.profile?.copy(runTimeoutSec = null),
+            capped = emptyList(),
         )
         return hash(Json.encodeToString(ExperimentSpec.serializer(), measured))
     }
@@ -173,6 +177,30 @@ object Experiments {
         seeds.ifEmpty { listOf(null) }.flatMap { seed ->
             (0 until repeats).flatMap { repeat -> order.map { arm -> Case(problem, arm, seed, repeat) } }
         }
+    }
+
+    /**
+     * [spec] cut down to fit the Mac, which every job the lab accepts must: each `processors` over [cores] becomes
+     * [cores], and a `parallel` over [maxParallel] becomes [maxParallel]. AWS is only overflow for the Mac's queue, so
+     * no job needs a node. A grid axis whose values the cap makes equal keeps one of them. What was cut is added to
+     * [ExperimentSpec.capped], which the submit response, the job log and the job page show.
+     */
+    fun capToMac(spec: ExperimentSpec, cores: Int, maxParallel: Int): ExperimentSpec {
+        val notes = mutableListOf<String>()
+        fun capCores(value: String): String {
+            val asked = value.toIntOrNull()?.takeIf { it > cores } ?: return value
+            notes += "processors=$asked was asked, capped at the Mac's $cores cores"
+            return cores.toString()
+        }
+        fun cap(values: Map<String, String>): Map<String, String> =
+            values["processors"]?.let { values + ("processors" to capCores(it)) } ?: values
+        val grid = spec.grid.mapValues { (key, values) -> if (key == "processors") values.map(::capCores).distinct() else values }
+        val parallel = spec.parallel?.takeIf { it > maxParallel }?.let {
+            notes += "parallel=$it was asked, capped at the Mac's $maxParallel"
+            maxParallel
+        } ?: spec.parallel
+        val capped = spec.copy(base = cap(spec.base), configs = spec.configs.map(::cap), grid = grid, parallel = parallel)
+        return if (notes.isEmpty()) spec else capped.copy(capped = spec.capped + notes.distinct())
     }
 
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
