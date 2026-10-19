@@ -1,40 +1,57 @@
 # Cache extraction never touches an installation until the complete download and validation succeed.
+# validate_lab_cache <root> install|gradle: the solver installs, or the Gradle wrapper's distribution, under <root>
+# are complete: every jar's entries pass unzip's CRC test and the classes they are run by are there.
 validate_lab_cache() {
-    python3 - "$1" "$2" <<'PY'
-import pathlib, re, sys, zipfile
-root, kind = pathlib.Path(sys.argv[1]), sys.argv[2]
-if kind == 'install':
-    distributions = [(['klause-cli/build/install/klause-cli-jvm', 'klause-cli/build/install/klause-cli'], ['klause-cli', 'klause-cli-jvm'], 'com/eignex/klause/cli/MainKt.class'),
-                     (['klause-bench/build/install/klause-bench'], ['klause-bench'], 'com/eignex/klause/bench/target/BenchCli.class')]
-    for relatives, names, main in distributions:
-        launchers = [root / relative / 'bin' / name for relative in relatives for name in names]
-        launcher = next((p for p in launchers if p.is_file()), launchers[0])
-        dist = launcher.parent.parent
-        assert launcher.is_file() and launcher.stat().st_mode & 0o111, f'missing executable: {launcher}'
-        jars = list((dist / 'lib').glob('*.jar'))
-        assert jars, f'missing libraries: {dist}'
-        found = False
-        for jar in jars:
-            with zipfile.ZipFile(jar) as archive:
-                assert archive.testzip() is None, f'corrupt library: {jar}'
-                found |= main in archive.namelist()
-        assert found, f'missing main class: {main}'
-        refs = re.findall(r'\$(?:APP_HOME|\{APP_HOME\})/lib/([^:\s"\']+\.jar)', launcher.read_text())
-        assert refs, f'missing launcher classpath: {launcher}'
-        assert all((dist / 'lib' / ref).is_file() for ref in refs), f'incomplete classpath: {launcher}'
-else:
-    wrapper = root / '.gradle/wrapper'
-    assert wrapper.is_dir(), 'missing Gradle wrapper cache'
-    distributions = [d for d in wrapper.rglob('lib') if d.parent.name.startswith('gradle-')]
-    assert distributions, 'missing extracted Gradle distribution'
-    for dist in distributions:
-        bootstrap = False
-        for jar in dist.rglob('*.jar'):
-            with zipfile.ZipFile(jar) as archive:
-                assert archive.testzip() is None, f'corrupt Gradle library: {jar}'
-                bootstrap |= 'org/gradle/launcher/bootstrap/ProcessBootstrap.class' in archive.namelist()
-        assert bootstrap, f'incomplete Gradle bootstrap: {dist}'
-PY
+    if [ "$2" = install ]; then
+        validate_lab_distribution "$1" com/eignex/klause/cli/MainKt.class \
+            klause-cli/build/install/klause-cli-jvm/bin/klause-cli klause-cli/build/install/klause-cli-jvm/bin/klause-cli-jvm \
+            klause-cli/build/install/klause-cli/bin/klause-cli klause-cli/build/install/klause-cli/bin/klause-cli-jvm &&
+            validate_lab_distribution "$1" com/eignex/klause/bench/target/BenchCli.class klause-bench/build/install/klause-bench/bin/klause-bench
+        return
+    fi
+    local wrapper="$1/.gradle/wrapper" dist jar any=0 bootstrap
+    [ -d "$wrapper" ] || { echo 'missing Gradle wrapper cache' >&2; return 1; }
+    while IFS= read -r -d '' dist; do
+        case "$(basename "$(dirname "$dist")")" in gradle-*) ;; *) continue ;; esac
+        any=1
+        bootstrap=0
+        while IFS= read -r -d '' jar; do
+            unzip -tqq "$jar" >/dev/null 2>&1 || { echo "corrupt Gradle library: $jar" >&2; return 1; }
+            if lab_jar_has "$jar" org/gradle/launcher/bootstrap/ProcessBootstrap.class; then bootstrap=1; fi
+        done < <(find "$dist" -name '*.jar' -print0)
+        [ "$bootstrap" = 1 ] || { echo "incomplete Gradle bootstrap: $dist" >&2; return 1; }
+    done < <(find "$wrapper" -name lib -print0)
+    [ "$any" = 1 ] || { echo 'missing extracted Gradle distribution' >&2; return 1; }
+}
+
+# validate_lab_distribution <root> <main class> <launcher>...: the first of the launchers that is there, else the first
+# named, is executable, and its distribution's jars are complete, hold <main class> and are all its classpath names.
+validate_lab_distribution() {
+    local root=$1 main=$2 launcher="" candidate dist jar found=0 refs ref
+    shift 2
+    for candidate in "$@"; do
+        if [ -f "$root/$candidate" ]; then launcher="$root/$candidate"; break; fi
+    done
+    [ -n "$launcher" ] || launcher="$root/$1"
+    [ -f "$launcher" ] && [ -x "$launcher" ] || { echo "missing executable: $launcher" >&2; return 1; }
+    dist=$(dirname "$(dirname "$launcher")")
+    set -- "$dist"/lib/*.jar
+    [ -e "$1" ] || { echo "missing libraries: $dist" >&2; return 1; }
+    for jar in "$@"; do
+        unzip -tqq "$jar" >/dev/null 2>&1 || { echo "corrupt library: $jar" >&2; return 1; }
+        if lab_jar_has "$jar" "$main"; then found=1; fi
+    done
+    [ "$found" = 1 ] || { echo "missing main class: $main" >&2; return 1; }
+    refs=$(grep -oE '\$(APP_HOME|\{APP_HOME\})/lib/[^:[:space:]"'\'']+\.jar' "$launcher" | sed -E 's#^\$(\{APP_HOME\}|APP_HOME)/lib/##') || true
+    [ -n "$refs" ] || { echo "missing launcher classpath: $launcher" >&2; return 1; }
+    while IFS= read -r ref; do
+        [ -f "$dist/lib/$ref" ] || { echo "incomplete classpath: $launcher" >&2; return 1; }
+    done <<< "$refs"
+}
+
+# lab_jar_has <jar> <entry>: whether the jar holds the entry. grep reads the whole listing, so pipefail sees no SIGPIPE.
+lab_jar_has() {
+    unzip -Z1 "$1" 2>/dev/null | grep -Fx -- "$2" >/dev/null
 }
 
 restore_lab_cache() {
@@ -66,23 +83,31 @@ publish_lab_cache() {
     rm -f "$cache_archive"
 }
 
+# validate_lab_provenance <worktree>: the bench's provenance manifest, when it wrote one, names a CLI launcher installed
+# in the worktree, and every file of that launcher's distribution it lists is inside it and has the hash it lists.
 validate_lab_provenance() {
-    python3 - "$1" <<'PYCODE'
-import hashlib, json, pathlib, sys
-root = pathlib.Path(sys.argv[1]).resolve()
-manifest = root / 'klause-bench/build/provenance.json'
-if manifest.exists():
-    data = json.loads(manifest.read_text())
-    assert data.get('version', 1) == 1
-    launcher = pathlib.Path(data['launcher']).resolve()
-    assert launcher.is_relative_to(root / 'klause-cli/build/install') and launcher.is_file()
-    distribution = data['provenance']['distribution']
-    assert distribution, 'empty installed provenance'
-    for name, digest in distribution.items():
-        file = (launcher.parent.parent / name).resolve()
-        assert file.is_relative_to(launcher.parent.parent) and file.is_file()
-        assert hashlib.sha256(file.read_bytes()).hexdigest() == digest, f'provenance hash mismatch: {name}'
-PYCODE
+    local root manifest launcher dist name digest file
+    root=$(cd "$1" && pwd -P) || return 1
+    manifest="$root/klause-bench/build/provenance.json"
+    [ -e "$manifest" ] || return 0
+    # Nodes booted before jq joined their packages install it on first use.
+    command -v jq >/dev/null || sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -yq jq >/dev/null 2>&1 ||
+        { echo 'jq is missing' >&2; return 1; }
+    jq -e '(has("version") | not) or .version == 1' "$manifest" >/dev/null 2>&1 ||
+        { echo "unsupported or invalid provenance manifest: $manifest" >&2; return 1; }
+    launcher=$(jq -er '.launcher | strings' "$manifest") && launcher=$(realpath "$launcher" 2>/dev/null) ||
+        { echo 'provenance names no launcher' >&2; return 1; }
+    case "$launcher" in "$root/klause-cli/build/install/"*) ;; *) echo "provenance launcher outside the install: $launcher" >&2; return 1 ;; esac
+    [ -f "$launcher" ] || { echo "provenance launcher missing: $launcher" >&2; return 1; }
+    dist=$(dirname "$(dirname "$launcher")")
+    jq -e '.provenance.distribution | type == "object" and length > 0' "$manifest" >/dev/null 2>&1 ||
+        { echo 'empty installed provenance' >&2; return 1; }
+    while IFS= read -r -d '' name && IFS= read -r -d '' digest; do
+        file=$(realpath "$dist/$name" 2>/dev/null) || { echo "provenance file missing: $name" >&2; return 1; }
+        case "$file" in "$dist"/*) ;; *) echo "provenance file outside the distribution: $name" >&2; return 1 ;; esac
+        [ -f "$file" ] || { echo "provenance file missing: $name" >&2; return 1; }
+        [ "$(sha256sum < "$file" | cut -d' ' -f1)" = "$digest" ] || { echo "provenance hash mismatch: $name" >&2; return 1; }
+    done < <(jq -j '.provenance.distribution | to_entries[] | "\(.key)\u0000\(.value)\u0000"' "$manifest")
 }
 
 # The corpus in the bucket as one tar per collection (`corpus-packs/<collection>.tar`) and an index of each one's
