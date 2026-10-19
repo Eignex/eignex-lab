@@ -96,6 +96,71 @@ class AwsBuildCacheTest {
         assertTrue(run(root, "validate_lab_provenance ${quote(root.path)}") != 0)
     }
 
+    @Test
+    fun `provenance passes only while every listed file of the installed launcher's distribution matches its hash`() = fixture { root ->
+        assertEquals(0, run(root, "validate_lab_provenance ${quote(root.path)}"), "no manifest: nothing to check")
+        val dist = root.resolve("klause-cli/build/install/klause-cli-jvm")
+        val launcher = dist.resolve("bin/klause-cli").apply { parentFile.mkdirs(); writeText("#!/bin/sh\n") }
+        val jar = dist.resolve("lib/main jar.jar").apply { parentFile.mkdirs(); writeText("classes") }
+        fun sha(file: java.io.File) = java.security.MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+        val manifest = root.resolve("klause-bench/build/provenance.json").apply { parentFile.mkdirs() }
+        fun write(distribution: String, path: String = launcher.path) =
+            manifest.writeText("""{"version":1,"launcher":"$path","provenance":{"distribution":{$distribution}}}""")
+
+        write(""""bin/klause-cli":"${sha(launcher)}","lib/main jar.jar":"${sha(jar)}"""")
+        assertEquals(0, run(root, "validate_lab_provenance ${quote(root.path)}"))
+        jar.writeText("changed")
+        assertTrue(run(root, "validate_lab_provenance ${quote(root.path)}") != 0)
+        write(""""../../../../../outside":"${sha(launcher)}"""")
+        root.resolve("outside").writeText("#!/bin/sh\n")
+        assertTrue(run(root, "validate_lab_provenance ${quote(root.path)}") != 0)
+        write("")
+        assertTrue(run(root, "validate_lab_provenance ${quote(root.path)}") != 0)
+        write(""""bin/klause-cli":"${sha(launcher)}"""", root.resolve("outside").path)
+        assertTrue(run(root, "validate_lab_provenance ${quote(root.path)}") != 0)
+    }
+
+    @Test
+    fun `a launcher whose classpath names a missing jar is rejected`() = fixture { root ->
+        val content = root.resolve("content").apply { mkdirs() }
+        for ((relative, name, main) in listOf(
+            Triple("klause-cli/build/install/klause-cli-jvm", "klause-cli", "com/eignex/klause/cli/MainKt.class"),
+            Triple("klause-bench/build/install/klause-bench", "klause-bench", "com/eignex/klause/bench/target/BenchCli.class"),
+        )) {
+            val dist = content.resolve(relative)
+            dist.resolve("bin").mkdirs(); dist.resolve("lib").mkdirs()
+            dist.resolve("bin/$name").apply { writeText("#!/bin/sh\nCLASSPATH=\$APP_HOME/lib/main.jar:\${APP_HOME}/lib/gone.jar\n"); setExecutable(true) }
+            ZipOutputStream(dist.resolve("lib/main.jar").outputStream()).use { zip ->
+                zip.putNextEntry(ZipEntry(main)); zip.write(byteArrayOf(0)); zip.closeEntry()
+            }
+        }
+        assertTrue(run(root, "validate_lab_cache ${quote(content.path)} install") != 0)
+        content.resolve("klause-cli/build/install/klause-cli-jvm/lib/gone.jar").writeText("")
+        ZipOutputStream(content.resolve("klause-bench/build/install/klause-bench/lib/gone.jar").outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("x")); zip.closeEntry()
+        }
+        // The empty file is no zip either.
+        assertTrue(run(root, "validate_lab_cache ${quote(content.path)} install") != 0)
+        ZipOutputStream(content.resolve("klause-cli/build/install/klause-cli-jvm/lib/gone.jar").outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("x")); zip.closeEntry()
+        }
+        assertEquals(0, run(root, "validate_lab_cache ${quote(content.path)} install"))
+    }
+
+    @Test
+    fun `a complete Gradle distribution passes`() = fixture { root ->
+        val content = root.resolve("content").apply { mkdirs() }
+        val lib = content.resolve(".gradle/wrapper/dists/gradle-test/hash/gradle-test/lib").apply { mkdirs() }
+        ZipOutputStream(lib.resolve("gradle-launcher.jar").outputStream()).use { zip ->
+            zip.putNextEntry(ZipEntry("org/gradle/launcher/bootstrap/ProcessBootstrap.class")); zip.write(byteArrayOf(0)); zip.closeEntry()
+        }
+        lib.resolve("plugins").mkdirs()
+        ZipOutputStream(lib.resolve("plugins/other.jar").outputStream()).use { zip -> zip.putNextEntry(ZipEntry("Other.class")); zip.closeEntry() }
+        assertEquals(0, run(root, "validate_lab_cache ${quote(content.path)} gradle"))
+        lib.resolve("plugins/other.jar").writeText("broken")
+        assertTrue(run(root, "validate_lab_cache ${quote(content.path)} gradle") != 0)
+    }
+
     private fun fixture(block: (java.io.File) -> Unit) {
         val root = Files.createTempDirectory("cache test ").toFile()
         try { block(root) } finally { root.deleteRecursively() }
