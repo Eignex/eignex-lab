@@ -11,6 +11,15 @@ call, so it is reported and not required. `klause-lab check` prints the report a
 
 ## Experiments
 
+**One question, one experiment.** Submit one experiment that covers all the problems a question needs; never split
+it into batches. The lab bounds runtime itself (each case's `timeout`, profile time limits) and orders and places
+the work (Mac first, AWS nodes by queue pressure), and a batch defeats that placement and the arms' pairing and
+scatters the results. Don't impose your own wall-clock caps or cancel a job to keep it short. Follow a long job
+with `lab wait <id>` run in the background, or poll `lab show <id>` / `lab cases <id>`: finished cases are readable
+while it runs. A submission whose arms, seeds, repeats and profiling equal those of a queued or running experiment,
+so that only its name, description or problems differ, is refused (409) and names that job; scheduled runs,
+confirmations, profile jobs and `lab retry` are exempt, and a cancelled job no longer counts.
+
 An experiment runs one selection of problems under every configuration it names, one problem per case. Each case
 is one job command the lab writes itself; there is no other kind of job. `lab run <experiment.json>` queues one:
 

@@ -147,6 +147,39 @@ object Experiments {
     fun fingerprint(spec: ExperimentSpec, problems: Collection<Problem>): String =
         hash(fingerprint(spec) + "\n" + problems.map { "${it.suite}/${it.problem}" }.sorted().joinToString("\n"))
 
+    /**
+     * The active job [spec] would split: one queued or running, not being cancelled, that runs the same arms, seeds,
+     * repeats and profiling as [spec] and differs at most in its name, description and problems. One question is one
+     * experiment over all its problems; the lab bounds its runtime itself (per-case timeouts, placement on the Mac or
+     * AWS by load), and batches defeat that placement and the arms' pairing and scatter the results. Scheduled runs,
+     * confirmations and profile jobs are neither refused nor counted, and a cancelled job is no longer active.
+     */
+    fun splitOf(spec: ExperimentSpec, active: List<Job>): Job? {
+        if (exemptFromSplitting(spec)) return null
+        val key = splitKey(spec)
+        return active.firstOrNull { job ->
+            job.status in setOf(Status.QUEUED, Status.RUNNING) && !job.cancelRequested &&
+                job.experiment?.let { !exemptFromSplitting(it) && splitKey(it) == key } == true
+        }
+    }
+
+    /** Why a submission that [splitOf] matched to [job] is refused, and what to do instead. */
+    fun splitMessage(job: Job): String =
+        "job ${job.id} (${job.name}) is already ${job.status.name.lowercase()} with these configs, seeds and repeats: " +
+            "submit one experiment that covers all the problems instead of splitting it into batches. The lab bounds " +
+            "runtime itself (per-case timeouts, placement on the Mac or AWS by load), so don't split or cancel jobs to " +
+            "keep them short; read partial results with `lab cases ${job.id}` while it runs"
+
+    private fun exemptFromSplitting(spec: ExperimentSpec) = spec.isProfile || '@' in spec.name || Confirm.SUFFIX in spec.name
+
+    /** What [spec] runs apart from its problems: each arm's values with their defaults filled in, labels left out. */
+    private fun splitKey(spec: ExperimentSpec): List<Any> = listOf(
+        arms(spec).map { arm -> (arm.values + ("ref" to arm.ref) + ("timeout" to arm.timeoutMs.toString())).toSortedMap().toString() }.sorted(),
+        spec.seeds.sorted(),
+        spec.repeats,
+        spec.profileCli,
+    )
+
     private fun hash(text: String): String =
         MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
 

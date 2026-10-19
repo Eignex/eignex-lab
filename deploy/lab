@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
+#                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]
 #                                                            queue a profile job: the class <main> (in com.eignex.klause.bench.profile)
 #                                                            run once with [arg...] in a build of <ref>, under JFR, on the Mac
@@ -28,6 +29,7 @@
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
+#                                                            cancel a wrong job, not a long one: the lab bounds runtime itself
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab host <id> auto|lab|aws                              operators only: override where a queued, unplanned job may run
 #                                                            (the lab places every job itself; agents need not)

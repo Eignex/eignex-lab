@@ -263,6 +263,36 @@ class PagesTest {
     }
 
     @Test
+    fun `a batch of an active experiment is refused, and a cancelled one no longer counts`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.database)
+        fun spec(name: String, suite: String) = """{"name": "$name", "description": "d", "problems": {"suite": "$suite"},
+            "grid": {"ref": ["0123456789abcdef", "fedcba9876543210"]}, "seeds": [1, 2], "repeats": 3}"""
+        testApplication {
+            application { api(config, store, host) }
+            suspend fun submit(body: String) = client.post("/experiments") {
+                header(HttpHeaders.ContentType, "application/json")
+                setBody(body)
+            }
+
+            assertEquals(HttpStatusCode.Created, submit(spec("ab-batch1", "a")).status)
+            val batch = submit(spec("ab-batch2", "b"))
+            val other = submit(spec("ab-other", "b").replace("\"repeats\": 3", "\"repeats\": 5"))
+            assertEquals(HttpStatusCode.Created, other.status)
+            store.requestCancel(1)
+            val after = submit(spec("ab-all", "a,b"))
+
+            assertEquals(HttpStatusCode.Conflict, batch.status)
+            val message = batch.bodyAsText()
+            assertContains(message, "job 1 (ab-batch1)")
+            assertContains(message, "submit one experiment that covers all the problems")
+            assertContains(message, "lab cases 1")
+            assertEquals(HttpStatusCode.Created, after.status)
+            assertEquals(listOf("ab-other", "ab-all"), store.active(withCommands = false).map { it.name })
+        }
+    }
+
+    @Test
     fun `a job asking for more than the Mac has is cut down to it, and the response and the job page say so`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = 8, maxParallel = 6)
         config.dataDir.resolve("aws").toFile().mkdirs()
