@@ -581,7 +581,11 @@ Nodes launch on pressure, with damping:
   does. The node that claims a job plans it, and nodes that join fetch the same corpora before their cases start. The
   nodes share the job's problems: each takes the next one in plan order whenever it has room for a case, and a
   problem's arms, seeds and repeats all run on the node that took it, so each comparison is made on one machine and no
-  node idles while another has a backlog. Each node keeps a job's case files in `~/jobs/<id>`, removed when it moves
+  node idles while another has a backlog. An iteration, the arms of one problem, seed and repeat (an A/B's A and B),
+  is never split across machines: when AWS takes a spot node back, the cases it finished of a problem it had not
+  finished lose their results and go back to the queue with the rest of their iteration, to run again together on the
+  node that takes them; and a planned job set up afresh on another host (the Mac taking it over, or a node claiming it
+  again after it went back to the queue) first queues again the finished cases of any iteration left part done. Each node keeps a job's case files in `~/jobs/<id>`, removed when it moves
   on. Cases run over SSH under `timeout`, and each record is copied back as its case ends, so the job page,
   comparisons and CSVs work as for a local job.
 - A running AWS case carries its phase, so a case RUNNING past its `timeoutSec` shows whether the solver or the lab

@@ -416,6 +416,57 @@ class Store(file: Path) {
     fun caseRecord(jobId: Long, index: Int, record: String) =
         update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, jobId, index)
 
+    /** [cases] without their records: what rewriting a job's commands for another host reads. */
+    @Synchronized
+    fun casePlan(jobId: Long): List<CaseResult> = casesWith("NULL", jobId)
+
+    /** Replace the command lines of [jobId]'s queued commands, by index: a planned job taken by another host. */
+    @Synchronized
+    fun rewriteCommands(jobId: Long, commands: Map<Int, String>) = transaction {
+        connection.prepareStatement("UPDATE commands SET cmd = ? WHERE job_id = ? AND idx = ? AND status = ?").use { statement ->
+            for ((index, cmd) in commands) {
+                statement.setString(1, cmd)
+                statement.setLong(2, jobId)
+                statement.setInt(3, index)
+                statement.setString(4, Status.QUEUED.name)
+                statement.addBatch()
+            }
+            statement.executeBatch()
+        }
+    }
+
+    /**
+     * Queue again the finished cases of every iteration of [jobId] that is only part done: an iteration is the arms of
+     * one problem, seed and repeat, which are compared with each other and so must all run on one machine. A finished
+     * case whose iteration still has a queued or running case loses its result and runs again with the rest, wherever
+     * they run. Only the cases in [among] are queued again when it is given: the ones a lost host finished. Returns them.
+     */
+    @Synchronized
+    fun requeueSplitIterations(jobId: Long, among: Collection<Int>? = null): List<Int> = transaction {
+        data class Row(val index: Int, val iteration: Triple<Int, Long?, Int>, val status: Status)
+        val rows = connection.prepareStatement(
+            "SELECT c.idx, c.problem_idx, c.seed, c.repeat, m.status FROM cases c " +
+                "JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx WHERE c.job_id = ? ORDER BY c.idx",
+        ).use { statement ->
+            statement.setLong(1, jobId)
+            statement.executeQuery().use { r ->
+                generateSequence {
+                    if (r.next()) Row(r.getInt(1), Triple(r.getInt(2), r.longOrNull("seed"), r.getInt(4)), Status.valueOf(r.getString(5))) else null
+                }.toList()
+            }
+        }
+        val finished = setOf(Status.DONE, Status.FAILED)
+        val split = rows.groupBy { it.iteration }.values
+            .filter { cases -> cases.any { it.status in finished } && cases.any { it.status == Status.QUEUED || it.status == Status.RUNNING } }
+        val again = split.flatten().filter { it.status in finished && (among == null || it.index in among) }.map { it.index }
+        for (index in again) {
+            update("UPDATE commands SET status = ?, exit_code = NULL, started_at = NULL, finished_at = NULL, phase = NULL " +
+                "WHERE job_id = ? AND idx = ?", Status.QUEUED.name, jobId, index)
+            update("UPDATE cases SET record = NULL WHERE job_id = ? AND idx = ?", jobId, index)
+        }
+        again
+    }
+
     /** Every case of an experiment in command order, with its problem, arm, status and record. */
     @Synchronized
     fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId)
@@ -1166,6 +1217,20 @@ class Store(file: Path) {
         require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli runs only on AWS" }
         val moved = spec.copy(host = host, auto = false, machines = null)
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
+    }
+
+    /**
+     * Place a queued experiment again on [host] whether or not it was planned: the host that takes a planned one next
+     * rewrites its queued commands for itself ([Runner.adopt]). What [Placement.release] does with a job a node planned
+     * and gave back. False when there is no such queued experiment.
+     */
+    @Synchronized
+    fun release(jobId: Long, host: String): Boolean {
+        val job = job(jobId) ?: return false
+        val spec = job.experiment ?: return false
+        if (job.status != Status.QUEUED) return false
+        val moved = spec.copy(host = host, auto = false, machines = null)
+        return update("UPDATE jobs SET experiment = ? WHERE id = ? AND status = ?", Json.encodeToString(moved), jobId, Status.QUEUED.name) == 1
     }
 
     /** Set an experiment's description; false when there is no such experiment. */
