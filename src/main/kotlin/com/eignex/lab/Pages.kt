@@ -1263,7 +1263,8 @@ private fun hostCell(config: Config, job: Job): String {
     val detail = when {
         instances.isNotEmpty() -> "${instances.size} ${if (instances.size == 1) "node" else "nodes"}: " +
             shapes.entries.joinToString(", ") { (shape, n) -> if (n == 1) shape else "$n × $shape" }
-        job.status == Status.QUEUED -> "waiting for a node"
+        // A cancel-requested or paused job waits for nothing: no node takes it.
+        job.status == Status.QUEUED && !job.cancelRequested && !job.paused -> "waiting for a node"
         else -> null
     }
     return "<span class=\"where aws\">AWS</span>" +

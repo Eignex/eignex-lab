@@ -73,6 +73,8 @@ class Runner(
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
+        // A job requeued with its cancel requested, before a requeue ended such a job, would wait for a host forever.
+        runCatching { store.queuedCancels().forEach(::cancel) }.onFailure { println("cancelling requeued jobs failed: ${it.message}") }
         // Jobs queued before the lab placed them itself may name a host their submitter chose: placed again by the rules.
         runCatching { Placement.replaceQueued(store, config) }
             .onSuccess { if (it.isNotEmpty()) println("placed queued jobs again by the lab's rules: $it") }
@@ -143,7 +145,7 @@ class Runner(
                 failure = error
             }
             if (outcome == Dispatched.YIELDED && failure == null) {
-                store.requeue(job.id)
+                if (store.requeue(job.id) == Status.CANCELLED) return cancel(job.id)
                 log(job.id, "job paused between commands")
                 return
             }
@@ -191,7 +193,7 @@ class Runner(
             Dispatched.CANCELLED -> return cancel(job.id)
             // Its worktree and finished commands stay, so the job resumes at its next command when picked again.
             Dispatched.YIELDED -> {
-                store.requeue(job.id)
+                if (store.requeue(job.id) == Status.CANCELLED) return cancel(job.id)
                 log(job.id, "job paused between commands")
                 return
             }
