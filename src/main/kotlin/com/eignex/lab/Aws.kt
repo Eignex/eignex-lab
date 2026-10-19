@@ -906,20 +906,22 @@ class AwsWorker(
                 store.cancelRemaining(job.id)
                 store.finish(job.id, Status.FAILED, failure.message ?: failure.toString())
             }
-            current.paused || Dispatched.YIELDED in job.outcomes -> {
-                store.requeue(job.id)
-                runner.log(job.id, "job paused between commands; a node takes it up again on resume")
-            }
+            current.paused || Dispatched.YIELDED in job.outcomes ->
+                requeue(job.id, "job paused between commands; a node takes it up again on resume")
             // Its nodes were taken back by AWS or retired with cases left: the next free node takes it up again.
-            current.commands.any { it.status == Status.QUEUED } -> {
-                store.requeue(job.id)
-                runner.log(job.id, "no node left on the job with cases to run: queued again, for the next node")
-            }
+            current.commands.any { it.status == Status.QUEUED } ->
+                requeue(job.id, "no node left on the job with cases to run: queued again, for the next node")
             else -> {
                 store.finish(job.id, Status.DONE)
                 runner.log(job.id, "job finished")
             }
         }
+    }
+
+    /** Put [jobId] back in the queue, saying [why]; one whose cancel was requested meanwhile ends cancelled instead. */
+    private fun requeue(jobId: Long, why: String) {
+        if (store.requeue(jobId) == Status.CANCELLED) return runner.cancel(jobId)
+        runner.log(jobId, why)
     }
 
     /** [node] as a host for [job]'s cases: its files in their own directory, one case per two cores unless the job
@@ -976,8 +978,8 @@ class AwsWorker(
     private fun recover() {
         for (job in store.active().filter { it.status == Status.RUNNING && it.experiment?.host == Experiments.AWS_HOST }) {
             store.requeueInterrupted(job.id)
-            store.requeue(job.id)
             Files.deleteIfExists(config.jobDir(job.id).resolve(INSTANCES_FILE))
+            requeue(job.id, "the lab restarted while the job ran on AWS: queued again, for the next node")
         }
         sweep()
     }

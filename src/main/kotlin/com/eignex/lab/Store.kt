@@ -1119,15 +1119,39 @@ class Store(file: Path) {
         reopened
     }
 
-    /** Put a running job that yielded back in the queue; its finished commands and its worktree stay. */
+    /**
+     * Put a running job that yielded back in the queue; its finished commands and its worktree stay. A job whose cancel
+     * was requested never goes back in the queue, where no host would take it: it ends CANCELLED instead, its
+     * unfinished commands with it, for the caller to clean up and log as [Runner.cancel] does. Each step is one
+     * statement, so a cancel another process requests meanwhile lands on one side or the other. Returns the status the
+     * job is left in, null when it was neither running nor cancel-requested.
+     */
     @Synchronized
-    fun requeue(jobId: Long): Int {
+    fun requeue(jobId: Long): Status? {
         val at = now()
-        return update(
+        val queued = update(
             "UPDATE jobs SET status = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL " +
-                "WHERE id = ? AND status = ?",
+                "WHERE id = ? AND status = ? AND cancel_requested = 0",
             Status.QUEUED.name, at, jobId, Status.RUNNING.name,
         )
+        if (queued == 1) return Status.QUEUED
+        val cancelled = update(
+            "UPDATE jobs SET status = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), " +
+                "running_since = NULL WHERE id = ? AND status IN (?, ?) AND cancel_requested = 1",
+            Status.CANCELLED.name, at, at, jobId, Status.QUEUED.name, Status.RUNNING.name,
+        )
+        if (cancelled == 0) return null
+        cancelRemaining(jobId)
+        return Status.CANCELLED
+    }
+
+    /** Queued jobs whose cancel was requested: left by a runner from before a requeue ended them, as no host takes one. */
+    @Synchronized
+    fun queuedCancels(): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 1 ORDER BY id",
+    ).use {
+        it.setString(1, Status.QUEUED.name)
+        it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
     }
 
     /**

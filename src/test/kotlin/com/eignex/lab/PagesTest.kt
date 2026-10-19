@@ -281,4 +281,19 @@ class PagesTest {
         assertContains(line, "4xlarge on-demand</span> idle")
         assertContains(line, "pressure 3.3 core-h")
     }
+
+    @Test
+    fun `a queued AWS job waits for a node unless its cancel was requested`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST)
+        fun job(id: Long, cancelRequested: Boolean) =
+            Job(id, "e$id", "main", status = Status.QUEUED, cancelRequested = cancelRequested, setupDone = true, createdAt = 0, experiment = spec)
+
+        val waiting = indexPage(config, host, listOf(job(1, false)), emptyList(), emptyList(), 50, null, null)
+        val cancelling = indexPage(config, host, listOf(job(2, true)), emptyList(), emptyList(), 50, null, null)
+
+        assertContains(waiting, "waiting for a node")
+        assertContains(cancelling, "cancelling")
+        assertFalse("waiting for a node" in cancelling)
+    }
 }

@@ -87,6 +87,39 @@ class StoreTest {
     }
 
     @Test
+    fun `a running job whose cancel was requested is cancelled when requeued, never queued again`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L, "true" to 10L))
+        store.next()
+        store.commandStarted(id, 0)
+        store.commandFinished(id, 0, 0)
+        store.commandStarted(id, 1)
+        assertEquals(CancelOutcome.REQUESTED, store.requestCancel(id))
+        store.requeueInterrupted(id)
+
+        assertEquals(Status.CANCELLED, store.requeue(id))
+        val job = store.job(id)!!
+        assertEquals(listOf(Status.CANCELLED, Status.DONE, Status.CANCELLED), listOf(job.status) + job.commands.map { it.status })
+        assertTrue(job.finishedAt != null && job.runningSince == null)
+        assertEquals(listOf(null, null), listOf(store.next(), store.requeue(id)))
+    }
+
+    @Test
+    fun `a queued job left with its cancel requested is found for the runner to end`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val stuck = store.create("a", "main", listOf("true" to 10L))
+        val waiting = store.create("b", "main", listOf("true" to 10L))
+        // What a runner from before left: requeued after its cancel was requested.
+        DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().executeUpdate("UPDATE jobs SET cancel_requested = 1 WHERE id = $stuck") }
+
+        assertEquals(listOf(stuck), store.queuedCancels())
+        assertEquals(Status.CANCELLED, store.requeue(stuck))
+        assertEquals(listOf(Status.CANCELLED, Status.QUEUED), listOf(stuck, waiting).map { store.job(it)!!.status })
+        assertEquals(emptyList(), store.queuedCancels())
+    }
+
+    @Test
     fun `cancelling a finished job reports it as finished`() {
         val store = store()
         val id = store.create("a", "main", listOf("true" to 10L))
@@ -244,7 +277,7 @@ class StoreTest {
         store.next()
         store.commandStarted(id, 0)
         store.commandFinished(id, 0, 0)
-        store.requeue(id)
+        assertEquals(Status.QUEUED, store.requeue(id))
 
         val resumed = store.next()
 
