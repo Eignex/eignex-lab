@@ -64,8 +64,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   ignored.
 - `profileCli: true` (with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings and
   measures its physical peak RSS and user/system CPU. It is placed like any other job, Mac first, then a node. On a
-  node (Linux) GNU time measures the CLI; on the Mac (macOS), which has no GNU time, a Python wrapper reads the CLI's
-  resource usage from `wait4` and passes SIGTERM, SIGINT and SIGHUP on to it. Both write `resources.txt` with the same
+  node (Linux) GNU time measures the CLI; on the Mac (macOS), which has no GNU time, BSD `time -l` does, its report
+  converted by the launcher, which passes SIGTERM, SIGINT and SIGHUP on to the CLI. Both write `resources.txt` with the same
   keys and units (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`), and `measurement.json` says
   which measured the memory and where the case ran (the node's instance, or `lab`). Each case returns `cli.jfr`,
   `resources.txt` and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page
