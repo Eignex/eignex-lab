@@ -53,18 +53,24 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `host` and `machines` are no longer followed: the lab places every job itself (see Running on AWS). They are still
   accepted, so older specs and clients work, and the reply's `placement` says where the job went and that they were
   ignored.
-- `profileCli: true` (AWS only, with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings
-  and measures its physical peak RSS and user/system CPU with GNU time. Each case returns `cli.jfr`, `resources.txt`
-  and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page or `lab fetch`.
+- `profileCli: true` (with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings and
+  measures its physical peak RSS and user/system CPU. It is placed like any other job, Mac first, then a node. On a
+  node (Linux) GNU time measures the CLI; on the Mac (macOS), which has no GNU time, a Python wrapper reads the CLI's
+  resource usage from `wait4` and passes SIGTERM, SIGINT and SIGHUP on to it. Both write `resources.txt` with the same
+  keys and units (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`), and `measurement.json` says
+  which measured the memory and where the case ran (the node's instance, or `lab`). Each case returns `cli.jfr`,
+  `resources.txt` and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page
+  or `lab fetch`; on the Mac they are written there directly, along with the case's stdout and stderr as for any case.
   Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
   command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
-  A profiling job runs only on an AWS node, with a parallel limit of one, however it is edited through the client or API.
+  A profiling job runs with a parallel limit of one, however it is edited through the client or API.
   These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
   at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
   RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted
   recordings are measurement failures. A dropped artifact transfer retries that transfer without re-solving the case.
-  Profiling changes generated launch scripts only on that job's instances, after build caching; solver jars and the
-  baseline revision are unchanged. Killing the timer kills its CLI child through Linux's parent-death signal.
+  Profiling changes generated launch scripts only in that job's worktrees (on a node after build caching); solver jars
+  and the baseline revision are unchanged. On a node, killing the timer kills its CLI child through Linux's
+  parent-death signal; on the Mac, the runner's kill of the case's process group reaches it.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 ### Profile jobs
@@ -495,8 +501,8 @@ node, then an on-demand node, with fixed exceptions:
 - Every job fits the Mac: a `processors` over the Mac's cores (`LAB_CORES`), in `base`, a config or the grid, and a
   `parallel` over its limit (`LAB_MAX_PARALLEL`) are cut down to them at submit. The response's `notes`, the job log
   and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. So no
-  job needs AWS: nodes are overflow capacity for the Mac's queue, launched on pressure alone (below). Only
-  `profileCli` jobs run on AWS only.
+  job needs AWS: nodes are overflow capacity for the Mac's queue, launched on pressure alone (below). `profileCli`
+  jobs too go Mac first: both hosts measure them (see the spec's keys above).
 - Profile jobs never run on spot: Mac, then an on-demand node.
 
 A job's `host` records the placement: `lab` (the Mac only), `aws` (a node only) or `auto` (whichever is free first).
@@ -533,7 +539,8 @@ summary has a line on the whole pool: each node's size, market and what it is do
 Nodes launch on pressure, with damping:
 
 - Pressure is the estimated core-hours of the work waiting for AWS: queued `auto` jobs at priority `nodeMinPriority`
-  (0) or above and every queued `aws` (`profileCli`) job, less the job the Mac takes next when it is free, plus the unclaimed problems
+  (0) or above and every queued `aws` job (only an operator's override places one there), less the job the Mac takes
+  next when it is free, plus the unclaimed problems
   of jobs running on AWS. A job's core-hours are its cases times each arm's `timeout` times its `processors`: a planned
   job counts its queued cases; an unplanned one is estimated from its selections (`max`, else `per-family` times 10
   families, else 20 problems per selection, the smaller when both are set) times arms, seeds and repeats; a profile

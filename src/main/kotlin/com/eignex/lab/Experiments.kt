@@ -228,7 +228,6 @@ object Experiments {
             arms(spec).single().let { require(it.cores <= cores) { "the profile asks for ${it.cores} processors; the lab has $cores cores" } }
             return
         }
-        require(!spec.profileCli || spec.host == AWS_HOST) { "profileCli requires host=aws" }
         require(!spec.profileCli || spec.parallel == 1) { "profileCli requires parallel=1" }
         require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
         arms(spec).firstOrNull { it.cores > cores }?.let { require(false) { "arm '${it.label}' asks for ${it.cores} processors; the lab has $cores cores" } }

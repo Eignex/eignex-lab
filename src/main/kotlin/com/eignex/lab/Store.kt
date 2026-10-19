@@ -1215,7 +1215,6 @@ class Store(file: Path) {
         val job = job(jobId) ?: return false
         val spec = placed ?: job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
-        require(!spec.profileCli || host == Experiments.AWS_HOST) { "profileCli runs only on AWS" }
         val moved = spec.copy(host = host, auto = false, machines = null)
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
     }

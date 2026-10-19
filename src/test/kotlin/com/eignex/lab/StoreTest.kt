@@ -153,15 +153,15 @@ class StoreTest {
     }
 
     @Test
-    fun `a queued profiling job cannot move to the local host`() {
+    fun `a queued profiling job may move to the Mac like any other`() {
         val store = store()
         val experiment = ExperimentSpec("profile", listOf(mapOf("suite" to "miplib2017")),
             parallel = 1, host = "aws", profileCli = true)
         val id = store.create("profile", "main", emptyList(), parallel = 1, experiment = experiment)
 
-        assertFailsWith<IllegalArgumentException> { store.place(id, "lab") }
+        assertTrue(store.place(id, "lab"))
 
-        assertEquals("aws", store.job(id)!!.experiment!!.host)
+        assertEquals("lab", store.job(id)!!.experiment!!.host)
     }
 
     @Test

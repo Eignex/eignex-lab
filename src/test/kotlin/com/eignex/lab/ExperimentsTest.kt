@@ -173,14 +173,11 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `CLI profiling requires an explicit serial AWS experiment`() {
+    fun `CLI profiling requires an explicit serial experiment, wherever it runs`() {
         val experiment = spec().copy(profileCli = true)
 
         assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(experiment.copy(host = "aws"), maxParallel = 4)
-        }
-        Experiments.validate(experiment.copy(host = "aws", parallel = 1), maxParallel = 4)
+        for (host in listOf("lab", "auto", "aws")) Experiments.validate(experiment.copy(host = host, parallel = 1), maxParallel = 4)
         assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(experiment))
     }
 

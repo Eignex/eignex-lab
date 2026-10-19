@@ -2,25 +2,43 @@ package com.eignex.lab
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 internal object CliMeasurements {
     const val CLI = "klause-cli/build/install/klause-cli-jvm/bin/klause-cli"
     val artifacts = listOf("cli.jfr", "resources.txt")
 
+    /** Whether the lab itself runs on macOS, as the lab Mac does: its own profiling launcher is then the macOS one. */
+    val localMacOs: Boolean get() = System.getProperty("os.name").orEmpty().startsWith("Mac")
+
     fun options(directory: String): String =
         "-XX:StartFlightRecording=filename=$directory/cli.jfr,settings=profile,dumponexit=true"
 
+    /** What `resources.txt`'s `peakRssKiB` measures on macOS ([macOs]) or Linux, for a measurement's manifest. */
+    fun memory(macOs: Boolean): String =
+        if (macOs) "getrusage ru_maxrss of the CLI process (bytes on macOS, written as KiB), KiB"
+        else "GNU time peak RSS of the CLI process, KiB"
+
+    /**
+     * The step that installs the profiling launcher in [worktree]'s CLI: with `KLAUSE_LAB_PROFILE_DIR` set, the CLI
+     * runs under a measurement that writes `resources.txt` there, with the same keys in the same units on both
+     * systems (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`). On Linux, an AWS node, GNU time
+     * measures it through a guard that dies with its timer. On macOS ([macOs]), the lab Mac, which has neither GNU time
+     * nor `prctl`, a Python wrapper measures it from `wait4`'s resource usage and passes SIGTERM, SIGINT and SIGHUP on,
+     * so a case stopped at its limit still writes its JFR; the runner's kill of the case's process group reaches both.
+     */
     // Only generated launch scripts change. The installed solver jars, and the cached builds, stay byte-identical.
-    fun install(worktree: String): String {
+    fun install(worktree: String, macOs: Boolean = false): String {
         val cli = "$worktree/$CLI"
         return """
             set -euo pipefail
-            test -x /usr/bin/time
+            ${if (macOs) "" else "test -x /usr/bin/time"}
             command -v python3 >/dev/null
             test -x ${quote(cli)}
             if ! test -f ${quote("$cli.lab-original")}; then
@@ -31,7 +49,40 @@ internal object CliMeasurements {
             set -euo pipefail
             delegate="${'$'}{0}.lab-original"
             if [[ -n "${'$'}{KLAUSE_LAB_PROFILE_DIR:-}" ]]; then
-                export KLAUSE_LAB_TIMER_PID=${'$'}$
+${if (macOs) MAC_MEASURE else LINUX_MEASURE}
+            fi
+            exec "${'$'}delegate" "${'$'}@"
+            KLAUSE_LAB_CLI_MEASUREMENT
+            chmod +x ${quote("$cli.lab-measurement")}
+            mv ${quote("$cli.lab-measurement")} ${quote(cli)}
+        """.trimIndent()
+    }
+
+    /**
+     * Keep a profiled case's measurement beside its artifacts in [files]: [record], the case's solve record as it came
+     * back, as `solve-record.json`, and the manifest (`measurement.json`) saying where and how it ran.
+     */
+    fun writeManifest(
+        files: Path, index: Int, attempt: Int, measurementId: String, instance: String, command: String, exit: Int,
+        javaOptions: String, record: String?, macOs: Boolean,
+    ) {
+        val recordHash = record?.takeIf { it.isNotEmpty() }?.let { snapshot ->
+            files.resolve("solve-record.json").toFile().writeText(snapshot)
+            MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
+        }
+        files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
+            CliMeasurementManifest.serializer(),
+            CliMeasurementManifest(index, attempt, measurementId, instance, command, exit, javaOptions, recordHash, memory = memory(macOs)),
+        ))
+    }
+}
+
+// The measurements' shell, at the launcher's indentation in [CliMeasurements.install]'s template: its Python at the
+// template's own margin, so it starts in column 0 once the template is trimmed.
+
+/** Linux: GNU time over a guard that dies with its timer. */
+private val LINUX_MEASURE = """
+                export KLAUSE_LAB_TIMER_PID=${'$'}${'$'}
                 guard='import ctypes, os, signal, sys
             expected = int(os.environ["KLAUSE_LAB_TIMER_PID"])
             libc = ctypes.CDLL(None, use_errno=True)
@@ -41,15 +92,25 @@ internal object CliMeasurements {
                 os.kill(os.getpid(), signal.SIGKILL)
             os.execv(sys.argv[1], sys.argv[1:])'
                 exec /usr/bin/time --format='peakRssKiB=%M\nuserSeconds=%U\nsystemSeconds=%S\nwallSeconds=%e\nexit=%x' \
-                    --output="${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" python3 -c "${'$'}guard" "${'$'}delegate" "${'$'}@"
-            fi
-            exec "${'$'}delegate" "${'$'}@"
-            KLAUSE_LAB_CLI_MEASUREMENT
-            chmod +x ${quote("$cli.lab-measurement")}
-            mv ${quote("$cli.lab-measurement")} ${quote(cli)}
-        """.trimIndent()
-    }
-}
+                    --output="${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" python3 -c "${'$'}guard" "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
+
+/** macOS: a Python wrapper reading the CLI's resource usage from `wait4`; `ru_maxrss` is bytes there, KiB on Linux. */
+private val MAC_MEASURE = """
+                measure='import os, signal, subprocess, sys, time
+            out = sys.argv[1]
+            start = time.monotonic()
+            child = subprocess.Popen(sys.argv[2:])
+            for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(number, lambda n, frame: child.send_signal(n))
+            _, status, usage = os.wait4(child.pid, 0)
+            wall = time.monotonic() - start
+            code = os.waitstatus_to_exitcode(status)
+            code = code if code >= 0 else 128 - code
+            rss = usage.ru_maxrss // 1024 if sys.platform == "darwin" else usage.ru_maxrss
+            with open(out, "w") as f:
+                f.write("peakRssKiB=%d\nuserSeconds=%.2f\nsystemSeconds=%.2f\nwallSeconds=%.2f\nexit=%d\n" % (rss, usage.ru_utime, usage.ru_stime, wall, code))
+            sys.exit(code)'
+                exec python3 -c "${'$'}measure" "${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
 
 @Serializable
 internal data class CliMeasurementManifest(

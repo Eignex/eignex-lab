@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
@@ -447,6 +448,8 @@ class Runner(
                     }
                     throw e
                 }
+                // A profileCli job's launcher goes in before the provenance manifest describes the build, as on a node.
+                if (spec.profileCli) sh(log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
                 sh(log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
         }
@@ -663,11 +666,17 @@ class Runner(
             .directory(work)
             .redirectOutput(dir.resolve("${command.index}.out").toFile())
             .redirectError(dir.resolve("${command.index}.err").toFile())
+        // A profileCli case's CLI records JFR and its resources into a directory of its own under the case, as on a node.
+        val measurementId = if (job.experiment?.profileCli == true) UUID.randomUUID().toString() else null
+        val profile = measurementId?.let { dir.resolve("$CASES/${command.index}/profile-$it").createDirectories() }
+        val javaOptions = ("${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores} " +
+            profile?.let { CliMeasurements.options(it.toString()) }.orEmpty()).trim()
         builder.environment().apply {
             put("JOB_DIR", dir.toString())
             // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
             // solve does not size its pools to the whole machine.
-            put("KLAUSE_CLI_OPTS", "${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores}")
+            put("KLAUSE_CLI_OPTS", javaOptions)
+            profile?.let { put("KLAUSE_LAB_PROFILE_DIR", it.toString()) }
             // Host BLAS libraries otherwise size their own thread pools to the machine.
             put("OPENBLAS_NUM_THREADS", "1")
             put("VECLIB_MAXIMUM_THREADS", "1")
@@ -679,7 +688,14 @@ class Runner(
         val process = start(builder, dir.resolve("${command.index}.pid"))
         terminations[process] = Termination.file(dir, command.index)
         try {
-            return await(job, command, dir, process)
+            return await(job, command, dir, process).also { exit ->
+                if (profile != null && exit != CANCELLED_EXIT) runCatching {
+                    val record = dir.resolve(CASES).resolve(command.index.toString()).toFile()
+                        .listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
+                    CliMeasurements.writeManifest(profile, command.index, 1, requireNotNull(measurementId), Experiments.LAB_HOST,
+                        command.cmd, exit, javaOptions, record, CliMeasurements.localMacOs)
+                }.onFailure { log(job.id, "case ${command.index}: measurement manifest not written: ${it.message}") }
+            }
         } finally {
             running.remove(process)
             terminations.remove(process)

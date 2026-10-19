@@ -7,7 +7,6 @@ import kotlinx.serialization.json.longOrNull
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import java.util.Collections
 import java.util.Properties
 import java.util.UUID
@@ -472,13 +471,8 @@ class AwsHost(
         }
         if (profile != null) {
             val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
-            val recordHash = record.takeIf { it.isNotEmpty() }?.let { snapshot ->
-                files.resolve("solve-record.json").toFile().writeText(snapshot)
-                MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
-            }
-            files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
-                CliMeasurementManifest.serializer(), CliMeasurementManifest(
-                    i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions, recordHash)))
+            CliMeasurements.writeManifest(files, i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions,
+                record, macOs = false)
             for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
         }
         return result
