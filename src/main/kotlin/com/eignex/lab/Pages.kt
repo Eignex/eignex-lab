@@ -83,6 +83,9 @@ internal fun jobPage(
         append("</dd>")
     }
     append("<dt>where</dt><dd>${hostCell(config, job)}</dd>")
+    job.experiment?.capped?.takeIf { it.isNotEmpty() }?.let { caps ->
+        append("<dt>capped</dt><dd>${caps.joinToString("<br>") { esc(it) }}</dd>")
+    }
     append("<dt>parallel</dt><dd>${job.parallel}</dd><dt>priority</dt><dd>${job.priority}</dd>")
     append("<dt>files</dt><dd><a href=\"/jobs/${job.id}/files\">all files</a>")
     for (log in listOf("setup.log", "job.log")) {

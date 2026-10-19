@@ -39,6 +39,19 @@ class NodesTest {
     }
 
     @Test
+    fun `a short profile alone, even capped to all of the Mac's cores, is far below the launch threshold`() {
+        val profile = Experiments.capToMac(ExperimentSpec("p", base = mapOf("processors" to "12", "timeout" to "180000"),
+            profile = ProfileMain("com.eignex.klause.bench.profile.T")), cores = 10, maxParallel = 6)
+        val threshold = NodePool.threshold(macCores = 10, macHours = 1.0)
+
+        assertEquals(10.0, threshold, 1e-9)
+        assertEquals(10 * 300 / 3600.0, NodePool.coreHours(profile, queuedCases = null), 1e-9)
+        assertEquals(false, LaunchGate().let { gate ->
+            listOf(0L, 10L, 20L).map { gate.shouldLaunch(it * 60_000, NodePool.coreHours(profile, null), 0, threshold, true, 10 * 60_000, 5 * 60_000) }
+        }.any { it })
+    }
+
+    @Test
     fun `pressure leaves out work below the minimum priority`() {
         val demands = listOf(Demand(1, 2.0, 1, priority = 0), Demand(2, 3.0, 1, priority = -1), Demand(3, 0.5, 1, priority = 4))
 

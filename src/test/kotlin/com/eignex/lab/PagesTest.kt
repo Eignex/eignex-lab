@@ -263,6 +263,32 @@ class PagesTest {
     }
 
     @Test
+    fun `a job asking for more than the Mac has is cut down to it, and the response and the job page say so`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = 8, maxParallel = 6)
+        config.dataDir.resolve("aws").toFile().mkdirs()
+        config.dataDir.resolve("aws/aws.properties").toFile()
+            .writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nvcpuQuota=32\n")
+        val store = Store(config.database)
+        testApplication {
+            application { api(config, store, host) }
+
+            val created = client.post("/experiments") {
+                header(HttpHeaders.ContentType, "application/json")
+                setBody("""{"name": "e", "description": "d", "problems": {"suite": "s"},
+                    "base": {"ref": "0123456789abcdef", "processors": "12"}, "parallel": 8}""")
+            }
+            val body = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+            val job = store.job(body["id"]!!.jsonPrimitive.content.toLong())!!
+            val notes = body["notes"]!!.jsonArray.map { it.jsonPrimitive.content }
+
+            assertEquals(HttpStatusCode.Created, created.status)
+            assertEquals(listOf(Experiments.AUTO_HOST, "8", "6"), listOf(job.experiment!!.host, job.experiment!!.base["processors"], "${job.parallel}"))
+            assertEquals(listOf("capped: parallel=8 was asked, capped at the Mac's 6", "capped: processors=12 was asked, capped at the Mac's 8 cores"), notes)
+            assertContains(jobPage(config, job, failedOnly = false), "processors=12 was asked, capped at the Mac's 8 cores")
+        }
+    }
+
+    @Test
     fun `the queue's summary shows the AWS nodes, their sizes, markets and what each does`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         config.dataDir.resolve("aws").toFile().mkdirs()

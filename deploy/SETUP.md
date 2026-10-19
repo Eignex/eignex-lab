@@ -492,8 +492,11 @@ node, then an on-demand node, with fixed exceptions:
 
 - Scheduled runs (`<schedule>@<sha>`) and their confirmations (`~confirm`), reference runs (an arm with
   `backend=reference`), exact problem lists and profiles with a `runTimeoutSec` stay on the Mac only.
-- `profileCli` jobs, and jobs whose cases need more cores than the Mac has (or a `parallel` over its limit), run on AWS
-  only. A job no node size within the quota could hold stays on the Mac.
+- Every job fits the Mac: a `processors` over the Mac's cores (`LAB_CORES`), in `base`, a config or the grid, and a
+  `parallel` over its limit (`LAB_MAX_PARALLEL`) are cut down to them at submit. The response's `notes`, the job log
+  and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. So no
+  job needs AWS: nodes are overflow capacity for the Mac's queue, launched on pressure alone (below). Only
+  `profileCli` jobs run on AWS only.
 - Profile jobs never run on spot: Mac, then an on-demand node.
 
 A job's `host` records the placement: `lab` (the Mac only), `aws` (a node only) or `auto` (whichever is free first).
@@ -503,9 +506,20 @@ placed on the Mac always goes before an `auto` job there, whatever their priorit
 gives way to one between its cases, never the other way round, so sweeps and reference runs are never held up. An
 `auto` job is taken by whichever comes first, the free Mac or a free node (a node leaves the free Mac's next job to
 it); once taken its `host` is where it went, since a planned job's commands name paths on the host that planned it.
-When the runner starts, it places every queued job that has not been planned again by these rules, so a job queued
-under the old model with an explicit `aws` or `lab` becomes `auto` unless an exception applies; planned ones keep
-their host. `lab host <id> auto|lab|aws` (`POST /jobs/{id}/host`) remains as an operator override for a queued,
+When the runner starts, it places every queued job that has not been planned again by these rules, cut down to fit
+the Mac first, so a job queued under the old model with an explicit `aws` or `lab`, or with more `processors` than the
+Mac has, becomes `auto` unless an exception applies; a planned job placed on `aws` is released as below, and other
+planned ones keep their host.
+
+A planned job a node gives back goes Mac first like any other: when its nodes retire or are taken back with cases
+left, when it is paused, or when the lab restarts while it runs on AWS, it is queued again and placed by these rules,
+normally `auto`. The free Mac then takes it over before a node does, and a node may still take it when the pressure
+calls for one. The host that takes a planned job over writes its queued commands again for its own worktrees and
+corpus, since the plan named the paths of the host that made it; finished cases and their results stay, except the
+finished arms of an iteration left part done, which run again with the rest of it (below). A retried job is placed
+the same way. A job whose cancel was requested is never queued again: whatever would requeue it (a pause, a lost or
+retired node, a restart) ends it cancelled instead, its unfinished cases with it, and the runner ends any queued job
+left with a cancel requested when it starts. `lab host <id> auto|lab|aws` (`POST /jobs/{id}/host`) remains as an operator override for a queued,
 unplanned job; agents never need it. `lab machines` and `POST /jobs/{id}/machines` are retired and ignored.
 
 AWS work runs on a pool of nodes. A node is an EC2 instance that, once booted, takes work until there is none for it:
@@ -519,23 +533,25 @@ summary has a line on the whole pool: each node's size, market and what it is do
 Nodes launch on pressure, with damping:
 
 - Pressure is the estimated core-hours of the work waiting for AWS: queued `auto` jobs at priority `nodeMinPriority`
-  (0) or above and every queued `aws` job, less the job the Mac takes next when it is free, plus the unclaimed problems
+  (0) or above and every queued `aws` (`profileCli`) job, less the job the Mac takes next when it is free, plus the unclaimed problems
   of jobs running on AWS. A job's core-hours are its cases times each arm's `timeout` times its `processors`: a planned
   job counts its queued cases; an unplanned one is estimated from its selections (`max`, else `per-family` times 10
   families, else 20 problems per selection, the smaller when both are set) times arms, seeds and repeats; a profile
   job is one case of its allowance. Work below `nodeMinPriority` that the Mac can run waits for the Mac: no node
   launches for it or takes it. Mac-only work never counts.
-- The first node launches once pressure has stayed at or above `nodeLaunchCoreHours` (1.0) for `nodeSustainMin`
-  minutes (3). Another launches only while pressure is at least twice that per node already up or launching, again
-  for `nodeSustainMin`, and `nodeCooldownMin` minutes (5) after the last launch; at most `maxInstances` nodes, within
-  the `vcpuQuota`. While a lab update waits, no node launches.
+- The launch threshold is set by the Mac: the work that would keep it busy for `nodeLaunchMacHours` (1.0) hours, that
+  is the Mac's cores times that in core-hours (10 core-hours on a 10-core Mac). The first node launches once pressure
+  has stayed at or above it for `nodeSustainMin` minutes (10). Another launches only while pressure is at least twice
+  the threshold per node already up or launching, again for `nodeSustainMin`, and `nodeCooldownMin` minutes (5) after
+  the last launch; at most `maxInstances` nodes, within the `vcpuQuota`. While a lab update waits, no node launches.
+  A small queue never starts a node: a job alone launches one only when its own estimate is over the threshold.
 - Each launch asks for spot and asks again every 30 s while AWS has no spot capacity or quota; after `spotWaitMin`
   minutes (15) it buys on demand, or at once if the account cannot launch spot at all, but only with `onDemand=true`.
   With `onDemand=false`, the default, a launch never falls back to on demand and gives up once the pressure is gone.
   A node launched while a profile job waits and no on-demand node is up is bought on demand directly. A spot node
-  idle beside a profile job it may not run retires after `nodeIdleMin`, and an on-demand node then launches. A short
-  profile alone (10 minutes by default, about 0.2 core-hours) is under the threshold and waits for the Mac or an
-  on-demand node already up; a profile worth a node is one of an hour or more.
+  idle beside a profile job it may not run retires after `nodeIdleMin`, and an on-demand node then launches. A
+  profile alone is far under the threshold (one of 3 minutes on all 10 of the Mac's cores is under a core-hour) and
+  waits for the Mac or an on-demand node already up; profiles run on the Mac unless a large backlog waits.
 - Node size is chosen at launch and kept small: the smallest size of the family (`instanceType`, then `4xlarge`,
   `8xlarge`, …) that has the cores the largest waiting case needs (its `processors`) and covers this node's share of
   the pressure (pressure over the nodes up plus this one) within two hours, at most `nodeMaxVcpus` (16, a
@@ -546,8 +562,8 @@ Nodes launch on pressure, with damping:
   its cores: single-core arms run 2 cases on a c7i.2xlarge and 4 on a c7i.4xlarge.
 
 `aws.properties` keys for the pool, all optional and reread on every poll: `maxInstances`, `vcpuQuota`, `onDemand`,
-`spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchCoreHours`, `nodeSustainMin`, `nodeCooldownMin`,
-`nodeMaxVcpus`. `market` and `spotFallback` are no longer read.
+`spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchMacHours`, `nodeSustainMin`, `nodeCooldownMin`,
+`nodeMaxVcpus`. `market`, `spotFallback` and `nodeLaunchCoreHours` are no longer read.
 
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
   creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
@@ -719,9 +735,9 @@ Cases run in order within two limits. A case holds as many cores as its arm's `p
 running cases together hold at most `LAB_CORES` (default: the machine's cores less two, for the JVMs around the
 solves and the machine). Each solve sees exactly its cores (`-XX:ActiveProcessorCount`), so a portfolio sizes its
 threads to them. A case too big for the cores left waits for room rather than letting later ones pass it, and an arm
-asking for more processors than `LAB_CORES` is refused at submit. On top of that, at most `parallel` cases run at
+asking for more processors than `LAB_CORES` is cut down to them at submit (see Running on AWS). On top of that, at most `parallel` cases run at
 once: the spec's, or `LAB_DEFAULT_PARALLEL` (default 4) when it sets none, and never more than `LAB_MAX_PARALLEL`
-(default 6). The default is the lab Mac's (an M4) performance cores: a solve on one of its six efficiency cores runs
+(default 6; a larger one is cut down to it at submit). The default is the lab Mac's (an M4) performance cores: a solve on one of its six efficiency cores runs
 at a fraction of the speed, and which solves land there changes from run to run, which is timing noise. The cap is
 bounded by memory: each solve holds its own heap (`-Xmx3g` by default), so keep `LAB_MAX_PARALLEL` times that within
 the machine's memory. `deploy/lab parallel <id> <n>` changes an experiment's limit while it runs: raising it starts
