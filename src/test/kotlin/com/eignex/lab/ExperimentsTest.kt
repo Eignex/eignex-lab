@@ -515,4 +515,56 @@ class ExperimentsTest {
         assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(grid = mapOf("out" to listOf("/x"))), maxParallel = 4) }
         assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(problems = listOf(mapOf("suite" to "s", "out" to "/x"))), maxParallel = 4) }
     }
+
+    private val batched = ExperimentSpec(
+        "ab-batch1", problems = listOf(mapOf("suite" to "s", "name" to "p1")), description = "first batch",
+        base = mapOf("timeout" to "10000"), grid = mapOf("ref" to listOf("main", "fix/x")), seeds = listOf(1, 2), repeats = 3,
+    )
+
+    private fun activeJob(spec: ExperimentSpec, status: Status = Status.RUNNING, cancelRequested: Boolean = false) =
+        Job(7, spec.name, "main", status = status, cancelRequested = cancelRequested, setupDone = false, createdAt = 0, experiment = spec)
+
+    @Test
+    fun `an experiment differing from an active one only in its problems is a split of it`() {
+        val batch = batched.copy(name = "ab-batch2", description = "second batch", problems = listOf(mapOf("suite" to "s", "name" to "p2")))
+        val listed = batch.copy(problems = emptyList(), problemList = listOf(Problem("s", "p3")))
+        // The same arms, written another way: seeds reordered, the grid as configs, labels and the default ref spelt out.
+        val reworded = batch.copy(grid = emptyMap(), seeds = listOf(2, 1),
+            configs = listOf(mapOf("ref" to "main", "label" to "A"), mapOf("ref" to "fix/x", "label" to "B")))
+
+        for (status in listOf(Status.QUEUED, Status.RUNNING)) {
+            for (spec in listOf(batch, listed, reworded, batched)) assertEquals(7L, Experiments.splitOf(spec, listOf(activeJob(batched, status)))?.id)
+        }
+        assertContains(Experiments.splitMessage(activeJob(batched)), "lab cases 7")
+    }
+
+    @Test
+    fun `other arms, seeds, repeats, timeouts or profiling are another experiment`() {
+        val active = listOf(activeJob(batched))
+
+        for (spec in listOf(
+            batched.copy(grid = mapOf("ref" to listOf("main", "fix/y"))),
+            batched.copy(seeds = listOf(1, 2, 3)),
+            batched.copy(repeats = 5),
+            batched.copy(base = mapOf("timeout" to "20000")),
+            batched.copy(base = emptyMap()),
+            batched.copy(profileCli = true, parallel = 1),
+        )) assertNull(Experiments.splitOf(spec, active), spec.toString())
+    }
+
+    @Test
+    fun `scheduled runs, confirmations, profile jobs and ended or cancelling jobs are exempt`() {
+        for (name in listOf("nightly@0123456789ab", "nightly${Confirm.SUFFIX}@0123456-41")) {
+            assertNull(Experiments.splitOf(batched.copy(name = name), listOf(activeJob(batched))))
+            assertNull(Experiments.splitOf(batched, listOf(activeJob(batched.copy(name = name)))))
+        }
+        val profile = ExperimentSpec("profile", base = mapOf("ref" to "main"), profile = ProfileMain("com.eignex.klause.bench.profile.Tool", listOf("a")))
+        assertNull(Experiments.splitOf(profile.copy(profile = ProfileMain("com.eignex.klause.bench.profile.Tool", listOf("b"))), listOf(activeJob(profile))))
+        for (job in listOf(
+            activeJob(batched, Status.RUNNING, cancelRequested = true),
+            activeJob(batched, Status.CANCELLED, cancelRequested = true),
+            activeJob(batched, Status.DONE),
+            activeJob(batched, Status.FAILED),
+        )) assertNull(Experiments.splitOf(batched, listOf(job)), job.toString())
+    }
 }

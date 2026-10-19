@@ -153,6 +153,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             requireDescription(spec)
             requireHost(spec, config)
             Experiments.validate(spec, config.maxParallel, config.cores)
+            // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
+            Experiments.splitOf(spec, store.active(withCommands = false))?.let { split ->
+                call.respond(HttpStatusCode.Conflict, Experiments.splitMessage(split))
+                return@post
+            }
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config, trust)
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
