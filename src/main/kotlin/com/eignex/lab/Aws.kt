@@ -407,10 +407,11 @@ class AwsHost(
         val measurementId = if (profileCli) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { "$jobDir/cases/$i/profile-$it" }
         val options = profile?.let { CliMeasurements.options(it, compilation) }.orEmpty()
-        val javaOptions = "$solveJavaOpts -XX:ActiveProcessorCount=${command.cores} $options".trim()
+        val runtimeOptions = "$solveJavaOpts -XX:ActiveProcessorCount=${command.cores}".trim()
+        val javaOptions = "$runtimeOptions $options".trim()
         val script = """
             $ENV
-            export JOB_DIR=$jobDir KLAUSE_CLI_OPTS=${quote(javaOptions)}
+            export JOB_DIR=$jobDir KLAUSE_CLI_OPTS=${quote(javaOptions)} KLAUSE_CLI_PREFLIGHT_OPTS=${quote(runtimeOptions)}
             export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1
             mkdir -p ${'$'}JOB_DIR/cases
             ${profile?.let { "mkdir -p ${quote(it)}; export KLAUSE_LAB_PROFILE_DIR=${quote(it)}" }.orEmpty()}

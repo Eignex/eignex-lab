@@ -40,7 +40,8 @@ class RunnerTest {
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true)
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
-            "echo \"\$KLAUSE_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\""
+            "echo \"\$KLAUSE_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
+            "echo \"\$KLAUSE_CLI_PREFLIGHT_OPTS\" > \"\$JOB_DIR/preflight\""
         val id = store.create("cli", "main", listOf(case to 60L), experiment = spec)
         config.worktree(id).createDirectories()
         val dir = config.jobDir(id).createDirectories()
@@ -50,6 +51,9 @@ class RunnerTest {
         val profile = Path.of(dir.resolve("dir").toFile().readText().trim())
         assertTrue(profile.startsWith(dir.resolve("cases/0")) && profile.fileName.toString().startsWith("profile-"))
         assertTrue("-XX:StartFlightRecording=filename=$profile/cli.jfr" in dir.resolve("opts").toFile().readText())
+        // The bench's version check gets the same options without the recording.
+        val preflight = dir.resolve("preflight").toFile().readText().trim()
+        assertTrue("-XX:ActiveProcessorCount=" in preflight && "FlightRecording" !in preflight, preflight)
         assertEquals("{\"ok\":true}", profile.resolve("solve-record.json").toFile().readText().trim())
         assertTrue("\"commandExit\":0" in profile.resolve("measurement.json").toFile().readText())
         assertEquals(Status.DONE, store.job(id)!!.commands.single().status)

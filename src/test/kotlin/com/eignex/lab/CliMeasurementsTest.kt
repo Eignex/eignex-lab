@@ -43,6 +43,32 @@ class CliMeasurementsTest {
     }
 
     @Test
+    @EnabledOnOs(OS.LINUX)
+    fun `a bare version check runs unmeasured and leaves the profile directory alone`() {
+        val dir = Files.createTempDirectory("measurement")
+        val cli = dir.resolve(CliMeasurements.CLI)
+        Files.createDirectories(cli.parent)
+        Files.writeString(cli, "#!/bin/bash\nprintf 'cli %s\\n' \"\$*\"\n")
+        cli.toFile().setExecutable(true)
+        val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString())).start()
+        assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
+        val profile = Files.createDirectories(dir.resolve("profile"))
+        fun run(vararg args: String): String {
+            val builder = ProcessBuilder(listOf(cli.toString()) + args).redirectErrorStream(true)
+            builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+            val process = builder.start()
+            val output = process.inputStream.bufferedReader().readText()
+            assertEquals(0, process.waitFor(), output)
+            return output
+        }
+
+        assertEquals("cli --version", run("--version").trim())
+        assertTrue(Files.list(profile).use { it.toList() }.isEmpty())
+        assertTrue("cli solve x" in run("solve", "x"))
+        assertTrue(Files.exists(profile.resolve("resources.txt")))
+    }
+
+    @Test
     fun `compilation profiling records every compilation, and with the log HotSpot's inlining too`() {
         assertEquals("-XX:StartFlightRecording=filename=/p/cli.jfr,settings=profile,dumponexit=true", CliMeasurements.options("/p"))
         assertEquals("-XX:StartFlightRecording=filename=/p/cli.jfr,settings=profile,jdk.Compilation#threshold=0ms,dumponexit=true",

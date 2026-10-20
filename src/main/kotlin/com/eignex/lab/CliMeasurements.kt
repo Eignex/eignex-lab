@@ -78,7 +78,9 @@ internal object CliMeasurements {
             #!/usr/bin/env bash
             set -euo pipefail
             delegate="${'$'}{0}.lab-original"
-            if [[ -n "${'$'}{KLAUSE_LAB_PROFILE_DIR:-}" ]]; then
+            # A bare `--version` is the bench's check that the CLI starts, not the solve: it runs unmeasured, so it
+            # cannot write over the solve's recording, log or resources.
+            if [[ -n "${'$'}{KLAUSE_LAB_PROFILE_DIR:-}" && ! ( ${'$'}# -eq 1 && ${'$'}1 == --version ) ]]; then
 ${if (macOs) macMeasure(time) else linuxMeasure(time)}
             fi
             exec "${'$'}delegate" "${'$'}@"
