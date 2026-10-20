@@ -45,6 +45,16 @@ data class Config(
     val maxExperimentHours: Long = env("LAB_MAX_EXPERIMENT_HOURS", "24").toLong(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
     val requireDocker: Boolean = env("LAB_REQUIRE_DOCKER", "false").toBoolean(),
+    /** The reference image tags a Docker cleanup ([DockerCleanup]) always keeps; their repositories are the ones it
+     *  removes superseded tags from, never any other's. */
+    val dockerKeep: Set<String> = env("LAB_DOCKER_KEEP", DockerCleanup.DEFAULT_KEEP)
+        .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
+    /** Days between Docker cleanups, sooner on a low disk; `0` turns the automatic cleanup off. */
+    val dockerCleanupDays: Long = env("LAB_DOCKER_CLEANUP_DAYS", "7").toLong(),
+    /** Whether Docker runs in Colima's VM, which `install.sh` points the services' `DOCKER_HOST` into, or, in a shell
+     *  with no `DOCKER_HOST`, a Mac with a Colima VM: a cleanup then trims its disk. */
+    val colima: Boolean = System.getenv("DOCKER_HOST")?.takeIf { it.isNotBlank() }?.contains("/.colima/")
+        ?: (System.getProperty("os.name").orEmpty().startsWith("Mac") && Path(System.getProperty("user.home"), ".colima", "default").toFile().isDirectory),
     /** Retries of a step that talks to the network (fetching the mirror, adding a worktree, a schedule's check): 15 s,
      *  then doubling to at most 5 min, six tries in all, so a network outage of several minutes is ridden out. */
     val retry: Backoff = Backoff(
@@ -81,6 +91,12 @@ data class Config(
     val mirror: Path get() = dataDir.resolve("repo.git")
     /** Written by `lab update`: the runner checks for a lab update at once instead of at its interval. */
     val updateRequest: Path get() = dataDir.resolve("update-requested")
+    /** Written by `lab docker-cleanup`: the runner cleans Docker up at its next free moment. */
+    val dockerCleanupRequest: Path get() = dataDir.resolve("docker-cleanup-requested")
+    /** The last Docker cleanup, as [DockerCleanup] wrote it. */
+    val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
+    /** Colima's Lima directory on the host, which holds its VM's disks: `_disks` with the data disk Docker writes to. */
+    val colimaDisks: Path get() = Path(System.getProperty("user.home"), ".colima", "_lima")
     /** The AWS settings, when `$LAB_DATA/aws/aws.properties` exists: experiments with `"host": "aws"` need them. */
     val aws: AwsConfig? by lazy { AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) }
     fun jobDir(id: Long): Path = dataDir.resolve("jobs").resolve(id.toString())

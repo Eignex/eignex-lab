@@ -71,6 +71,11 @@ class Runner(
         )
     }
 
+    /** Prunes the reference solvers' Docker images and build cache between jobs ([DockerCleanup]). */
+    private val dockerCleanup by lazy {
+        dockerCleanup(config, store) { pattern, revision -> synchronized(mirrorLock) { mirrorGrep(config.mirror.toFile())(pattern, revision) } }
+    }
+
     fun loop() {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
@@ -106,6 +111,8 @@ class Runner(
             // Only between jobs: an update builds on this machine and restarts the runner, so a job yields to it
             // between its cases (see dispatch) and the update runs here with nothing running.
             if (!awsActive()) updater.maybeUpdate()
+            // Also only between jobs, so no case of the runner's starts a container while images go.
+            runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
             if (!disk.allowsWork()) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue

@@ -320,6 +320,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             config.updateRequest.toFile().writeText("${System.currentTimeMillis()}\n")
             call.respond(HttpStatusCode.Accepted, "update requested")
         }
+        // The runner cleans Docker up ([DockerCleanup]) once it is between jobs and no container runs.
+        post("/docker-cleanup") {
+            if (!config.requireDocker) return@post call.respond(HttpStatusCode.Conflict, "docker is off on this lab (LAB_DOCKER=none)")
+            config.dockerCleanupRequest.toFile().writeText("${System.currentTimeMillis()}\n")
+            call.respond(HttpStatusCode.Accepted, "docker cleanup requested: it runs between jobs")
+        }
         post("/jobs/{id}/retry") {
             val id = call.parameters["id"]!!.toLong()
             val retried = store.retry(id)

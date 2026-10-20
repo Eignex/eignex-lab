@@ -808,6 +808,7 @@ fetches the dependencies into the new home once.
   case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
   `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are
   never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within a week.
+- Docker's old reference images and build cache are pruned weekly, and sooner on a low disk (see Docker cleanup).
 
 ## What a case runs in
 
@@ -858,6 +859,52 @@ The XCSP3 image builds from this repository; see [images/xcsp3-cpsat](../images/
 ```sh
 docker build -t klause-xcsp3-cpsat:source-preserving-v2 images/xcsp3-cpsat
 ```
+
+### Docker cleanup
+
+Every rebuild of an image leaves its build cache, its old layers and, when its tag changes, its old tag behind. On
+macOS all of that sits in Colima's VM disk (`~/.colima/_lima/_disks`), which grows as Docker writes and does not shrink
+by itself. The runner cleans up every `LAB_DOCKER_CLEANUP_DAYS` (default 7), sooner when the data directory's disk has
+under 25 GB free (the signal job trimming uses, at most every six hours), and only while Docker is on (`LAB_DOCKER` is
+not `none`). It runs between jobs, never during one, and skips while any container runs, a reference solve started by
+hand included, trying again ten minutes later. A cleanup:
+
+1. removes build cache older than a week: `docker builder prune -af --filter until=168h`;
+2. removes the superseded tags of the reference repositories, with `docker rmi` and no force, so an image a container
+   still uses stays;
+3. removes dangling images: `docker image prune -f`;
+4. on Colima, trims the VM's filesystems so the freed blocks can go back to the host: `colima ssh -- sudo fstrim -av`.
+
+What it keeps: every tag in `LAB_DOCKER_KEEP`, by default
+`klause-xcsp3-cpsat:source-preserving-v2,klause-scip:latest,klause-clasp:latest`, the tags klause-bench runs
+(`Xcsp3CpSatReference.IMAGE`, `ScipReference.IMAGE`, `ClaspReference.IMAGE`); the `latest` tag of each of those
+repositories; and every tag of them that a queued or running job's commits name in klause-bench, found with `git grep`
+in the lab's mirror. When one of those commits cannot be read, the cleanup removes no tag at all that time. Images of
+any other repository are never touched, except dangling ones. Change `LAB_DOCKER_KEEP` when klause-bench moves to a
+new tag, so the old one goes; until then, a job on a commit that names the new tag keeps it.
+
+The runner log has a line for each cleanup: the tags removed, the images pruned, the build cache reclaimed, the total
+of `docker system df` before and after, and on Colima the allocated size of its VM disks on the host before and after
+the trim. `/disk` shows what Docker holds now and the last cleanup, read from `$LAB_DATA/docker-cleanup.json`.
+
+Whether the trim shrinks the disk file on the host depends on the VM's disk: Colima's FAQ says space freed in the VM is
+released by `fstrim` (and on VM start) from v0.5.0, but that was not measured on the lab Mac, and Lima has had reports
+of `fstrim` trimming in the VM while the host file kept its size. Compare the two Colima sizes in the log line: if
+they stay the same, Docker's space is free inside the VM for new images but not on the host, and only
+`colima delete` and a fresh VM (then rebuilding the images) gives it back.
+
+`lab docker-cleanup` asks the runner for a cleanup at its next free moment. On the server,
+`klause-lab docker-cleanup` (in `$LAB_DATA/releases/current/bin`) cleans up at once, whatever the interval; it still
+skips while a container runs and exits 1 when it did. The built-in task is the default; to run it from cron or
+launchd instead, set `LAB_DOCKER_CLEANUP_DAYS=0`, rerun `install.sh`, and call the subcommand weekly with what the
+services get: `JAVA_HOME`, a `PATH` with `docker` and `colima`, and on Colima its `DOCKER_HOST`. For example in crontab:
+
+```sh
+0 4 * * 0  JAVA_HOME=/path/to/jdk-25 PATH=/opt/homebrew/bin:/usr/bin:/bin DOCKER_HOST=unix://$HOME/.colima/default/docker.sock $HOME/klause-lab-data/releases/current/bin/klause-lab docker-cleanup >> $HOME/klause-lab-data/logs/docker-cleanup.log 2>&1
+```
+
+A cron entry can run during a job, between its reference cases: the job's images stay, since its commits name them,
+but the pruning competes with its cases for the disk. The runner's own cleanup waits for the job to end.
 
 ## Setup
 
