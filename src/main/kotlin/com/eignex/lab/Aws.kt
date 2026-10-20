@@ -588,6 +588,9 @@ class AwsWorker(
     /** Launches in progress bought on demand for a profile job, so a second is not bought for the same one. */
     private val launchingOnDemand = AtomicInteger()
     private val nodes = ConcurrentHashMap<String, Node>()
+    /** The finished runs the pressure's estimates learn from ([Estimates]), so it counts realistic work rather than
+     *  every case's whole timeout. */
+    private val history = EstimateHistory(store, config.cores)
     /** The jobs running on AWS, each with the nodes working on it. */
     private val jobs = ConcurrentHashMap<Long, AwsJob>()
     /** Held while a node chooses and takes work, and while a job's last node lets it go: two nodes never claim one
@@ -644,8 +647,7 @@ class AwsWorker(
                 }
                 return@mapNotNull null
             }
-            val planned = job.total.takeIf { it > 0 }?.let { it - job.done - job.running }
-            Demand(job.id, NodePool.coreHours(spec, planned), cores, spec.isProfile, job.priority)
+            Demand(job.id, Estimates.pressureCoreHours(job, history::lookup, config.cores), cores, spec.isProfile, job.priority)
         }
         val running = jobs.values.mapNotNull { it.demand() }
         return queued to running
@@ -986,7 +988,7 @@ class AwsWorker(
         fun demand(): Demand? {
             val queue = problems?.takeIf { !it.isEmpty() && failure == null } ?: return null
             val current = store.job(id)?.takeIf { !it.paused && !it.cancelRequested } ?: return null
-            return Demand(id, queue.cases * NodePool.meanCaseCoreHours(spec), Experiments.arms(spec).maxOf { it.cores },
+            return Demand(id, queue.cases * Estimates.caseCoreHours(current, history::lookup), Experiments.arms(spec).maxOf { it.cores },
                 spec.isProfile, current.priority)
         }
     }

@@ -110,6 +110,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     }
     val trendCache = TrendCache()
     val referenceCache = ReferenceCache(store)
+    // The finished runs the queue page's estimates learn from, reread at most once a minute.
+    val estimates = EstimateHistory(store, config.cores)
     val disk = DiskUsage(config).also { it.start() }
     // Only branches are asked about here, from GitHub; the runner checks each commit on its mirror when it plans.
     val trust = Trust(config.trustedUsers, config.repoUrl, git = { 1 to "" },
@@ -125,7 +127,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
-            val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name, store.queue())
+            val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name, store.queue(), estimates::lookup)
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {

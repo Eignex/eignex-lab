@@ -175,16 +175,4 @@ class NodesTest {
         assertEquals(false to LaunchGate.AT_MAX, at(7, 2.5, nodes = 1, noRoom = LaunchGate.AT_MAX))
         assertEquals(true, at(8, 2.5, nodes = 1).first)
     }
-
-    @Test
-    fun `a job's remaining estimate counts its queued cases, a running one's unfinished ones, and an unplanned one's guess`() {
-        val timed = spec.copy(problems = listOf(mapOf("suite" to "s", "max" to "10")), base = mapOf("timeout" to "360000"))
-        fun job(status: Status, counts: CommandCounts?, experiment: ExperimentSpec? = timed) =
-            Job(1, "e", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, experiment = experiment, counts = counts)
-
-        assertEquals(0.1 * 4, NodePool.remainingCoreHours(job(Status.QUEUED, CommandCounts(10, 4, 0, 2)))!!, 1e-9)
-        assertEquals(0.1 * 6, NodePool.remainingCoreHours(job(Status.RUNNING, CommandCounts(10, 4, 0, 2)))!!, 1e-9)
-        assertEquals(0.1 * 10, NodePool.remainingCoreHours(job(Status.RUNNING, CommandCounts(0, 0, 0, 0)))!!, 1e-9)
-        assertEquals(null, NodePool.remainingCoreHours(job(Status.QUEUED, null, experiment = null)))
-    }
 }

@@ -21,6 +21,8 @@ internal fun indexPage(
     name: String?,
     /** The queued jobs in queue order ([Store.queue]), wherever each may run. */
     queueOrder: List<Long> = emptyList(),
+    /** The earlier run a job's estimate learns from ([EstimateHistory.lookup]). */
+    caseHistory: (Job) -> CaseHistory? = { null },
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
@@ -28,7 +30,9 @@ internal fun indexPage(
     append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active)}</p></header>")
     if (front) {
         // One pass over the active jobs: the per-row estimates and the summary's totals read the same numbers.
-        val estimates = active.mapNotNull { job -> NodePool.remainingCoreHours(job)?.let { job.id to it } }.toMap()
+        val estimates = active.mapNotNull { job ->
+            Estimates.estimate(job, caseHistory, config.cores, config.maxParallel)?.let { job.id to it }
+        }.toMap()
         append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(config, active, estimates)}</div>")
         append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates)}</div></section>")
         if (schedules.isNotEmpty()) {
@@ -1190,20 +1194,21 @@ private fun workKind(config: Config, job: Job): WorkKind = when (job.experiment?
 
 /**
  * The block above the Active table: the work scheduled, in estimated core-hours ([estimates], by job) split by where
- * it may run, and the time the Mac alone would take to drain what it may run; then, with AWS settings, the launch
- * gauge ([launchGauge]). Paused jobs and ones whose cancel was requested wait for nothing, so they are not counted.
+ * it may run, and the time the Mac alone would take to drain what it may run: the sum of those jobs' own wall times,
+ * as the Mac runs one job at a time. Then, with AWS settings, the launch gauge ([launchGauge]). Paused jobs and ones
+ * whose cancel was requested wait for nothing, so they are not counted.
  */
-internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long, Double>): String = buildString {
+internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long, WorkEstimate>): String = buildString {
     val counted = active.filter { !it.paused && !it.cancelRequested }
-    val split = counted.groupBy { workKind(config, it) }.mapValues { (_, jobs) -> jobs.sumOf { estimates[it.id] ?: 0.0 } }
+    val split = counted.groupBy { workKind(config, it) }.mapValues { (_, jobs) -> jobs.sumOf { estimates[it.id]?.coreHours ?: 0.0 } }
     val total = split.values.sum()
-    val mac = total - (split[WorkKind.AWS] ?: 0.0)
+    val mac = counted.filter { workKind(config, it) != WorkKind.AWS }.sumOf { estimates[it.id]?.macHours ?: 0.0 }
     append("<div class=\"work\"><div><b>Work scheduled</b> ")
     if (total <= 0.0) {
         append("<span class=\"muted\">none</span>")
     } else {
         append("≈${coreHoursText(total)} core-h")
-        if (mac > 0) append(" <span class=\"muted\">· ~${wallText(mac / config.cores.coerceAtLeast(1))} for the Mac alone</span>")
+        if (mac > 0) append(" <span class=\"muted\">· ~${wallText(mac)} for the Mac alone</span>")
     }
     append("</div>")
     val parts = WorkKind.entries.mapNotNull { kind -> split[kind]?.takeIf { it > 0 }?.let { kind to it } }
@@ -1293,14 +1298,23 @@ private fun wallText(hours: Double): String {
     }
 }
 
-/** A row's remaining work: its estimated core-hours, and for work the Mac may run the time the Mac would take. */
-private fun estimateText(config: Config, job: Job, hours: Double?): String {
-    if (hours == null || hours <= 0) return ""
-    val mac = if (workKind(config, job) == WorkKind.AWS) "" else " · ~${wallText(hours / config.cores.coerceAtLeast(1))} on the Mac"
-    return "<div class=\"est\" title=\"estimated from each case's whole timeout on its cores\">≈${coreHoursText(hours)} core-h$mac</div>"
+/**
+ * A row's remaining work: its estimated core-hours, for work the Mac may run the time the Mac would take at the job's
+ * own concurrency, and where the time a case came from ([WorkEstimate.note]).
+ */
+private fun estimateText(config: Config, job: Job, estimate: WorkEstimate?): String {
+    if (estimate == null || estimate.coreHours <= 0) return ""
+    val mac = if (workKind(config, job) == WorkKind.AWS) "" else " · ~${wallText(estimate.macHours)} on the Mac"
+    val title = when (estimate.source) {
+        EstimateSource.MEASURED -> "from the mean time of this job's finished cases"
+        EstimateSource.HISTORY -> "from the case count and mean case time of run ${estimate.history}, the last done run of this experiment"
+        EstimateSource.TIMEOUT -> "from each case's whole timeout on its cores: no finished run of this experiment measured its cases"
+    }
+    return "<div class=\"est\" title=\"$title\">≈${coreHoursText(estimate.coreHours)} core-h$mac " +
+        "<span class=\"muted\">(${esc(estimate.note)})</span></div>"
 }
 
-private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, Double>): String {
+private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
     // One queue by priority, whatever runs each job: the Mac and the AWS nodes take from it in this order as the lab
     // places jobs, each passing over those it may not run.
@@ -1310,7 +1324,7 @@ private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long
 }
 
 private fun jobTable(
-    config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, Double>? = null,
+    config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
 ): String = buildString {
     if (jobs.isEmpty()) return "<p class=\"muted\">No jobs.</p>"
     append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>")
