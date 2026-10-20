@@ -32,3 +32,13 @@ jobs:
         with:
           name: klause-lab-distribution
           path: build/distributions/*.zip
+
+  xcsp3-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test XCSP3 reference importer
+        run: |
+          docker build -t klause-xcsp3-cpsat:source-preserving-v2 images/xcsp3-cpsat
+          docker run --rm --entrypoint python -v "$PWD/images/xcsp3-cpsat:/tests:ro" -w /tests klause-xcsp3-cpsat:source-preserving-v2 test_solve.py

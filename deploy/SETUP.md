@@ -769,12 +769,17 @@ run with the bench result cache off, so it serves only the bench's own tooling.
 The containerised reference solvers (SCIP, clasp, the XCSP3 cp-sat image) need Docker. `install.sh` picks it up
 by itself: on macOS it installs a boot-time colima daemon when colima is installed (`brew install colima docker`), on
 Linux it uses the system Docker. The runner then waits for `docker info` to answer before it takes a job. Set
-`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once on the server, from a klause checkout:
+`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once on the server. SCIP and clasp build from a klause checkout:
 
 ```sh
 docker build -t klause-scip klause-bench/scip
 docker build -t klause-clasp klause-bench/clasp
-docker build -t klause-xcsp3-cpsat klause-bench/xcsp3-cpsat
+```
+
+The XCSP3 image builds from this repository; see [images/xcsp3-cpsat](../images/xcsp3-cpsat/README.md):
+
+```sh
+docker build -t klause-xcsp3-cpsat:source-preserving-v2 images/xcsp3-cpsat
 ```
 
 ## Setup
