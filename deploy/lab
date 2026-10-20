@@ -13,6 +13,12 @@
 #                                                            empty or left out, capped at 7200 (2 h); at it the main gets
 #                                                            SIGTERM, then SIGKILL 30 s later, so it should write results
 #                                                            as it goes or flush them on shutdown
+#   lab analyze <id>                                        queue an analysis job: the lab's compilation analyser rerun over the
+#                                                            retained captures of ended profileCli job <id>, writing each case's
+#                                                            compilation-report.json afresh; no build, no solver, no klause code.
+#                                                            Refused once the job was trimmed (a week after it ended)
+#   lab compilation <id>                                    a profileCli job's compiler work per arm against the first arm
+#                                                            (profileCompilation), then each case's report in brief
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
@@ -78,6 +84,16 @@ profile)
       base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))}' "$@" |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;
+analyze)
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || { echo "usage: lab analyze <job id>" >&2; exit 2; }
+  jq -n --argjson job "$1" '{analyze: {job: $job, kind: "compilation"}}' |
+    curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
+compilation) curl -fsS "$url/experiments/$1/compilation" | jq -r '
+    (["arm", "reports", "compilations", "compiler-ms", "c1-ms", "c2-ms", "osr", "failed", "x-first-ms", "delta-compilations", "incomplete"] | @tsv),
+    (.arms[] | [.arm, .cases, .compilations, .compilerMs, .c1Ms, .c2Ms, .osr, .failed, (.compilerMsRatio // "-"), (.compilationsDelta // "-"), .incomplete] | @tsv),
+    "",
+    (["case", "arm", "problem", "compilations", "compiler-ms", "c1-ms", "c2-ms", "report", "missing-or-incomplete"] | @tsv),
+    (.cases[] | [.case, .arm, .problem, .compilations, .compilerMs, .c1Ms, .c2Ms, .report, (.markers | join(","))] | @tsv)' ;;
 cases) curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
       (.seed // "-"), (if .record == null then "-" else
         "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv' ;;

@@ -80,6 +80,61 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   Profiling changes generated launch scripts only in that job's worktrees (on a node after build caching); solver jars
   and the baseline revision are unchanged. On a node, killing the timer kills its CLI child through Linux's
   parent-death signal; on the Mac, the runner's kill of the case's process group reaches it.
+- `profileCompilation` (with `profileCli: true`) also records every JIT compilation of the CLI JVM: through startup,
+  the solve and shutdown. `"jfr"` records `jdk.Compilation` with no threshold
+  (`-XX:StartFlightRecording=…,settings=profile,jdk.Compilation#threshold=0ms,…`; the profile settings otherwise keep
+  only compilations of 100 ms or more). `"jfr+log"` also passes `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation
+  -XX:LogFile=<profile dir>/hotspot-compilation.log`. That is HotSpot's compilation log, with every task's calls and
+  whether each was inlined, so the helpers and inlined callees inside each compiled root show up. The log runs to
+  hundreds of MB per run, so ask for it only when inlining matters. From a node it comes back gzipped
+  (`hotspot-compilation.log.gz`). HotSpot merges its compiler threads' logs into it when the JVM exits cleanly, so a
+  case stopped at its limit still gets one, because the stop is a SIGTERM with a grace period, but a SIGKILL leaves it
+  without the inlining.
+  These cases are **instrumented**. `measurement.json` says so (`instrumented`, `instrumentation`, `compilation`), as do
+  each case's JSON (`instrumented` in `/experiments/{id}/cases`), the job page and every comparison. On a job page, on
+  `/compare` and in `/experiments/{id}/stats` (`instrumented`), the arms are marked. A comparison that mixes
+  instrumented runs with uninstrumented ones says that their times, PAR-2, time ratios and time-split scores measure
+  the instrumentation. The trend, the reference scoreboard and a problem's lab runs mark instrumented runs too.
+  Instrumented runs never add their times to the reference results. The fingerprint differs from the uninstrumented
+  spec's, so a schedule's trend keeps them apart. Compare runtime between uninstrumented runs only.
+- After each case of such a job, the lab (not klause, and the same on the Mac and for a node's case once its captures
+  are back) writes `compilation-report.json` beside the captures in `cases/<index>/profile-<uuid>/`. It reads them with
+  the JDK's own JFR consumer and an XML stream reader. The report (`schemaVersion` 1, `kind: "compilation"`) holds:
+  - `totals`: the compilation count, compiler ms (the sum of the compilations' own durations, on the compiler
+    threads beside the solve), the longest compilation, succeeded, failed, OSR, code bytes and inlined bytes.
+  - `byTier` (compiler and level: C1 is tiers 1–3, C2 tier 4), `byKind` (`normal`, `osr`), `byStatus` (`succeeded`,
+    `failed`, `unknown`) and `failures` (each failure or bailout reason, with its count).
+  - `methods`: per compiled root (`holder.name(descriptor)`), its count, total and longest ms, tiers, OSR count,
+    failures and code size. With the log it also holds `inlined` (each callee inlined into it, at any depth, with its
+    count) and `inlineFailures` (why calls were not inlined, by reason).
+  - `jvmStatistics`: the JVM's own running totals from its last `jdk.CompilerStatistics` event. `log`: the log's task,
+    inline and compiler-thread counts.
+  - `coverage`: how many compile ids each capture held, both, or only one; the first and last id; the ids in neither;
+    the recorded `jdk.Compilation` threshold; JFR events read; data lost; and log bytes.
+  - `provenance`: the JVM (from `jdk.JVMInformation` and the VM's initial system properties: name, version, vendor,
+    arguments, flags, pid); the source (job, case, problem, arm, ref, commit); the worker (the lab release it ran on
+    with its sha, the host, when, and the analysis job if one asked); the execution (from `measurement.json` and
+    `resources.txt`); and every capture's size and SHA-256.
+  - `missing` and `incomplete`: each observation the captures lack, or hold only in part, with `what` and `why`.
+    Examples: no recording; a recording that stops mid-chunk or has no JVM shutdown event; a `jdk.Compilation`
+    threshold above zero; JFR data loss; startup compilations before the recording began (JFR alone always has these,
+    and the log covers them); no or a cut-short log; a log without the compiler threads' logs; a case that exited
+    non-zero, such as one stopped at its limit. `complete` is true only when both lists are empty.
+
+  The raw captures stay with the job. The job page's Files list them and the report. The job page also has a
+  **Compilation** section: each arm's mean compilations, compiler, C1 and C2 ms, OSR and failures over its cases,
+  set against the first arm (`0.77× compiler time, -12.0 compilations`), and each case's report in brief.
+  `lab compilation <id>` (`GET /experiments/{id}/compilation`) prints the same. That is how a baseline and a
+  candidate are compared on compiler work: one experiment with both arms, one pinned problem and seed (`seeds`), a
+  short `timeout`, and `repeats` for the noise.
+- `{"analyze": {"job": <id>, "kind": "compilation"}}` posted to `/experiments` (`lab analyze <id>`) queues an
+  analysis job. It runs on the Mac, where the captures are. It reruns the lab's analyser over an ended `profileCli`
+  job's retained captures and writes each case's `compilation-report.json` afresh, with the analysis job in its
+  provenance. It also writes an `analysis.json` summary into its own directory, and its page lists the reports. Nothing
+  is built and no solver or klause code runs, so it suits a report the analyser has since learned to improve, and a
+  plain `profileCli` job too, whose report then says its threshold kept only the slow compilations. It is refused,
+  saying why, when the job has not ended, ran without `profileCli`, or has no captures left. That includes a job
+  trimmed a week after it ended (see Disk), whose raw captures are gone while its reports and manifests stay.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 ### Profile jobs
@@ -744,7 +799,9 @@ fetches the dependencies into the new home once.
 - From AWS, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
 - An ended job is trimmed a week after it ended, and sooner, largest first, while the disk has under 25 GB free: its
   `job.log`, `setup.log`, `sha`, commands' `.exit` and `.termination` files, `selection-*.jsonl` and each case's record (the `.json` in
-  `cases/<i>`) stay, and everything else goes: raw solver output, case stdout and stderr, profiles, `$OUT`. Every
+  `cases/<i>`) stay, as do profiled cases' `compilation-report.json` and `measurement.json` and an analysis job's
+  `analysis.json`, and everything else goes: raw solver output, case stdout and stderr, profiles' raw captures
+  (`cli.jfr`, the HotSpot log), `$OUT`. An analysis job of a trimmed job is refused. Every
   case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
   `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are
   never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within a week.
@@ -861,6 +918,8 @@ deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
 deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, Mac first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
+deploy/lab compilation 7      # a profileCompilation A/B: each arm's compiler work against the first, then each case
+deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running AWS job; no command opens a shell
 deploy/lab cancel 7
@@ -882,11 +941,12 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement"}`, where the lab placed it; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement"}`, where the lab placed it; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}` queues an analysis job instead (above); 409 when its captures are gone |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
-| `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON |
+| `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON; `instrumented` names the arms with instrumented runs |
+| `GET` | `/experiments/{id}/compilation` | a `profileCli` job's compilation reports: each arm's means against the first arm's, and each case's report in brief |
 | `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
