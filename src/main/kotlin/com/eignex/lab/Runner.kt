@@ -744,13 +744,15 @@ class Runner(
         val measurementId = if (job.experiment?.profileCli == true) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { dir.resolve("$CASES/${command.index}/profile-$it").createDirectories() }
         val compilation = job.experiment?.profileCompilation
-        val javaOptions = ("${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores} " +
-            profile?.let { CliMeasurements.options(it.toString(), compilation) }.orEmpty()).trim()
+        val runtimeOptions = "${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores}".trim()
+        val javaOptions = ("$runtimeOptions " + profile?.let { CliMeasurements.options(it.toString(), compilation) }.orEmpty()).trim()
         builder.environment().apply {
             put("JOB_DIR", dir.toString())
             // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
             // solve does not size its pools to the whole machine.
             put("KLAUSE_CLI_OPTS", javaOptions)
+            // The bench's `--version` check before the solve runs without the recording options.
+            put("KLAUSE_CLI_PREFLIGHT_OPTS", runtimeOptions)
             profile?.let { put("KLAUSE_LAB_PROFILE_DIR", it.toString()) }
             // Host BLAS libraries otherwise size their own thread pools to the machine.
             put("OPENBLAS_NUM_THREADS", "1")
