@@ -877,7 +877,7 @@ class Store(file: Path) {
     /** Every case of any experiment that ran one problem, newest experiment first. */
     @Synchronized
     fun problemRuns(collection: String, problem: String): List<ProblemRun> = connection.prepareStatement(
-        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, c.record, $INSTRUMENTED
+        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, c.record
            FROM problems p
            JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
@@ -894,7 +894,7 @@ class Store(file: Path) {
                 ProblemRun(
                     job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
                     sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
-                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let(::recordOf), instrumented = r.getInt(11) != 0,
+                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let(::recordOf),
                 )
             }.toList()
         }

@@ -245,19 +245,6 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
-        // Each arm's compiler work over its cases' compilation reports, against the first arm's, and each report in brief.
-        get("/experiments/{id}/compilation") {
-            val id = call.parameters["id"]!!.toLong()
-            val job = store.job(id)?.takeIf { it.experiment != null }
-            if (job == null) {
-                call.respond(HttpStatusCode.NotFound, "no such experiment")
-                return@get
-            }
-            val view = withContext(Dispatchers.IO) {
-                CompilationReports.view(id, config.jobDir(id), job.experiment, store.arms(id).map { it.arm.label }, store.casePlan(id))
-            }
-            call.respond(view)
-        }
         get("/experiments/{id}/stats") {
             val id = call.parameters["id"]!!.toLong()
             call.respond(Stats.of(store.arms(id).map { it.arm.label }, store.cases(id)))

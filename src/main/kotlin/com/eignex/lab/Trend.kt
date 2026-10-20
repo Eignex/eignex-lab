@@ -62,8 +62,6 @@ data class TrendRun(
      * sweep set was drawn by, so each holds a fair share of it. A problem of several themes counts in each.
      */
     val themes: Map<String, SuiteShare> = emptyMap(),
-    /** Whether the run was instrumented ([ExperimentSpec.instrumented]): its PAR-2 time is no runtime measurement. */
-    val instrumented: Boolean = false,
 )
 
 object Trend {
@@ -201,7 +199,6 @@ object Trend {
             par2 = stats.par2,
             suites = suites,
             themes = themes,
-            instrumented = job.experiment?.instrumented == true,
         )
     }
 

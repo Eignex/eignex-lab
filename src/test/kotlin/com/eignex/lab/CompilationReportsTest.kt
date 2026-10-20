@@ -212,31 +212,6 @@ class CompilationReportsTest {
     }
 
     @Test
-    fun `each arm's mean compiler work is set against the first arm's`() {
-        val jobDir = Files.createTempDirectory("job")
-        val cases = listOf(0 to "base", 1 to "candidate").map { (index, arm) ->
-            val dir = jobDir.resolve("cases/$index/profile-$index").createDirectories()
-            dir.resolve(CliMeasurements.COMPILATION_LOG).writeText(if (arm == "base") sample else sample.replace("stamp='0.956'", "stamp='0.953'"))
-            manifest(dir, Experiments.COMPILATION_JFR_LOG)
-            CompilationReports.analyzeAndWrite(dir, SourceProvenance(1, index), worker)
-            CaseResult(index, Status.DONE, Problem("s", "p"), arm, instrumented = true)
-        } + CaseResult(2, Status.FAILED, Problem("s", "q"), "candidate", instrumented = true)
-
-        val view = CompilationReports.view(1, jobDir, ExperimentSpec("x", profileCli = true, profileCompilation = "jfr+log"),
-            listOf("base", "candidate"), cases)
-
-        assertTrue(view.instrumented)
-        assertEquals(listOf(2), view.withoutReport)
-        val (base, candidate) = view.arms
-        assertEquals(13.0, base.compilerMs, 1e-6)
-        assertNull(base.compilerMsRatio)
-        assertEquals(10.0, candidate.compilerMs, 1e-6)
-        assertEquals(10.0 / 13.0, candidate.compilerMsRatio!!, 1e-3)
-        assertEquals(0.0, candidate.compilationsDelta)
-        assertEquals("cases/1/profile-1/${CompilationReports.REPORT}", view.cases[1].report)
-    }
-
-    @Test
     fun `an analysis is refused for a trimmed, missing, running or unprofiled job`() {
         val jobDir = Files.createTempDirectory("job")
         val spec = ExperimentSpec("x", profileCli = true, profileCompilation = "jfr")

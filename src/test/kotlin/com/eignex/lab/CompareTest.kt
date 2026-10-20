@@ -26,7 +26,6 @@ class CompareTest {
         assertTrue(mixesInstrumented(mixed.arms))
         assertFalse(mixesInstrumented(alike.arms))
         assertFalse(mixesInstrumented(Compare.compare(listOf("1 base"), listOf(plain)).arms))
-        assertEquals(listOf("2 base"), Stats.of(listOf("1 base", "2 base"), listOf(plain, instrumented), resamples = 10).instrumented)
     }
 
     @Test

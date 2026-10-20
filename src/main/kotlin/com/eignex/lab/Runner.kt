@@ -694,11 +694,10 @@ class Runner(
     }
 
     /** A case of a reference arm adds its verdict to the reference results as it finishes, so a run cut short still
-     *  contributes what it solved; a stored stronger verdict stays. An instrumented run's times are not the reference's. */
+     *  contributes what it solved; a stored stronger verdict stays. */
     private fun promote(jobId: Long, index: Int, record: String) {
         val (problem, arm) = store.caseOf(jobId, index) ?: return
         if (arm.values["backend"] != REFERENCE_BACKEND || problem.collection.isEmpty()) return
-        if (store.job(jobId)?.experiment?.instrumented == true) return
         val reference = References.of(Json.parseToJsonElement(record)) ?: return
         store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$jobId")
     }
