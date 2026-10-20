@@ -67,6 +67,24 @@ object NodePool {
      *  for [macHours]. A job or two the Mac clears within that never starts a node. */
     fun threshold(macCores: Int, macHours: Double): Double = macCores * macHours
 
+    /** The pressure that launches another node beside the [nodes] up or launching: [threshold] for the first, then
+     *  twice it per node already there. */
+    fun nextThreshold(threshold: Double, nodes: Int): Double = threshold * if (nodes == 0) 1.0 else 2.0 * nodes
+
+    /**
+     * Core-hours left of [job] by the estimate the pool uses ([coreHours]): a queued job's cases no host has started,
+     * a running one's unfinished cases, an unplanned one's estimate. Null for a job that is not an experiment.
+     */
+    fun remainingCoreHours(job: Job): Double? {
+        val spec = job.experiment?.takeUnless { it.isScript } ?: return null
+        val left = when {
+            job.total == 0 -> null
+            job.status == Status.RUNNING -> job.total - job.done
+            else -> job.total - job.done - job.running
+        }
+        return runCatching { coreHours(spec, left?.coerceAtLeast(0)) }.getOrNull()
+    }
+
     /** The pressure on the pool: every demand's core-hours, the ones at [minPriority] or above. */
     fun pressure(demands: List<Demand>, minPriority: Int): Double =
         demands.filter { it.priority >= minPriority }.sumOf { it.coreHours }
@@ -132,8 +150,15 @@ object NodePool {
  * every queued job.
  */
 class LaunchGate {
-    private var since: Long? = null
-    private var lastLaunch: Long? = null
+    /** When the pressure came to stand at or over the threshold for the next node, with no launch since; null while
+     *  it is under. */
+    @Volatile
+    var since: Long? = null
+        private set
+    /** When the gate last said to launch. */
+    @Volatile
+    var lastLaunch: Long? = null
+        private set
 
     /** Whether [pressure] calls for another node beside [nodes], at [now], with room for one ([room]). Records the
      *  launch when it says yes. The settings come with each call, since the worker rereads them on every poll. */
@@ -141,7 +166,7 @@ class LaunchGate {
     fun shouldLaunch(
         now: Long, pressure: Double, nodes: Int, threshold: Double, room: Boolean, sustainMs: Long, cooldownMs: Long,
     ): Boolean {
-        val wanted = pressure >= threshold * if (nodes == 0) 1.0 else 2.0 * nodes
+        val wanted = pressure >= NodePool.nextThreshold(threshold, nodes)
         if (!wanted) {
             since = null
             return false
@@ -154,15 +179,54 @@ class LaunchGate {
         since = null
         return true
     }
+
+    /**
+     * Why no node launches at [now], in plain words for the pages, given what [shouldLaunch] was last given: the
+     * pressure is under the threshold, there is no room ([noRoom], the reason), the pressure has not held for
+     * [sustainMs] yet, or the cooldown after the last launch runs. Null when nothing holds a launch back.
+     */
+    @Synchronized
+    fun blocker(
+        now: Long, pressure: Double, nodes: Int, threshold: Double, noRoom: String?, sustainMs: Long, cooldownMs: Long,
+    ): String? {
+        if (pressure < NodePool.nextThreshold(threshold, nodes)) return BELOW
+        if (noRoom != null) return noRoom
+        since?.let { start -> (sustainMs - (now - start)).takeIf { it > 0 }?.let { return "waiting ${minutes(it)} min more" } }
+        if (nodes > 0) lastLaunch?.let { at -> (cooldownMs - (now - at)).takeIf { it > 0 }?.let { return "cooldown ${minutes(it)} min" } }
+        return null
+    }
+
+    companion object {
+        const val BELOW = "below threshold"
+        const val AT_MAX = "at maxInstances"
+        const val QUOTA_FULL = "vCPU quota full"
+        const val UPDATE_WAITING = "lab update waiting"
+        private const val MS_PER_MIN = 60_000L
+
+        /** [ms] in whole minutes, rounded up, so a wait under a minute reads as one. */
+        fun minutes(ms: Long): Long = (ms + MS_PER_MIN - 1) / MS_PER_MIN
+    }
 }
 
-/** The pool as the pages show it, written by the AWS worker to `aws/nodes.json` on each change. */
+/**
+ * The pool as the pages show it, written by the AWS worker to `aws/nodes.json` on each change. The launch gate's
+ * fields are null in a file an older lab wrote: the [threshold] for the first node and the [nextThreshold] for the
+ * next one, in core-hours; since when the pressure has stood over it ([overSince], the gate's wait); the [lastLaunch];
+ * the [sustainMs] and [cooldownMs] settings; and the [blocker] that keeps the next node from launching, in plain words.
+ */
 @Serializable
 data class NodePoolReport(
     val updatedAt: Long,
     val pressure: Double,
     val launching: Int,
     val nodes: List<NodeReport>,
+    val threshold: Double? = null,
+    val nextThreshold: Double? = null,
+    val overSince: Long? = null,
+    val lastLaunch: Long? = null,
+    val sustainMs: Long? = null,
+    val cooldownMs: Long? = null,
+    val blocker: String? = null,
 )
 
 @Serializable

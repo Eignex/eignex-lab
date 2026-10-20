@@ -7,6 +7,7 @@ import java.net.URLEncoder
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /** The queue's front page: what runs and waits, the schedules, and the history, newest first. */
 internal fun indexPage(
@@ -26,7 +27,10 @@ internal fun indexPage(
     append("<header><h1>Queue</h1>")
     append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active)}</p></header>")
     if (front) {
-        append("<section><h2>Active</h2><div id=\"active\" data-live>${activeTable(config, active, queueOrder)}</div></section>")
+        // One pass over the active jobs: the per-row estimates and the summary's totals read the same numbers.
+        val estimates = active.mapNotNull { job -> NodePool.remainingCoreHours(job)?.let { job.id to it } }.toMap()
+        append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(config, active, estimates)}</div>")
+        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates)}</div></section>")
         if (schedules.isNotEmpty()) {
             append("<section><h2>Schedules</h2><div id=\"schedules\" data-live>${schedulesTable(schedules)}</div></section>")
         }
@@ -1130,37 +1134,147 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
         " (<a href=\"/disk\">what uses it</a>)"
     val accel = listOfNotNull(host.vendor, "simd".takeIf { host.simd }).joinToString(", ")
     return "$running running · $queued queued · $disk · ${esc(host.host)}, ${host.cores} cores" +
-        (if (accel.isEmpty()) "" else ", ${esc(accel)}") + (nodesLine(config)?.let { "<br>$it" } ?: "")
+        (if (accel.isEmpty()) "" else ", ${esc(accel)}")
+}
+
+/** Where a job's remaining work may run, as the work summary splits it. */
+private enum class WorkKind(val label: String) {
+    MAC("Mac only"),
+    TOWARD_AWS("Mac or AWS, toward AWS"),
+    BELOW_FLOOR("Mac or AWS below the priority floor"),
+    AWS("AWS"),
+}
+
+private fun workKind(config: Config, job: Job): WorkKind = when (job.experiment?.host) {
+    Experiments.AUTO_HOST -> if (job.priority < (config.aws?.nodeMinPriority ?: 0)) WorkKind.BELOW_FLOOR else WorkKind.TOWARD_AWS
+    Experiments.AWS_HOST -> WorkKind.AWS
+    else -> WorkKind.MAC
 }
 
 /**
- * The AWS node pool in a line, from the worker's `aws/nodes.json` ([NodePoolReport]): how many nodes, of which sizes
- * and markets, what each is doing, and the pressure that launches them. Null without AWS settings or a report.
+ * The block above the Active table: the work scheduled, in estimated core-hours ([estimates], by job) split by where
+ * it may run, and the time the Mac alone would take to drain what it may run; then, with AWS settings, the launch
+ * gauge ([launchGauge]). Paused jobs and ones whose cancel was requested wait for nothing, so they are not counted.
  */
-internal fun nodesLine(config: Config): String? {
-    if (config.aws == null) return null
-    val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
-    val report = runCatching { Json.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull() ?: return null
-    val pressure = "pressure %.1f core-h".format(report.pressure)
-    val launching = if (report.launching > 0) ", ${report.launching} launching" else ""
-    if (report.nodes.isEmpty()) return "AWS nodes: none$launching · $pressure"
-    val each = report.nodes.joinToString(", ") { node ->
-        val doing = node.job?.let { job -> esc(node.doing).replace("job $job", "<a href=\"/jobs/$job\">job $job</a>") } ?: esc(node.doing)
-        "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span> $doing"
+internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long, Double>): String = buildString {
+    val counted = active.filter { !it.paused && !it.cancelRequested }
+    val split = counted.groupBy { workKind(config, it) }.mapValues { (_, jobs) -> jobs.sumOf { estimates[it.id] ?: 0.0 } }
+    val total = split.values.sum()
+    val mac = total - (split[WorkKind.AWS] ?: 0.0)
+    append("<div class=\"work\"><div><b>Work scheduled</b> ")
+    if (total <= 0.0) {
+        append("<span class=\"muted\">none</span>")
+    } else {
+        append("≈${coreHoursText(total)} core-h")
+        if (mac > 0) append(" <span class=\"muted\">· ~${wallText(mac / config.cores.coerceAtLeast(1))} for the Mac alone</span>")
     }
-    return "AWS nodes: ${report.nodes.size}$launching ($each) · $pressure"
+    append("</div>")
+    val parts = WorkKind.entries.mapNotNull { kind -> split[kind]?.takeIf { it > 0 }?.let { kind to it } }
+    if (parts.any { it.first != WorkKind.MAC }) {
+        val floor = config.aws?.nodeMinPriority ?: 0
+        append("<div class=\"muted small\">")
+        append(parts.joinToString(" · ") { (kind, hours) ->
+            val title = when (kind) {
+                WorkKind.MAC -> "placed on the Mac, or taken by it"
+                WorkKind.TOWARD_AWS -> "priority $floor or more: counts toward a node's launch"
+                WorkKind.BELOW_FLOOR -> "under priority $floor: no node takes it, so the Mac runs it"
+                WorkKind.AWS -> "placed on or running on AWS nodes"
+            }
+            "<span title=\"$title\">${kind.label} ${coreHoursText(hours)}</span>"
+        })
+        append("</div>")
+    }
+    config.aws?.let { append(launchGauge(config, it)) }
+    append("</div>")
 }
 
-private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>): String {
+/**
+ * The AWS launch gauge, from the worker's `aws/nodes.json` ([NodePoolReport]): the pressure against the threshold for
+ * the next node as a bar, how long it has stood over it against `nodeSustainMin`, the cooldown left, what holds the
+ * next node back, and the nodes up, with their sizes, markets and what each is doing. A report an older lab wrote has
+ * no gate fields; the threshold is then worked out from the settings, and the rest left out.
+ */
+private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
+    val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
+    val report = runCatching { NODE_JSON.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull()
+        ?: return "<div class=\"muted small\">AWS: no pool report yet</div>"
+    val count = report.nodes.size + report.launching
+    val threshold = report.threshold ?: NodePool.threshold(config.cores, aws.nodeLaunchMacHours)
+    val next = report.nextThreshold ?: NodePool.nextThreshold(threshold, count)
+    val over = report.pressure >= next
+    val fill = if (next > 0) (report.pressure / next).coerceIn(0.0, 1.0) else 1.0
+    val which = if (count == 0) "the first node" else "node ${count + 1}"
+    append("<div class=\"gauge-row\"><b>AWS</b> ")
+    append("<span class=\"gauge\" title=\"pressure: queued Mac-or-AWS work at priority ${aws.nodeMinPriority} or more, " +
+        "less the job the free Mac takes next, plus the unclaimed work of jobs on AWS\">")
+    append("<i${if (over) " class=\"over\"" else ""} style=\"width:${"%.1f".format(Locale.ROOT, fill * 100)}%\"></i></span> ")
+    append("<span>${coreHoursText(report.pressure)} of ${coreHoursText(next)} core-h for $which</span>")
+    val notes = mutableListOf<String>()
+    val at = report.updatedAt
+    if (over && report.overSince != null && report.sustainMs != null) {
+        notes += "over for ${((at - report.overSince) / MS_PER_MIN).coerceAtLeast(0)} of ${report.sustainMs / MS_PER_MIN} min"
+    }
+    val cooldownLeft = report.lastLaunch?.let { launched -> report.cooldownMs?.let { launched + it - at } }?.takeIf { count > 0 && it > 0 }
+    if (cooldownLeft != null && report.blocker?.startsWith("cooldown") != true) notes += "cooldown ${LaunchGate.minutes(cooldownLeft)} min left"
+    if (report.launching > 0) notes += "${report.launching} launching"
+    report.blocker?.let { blocker ->
+        val hard = blocker in setOf(LaunchGate.AT_MAX, LaunchGate.QUOTA_FULL, LaunchGate.UPDATE_WAITING)
+        notes += "<span class=\"${if (hard) "warn" else "muted"}\">no node: ${esc(blocker)}</span>"
+    }
+    if (now() - at > STALE_REPORT_MS) notes += "report ${ago(at)}"
+    if (notes.isNotEmpty()) append(" <span class=\"muted\">· </span>" + notes.joinToString(" <span class=\"muted\">·</span> "))
+    append("</div><div class=\"muted small\">")
+    if (report.nodes.isEmpty()) {
+        append("AWS nodes: none")
+    } else {
+        append("AWS nodes: ${report.nodes.size} (")
+        append(report.nodes.joinToString(", ") { node ->
+            val doing = node.job?.let { job -> esc(node.doing).replace("job $job", "<a href=\"/jobs/$job\">job $job</a>") } ?: esc(node.doing)
+            "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span> $doing"
+        })
+        append(")")
+    }
+    append("</div>")
+}
+
+/** `aws/nodes.json` as the pages read it, a file from a newer or older lab included. */
+private val NODE_JSON = Json { ignoreUnknownKeys = true }
+private const val MS_PER_MIN = 60_000L
+/** A pool report older than this says how old it is: the worker rewrites it on every poll. */
+private const val STALE_REPORT_MS = 2 * 60_000L
+
+/** Core-hours, one decimal under ten and whole above. */
+private fun coreHoursText(hours: Double): String = if (hours < 10) "%.1f".format(Locale.ROOT, hours) else "%.0f".format(Locale.ROOT, hours)
+
+/** A wall time of [hours], rounded up to the minute: `14 min`, `3 h 20 min`, `2 d 5 h`. */
+private fun wallText(hours: Double): String {
+    val minutes = kotlin.math.ceil(hours * 60).toLong()
+    return when {
+        minutes < 60 -> "$minutes min"
+        minutes < 48 * 60 -> "${minutes / 60} h" + if (minutes % 60 != 0L) " ${minutes % 60} min" else ""
+        else -> "${minutes / (24 * 60)} d ${minutes / 60 % 24} h"
+    }
+}
+
+/** A row's remaining work: its estimated core-hours, and for work the Mac may run the time the Mac would take. */
+private fun estimateText(config: Config, job: Job, hours: Double?): String {
+    if (hours == null || hours <= 0) return ""
+    val mac = if (workKind(config, job) == WorkKind.AWS) "" else " · ~${wallText(hours / config.cores.coerceAtLeast(1))} on the Mac"
+    return "<div class=\"est\" title=\"estimated from each case's whole timeout on its cores\">≈${coreHoursText(hours)} core-h$mac</div>"
+}
+
+private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, Double>): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
     // One queue by priority, whatever runs each job: the Mac and the AWS nodes take from it in this order as the lab
     // places jobs, each passing over those it may not run.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
-    return jobTable(config, ordered, positions, filterable = false)
+    return jobTable(config, ordered, positions, filterable = false, estimates = estimates)
 }
 
-private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean): String = buildString {
+private fun jobTable(
+    config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, Double>? = null,
+): String = buildString {
     if (jobs.isEmpty()) return "<p class=\"muted\">No jobs.</p>"
     append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>")
     append("<th>created</th><th>elapsed</th><th></th></tr>")
@@ -1185,7 +1299,7 @@ private fun jobTable(config: Config, jobs: List<Job>, positions: Map<Long, Int>,
         }
         append("</td>")
         append("<td>${refText(config, job)}</td><td>${hostCell(config, job)}</td><td>${statusCell(job, positions[job.id])}</td>")
-        append("<td>${progress(job)}</td>")
+        append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
     }
@@ -1428,6 +1542,10 @@ code{font-size:12px;word-break:break-all}
 .where{border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.kind{font-size:.8em;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.where.aws{border-color:var(--link);color:var(--link)}
 .bar{display:flex;width:90px;height:6px;margin:6px 0 2px;background:var(--soft);border-radius:3px;overflow:hidden}
 .bar i{display:block}.bar .ok{background:var(--ok)}.bar .bad{background:var(--bad)}.bar .run{background:var(--run)}
+td .est{color:var(--muted);font-size:12px}.small{font-size:12px}.warn{color:var(--warn)}
+.work{display:flex;flex-direction:column;gap:4px;margin:0 0 12px;line-height:1.5;overflow-wrap:anywhere}
+.gauge{display:inline-block;width:120px;max-width:30vw;height:6px;background:var(--soft);border-radius:3px;overflow:hidden;vertical-align:middle}
+.gauge i{display:block;height:100%;background:var(--run)}.gauge i.over{background:var(--warn)}
 .tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.tools input{font:inherit;padding:3px 6px;min-width:200px}
 button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--soft);color:var(--fg);cursor:pointer}
 pre.script{background:var(--soft);padding:8px;overflow-x:auto;max-width:120ch}table.board tr.total td{font-weight:600;border-bottom:2px solid var(--line)}.chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
