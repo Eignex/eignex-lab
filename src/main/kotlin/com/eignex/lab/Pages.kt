@@ -1271,9 +1271,8 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
  * no gate fields; the threshold is then worked out from the settings, and the rest left out.
  */
 private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
-    val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
-    val report = runCatching { NODE_JSON.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull()
-        ?: return "<div class=\"muted small\">Cloud: no pool report yet</div>"
+    val report = readPoolReport(config)
+        ?: return "<div class=\"muted small\">Cloud: no pool report yet ${startNode(aws, null)}</div>"
     val count = report.nodes.size + report.launching
     val threshold = report.threshold ?: NodePool.threshold(config.cores, aws.nodeLaunchLocalHours)
     val next = report.nextThreshold ?: NodePool.nextThreshold(threshold, count)
@@ -1306,15 +1305,37 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
         append("cloud nodes: ${report.nodes.size} (")
         append(report.nodes.joinToString(", ") { node ->
             val doing = node.job?.let { job -> esc(node.doing).replace("job $job", "<a href=\"/jobs/$job\">job $job</a>") } ?: esc(node.doing)
-            "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span> $doing"
+            val manual = if (node.manual) " <span title=\"started by hand\">manual</span>" else ""
+            "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span>$manual $doing"
         })
         append(")")
     }
-    append("</div>")
+    append(" ${startNode(aws, report)}</div>")
+}
+
+/**
+ * The control that starts a cloud node by hand (`POST /cloud/nodes`, [ManualLaunch]): a size, the one the queue calls
+ * for first ([NodePoolReport.manualSize]), a market, spot first by default, and the button. The lab refuses it, saying
+ * why, at `maxInstances`, with the quota full or while an update waits.
+ */
+private fun startNode(aws: AwsConfig, report: NodePoolReport?): String = buildString {
+    val chosen = report?.manualSize
+    append("<span class=\"start-node\"><select id=\"node-size\" title=\"size; the first is the one the queue calls for\">")
+    val sizes = aws.sizes.sortedBy { if (it.type == chosen) 0 else 1 }
+    for (size in sizes) append("<option value=\"${esc(size.type)}\">${esc(size.type)} (${size.vcpus} vCPUs)</option>")
+    append("</select> <select id=\"node-market\"><option value=\"spot\">spot first</option><option value=\"on-demand\">on-demand</option></select> ")
+    append("<button onclick=\"act('/cloud/nodes', {size: document.getElementById('node-size').value, " +
+        "market: document.getElementById('node-market').value}, 'Start a cloud node? It retires after ${aws.nodeIdleMin} min with nothing to take.')\">Start a node</button></span>")
 }
 
 /** `aws/nodes.json` as the pages read it, a file from a newer or older lab included. */
 private val NODE_JSON = Json { ignoreUnknownKeys = true }
+
+/** The cloud worker's last pool report ([NodePoolReport]), or null when there is none or it cannot be read. */
+internal fun readPoolReport(config: Config): NodePoolReport? {
+    val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
+    return runCatching { NODE_JSON.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull()
+}
 private const val MS_PER_MIN = 60_000L
 /** A pool report older than this says how old it is: the worker rewrites it on every poll. */
 private const val STALE_REPORT_MS = 2 * 60_000L

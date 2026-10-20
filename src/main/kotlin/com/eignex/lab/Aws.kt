@@ -608,6 +608,11 @@ class AwsWorker(
     /** What kept the last poll from launching a node ([LaunchGate.blocker]), for the pages. */
     @Volatile
     private var blocker: String? = null
+    /** The size the queue called for at the last poll, which a manual launch that names none gets ([ManualLaunch]):
+     *  the cores of the largest waiting case, at least the smallest size; null when none fits the quota left. */
+    @Volatile
+    private var queueSize: InstanceSize? = null
+    private val manualFile = ManualLaunch.file(config)
 
     /** Whether any node is up or launching: the runner holds off updating itself until none is, since a restart would
      *  end the threads that drive them. */
@@ -622,6 +627,7 @@ class AwsWorker(
         while (true) {
             runCatching { AwsConfig.load(settings)?.let { aws = it } }.onFailure { println("aws: settings not reread: ${it.message}") }
             runCatching { scale() }.onFailure { println("aws: ${it.message}") }
+            runCatching { manual() }.onFailure { println("aws: manual launch failed: ${it.message}") }
             runCatching { report() }
             if (System.currentTimeMillis() - swept > SWEEP_MS) {
                 swept = System.currentTimeMillis()
@@ -673,6 +679,7 @@ class AwsWorker(
         val size = all.maxOfOrNull { it.cores }?.let { cores ->
             NodePool.size(aws.sizes, cores, pressure, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
         }
+        queueSize = size ?: NodePool.size(aws.sizes, 1, 0.0, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus).takeIf { all.isEmpty() }
         val noRoom = when {
             count >= aws.maxInstances -> LaunchGate.AT_MAX
             runner.updateWaiting() -> LaunchGate.UPDATE_WAITING
@@ -691,14 +698,33 @@ class AwsWorker(
         launch(size, onDemand)
     }
 
+    /**
+     * Start the node a manual launch asked for ([ManualLaunch]), when its request waits: past the pressure threshold
+     * and the sustain wait, but within `maxInstances`, the quota and a waiting update, checked again here against the
+     * pool as it now stands. It counts as the gate's last launch, for the cooldown.
+     */
+    private fun manual() {
+        val request = ManualLaunch.take(manualFile) ?: return
+        val now = System.currentTimeMillis()
+        val plan = ManualLaunch.decide(request, now, aws, queueSize, nodes.size + launching.get(), aws.vcpuQuota - busy.get(),
+            runner.updateWaiting()).getOrElse {
+            println("aws: manual launch refused: ${it.message}")
+            return
+        }
+        gate.manualLaunch(now)
+        println("aws: manual launch of a ${plan.size.type} ${ManualLaunch.marketText(plan.onDemand)} node")
+        launch(plan.size, plan.onDemand, manual = true)
+        report()
+    }
+
     /** Reserve [size]'s vCPUs and launch a node on its own thread, which then runs it until it retires. */
-    private fun launch(size: InstanceSize, onDemand: Boolean) {
+    private fun launch(size: InstanceSize, onDemand: Boolean, manual: Boolean = false) {
         busy.addAndGet(size.vcpus)
         launching.incrementAndGet()
         if (onDemand) launchingOnDemand.incrementAndGet()
         thread(name = "aws-node-${launched.get() + 1}") {
             val node = try {
-                buy(size, onDemand)
+                buy(size, onDemand, manual)
             } catch (e: Exception) {
                 println("aws: no ${size.type} node launched: ${e.message}")
                 null
@@ -710,16 +736,17 @@ class AwsWorker(
         }
     }
 
-    /** One instance of [size], registered as a node at once so the sweep leaves it alone. */
-    private fun buy(size: InstanceSize, onDemand: Boolean): Node {
+    /** One instance of [size], registered as a node at once so the sweep leaves it alone; [manual] when started by
+     *  hand. */
+    private fun buy(size: InstanceSize, onDemand: Boolean, manual: Boolean): Node {
         runCatching { cli.admitThisMachine() }
         val userData = Files.createTempFile("klause-lab-user-data", ".sh").toFile()
         try {
             userData.writeText(bootstrap())
             val name = "klause-lab-node-${launched.incrementAndGet()}"
-            val (id, market) = if (onDemand) cli.launch(name, userData, size.type) to ON_DEMAND else spotFirst(name, userData, size.type)
-            return Node(id, size, market, System.currentTimeMillis()).also { nodes[id] = it }
-                .also { println("aws: launched ${size.type} $market node $id") }
+            val (id, market) = if (onDemand) cli.launch(name, userData, size.type) to ON_DEMAND else spotFirst(name, userData, size.type, manual)
+            return Node(id, size, market, System.currentTimeMillis(), manual).also { nodes[id] = it }
+                .also { println("aws: launched ${size.type} $market ${if (manual) "manual " else ""}node $id") }
         } finally {
             userData.delete()
         }
@@ -728,9 +755,10 @@ class AwsWorker(
     /**
      * A spot instance, asked for again every [SPOT_RETRY_MS] while AWS has no spot capacity or quota for it, and on
      * demand once [AwsConfig.spotWaitMin] minutes have passed, or at once when the account cannot launch spot at all,
-     * if [AwsConfig.onDemand] allows. It gives up once the pressure it was launched for is gone.
+     * if [AwsConfig.onDemand] allows. It gives up once the pressure it was launched for is gone, or, for a [manual]
+     * launch, which no pressure called for, once `spotWaitMin` has passed without spot or on demand.
      */
-    private fun spotFirst(name: String, userData: File, type: String): Pair<String, String> {
+    private fun spotFirst(name: String, userData: File, type: String, manual: Boolean = false): Pair<String, String> {
         val since = System.currentTimeMillis()
         while (true) {
             val e = runCatching { return cli.launch(name, userData, type, spot = true) to SPOT }.exceptionOrNull()!!
@@ -742,14 +770,16 @@ class AwsWorker(
                 return cli.launch(name, userData, type) to ON_DEMAND
             }
             if (capacity == null) throw e
-            check(pressure >= threshold) { "no spot for $type, and the work it was for is gone" }
+            if (manual) check(waited < aws.spotWaitMin * MS_PER_MIN) { "no spot for $type within ${aws.spotWaitMin} min, and onDemand is off" }
+            else check(pressure >= threshold) { "no spot for $type, and the work it was for is gone" }
             println("aws: no spot for $type yet ($capacity); trying again in ${SPOT_RETRY_MS / MS_PER_SEC} s")
             Thread.sleep(SPOT_RETRY_MS)
         }
     }
 
-    /** An instance of the pool: its size, how it was bought, and what it is doing, for the pages. */
-    private inner class Node(val instance: String, val size: InstanceSize, val market: String, val launchedAt: Long) {
+    /** An instance of the pool: its size, how it was bought, whether it was started by hand, and what it is doing, for
+     *  the pages. */
+    private inner class Node(val instance: String, val size: InstanceSize, val market: String, val launchedAt: Long, val manual: Boolean = false) {
         val onDemand: Boolean get() = market == ON_DEMAND
         val shape: NodeShape get() = NodeShape(size.cores, onDemand)
         @Volatile
@@ -1049,8 +1079,8 @@ class AwsWorker(
     @Synchronized
     private fun report() {
         val report = poolReport(System.currentTimeMillis(), pressure, launching.get(),
-            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job) },
-            threshold, gate, aws, blocker)
+            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job, it.manual) },
+            threshold, gate, aws, blocker, runner.updateWaiting(), busy.get(), queueSize?.type)
         nodesFile.parent.createDirectories()
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
     }
@@ -1124,14 +1154,16 @@ class AwsWorker(
             listOfNotNull(CliMeasurements.install(worktree).takeIf { profileCli }, Experiments.captureProvenance(worktree))
 
         /** The pool's report for the pages: its [nodes] and [launching] count, the [pressure] against the [threshold]
-         *  for the next node, and the [gate]'s state with the settings it runs on and what holds a launch back. */
+         *  for the next node, the [gate]'s state with the settings it runs on and what holds a launch back, and what a
+         *  manual start checks: whether an update waits, the vCPUs the nodes hold, and the size the queue calls for. */
         internal fun poolReport(
             now: Long, pressure: Double, launching: Int, nodes: List<NodeReport>, threshold: Double, gate: LaunchGate,
-            aws: AwsConfig, blocker: String?,
+            aws: AwsConfig, blocker: String?, updateWaiting: Boolean = false, busyVcpus: Int = 0, manualSize: String? = null,
         ) = NodePoolReport(now, pressure, launching, nodes,
             threshold = threshold, nextThreshold = NodePool.nextThreshold(threshold, nodes.size + launching),
             overSince = gate.since, lastLaunch = gate.lastLaunch, sustainMs = aws.nodeSustainMin * MS_PER_MIN,
-            cooldownMs = aws.nodeCooldownMin * MS_PER_MIN, blocker = blocker)
+            cooldownMs = aws.nodeCooldownMin * MS_PER_MIN, blocker = blocker, updateWaiting = updateWaiting,
+            busyVcpus = busyVcpus, manualSize = manualSize)
 
         /** Cases a node of [size] runs at once when a job sets no `parallel`: one per two physical cores. */
         internal fun defaultParallel(size: InstanceSize): Int = (size.cores / 2).coerceAtLeast(1)

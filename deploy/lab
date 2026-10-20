@@ -40,6 +40,9 @@
 #                                                            (the lab places every job itself; agents need not); lab and
 #                                                            aws, the older names of local and cloud, still work
 #   lab machines <id> [n]                                    retired: the cloud node pool sizes itself; the lab ignores it
+#   lab node start [size] [spot|on-demand]                   start a cloud node now, past the pressure threshold: the size the
+#                                                            queue calls for and spot first unless given (e.g. c7i.4xlarge);
+#                                                            it takes work as any node and retires after nodeIdleMin idle
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
@@ -170,5 +173,11 @@ ssh) job="$1"; n="${2:-0}"; shift; shift || true
       -o HostKeyAlias=klause-lab-\$region-\$id ubuntu@\$ip $(printf '%q ' "$@")"
   if [[ $# -eq 0 ]]; then exec ssh -t "$host" "$remote"; else exec ssh "$host" "$remote"; fi ;;
 health) curl -fsS "$url/health" | jq . ;;
+node)
+  [[ "${1:-}" == start ]] || { echo "usage: lab node start [size] [spot|on-demand]" >&2; exit 2; }
+  shift; size="" market=""
+  for arg in "$@"; do case "$arg" in spot | on-demand) market="$arg" ;; *) size="$arg" ;; esac; done
+  jq -n --arg size "$size" --arg market "$market" '{size: (if $size == "" then null else $size end), market: (if $market == "" then null else $market end)}' |
+    curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/cloud/nodes"; echo ;;
 *) sed -n '2,/^set /{/^#/p}' "$0"; exit 2 ;;
 esac
