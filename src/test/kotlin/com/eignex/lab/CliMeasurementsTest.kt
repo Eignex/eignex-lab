@@ -43,6 +43,83 @@ class CliMeasurementsTest {
     }
 
     @Test
+    fun `compilation profiling records every compilation, and with the log HotSpot's inlining too`() {
+        assertEquals("-XX:StartFlightRecording=filename=/p/cli.jfr,settings=profile,dumponexit=true", CliMeasurements.options("/p"))
+        assertEquals("-XX:StartFlightRecording=filename=/p/cli.jfr,settings=profile,jdk.Compilation#threshold=0ms,dumponexit=true",
+            CliMeasurements.options("/p", "jfr"))
+        assertEquals("-XX:StartFlightRecording=filename=/p/cli.jfr,settings=profile,jdk.Compilation#threshold=0ms,dumponexit=true " +
+            "-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation -XX:LogFile=/p/hotspot-compilation.log", CliMeasurements.options("/p", "jfr+log"))
+        assertEquals(listOf("cli.jfr", "resources.txt"), CliMeasurements.artifacts("jfr"))
+        assertEquals(listOf("cli.jfr", "resources.txt", "hotspot-compilation.log"), CliMeasurements.artifacts("jfr+log"))
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    fun `the Linux launcher's CLI with compilation logging leaves a recording and a log the lab reports on`() {
+        val dir = Files.createTempDirectory("measurement")
+        val cli = dir.resolve(CliMeasurements.CLI)
+        Files.createDirectories(cli.parent)
+        val javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java")
+        // A shell CLI reads its options as the real start script does: split on spaces, each word one argument.
+        Files.writeString(cli, "#!/bin/bash\nexec ${quote(javaExecutable.toString())} \$KLAUSE_CLI_OPTS -Xshare:off -version\n")
+        cli.toFile().setExecutable(true)
+        val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString())).start()
+        assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
+        val profile = Files.createDirectories(dir.resolve("profile"))
+        val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
+        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m ${CliMeasurements.options(profile.toString(), "jfr+log")}"
+
+        val process = builder.start()
+        val output = process.inputStream.bufferedReader().readText()
+
+        assertEquals(0, process.waitFor(), output)
+        CliMeasurements.writeManifest(profile, 0, 1, "m", "lab", "cmd", 0, "", null, macOs = false, compilation = "jfr+log")
+        val report = CompilationReports.analyze(profile, SourceProvenance(1, 0), WorkerProvenance())
+        assertEquals("jfr+log", report.mode)
+        assertTrue(report.totals.compilations > 0)
+        assertEquals("0 ms", report.coverage.compilationThreshold)
+        assertEquals(true, report.log?.complete, report.incomplete.toString())
+        assertTrue((report.log?.compilerThreads ?: 0) > 0)
+        assertTrue(report.methods.any { it.inlined != null })
+        val markers = (report.missing + report.incomplete).map { it.what }
+        assertFalse(markers.any { it in setOf("jfr", "hotspot-log", "inlining", "jfr-threshold", "jfr-shutdown", "hotspot-log-parse") }, markers.toString())
+        assertTrue(report.provenance.jvm?.jvmArguments.orEmpty().contains("LogCompilation"))
+    }
+
+    @Test
+    fun `the macOS launcher hands the compilation options to the CLI as they were set`() {
+        val dir = Files.createTempDirectory("measurement")
+        val cli = macLauncher(dir, "#!/bin/bash\nprintf '%s\\n' \$KLAUSE_CLI_OPTS\n")
+        val profile = Files.createDirectories(dir.resolve("profile"))
+        val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
+        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        val options = CliMeasurements.options(profile.toString(), "jfr+log")
+        builder.environment()["KLAUSE_CLI_OPTS"] = options
+
+        val process = builder.start()
+        val output = process.inputStream.bufferedReader().readText()
+
+        assertEquals(0, process.waitFor(), output)
+        assertEquals(options.split(' '), output.trim().lines())
+        assertTrue("jdk.Compilation#threshold=0ms" in output && "-XX:LogFile=$profile/hotspot-compilation.log" in output)
+        assertTrue("exit=0" in Files.readString(profile.resolve("resources.txt")))
+    }
+
+    @Test
+    fun `an instrumented measurement's manifest says so and lists the compilation log`() {
+        val dir = Files.createTempDirectory("measurement")
+
+        CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", null, macOs = false, compilation = "jfr+log")
+
+        val manifest = Files.readString(dir.resolve("measurement.json"))
+        assertTrue("\"instrumented\":true" in manifest && "\"compilation\":\"jfr+log\"" in manifest, manifest)
+        assertTrue("\"instrumentation\":\"jfr-profile+compilation+hotspot-log\"" in manifest && "hotspot-compilation.log" in manifest, manifest)
+        CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", null, macOs = false)
+        assertTrue("\"instrumented\":false" in Files.readString(dir.resolve("measurement.json")))
+    }
+
+    @Test
     fun `the Linux launcher measures with GNU time and the macOS one with BSD time, both valid shell, neither Python`() {
         val linux = CliMeasurements.install("/w", macOs = false)
         val mac = CliMeasurements.install("/w", macOs = true)

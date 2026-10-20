@@ -1,6 +1,8 @@
 package com.eignex.lab
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlin.test.assertFalse
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.test.assertContains
@@ -179,6 +181,45 @@ class ExperimentsTest {
         assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, maxParallel = 4) }
         for (host in listOf("lab", "auto", "aws")) Experiments.validate(experiment.copy(host = host, parallel = 1), maxParallel = 4)
         assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(experiment))
+    }
+
+    @Test
+    fun `compilation profiling needs CLI profiling, names a known mode, and marks the experiment instrumented`() {
+        val profiled = spec().copy(profileCli = true, parallel = 1)
+
+        for (mode in listOf("jfr", "jfr+log")) {
+            val instrumented = profiled.copy(profileCompilation = mode)
+            Experiments.validate(instrumented, maxParallel = 4)
+            assertTrue(instrumented.instrumented)
+            assertNotEquals(Experiments.fingerprint(profiled), Experiments.fingerprint(instrumented))
+        }
+        assertFalse(profiled.instrumented)
+        assertEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(spec().copy(profileCompilation = null)))
+        val unprofiled = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec().copy(profileCompilation = "jfr"), maxParallel = 4) }
+        assertTrue("requires profileCli" in unprofiled.message.orEmpty())
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profiled.copy(profileCompilation = "log"), maxParallel = 4) }
+    }
+
+    @Test
+    fun `an analysis job names a job and a kind and nothing an experiment runs, and stays on the Mac`() {
+        val analysis = ExperimentSpec("analyze-9", description = "again", analyze = AnalyzeSpec(9))
+
+        Experiments.validate(analysis, maxParallel = 4)
+        assertTrue(analysis.isAnalysis)
+        assertTrue(Placement.macOnly(analysis, analysis.name))
+        for (wrong in listOf(
+            analysis.copy(analyze = AnalyzeSpec(9, "cpu")),
+            analysis.copy(analyze = AnalyzeSpec(0)),
+            analysis.copy(problems = listOf(mapOf("suite" to "s"))),
+            analysis.copy(base = mapOf("ref" to "main")),
+            analysis.copy(profileCli = true),
+            analysis.copy(profile = ProfileMain("com.eignex.klause.bench.profile.Tool")),
+        )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxParallel = 4) }
+        val defaulted = Json.decodeFromJsonElement(ExperimentSpec.serializer(),
+            analysisDefaults(Json.parseToJsonElement("""{"analyze": {"job": 9}}""").jsonObject))
+        assertEquals("analyze-9", defaulted.name)
+        assertEquals(AnalyzeSpec(9, "compilation"), defaulted.analyze)
+        assertTrue(defaulted.description.isNotBlank())
     }
 
     @Test

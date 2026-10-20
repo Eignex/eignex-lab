@@ -10,7 +10,8 @@ import kotlin.io.path.name
 /**
  * Trims ended jobs' directories down to what is worth keeping once their bulk is no longer looked at: a job's logs,
  * its commands' exits and termination reasons ([Termination]), its selections and each case's record (a `.json` file in
- * `cases/<i>`) stay, and everything else goes, raw solver output, case stdout and stderr, profiles and `$OUT` among it. The results stay readable either way, since
+ * `cases/<i>`) stay, as do profiled cases' compilation reports and measurement manifests, and everything else goes, raw
+ * solver output, case stdout and stderr, profiles' raw captures and `$OUT` among it. The results stay readable either way, since
  * every case's record is in the database too. A job is trimmed [MAX_AGE_MS] after it ended, and sooner, largest
  * first, whenever the disk has less than [TARGET_FREE_BYTES] free. A trimmed job gets a `trimmed` file saying when and
  * how much, and is never trimmed again; its log says so too. Queued and running jobs are never touched.
@@ -77,13 +78,18 @@ class JobTrim(
         const val INTERVAL_MIN = 30L
         private const val BYTES_PER_MB = 1_000_000L
 
-        /** Whether a trim keeps [relative], a path inside a job directory. */
+        /**
+         * Whether a trim keeps [relative], a path inside a job directory. A profiled case's compilation report and its
+         * measurement manifest stay with its records, while its raw captures go: an analysis job then refuses it.
+         */
         fun keeps(relative: Path): Boolean {
             val name = relative.name
             return when (relative.nameCount) {
-                1 -> name in setOf("job.log", "setup.log", "sha", MARKER) || name.endsWith(".exit") || name.endsWith(".termination") ||
-                    (name.startsWith("selection-") && name.endsWith(".jsonl"))
+                1 -> name in setOf("job.log", "setup.log", "sha", MARKER, CompilationReports.ANALYSIS) || name.endsWith(".exit") ||
+                    name.endsWith(".termination") || (name.startsWith("selection-") && name.endsWith(".jsonl"))
                 3 -> relative.getName(0).toString() == "cases" && name.endsWith(".json")
+                4 -> relative.getName(0).toString() == "cases" && relative.getName(2).toString().startsWith("profile-") &&
+                    name in setOf(CompilationReports.REPORT, CliMeasurements.MANIFEST)
                 else -> false
             }
         }

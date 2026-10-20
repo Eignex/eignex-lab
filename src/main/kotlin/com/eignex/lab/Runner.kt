@@ -15,6 +15,7 @@ import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.isSymbolicLink
+import kotlin.io.path.name
 import kotlin.io.path.writeText
 import kotlinx.serialization.json.Json
 
@@ -116,6 +117,14 @@ class Runner(
             }
             if (job.experiment?.profile?.runTimeoutSec != null) {
                 workWithDeadline(job)
+                continue
+            }
+            if (job.experiment?.isAnalysis == true) {
+                runCatching { analyze(job) }.onFailure { e ->
+                    if (stopping) return
+                    log(job.id, "job failed: ${e.message}")
+                    store.finish(job.id, Status.FAILED, e.message ?: e.toString())
+                }
                 continue
             }
             runCatching { work(job) }.onFailure { e ->
@@ -260,6 +269,7 @@ class Runner(
                         store.commandFinished(job.id, index, exit)
                         finished += index
                         keepRecord(job.id, index, dir)
+                        if (job.experiment?.instrumented == true) reportCompilation(job.id, index, dir)
                     }
                 }
                 // Another problem only once this host has room for a case of it, so the problems left go to whichever
@@ -619,11 +629,76 @@ class Runner(
         }.onFailure { log(jobId, "case $index: record not kept: ${it.message}") }
     }
 
+    /**
+     * Write the compilation report ([CompilationReports]) of each of case [index]'s profile directories under job
+     * directory [dir] that has none yet, on the lab, once a node's captures have come back too. An analysis job
+     * ([analyzeJob]) writes each one again from the captures still there. A report that cannot be written is logged
+     * and the job goes on: the captures stay for an analysis job to try again.
+     */
+    internal fun reportCompilation(jobId: Long, index: Int, dir: Path, analyzeJob: Long? = null): List<Pair<Path, CompilationReport>> =
+        runCatching {
+            val source = store.caseOf(jobId, index)?.let { (problem, arm) ->
+                SourceProvenance(jobId, index, if (problem.suite.isEmpty()) problem.problem else "${problem.suite}/${problem.problem}",
+                    arm.label, arm.ref, store.arms(jobId).firstOrNull { it.arm.label == arm.label }?.sha)
+            } ?: SourceProvenance(jobId, index)
+            val worker = CompilationReports.worker(analyzeJob)
+            CompilationReports.profileDirs(dir, index)
+                .filter { if (analyzeJob == null) !Files.exists(it.resolve(CompilationReports.REPORT)) else CompilationReports.hasCaptures(it) }
+                .map { profile ->
+                    val report = CompilationReports.analyzeAndWrite(profile, source, worker)
+                    val gaps = (report.missing + report.incomplete).joinToString { it.what }
+                    log(jobId, "case $index: compilation report ${dir.relativize(profile)}: ${report.totals.compilations} compilations, " +
+                        "${"%.1f".format(report.totals.compilerMs)} ms compiler time" + if (gaps.isEmpty()) "" else "; missing or incomplete: $gaps")
+                    profile to report
+                }
+        }.getOrElse { e ->
+            log(jobId, "case $index: compilation report not written: ${e.message}")
+            emptyList()
+        }
+
+    /**
+     * Run analysis job [job]: the lab's analyser over the retained captures of the ended job it names, writing each
+     * case's report afresh beside them, and a brief of them all in its own directory ([CompilationReports.ANALYSIS]).
+     * Nothing is built and no klause code runs. It fails, saying why, when the captures were trimmed or are missing.
+     */
+    internal fun analyze(job: Job) {
+        val spec = checkNotNull(job.experiment?.analyze)
+        val dir = config.jobDir(job.id).createDirectories()
+        val target = config.jobDir(spec.job)
+        CompilationReports.refusal(store.job(spec.job), target)?.let { refusal ->
+            log(job.id, "job failed: $refusal")
+            store.finish(job.id, Status.FAILED, refusal)
+            return
+        }
+        log(job.id, "analysing job ${spec.job}'s retained captures with the lab's ${spec.kind} analyser")
+        log(spec.job, "analysis job ${job.id} writes its compilation reports again from the retained captures")
+        val indices = CompilationReports.profileDirs(target).mapNotNull { it.parent.name.toIntOrNull() }.distinct()
+        val written = ArrayList<AnalysisEntry>()
+        for (index in indices) {
+            if (store.cancelRequested(job.id)) return cancel(job.id)
+            for ((profile, report) in reportCompilation(spec.job, index, target, analyzeJob = job.id)) {
+                written += AnalysisEntry(index, target.relativize(profile.resolve(CompilationReports.REPORT)).joinToString("/"),
+                    report.totals.compilations, report.totals.compilerMs, report.complete, (report.missing + report.incomplete).map { it.what })
+            }
+        }
+        dir.resolve(CompilationReports.ANALYSIS).writeAtomically(
+            Json { encodeDefaults = true }.encodeToString(AnalysisResult.serializer(), AnalysisResult(spec.job, spec.kind, written)))
+        if (written.isEmpty()) {
+            val error = "job ${spec.job}'s captures could not be analysed: see its job.log"
+            log(job.id, "job failed: $error")
+            store.finish(job.id, Status.FAILED, error)
+            return
+        }
+        store.finish(job.id, Status.DONE)
+        log(job.id, "job finished: ${written.size} reports written for job ${spec.job}")
+    }
+
     /** A case of a reference arm adds its verdict to the reference results as it finishes, so a run cut short still
-     *  contributes what it solved; a stored stronger verdict stays. */
+     *  contributes what it solved; a stored stronger verdict stays. An instrumented run's times are not the reference's. */
     private fun promote(jobId: Long, index: Int, record: String) {
         val (problem, arm) = store.caseOf(jobId, index) ?: return
         if (arm.values["backend"] != REFERENCE_BACKEND || problem.collection.isEmpty()) return
+        if (store.job(jobId)?.experiment?.instrumented == true) return
         val reference = References.of(Json.parseToJsonElement(record)) ?: return
         store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$jobId")
     }
@@ -669,8 +744,9 @@ class Runner(
         // A profileCli case's CLI records JFR and its resources into a directory of its own under the case, as on a node.
         val measurementId = if (job.experiment?.profileCli == true) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { dir.resolve("$CASES/${command.index}/profile-$it").createDirectories() }
+        val compilation = job.experiment?.profileCompilation
         val javaOptions = ("${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores} " +
-            profile?.let { CliMeasurements.options(it.toString()) }.orEmpty()).trim()
+            profile?.let { CliMeasurements.options(it.toString(), compilation) }.orEmpty()).trim()
         builder.environment().apply {
             put("JOB_DIR", dir.toString())
             // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
@@ -693,7 +769,7 @@ class Runner(
                     val record = dir.resolve(CASES).resolve(command.index.toString()).toFile()
                         .listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     CliMeasurements.writeManifest(profile, command.index, 1, requireNotNull(measurementId), Experiments.LAB_HOST,
-                        command.cmd, exit, javaOptions, record, CliMeasurements.localMacOs)
+                        command.cmd, exit, javaOptions, record, CliMeasurements.localMacOs, compilation)
                 }.onFailure { log(job.id, "case ${command.index}: measurement manifest not written: ${it.message}") }
             }
         } finally {

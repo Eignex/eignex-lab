@@ -3,6 +3,8 @@ package com.eignex.lab
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class CompareTest {
     private fun outcome(feasible: Boolean?, objective: Double? = null, proven: Boolean = false, timeMs: Long = 100, maximize: Boolean = false) =
@@ -10,6 +12,22 @@ class CompareTest {
 
     private fun case(arm: String, problem: String, record: String, seed: Long? = null) =
         CaseResult(0, Status.DONE, Problem("s", problem), arm, seed, Json.parseToJsonElement(record))
+
+    @Test
+    fun `instrumented runs are counted per arm, and a comparison mixing them with uninstrumented ones says so`() {
+        val record = """{"kind":"optimize","feasible":true,"objective":3,"proven":true,"timeToBestMs":5,"budgetMs":1000}"""
+        val plain = case("1 base", "p", record)
+        val instrumented = case("2 base", "p", record).copy(instrumented = true)
+
+        val mixed = Compare.compare(listOf("1 base", "2 base"), listOf(plain, instrumented))
+        val alike = Compare.compare(listOf("2 base", "3 base"), listOf(instrumented, instrumented.copy(arm = "3 base")))
+
+        assertEquals(listOf(0, 1), mixed.arms.map { it.instrumented })
+        assertTrue(mixesInstrumented(mixed.arms))
+        assertFalse(mixesInstrumented(alike.arms))
+        assertFalse(mixesInstrumented(Compare.compare(listOf("1 base"), listOf(plain)).arms))
+        assertEquals(listOf("2 base"), Stats.of(listOf("1 base", "2 base"), listOf(plain, instrumented), resamples = 10).instrumented)
+    }
 
     @Test
     fun `arm summaries retain mixed build and policy identities with missing legacy records`() {

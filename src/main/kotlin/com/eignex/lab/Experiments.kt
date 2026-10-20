@@ -54,8 +54,20 @@ data class ExperimentSpec(
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
     val description: String = "",
-    /** AWS-only whole-CLI JFR and physical resource measurements, returned with each case's files. */
+    /** Whole-CLI JFR and physical resource measurements, on the Mac or a node, returned with each case's files. */
     val profileCli: Boolean = false,
+    /**
+     * With [profileCli], also record every JIT compilation of the CLI JVM ([CliMeasurements.options]): `jfr` records
+     * `jdk.Compilation` with no threshold, and `jfr+log` adds HotSpot's compilation log, with its inlining decisions.
+     * The lab writes a `compilation-report.json` beside each case's captures ([CompilationReports]). Its cases are
+     * instrumented ([instrumented]): comparisons flag them, as their times are no runtime measurement.
+     */
+    val profileCompilation: String? = null,
+    /**
+     * An analysis job: the lab's own analyser run again over an ended job's retained captures, writing fresh reports.
+     * Nothing is built and no solver or klause code runs. Its spec names nothing else.
+     */
+    val analyze: AnalyzeSpec? = null,
     /**
      * A profile job: this `main` of klause's build at the base `ref`, run once under JFR instead of problems and arms.
      * For measurements the experiments cannot express; not for the build's tests or lint gates, which CI runs.
@@ -84,6 +96,20 @@ data class ProfileMain(
      */
     val runTimeoutSec: Long? = null,
 )
+
+/** What an analysis job reruns: the analyser of [kind] (`compilation`, the only one) over [job]'s retained captures. */
+@Serializable
+data class AnalyzeSpec(val job: Long, val kind: String = COMPILATION) {
+    companion object {
+        const val COMPILATION = "compilation"
+    }
+}
+
+/** Whether [this] is an analysis job, which runs the lab's analyser over another job's captures. */
+val ExperimentSpec.isAnalysis: Boolean get() = analyze != null
+
+/** Whether [this] job's cases are instrumented: their CLI recorded every compilation, so their times are no runtime measurement. */
+val ExperimentSpec.instrumented: Boolean get() = profileCompilation != null
 
 /** Whether [this] is a profile job rather than an experiment over problems. */
 val ExperimentSpec.isProfile: Boolean get() = profile != null
@@ -170,7 +196,7 @@ object Experiments {
             "runtime itself (per-case timeouts, placement on the Mac or AWS by load), so don't split or cancel jobs to " +
             "keep them short; read partial results with `lab cases ${job.id}` while it runs"
 
-    private fun exemptFromSplitting(spec: ExperimentSpec) = spec.isProfile || '@' in spec.name || Confirm.SUFFIX in spec.name
+    private fun exemptFromSplitting(spec: ExperimentSpec) = spec.isProfile || spec.isAnalysis || '@' in spec.name || Confirm.SUFFIX in spec.name
 
     /** What [spec] runs apart from its problems: each arm's values with their defaults filled in, labels left out. */
     private fun splitKey(spec: ExperimentSpec): List<Any> = listOf(
@@ -178,6 +204,7 @@ object Experiments {
         spec.seeds.sorted(),
         spec.repeats,
         spec.profileCli,
+        spec.profileCompilation.orEmpty(),
     )
 
     private fun hash(text: String): String =
@@ -241,6 +268,20 @@ object Experiments {
         require(spec.name.isNotBlank()) { "name is required" }
         requireOptions(spec)
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
+        spec.analyze?.let { analyze ->
+            require(analyze.kind == AnalyzeSpec.COMPILATION) { "analyze.kind must be '${AnalyzeSpec.COMPILATION}', not '${analyze.kind}'" }
+            require(analyze.job > 0) { "analyze.job must name a job" }
+            require(
+                spec.profile == null && spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.base.isEmpty() &&
+                    spec.configs == listOf(emptyMap<String, String>()) && spec.grid.isEmpty() && spec.seeds.isEmpty() &&
+                    spec.repeats == 1 && !spec.profileCli && spec.profileCompilation == null,
+            ) { "an analyze job reruns the lab's analyser over another job's captures: no problems, configs, profile or profiling of its own" }
+            return
+        }
+        spec.profileCompilation?.let { mode ->
+            require(mode in COMPILATION_MODES) { "profileCompilation must be one of $COMPILATION_MODES, not '$mode'" }
+            require(spec.profileCli) { "profileCompilation requires profileCli: true, whose CLI JVM it records" }
+        }
         spec.profile?.let { profile ->
             profile.runTimeoutSec?.let { timeout ->
                 require(timeout in 1..(Long.MAX_VALUE / 1_000_000_000)) { "profile.runTimeoutSec must be positive and fit a monotonic deadline" }
@@ -456,6 +497,11 @@ object Experiments {
 
     private fun requireValue(key: String, value: String) =
         require(value.isNotBlank() && value.none { it.isWhitespace() || it.isISOControl() }) { "'$key' has an empty value or whitespace in it" }
+
+    /** What [ExperimentSpec.profileCompilation] may be: JFR alone, or JFR and HotSpot's compilation log. */
+    const val COMPILATION_JFR = "jfr"
+    const val COMPILATION_JFR_LOG = "jfr+log"
+    val COMPILATION_MODES = listOf(COMPILATION_JFR, COMPILATION_JFR_LOG)
 
     private const val PARAM = "param."
     private val NAME = Regex("[A-Za-z0-9._-]+")

@@ -12,11 +12,11 @@ object Placement {
     /**
      * The jobs that stay on the Mac whatever is free: scheduled runs (`<schedule>@<sha>`) and their confirmations,
      * which the sweeps and the trend compare against each other on one machine; reference runs, which need the Mac's
-     * reference solvers; exact problem lists, which only confirmations use; and a profile with a whole-run deadline,
-     * which the Mac enforces on its own processes.
+     * reference solvers; exact problem lists, which only confirmations use; a profile with a whole-run deadline,
+     * which the Mac enforces on its own processes; and an analysis job, which reads captures kept on the Mac.
      */
     fun macOnly(spec: ExperimentSpec, name: String): Boolean =
-        '@' in name || Confirm.SUFFIX in name || spec.problemList.isNotEmpty() || spec.profile?.runTimeoutSec != null ||
+        '@' in name || Confirm.SUFFIX in name || spec.problemList.isNotEmpty() || spec.profile?.runTimeoutSec != null || spec.isAnalysis ||
             runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND }
 
     /** The host [spec] named [name] is placed on: `lab` when only the Mac may or can run it, `auto` otherwise, a
