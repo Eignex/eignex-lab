@@ -14,7 +14,7 @@ data class NodeStart(val size: String? = null, val market: String? = null)
 /** What the API leaves for the cloud worker, in `aws/manual-launch.json`: the [size] asked for (null for the size the
  *  queue calls for), whether to buy it [onDemand], and when it was asked [at]. */
 @Serializable
-data class ManualLaunchRequest(val size: String? = null, val onDemand: Boolean = false, val at: Long)
+data class ManualLaunchRequest(val size: String? = null, val onDemand: Boolean = false, val at: Long, val by: String? = null)
 
 /** The size and market a manual launch goes ahead with. */
 data class ManualLaunchPlan(val size: InstanceSize, val onDemand: Boolean)
@@ -37,6 +37,9 @@ object ManualLaunch {
     const val EXPIRY_MS = 5 * 60_000L
     /** A pool report older than this says the worker is not running, so a request would sit unread. */
     const val STALE_REPORT_MS = 2 * 60_000L
+    /** How soon after any launch a manual start is refused as a repeat of the press that caused it. */
+    const val REPEAT_MS = 2 * 60_000L
+    private const val MS_PER_SEC = 1000L
     private val JSON = Json { ignoreUnknownKeys = true }
 
     fun file(config: Config): Path = config.dataDir.resolve("aws").resolve(FILE)
@@ -70,7 +73,7 @@ object ManualLaunch {
      * worker. Returns the HTTP status and the message to answer with: 202 when requested, 409 when the pool cannot take
      * a node or a request already waits, 400 for an unknown size or market.
      */
-    fun request(config: Config, aws: AwsConfig, report: NodePoolReport?, start: NodeStart, now: Long): Pair<Int, String> {
+    fun request(config: Config, aws: AwsConfig, report: NodePoolReport?, start: NodeStart, now: Long, by: String? = null): Pair<Int, String> {
         val onDemand = try {
             onDemand(start.market)
         } catch (e: IllegalArgumentException) {
@@ -87,6 +90,13 @@ object ManualLaunch {
         }
         val file = file(config)
         if (file.exists()) return 409 to "a manual launch is already requested; the worker takes it on its next poll"
+        // A second press right after the first, a double click or a reload, would buy a second node nobody asked for.
+        report.lastLaunch?.let { last ->
+            val ago = now - last
+            if (ago in 0 until REPEAT_MS) {
+                return 409 to "a node was launched ${ago / MS_PER_SEC} s ago; start another after ${REPEAT_MS / MS_PER_SEC} s if you want two"
+            }
+        }
         val busy = report.busyVcpus ?: report.nodes.sumOf { node -> aws.sizes.firstOrNull { it.type == node.type }?.vcpus ?: 0 }
         // The size the queue calls for, as the worker last worked it out; a report from an older lab has none, so the
         // smallest. A null one from a newer lab means none fits what is left of the quota.
@@ -98,7 +108,7 @@ object ManualLaunch {
         }
         val size = checkNotNull(chosen)
         file.parent.createDirectories()
-        file.writeAtomically(JSON.encodeToString(ManualLaunchRequest.serializer(), ManualLaunchRequest(asked?.type, onDemand, now)))
+        file.writeAtomically(JSON.encodeToString(ManualLaunchRequest.serializer(), ManualLaunchRequest(asked?.type, onDemand, now, by)))
         return 202 to "manual launch requested: a ${size.type} ${marketText(onDemand)} node${if (asked == null) ", the size the queue calls for" else ""}. " +
             "It takes work as any node does and retires after ${aws.nodeIdleMin} min with nothing to take"
     }

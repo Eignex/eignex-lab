@@ -1324,7 +1324,7 @@ private fun startNode(aws: AwsConfig, report: NodePoolReport?): String = buildSt
     val sizes = aws.sizes.sortedBy { if (it.type == chosen) 0 else 1 }
     for (size in sizes) append("<option value=\"${esc(size.type)}\">${esc(size.type)} (${size.vcpus} vCPUs)</option>")
     append("</select> <select id=\"node-market\"><option value=\"spot\">spot first</option><option value=\"on-demand\">on-demand</option></select> ")
-    append("<button onclick=\"act('/cloud/nodes', {size: document.getElementById('node-size').value, " +
+    append("<button onclick=\"this.disabled = true; act('/cloud/nodes', {size: document.getElementById('node-size').value, " +
         "market: document.getElementById('node-market').value}, 'Start a cloud node? It retires after ${aws.nodeIdleMin} min with nothing to take.')\">Start a node</button></span>")
 }
 

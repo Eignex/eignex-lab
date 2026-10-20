@@ -86,6 +86,11 @@ class ManualLaunchTest {
         assertContains(unknown.second, "size must be one of c7i.2xlarge, c7i.4xlarge, c7i.8xlarge")
         assertEquals(409, twice.first)
         assertContains(twice.second, "already requested")
+        // Right after any launch, a second press is refused as a repeat of the first.
+        val repeat = ManualLaunch.request(lab("maxInstances=2\n"), aws, report().copy(lastLaunch = now - 30_000), NodeStart(), now)
+        assertEquals(409, repeat.first)
+        assertContains(repeat.second, "a node was launched 30 s ago")
+        assertEquals(202, ManualLaunch.request(lab("maxInstances=2\n"), aws, report().copy(lastLaunch = now - ManualLaunch.REPEAT_MS), NodeStart(), now).first)
     }
 
     @Test
