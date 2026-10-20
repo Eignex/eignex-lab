@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -243,6 +244,23 @@ class AwsTest {
             with(default) { listOf(onDemand, spotWaitMin, nodeIdleMin, nodeMinPriority, nodeLaunchMacHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
         assertEquals(listOf<Any>(true, 2L, 1, 4.5, 1L, 9L, 32),
             with(set) { listOf(onDemand, nodeIdleMin, nodeMinPriority, nodeLaunchMacHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+    }
+
+    @Test
+    fun `the pool's report carries the launch gate for the pages, and an old report still reads`() {
+        val aws = AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null,
+            nodeSustainMin = 10, nodeCooldownMin = 5)
+        val gate = LaunchGate()
+        gate.shouldLaunch(1_000, 12.0, 0, 10.0, room = false, sustainMs = 600_000, cooldownMs = 300_000)
+        val nodes = listOf(NodeReport("i-1", "c7i.2xlarge", "spot", "idle"))
+
+        val report = AwsWorker.poolReport(2_000, 25.0, 1, nodes, 10.0, gate, aws, LaunchGate.AT_MAX)
+        val read = Json.decodeFromString(NodePoolReport.serializer(), Json.encodeToString(NodePoolReport.serializer(), report))
+        val old = Json.decodeFromString(NodePoolReport.serializer(), """{"updatedAt": 1, "pressure": 0.5, "launching": 0, "nodes": []}""")
+
+        assertEquals(listOf<Any?>(10.0, 40.0, 1_000L, null, 600_000L, 300_000L, LaunchGate.AT_MAX),
+            with(read) { listOf(threshold, nextThreshold, overSince, lastLaunch, sustainMs, cooldownMs, blocker) })
+        assertEquals(listOf<Any?>(null, null, null, null), with(old) { listOf(threshold, nextThreshold, overSince, blocker) })
     }
 
     @Test

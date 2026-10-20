@@ -587,6 +587,9 @@ class AwsWorker(
     /** The pressure at the last poll, in core-hours; a launch waiting for spot gives up once it is gone. */
     @Volatile
     private var pressure = 0.0
+    /** What kept the last poll from launching a node ([LaunchGate.blocker]), for the pages. */
+    @Volatile
+    private var blocker: String? = null
 
     /** Whether any node is up or launching: the runner holds off updating itself until none is, since a restart would
      *  end the threads that drive them. */
@@ -652,9 +655,17 @@ class AwsWorker(
         val size = all.maxOfOrNull { it.cores }?.let { cores ->
             NodePool.size(aws.sizes, cores, pressure, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
         }
-        val room = size != null && count < aws.maxInstances && !runner.updateWaiting()
-        val launch = gate.shouldLaunch(System.currentTimeMillis(), pressure, count, threshold, room,
-            aws.nodeSustainMin * MS_PER_MIN, aws.nodeCooldownMin * MS_PER_MIN)
+        val noRoom = when {
+            count >= aws.maxInstances -> LaunchGate.AT_MAX
+            runner.updateWaiting() -> LaunchGate.UPDATE_WAITING
+            size == null && all.isNotEmpty() -> LaunchGate.QUOTA_FULL
+            else -> null
+        }
+        val now = System.currentTimeMillis()
+        val sustainMs = aws.nodeSustainMin * MS_PER_MIN
+        val cooldownMs = aws.nodeCooldownMin * MS_PER_MIN
+        val launch = gate.shouldLaunch(now, pressure, count, threshold, size != null && noRoom == null, sustainMs, cooldownMs)
+        blocker = if (launch) null else gate.blocker(now, pressure, count, threshold, noRoom, sustainMs, cooldownMs)
         if (!launch || size == null) return
         // A profile job runs only on an on-demand node: one is bought for it when none is up or on its way.
         val onDemand = queued.any { it.profile } && nodes.values.none { it.onDemand } && launchingOnDemand.get() == 0
@@ -1018,8 +1029,9 @@ class AwsWorker(
     /** The pool as the pages show it, in `aws/nodes.json`. */
     @Synchronized
     private fun report() {
-        val report = NodePoolReport(System.currentTimeMillis(), pressure, launching.get(),
-            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job) })
+        val report = poolReport(System.currentTimeMillis(), pressure, launching.get(),
+            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job) },
+            threshold, gate, aws, blocker)
         nodesFile.parent.createDirectories()
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
     }
@@ -1091,6 +1103,16 @@ class AwsWorker(
          */
         internal fun finishWorktree(worktree: String, profileCli: Boolean): List<String> =
             listOfNotNull(CliMeasurements.install(worktree).takeIf { profileCli }, Experiments.captureProvenance(worktree))
+
+        /** The pool's report for the pages: its [nodes] and [launching] count, the [pressure] against the [threshold]
+         *  for the next node, and the [gate]'s state with the settings it runs on and what holds a launch back. */
+        internal fun poolReport(
+            now: Long, pressure: Double, launching: Int, nodes: List<NodeReport>, threshold: Double, gate: LaunchGate,
+            aws: AwsConfig, blocker: String?,
+        ) = NodePoolReport(now, pressure, launching, nodes,
+            threshold = threshold, nextThreshold = NodePool.nextThreshold(threshold, nodes.size + launching),
+            overSince = gate.since, lastLaunch = gate.lastLaunch, sustainMs = aws.nodeSustainMin * MS_PER_MIN,
+            cooldownMs = aws.nodeCooldownMin * MS_PER_MIN, blocker = blocker)
 
         /** Cases a node of [size] runs at once when a job sets no `parallel`: one per two physical cores. */
         internal fun defaultParallel(size: InstanceSize): Int = (size.cores / 2).coerceAtLeast(1)

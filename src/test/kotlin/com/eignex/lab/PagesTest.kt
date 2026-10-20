@@ -318,24 +318,163 @@ class PagesTest {
         }
     }
 
-    @Test
-    fun `the queue's summary shows the AWS nodes, their sizes, markets and what each does`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
-        config.dataDir.resolve("aws").toFile().mkdirs()
-        config.dataDir.resolve("aws/aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
-        assertEquals(null, nodesLine(config))
-        val report = NodePoolReport(1, 3.25, 1, listOf(
-            NodeReport("i-1", "c7i.2xlarge", "spot", "running job 7", 7),
-            NodeReport("i-2", "c7i.4xlarge", "on-demand", "idle"),
-        ))
+    /** A lab of [cores] cores, with AWS settings when [aws] is not null (extra `aws.properties` lines). */
+    private fun lab(cores: Int = 4, aws: String? = ""): Config {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = cores)
+        if (aws != null) {
+            config.dataDir.resolve("aws").toFile().mkdirs()
+            config.dataDir.resolve("aws/aws.properties").toFile()
+                .writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n$aws")
+        }
+        return config
+    }
+
+    private fun writeReport(config: Config, report: NodePoolReport) =
         config.dataDir.resolve("aws/nodes.json").toFile().writeText(Json.encodeToString(NodePoolReport.serializer(), report))
 
-        val line = nodesLine(config)!!
+    /** A job of 0.1 core-hours a case (6-minute timeout on one core), [cases] of them planned, [done] of them done. */
+    private fun work(id: Long, host: String, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
+        id, "e$id", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, priority = priority,
+        experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "360000"), host = host),
+        counts = CommandCounts(cases, done, 0, 0),
+    )
 
-        assertContains(line, "AWS nodes: 2, 1 launching")
-        assertContains(line, "2xlarge spot</span> running <a href=\"/jobs/7\">job 7</a>")
-        assertContains(line, "4xlarge on-demand</span> idle")
-        assertContains(line, "pressure 3.3 core-h")
+    private fun summaryOf(config: Config, jobs: List<Job>) =
+        workSummary(config, jobs, jobs.associate { it.id to NodePool.remainingCoreHours(it)!! })
+
+    @Test
+    fun `without AWS settings the work summary shows only the work and the Mac's time to drain it`() {
+        val config = lab(aws = null)
+
+        val summary = summaryOf(config, listOf(work(1, Experiments.LAB_HOST, 10), work(2, Experiments.LAB_HOST, 30, done = 10)))
+
+        assertContains(summary, "≈3.0 core-h")
+        assertContains(summary, "~45 min for the Mac alone")
+        assertFalse("AWS" in summary)
+    }
+
+    @Test
+    fun `the work summary splits Mac-only, toward-AWS and below-the-floor work`() {
+        val config = lab(aws = "nodeMinPriority=1\n")
+        writeReport(config, NodePoolReport(now(), 0.0, 0, emptyList()))
+
+        val summary = summaryOf(config, listOf(work(1, Experiments.LAB_HOST, 10), work(2, Experiments.AUTO_HOST, 20, priority = 1),
+            work(3, Experiments.AUTO_HOST, 40), work(4, Experiments.AWS_HOST, 50, done = 20, status = Status.RUNNING)))
+
+        assertContains(summary, "≈10 core-h")
+        // Everything but the AWS job's 3 core-hours, on four cores.
+        assertContains(summary, "~1 h 45 min for the Mac alone")
+        assertContains(summary, "Mac only 1.0</span>")
+        assertContains(summary, "Mac or AWS, toward AWS 2.0</span>")
+        assertContains(summary, "Mac or AWS below the priority floor 4.0</span>")
+        assertContains(summary, "AWS 3.0</span>")
+    }
+
+    @Test
+    fun `below the threshold the gauge says how far the pressure is from the first node`() {
+        val config = lab(cores = 10)
+        writeReport(config, NodePoolReport(now(), 0.8, 0, emptyList(), threshold = 10.0, nextThreshold = 10.0,
+            sustainMs = 600_000, cooldownMs = 300_000, blocker = LaunchGate.BELOW))
+
+        val summary = summaryOf(config, listOf(work(1, Experiments.AUTO_HOST, 8)))
+
+        assertContains(summary, "style=\"width:8.0%\"")
+        assertContains(summary, "0.8 of 10 core-h for the first node")
+        assertContains(summary, "no node: below threshold")
+        assertContains(summary, "AWS nodes: none")
+        assertFalse("over for" in summary)
+    }
+
+    @Test
+    fun `over the threshold the gauge says how long it has held against the sustain time`() {
+        val config = lab(cores = 10)
+        val at = now()
+        writeReport(config, NodePoolReport(at, 45.0, 0, listOf(
+            NodeReport("i-1", "c7i.2xlarge", "spot", "running job 7", 7),
+            NodeReport("i-2", "c7i.4xlarge", "on-demand", "idle"),
+        ), threshold = 10.0, nextThreshold = 40.0, overSince = at - 4 * 60_000, lastLaunch = at - 30 * 60_000,
+            sustainMs = 600_000, cooldownMs = 300_000, blocker = "waiting 6 min more"))
+
+        val summary = summaryOf(config, listOf(work(1, Experiments.AUTO_HOST, 450)))
+
+        assertContains(summary, "<i class=\"over\" style=\"width:100.0%\">")
+        assertContains(summary, "45 of 40 core-h for node 3")
+        assertContains(summary, "over for 4 of 10 min")
+        assertContains(summary, "no node: waiting 6 min more")
+        assertFalse("cooldown" in summary)
+        assertContains(summary, "AWS nodes: 2 (")
+        assertContains(summary, "2xlarge spot</span> running <a href=\"/jobs/7\">job 7</a>")
+        assertContains(summary, "4xlarge on-demand</span> idle")
+    }
+
+    @Test
+    fun `the gauge shows the cooldown left after a launch`() {
+        val config = lab(cores = 10)
+        val at = now()
+        writeReport(config, NodePoolReport(at, 12.0, 1, emptyList(), threshold = 10.0, nextThreshold = 20.0,
+            lastLaunch = at - 2 * 60_000, sustainMs = 600_000, cooldownMs = 300_000, blocker = LaunchGate.BELOW))
+
+        val summary = summaryOf(config, listOf(work(1, Experiments.AUTO_HOST, 120)))
+
+        assertContains(summary, "12 of 20 core-h for node 2")
+        assertContains(summary, "cooldown 3 min left")
+        assertContains(summary, "1 launching")
+    }
+
+    @Test
+    fun `a launch held back by the quota or a lab update says so`() {
+        val config = lab(cores = 10)
+        for (blocker in listOf(LaunchGate.QUOTA_FULL, LaunchGate.UPDATE_WAITING, LaunchGate.AT_MAX)) {
+            writeReport(config, NodePoolReport(now(), 15.0, 0, emptyList(), threshold = 10.0, nextThreshold = 10.0,
+                overSince = now() - 20 * 60_000, sustainMs = 600_000, cooldownMs = 300_000, blocker = blocker))
+
+            assertContains(summaryOf(config, emptyList()), "<span class=\"warn\">no node: $blocker</span>")
+        }
+    }
+
+    @Test
+    fun `a pool report from an older lab still shows the gauge, its threshold from the settings`() {
+        val config = lab(cores = 10)
+        config.dataDir.resolve("aws/nodes.json").toFile()
+            .writeText("""{"updatedAt": ${now()}, "pressure": 3.25, "launching": 0, "nodes": [], "someday": 1}""")
+
+        val summary = summaryOf(config, emptyList())
+
+        assertContains(summary, "Work scheduled</b> <span class=\"muted\">none</span>")
+        assertContains(summary, "3.3 of 10 core-h for the first node")
+        assertFalse("no node:" in summary)
+        assertContains(summaryOf(lab(), emptyList()), "AWS: no pool report yet")
+    }
+
+    @Test
+    fun `each active row shows its remaining estimate, and the Mac's time for work the Mac may run`() {
+        val config = lab(cores = 4)
+        writeReport(config, NodePoolReport(now(), 0.0, 0, emptyList()))
+        val jobs = listOf(work(1, Experiments.AUTO_HOST, 10), work(2, Experiments.AWS_HOST, 50, done = 20, status = Status.RUNNING),
+            work(3, Experiments.LAB_HOST, 0))
+
+        val page = indexPage(config, host, jobs, emptyList(), emptyList(), 50, null, null, listOf(1L, 3L))
+
+        assertContains(page, "≈1.0 core-h · ~15 min on the Mac</div>")
+        assertContains(page, "≈3.0 core-h</div>")
+        // Unplanned: 20 problems by the pool's estimate, so 2 core-hours.
+        assertContains(page, "≈2.0 core-h · ~30 min on the Mac</div>")
+        assertContains(page, "<div id=\"work\" data-live>")
+        assertFalse("pressure" in page.substringBefore("<div id=\"work\""))
+    }
+
+    @Test
+    fun `the queue page renders hundreds of active jobs quickly`() {
+        val config = lab(cores = 10)
+        writeReport(config, NodePoolReport(now(), 0.0, 0, emptyList()))
+        val jobs = (1L..500L).map { work(it, if (it % 2 == 0L) Experiments.AUTO_HOST else Experiments.LAB_HOST, 40, done = 5) }
+        repeat(3) { indexPage(config, host, jobs, emptyList(), emptyList(), 50, null, null, jobs.map { it.id }) }
+
+        val started = System.nanoTime()
+        indexPage(config, host, jobs, emptyList(), emptyList(), 50, null, null, jobs.map { it.id })
+        val ms = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue(ms < 200, "rendering took $ms ms")
     }
 
     @Test

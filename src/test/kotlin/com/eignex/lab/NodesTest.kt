@@ -146,4 +146,44 @@ class NodesTest {
         assertEquals(listOf(false, false, true), listOf(at(4, 2.5, 1), at(7, 2.5, 1), at(8, 2.5, 1)))
         assertEquals(listOf(false, false), listOf(at(9, 3.9, 2), at(20, 3.9, 2)))
     }
+
+    @Test
+    fun `the next node's threshold is the threshold, then twice it per node`() {
+        assertEquals(listOf(10.0, 20.0, 40.0, 60.0), (0..3).map { NodePool.nextThreshold(10.0, it) })
+    }
+
+    @Test
+    fun `the gate says what holds a launch back, the threshold, the room, the sustain time or the cooldown`() {
+        val gate = LaunchGate()
+        fun at(min: Long, pressure: Double, nodes: Int = 0, noRoom: String? = null): Pair<Boolean, String?> {
+            val launched = gate.shouldLaunch(min * 60_000, pressure, nodes, 1.0, noRoom == null, 3 * 60_000, 5 * 60_000)
+            return launched to gate.blocker(min * 60_000, pressure, nodes, 1.0, noRoom, 3 * 60_000, 5 * 60_000)
+        }
+
+        assertEquals(false to LaunchGate.BELOW, at(0, 0.5))
+        assertEquals(null, gate.since)
+        assertEquals(false to "waiting 3 min more", at(0, 2.0))
+        assertEquals(0L, gate.since)
+        assertEquals(false to LaunchGate.QUOTA_FULL, at(1, 2.0, noRoom = LaunchGate.QUOTA_FULL))
+        assertEquals(false to "waiting 1 min more", at(2, 2.0))
+        assertEquals(true, at(3, 2.0).first)
+        assertEquals(listOf(null, 3 * 60_000L), listOf(gate.since, gate.lastLaunch))
+        // One node up: 2.5 core-hours is past twice the threshold, held 4 minutes, but only 5 after the launch.
+        at(4, 2.5, nodes = 1)
+        assertEquals(false to "cooldown 1 min", at(7, 2.5, nodes = 1))
+        assertEquals(false to LaunchGate.AT_MAX, at(7, 2.5, nodes = 1, noRoom = LaunchGate.AT_MAX))
+        assertEquals(true, at(8, 2.5, nodes = 1).first)
+    }
+
+    @Test
+    fun `a job's remaining estimate counts its queued cases, a running one's unfinished ones, and an unplanned one's guess`() {
+        val timed = spec.copy(problems = listOf(mapOf("suite" to "s", "max" to "10")), base = mapOf("timeout" to "360000"))
+        fun job(status: Status, counts: CommandCounts?, experiment: ExperimentSpec? = timed) =
+            Job(1, "e", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, experiment = experiment, counts = counts)
+
+        assertEquals(0.1 * 4, NodePool.remainingCoreHours(job(Status.QUEUED, CommandCounts(10, 4, 0, 2)))!!, 1e-9)
+        assertEquals(0.1 * 6, NodePool.remainingCoreHours(job(Status.RUNNING, CommandCounts(10, 4, 0, 2)))!!, 1e-9)
+        assertEquals(0.1 * 10, NodePool.remainingCoreHours(job(Status.RUNNING, CommandCounts(0, 0, 0, 0)))!!, 1e-9)
+        assertEquals(null, NodePool.remainingCoreHours(job(Status.QUEUED, null, experiment = null)))
+    }
 }

@@ -546,8 +546,8 @@ first it joins a job already running on AWS that still has problems no node has 
 first), otherwise it claims the next queued job it may run (not Mac-only, its cases fit the node's cores, a profile job
 only on an on-demand node, priority order). A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
 and at once when a lab update waits. It stops taking problems an hour before its `maxHours` power-off. A job's
-instances are the nodes working on it right now; its page lists them with their sizes and markets, and the queue's
-summary has a line on the whole pool: each node's size, market and what it is doing, and the pressure.
+instances are the nodes working on it right now; its page lists them with their sizes and markets, and the queue
+page's work summary shows the whole pool (below).
 
 Nodes launch on pressure, with damping:
 
@@ -580,6 +580,19 @@ Nodes launch on pressure, with damping:
   a backlog beyond that a second node.
 - A node runs one case per two physical cores unless the job sets `parallel`, which on AWS counts per node, within
   its cores: single-core arms run 2 cases on a c7i.2xlarge and 4 on a c7i.4xlarge.
+
+The queue page shows the scheduled work and the launch gauge above the Active table. Each active row has its
+remaining estimate under its progress (the pool's estimate above: a running job's unfinished cases, a queued one's
+queued cases), with the Mac's wall time for work the Mac may run (core-hours over `LAB_CORES`). The work summary
+totals it, split into Mac only, Mac or AWS at `nodeMinPriority` or above (which counts toward a node), Mac or AWS
+below it (the Mac's in practice) and AWS, with the time the Mac alone would take to drain all but the AWS work;
+paused and cancelling jobs are left out. With AWS settings, the gauge is a bar of the worker's pressure against the
+threshold for the next node ("0.8 of 10 core-h for the first node", "26 of 40 core-h for node 3"), how long the
+pressure has stood over it against `nodeSustainMin` ("over for 4 of 10 min"), the cooldown left, what holds the next
+node back ("no node: below threshold", "waiting 6 min more", "cooldown 3 min", "at maxInstances", "vCPU quota full",
+"lab update waiting") and the nodes up with their size, market and what each is doing. The worker writes these to
+`$LAB_DATA/aws/nodes.json` on every poll; the page's totals include the job the free Mac takes next, which the
+pressure leaves out.
 
 `aws.properties` keys for the pool, all optional and reread on every poll: `maxInstances`, `vcpuQuota`, `onDemand`,
 `spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchMacHours`, `nodeSustainMin`, `nodeCooldownMin`,
