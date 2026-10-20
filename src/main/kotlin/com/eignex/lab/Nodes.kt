@@ -45,7 +45,8 @@ object NodePool {
 
     /**
      * Cases [spec] is expected to run before it is planned, when the selection is not known yet: per selection its
-     * `max`, else its `per-family` over [ASSUMED_FAMILIES] families, else [ASSUMED_SELECTION]; a selection naming one
+     * `max`, else its `per-family` over [ASSUMED_FAMILIES] families but at most [ASSUMED_OPEN_SELECTION] (a
+     * `per-family` of 1000000 means "all of it", not millions), else [ASSUMED_SELECTION]; a selection naming one
      * problem (`name`) and an exact problem list count as they are. Times the arms, seeds and repeats. A profile job runs one case.
      */
     fun estimatedCases(spec: ExperimentSpec): Int {
@@ -54,7 +55,7 @@ object NodePool {
             if ("name" in selection) return@sumOf 1
             val max = selection["max"]?.toIntOrNull()
             val perFamily = selection["per-family"]?.toIntOrNull()?.times(ASSUMED_FAMILIES)
-            listOfNotNull(max, perFamily).minOrNull() ?: ASSUMED_SELECTION
+            max?.let { minOf(it, perFamily ?: it) } ?: perFamily?.let { minOf(it, ASSUMED_OPEN_SELECTION) } ?: ASSUMED_SELECTION
         }
         return problems * Experiments.arms(spec).size * maxOf(1, spec.seeds.size) * spec.repeats
     }
@@ -136,6 +137,8 @@ object NodePool {
     const val ASSUMED_FAMILIES = 10
     /** Problems a selection with neither `max` nor `per-family` is assumed to give before it is planned. */
     const val ASSUMED_SELECTION = 20
+    /** Problems a `per-family` selection without `max` is assumed to give at most before it is planned. */
+    const val ASSUMED_OPEN_SELECTION = 200
     /** A node stops taking work an hour before it powers itself off. */
     const val RETIRE_MARGIN_MS = 60 * 60_000L
     private const val MS_PER_HOUR = 3_600_000.0
