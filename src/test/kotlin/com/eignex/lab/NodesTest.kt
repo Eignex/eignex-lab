@@ -25,6 +25,7 @@ class NodesTest {
             listOf(cases(mapOf("suite" to "s", "max" to "30")), cases(mapOf("suite" to "s", "per-family" to "2")),
                 cases(mapOf("suite" to "s", "per-family" to "5", "max" to "30")), cases(mapOf("suite" to "s"))))
         assertEquals(10 * 2 * 2 * 3, cases(mapOf("suite" to "s", "max" to "10"), seeds = listOf(1, 2), repeats = 3, arms = 2))
+        assertEquals(NodePool.ASSUMED_OPEN_SELECTION, cases(mapOf("suite" to "s", "per-family" to "1000000")))
         assertEquals(15, cases(mapOf("suite" to "s", "max" to "5"), mapOf("suite" to "t", "max" to "10")))
         assertEquals(2 * 3, cases(mapOf("suite" to "s", "name" to "a"), mapOf("suite" to "s", "name" to "b"), repeats = 3))
         assertEquals(3, NodePool.estimatedCases(spec.copy(problems = emptyList(), problemList = List(3) { Problem("s", "p$it") })))
