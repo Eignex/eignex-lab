@@ -19,11 +19,15 @@ data class DiskReport(
     val places: List<DiskPlace>,
     /** The largest job directories, [TOP_JOBS] of them, largest first: job id and bytes. */
     val largestJobs: List<Pair<Long, Long>> = emptyList(),
+    /** `docker system df` when the lab uses Docker; empty when it does not or Docker did not answer. */
+    val docker: List<DockerUsage> = emptyList(),
+    /** The last Docker cleanup ([DockerCleanup]), null before the first. */
+    val dockerCleanup: DockerCleanupRun? = null,
 )
 
 /**
  * What takes the lab machine's disk: the lab's own data, part by part, and the caches and tools beside it that grow as
- * the lab runs (the corpus, Gradle, the reference solvers' Docker VM, other checkouts). Measured with `du` on a
+ * the lab runs (the corpus, Gradle, the reference solvers' Docker VM and what Docker holds in it, other checkouts). Measured with `du` on a
  * background thread every [INTERVAL_MIN] minutes, at background priority, since a walk over a hundred gigabytes takes a
  * while; [latest] is the last measurement, null until the first is done.
  */
@@ -52,6 +56,8 @@ class DiskUsage(private val config: Config) {
             "other caches" to Path(home, ".cache"),
             "Gradle" to Path(home, ".gradle"),
             "Colima VM" to Path(home, ".colima"),
+            // Part of the VM's, shown on its own: the data disk Docker's images and build cache live on.
+            "Colima VM disks" to Path(home, ".colima", "_lima", "_disks"),
             "Lima VMs" to Path(home, ".lima"),
             "Docker Desktop" to Path(home, "Library/Containers/com.docker.docker"),
             "Workspaces" to Path(home, "Workspaces"),
@@ -68,9 +74,20 @@ class DiskUsage(private val config: Config) {
         val adjusted = places.map { p ->
             if (p.label == "other caches" && config.corpusDir.startsWith(Path(p.path))) p.copy(bytes = p.bytes?.let { maxOf(0, it - corpus) }) else p
         }
-        return DiskReport(System.currentTimeMillis(), freeBytes(config.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 }, largestJobs())
+        return DiskReport(
+            System.currentTimeMillis(), freeBytes(config.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 }, largestJobs(),
+            docker(), DockerCleanup.last(config.dockerCleanupState),
+        )
             .also { latest = it }
     }
+
+    /** What Docker holds, by `docker system df`, when the lab uses it. */
+    private fun docker(): List<DockerUsage> = if (!config.requireDocker) emptyList() else runCatching {
+        val process = ProcessBuilder(Background.prefix + listOf("docker", "system", "df", "--format", "{{json .}}"))
+            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val out = process.inputStream.bufferedReader().readText()
+        if (process.waitFor() == 0) DockerCleanup.parseDf(out) else emptyList()
+    }.getOrDefault(emptyList())
 
     /** Each job directory's size in one `du` over them all, the [TOP_JOBS] largest. */
     private fun largestJobs(): List<Pair<Long, Long>> = runCatching {

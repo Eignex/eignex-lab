@@ -35,6 +35,7 @@
 #   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #                                                            cancel a wrong job, not a long one: the lab bounds runtime itself
 #   lab update                                              update the lab now: between the running job's cases, not during one
+#   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
 #   lab host <id> auto|lab|aws                              operators only: override where a queued, unplanned job may run
 #                                                            (the lab places every job itself; agents need not)
 #   lab machines <id> [n]                                    retired: the AWS node pool sizes itself; the lab ignores it
@@ -132,6 +133,7 @@ schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \
 check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
 launch) curl -sS -X POST "$url/schedules/$1/launch"; echo ;;
 update) curl -sS -X POST "$url/update"; echo ;;
+docker-cleanup) curl -sS -X POST "$url/docker-cleanup"; echo ;;
 host) jq -n --arg host "$2" '{host: $host}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/host"; echo ;;
 machines) jq -n --argjson machines "${2:-null}" '{machines: $machines}' |

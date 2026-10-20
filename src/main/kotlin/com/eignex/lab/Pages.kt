@@ -1140,7 +1140,41 @@ internal fun diskPage(report: DiskReport?): String = buildString {
         }
         append("</table></div>")
     }
+    append(dockerSection(report))
     append("</body></html>")
+}
+
+/** The disk page's Docker part: what Docker holds and what the last [DockerCleanup] did. Empty when neither is known. */
+private fun dockerSection(report: DiskReport): String = buildString {
+    val cleanup = report.dockerCleanup
+    if (report.docker.isEmpty() && cleanup == null) return@buildString
+    append("<h2>Docker</h2>")
+    if (report.docker.isNotEmpty()) {
+        append("<div class=\"scroll\"><table><tr><th>what</th><th class=\"num\">size</th><th class=\"num\">reclaimable</th></tr>")
+        for (usage in report.docker) {
+            append("<tr><td>${esc(usage.type)}</td><td class=\"num\">${usage.bytes?.let(::size) ?: "?"}</td>")
+            append("<td class=\"num\">${usage.reclaimableBytes?.let(::size) ?: "?"}</td></tr>")
+        }
+        append("</table></div>")
+    }
+    if (cleanup == null) {
+        append("<p class=\"muted\">No cleanup has run yet.</p>")
+        return@buildString
+    }
+    val before = DockerCleanup.total(cleanup.dockerBefore)
+    val after = DockerCleanup.total(cleanup.dockerAfter)
+    append("<p>Last cleanup ${ago(cleanup.at)}, because ${esc(cleanup.why)}")
+    if (before != null && after != null) append(": Docker ${size(before)} → ${size(after)}")
+    if (cleanup.hostDiskBefore != null && cleanup.hostDiskAfter != null) {
+        append(", Colima's disks on the host ${size(cleanup.hostDiskBefore)} → ${size(cleanup.hostDiskAfter)}")
+    }
+    append(".</p><ul>")
+    append("<li>tags removed: ${if (cleanup.removedTags.isEmpty()) "none" else cleanup.removedTags.joinToString { "<code>${esc(it)}</code>" }}</li>")
+    append("<li>dangling images pruned: ${cleanup.prunedImages}</li>")
+    append("<li>build cache reclaimed: ${esc(cleanup.buildCacheReclaimed ?: "?")}</li>")
+    cleanup.trimmed?.let { append("<li>fstrim: ${esc(it)}</li>") }
+    for (note in cleanup.notes) append("<li class=\"muted\">${esc(note)}</li>")
+    append("</ul>")
 }
 
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
