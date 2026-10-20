@@ -172,6 +172,14 @@ class LaunchGate {
         return true
     }
 
+    /** Record a node started by hand at [now] ([ManualLaunch]) as the last launch, so the cooldown holds the next
+     *  automatic one, and start the sustain wait afresh. */
+    @Synchronized
+    fun manualLaunch(now: Long) {
+        lastLaunch = now
+        since = null
+    }
+
     /**
      * Why no node launches at [now], in plain words for the pages, given what [shouldLaunch] was last given: the
      * pressure is under the threshold, there is no room ([noRoom], the reason), the pressure has not held for
@@ -205,6 +213,8 @@ class LaunchGate {
  * fields are null in a file an older lab wrote: the [threshold] for the first node and the [nextThreshold] for the
  * next one, in core-hours; since when the pressure has stood over it ([overSince], the gate's wait); the [lastLaunch];
  * the [sustainMs] and [cooldownMs] settings; and the [blocker] that keeps the next node from launching, in plain words.
+ * For a manual start ([ManualLaunch]): whether a lab update waits ([updateWaiting]), the vCPUs the nodes hold of the
+ * quota ([busyVcpus]), and the size the queue calls for ([manualSize], null when none fits the quota left).
  */
 @Serializable
 data class NodePoolReport(
@@ -219,7 +229,13 @@ data class NodePoolReport(
     val sustainMs: Long? = null,
     val cooldownMs: Long? = null,
     val blocker: String? = null,
+    val updateWaiting: Boolean? = null,
+    val busyVcpus: Int? = null,
+    val manualSize: String? = null,
 )
 
+/** A node as the pages show it; [manual] when it was started by hand ([ManualLaunch]). */
 @Serializable
-data class NodeReport(val instance: String, val type: String, val market: String, val doing: String, val job: Long? = null)
+data class NodeReport(
+    val instance: String, val type: String, val market: String, val doing: String, val job: Long? = null, val manual: Boolean = false,
+)

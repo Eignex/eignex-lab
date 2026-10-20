@@ -17,6 +17,7 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.accept
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
@@ -318,6 +319,19 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
         // The runner fetches within seconds and, when the lab's upstream moved, updates between the running job's cases.
+        // Start a cloud node by hand ([ManualLaunch]): the runner's cloud worker launches it on its next poll.
+        post("/cloud/nodes") {
+            val aws = AwsConfig.load(config.dataDir.resolve("aws").resolve("aws.properties"))
+            if (aws == null) {
+                call.respond(HttpStatusCode.Conflict, "the lab has no cloud settings: run deploy/aws-setup.sh")
+                return@post
+            }
+            val text = call.receiveText()
+            val start = if (text.isBlank()) NodeStart() else runCatching { DefaultJson.decodeFromString(NodeStart.serializer(), text) }
+                .getOrElse { throw IllegalArgumentException("the body is {\"size\"?, \"market\"?}: ${it.message}") }
+            val (status, message) = ManualLaunch.request(config, aws, readPoolReport(config), start, System.currentTimeMillis())
+            call.respond(HttpStatusCode.fromValue(status), message)
+        }
         post("/update") {
             config.updateRequest.toFile().writeText("${System.currentTimeMillis()}\n")
             call.respond(HttpStatusCode.Accepted, "update requested")

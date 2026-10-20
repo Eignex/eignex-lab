@@ -639,6 +639,21 @@ Nodes launch on pressure, with damping:
 - A node runs one case per two physical cores unless the job sets `parallel`, which on cloud nodes counts per node, within
   its cores: single-core arms run 2 cases on a c7i.2xlarge and 4 on a c7i.4xlarge.
 
+A node can also be started by hand: the Cloud gauge's **Start a node** button, `lab node start [size] [spot|on-demand]`
+or `POST /cloud/nodes` (`{"size"?, "market"?}`). It skips the pressure threshold and the sustain wait, but not
+`maxInstances`, the `vcpuQuota` or a waiting lab update; the lab refuses it (409) saying which, and also when a manual
+request already waits or the cloud worker has not reported for two minutes (the runner is down). Its size is the one
+the queue calls for, as above (at least the cores of the largest waiting case; the smallest when nothing waits),
+unless one of the family's sizes within the quota is named. Its market is spot first as for any launch (on demand
+after `spotWaitMin` only with `onDemand=true`, else it gives up then); `on-demand`, asked for, is always allowed,
+since the operator chose to pay for it. The API leaves the request in `$LAB_DATA/aws/manual-launch.json` and the
+runner's cloud worker takes it on its next poll (10 s), checking the limits again and dropping a request over 5
+minutes old; it logs `aws: manual launch of a <type> <market> node` or `aws: manual launch refused: <why>`. The launch
+counts as the gate's last, so the cooldown holds the next automatic one. The node is then like any other: it joins
+jobs running on cloud nodes, claims queued jobs it may run (leaving the local machine its next job), and retires
+after `nodeIdleMin` minutes with nothing to take, so a manual node with nothing to do costs a few minutes. The nodes
+line marks it `manual`.
+
 The queue page shows the scheduled work and the launch gauge above the Active table. Each active row has its
 remaining estimate under its progress (the pool's estimate above: a running job's unfinished cases, a queued one's
 queued cases), with the local machine's wall time for work it may run ("~40 min locally") and where the time a case came from: "(measured)",
@@ -974,6 +989,7 @@ deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the ca
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
+deploy/lab node start c7i.4xlarge   # start a cloud node now, past the pressure threshold
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
 deploy/lab cancel 7
 ```
@@ -1010,6 +1026,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/problem?collection=<c>&problem=<p>` | one problem: every reference solver's verdict and every lab run |
 | `GET` | `/experiments/{id}/reference` | each arm against the reference, with disagreements |
 | `GET` | `/health` | queue counts and the koblas report |
+| `POST` | `/cloud/nodes` | `{"size"?, "market"?}`: start a cloud node by hand (see Running on cloud nodes); 202 when requested, 409 with the reason when refused |
 
 A browser (`Accept: text/html`) gets a page for `/jobs/{id}` and `/jobs/{id}/files`; `?json` gets the data instead.
 
