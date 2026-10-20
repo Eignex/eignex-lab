@@ -60,7 +60,8 @@ object NodePool {
         return problems * Experiments.arms(spec).size * maxOf(1, spec.seeds.size) * spec.repeats
     }
 
-    /** Core-hours left of a queued job: its queued cases when it was planned ([queuedCases]), its estimate otherwise. */
+    /** Core-hours left of a queued job by each case's whole timeout: its queued cases when it was planned
+     *  ([queuedCases]), its estimate otherwise. The upper bound, which [Estimates] fall back on. */
     fun coreHours(spec: ExperimentSpec, queuedCases: Int?): Double =
         (queuedCases ?: estimatedCases(spec)) * meanCaseCoreHours(spec)
 
@@ -71,20 +72,6 @@ object NodePool {
     /** The pressure that launches another node beside the [nodes] up or launching: [threshold] for the first, then
      *  twice it per node already there. */
     fun nextThreshold(threshold: Double, nodes: Int): Double = threshold * if (nodes == 0) 1.0 else 2.0 * nodes
-
-    /**
-     * Core-hours left of [job] by the estimate the pool uses ([coreHours]): a queued job's cases no host has started,
-     * a running one's unfinished cases, an unplanned one's estimate. Null for a job that is not an experiment.
-     */
-    fun remainingCoreHours(job: Job): Double? {
-        val spec = job.experiment?.takeUnless { it.isScript } ?: return null
-        val left = when {
-            job.total == 0 -> null
-            job.status == Status.RUNNING -> job.total - job.done
-            else -> job.total - job.done - job.running
-        }
-        return runCatching { coreHours(spec, left?.coerceAtLeast(0)) }.getOrNull()
-    }
 
     /** The pressure on the pool: every demand's core-hours, the ones at [minPriority] or above. */
     fun pressure(demands: List<Demand>, minPriority: Int): Double =

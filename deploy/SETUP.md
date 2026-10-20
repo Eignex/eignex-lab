@@ -554,11 +554,16 @@ Nodes launch on pressure, with damping:
 - Pressure is the estimated core-hours of the work waiting for AWS: queued `auto` jobs at priority `nodeMinPriority`
   (0) or above and every queued `aws` job (only an operator's override places one there), less the job the Mac takes
   next when it is free or about to give way to it, plus the unclaimed problems
-  of jobs running on AWS. A job's core-hours are its cases times each arm's `timeout` times its `processors`: a planned
-  job counts its queued cases; an unplanned one is estimated from its selections (`max`, else `per-family` times 10
-  families, else 20 problems per selection, the smaller when both are set) times arms, seeds and repeats; a profile
-  job is one case of its allowance. Work below `nodeMinPriority` that the Mac can run waits for the Mac: no node
-  launches for it or takes it. Mac-only work never counts.
+  of jobs running on AWS. A job's core-hours are its cases left times the wall time a case is taken to need times its
+  arms' `processors`. A planned job counts its queued cases; an unplanned one takes the case count of the last done run
+  of the same experiment (same fingerprint, the ref, name, description and placement left out; a run of the same
+  schedule first), else is guessed from its selections (`max`, else `per-family` times 10 families, else 20 problems
+  per selection, the smaller when both are set) times arms, seeds and repeats; a profile job is one case. The time a
+  case is the job's own mean once 10 of its cases finished, else that earlier run's mean case time (its cases' recorded
+  times, or its running time over its cases at the concurrency it ran at), else each arm's whole `timeout` (a profile's
+  allowance), the upper bound. The earlier runs are the newest 300 done experiments, reread at most once a minute.
+  Work below `nodeMinPriority` that the Mac can run waits for the Mac: no node launches for it or takes it. Mac-only
+  work never counts.
 - The launch threshold is set by the Mac: the work that would keep it busy for `nodeLaunchMacHours` (1.0) hours, that
   is the Mac's cores times that in core-hours (10 core-hours on a 10-core Mac). The first node launches once pressure
   has stayed at or above it for `nodeSustainMin` minutes (10). Another launches only while pressure is at least twice
@@ -583,10 +588,14 @@ Nodes launch on pressure, with damping:
 
 The queue page shows the scheduled work and the launch gauge above the Active table. Each active row has its
 remaining estimate under its progress (the pool's estimate above: a running job's unfinished cases, a queued one's
-queued cases), with the Mac's wall time for work the Mac may run (core-hours over `LAB_CORES`). The work summary
-totals it, split into Mac only, Mac or AWS at `nodeMinPriority` or above (which counts toward a node), Mac or AWS
-below it (the Mac's in practice) and AWS, with the time the Mac alone would take to drain all but the AWS work;
-paused and cancelling jobs are left out. With AWS settings, the gauge is a bar of the worker's pressure against the
+queued cases), with the Mac's wall time for work the Mac may run and where the time a case came from: "(measured)",
+"(from run 6659)", "(upper bound)", or "(guessed, upper bound)" for an unplanned job no earlier run tells about. The
+Mac's wall time is the cases left times the time a case over the cases the job runs at once: its `parallel`, within
+`LAB_MAX_PARALLEL`, and no more than its largest arm's `processors` fit in `LAB_CORES` (a `parallel` of 4 with
+4-core cases on 8 cores runs 2 at once). The work summary totals the core-hours, split into Mac only, Mac or AWS at
+`nodeMinPriority` or above (which counts toward a node), Mac or AWS below it (the Mac's in practice) and AWS, with the
+time the Mac alone would take to drain all but the AWS work: the sum of those jobs' wall times, as the Mac runs one
+job at a time. Paused and cancelling jobs are left out. With AWS settings, the gauge is a bar of the worker's pressure against the
 threshold for the next node ("0.8 of 10 core-h for the first node", "26 of 40 core-h for node 3"), how long the
 pressure has stood over it against `nodeSustainMin` ("over for 4 of 10 min"), the cooldown left, what holds the next
 node back ("no node: below threshold", "waiting 6 min more", "cooldown 3 min", "at maxInstances", "vCPU quota full",

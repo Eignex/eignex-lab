@@ -56,9 +56,10 @@ data class CasePhase(
 /** A command as planned: what runs, how long it may, and how many cores it holds. */
 data class CaseCommand(val cmd: String, val timeoutSec: Long, val cores: Int = 1)
 
-/** How many of a job's commands there are, and how many finished, failed and are running: its progress, without them. */
+/** How many of a job's commands there are, and how many finished, failed and are running: its progress, without them.
+ *  [timed] of the finished ones recorded when they started and ended, together [timedMs] of wall time. */
 @Serializable
-data class CommandCounts(val total: Int, val done: Int, val failed: Int, val running: Int)
+data class CommandCounts(val total: Int, val done: Int, val failed: Int, val running: Int, val timed: Int = 0, val timedMs: Long = 0)
 
 @Serializable
 data class Job(
@@ -96,6 +97,13 @@ data class Job(
     val done: Int get() = counts?.done ?: commands.count { it.status == Status.DONE || it.status == Status.FAILED }
     val failed: Int get() = counts?.failed ?: commands.count { it.status == Status.FAILED }
     val running: Int get() = counts?.running ?: commands.count { it.status == Status.RUNNING }
+    /** Finished commands that recorded when they started and ended, and their wall time together: what a job's
+     *  measured case time is read from ([Estimates]). */
+    val timed: Int get() = counts?.timed ?: timedCommands().count()
+    val timedMs: Long get() = counts?.timedMs ?: timedCommands().sumOf { it.finishedAt!! - it.startedAt!! }
+
+    private fun timedCommands() = commands.asSequence()
+        .filter { (it.status == Status.DONE || it.status == Status.FAILED) && it.startedAt != null && it.finishedAt != null }
 }
 
 enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
@@ -553,14 +561,32 @@ class Store(file: Path) {
 
     private fun commandCounts(ids: List<Long>): Map<Long, CommandCounts> = if (ids.isEmpty()) emptyMap() else
         connection.prepareStatement(
-            "SELECT job_id, COUNT(*), SUM(status IN ('DONE', 'FAILED')), SUM(status = 'FAILED'), SUM(status = 'RUNNING') " +
+            "SELECT job_id, COUNT(*), SUM(status IN ('DONE', 'FAILED')), SUM(status = 'FAILED'), SUM(status = 'RUNNING'), " +
+                "SUM($TIMED), SUM(CASE WHEN $TIMED THEN finished_at - started_at ELSE 0 END) " +
                 "FROM commands WHERE job_id IN (${ids.joinToString(",") { "?" }}) GROUP BY job_id",
         ).use { statement ->
             ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
             statement.executeQuery().use { r ->
-                generateSequence { if (r.next()) r.getLong(1) to CommandCounts(r.getInt(2), r.getInt(3), r.getInt(4), r.getInt(5)) else null }.toMap()
+                generateSequence {
+                    if (r.next()) r.getLong(1) to CommandCounts(r.getInt(2), r.getInt(3), r.getInt(4), r.getInt(5), r.getInt(6), r.getLong(7)) else null
+                }.toMap()
             }
         }
+
+    /** The newest [limit] experiments that ended done, their ids only, newest first: the runs [EstimateHistory] reads. */
+    @Synchronized
+    fun doneExperimentIds(limit: Int): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND experiment IS NOT NULL ORDER BY id DESC LIMIT ?",
+    ).use { statement ->
+        statement.setString(1, Status.DONE.name)
+        statement.setInt(2, limit)
+        statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) else null }.toList() }
+    }
+
+    /** The jobs [ids], without their commands, with their [Job.counts]. */
+    @Synchronized
+    fun jobsByIds(ids: Collection<Long>): List<Job> =
+        if (ids.isEmpty()) emptyList() else jobsWhere("id IN (${ids.joinToString(",") { "?" }}) ORDER BY id", *ids.toTypedArray(), withCommands = false)
 
     private fun likeEscape(text: String) = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -1338,6 +1364,9 @@ class Store(file: Path) {
 }
 
 fun now(): Long = System.currentTimeMillis()
+
+/** A finished command that recorded when it started and ended, in SQL. */
+private const val TIMED = "(status IN ('DONE', 'FAILED') AND started_at IS NOT NULL AND finished_at IS NOT NULL)"
 
 /** A job's series in SQL, for the job in [next]'s outer query and the runs [next] looks back over: its name before
  *  any `@`, so every run a schedule queues shares its schedule's name. */

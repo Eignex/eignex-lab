@@ -332,15 +332,16 @@ class PagesTest {
     private fun writeReport(config: Config, report: NodePoolReport) =
         config.dataDir.resolve("aws/nodes.json").toFile().writeText(Json.encodeToString(NodePoolReport.serializer(), report))
 
-    /** A job of 0.1 core-hours a case (6-minute timeout on one core), [cases] of them planned, [done] of them done. */
+    /** A job of 0.1 core-hours a case (6-minute timeout on one core), [cases] of them planned, [done] of them done,
+     *  four at once. */
     private fun work(id: Long, host: String, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
-        id, "e$id", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, priority = priority,
+        id, "e$id", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, parallel = 4, priority = priority,
         experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "360000"), host = host),
         counts = CommandCounts(cases, done, 0, 0),
     )
 
     private fun summaryOf(config: Config, jobs: List<Job>) =
-        workSummary(config, jobs, jobs.associate { it.id to NodePool.remainingCoreHours(it)!! })
+        workSummary(config, jobs, jobs.associate { it.id to Estimates.estimate(it, { null }, config.cores)!! })
 
     @Test
     fun `without AWS settings the work summary shows only the work and the Mac's time to drain it`() {
@@ -455,12 +456,29 @@ class PagesTest {
 
         val page = indexPage(config, host, jobs, emptyList(), emptyList(), 50, null, null, listOf(1L, 3L))
 
-        assertContains(page, "≈1.0 core-h · ~15 min on the Mac</div>")
-        assertContains(page, "≈3.0 core-h</div>")
+        assertContains(page, "≈1.0 core-h · ~15 min on the Mac <span class=\"muted\">(upper bound)</span></div>")
+        assertContains(page, "≈3.0 core-h <span class=\"muted\">(upper bound)</span></div>")
         // Unplanned: 20 problems by the pool's estimate, so 2 core-hours.
-        assertContains(page, "≈2.0 core-h · ~30 min on the Mac</div>")
+        assertContains(page, "≈2.0 core-h · ~30 min on the Mac <span class=\"muted\">(guessed, upper bound)</span></div>")
         assertContains(page, "<div id=\"work\" data-live>")
         assertFalse("pressure" in page.substringBefore("<div id=\"work\""))
+    }
+
+    @Test
+    fun `each estimate names where its case times came from`() {
+        val config = lab(cores = 8, aws = null)
+        val measured = work(1, Experiments.LAB_HOST, 100, done = 20, status = Status.RUNNING)
+            .let { it.copy(counts = it.counts!!.copy(timed = 20, timedMs = 20 * 60_000)) }
+        val unplanned = work(2, Experiments.LAB_HOST, 0)
+        val history = { job: Job -> CaseHistory(6659, 977, 9_600.0).takeIf { job.id == 2L } }
+
+        val page = indexPage(config, host, listOf(measured, unplanned), emptyList(), emptyList(), 50, null, null, listOf(2L), history)
+
+        // 80 cases of a minute, four at once.
+        assertContains(page, "≈1.3 core-h · ~20 min on the Mac <span class=\"muted\">(measured)</span></div>")
+        // 977 cases of 9.6 s, four at once: 2.6 core-h and 40 min.
+        assertContains(page, "≈2.6 core-h · ~40 min on the Mac <span class=\"muted\">(from run 6659)</span></div>")
+        assertContains(page, "~1 h for the Mac alone")
     }
 
     @Test
