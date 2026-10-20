@@ -137,7 +137,6 @@ internal fun jobPage(
         append(singleCaseSection(config, job, spec))
     } else if (spec != null) {
         append(experimentSection(config, job.id, arms, cases, references))
-        if (spec.profileCli) append(compilationSection(config, job, arms, cases))
     }
     if (!showCommands) {
         append("<p><a href=\"/jobs/${job.id}?commands\">every case's command</a></p></div>")
@@ -203,7 +202,7 @@ private fun experimentSection(
         append("between uninstrumented runs only.</p>")
     } else if (comparison.arms.any { it.instrumented > 0 }) {
         append("<p class=\"note\">Instrumented runs (profileCompilation): every compilation was recorded, so times here include ")
-        append("that overhead and are no runtime measurement. Each job's page compares its arms' compiler work.</p>")
+        append("that overhead and are no runtime measurement. Each case's compilation report is among its files.</p>")
     }
     append("<h2>${if (compared) "Arms" else "Results"} <small>${cases.map { it.problem }.distinct().size} problems")
     if (seeds.size > 1) append(" × ${seeds.size} seeds")
@@ -492,10 +491,6 @@ internal fun trendPage(
         append(" · $specs experiments, each change marked by a dashed line: <a href=\"/trend${query("name" to name)}\">current only</a>")
     }
     append("</p></header>")
-    runs.count { it.instrumented }.takeIf { it > 0 }?.let { instrumented ->
-        append("<p class=\"note\">$instrumented of these runs were instrumented (profileCompilation): their PAR-2 times include ")
-        append("the compilation recording's overhead and are no runtime measurement.</p>")
-    }
     if (runs.isEmpty()) {
         append("<p class=\"muted\">No run of this schedule's current experiment has results yet.</p></body></html>")
         return@buildString
@@ -919,59 +914,6 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
     append("</p>")
 }
 
-/**
- * A profiled experiment's compiler work: each arm's means over its cases' compilation reports against the first
- * arm's, and every case's report in brief. Nothing for a profiled job with no report and no compilation recording.
- */
-private fun compilationSection(config: Config, job: Job, arms: List<PlannedArm>, cases: List<CaseResult>): String = buildString {
-    val view = CompilationReports.view(job.id, config.jobDir(job.id), job.experiment, arms.map { it.arm.label }, cases)
-    if (view.cases.isEmpty() && !view.instrumented) return@buildString
-    append("<h2>Compilation <small>JIT compiler work in each case's CLI JVM, from its ${CompilationReports.REPORT} · ")
-    append("<a href=\"/experiments/${job.id}/compilation\">json</a></small></h2>")
-    if (view.cases.isEmpty()) {
-        append("<p class=\"muted\">No report yet: the lab writes one as each case ends.</p>")
-        return@buildString
-    }
-    fun ms(value: Double) = "%.1f".format(value)
-    val first = view.arms.firstOrNull()?.arm
-    append("<div class=\"scroll\"><table><tr><th>arm</th><th class=\"num\">reports</th><th class=\"num\">compilations</th>")
-    append("<th class=\"num\">compiler ms</th><th class=\"num\">C1 ms</th><th class=\"num\">C2 ms</th><th class=\"num\">OSR</th>")
-    append("<th class=\"num\">failed</th>")
-    if (view.arms.size > 1) append("<th>vs ${esc(first.orEmpty())}</th>")
-    append("<th class=\"num\">incomplete</th></tr>")
-    for (arm in view.arms) {
-        append("<tr><td><b>${esc(arm.arm)}</b></td><td class=\"num\">${arm.cases}</td><td class=\"num\">${"%.1f".format(arm.compilations)}</td>")
-        append("<td class=\"num\">${ms(arm.compilerMs)}</td><td class=\"num\">${ms(arm.c1Ms)}</td><td class=\"num\">${ms(arm.c2Ms)}</td>")
-        append("<td class=\"num\">${"%.1f".format(arm.osr)}</td><td class=\"num\">${"%.1f".format(arm.failed)}</td>")
-        if (view.arms.size > 1) {
-            append("<td>")
-            append(if (arm.compilerMsRatio == null) "<span class=\"muted\">${if (arm.arm == first) "baseline" else "–"}</span>"
-                else "${"%.2f".format(arm.compilerMsRatio)}× compiler time, ${"%+.1f".format(arm.compilationsDelta ?: 0.0)} compilations")
-            append("</td>")
-        }
-        append("<td class=\"num\">${if (arm.incomplete > 0) "<span class=\"PARTIAL\">${arm.incomplete}</span>" else "0"}</td></tr>")
-    }
-    append("</table></div>")
-    append("<p class=\"muted\"><small>Means over each arm's cases with a report. Compiler time sums the compilations' own durations ")
-    append("on the compiler threads, which run beside the solve. A report is incomplete when a capture was cut short or ")
-    append("could not see part of the run (each says what, under <code>missing</code> and <code>incomplete</code>).</small></p>")
-    append("<details><summary><b>Cases</b> <small class=\"muted\">${view.cases.size} reports</small></summary>")
-    append("<div class=\"scroll\"><table><tr><th>#</th><th>arm</th><th>problem</th><th class=\"num\">compilations</th>")
-    append("<th class=\"num\">compiler ms</th><th class=\"num\">C1 ms</th><th class=\"num\">C2 ms</th><th class=\"num\">OSR</th>")
-    append("<th class=\"num\">failed</th><th>report</th><th>missing or incomplete</th></tr>")
-    for (case in view.cases) {
-        append("<tr><td>${case.case}</td><td>${esc(case.arm)}</td><td><code>${esc(case.problem)}</code></td>")
-        append("<td class=\"num\">${case.compilations}</td><td class=\"num\">${ms(case.compilerMs)}</td>")
-        append("<td class=\"num\">${ms(case.c1Ms)}</td><td class=\"num\">${ms(case.c2Ms)}</td><td class=\"num\">${case.osr}</td>")
-        append("<td class=\"num\">${case.failed}</td><td><a href=\"/jobs/${job.id}/files/${case.report}\">json</a></td>")
-        append("<td>${if (case.complete) "<span class=\"muted\">none</span>" else "<span class=\"PARTIAL\">${esc(case.markers.joinToString(", "))}</span>"}</td></tr>")
-    }
-    append("</table></div></details>")
-    if (view.withoutReport.isNotEmpty()) {
-        append("<p class=\"muted\">No report for case ${view.withoutReport.joinToString(", ")}: see job.log.</p>")
-    }
-}
-
 /** An analysis job: the job whose captures it analysed, and the reports it wrote, once it has. */
 private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
     val analyze = spec.analyze ?: return@buildString
@@ -1004,10 +946,6 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
     if (job == null) {
         append("<p class=\"muted\">No finished scheduled run to score yet.</p>")
         return@buildString
-    }
-    if (job.experiment?.instrumented == true) {
-        append("<p class=\"error\">Run ${job.id} was instrumented (profileCompilation): its times include the compilation ")
-        append("recording's overhead, so the time splits below do not measure the solver against the references.</p>")
     }
     fun link(vararg changes: Pair<String, String?>): String {
         val current = linkedMapOf<String, String?>("job" to job.id.toString(), "arm" to view.arm, "by" to view.by.name.lowercase(),
@@ -1147,8 +1085,7 @@ internal fun problemPage(report: ProblemReport, repoUrl: String): String = build
             val outcome = Outcome.of(run.record)
             val commit = commitUrl(repoUrl, run.sha)?.let { "<a href=\"$it\">${run.sha.take(9)}</a>" } ?: run.sha.take(9)
             val time = outcome?.takeIf { it.rank > 0 }?.let { "%.2fs".format(it.timeMs / 1000.0) } ?: "–"
-            val instrumented = if (run.instrumented) " <span class=\"PARTIAL\" title=\"profileCompilation: its time is no runtime measurement\">instrumented</span>" else ""
-            append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a> ${esc(run.jobName)}$instrumented</td><td>${esc(run.arm)}</td>")
+            append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a> ${esc(run.jobName)}</td><td>${esc(run.arm)}</td>")
             append("<td><code>$commit</code></td><td>${run.seed ?: "–"}${if (run.repeat > 0) " #${run.repeat}" else ""}</td>")
             append("<td>${verdict(outcome, run.status)}</td><td class=\"num\">$time</td>")
             append("<td><a href=\"/jobs/${run.job}/files/${run.case}.out\">out</a> <a href=\"/jobs/${run.job}/files/${run.case}.err\">err</a></td>")

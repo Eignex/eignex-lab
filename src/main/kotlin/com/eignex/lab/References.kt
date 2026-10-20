@@ -60,8 +60,6 @@ data class ProblemRun(
     val repeat: Int = 0,
     val status: Status,
     val record: JsonElement? = null,
-    /** Whether the run was instrumented ([ExperimentSpec.instrumented]): its time is no runtime measurement. */
-    val instrumented: Boolean = false,
 )
 
 /** A problem as its inspection page shows it: every reference row and every lab run. */

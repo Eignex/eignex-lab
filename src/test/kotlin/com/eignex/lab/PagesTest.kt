@@ -195,7 +195,7 @@ class PagesTest {
     }
 
     @Test
-    fun `an instrumented experiment's page says so and sets each arm's compiler work against the first`() {
+    fun `an instrumented experiment's page says so and marks its arms`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.database)
         val id = instrumentedJob(config, store)
@@ -203,16 +203,11 @@ class PagesTest {
             application { api(config, store, host) }
 
             val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
-            val view = Json.parseToJsonElement(client.get("/experiments/$id/compilation").bodyAsText()).jsonObject
 
             assertContains(page, "<dt>instrumented</dt>")
             assertContains(page, "profileCompilation jfr+log")
-            assertContains(page, "<h2>Compilation")
-            assertContains(page, "0.77× compiler time, +0.0 compilations")
-            assertContains(page, "/jobs/$id/files/cases/1/profile-1/${CompilationReports.REPORT}")
             assertContains(page, "title=\"profileCompilation: times are no runtime measurement\">instrumented</span>")
-            assertEquals("true", view.getValue("instrumented").jsonPrimitive.content)
-            assertEquals(2, view.getValue("arms").jsonArray.size)
+            assertContains(client.get("/jobs/$id/files").bodyAsText(), "cases/1/profile-1/${CompilationReports.REPORT}")
         }
     }
 

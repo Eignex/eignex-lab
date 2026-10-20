@@ -90,13 +90,11 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   (`hotspot-compilation.log.gz`). HotSpot merges its compiler threads' logs into it when the JVM exits cleanly, so a
   case stopped at its limit still gets one, because the stop is a SIGTERM with a grace period, but a SIGKILL leaves it
   without the inlining.
-  These cases are **instrumented**. `measurement.json` says so (`instrumented`, `instrumentation`, `compilation`), as do
-  each case's JSON (`instrumented` in `/experiments/{id}/cases`), the job page and every comparison. On a job page, on
-  `/compare` and in `/experiments/{id}/stats` (`instrumented`), the arms are marked. A comparison that mixes
-  instrumented runs with uninstrumented ones says that their times, PAR-2, time ratios and time-split scores measure
-  the instrumentation. The trend, the reference scoreboard and a problem's lab runs mark instrumented runs too.
-  Instrumented runs never add their times to the reference results. The fingerprint differs from the uninstrumented
-  spec's, so a schedule's trend keeps them apart. Compare runtime between uninstrumented runs only.
+  These cases are **instrumented**. `measurement.json` says so (`instrumented`, `instrumentation`, `compilation`), as
+  does each case's JSON (`instrumented` in `/experiments/{id}/cases`) and the job page. The spec's fingerprint differs
+  from the uninstrumented one's, so a schedule's trend keeps the two apart. `/compare` across jobs, the one place
+  they could be set beside uninstrumented runs, marks their arms, and warns that a comparison mixing the two measures
+  the instrumentation. Compare runtime between uninstrumented runs only.
 - After each case of such a job, the lab (not klause, and the same on the Mac and for a node's case once its captures
   are back) writes `compilation-report.json` beside the captures in `cases/<index>/profile-<uuid>/`. It reads them with
   the JDK's own JFR consumer and an XML stream reader. The report (`schemaVersion` 1, `kind: "compilation"`) holds:
@@ -121,12 +119,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
     and the log covers them); no or a cut-short log; a log without the compiler threads' logs; a case that exited
     non-zero, such as one stopped at its limit. `complete` is true only when both lists are empty.
 
-  The raw captures stay with the job. The job page's Files list them and the report. The job page also has a
-  **Compilation** section: each arm's mean compilations, compiler, C1 and C2 ms, OSR and failures over its cases,
-  set against the first arm (`0.77× compiler time, -12.0 compilations`), and each case's report in brief.
-  `lab compilation <id>` (`GET /experiments/{id}/compilation`) prints the same. That is how a baseline and a
-  candidate are compared on compiler work: one experiment with both arms, one pinned problem and seed (`seeds`), a
-  short `timeout`, and `repeats` for the noise.
+  The raw captures stay with the case. The job's Files page lists them with the report, and `lab cat` or `lab fetch`
+  gets them.
 - `{"analyze": {"job": <id>, "kind": "compilation"}}` posted to `/experiments` (`lab analyze <id>`) queues an
   analysis job. It runs on the Mac, where the captures are. It reruns the lab's analyser over an ended `profileCli`
   job's retained captures and writes each case's `compilation-report.json` afresh, with the analysis job in its
@@ -918,7 +912,6 @@ deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
 deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, Mac first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
-deploy/lab compilation 7      # a profileCompilation A/B: each arm's compiler work against the first, then each case
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running AWS job; no command opens a shell
@@ -945,8 +938,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
-| `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON; `instrumented` names the arms with instrumented runs |
-| `GET` | `/experiments/{id}/compilation` | a `profileCli` job's compilation reports: each arm's means against the first arm's, and each case's report in brief |
+| `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON |
 | `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |

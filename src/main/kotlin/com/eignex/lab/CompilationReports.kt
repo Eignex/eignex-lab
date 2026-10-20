@@ -210,42 +210,6 @@ data class ExecutionProvenance(
 @Serializable
 data class Capture(val name: String, val bytes: Long, val sha256: String)
 
-/** One case's report in brief, for the job page and `lab compilation`. */
-@Serializable
-data class CaseCompilation(
-    val case: Int,
-    val arm: String,
-    val problem: String,
-    /** The report's path within the job's files. */
-    val report: String,
-    val compilations: Int,
-    val compilerMs: Double,
-    val c1Ms: Double,
-    val c2Ms: Double,
-    val osr: Int,
-    val failed: Int,
-    val complete: Boolean,
-    val markers: List<String>,
-)
-
-/** An arm's means over its cases with a report, and how they differ from the first arm's. */
-@Serializable
-data class ArmCompilation(
-    val arm: String,
-    val cases: Int,
-    val compilations: Double,
-    val compilerMs: Double,
-    val c1Ms: Double,
-    val c2Ms: Double,
-    val osr: Double,
-    val failed: Double,
-    /** Its cases whose report is not complete. */
-    val incomplete: Int,
-    /** Mean compiler time against the first arm's: below 1 is less compiler work. Null for the first arm, or without one. */
-    val compilerMsRatio: Double? = null,
-    val compilationsDelta: Double? = null,
-)
-
 /** What an analysis job wrote ([CompilationReports.ANALYSIS]): the reports it wrote afresh for [job]'s cases. */
 @Serializable
 data class AnalysisResult(val job: Long, val kind: String, val reports: List<AnalysisEntry>)
@@ -259,17 +223,6 @@ data class AnalysisEntry(
     val compilerMs: Double,
     val complete: Boolean,
     val markers: List<String>,
-)
-
-@Serializable
-data class CompilationView(
-    val job: Long,
-    val instrumented: Boolean,
-    val mode: String?,
-    val arms: List<ArmCompilation>,
-    val cases: List<CaseCompilation>,
-    /** Cases that ended without a report. */
-    val withoutReport: List<Int>,
 )
 
 /**
@@ -477,71 +430,6 @@ object CompilationReports {
             provenance = Provenance(jfr?.jvm, source, worker, execution.takeIf { manifest != null || resources != null }, captures),
         )
     }
-
-    /** The case reports of job [jobId] in brief, and each arm's means against the first arm's, in [labels]' order. */
-    fun view(jobId: Long, jobDir: Path, spec: ExperimentSpec?, labels: List<String>, cases: List<CaseResult>): CompilationView {
-        val briefs = cases.mapNotNull { case -> latest(jobDir, case.index)?.let { (path, report) -> brief(jobDir, path, case, report) } }
-        val reported = briefs.mapTo(HashSet()) { it.case }
-        val arms = labels.map { label -> briefs.filter { it.arm == label } }.zip(labels)
-        val first = arms.firstOrNull()?.first.orEmpty()
-        val firstMs = first.map { it.compilerMs }.average().takeIf { first.isNotEmpty() }
-        val firstCount = first.map { it.compilations.toDouble() }.average().takeIf { first.isNotEmpty() }
-        return CompilationView(
-            job = jobId,
-            instrumented = spec?.instrumented == true,
-            mode = spec?.profileCompilation,
-            arms = arms.mapIndexed { index, (own, label) ->
-                fun mean(value: (CaseCompilation) -> Double) = if (own.isEmpty()) 0.0 else round(own.map(value).average())
-                val ms = mean { it.compilerMs }
-                val count = mean { it.compilations.toDouble() }
-                ArmCompilation(
-                    label, own.size, count, ms, mean { it.c1Ms }, mean { it.c2Ms }, mean { it.osr.toDouble() }, mean { it.failed.toDouble() },
-                    own.count { !it.complete },
-                    compilerMsRatio = if (index == 0 || own.isEmpty() || firstMs == null || firstMs == 0.0) null else round(ms / firstMs),
-                    compilationsDelta = if (index == 0 || own.isEmpty() || firstCount == null) null else round(count - firstCount),
-                )
-            },
-            cases = briefs,
-            withoutReport = cases.filter { it.status == Status.DONE || it.status == Status.FAILED }.map { it.index }.filter { it !in reported },
-        )
-    }
-
-    /** Case [index]'s latest report under [jobDir]: of its last attempt, when the case ran more than once. */
-    private fun latest(jobDir: Path, index: Int): Pair<Path, CompilationReport>? =
-        profileDirs(jobDir, index).map { it.resolve(REPORT) }.filter { Files.isRegularFile(it) }
-            .maxByOrNull { Files.getLastModifiedTime(it).toMillis() }
-            ?.let { path -> cached(path)?.let { path to it } }
-
-    private fun brief(jobDir: Path, path: Path, case: CaseResult, report: CompilationReport) = CaseCompilation(
-        case = case.index,
-        arm = case.arm,
-        problem = if (case.problem.suite.isEmpty()) case.problem.problem else "${case.problem.suite}/${case.problem.problem}",
-        report = jobDir.relativize(path).joinToString("/"),
-        compilations = report.totals.compilations,
-        compilerMs = report.totals.compilerMs,
-        c1Ms = round(report.byTier.filter { it.compiler == "c1" }.sumOf { it.compilerMs }),
-        c2Ms = round(report.byTier.filter { it.compiler == "c2" }.sumOf { it.compilerMs }),
-        osr = report.totals.osr,
-        failed = report.totals.failed,
-        complete = report.complete,
-        markers = (report.missing + report.incomplete).map { it.what },
-    )
-
-    /** Reports read before, kept by path while the file is unchanged: a job page reads every case's. */
-    private val cache = object : LinkedHashMap<Path, Pair<Pair<Long, Long>, CompilationReport>>(CACHED, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Path, Pair<Pair<Long, Long>, CompilationReport>>) = size > CACHED
-    }
-
-    private fun cached(path: Path): CompilationReport? {
-        val stamp = runCatching { Files.getLastModifiedTime(path).toMillis() to Files.size(path) }.getOrNull() ?: return null
-        synchronized(cache) { cache[path]?.takeIf { it.first == stamp }?.let { return it.second } }
-        // Only what the brief needs is kept: the methods are most of a report.
-        val report = read(path)?.copy(methods = emptyList()) ?: return null
-        synchronized(cache) { cache[path] = stamp to report }
-        return report
-    }
-
-    private const val CACHED = 512
 
     /** One compile id's figures, JFR's where it has them and the log's otherwise. */
     internal class Compiled(
