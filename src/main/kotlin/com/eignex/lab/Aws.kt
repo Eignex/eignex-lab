@@ -712,7 +712,7 @@ class AwsWorker(
             return
         }
         gate.manualLaunch(now)
-        println("aws: manual launch of a ${plan.size.type} ${ManualLaunch.marketText(plan.onDemand)} node")
+        println("aws: manual launch of a ${plan.size.type} ${ManualLaunch.marketText(plan.onDemand)} node, asked from the ${request.by ?: "unknown"}")
         launch(plan.size, plan.onDemand, manual = true)
         report()
     }

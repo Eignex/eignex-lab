@@ -329,7 +329,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val text = call.receiveText()
             val start = if (text.isBlank()) NodeStart() else runCatching { DefaultJson.decodeFromString(NodeStart.serializer(), text) }
                 .getOrElse { throw IllegalArgumentException("the body is {\"size\"?, \"market\"?}: ${it.message}") }
-            val (status, message) = ManualLaunch.request(config, aws, readPoolReport(config), start, System.currentTimeMillis())
+            // Who asked, for the log: the page's button (a browser) or the client (curl), so a launch nobody expected
+            // can be traced.
+            val agent = call.request.headers["User-Agent"].orEmpty()
+            val by = if (agent.startsWith("curl/")) "client" else if (agent.isNotEmpty()) "page" else "unknown"
+            val (status, message) = ManualLaunch.request(config, aws, readPoolReport(config), start, System.currentTimeMillis(), by)
+            println("api: manual launch from the $by (${start.size ?: "queue size"}, ${start.market ?: "spot"}): $status $message")
             call.respond(HttpStatusCode.fromValue(status), message)
         }
         post("/update") {
