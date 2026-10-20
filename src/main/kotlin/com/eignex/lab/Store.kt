@@ -115,6 +115,8 @@ data class CaseResult(
     val record: JsonElement? = null,
     /** Which of the identical runs of its (problem, arm, seed) this is, from 0. */
     val repeat: Int = 0,
+    /** Whether its job was instrumented ([ExperimentSpec.instrumented]): its times are no runtime measurement. */
+    val instrumented: Boolean = false,
 )
 
 /**
@@ -499,10 +501,11 @@ class Store(file: Path) {
 
     @Synchronized
     private fun casesWith(record: String, jobId: Long): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat FROM cases c
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
+           JOIN jobs j ON j.id = c.job_id
            WHERE c.job_id = ? ORDER BY c.idx""",
     ).use { statement ->
         statement.setLong(1, jobId)
@@ -512,7 +515,7 @@ class Store(file: Path) {
                 CaseResult(
                     rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
                     rows.getString(4), rows.longOrNull("seed"), rows.getString(6)?.let(::recordOf),
-                    rows.getInt(7),
+                    rows.getInt(7), rows.getInt(8) != 0,
                 )
             }.toList()
         }
@@ -874,7 +877,7 @@ class Store(file: Path) {
     /** Every case of any experiment that ran one problem, newest experiment first. */
     @Synchronized
     fun problemRuns(collection: String, problem: String): List<ProblemRun> = connection.prepareStatement(
-        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, c.record
+        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, c.record, $INSTRUMENTED
            FROM problems p
            JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
@@ -891,7 +894,7 @@ class Store(file: Path) {
                 ProblemRun(
                     job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
                     sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
-                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let(::recordOf),
+                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let(::recordOf), instrumented = r.getInt(11) != 0,
                 )
             }.toList()
         }
@@ -1352,6 +1355,9 @@ private const val PRIORITY_ORDER = "priority DESC, (SELECT MAX(r.finished_at) FR
  *  ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
 private const val QUEUE_ORDER = "ORDER BY $PRIORITY_ORDER"
 
+
+/** Whether job `j` is instrumented ([ExperimentSpec.instrumented]), as 1 or 0. */
+private const val INSTRUMENTED = "(json_extract(j.experiment, '\$.profileCompilation') IS NOT NULL) AS instrumented"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"

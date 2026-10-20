@@ -145,7 +145,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
             // The lab places every job itself ([Placement]): a submitted host or machine count is read but not followed.
-            val body = call.receive<JsonObject>()
+            val body = analysisDefaults(call.receive<JsonObject>())
             // Every job fits the Mac: cores and parallel over its limits are cut down to them, and the notes say so.
             val given = Experiments.capToMac(DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList()),
                 config.cores, config.maxParallel)
@@ -153,6 +153,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             requireDescription(spec)
             requireHost(spec, config)
             Experiments.validate(spec, config.maxParallel, config.cores)
+            // An analysis needs its job's captures: refused now, saying why, when they are gone or the job has not ended.
+            spec.analyze?.let { analyze ->
+                val refusal = withContext(Dispatchers.IO) { CompilationReports.refusal(store.job(analyze.job), config.jobDir(analyze.job)) }
+                if (refusal != null) {
+                    call.respond(HttpStatusCode.Conflict, "cannot analyse job ${analyze.job}: $refusal")
+                    return@post
+                }
+                val id = store.create(spec.name, DEFAULT_REF, emptyList(), 1, spec.priority, spec)
+                call.respond(HttpStatusCode.Created, Created(id, listOf("analyses job ${analyze.job}'s retained captures on the Mac; no solver runs"),
+                    placementNote(spec.host)))
+                return@post
+            }
             // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
             Experiments.splitOf(spec, store.active(withCommands = false))?.let { split ->
                 call.respond(HttpStatusCode.Conflict, Experiments.splitMessage(split))
@@ -233,6 +245,19 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
+        // Each arm's compiler work over its cases' compilation reports, against the first arm's, and each report in brief.
+        get("/experiments/{id}/compilation") {
+            val id = call.parameters["id"]!!.toLong()
+            val job = store.job(id)?.takeIf { it.experiment != null }
+            if (job == null) {
+                call.respond(HttpStatusCode.NotFound, "no such experiment")
+                return@get
+            }
+            val view = withContext(Dispatchers.IO) {
+                CompilationReports.view(id, config.jobDir(id), job.experiment, store.arms(id).map { it.arm.label }, store.casePlan(id))
+            }
+            call.respond(view)
+        }
         get("/experiments/{id}/stats") {
             val id = call.parameters["id"]!!.toLong()
             call.respond(Stats.of(store.arms(id).map { it.arm.label }, store.cases(id)))
@@ -466,6 +491,20 @@ private fun placementNote(host: String): String = when (host) {
 }
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */
+/**
+ * [body] with an analysis job's name and description filled in when it gives none, so `{"analyze": {"job": 12}}` is a
+ * whole submission; any other body as it is.
+ */
+internal fun analysisDefaults(body: JsonObject): JsonObject {
+    val analyze = body["analyze"] as? JsonObject ?: return body
+    val job = (analyze["job"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: return body
+    val defaults = mapOf(
+        "name" to kotlinx.serialization.json.JsonPrimitive("analyze-$job"),
+        "description" to kotlinx.serialization.json.JsonPrimitive("Rerun the lab's compilation analyser over job $job's retained captures"),
+    )
+    return JsonObject(defaults.filterKeys { it !in body } + body)
+}
+
 private fun requireDescription(spec: ExperimentSpec) = require(spec.description.isNotBlank()) {
     "description is required: a sentence or two on what the experiment tests and why, e.g. \"A/B of #2232's " +
         "continuation scheduler against main on the sweep set, to see whether it closes the uf250 gap\""

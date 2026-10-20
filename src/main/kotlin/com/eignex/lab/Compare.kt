@@ -104,7 +104,15 @@ data class ArmSummary(
     val buildFingerprints: List<String> = emptyList(),
     val validationPolicies: List<String> = emptyList(),
     val missingProvenance: Int = 0,
+    /** Its cases from an instrumented job ([ExperimentSpec.instrumented]), whose times are no runtime measurement. */
+    val instrumented: Int = 0,
 )
+
+/** Whether [arms] mix instrumented and uninstrumented runs, whose times a comparison must not set side by side. */
+fun mixesInstrumented(arms: List<ArmSummary>): Boolean {
+    val counted = arms.filter { it.cases > 0 }
+    return counted.any { it.instrumented > 0 } && counted.any { it.instrumented < it.cases }
+}
 
 /** Arms that contradict each other on one problem, which at least one of them got wrong. */
 @Serializable
@@ -173,6 +181,7 @@ object Compare {
                 validationPolicies = provenanceValues(cases, label, "validationPolicy"),
                 missingProvenance = cases.count { it.arm == label && it.record != null &&
                     (provenanceValue(it, "buildFingerprint") == null || provenanceValue(it, "validationPolicy") == null) },
+                instrumented = outcomes.count { it.first.arm == label && it.first.instrumented },
             )
         }
         return Comparison(arms, disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))

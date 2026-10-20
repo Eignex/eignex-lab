@@ -43,7 +43,13 @@ data class Paired(
 data class Noise(val problem: Problem, val arm: String, val runs: Int, val verdicts: Int, val spread: Double)
 
 @Serializable
-data class Statistics(val arms: List<ArmStats>, val paired: List<Paired>, val noise: List<Noise>)
+data class Statistics(
+    val arms: List<ArmStats>,
+    val paired: List<Paired>,
+    val noise: List<Noise>,
+    /** The arms with instrumented runs ([ExperimentSpec.instrumented]): their times, and ratios against them, are no runtime measurement. */
+    val instrumented: List<String> = emptyList(),
+)
 
 /**
  * Intervals and tests over an experiment's cases. Problems are the unit: an arm's runs of one problem (its seeds and
@@ -66,7 +72,8 @@ object Stats {
                 bootstrap(score, sample, List<Double>::sum))
         }
         val paired = labels.drop(1).map { label -> paired(labels.first(), label, byProblem, random, resamples) }
-        return Statistics(arms, paired, noise(labels, byProblem))
+        val instrumented = labels.filter { label -> outcomes.any { it.first.arm == label && it.first.instrumented } }
+        return Statistics(arms, paired, noise(labels, byProblem), instrumented)
     }
 
     private fun paired(

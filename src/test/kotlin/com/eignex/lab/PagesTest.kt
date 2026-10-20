@@ -175,6 +175,94 @@ class PagesTest {
         }
     }
 
+    /** A finished profileCompilation A/B whose two cases have compilation reports from the committed HotSpot log sample. */
+    private fun instrumentedJob(config: Config, store: Store): Long {
+        val spec = ExperimentSpec("compile-ab", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true, profileCompilation = "jfr+log")
+        val id = store.create("compile-ab", "main", emptyList(), experiment = spec)
+        val arms = listOf(PlannedArm(Arm("baseline", emptyMap()), "abc"), PlannedArm(Arm("candidate", emptyMap()), "def"))
+        store.plan(id, arms, listOf(Problem("s", "p")), Experiments.cases(1, 2, emptyList()), listOf("true" to 1L, "true" to 1L))
+        val sample = checkNotNull(javaClass.getResource("/compilation/hotspot-compilation.log")).readText()
+        for (index in 0..1) {
+            store.caseRecord(id, index, """{"kind":"optimize","feasible":true,"objective":3,"proven":true,"timeToBestMs":5,"budgetMs":1000}""")
+            store.commandFinished(id, index, 0)
+            val dir = Files.createDirectories(config.jobDir(id).resolve("cases/$index/profile-$index"))
+            Files.writeString(dir.resolve(CliMeasurements.COMPILATION_LOG), if (index == 0) sample else sample.replace("stamp='0.956'", "stamp='0.953'"))
+            CliMeasurements.writeManifest(dir, index, 1, "m$index", "lab", "solve", 0, "", null, macOs = false, compilation = "jfr+log")
+            CompilationReports.analyzeAndWrite(dir, SourceProvenance(id, index), WorkerProvenance())
+        }
+        store.finish(id, Status.DONE)
+        return id
+    }
+
+    @Test
+    fun `an instrumented experiment's page says so and sets each arm's compiler work against the first`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.database)
+        val id = instrumentedJob(config, store)
+        testApplication {
+            application { api(config, store, host) }
+
+            val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+            val view = Json.parseToJsonElement(client.get("/experiments/$id/compilation").bodyAsText()).jsonObject
+
+            assertContains(page, "<dt>instrumented</dt>")
+            assertContains(page, "profileCompilation jfr+log")
+            assertContains(page, "<h2>Compilation")
+            assertContains(page, "0.77× compiler time, +0.0 compilations")
+            assertContains(page, "/jobs/$id/files/cases/1/profile-1/${CompilationReports.REPORT}")
+            assertContains(page, "title=\"profileCompilation: times are no runtime measurement\">instrumented</span>")
+            assertEquals("true", view.getValue("instrumented").jsonPrimitive.content)
+            assertEquals(2, view.getValue("arms").jsonArray.size)
+        }
+    }
+
+    @Test
+    fun `comparing an instrumented run with an uninstrumented one warns that their times measure the instrumentation`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.database)
+        val instrumented = instrumentedJob(config, store)
+        val plain = store.create("plain", "main", emptyList(), experiment = ExperimentSpec("plain", listOf(mapOf("suite" to "s"))))
+        store.plan(plain, listOf(PlannedArm(Arm("baseline", emptyMap()), "abc")), listOf(Problem("s", "p")), Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+        store.caseRecord(plain, 0, """{"kind":"optimize","feasible":true,"objective":3,"proven":true,"timeToBestMs":5,"budgetMs":1000}""")
+        testApplication {
+            application { api(config, store, host) }
+
+            val page = client.get("/compare?jobs=$plain,$instrumented").bodyAsText()
+
+            assertContains(page, "This mixes instrumented runs")
+        }
+    }
+
+    @Test
+    fun `an analysis is queued on the Mac for a profiled job's captures and refused once they were trimmed`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.database)
+        val target = instrumentedJob(config, store)
+        testApplication {
+            application { api(config, store, host) }
+            suspend fun analyze() = client.post("/experiments") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"analyze": {"job": $target, "kind": "compilation"}}""")
+            }
+
+            val queued = analyze()
+            Files.writeString(config.jobDir(target).resolve(JobTrim.MARKER), "1 2\n")
+            val refused = analyze()
+
+            assertEquals(HttpStatusCode.Created, queued.status, queued.bodyAsText())
+            val id = Json.parseToJsonElement(queued.bodyAsText()).jsonObject.getValue("id").jsonPrimitive.content.toLong()
+            val job = store.job(id)!!
+            assertEquals("analyze-$target", job.name)
+            assertEquals(Experiments.LAB_HOST, job.experiment?.host)
+            assertEquals(AnalyzeSpec(target), job.experiment?.analyze)
+            assertEquals(HttpStatusCode.Conflict, refused.status)
+            assertContains(refused.bodyAsText(), "was trimmed")
+            assertEquals(HttpStatusCode.OK, client.get("/") { header(HttpHeaders.Accept, "text/html") }.status)
+            val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+            assertContains(page, "retained captures of job <a href=\"/jobs/$target\">$target</a>")
+        }
+    }
+
     @Test
     fun `two experiments compare side by side with each arm named by its job`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)

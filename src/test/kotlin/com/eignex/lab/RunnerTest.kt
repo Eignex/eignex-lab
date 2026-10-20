@@ -55,6 +55,88 @@ class RunnerTest {
         assertEquals(Status.DONE, store.job(id)!!.commands.single().status)
     }
 
+    private val sampleLog: String = checkNotNull(javaClass.getResource("/compilation/hotspot-compilation.log")).readText()
+
+    /** A finished profileCompilation job whose case 0 left [log] as its HotSpot log; returns its id. */
+    private fun profiledJob(config: Config, store: Store, log: String = sampleLog): Long {
+        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true, profileCompilation = "jfr+log")
+        val source = config.dataDir.resolve("sample.log").apply { writeText(log) }
+        val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
+            "cp ${quote(source.toString())} \"\$KLAUSE_LAB_PROFILE_DIR/hotspot-compilation.log\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\""
+        val id = store.create("cli", "main", emptyList(), experiment = spec)
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "abc123") }, listOf(Problem("s", "p")), Experiments.cases(1, 1, emptyList()),
+            listOf(case to 60L))
+        config.worktree(id).createDirectories()
+        store.next()
+        assertEquals(Dispatched.FINISHED, Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id).createDirectories()))
+        store.finish(id, Status.DONE)
+        return id
+    }
+
+    private fun report(config: Config, id: Long): Path =
+        CompilationReports.profileDirs(config.jobDir(id), 0).single().resolve(CompilationReports.REPORT)
+
+    @Test
+    fun `a profileCompilation case records every compilation and gets its compilation report as it ends`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+
+        val id = profiledJob(config, store)
+
+        val opts = config.jobDir(id).resolve("opts").toFile().readText()
+        assertTrue("jdk.Compilation#threshold=0ms" in opts && "-XX:+LogCompilation" in opts, opts)
+        val report = checkNotNull(CompilationReports.read(report(config, id)))
+        assertEquals(4, report.totals.compilations)
+        assertEquals(SourceProvenance(id, 0, "s/p", "base", "main", "abc123"), report.provenance.source)
+        assertTrue(report.missing.any { it.what == "jfr" })
+        assertTrue("\"instrumented\":true" in report(config, id).resolveSibling("measurement.json").toFile().readText())
+        assertTrue("compilation report" in config.jobDir(id).resolve("job.log").toFile().readText())
+        assertTrue(store.cases(id).single().instrumented)
+        assertTrue(store.scoringCases(id).single().instrumented)
+    }
+
+    @Test
+    fun `an analysis job writes its job's reports again from the retained captures, without a build`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val target = profiledJob(config, store)
+        // As an older analyser would have left it.
+        report(config, target).writeText("{}")
+        val spec = ExperimentSpec("analyze-$target", description = "again", analyze = AnalyzeSpec(target))
+        Experiments.validate(spec, 4)
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        val job = checkNotNull(store.next())
+        assertEquals(id, job.id)
+
+        Runner(config, store).analyze(job)
+
+        assertEquals(Status.DONE, store.job(id)!!.status)
+        val report = checkNotNull(CompilationReports.read(report(config, target)))
+        assertEquals(id, report.provenance.worker.analyzeJob)
+        assertEquals(4, report.totals.compilations)
+        val analysis = config.jobDir(id).resolve(CompilationReports.ANALYSIS).toFile().readText()
+        assertTrue("\"compilations\":4" in analysis && "cases/0/profile-" in analysis, analysis)
+        assertFalse(config.worktree(id).exists())
+    }
+
+    @Test
+    fun `an analysis job of a trimmed job fails, saying its captures are gone`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val target = profiledJob(config, store)
+        val trim = JobTrim(config.dataDir.resolve("jobs"), { listOf(target to 0L) }, { Long.MAX_VALUE }, { _, _ -> }, clock = { JobTrim.MAX_AGE_MS })
+        trim.run()
+        assertTrue(Files.exists(report(config, target)), "the trim keeps the report")
+        val spec = ExperimentSpec("analyze-$target", description = "again", analyze = AnalyzeSpec(target))
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+
+        Runner(config, store).analyze(checkNotNull(store.next()))
+
+        val job = store.job(id)!!
+        assertEquals(Status.FAILED, job.status)
+        assertTrue("was trimmed" in job.error.orEmpty() && "rerun the experiment" in job.error.orEmpty(), job.error)
+    }
+
     @Test
     fun `a bounded profile is done after its worktree cleanup succeeds`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))

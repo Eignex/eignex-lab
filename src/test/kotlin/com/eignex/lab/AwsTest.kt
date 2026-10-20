@@ -5,6 +5,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.concurrent.thread
+import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -364,6 +365,32 @@ class AwsTest {
         assertEquals(setOf("out/small.json", "out/sub/medium.xml", "out/omitted.tsv"), listed)
         assertEquals("500\tout/huge.json", out.resolve("omitted.tsv").readText().trim())
         case.deleteRecursively()
+    }
+
+    @Test
+    fun `a node's compilation-profiled case records every compilation and brings its HotSpot log back gzipped`() {
+        val dir = Files.createTempDirectory("aws")
+        dir.resolve("aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val scripts = ArrayList<String>()
+        val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
+            override fun start(script: String, mergeErrors: Boolean): Process {
+                scripts += script
+                val reply = if (scripts.size == 1) "exit=0\n----klause-lab-record----\n{\"elapsedMs\":5}" else "captured"
+                return ProcessBuilder("printf", "%s\n", reply).start()
+            }
+        }
+        val host = AwsHost("i-1", ssh, 4, "", profileCli = true, compilation = "jfr+log") { false }
+
+        assertEquals(0, host.run(Command(7, "solve", 10, Status.RUNNING), dir))
+
+        assertTrue("jdk.Compilation#threshold=0ms" in scripts.first() && "-XX:+LogCompilation" in scripts.first(), scripts.first())
+        assertTrue(scripts.any { it.startsWith("gzip -1 -c -- ") && it.endsWith("/hotspot-compilation.log'") }, scripts.toString())
+        val profile = Files.list(dir.resolve("cases/7")).use { it.toList() }.single { it.fileName.toString().startsWith("profile-") }
+        for (name in listOf("cli.jfr", "resources.txt", "hotspot-compilation.log.gz", "measurement.json")) {
+            assertTrue(Files.exists(profile.resolve(name)), name)
+        }
+        assertTrue("\"instrumented\":true" in profile.resolve("measurement.json").readText())
+        dir.toFile().deleteRecursively()
     }
 
     @Test

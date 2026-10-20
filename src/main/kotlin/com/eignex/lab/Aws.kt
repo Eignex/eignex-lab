@@ -347,6 +347,8 @@ class AwsHost(
     private val jobDir: String = "$HOME/job",
     /** The cases at once here, whatever the job's `parallel` says; null follows the job's, up to the cores. */
     private val parallel: Int? = null,
+    /** The job's [ExperimentSpec.profileCompilation]: what its profiled CLI records of compilation, and brings back. */
+    private val compilation: String? = null,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val corpus = "$HOME/corpus"
@@ -404,7 +406,7 @@ class AwsHost(
         val i = command.index
         val measurementId = if (profileCli) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { "$jobDir/cases/$i/profile-$it" }
-        val options = profile?.let(CliMeasurements::options).orEmpty()
+        val options = profile?.let { CliMeasurements.options(it, compilation) }.orEmpty()
         val javaOptions = "$solveJavaOpts -XX:ActiveProcessorCount=${command.cores} $options".trim()
         val script = """
             $ENV
@@ -472,8 +474,15 @@ class AwsHost(
         if (profile != null) {
             val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
             CliMeasurements.writeManifest(files, i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions,
-                record, macOs = false)
-            for (name in CliMeasurements.artifacts) ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
+                record, macOs = false, compilation = compilation)
+            for (name in CliMeasurements.artifacts(compilation)) {
+                // HotSpot's compilation log runs to hundreds of MB, and compresses tenfold: it comes back gzipped.
+                if (name == CliMeasurements.COMPILATION_LOG) {
+                    ssh.downloadStream("gzip -1 -c -- ${quote("$profile/$name")}", files.resolve(CliMeasurements.COMPILATION_LOG_GZ), LOG_TRANSFER_SEC)
+                } else {
+                    ssh.download("$profile/$name", files.resolve(name), ARTIFACT_TRANSFER_SEC)
+                }
+            }
         }
         return result
     }
@@ -536,6 +545,7 @@ class AwsHost(
         private const val POLL_MS = 1000L
         private const val READ_WAIT_MS = 5_000L
         private const val ARTIFACT_TRANSFER_SEC = 120L
+        private const val LOG_TRANSFER_SEC = 600L
         private const val MS_PER_SEC = 1000L
         private const val ERROR_CHARS = 2000
         private const val TIMEOUT_EXIT_CODE = 124
@@ -949,6 +959,7 @@ class AwsWorker(
         onPhase = { index, phase -> store.commandPhase(job.id, index, phase) },
         jobDir = job.remoteDir,
         parallel = if (job.spec.parallel == null) defaultParallel(node.size) else null,
+        compilation = job.spec.profileCompilation,
     ) {
         store.cancelRequested(job.id)
     }

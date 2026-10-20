@@ -12,13 +12,41 @@ import kotlinx.serialization.json.Json
 
 internal object CliMeasurements {
     const val CLI = "klause-cli/build/install/klause-cli-jvm/bin/klause-cli"
-    val artifacts = listOf("cli.jfr", "resources.txt")
+    const val JFR = "cli.jfr"
+    const val RESOURCES = "resources.txt"
+    const val MANIFEST = "measurement.json"
+    /** HotSpot's compilation log, written with `profileCompilation: "jfr+log"`. */
+    const val COMPILATION_LOG = "hotspot-compilation.log"
+    /** The compilation log as it comes back from a node, gzipped. */
+    const val COMPILATION_LOG_GZ = "$COMPILATION_LOG.gz"
+    val artifacts = listOf(JFR, RESOURCES)
+
+    /** The files a case's CLI writes into its profile directory, the compilation log among them when [compilation] logs. */
+    fun artifacts(compilation: String?): List<String> =
+        artifacts + if (compilation == Experiments.COMPILATION_JFR_LOG) listOf(COMPILATION_LOG) else emptyList()
 
     /** Whether the lab itself runs on macOS, as the lab Mac does: its own profiling launcher is then the macOS one. */
     val localMacOs: Boolean get() = System.getProperty("os.name").orEmpty().startsWith("Mac")
 
-    fun options(directory: String): String =
-        "-XX:StartFlightRecording=filename=$directory/cli.jfr,settings=profile,dumponexit=true"
+    /**
+     * The CLI JVM's options for a profiled case writing into [directory]: JFR under its `profile` settings, dumped on
+     * exit. With [compilation] (an [ExperimentSpec.profileCompilation]) `jdk.Compilation` is recorded with no threshold,
+     * so every compilation from the recording's start through the solve to shutdown is in it, and with `jfr+log`
+     * HotSpot also writes its compilation log, inlining decisions included, which it completes when the JVM exits.
+     */
+    fun options(directory: String, compilation: String? = null): String {
+        val settings = if (compilation == null) "" else ",jdk.Compilation#threshold=0ms"
+        val jfr = "-XX:StartFlightRecording=filename=$directory/$JFR,settings=profile$settings,dumponexit=true"
+        return if (compilation != Experiments.COMPILATION_JFR_LOG) jfr
+        else "$jfr -XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation -XX:LogFile=$directory/$COMPILATION_LOG"
+    }
+
+    /** What instruments a profiled case's CLI, in a word or two, for its manifest and its report. */
+    fun instrumentation(compilation: String?): String = when (compilation) {
+        null -> "jfr-profile"
+        Experiments.COMPILATION_JFR -> "jfr-profile+compilation"
+        else -> "jfr-profile+compilation+hotspot-log"
+    }
 
     /** What `resources.txt`'s `peakRssKiB` measures on macOS ([macOs]) or Linux, for a measurement's manifest. */
     fun memory(macOs: Boolean): String =
@@ -66,15 +94,19 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
      */
     fun writeManifest(
         files: Path, index: Int, attempt: Int, measurementId: String, instance: String, command: String, exit: Int,
-        javaOptions: String, record: String?, macOs: Boolean,
+        javaOptions: String, record: String?, macOs: Boolean, compilation: String? = null,
     ) {
         val recordHash = record?.takeIf { it.isNotEmpty() }?.let { snapshot ->
             files.resolve("solve-record.json").toFile().writeText(snapshot)
             MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
         }
-        files.resolve("measurement.json").toFile().writeText(Json { encodeDefaults = true }.encodeToString(
+        files.resolve(MANIFEST).toFile().writeText(Json { encodeDefaults = true }.encodeToString(
             CliMeasurementManifest.serializer(),
-            CliMeasurementManifest(index, attempt, measurementId, instance, command, exit, javaOptions, recordHash, memory = memory(macOs)),
+            CliMeasurementManifest(
+                index, attempt, measurementId, instance, command, exit, javaOptions, recordHash, memory = memory(macOs),
+                instrumented = compilation != null, instrumentation = instrumentation(compilation), compilation = compilation,
+                artifacts = artifacts(compilation) + if (recordHash == null) emptyList() else listOf("solve-record.json"),
+            ),
         ))
     }
 }
@@ -135,6 +167,11 @@ internal data class CliMeasurementManifest(
     val memory: String = "GNU time peak RSS of the CLI process, KiB",
     val artifacts: List<String> = CliMeasurements.artifacts +
         if (recordSha256 == null) emptyList() else listOf("solve-record.json"),
+    /** Whether the case recorded every compilation ([ExperimentSpec.instrumented]): its times are no runtime measurement. */
+    val instrumented: Boolean = false,
+    val instrumentation: String = "jfr-profile",
+    /** The job's [ExperimentSpec.profileCompilation], null without one. */
+    val compilation: String? = null,
 )
 
 internal class FileTransferFailure(val exit: Int?, message: String) : IllegalStateException(message)

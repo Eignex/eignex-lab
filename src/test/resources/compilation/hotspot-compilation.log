@@ -1,0 +1,103 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<hotspot_log version='160 1' process='118024' time_ms='1792501576792'>
+<vm_version>
+<name>
+OpenJDK 64-Bit Server VM
+</name>
+<release>
+25.0.1+8-LTS
+</release>
+<info>
+OpenJDK 64-Bit Server VM (25.0.1+8-LTS) for linux-amd64 JRE (25.0.1+8-LTS), built on 2025-10-21T00:00:00Z with gcc 14.2.0
+</info>
+</vm_version>
+<vm_arguments>
+<args>
+-XX:StartFlightRecording=filename=cli.jfr,settings=profile,jdk.Compilation#threshold=0ms,dumponexit=true -XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation -XX:LogFile=hotspot-compilation.log </args>
+<command>
+Hot
+</command>
+<launcher>
+SUN_STANDARD
+</launcher>
+</vm_arguments>
+<tty>
+<task_queued compile_id='17' method='java.lang.module.ModuleDescriptor$Exports hashCode ()I' bytes='36' count='256' iicount='256' level='3' stamp='0.052' comment='tiered' hot_count='256'/>
+<nmethod compile_id='17' compiler='c1' level='3' entry='0x00007c74f0407280' size='1024' address='0x00007c74f0407188' method='java.lang.module.ModuleDescriptor$Exports hashCode ()I' bytes='36' count='333' iicount='333' stamp='0.066'/>
+<task_queued compile_id='300' method='java.util.HashMap putVal (ILjava/lang/Object;Ljava/lang/Object;ZZ)Ljava/lang/Object;' bytes='300' count='5383' iicount='5383' stamp='0.120' comment='tiered' hot_count='5383'/>
+<task_queued compile_id='2701' method='Hot f (I)I' bytes='8' count='9728' iicount='9728' stamp='0.951' comment='tiered' hot_count='9728'/>
+<nmethod compile_id='2701' compiler='c2' level='4' entry='0x00007c74f806ba80' size='368' address='0x00007c74f806b988' method='Hot f (I)I' bytes='8' count='21680' iicount='21686' stamp='0.951'/>
+<task_queued compile_id='2704' compile_kind='osr' method='Hot g (I)I' bytes='28' count='13' backedge_count='122670' iicount='13' osr_bci='4' stamp='0.952' comment='tiered' hot_count='122670'/>
+<nmethod compile_id='2704' compile_kind='osr' compiler='c2' level='4' entry='0x00007c74f806bd80' size='1416' address='0x00007c74f806bc88' method='Hot g (I)I' bytes='28' count='244' backedge_count='2437468' iicount='244' stamp='0.956'/>
+<tty_done stamp='1.008'/>
+</tty>
+<compilation_log thread='118044'>
+<start_compile_thread name='C1 CompilerThread0' thread='118044' process='118024' stamp='0.036'/>
+<task compile_id='17' method='java.lang.module.ModuleDescriptor$Exports hashCode ()I' bytes='36' count='333' iicount='333' level='3' stamp='0.064'>
+<type id='1210' name='int'/>
+<klass id='1386' name='java.lang.module.ModuleDescriptor$Exports' flags='25'/>
+<method id='1387' holder='1386' name='hashCode' return='1210' flags='1' bytes='36' iicount='333'/>
+<parse method='1387'  stamp='0.064'>
+<bc code='184' bci='4'/>
+<klass id='1363' name='java.lang.Iterable' flags='1537'/>
+<klass id='1390' name='java.lang.module.ModuleDescriptor' flags='17'/>
+<method id='1391' holder='1390' name='modsHashCode' return='1210' arguments='1363' flags='10' bytes='43' compile_id='13' compiler='c1' level='3' iicount='446'/>
+<call method='1391' instr='invokestatic'/>
+<inline_fail reason='callee is too large'/>
+<bc code='182' bci='16'/>
+<klass id='1218' name='java.lang.String' flags='17'/>
+<method id='1398' holder='1218' name='hashCode' return='1210' flags='1' bytes='60' compile_id='1' compiler='c1' level='3' iicount='2763'/>
+<call method='1398' instr='invokevirtual'/>
+<inline_fail reason='callee is too large'/>
+<bc code='185' bci='29'/>
+<klass id='1389' name='java.util.Set' flags='1537'/>
+<method id='1400' holder='1389' name='hashCode' return='1210' flags='1025' bytes='0' iicount='1'/>
+<call method='1400' instr='invokeinterface'/>
+<inline_fail reason='no static binding'/>
+<parse_done stamp='0.065'/>
+</parse>
+<code_cache total_blobs='336' nmethods='34' adapters='203' free_code_cache='249229440'/>
+<task_done success='1' nmsize='776' count='333' stamp='0.066'/>
+</task>
+</compilation_log>
+<compilation_log thread='118043'>
+<start_compile_thread name='C2 CompilerThread0' thread='118043' process='118024' stamp='0.036'/>
+<task compile_id='300' method='java.util.HashMap putVal (ILjava/lang/Object;Ljava/lang/Object;ZZ)Ljava/lang/Object;' bytes='300' count='5383' iicount='5383' stamp='0.125'>
+<type id='1210' name='int'/>
+<klass id='1386' name='java.util.HashMap' flags='1'/>
+<parse method='1387' stamp='0.125'>
+</parse>
+<failure reason='concurrent class loading'/>
+<task_done success='0' nmsize='0' count='5383' stamp='0.132'/>
+</task>
+<task compile_id='2701' method='Hot f (I)I' bytes='8' count='10108' iicount='10118' stamp='0.951'>
+<type id='1210' name='int'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1387' holder='1386' name='f' return='1210' arguments='1210' flags='8' bytes='8' compile_id='2700' compiler='c1' level='3' iicount='10867'/>
+<parse method='1387' uses='10867.000000' stamp='0.951'>
+<parse_done nodes='29' live='28' memory='3760' stamp='0.951'/>
+</parse>
+<task_done success='1' nmsize='112' count='21792' stamp='0.951'/>
+</task>
+<task compile_id='2704' compile_kind='osr' method='Hot g (I)I' bytes='28' count='13' backedge_count='126755' iicount='13' osr_bci='4' stamp='0.952'>
+<type id='1210' name='int'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1387' holder='1386' name='g' return='1210' arguments='1210' flags='8' bytes='28' compile_id='2703' compiler='c1' level='3' iicount='14'/>
+<parse method='1387' uses='14.000000' osr_bci='4' stamp='0.952'>
+<method id='1389' holder='1386' name='f' return='1210' arguments='1210' flags='8' bytes='8' compile_id='2701' compiler='c2' level='4' iicount='103178'/>
+<call method='1389' count='73849' prof_factor='1.000000' inline='1'/>
+<inline_success reason='inline (hot)'/>
+<parse method='1389' uses='129236.000000' stamp='0.952'>
+</parse>
+<klass id='1217' name='java.lang.Object' flags='1'/>
+<method id='1392' holder='1223' name='arraycopy' return='1212' arguments='1217 1210 1217 1210 1210' flags='265' bytes='0' compile_id='24' compile_kind='c2n' compiler='' level='0' iicount='128'/>
+<type id='1212' name='void'/>
+<klass id='1223' name='java.lang.System' flags='17'/>
+<call method='1392' instr='invokestatic'/>
+<inline_success reason='intrinsic'/>
+</parse>
+<task_done success='1' nmsize='1160' count='245' backedge_count='2441006' inlined_bytes='8' stamp='0.956'/>
+</task>
+</compilation_log>
+<hotspot_log_done stamp='1.021'/>
+</hotspot_log>
