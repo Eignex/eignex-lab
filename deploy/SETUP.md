@@ -517,11 +517,14 @@ node, then an on-demand node, with fixed exceptions:
 
 A job's `host` records the placement: `lab` (the Mac only), `aws` (a node only) or `auto` (whichever is free first).
 The queue shows them as `Mac only`, `AWS` and `Mac or AWS`, in one queue ordered by priority, series and age. The Mac
-takes the next job it may run when it is free: jobs placed on the Mac first, then `auto` jobs in queue order. A job
-placed on the Mac always goes before an `auto` job there, whatever their priorities, and an `auto` job the Mac took
-gives way to one between its cases, never the other way round, so sweeps and reference runs are never held up. An
-`auto` job is taken by whichever comes first, the free Mac or a free node (a node leaves the free Mac's next job to
-it); once taken its `host` is where it went, since a planned job's commands name paths on the host that planned it.
+takes the first job it may run in that order when it is free, whatever the placement: jobs placed on the Mac and
+`auto` jobs no node has claimed compete by priority alone. A job running on the Mac, placed there or an `auto` job it
+took, gives way between its cases to any such queued job of strictly higher priority; an equal priority never
+preempts, and a paused, cancelled or node-claimed job does not count. So an a/b at priority 0 goes ahead of a status
+sweep (-2) or a reference run (-3, -4) even when the pressure is too low to launch a node, and the run it interrupted
+resumes later with its finished cases kept. An `auto` job is taken by whichever comes first, the free Mac or a free
+node (a node leaves to the Mac the job it takes next, when it is free or about to give way to that job); once taken
+its `host` is where it went, since a planned job's commands name paths on the host that planned it.
 When the runner starts, it places every queued job that has not been planned again by these rules, cut down to fit
 the Mac first, so a job queued under the old model with an explicit `aws` or `lab`, or with more `processors` than the
 Mac has, becomes `auto` unless an exception applies; a planned job placed on `aws` is released as below, and other
@@ -550,7 +553,7 @@ Nodes launch on pressure, with damping:
 
 - Pressure is the estimated core-hours of the work waiting for AWS: queued `auto` jobs at priority `nodeMinPriority`
   (0) or above and every queued `aws` job (only an operator's override places one there), less the job the Mac takes
-  next when it is free, plus the unclaimed problems
+  next when it is free or about to give way to it, plus the unclaimed problems
   of jobs running on AWS. A job's core-hours are its cases times each arm's `timeout` times its `processors`: a planned
   job counts its queued cases; an unplanned one is estimated from its selections (`max`, else `per-family` times 10
   families, else 20 problems per selection, the smaller when both are set) times arms, seeds and repeats; a profile
@@ -827,7 +830,7 @@ Experiments run highest priority first (`"priority"` in the spec, default 0; `la
 later). Within one priority, the job whose series last finished a run longest ago goes first (a schedule's runs
 share its name, an experiment's reruns their name; one that never ran goes before all), then the oldest, so a
 schedule that just ran does not keep going ahead of one that has waited. A running experiment checks before each case whether it was paused (`lab
-pause <id>`) or a higher-priority one is waiting; if so it starts no more, lets its running cases finish, and goes
+pause <id>`) or a higher-priority one it may run is waiting, whether placed on the Mac or `auto`; if so it starts no more, lets its running cases finish, and goes
 back to the queue with its worktrees and finished cases kept, resuming at its next case when it is taken again. `lab
 resume <id>` releases a paused one.
 
