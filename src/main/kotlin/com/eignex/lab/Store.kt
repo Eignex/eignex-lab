@@ -24,7 +24,7 @@ data class Command(
     val finishedAt: Long? = null,
     /** Cores the command keeps busy: its arm's `processors`; the runner's core budget counts these. */
     val cores: Int = 1,
-    /** What the lab is doing with it while it runs on AWS; null when it does not run or runs on the lab machine. */
+    /** What the lab is doing with it while it runs on a cloud node; null when it does not run or runs locally. */
     val phase: CasePhase? = null,
     /** Why the lab, or something else, ended its processes ([Termination]), each line with when; read from the job's
      *  directory for a single job's JSON, empty elsewhere. */
@@ -32,7 +32,7 @@ data class Command(
 )
 
 /**
- * What the lab is doing with a running AWS case, so a long RUNNING case tells the solver's work apart from the lab's:
+ * What the lab is doing with a running cloud case, so a long RUNNING case tells the solver's work apart from the lab's:
  * the case [EXECUTING][Phase.EXECUTING] over SSH, its output coming back, a wait before running it again after SSH
  * dropped, or its tree being killed after a timeout or a cancel.
  */
@@ -611,12 +611,12 @@ class Store(file: Path) {
     }?.let { it.copy(commands = commands(it.id)) }
 
     /**
-     * The job the Mac works on: one left RUNNING there by a crashed runner first, else the first of its queue
-     * ([queueOrder]), claimed for the Mac when it is an `auto` job. The queue holds the jobs placed on the Mac alone and
-     * the `auto` ones no node has claimed, as one, by priority whatever their placement. Among equals, the job whose
-     * series last finished a run longest ago goes first, one that never has before any that has, then the oldest: so a
-     * schedule that just ran cannot keep going ahead of one that has waited. A series is a schedule's runs
-     * (`<schedule>@<sha>`), or an experiment's reruns under its name.
+     * The job the local machine works on: one left RUNNING there by a crashed runner first, else the first of its queue
+     * ([queueOrder]), claimed for the local machine when it is an `auto` job. The queue holds the jobs placed on the
+     * local machine alone and the `auto` ones no node has claimed, as one, by priority whatever their placement. Among
+     * equals, the job whose series last finished a run longest ago goes first, one that never has before any that has,
+     * then the oldest: so a schedule that just ran cannot keep going ahead of one that has waited. A series is a
+     * schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
      */
     @Synchronized
     fun next(): Job? = transaction {
@@ -628,8 +628,8 @@ class Store(file: Path) {
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
         val id = running ?: queueOrder().firstOrNull()?.also { claimed ->
-            // An auto job is taken where it goes: from now on it is the Mac's job, resumed there after a pause or a
-            // restart, and `auto` marks that it could have gone elsewhere.
+            // An auto job is taken where it goes: from now on it is the local machine's job, resumed there after a
+            // pause or a restart, and `auto` marks that it could have gone elsewhere.
             connection.prepareStatement(
                 "UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', json('true')) WHERE id = ? AND $HOST = ?",
             ).use {
@@ -661,16 +661,17 @@ class Store(file: Path) {
         it.executeUpdate()
     }
 
-    /** The job [next] would take now, without taking it: the first of the Mac's queue ([queueOrder]). */
+    /** The job [next] would take now, without taking it: the first of the local machine's queue ([queueOrder]). */
     @Synchronized
     fun peek(): Long? = queueOrder().firstOrNull()
 
     /**
-     * The job the Mac is about to take, which a node must leave to it: the first of its queue when the Mac is free, or
-     * when the job it runs gives way to that one between cases ([shouldYield]). Null when the Mac keeps what it runs.
+     * The job the local machine is about to take, which a node must leave to it: the first of its queue when the local
+     * machine is free, or when the job it runs gives way to that one between cases ([shouldYield]). Null when the local
+     * machine keeps what it runs.
      */
     @Synchronized
-    fun macNext(): Long? {
+    fun localNext(): Long? {
         val first = peek() ?: return null
         val running = connection.prepareStatement("SELECT priority FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1").use {
             it.setString(1, Status.RUNNING.name)
@@ -680,17 +681,17 @@ class Store(file: Path) {
         return first.takeIf { (job(it)?.priority ?: Int.MIN_VALUE) > running }
     }
 
-    /** Whether the Mac is running a job. */
+    /** Whether the local machine is running a job. */
     @Synchronized
-    fun macBusy(): Boolean = connection.prepareStatement("SELECT 1 FROM jobs WHERE status = ? AND $HOST = ? LIMIT 1").use {
+    fun localBusy(): Boolean = connection.prepareStatement("SELECT 1 FROM jobs WHERE status = ? AND $HOST = ? LIMIT 1").use {
         it.setString(1, Status.RUNNING.name)
         it.setString(2, Experiments.LAB_HOST)
         it.executeQuery().use { rows -> rows.next() }
     }
 
     /**
-     * The queued, unpaused jobs an AWS node may take, `auto` and `aws` ones alike, in the order a node takes them: by
-     * priority, then series, then age, as the Mac orders its own. Without their commands, with their counts.
+     * The queued, unpaused jobs a cloud node may take, `auto` and `aws` ones alike, in the order a node takes them: by
+     * priority, then series, then age, as the local machine orders its own. Without their commands, with their counts.
      */
     @Synchronized
     fun nodeQueue(): List<Job> = jobsWhere(
@@ -699,8 +700,9 @@ class Store(file: Path) {
     )
 
     /**
-     * Claim queued job [id] for an AWS node: it becomes an `aws` job, `auto` marking one that could have gone to the
-     * Mac. Null when it is no longer one a node may take: the Mac took it, or it was paused or cancelled meanwhile.
+     * Claim queued job [id] for a cloud node: it becomes an `aws` job, `auto` marking one that could have gone to the
+     * local machine. Null when it is no longer one a node may take: the local machine took it, or it was paused or
+     * cancelled meanwhile.
      */
     @Synchronized
     fun claimForNode(id: Long): Job? = transaction {
@@ -1161,10 +1163,11 @@ class Store(file: Path) {
     ) == 1
 
     /**
-     * Whether [jobId], running on the Mac, should stop starting commands: it was paused, or a job in the Mac's queue
-     * ([queueOrder]) has a strictly higher priority. Placement does not matter: a job placed on the Mac alone, one an
-     * `auto` job the Mac took, and an `auto` job no node has claimed all compete by priority alone, and an equal
-     * priority never preempts. A paused or cancelled job, or one a node claimed, does not count.
+     * Whether [jobId], running on the local machine, should stop starting commands: it was paused, or a job in the
+     * local machine's queue ([queueOrder]) has a strictly higher priority. Placement does not matter: a job placed on
+     * the local machine alone, one an `auto` job the local machine took, and an `auto` job no node has claimed all
+     * compete by priority alone, and an equal priority never preempts. A paused or cancelled job, or one a node
+     * claimed, does not count.
      */
     @Synchronized
     fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
@@ -1182,8 +1185,8 @@ class Store(file: Path) {
     }
 
     /**
-     * The Mac's queue in the order [next] takes it: the queued, unpaused jobs placed on the Mac alone or taken by it,
-     * and the `auto` jobs no node has claimed, as one queue by priority, then series, then age.
+     * The local machine's queue in the order [next] takes it: the queued, unpaused jobs placed on the local machine
+     * alone or taken by it, and the `auto` jobs no node has claimed, as one queue by priority, then series, then age.
      */
     @Synchronized
     fun queueOrder(): List<Long> = connection.prepareStatement(
@@ -1262,8 +1265,8 @@ class Store(file: Path) {
 
     /**
      * Place a queued experiment that has not been planned on [host] (`lab`, `aws` or `auto`): what [Placement] decides,
-     * or an operator overrides. [placed], when given, is the spec it then has: its own cut down to fit the Mac. False
-     * otherwise; a planned job a node gave back is placed with [release].
+     * or an operator overrides. [placed], when given, is the spec it then has: its own cut down to fit the local
+     * machine. False otherwise; a planned job a node gave back is placed with [release].
      */
     @Synchronized
     fun place(jobId: Long, host: String, placed: ExperimentSpec? = null): Boolean {
@@ -1391,8 +1394,8 @@ private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.nam
 private const val PRIORITY_ORDER = "priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
     "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
 
-/** How queues are ordered, the Mac's ([Store.queueOrder]), a node's ([Store.nodeQueue]) and the one the pages show
- *  ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
+/** How queues are ordered, the local machine's ([Store.queueOrder]), a node's ([Store.nodeQueue]) and the one the pages
+ *  show ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
 private const val QUEUE_ORDER = "ORDER BY $PRIORITY_ORDER"
 
 

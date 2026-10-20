@@ -64,10 +64,11 @@ data class ScheduleSpec(
 @Serializable
 data class ScheduleUpdate(val experiment: ExperimentSpec? = null, val intervalSec: Long? = null, val nextCheckInSec: Long? = null)
 
-/** A queued job's [id], with [notes] on what the lab made of its spec, such as a profile's time limit (none for most), and
- *  [placement], where the lab placed it. */
+/** A queued job's [id], with [notes] on what the lab made of its spec, such as a profile's time limit (none for most),
+ *  [placement], where the lab placed it, in words, and [host], the same as `local`, `cloud` or `auto`
+ *  ([Experiments.hostWord]). The job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`. */
 @Serializable
-data class Created(val id: Long, val notes: List<String>? = null, val placement: String? = null)
+data class Created(val id: Long, val notes: List<String>? = null, val placement: String? = null, val host: String? = null)
 
 @Serializable
 data class ReferenceHit(val collection: String, val problem: String, val reference: Reference)
@@ -148,8 +149,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/experiments") {
             // The lab places every job itself ([Placement]): a submitted host or machine count is read but not followed.
             val body = analysisDefaults(call.receive<JsonObject>())
-            // Every job fits the Mac: cores and parallel over its limits are cut down to them, and the notes say so.
-            val given = Experiments.capToMac(DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList()),
+            // Every job fits the local machine: cores and parallel over its limits are cut down to them, and the notes
+            // say so.
+            val given = Experiments.capToLocal(DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList()),
                 config.cores, config.maxParallel)
             val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
             requireDescription(spec)
@@ -163,8 +165,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                     return@post
                 }
                 val id = store.create(spec.name, DEFAULT_REF, emptyList(), 1, spec.priority, spec)
-                call.respond(HttpStatusCode.Created, Created(id, listOf("analyses job ${analyze.job}'s retained captures on the Mac; no solver runs"),
-                    placementNote(spec.host)))
+                call.respond(HttpStatusCode.Created, Created(id, listOf("analyses job ${analyze.job}'s retained captures on the local machine; no solver runs"),
+                    placementNote(spec.host), Experiments.hostWord(spec.host)))
                 return@post
             }
             // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
@@ -181,7 +183,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             } else emptyList()).plus(spec.capped.map { "capped: $it" }).ifEmpty { null }
             val ignored = listOf("host", "machines").filter { it in body }
             call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host) +
-                if (ignored.isEmpty()) "" else "; ${ignored.joinToString(" and ")} ignored: the lab places jobs"))
+                if (ignored.isEmpty()) "" else "; ${ignored.joinToString(" and ")} ignored: the lab places jobs", Experiments.hostWord(spec.host)))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
@@ -355,21 +357,22 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // An operator's override of where a queued, unplanned job may run; the lab places jobs itself ([Placement]).
         post("/jobs/{id}/host") {
             val id = call.parameters["id"]!!.toLong()
-            val spec = call.receive<HostSpec>()
+            // `local` and `cloud` are stored as `lab` and `aws`, the names older jobs and clients use.
+            val host = Experiments.storedHost(call.receive<HostSpec>().host)
             val job = store.job(id)
             val experiment = requireNotNull(job?.experiment) { "no such experiment" }
-            requireHost(experiment.copy(host = spec.host), config)
-            val moved = store.place(id, spec.host)
+            requireHost(experiment.copy(host = host), config)
+            val moved = store.place(id, host)
             call.respond(
                 if (moved) HttpStatusCode.OK else HttpStatusCode.Conflict,
-                if (moved) "operator override: ${placementNote(spec.host)} (the lab places jobs itself; agents need not)"
+                if (moved) "operator override: ${placementNote(host)} (the lab places jobs itself; agents need not)"
                 else "only a queued job that has not been planned can change host",
             )
         }
         // Kept so old clients get an answer: the node pool decides how many machines work on a job.
         post("/jobs/{id}/machines") {
             call.receive<MachinesSpec>()
-            call.respond(HttpStatusCode.OK, "ignored: the lab places jobs, and the AWS node pool sizes itself to the queue (see maxInstances)")
+            call.respond(HttpStatusCode.OK, "ignored: the lab places jobs, and the cloud node pool sizes itself to the queue (see maxInstances)")
         }
         post("/jobs/{id}/description") {
             val spec = call.receive<DescriptionSpec>()
@@ -461,17 +464,17 @@ private const val MAX_TAIL_BYTES = 16L * 1024 * 1024
 private fun worktrees(config: Config, id: Long): List<File> =
     config.worktree(id).toFile().parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList()
 
-/** A job that may run on AWS needs the lab's AWS settings, runs klause only, and fits a node. */
+/** A job that may run on a cloud node needs the lab's cloud settings, runs klause only, and fits a node. */
 private fun requireHost(spec: ExperimentSpec, config: Config) {
-    require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be lab, aws or auto" }
+    require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be local, cloud or auto (or lab or aws, their older names)" }
     if (spec.host == Experiments.LAB_HOST) return
     val aws = requireNotNull(config.aws) {
-        "the lab has no AWS settings: run deploy/aws-setup.sh"
+        "the lab has no cloud settings: run deploy/aws-setup.sh"
     }
     require(Experiments.arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
-        "reference runs stay on the lab machine, which has the reference solvers"
+        "reference runs stay on the local machine, which has the reference solvers"
     }
-    require(spec.problemList.isEmpty()) { "an AWS experiment selects its problems" }
+    require(spec.problemList.isEmpty()) { "a cloud experiment selects its problems" }
     val cores = Experiments.arms(spec).maxOf { it.cores }
     requireNotNull(aws.sizeFor(cores)) {
         "its cases need $cores cores; the largest instance within the ${aws.vcpuQuota}-vCPU quota has ${aws.sizes.last().cores}"
@@ -480,9 +483,9 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
 
 /** What placing a job on [host] means, for the submitter. */
 private fun placementNote(host: String): String = when (host) {
-    Experiments.AWS_HOST -> "placed on AWS: an AWS node runs it"
-    Experiments.AUTO_HOST -> "placed by the lab: the Mac when it is free, else an AWS node"
-    else -> "placed on the Mac"
+    Experiments.AWS_HOST -> "placed on the cloud: a cloud node runs it"
+    Experiments.AUTO_HOST -> "placed by the lab: the local machine when it is free, else a cloud node"
+    else -> "placed locally"
 }
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */

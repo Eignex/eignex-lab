@@ -229,7 +229,7 @@ class PagesTest {
     }
 
     @Test
-    fun `an analysis is queued on the Mac for a profiled job's captures and refused once they were trimmed`() {
+    fun `an analysis is queued on the local machine for a profiled job's captures and refused once they were trimmed`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.database)
         val target = instrumentedJob(config, store)
@@ -338,11 +338,40 @@ class PagesTest {
             assertEquals(HttpStatusCode.Created, created.status)
             assertEquals(listOf(Experiments.AUTO_HOST, null), listOf(spec.host, spec.machines))
             assertContains(body["placement"]!!.jsonPrimitive.content, "host and machines ignored: the lab places jobs")
+            assertEquals("auto", body["host"]!!.jsonPrimitive.content)
             assertContains(client.post("/jobs/1/machines") {
                 header(HttpHeaders.ContentType, "application/json")
                 setBody("""{"machines": 2}""")
             }.bodyAsText(), "ignored")
         }
+    }
+
+    @Test
+    fun `an operator's host override takes local and cloud, stored as lab and aws, and the older names still`() {
+        val config = lab(cores = 8, aws = "vcpuQuota=32\n")
+        val store = Store(config.database)
+        val id = store.create("e", "0123456789abcdef", emptyList(), 1, 0,
+            ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("ref" to "0123456789abcdef"), description = "d"))
+        testApplication {
+            application { api(config, store, host) }
+            suspend fun place(to: String) = client.post("/jobs/$id/host") {
+                header(HttpHeaders.ContentType, "application/json")
+                setBody("""{"host": "$to"}""")
+            }
+
+            val cloud = place("cloud")
+            assertEquals(HttpStatusCode.OK, cloud.status)
+            assertContains(cloud.bodyAsText(), "placed on the cloud: a cloud node runs it")
+            assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
+            assertContains(place("local").bodyAsText(), "placed locally")
+            assertEquals(Experiments.LAB_HOST, store.job(id)!!.experiment!!.host)
+            assertEquals(HttpStatusCode.OK, place("aws").status)
+            assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
+            assertContains(place("mac").bodyAsText(), "host must be local, cloud or auto")
+        }
+        assertEquals(listOf("lab", "aws", "auto", "lab", "aws"),
+            listOf("local", "cloud", "auto", "lab", "aws").map(Experiments::storedHost))
+        assertEquals(listOf("local", "cloud", "auto"), listOf("lab", "aws", "auto").map(Experiments::hostWord))
     }
 
     @Test
@@ -376,7 +405,7 @@ class PagesTest {
     }
 
     @Test
-    fun `a job asking for more than the Mac has is cut down to it, and the response and the job page say so`() {
+    fun `a job asking for more than the local machine has is cut down to it, and the response and the job page say so`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = 8, maxParallel = 6)
         config.dataDir.resolve("aws").toFile().mkdirs()
         config.dataDir.resolve("aws/aws.properties").toFile()
@@ -396,8 +425,8 @@ class PagesTest {
 
             assertEquals(HttpStatusCode.Created, created.status)
             assertEquals(listOf(Experiments.AUTO_HOST, "8", "6"), listOf(job.experiment!!.host, job.experiment!!.base["processors"], "${job.parallel}"))
-            assertEquals(listOf("capped: parallel=8 was asked, capped at the Mac's 6", "capped: processors=12 was asked, capped at the Mac's 8 cores"), notes)
-            assertContains(jobPage(config, job, failedOnly = false), "processors=12 was asked, capped at the Mac's 8 cores")
+            assertEquals(listOf("capped: parallel=8 was asked, capped at the local machine's 6", "capped: processors=12 was asked, capped at the local machine's 8 cores"), notes)
+            assertContains(jobPage(config, job, failedOnly = false), "processors=12 was asked, capped at the local machine's 8 cores")
         }
     }
 
@@ -427,18 +456,18 @@ class PagesTest {
         workSummary(config, jobs, jobs.associate { it.id to Estimates.estimate(it, { null }, config.cores)!! })
 
     @Test
-    fun `without AWS settings the work summary shows only the work and the Mac's time to drain it`() {
+    fun `without cloud settings the work summary shows only the work and the local machine's time to drain it`() {
         val config = lab(aws = null)
 
         val summary = summaryOf(config, listOf(work(1, Experiments.LAB_HOST, 10), work(2, Experiments.LAB_HOST, 30, done = 10)))
 
         assertContains(summary, "≈3.0 core-h")
-        assertContains(summary, "~45 min for the Mac alone")
-        assertFalse("AWS" in summary)
+        assertContains(summary, "~45 min for the local machine alone")
+        assertFalse("Cloud" in summary)
     }
 
     @Test
-    fun `the work summary splits Mac-only, toward-AWS and below-the-floor work`() {
+    fun `the work summary splits local-only, toward-cloud and below-the-floor work`() {
         val config = lab(aws = "nodeMinPriority=1\n")
         writeReport(config, NodePoolReport(now(), 0.0, 0, emptyList()))
 
@@ -447,11 +476,11 @@ class PagesTest {
 
         assertContains(summary, "≈10 core-h")
         // Everything but the AWS job's 3 core-hours, on four cores.
-        assertContains(summary, "~1 h 45 min for the Mac alone")
-        assertContains(summary, "Mac only 1.0</span>")
-        assertContains(summary, "Mac or AWS, toward AWS 2.0</span>")
-        assertContains(summary, "Mac or AWS below the priority floor 4.0</span>")
-        assertContains(summary, "AWS 3.0</span>")
+        assertContains(summary, "~1 h 45 min for the local machine alone")
+        assertContains(summary, "local only 1.0</span>")
+        assertContains(summary, "local or cloud, toward cloud 2.0</span>")
+        assertContains(summary, "local or cloud below the priority floor 4.0</span>")
+        assertContains(summary, "cloud 3.0</span>")
     }
 
     @Test
@@ -465,7 +494,7 @@ class PagesTest {
         assertContains(summary, "style=\"width:8.0%\"")
         assertContains(summary, "0.8 of 10 core-h for the first node")
         assertContains(summary, "no node: below threshold")
-        assertContains(summary, "AWS nodes: none")
+        assertContains(summary, "cloud nodes: none")
         assertFalse("over for" in summary)
     }
 
@@ -486,7 +515,7 @@ class PagesTest {
         assertContains(summary, "over for 4 of 10 min")
         assertContains(summary, "no node: waiting 6 min more")
         assertFalse("cooldown" in summary)
-        assertContains(summary, "AWS nodes: 2 (")
+        assertContains(summary, "cloud nodes: 2 (")
         assertContains(summary, "2xlarge spot</span> running <a href=\"/jobs/7\">job 7</a>")
         assertContains(summary, "4xlarge on-demand</span> idle")
     }
@@ -527,11 +556,11 @@ class PagesTest {
         assertContains(summary, "Work scheduled</b> <span class=\"muted\">none</span>")
         assertContains(summary, "3.3 of 10 core-h for the first node")
         assertFalse("no node:" in summary)
-        assertContains(summaryOf(lab(), emptyList()), "AWS: no pool report yet")
+        assertContains(summaryOf(lab(), emptyList()), "Cloud: no pool report yet")
     }
 
     @Test
-    fun `each active row shows its remaining estimate, and the Mac's time for work the Mac may run`() {
+    fun `each active row shows its remaining estimate, and the local machine's time for work the local machine may run`() {
         val config = lab(cores = 4)
         writeReport(config, NodePoolReport(now(), 0.0, 0, emptyList()))
         val jobs = listOf(work(1, Experiments.AUTO_HOST, 10), work(2, Experiments.AWS_HOST, 50, done = 20, status = Status.RUNNING),
@@ -539,10 +568,10 @@ class PagesTest {
 
         val page = indexPage(config, host, jobs, emptyList(), emptyList(), 50, null, null, listOf(1L, 3L))
 
-        assertContains(page, "≈1.0 core-h · ~15 min on the Mac <span class=\"muted\">(upper bound)</span></div>")
+        assertContains(page, "≈1.0 core-h · ~15 min locally <span class=\"muted\">(upper bound)</span></div>")
         assertContains(page, "≈3.0 core-h <span class=\"muted\">(upper bound)</span></div>")
         // Unplanned: 20 problems by the pool's estimate, so 2 core-hours.
-        assertContains(page, "≈2.0 core-h · ~30 min on the Mac <span class=\"muted\">(guessed, upper bound)</span></div>")
+        assertContains(page, "≈2.0 core-h · ~30 min locally <span class=\"muted\">(guessed, upper bound)</span></div>")
         assertContains(page, "<div id=\"work\" data-live>")
         assertFalse("pressure" in page.substringBefore("<div id=\"work\""))
     }
@@ -558,10 +587,10 @@ class PagesTest {
         val page = indexPage(config, host, listOf(measured, unplanned), emptyList(), emptyList(), 50, null, null, listOf(2L), history)
 
         // 80 cases of a minute, four at once.
-        assertContains(page, "≈1.3 core-h · ~20 min on the Mac <span class=\"muted\">(measured)</span></div>")
+        assertContains(page, "≈1.3 core-h · ~20 min locally <span class=\"muted\">(measured)</span></div>")
         // 977 cases of 9.6 s, four at once: 2.6 core-h and 40 min.
-        assertContains(page, "≈2.6 core-h · ~40 min on the Mac <span class=\"muted\">(from run 6659)</span></div>")
-        assertContains(page, "~1 h for the Mac alone")
+        assertContains(page, "≈2.6 core-h · ~40 min locally <span class=\"muted\">(from run 6659)</span></div>")
+        assertContains(page, "~1 h for the local machine alone")
     }
 
     @Test

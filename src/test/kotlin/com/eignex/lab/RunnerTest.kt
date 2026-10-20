@@ -35,7 +35,7 @@ class RunnerTest {
     }
 
     @Test
-    fun `a profileCli case on the Mac gets its own profile directory and leaves its measurement manifest there`() {
+    fun `a profileCli case on the local machine gets its own profile directory and leaves its measurement manifest there`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true)

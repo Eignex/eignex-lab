@@ -3,8 +3,8 @@ package com.eignex.lab
 import kotlinx.serialization.Serializable
 
 /**
- * What one job asks of the AWS node pool: its estimated core-hours of work no node or the Mac has started, the cores
- * its largest case holds, and whether it is a profile job, which only an on-demand node may run.
+ * What one job asks of the cloud node pool: its estimated core-hours of work no node or the local machine has started,
+ * the cores its largest case holds, and whether it is a profile job, which only an on-demand node may run.
  */
 data class Demand(
     val jobId: Long,
@@ -17,7 +17,8 @@ data class Demand(
 /** A node as the work selection sees it: the cores its cases may hold, and whether it was bought on demand. */
 data class NodeShape(val cores: Int, val onDemand: Boolean)
 
-/** What a free node does next: help a job already running on AWS with its unclaimed problems, or claim a queued one. */
+/** What a free node does next: help a job already running on cloud nodes with its unclaimed problems, or claim a queued
+ *  one. */
 sealed interface NodeWork {
     val jobId: Long
 
@@ -26,8 +27,9 @@ sealed interface NodeWork {
 }
 
 /**
- * The node pool's decisions, kept free of AWS and the store so they can be tested on their own: how much work waits
- * for AWS (pressure, in core-hours), whether to launch a node, what size, what a free node takes, and when it retires.
+ * The node pool's decisions, kept free of the cloud provider and the store so they can be tested on their own: how much
+ * work waits for the cloud (pressure, in core-hours), whether to launch a node, what size, what a free node takes, and
+ * when it retires.
  */
 object NodePool {
     /** Core-hours a case of [arm] may take: its whole budget on every core it holds, the cost of a case that never
@@ -65,9 +67,9 @@ object NodePool {
     fun coreHours(spec: ExperimentSpec, queuedCases: Int?): Double =
         (queuedCases ?: estimatedCases(spec)) * meanCaseCoreHours(spec)
 
-    /** The pressure, in core-hours, that launches the first node: the work that would keep the Mac's [macCores] busy
-     *  for [macHours]. A job or two the Mac clears within that never starts a node. */
-    fun threshold(macCores: Int, macHours: Double): Double = macCores * macHours
+    /** The pressure, in core-hours, that launches the first node: the work that would keep the local machine's
+     *  [localCores] busy for [localHours]. A job or two the local machine clears within that never starts a node. */
+    fun threshold(localCores: Int, localHours: Double): Double = localCores * localHours
 
     /** The pressure that launches another node beside the [nodes] up or launching: [threshold] for the first, then
      *  twice it per node already there. */
@@ -93,10 +95,10 @@ object NodePool {
     }
 
     /**
-     * What a free node of [node]'s shape takes next. First a job running on AWS that still has unclaimed problems
-     * ([helpable], highest priority first), joining it; else the first of [queued] (in queue order) it may claim. A
-     * job fits when its largest case's cores fit the node, and a profile job only an on-demand node runs. [excluded]
-     * is the job the Mac takes next when it is free, which a node leaves to it.
+     * What a free node of [node]'s shape takes next. First a job running on cloud nodes that still has unclaimed
+     * problems ([helpable], highest priority first), joining it; else the first of [queued] (in queue order) it may
+     * claim. A job fits when its largest case's cores fit the node, and a profile job only an on-demand node runs.
+     * [excluded] is the job the local machine takes next when it is free, which a node leaves to it.
      */
     fun pick(node: NodeShape, helpable: List<Demand>, queued: List<Demand>, excluded: Long? = null): NodeWork? {
         fun fits(d: Demand) = d.cores <= node.cores && (!d.profile || node.onDemand)

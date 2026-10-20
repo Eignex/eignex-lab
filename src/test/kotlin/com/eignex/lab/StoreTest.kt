@@ -153,7 +153,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a queued profiling job may move to the Mac like any other`() {
+    fun `a queued profiling job may move to the local machine like any other`() {
         val store = store()
         val experiment = ExperimentSpec("profile", listOf(mapOf("suite" to "miplib2017")),
             parallel = 1, host = "aws", profileCli = true)
@@ -431,7 +431,7 @@ class StoreTest {
     }
 
     @Test
-    fun `an auto job the Mac took keeps running ahead of a lower priority Mac job, and gives way to a higher one`() {
+    fun `an auto job the local machine took keeps running ahead of a lower priority local job, and gives way to a higher one`() {
         val store = store()
         val auto = autoJob(store, "a", priority = -1)
         assertEquals(auto, store.next()?.id)
@@ -443,7 +443,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a Mac job gives way to a queued auto job of higher priority, never to a lower or equal one`() {
+    fun `a local job gives way to a queued auto job of higher priority, never to a lower or equal one`() {
         val store = store()
         val reference = autoJob(store, "klause-reference@abc", priority = -3, host = Experiments.LAB_HOST)
         assertEquals(reference, store.next()?.id)
@@ -457,7 +457,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a paused, cancelled or node-claimed job does not make a Mac job give way`() {
+    fun `a paused, cancelled or node-claimed job does not make a local job give way`() {
         val store = store()
         val reference = autoJob(store, "klause-reference@abc", priority = -3, host = Experiments.LAB_HOST)
         store.next()
@@ -473,7 +473,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a Mac job that gives way to an auto job keeps its progress and resumes after it`() {
+    fun `a local job that gives way to an auto job keeps its progress and resumes after it`() {
         val store = store()
         val reference = store.create("klause-reference@abc", "main", listOf("true" to 10L, "true" to 10L), priority = -3)
         store.next()
@@ -491,7 +491,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a node claims an auto or aws job at once, with no wait for the Mac, and the Mac then cannot`() {
+    fun `a node claims an auto or aws job at once, with no wait for the local machine, and the local machine then cannot`() {
         val store = store()
         val auto = autoJob(store, "a")
         val aws = autoJob(store, "b", host = Experiments.AWS_HOST)
@@ -506,7 +506,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a node never claims a job placed on the Mac, nor a paused one`() {
+    fun `a node never claims a job placed on the local machine, nor a paused one`() {
         val store = store()
         val mac = autoJob(store, "sweep@abc", host = Experiments.LAB_HOST)
         val paused = autoJob(store, "p")
@@ -517,7 +517,7 @@ class StoreTest {
     }
 
     @Test
-    fun `the node queue holds auto and aws jobs by priority, and the Mac's next is what it would take`() {
+    fun `the node queue holds auto and aws jobs by priority, and the local machine's next is what it would take`() {
         val store = store()
         val low = autoJob(store, "low", priority = -1)
         val aws = autoJob(store, "aws", host = Experiments.AWS_HOST)
@@ -526,29 +526,29 @@ class StoreTest {
 
         assertEquals(listOf(high, aws, low), store.nodeQueue().map { it.id })
         assertEquals(listOf(high, low, mac), store.queueOrder())
-        assertEquals(listOf(high, high), listOf(store.peek(), store.macNext()))
+        assertEquals(listOf(high, high), listOf(store.peek(), store.localNext()))
         assertEquals(listOf(high, aws, low, mac), store.queue())
-        assertEquals(false, store.macBusy())
+        assertEquals(false, store.localBusy())
         store.next()
-        assertEquals(listOf(true, low, null), listOf(store.macBusy(), store.peek(), store.macNext()))
+        assertEquals(listOf(true, low, null), listOf(store.localBusy(), store.peek(), store.localNext()))
     }
 
     @Test
-    fun `the Mac's next is left to it while the job it runs is about to give way to that one`() {
+    fun `the local machine's next is left to it while the job it runs is about to give way to that one`() {
         val store = store()
         val reference = autoJob(store, "klause-reference@abc", priority = -3, host = Experiments.LAB_HOST)
         store.next()
         val low = autoJob(store, "low", priority = -5)
-        val held = store.macNext()
+        val held = store.localNext()
         val high = autoJob(store, "high", priority = 3)
 
-        assertEquals(listOf(null, high), listOf(held, store.macNext()))
+        assertEquals(listOf(null, high), listOf(held, store.localNext()))
         assertEquals(listOf(high, low), store.queueOrder())
         assertEquals(true, store.shouldYield(reference))
     }
 
     @Test
-    fun `an auto job the Mac took and gave back competes with Mac jobs by priority`() {
+    fun `an auto job the local machine took and gave back competes with local jobs by priority`() {
         val store = store()
         val auto = autoJob(store, "a", priority = 5)
         assertEquals(auto, store.next()?.id)

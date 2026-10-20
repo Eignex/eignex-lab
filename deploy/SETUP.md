@@ -4,7 +4,8 @@ An experiment server for klause. An experiment solves a selection of problems un
 one problem per case. The server builds each commit the configurations name, runs the cases, one experiment at a
 time, and compares the results. It serves the queue, live output and results over HTTP.
 
-It runs on macOS or Linux. Both services log the koblas backend at startup: the engine, and whichever host BLAS
+It runs on macOS or Linux. The lab runs work on its local machine (a Mac here) and, when the queue calls for it,
+on cloud nodes rented from a cloud provider (AWS EC2 here; see Running on cloud nodes). Both services log the koblas backend at startup: the engine, and whichever host BLAS
 it finds. They refuse to start (exit 78) unless koblas runs its Vector API engine, which is what klause's Level 1
 calls use, so no timing comes from the scalar fallback. Host BLAS serves only Level 2 and 3, which klause does not
 call, so it is reported and not required. `klause-lab check` prints the report and does nothing else.
@@ -13,7 +14,7 @@ call, so it is reported and not required. `klause-lab check` prints the report a
 
 **One question, one experiment.** Submit one experiment that covers all the problems a question needs; never split
 it into batches. The lab bounds runtime itself (each case's `timeout`, profile time limits) and orders and places
-the work (Mac first, AWS nodes by queue pressure), and a batch defeats that placement and the arms' pairing and
+the work (local machine first, cloud nodes by queue pressure), and a batch defeats that placement and the arms' pairing and
 scatters the results. Don't impose your own wall-clock caps or cancel a job to keep it short. Follow a long job
 with `lab wait <id>` run in the background, or poll `lab show <id>` / `lab cases <id>`: finished cases are readable
 while it runs. A submission whose arms, seeds, repeats and profiling equal those of a queued or running experiment,
@@ -56,20 +57,20 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
-  On AWS spot instances, which share hosts with other tenants and can be taken back mid-problem (its remaining runs
-  then move to another instance), timing is noisier than on the Mac: use `repeats` of 3 or more for an A/B whose
+  On spot nodes (AWS spot instances), which share hosts with other tenants and can be taken back mid-problem (its remaining runs
+  then move to another instance), timing is noisier than locally: use `repeats` of 3 or more for an A/B whose
   answer rests on time, and more when the paired difference is small.
-- `host` and `machines` are no longer followed: the lab places every job itself (see Running on AWS). They are still
+- `host` and `machines` are no longer followed: the lab places every job itself (see Running on cloud nodes). They are still
   accepted, so older specs and clients work, and the reply's `placement` says where the job went and that they were
   ignored.
 - `profileCli: true` (with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings and
-  measures its physical peak RSS and user/system CPU. It is placed like any other job, Mac first, then a node. On a
-  node (Linux) GNU time measures the CLI; on the Mac (macOS), which has no GNU time, BSD `time -l` does, its report
+  measures its physical peak RSS and user/system CPU. It is placed like any other job, local first, then a node. On a
+  node (Linux) GNU time measures the CLI; on the local machine (macOS here), which has no GNU time, BSD `time -l` does, its report
   converted by the launcher, which passes SIGTERM, SIGINT and SIGHUP on to the CLI. Both write `resources.txt` with the same
   keys and units (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`), and `measurement.json` says
-  which measured the memory and where the case ran (the node's instance, or `lab`). Each case returns `cli.jfr`,
+  which measured the memory and where the case ran (the node's instance, or `lab`, the local machine). Each case returns `cli.jfr`,
   `resources.txt` and `measurement.json` under `cases/<index>/profile-<uuid>/`, accessible through the job's Files page
-  or `lab fetch`; on the Mac they are written there directly, along with the case's stdout and stderr as for any case.
+  or `lab fetch`; locally they are written there directly, along with the case's stdout and stderr as for any case.
   Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
   command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
   A profiling job runs with a parallel limit of one, however it is edited through the client or API.
@@ -79,7 +80,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   recordings are measurement failures. A dropped artifact transfer retries that transfer without re-solving the case.
   Profiling changes generated launch scripts only in that job's worktrees (on a node after build caching); solver jars
   and the baseline revision are unchanged. On a node, killing the timer kills its CLI child through Linux's
-  parent-death signal; on the Mac, the runner's kill of the case's process group reaches it.
+  parent-death signal; locally, the runner's kill of the case's process group reaches it.
 - `profileCompilation` (with `profileCli: true`) also records every JIT compilation of the CLI JVM: through startup,
   the solve and shutdown. `"jfr"` records `jdk.Compilation` with no threshold
   (`-XX:StartFlightRecording=…,settings=profile,jdk.Compilation#threshold=0ms,…`; the profile settings otherwise keep
@@ -95,7 +96,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   from the uninstrumented one's, so a schedule's trend keeps the two apart. `/compare` across jobs, the one place
   they could be set beside uninstrumented runs, marks their arms, and warns that a comparison mixing the two measures
   the instrumentation. Compare runtime between uninstrumented runs only.
-- After each case of such a job, the lab (not klause, and the same on the Mac and for a node's case once its captures
+- After each case of such a job, the lab (not klause, and the same locally and for a node's case once its captures
   are back) writes `compilation-report.json` beside the captures in `cases/<index>/profile-<uuid>/`. It reads them with
   the JDK's own JFR consumer and an XML stream reader. The report (`schemaVersion` 1, `kind: "compilation"`) holds:
   - `totals`: the compilation count, compiler ms (the sum of the compilations' own durations, on the compiler
@@ -122,7 +123,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   The raw captures stay with the case. The job's Files page lists them with the report, and `lab cat` or `lab fetch`
   gets them.
 - `{"analyze": {"job": <id>, "kind": "compilation"}}` posted to `/experiments` (`lab analyze <id>`) queues an
-  analysis job. It runs on the Mac, where the captures are. It reruns the lab's analyser over an ended `profileCli`
+  analysis job. It runs locally, where the captures are. It reruns the lab's analyser over an ended `profileCli`
   job's retained captures and writes each case's `compilation-report.json` afresh, with the analysis job in its
   provenance. It also writes an `analysis.json` summary into its own directory, and its page lists the reports. Nothing
   is built and no solver or klause code runs, so it suits a report the analyser has since learned to improve, and a
@@ -149,35 +150,35 @@ time it may take (`timeout` in ms: **10 minutes by default, at most 2 hours**) a
 }
 ```
 
-The lab builds the commit as for an experiment (on AWS, from the build cache when it holds it) and runs the class on
+The lab builds the commit as for an experiment (on a cloud node, from the build cache when it holds it) and runs the class on
 the bench's classpath with each argument passed as it is, no shell between, under a JFR recording written to
 `$OUT/profile.jfr`. `$OUT` is a directory whose files are kept with the job; the corpus cache is `$KLAUSE_CORPUS`, and
 the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to read. Its stdout, stderr, exit and
-`$OUT` come back to the job directory (on AWS as well), read with `lab cat`, `lab files` and `lab fetch` and listed on
-the job page. From AWS, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
+`$OUT` come back to the job directory (from a cloud node as well), read with `lab cat`, `lab files` and `lab fetch` and listed on
+the job page. From a cloud node, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
 in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and goes
-Mac first like every job: the Mac when it is free, else an on-demand AWS node. On the Mac it runs alone, as every job does.
+local first like every job: the local machine when it is free, else an on-demand cloud node. Locally it runs alone, as every job does.
 
 Every profile job is time-boxed. With no `timeout` it gets 10 minutes (`lab profile` sends none unless given its
 `timeout-sec`); a `timeout` over 2 hours is cut to 2 hours, which the job log, the job page and the submit response
 (`notes`) say. The case then runs for that limit plus two minutes for the JVM's start, the room every case gets. At
-the limit its process group gets SIGTERM, and whatever is still running 30 seconds later gets SIGKILL: on AWS by
-`timeout -k 30`, on the Mac by the runner, which does the same (a case of any job stopped at its limit gets this
+the limit its process group gets SIGTERM, and whatever is still running 30 seconds later gets SIGKILL: on a cloud node by
+`timeout -k 30`, locally by the runner, which does the same (a case of any job stopped at its limit gets this
 grace; a cancel or a runner shutdown still kills at once, since a cancelled case's results are not wanted and a case
 cut off by a shutdown reruns from scratch). SIGTERM runs the JVM's shutdown hooks, so JFR writes `profile.jfr` (its
 recording is started with `dumponexit=true`) and the main can flush what it has. A profile main should therefore
 write its results as it goes, or flush them in a shutdown hook within those 30 seconds; whatever it has written to
-`$OUT`, and its stdout and stderr, stay with the job (from AWS, `$OUT` is fetched back whatever the exit). The case's
+`$OUT`, and its stdout and stderr, stay with the job (from a cloud node, `$OUT` is fetched back whatever the exit). The case's
 exit reads `timeout`, its `.termination` file has a `timeout:` line saying SIGTERM was sent, and a second line when
 SIGKILL was needed; the job page says it was stopped at its time limit and lists `$OUT` as for any other exit.
 
-`"profile": {"main": "com.eignex.klause.bench.profile.Tool", "runTimeoutSec": 180}` keeps the profile on the Mac
+`"profile": {"main": "com.eignex.klause.bench.profile.Tool", "runTimeoutSec": 180}` keeps the profile locally
 and opts into one active-time deadline across setup, build retries, the profile command,
 and worktree cleanup. Queue and paused time do not count; resumed and explicitly retried work retains the active
 time already recorded for that job. `base.timeout` remains the separate command allowance, including its existing
 two-minute overhead. `runTimeoutSec` is capped at 7200 (2 hours) as `timeout` is. A whole-run deadline is
-optional; jobs without it retain their existing timeout policy. A profile with one is placed on the Mac only,
-since the Mac enforces the deadline on its own processes.
+optional; jobs without it retain their existing timeout policy. A profile with one is placed on the local machine only,
+since the local machine enforces the deadline on its own processes.
 Reclaiming an interrupted bounded profile conservatively includes the interval until the runner reclaims it,
 including runner downtime, so a restart cannot replenish its allowance.
 
@@ -192,7 +193,7 @@ the remainder of the same deadline; incomplete cleanup is logged and the job is 
 profiles do not repair shared Gradle transform caches. The deadline manages OS processes, not independently
 created container/service resources, whose cleanup remains the profile's responsibility.
 
-After a profile command reports its exit, AWS output retrieval retries only the result stream when SSH drops or
+After a profile command reports its exit, a cloud node's output retrieval retries only the result stream when SSH drops or
 its transfer times out. It uses the file-transfer policy: at most eight 120-second attempts, with cancellable
 backoff from 15 seconds to 5 minutes. It does not restart the completed profile command. Transfer failures remain
 in `cases/<n>/out.transfer-attempts.tsv`; cleanup or failure-reporting errors prevent another attempt.
@@ -206,7 +207,7 @@ files not returned are unavailable, and the file API serves only files already r
 Local archive unpacking runs once, with the same 120-second timeout and cancellation handling, and retains
 `out.unpack.log` when successful. A terminal status identifies whether transfer or unpacking was incomplete.
 `lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]` queues one; `[host]` is ignored.
-On AWS a profile job always runs on an on-demand node, never spot: AWS can take a spot instance back at two
+On the cloud a profile job always runs on an on-demand node, never spot: AWS can take a spot instance back at two
 minutes' notice, and a profile cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs
 resume after a reclaim and run on spot. The script jobs that came before (`script`, `scriptFile`) are retired: a spec
 naming one is refused, and one still queued fails when it is planned.
@@ -250,7 +251,7 @@ bench result cache is off) and its record lands in the store. `lab cases <id>` l
 
 After building each commit, setup captures the installed CLI and Java runtime hashes in a provenance
 manifest when that bench revision supports it. Each case validates the installed files' metadata and
-adds its runtime options to the identity, avoiding a full runtime hash in every JVM. AWS setup also
+adds its runtime options to the identity, avoiding a full runtime hash in every JVM. A cloud node's setup also
 captures a fresh manifest when it restores a cached distribution. Older bench revisions run without
 one. The raw records and case CSV retain `buildFingerprint` and `validationPolicy`; arm summaries and
 experiment pages list them and mark mixed identities or records missing provenance. These labels
@@ -550,49 +551,51 @@ over the MPS problems it has no current verdict on (its stale rows count as none
 a schedule by editing its file and running `lab reschedule`. A schedule's phase is its last check: the runner checks
 it again one interval later, so staggered schedules stay a day apart; `lab reschedule <id> - - <hours>` moves one.
 
-## Running on AWS
+## Running on cloud nodes
 
-The lab places every job itself; whoever submits one does not choose. Every job goes Mac first, then an AWS spot
-node, then an on-demand node, with fixed exceptions:
+The lab places every job itself; whoever submits one does not choose. Every job goes to the local machine first, then a
+cloud spot node, then an on-demand node, with fixed exceptions:
 
 - Scheduled runs (`<schedule>@<sha>`) and their confirmations (`~confirm`), reference runs (an arm with
-  `backend=reference`), exact problem lists and profiles with a `runTimeoutSec` stay on the Mac only.
-- Every job fits the Mac: a `processors` over the Mac's cores (`LAB_CORES`), in `base`, a config or the grid, and a
+  `backend=reference`), exact problem lists and profiles with a `runTimeoutSec` stay on the local machine only.
+- Every job fits the local machine: a `processors` over the local machine's cores (`LAB_CORES`), in `base`, a config or the grid, and a
   `parallel` over its limit (`LAB_MAX_PARALLEL`) are cut down to them at submit. The response's `notes`, the job log
   and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. So no
-  job needs AWS: nodes are overflow capacity for the Mac's queue, launched on pressure alone (below). `profileCli`
-  jobs too go Mac first: both hosts measure them (see the spec's keys above).
-- Profile jobs never run on spot: Mac, then an on-demand node.
+  job needs the cloud: nodes are overflow capacity for the local machine's queue, launched on pressure alone (below). `profileCli`
+  jobs too go local first: both hosts measure them (see the spec's keys above).
+- Profile jobs never run on spot: the local machine, then an on-demand node.
 
-A job's `host` records the placement: `lab` (the Mac only), `aws` (a node only) or `auto` (whichever is free first).
-The queue shows them as `Mac only`, `AWS` and `Mac or AWS`, in one queue ordered by priority, series and age. The Mac
-takes the first job it may run in that order when it is free, whatever the placement: jobs placed on the Mac and
-`auto` jobs no node has claimed compete by priority alone. A job running on the Mac, placed there or an `auto` job it
+A job's `host` records the placement: `lab` (the local machine only), `aws` (a cloud node only) or `auto` (whichever
+is free first). The stored values keep these names, so older jobs and clients need nothing; wherever a host is
+given, `local` and `cloud` are accepted for `lab` and `aws`, and the submit reply's `host` and the pages use the
+agnostic words (`local`, `cloud`, `auto`). The queue shows them as `local only`, `cloud` and `local or cloud`, in one queue ordered by priority, series and age. The local machine
+takes the first job it may run in that order when it is free, whatever the placement: jobs placed locally and
+`auto` jobs no node has claimed compete by priority alone. A job running locally, placed there or an `auto` job it
 took, gives way between its cases to any such queued job of strictly higher priority; an equal priority never
 preempts, and a paused, cancelled or node-claimed job does not count. So an a/b at priority 0 goes ahead of a status
 sweep (-2) or a reference run (-3, -4) even when the pressure is too low to launch a node, and the run it interrupted
-resumes later with its finished cases kept. An `auto` job is taken by whichever comes first, the free Mac or a free
-node (a node leaves to the Mac the job it takes next, when it is free or about to give way to that job); once taken
+resumes later with its finished cases kept. An `auto` job is taken by whichever comes first, the free local machine or a free
+node (a node leaves to the local machine the job it takes next, when it is free or about to give way to that job); once taken
 its `host` is where it went, since a planned job's commands name paths on the host that planned it.
 When the runner starts, it places every queued job that has not been planned again by these rules, cut down to fit
-the Mac first, so a job queued under the old model with an explicit `aws` or `lab`, or with more `processors` than the
-Mac has, becomes `auto` unless an exception applies; a planned job placed on `aws` is released as below, and other
+the local machine first, so a job queued under the old model with an explicit `aws` or `lab`, or with more `processors` than the
+local machine has, becomes `auto` unless an exception applies; a planned job placed on `aws` is released as below, and other
 planned ones keep their host.
 
-A planned job a node gives back goes Mac first like any other: when its nodes retire or are taken back with cases
-left, when it is paused, or when the lab restarts while it runs on AWS, it is queued again and placed by these rules,
-normally `auto`. The free Mac then takes it over before a node does, and a node may still take it when the pressure
+A planned job a node gives back goes local first like any other: when its nodes retire or are taken back with cases
+left, when it is paused, or when the lab restarts while it runs on a cloud node, it is queued again and placed by these rules,
+normally `auto`. The free local machine then takes it over before a node does, and a node may still take it when the pressure
 calls for one. The host that takes a planned job over writes its queued commands again for its own worktrees and
 corpus, since the plan named the paths of the host that made it; finished cases and their results stay, except the
 finished arms of an iteration left part done, which run again with the rest of it (below). A retried job is placed
 the same way. A job whose cancel was requested is never queued again: whatever would requeue it (a pause, a lost or
 retired node, a restart) ends it cancelled instead, its unfinished cases with it, and the runner ends any queued job
-left with a cancel requested when it starts. `lab host <id> auto|lab|aws` (`POST /jobs/{id}/host`) remains as an operator override for a queued,
+left with a cancel requested when it starts. `lab host <id> local|cloud|auto` (`POST /jobs/{id}/host`, `lab` and `aws` still accepted) remains as an operator override for a queued,
 unplanned job; agents never need it. `lab machines` and `POST /jobs/{id}/machines` are retired and ignored.
 
-AWS work runs on a pool of nodes. A node is an EC2 instance that, once booted, takes work until there is none for it:
-first it joins a job already running on AWS that still has problems no node has taken (building that job's commits
-first), otherwise it claims the next queued job it may run (not Mac-only, its cases fit the node's cores, a profile job
+Cloud work runs on a pool of nodes. The cloud provider is AWS: a node is an EC2 instance that, once booted, takes work until there is none for it:
+first it joins a job already running on cloud nodes that still has problems no node has taken (building that job's commits
+first), otherwise it claims the next queued job it may run (not local-only, its cases fit the node's cores, a profile job
 only on an on-demand node, priority order). A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
 and at once when a lab update waits. It stops taking problems an hour before its `maxHours` power-off. A job's
 instances are the nodes working on it right now; its page lists them with their sizes and markets, and the queue
@@ -600,10 +603,10 @@ page's work summary shows the whole pool (below).
 
 Nodes launch on pressure, with damping:
 
-- Pressure is the estimated core-hours of the work waiting for AWS: queued `auto` jobs at priority `nodeMinPriority`
-  (0) or above and every queued `aws` job (only an operator's override places one there), less the job the Mac takes
+- Pressure is the estimated core-hours of the work waiting for the cloud: queued `auto` jobs at priority `nodeMinPriority`
+  (0) or above and every queued `aws` job (only an operator's override places one there), less the job the local machine takes
   next when it is free or about to give way to it, plus the unclaimed problems
-  of jobs running on AWS. A job's core-hours are its cases left times the wall time a case is taken to need times its
+  of jobs running on cloud nodes. A job's core-hours are its cases left times the wall time a case is taken to need times its
   arms' `processors`. A planned job counts its queued cases; an unplanned one takes the case count of the last done run
   of the same experiment (same fingerprint, the ref, name, description and placement left out; a run of the same
   schedule first), else is guessed from its selections (`max`, else `per-family` times 10 families, else 20 problems
@@ -611,10 +614,11 @@ Nodes launch on pressure, with damping:
   case is the job's own mean once 10 of its cases finished, else that earlier run's mean case time (its cases' recorded
   times, or its running time over its cases at the concurrency it ran at), else each arm's whole `timeout` (a profile's
   allowance), the upper bound. The earlier runs are the newest 300 done experiments, reread at most once a minute.
-  Work below `nodeMinPriority` that the Mac can run waits for the Mac: no node launches for it or takes it. Mac-only
+  Work below `nodeMinPriority` that the local machine can run waits for the local machine: no node launches for it or takes it. Local-only
   work never counts.
-- The launch threshold is set by the Mac: the work that would keep it busy for `nodeLaunchMacHours` (1.0) hours, that
-  is the Mac's cores times that in core-hours (10 core-hours on a 10-core Mac). The first node launches once pressure
+- The launch threshold is set by the local machine: the work that would keep it busy for `nodeLaunchLocalHours`
+  (1.0; `nodeLaunchMacHours`, its older name, is still read) hours, that is the local machine's cores times that in
+  core-hours (10 core-hours on a 10-core machine). The first node launches once pressure
   has stayed at or above it for `nodeSustainMin` minutes (10). Another launches only while pressure is at least twice
   the threshold per node already up or launching, again for `nodeSustainMin`, and `nodeCooldownMin` minutes (5) after
   the last launch; at most `maxInstances` nodes, within the `vcpuQuota`. While a lab update waits, no node launches.
@@ -624,48 +628,48 @@ Nodes launch on pressure, with damping:
   With `onDemand=false`, the default, a launch never falls back to on demand and gives up once the pressure is gone.
   A node launched while a profile job waits and no on-demand node is up is bought on demand directly. A spot node
   idle beside a profile job it may not run retires after `nodeIdleMin`, and an on-demand node then launches. A
-  profile alone is far under the threshold (one of 3 minutes on all 10 of the Mac's cores is under a core-hour) and
-  waits for the Mac or an on-demand node already up; profiles run on the Mac unless a large backlog waits.
+  profile alone is far under the threshold (one of 3 minutes on all 10 of the local machine's cores is under a core-hour) and
+  waits for the local machine or an on-demand node already up; profiles run locally unless a large backlog waits.
 - Node size is chosen at launch and kept small: the smallest size of the family (`instanceType`, then `4xlarge`,
   `8xlarge`, …) that has the cores the largest waiting case needs (its `processors`) and covers this node's share of
   the pressure (pressure over the nodes up plus this one) within two hours, at most `nodeMaxVcpus` (16, a
   `c7i.4xlarge`) unless a case itself needs more. More pressure is met by another node later, through the damping,
   rather than one large node up front. So a few core-hours get a `c7i.2xlarge`, a larger backlog a `c7i.4xlarge`, and
   a backlog beyond that a second node.
-- A node runs one case per two physical cores unless the job sets `parallel`, which on AWS counts per node, within
+- A node runs one case per two physical cores unless the job sets `parallel`, which on cloud nodes counts per node, within
   its cores: single-core arms run 2 cases on a c7i.2xlarge and 4 on a c7i.4xlarge.
 
 The queue page shows the scheduled work and the launch gauge above the Active table. Each active row has its
 remaining estimate under its progress (the pool's estimate above: a running job's unfinished cases, a queued one's
-queued cases), with the Mac's wall time for work the Mac may run and where the time a case came from: "(measured)",
+queued cases), with the local machine's wall time for work it may run ("~40 min locally") and where the time a case came from: "(measured)",
 "(from run 6659)", "(upper bound)", or "(guessed, upper bound)" for an unplanned job no earlier run tells about. The
-Mac's wall time is the cases left times the time a case over the cases the job runs at once: its `parallel`, within
+local machine's wall time is the cases left times the time a case over the cases the job runs at once: its `parallel`, within
 `LAB_MAX_PARALLEL`, and no more than its largest arm's `processors` fit in `LAB_CORES` (a `parallel` of 4 with
-4-core cases on 8 cores runs 2 at once). The work summary totals the core-hours, split into Mac only, Mac or AWS at
-`nodeMinPriority` or above (which counts toward a node), Mac or AWS below it (the Mac's in practice) and AWS, with the
-time the Mac alone would take to drain all but the AWS work: the sum of those jobs' wall times, as the Mac runs one
-job at a time. Paused and cancelling jobs are left out. With AWS settings, the gauge is a bar of the worker's pressure against the
+4-core cases on 8 cores runs 2 at once). The work summary totals the core-hours, split into local only, local or cloud at
+`nodeMinPriority` or above (which counts toward a node), local or cloud below it (the local machine's in practice)
+and cloud, with the time the local machine alone would take to drain all but the cloud work: the sum of those jobs' wall times, as the local machine runs one
+job at a time. Paused and cancelling jobs are left out. With cloud settings, the Cloud gauge is a bar of the worker's pressure against the
 threshold for the next node ("0.8 of 10 core-h for the first node", "26 of 40 core-h for node 3"), how long the
 pressure has stood over it against `nodeSustainMin` ("over for 4 of 10 min"), the cooldown left, what holds the next
 node back ("no node: below threshold", "waiting 6 min more", "cooldown 3 min", "at maxInstances", "vCPU quota full",
 "lab update waiting") and the nodes up with their size, market and what each is doing. The worker writes these to
-`$LAB_DATA/aws/nodes.json` on every poll; the page's totals include the job the free Mac takes next, which the
+`$LAB_DATA/aws/nodes.json` on every poll; the page's totals include the job the free local machine takes next, which the
 pressure leaves out.
 
 `aws.properties` keys for the pool, all optional and reread on every poll: `maxInstances`, `vcpuQuota`, `onDemand`,
-`spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchMacHours`, `nodeSustainMin`, `nodeCooldownMin`,
+`spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchLocalHours`, `nodeSustainMin`, `nodeCooldownMin`,
 `nodeMaxVcpus`. `market`, `spotFallback` and `nodeLaunchCoreHours` are no longer read.
 
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
-  creates an SSH key pair, a security group admitting SSH from the Mac only, and an IAM user `klause-lab` that may only
+  creates an SSH key pair, a security group admitting SSH from the local machine only, and an IAM user `klause-lab` that may only
   launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
   The admin session is the CLI's default profile unless `ADMIN_PROFILE` names another; the lab itself only ever uses
-  the Mac's `klause-lab` profile. The script also creates EC2's spot service-linked role, which spot launches need and
+  the local machine's `klause-lab` profile. The script also creates EC2's spot service-linked role, which spot launches need and
   the `klause-lab` user may not create.
-  It installs the AWS CLI on the Mac if missing, writes the user's key into the Mac's `klause-lab` profile and writes
+  It installs the AWS CLI on the local machine if missing, writes the user's key into its `klause-lab` profile and writes
   `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` and `vcpuQuota`, now 8 and the account's 128 on-demand vCPUs, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
-  start the AWS worker. After that the worker rereads it on every poll, so a raised `vcpuQuota` or a new
+  start the cloud worker. After that the worker rereads it on every poll, so a raised `vcpuQuota` or a new
   `maxInstances` applies to the next launch without a restart.
 - The corpus cache lives in a private S3 bucket in the same region, `klause-lab-corpus-<account>-<region>`. An instance
   syncs it down while it builds (fast and free within the region) and, after planning, pushes back any collection it
@@ -692,16 +696,16 @@ pressure leaves out.
   node idles while another has a backlog. An iteration, the arms of one problem, seed and repeat (an A/B's A and B),
   is never split across machines: when AWS takes a spot node back, the cases it finished of a problem it had not
   finished lose their results and go back to the queue with the rest of their iteration, to run again together on the
-  node that takes them; and a planned job set up afresh on another host (the Mac taking it over, or a node claiming it
+  node that takes them; and a planned job set up afresh on another host (the local machine taking it over, or a node claiming it
   again after it went back to the queue) first queues again the finished cases of any iteration left part done. Each node keeps a job's case files in `~/jobs/<id>`, removed when it moves
   on. Cases run over SSH under `timeout`, and each record is copied back as its case ends, so the job page,
   comparisons and CSVs work as for a local job.
-- A running AWS case carries its phase, so a case RUNNING past its `timeoutSec` shows whether the solver or the lab
+- A running cloud case carries its phase, so a case RUNNING past its `timeoutSec` shows whether the solver or the lab
   holds it: `EXECUTING`, `TRANSFERRING_OUTPUT` (with the record's `elapsedMs`), `RETRY_BACKOFF` after SSH dropped
   (attempt n of m and when the next starts) or `TERMINATING` after a timeout or cancel. The job page lists it under
   `running` and beside the case's status; `GET /jobs/{id}` has it as each command's `phase` (`phase`, `since`,
-  `attempt`, `attempts`, `retryAt`, `elapsedMs`), null once the case ends and for cases on the Mac.
-- Leave `parallel` unset on AWS. The default, one case per two physical cores, is the controlled setting: each case is
+  `attempt`, `attempts`, `retryAt`, `elapsedMs`), null once the case ends and for local cases.
+- Leave `parallel` unset on cloud nodes. The default, one case per two physical cores, is the controlled setting: each case is
   a bench JVM driving a solver JVM, whose JIT compiler and garbage collector threads need the second core, and a
   problem's arms run on the same node, so a comparison never spans machines. `parallel=1` does not make an experiment
   more controlled; it only leaves half the node idle and takes twice as long. Set it lower only for an arm that needs
@@ -715,7 +719,7 @@ pressure leaves out.
   left with work and no node is queued again rather than failed, and the next free node takes it up. Cases that
   finished keep their records, so a reclaim costs only the cases in flight. The account's spot quota is a quota of its
   own, apart from `vcpuQuota`, and spot launches need the service-linked role `aws-setup.sh` creates. Spot timing is
-  noisier than the Mac's, so give a timing A/B on AWS more `repeats`.
+  noisier than the local machine's, so give a timing A/B on cloud nodes more `repeats`.
 - The corpus is kept in the bucket as one tar per collection, `corpus-packs/<collection>.tar`, with an index of each
   pack's signature (a digest of its files' names and sizes) in `corpus-packs/index.tsv`. A node pulls the index
   and the packs that differ from what it holds while it builds, and the node that plans a job pushes, after
@@ -730,14 +734,14 @@ pressure leaves out.
 ## Public access
 
 The lab answers at `https://lab.eignex.com` from anywhere, and only with its password (see Password). The home
-network sits behind the ISP's carrier-grade NAT, so nothing can connect in to it, router forwarding included; the Mac
-connects out to a relay instead:
+network sits behind the ISP's carrier-grade NAT, so nothing can connect in to it, router forwarding included; the local
+machine (the local machine) connects out to a relay instead:
 
 - The relay is an EC2 instance `klause-relay` (t4g.micro, eu-north-1) with the Elastic IP `klause-relay`, a security
   group open to 22, 80 and 443, and Caddy, which serves the domain with a Let's Encrypt certificate it renews itself
   and passes every request to `127.0.0.1:8420`. Its `tunnel` user can hold that one reverse forward and nothing else:
   no shell, no command, no other port.
-- The Mac holds the tunnel: the launchd daemon `com.eignex.klause-relay` runs `ssh -N -R 127.0.0.1:8420:...` to the
+- The local machine holds the tunnel: the launchd daemon `com.eignex.klause-relay` runs `ssh -N -R 127.0.0.1:8420:...` to the
   relay as the lab's user with `~/.ssh/klause-lab-relay`, starts at boot and reconnects after a drop. Its errors go
   to `$LAB_DATA/logs/relay.log`.
 - DNS for `eignex.com` is hosted at DigitalOcean (the registrar only points there); the `lab` A record names the
@@ -745,9 +749,9 @@ connects out to a relay instead:
 
 `deploy/relay/create.sh [domain] [user@lab-host]` builds all of it from an admin AWS session, reusing what exists:
 the Elastic IP carries over to a rebuilt relay, so DNS stays put, and with a DigitalOcean token in
-`~/.config/digitalocean/token` it sets the A record too. It ends by printing the one step left, on the Mac:
+`~/.config/digitalocean/token` it sets the A record too. It ends by printing the one step left, on the local machine:
 `sudo deploy/relay/install-tunnel.sh <relay-ip>`, which installs the daemon and forgets the old relay's host key. The
-relay is tagged only `Name=klause-relay`, never `klause-lab`, so the AWS worker's cleanup of its own instances leaves
+relay is tagged only `Name=klause-relay`, never `klause-lab`, so the cloud worker's cleanup of its own instances leaves
 it alone. Expose the lab only while its password check is live: a request without it must get 401.
 
 ## Crash safety
@@ -765,10 +769,10 @@ it alone. Expose the lab only while its password check is live: a request withou
 - Whenever the lab kills a case's processes it first appends why to `<n>.termination`, one line each, the time in
   epoch milliseconds and then the reason: `shutdown:` (the runner stopped; the case reruns), `orphan:` (a stopped
   runner left it running; killed before the rerun), `cancel:`, `timeout:`, `deadline:` (a profile job's whole-run
-  limit), `sibling:` (another case could not run, which failed the job) or `host-lost:` (AWS took the instance back;
+  limit), `sibling:` (another case could not run, which failed the job) or `host-lost:` (the cloud provider took the instance back;
   the case goes back to the queue). A pause or a yield kills nothing: the job stops only between cases. A case that
   exits 137 (SIGKILL) or 143 (SIGTERM) with no such line gets an `external:` one, which says only that the lab did not
-  send the signal; on AWS it adds the instance's kernel log lines about killed processes, or says there were none, and
+  send the signal; on a cloud node it adds the instance's kernel log lines about killed processes, or says there were none, and
   a kill once the case's limit has passed is `timeout`'s own. The job page shows the lines under each case's exit, and
   `GET /jobs/{id}` as each command's `terminations`.
 - Setup steps that can fail for a passing reason are retried with exponential backoff before a job fails:
@@ -797,9 +801,9 @@ fetches the dependencies into the new home once.
 
 ## Disk
 
-- Below `LAB_MIN_FREE_GB` (10) free on the data directory's disk, the Mac's queue is held until there is room again;
-  AWS jobs go on. `/disk` shows what takes the disk, measured every 30 minutes, with the largest job directories.
-- From AWS, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
+- Below `LAB_MIN_FREE_GB` (10) free on the data directory's disk, the local machine's queue is held until there is room again;
+  cloud jobs go on. `/disk` shows what takes the disk, measured every 30 minutes, with the largest job directories.
+- From a cloud node, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
 - An ended job is trimmed a week after it ended, and sooner, largest first, while the disk has under 25 GB free: its
   `job.log`, `setup.log`, `sha`, commands' `.exit` and `.termination` files, `selection-*.jsonl` and each case's record (the `.json` in
   `cases/<i>`) stay, as do profiled cases' `compilation-report.json` and `measurement.json` and an analysis job's
@@ -821,7 +825,7 @@ A case runs `klause-bench solve-one` in its arm's worktree, with this environmen
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
 Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output and the record go to
-`JOB_DIR/cases/<n>/`. On AWS the record comes back with every case, and stdout and stderr only for a case that
+`JOB_DIR/cases/<n>/`. On a cloud node the record comes back with every case, and stdout and stderr only for a case that
 failed, timed out or left no record, or for a profiling job: the rest would cost two SSH round trips a case. The worktrees are deleted when the job ends. A failing case does not stop the experiment: the
 rest still run, the job ends DONE, and the failures are counted on it. FAILED means the experiment itself could not
 run, such as a failed checkout, build or selection, or a plan over the size limit.
@@ -830,9 +834,9 @@ Cases run in order within two limits. A case holds as many cores as its arm's `p
 running cases together hold at most `LAB_CORES` (default: the machine's cores less two, for the JVMs around the
 solves and the machine). Each solve sees exactly its cores (`-XX:ActiveProcessorCount`), so a portfolio sizes its
 threads to them. A case too big for the cores left waits for room rather than letting later ones pass it, and an arm
-asking for more processors than `LAB_CORES` is cut down to them at submit (see Running on AWS). On top of that, at most `parallel` cases run at
+asking for more processors than `LAB_CORES` is cut down to them at submit (see Running on cloud nodes). On top of that, at most `parallel` cases run at
 once: the spec's, or `LAB_DEFAULT_PARALLEL` (default 4) when it sets none, and never more than `LAB_MAX_PARALLEL`
-(default 6; a larger one is cut down to it at submit). The default is the lab Mac's (an M4) performance cores: a solve on one of its six efficiency cores runs
+(default 6; a larger one is cut down to it at submit). The default is the local machine's performance cores (an M4 Mac's here): a solve on one of its six efficiency cores runs
 at a fraction of the speed, and which solves land there changes from run to run, which is timing noise. The cap is
 bounded by memory: each solve holds its own heap (`-Xmx3g` by default), so keep `LAB_MAX_PARALLEL` times that within
 the machine's memory. `deploy/lab parallel <id> <n>` changes an experiment's limit while it runs: raising it starts
@@ -950,7 +954,7 @@ Experiments run highest priority first (`"priority"` in the spec, default 0; `la
 later). Within one priority, the job whose series last finished a run longest ago goes first (a schedule's runs
 share its name, an experiment's reruns their name; one that never ran goes before all), then the oldest, so a
 schedule that just ran does not keep going ahead of one that has waited. A running experiment checks before each case whether it was paused (`lab
-pause <id>`) or a higher-priority one it may run is waiting, whether placed on the Mac or `auto`; if so it starts no more, lets its running cases finish, and goes
+pause <id>`) or a higher-priority one it may run is waiting, whether placed locally or `auto`; if so it starts no more, lets its running cases finish, and goes
 back to the queue with its worktrees and finished cases kept, resuming at its next case when it is taken again. `lab
 resume <id>` releases a paused one.
 
@@ -966,11 +970,11 @@ deploy/lab tail 7             # the last 8 kB of the job's log: planning, comman
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
-deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, Mac first; not for gates
+deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, local first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
-deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running AWS job; no command opens a shell
+deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
 deploy/lab cancel 7
 ```
 
@@ -990,7 +994,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement"}`, where the lab placed it; a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}` queues an analysis job instead (above); 409 when its captures are gone |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}` queues an analysis job instead (above); 409 when its captures are gone |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |

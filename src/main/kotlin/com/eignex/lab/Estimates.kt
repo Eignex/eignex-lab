@@ -10,16 +10,16 @@ enum class EstimateSource { MEASURED, HISTORY, TIMEOUT }
 data class CaseHistory(val jobId: Long, val cases: Int, val meanCaseMs: Double?, val sameExperiment: Boolean = true)
 
 /**
- * A job's remaining work: the [cases] left, the wall time a case is taken to need ([caseMs]), their core-hours, and
- * the hours the Mac would take for them at the job's own concurrency ([macHours]). [source] says where [caseMs] came
- * from; [history] names the run the case count or the time came from, and [guessed] marks a case count guessed from
- * the selections.
+ * A job's remaining work: the [cases] left, the wall time a case is taken to need ([caseMs]), their core-hours, and the
+ * hours the local machine would take for them at the job's own concurrency ([localHours]). [source] says where [caseMs]
+ * came from; [history] names the run the case count or the time came from, and [guessed] marks a case count guessed
+ * from the selections.
  */
 data class WorkEstimate(
     val cases: Int,
     val caseMs: Double,
     val coreHours: Double,
-    val macHours: Double,
+    val localHours: Double,
     val source: EstimateSource,
     val history: Long? = null,
     val guessed: Boolean = false,
@@ -39,7 +39,7 @@ data class WorkEstimate(
 }
 
 /**
- * The estimates of the work left in jobs, which the queue page shows and the AWS pressure counts. A job's time a case
+ * The estimates of the work left in jobs, which the queue page shows and the cloud pressure counts. A job's time a case
  * is its own mean once [MIN_MEASURED] of its cases finished, else the mean of the last finished run of the same
  * experiment ([EstimateHistory]), else each case's whole timeout, the upper bound. A job not planned yet takes its
  * case count from that run too, else the guess from its selections ([NodePool.estimatedCases]).
@@ -90,9 +90,9 @@ object Estimates {
     }
 
     /**
-     * The work left in [job] on a Mac of [cores] cores, null for a job that is not an experiment. The cases left are a
-     * queued job's cases no host has started, a running one's unfinished cases, an unplanned one's earlier run's or
-     * guessed count. [history] is asked only for a job that has not measured [MIN_MEASURED] cases of its own.
+     * The work left in [job] on a local machine of [cores] cores, null for a job that is not an experiment. The cases
+     * left are a queued job's cases no host has started, a running one's unfinished cases, an unplanned one's earlier
+     * run's or guessed count. [history] is asked only for a job that has not measured [MIN_MEASURED] cases of its own.
      */
     fun estimate(job: Job, history: (Job) -> CaseHistory?, cores: Int, maxParallel: Int = Int.MAX_VALUE): WorkEstimate? {
         val spec = job.experiment?.takeUnless { it.isScript } ?: return null
@@ -121,7 +121,7 @@ object Estimates {
     }
 
     /**
-     * The core-hours queued [job] adds to the AWS pressure: its [estimate], from measured or earlier runs' case times
+     * The core-hours queued [job] adds to the cloud pressure: its [estimate], from measured or earlier runs' case times
      * when there are any, so the pool reacts to the work a queue really holds. Each case's whole timeout
      * ([NodePool.coreHours]) is the fallback when the estimate cannot be made.
      */
@@ -138,7 +138,7 @@ object Estimates {
  * The finished runs the estimates learn from ([Estimates]), read from the store at most once every [ttlMs]: the newest
  * [limit] experiments that ended done, each by its experiment's fingerprint with its ref and placement left out
  * ([Experiments.fingerprint]). A run, once done, does not change, so each is read once; a refresh reads only the
- * runs that finished since. [cores] are the Mac's, for a run that recorded only its running time.
+ * runs that finished since. [cores] are the local machine's, for a run that recorded only its running time.
  */
 class EstimateHistory(
     private val store: Store,

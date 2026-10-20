@@ -368,7 +368,7 @@ class Runner(
     /** Whether a lab update waits: the AWS worker then starts no new job, so the running ones drain and it can land. */
     internal fun updateWaiting(): Boolean = updater.due()
 
-    /** Whether an AWS job is running, which holds a lab update back. */
+    /** Whether a cloud job is running, which holds a lab update back. */
     private var awsActive: () -> Boolean = { false }
 
     /** Cores the running cases at [indices] of [job] hold. */
@@ -411,7 +411,8 @@ class Runner(
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
-            // A schedule's runs stay on the Mac ([Placement.macOnly]), whatever host its experiment once named.
+            // A schedule's runs stay on the local machine ([Placement.localOnly]), whatever host its experiment once
+            // named.
             val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha),
                 host = Experiments.LAB_HOST, auto = false, machines = null)
             val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
@@ -567,7 +568,7 @@ class Runner(
             log(job.id, "profile time limit: ${Experiments.profileLimitText(spec)}; SIGTERM at it, SIGKILL ${Experiments.STOP_GRACE_SEC} s later")
             Experiments.profileCaps(spec).forEach { log(job.id, "capped: $it") }
         }
-        spec.capped.forEach { log(job.id, "capped to fit the Mac: $it") }
+        spec.capped.forEach { log(job.id, "capped to fit the local machine: $it") }
         log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
     }
 
@@ -579,9 +580,9 @@ class Runner(
     }
 
     /**
-     * Take over planned [job] on [host], which sets it up afresh: the Mac taking a job a node planned, or a node
-     * claiming one again. Every iteration left part done runs again whole here ([Store.requeueSplitIterations]), and
-     * the queued commands are written again for this host's worktrees and corpus, since the plan named the paths of
+     * Take over planned [job] on [host], which sets it up afresh: the local machine taking a job a node planned, or a
+     * node claiming one again. Every iteration left part done runs again whole here ([Store.requeueSplitIterations]),
+     * and the queued commands are written again for this host's worktrees and corpus, since the plan named the paths of
      * the host that made it. The finished cases and their results stay.
      */
     internal fun adopt(job: Job, spec: ExperimentSpec, host: ExecutionHost) {

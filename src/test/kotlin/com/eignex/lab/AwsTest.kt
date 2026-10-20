@@ -212,7 +212,7 @@ class AwsTest {
     }
 
     @Test
-    fun `a planned job a node gives back goes Mac first, and its cancel ends it rather than queueing it`() {
+    fun `a planned job a node gives back goes local first, and its cancel ends it rather than queueing it`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         config.dataDir.resolve("aws").toFile().mkdirs()
         config.dataDir.resolve("aws/aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
@@ -242,9 +242,12 @@ class AwsTest {
         val set = AwsConfig.load(file)!!
 
         assertEquals(listOf<Any>(false, 15L, 5L, 0, 1.0, 10L, 5L, 16),
-            with(default) { listOf(onDemand, spotWaitMin, nodeIdleMin, nodeMinPriority, nodeLaunchMacHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+            with(default) { listOf(onDemand, spotWaitMin, nodeIdleMin, nodeMinPriority, nodeLaunchLocalHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
         assertEquals(listOf<Any>(true, 2L, 1, 4.5, 1L, 9L, 32),
-            with(set) { listOf(onDemand, nodeIdleMin, nodeMinPriority, nodeLaunchMacHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+            with(set) { listOf(onDemand, nodeIdleMin, nodeMinPriority, nodeLaunchLocalHours, nodeSustainMin, nodeCooldownMin, nodeMaxVcpus) })
+        // The setting's agnostic name wins over its older one, `nodeLaunchMacHours`, still read above.
+        file.toFile().appendText("nodeLaunchLocalHours=2.5\n")
+        assertEquals(2.5, AwsConfig.load(file)!!.nodeLaunchLocalHours)
     }
 
     @Test
@@ -290,7 +293,7 @@ class AwsTest {
     }
 
     @Test
-    fun `the Mac never takes an aws job, and a node never a lab one`() {
+    fun `the local machine never takes an aws job, and a node never a lab one`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d")
         val onAws = store.create("aws", "main", emptyList(), experiment = spec.copy(host = Experiments.AWS_HOST), priority = 5)
