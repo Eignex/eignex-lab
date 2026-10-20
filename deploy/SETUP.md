@@ -607,6 +607,7 @@ Nodes launch on pressure, with damping:
   is published. Supported provenance capture must succeed and write a nonempty manifest. Publication packs a
   complete local archive before uploading, so a failed tar cannot stream an incomplete installation into S3.
 - A node boots Ubuntu 24.04 with a JDK 25 and MiniZinc, clones klause and builds every commit its job's arms name.
+  The build toolchain includes C++ and the GMP and zlib development headers for the native MIPLIB checker.
   SSH remembers each host key by region and EC2 instance ID, since AWS reuses public addresses after termination.
   A new instance at a reused address may enroll its key; a changed key on the same instance is refused. So a plain
   `ssh ubuntu@<address>` with the lab's `known_hosts` finds no key for the address and refuses in batch mode; reach a

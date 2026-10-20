@@ -1072,7 +1072,7 @@ class AwsWorker(
         shutdown -h +${aws.maxHours * MINUTES_PER_HOUR}
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -q
-        apt-get install -yq git zstd unzip curl xz-utils time jq
+        apt-get install -yq git zstd unzip curl xz-utils time jq build-essential libgmp-dev zlib1g-dev
         mkdir -p /opt/jdk /opt/minizinc
         curl -fsSL https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse | tar -xz -C /opt/jdk --strip-components=1
         curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz | tar -xz -C /opt/minizinc --strip-components=1
