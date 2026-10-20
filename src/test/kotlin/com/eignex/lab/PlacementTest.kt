@@ -17,17 +17,17 @@ class PlacementTest {
     }
 
     @Test
-    fun `scheduled runs, confirmations, reference runs, problem lists and bounded profiles stay on the Mac`() {
+    fun `scheduled runs, confirmations, reference runs, problem lists and bounded profiles stay on the local machine`() {
         val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
         val bounded = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.T", runTimeoutSec = 60))
 
         assertEquals(listOf(true, true, true, true, true, false), listOf(
-            Placement.macOnly(spec, "status-sweep@abc123"),
-            Placement.macOnly(spec, "e${Confirm.SUFFIX}"),
-            Placement.macOnly(reference, "r"),
-            Placement.macOnly(spec.copy(problemList = listOf(Problem("s", "p"))), "e"),
-            Placement.macOnly(bounded, "p"),
-            Placement.macOnly(spec, "e"),
+            Placement.localOnly(spec, "status-sweep@abc123"),
+            Placement.localOnly(spec, "e${Confirm.SUFFIX}"),
+            Placement.localOnly(reference, "r"),
+            Placement.localOnly(spec.copy(problemList = listOf(Problem("s", "p"))), "e"),
+            Placement.localOnly(bounded, "p"),
+            Placement.localOnly(spec, "e"),
         ))
     }
 
@@ -41,7 +41,7 @@ class PlacementTest {
     }
 
     @Test
-    fun `a submitted host is not followed, and a profile job goes Mac first too`() {
+    fun `a submitted host is not followed, and a profile job goes local first too`() {
         val config = config()
         val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.T"))
 
@@ -52,26 +52,26 @@ class PlacementTest {
     }
 
     @Test
-    fun `cores and parallel over the Mac's are cut down to it, so such a job goes Mac first like any other`() {
+    fun `cores and parallel over the local machine's are cut down to it, so such a job goes local first like any other`() {
         val config = config()
         val big = spec.copy(base = mapOf("processors" to "12"), parallel = 8)
         val grid = spec.copy(configs = listOf(mapOf("label" to "a"), mapOf("label" to "b", "processors" to "20")),
             grid = mapOf("processors" to listOf("4", "12", "16")))
 
-        val capped = Experiments.capToMac(big, config.cores, config.maxParallel)
-        val gridCapped = Experiments.capToMac(grid, config.cores, config.maxParallel)
+        val capped = Experiments.capToLocal(big, config.cores, config.maxParallel)
+        val gridCapped = Experiments.capToLocal(grid, config.cores, config.maxParallel)
 
         assertEquals(listOf("8", 6), listOf(capped.base["processors"], capped.parallel))
-        assertEquals(listOf("parallel=8 was asked, capped at the Mac's 6", "processors=12 was asked, capped at the Mac's 8 cores"), capped.capped)
+        assertEquals(listOf("parallel=8 was asked, capped at the local machine's 6", "processors=12 was asked, capped at the local machine's 8 cores"), capped.capped)
         assertEquals(Experiments.AUTO_HOST, Placement.host(capped, "e", config))
         assertEquals(listOf("4", "8"), gridCapped.grid["processors"])
         assertEquals(8, Experiments.arms(gridCapped).maxOf { it.cores })
-        assertEquals(spec, Experiments.capToMac(spec, config.cores, config.maxParallel))
+        assertEquals(spec, Experiments.capToLocal(spec, config.cores, config.maxParallel))
         assertEquals(Experiments.fingerprint(capped), Experiments.fingerprint(capped.copy(capped = emptyList())))
     }
 
     @Test
-    fun `queued jobs are placed again by the rules, cut down to fit the Mac, and planned AWS ones released to it`() {
+    fun `queued jobs are placed again by the rules, cut down to fit the local machine, and planned cloud ones released to it`() {
         val config = config()
         val store = Store(config.database)
         val chosen = store.create("a", "main", emptyList(), experiment = spec.copy(name = "a", host = Experiments.AWS_HOST, machines = 2))
@@ -88,7 +88,7 @@ class PlacementTest {
             Experiments.AUTO_HOST), listOf(chosen, mac, sweep, planned, onMac, big).map { store.job(it)!!.experiment!!.host })
         assertEquals(null, store.job(chosen)!!.experiment!!.machines)
         assertEquals(listOf("8"), listOf(store.job(big)!!.experiment!!.base["processors"]))
-        assertEquals(listOf("processors=12 was asked, capped at the Mac's 8 cores"), store.job(big)!!.experiment!!.capped)
+        assertEquals(listOf("processors=12 was asked, capped at the local machine's 8 cores"), store.job(big)!!.experiment!!.capped)
         assertEquals(emptyList(), Placement.replaceQueued(store, config))
     }
 }

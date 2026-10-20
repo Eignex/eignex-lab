@@ -4,8 +4,8 @@
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]
 #                                                            queue a profile job: the class <main> (in com.eignex.klause.bench.profile)
-#                                                            run once with [arg...] in a build of <ref>, under JFR, on the Mac
-#                                                            or an AWS node (on demand, never spot); [host] is ignored, the lab
+#                                                            run once with [arg...] in a build of <ref>, under JFR, locally
+#                                                            or on a cloud node (on demand, never spot); [host] is ignored, the lab
 #                                                            places jobs (pass - to skip it); for measurements experiments
 #                                                            cannot express, NOT for running tests, lint or other gates (CI
 #                                                            runs those). <ref> must be main or a branch only trusted users
@@ -36,9 +36,10 @@
 #                                                            cancel a wrong job, not a long one: the lab bounds runtime itself
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
-#   lab host <id> auto|lab|aws                              operators only: override where a queued, unplanned job may run
-#                                                            (the lab places every job itself; agents need not)
-#   lab machines <id> [n]                                    retired: the AWS node pool sizes itself; the lab ignores it
+#   lab host <id> local|cloud|auto                          operators only: override where a queued, unplanned job may run
+#                                                            (the lab places every job itself; agents need not); lab and
+#                                                            aws, the older names of local and cloud, still work
+#   lab machines <id> [n]                                    retired: the cloud node pool sizes itself; the lab ignores it
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
@@ -48,7 +49,8 @@
 #   lab corpus                                               rsync the local bench corpus to the server
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
 #   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
-#                                                            running AWS job, through the server with the lab's own key and host keys
+#                                                            running cloud job (an AWS instance), through the server with the
+#                                                            lab's own key and host keys
 set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"

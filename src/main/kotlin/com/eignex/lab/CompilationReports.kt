@@ -254,7 +254,7 @@ object CompilationReports {
         listOf(CliMeasurements.JFR, CliMeasurements.COMPILATION_LOG, CliMeasurements.COMPILATION_LOG_GZ)
             .any { Files.isRegularFile(dir.resolve(it), LinkOption.NOFOLLOW_LINKS) }
 
-    /** [dir]'s HotSpot compilation log: as the CLI wrote it on the Mac, gzipped as it came back from a node. */
+    /** [dir]'s HotSpot compilation log: as the CLI wrote it locally, gzipped as it came back from a node. */
     private fun logOf(dir: Path): Path? = listOf(CliMeasurements.COMPILATION_LOG, CliMeasurements.COMPILATION_LOG_GZ)
         .map(dir::resolve).firstOrNull { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
 

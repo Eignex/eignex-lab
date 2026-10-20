@@ -41,10 +41,10 @@ class NodesTest {
     }
 
     @Test
-    fun `a short profile alone, even capped to all of the Mac's cores, is far below the launch threshold`() {
-        val profile = Experiments.capToMac(ExperimentSpec("p", base = mapOf("processors" to "12", "timeout" to "180000"),
+    fun `a short profile alone, even capped to all of the local machine's cores, is far below the launch threshold`() {
+        val profile = Experiments.capToLocal(ExperimentSpec("p", base = mapOf("processors" to "12", "timeout" to "180000"),
             profile = ProfileMain("com.eignex.klause.bench.profile.T")), cores = 10, maxParallel = 6)
-        val threshold = NodePool.threshold(macCores = 10, macHours = 1.0)
+        val threshold = NodePool.threshold(localCores = 10, localHours = 1.0)
 
         assertEquals(10.0, threshold, 1e-9)
         assertEquals(10 * 300 / 3600.0, NodePool.coreHours(profile, queuedCases = null), 1e-9)
@@ -92,7 +92,7 @@ class NodesTest {
     }
 
     @Test
-    fun `a node takes only work whose cases fit it, profiles only on demand, and leaves the free Mac its next job`() {
+    fun `a node takes only work whose cases fit it, profiles only on demand, and leaves the free local machine its next job`() {
         val spot = NodeShape(cores = 4, onDemand = false)
         val onDemand = NodeShape(cores = 4, onDemand = true)
         val queued = listOf(Demand(1, 1.0, 8), Demand(2, 1.0, 1, profile = true), Demand(3, 1.0, 2), Demand(4, 1.0, 1))

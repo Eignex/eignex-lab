@@ -53,19 +53,19 @@ class EstimatesTest {
     }
 
     @Test
-    fun `the Mac's time for a job runs its parallel cases at once, as many as fit the cores`() {
+    fun `the local machine's time for a job runs its parallel cases at once, as many as fit the cores`() {
         val portfolio = spec.copy(base = spec.base + ("processors" to "4"))
-        fun macHours(parallel: Int, cores: Int, experiment: ExperimentSpec = portfolio) = Estimates.estimate(
+        fun localHours(parallel: Int, cores: Int, experiment: ExperimentSpec = portfolio) = Estimates.estimate(
             job(Status.QUEUED, CommandCounts(40, 0, 0, 0, timed = 0), experiment, parallel = parallel), { CaseHistory(7, 40, 600_000.0) }, cores,
-        )!!.macHours
+        )!!.localHours
 
         // 40 cases of ten minutes: four at once would take 100 min, but two four-core cases fill eight cores.
-        assertEquals(40 * 10 / 2 / 60.0, macHours(parallel = 4, cores = 8), 1e-9)
-        assertEquals(40 * 10 / 4 / 60.0, macHours(parallel = 4, cores = 16), 1e-9)
-        assertEquals(40 * 10 / 60.0, macHours(parallel = 1, cores = 16), 1e-9)
-        // A case larger than the Mac still runs, one at a time.
-        assertEquals(40 * 10 / 60.0, macHours(parallel = 4, cores = 2), 1e-9)
-        assertEquals(40 * 10 / 4 / 60.0, macHours(parallel = 4, cores = 8, experiment = spec), 1e-9)
+        assertEquals(40 * 10 / 2 / 60.0, localHours(parallel = 4, cores = 8), 1e-9)
+        assertEquals(40 * 10 / 4 / 60.0, localHours(parallel = 4, cores = 16), 1e-9)
+        assertEquals(40 * 10 / 60.0, localHours(parallel = 1, cores = 16), 1e-9)
+        // A case larger than the local machine still runs, one at a time.
+        assertEquals(40 * 10 / 60.0, localHours(parallel = 4, cores = 2), 1e-9)
+        assertEquals(40 * 10 / 4 / 60.0, localHours(parallel = 4, cores = 8, experiment = spec), 1e-9)
         // Core-hours count every core a case holds.
         assertEquals(40 * 10 * 4 / 60.0, Estimates.estimate(job(Status.QUEUED, CommandCounts(40, 0, 0, 0), portfolio, parallel = 4),
             { CaseHistory(7, 40, 600_000.0) }, 8)!!.coreHours, 1e-9)

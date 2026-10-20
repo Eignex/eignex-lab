@@ -201,12 +201,12 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `an analysis job names a job and a kind and nothing an experiment runs, and stays on the Mac`() {
+    fun `an analysis job names a job and a kind and nothing an experiment runs, and stays on the local machine`() {
         val analysis = ExperimentSpec("analyze-9", description = "again", analyze = AnalyzeSpec(9))
 
         Experiments.validate(analysis, maxParallel = 4)
         assertTrue(analysis.isAnalysis)
-        assertTrue(Placement.macOnly(analysis, analysis.name))
+        assertTrue(Placement.localOnly(analysis, analysis.name))
         for (wrong in listOf(
             analysis.copy(analyze = AnalyzeSpec(9, "cpu")),
             analysis.copy(analyze = AnalyzeSpec(0)),

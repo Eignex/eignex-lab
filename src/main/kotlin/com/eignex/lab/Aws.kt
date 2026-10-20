@@ -25,7 +25,7 @@ data class AwsConfig(
     val region: String,
     val profile: String,
     val instanceType: String,
-    /** The most AWS nodes up at once, launching ones included. */
+    /** The most cloud nodes up at once, launching ones included. */
     val maxInstances: Int,
     /** The account's on-demand vCPU quota for the family: what every running instance together may hold. */
     val vcpuQuota: Int = DEFAULT_VCPU_QUOTA,
@@ -34,11 +34,12 @@ data class AwsConfig(
     val keyFile: String,
     val securityGroup: String,
     val subnet: String?,
-    /** Cores of one instance a job's cases may hold together: its physical cores, as the lab Mac's are its P-cores. */
+    /** Cores of one instance a job's cases may hold together: its physical cores, as the local machine's are its
+     *  P-cores. */
     val cores: Int,
     /** An instance powers itself off after this long, whatever the lab does: a lost controller cannot leave one running. */
     val maxHours: Int,
-    /** The MiniZinc bundle an instance installs, the lab Mac's version so models compile alike. */
+    /** The MiniZinc bundle an instance installs, the local machine's version so models compile alike. */
     val minizinc: String,
     /** An image to launch instead of the current Ubuntu 24.04 one. */
     val ami: String?,
@@ -57,11 +58,13 @@ data class AwsConfig(
     val onDemand: Boolean = false,
     /** How long a node with nothing to take stays up before the lab terminates it. */
     val nodeIdleMin: Long = 5,
-    /** Work the Mac could run, queued below this priority, waits for the Mac: it launches no node, and no node takes it. */
+    /** Work the local machine could run, queued below this priority, waits for it: it launches no node, and no node
+     *  takes it. */
     val nodeMinPriority: Int = 0,
-    /** The first node launches once the waiting work would keep the Mac busy this many hours: the pressure, in
-     *  core-hours, at or over the Mac's cores times this ([AwsWorker.threshold], [LaunchGate]). */
-    val nodeLaunchMacHours: Double = 1.0,
+    /** The first node launches once the waiting work would keep the local machine busy this many hours: the pressure,
+     *  in core-hours, at or over the local machine's cores times this ([AwsWorker.threshold], [LaunchGate]). Read from
+     *  `nodeLaunchLocalHours`, or `nodeLaunchMacHours`, its older name. */
+    val nodeLaunchLocalHours: Double = 1.0,
     /** How long the pressure must stay up before a node launches. */
     val nodeSustainMin: Long = 10,
     /** The least time between two launches. */
@@ -111,7 +114,8 @@ data class AwsConfig(
                 onDemand = get("onDemand", "false")!!.toBoolean(),
                 nodeIdleMin = get("nodeIdleMin", "5")!!.toLong(),
                 nodeMinPriority = get("nodeMinPriority", "0")!!.toInt(),
-                nodeLaunchMacHours = get("nodeLaunchMacHours", "1.0")!!.toDouble(),
+                // `nodeLaunchMacHours`, its older name, is still read.
+                nodeLaunchLocalHours = (get("nodeLaunchLocalHours") ?: get("nodeLaunchMacHours", "1.0"))!!.toDouble(),
                 nodeSustainMin = get("nodeSustainMin", "10")!!.toLong(),
                 nodeCooldownMin = get("nodeCooldownMin", "5")!!.toLong(),
                 nodeMaxVcpus = get("nodeMaxVcpus", "16")!!.toInt(),
@@ -629,16 +633,16 @@ class AwsWorker(
 
     /**
      * The work waiting for AWS, as [Demand]s: the queued jobs a node may take, in queue order, and the unclaimed
-     * problems of the jobs running on AWS. A queued job the Mac could run counts only at [AwsConfig.nodeMinPriority] or
-     * above, and the one the Mac takes next, being free or about to give way to it ([Store.macNext]), is left to it;
-     * one only AWS can run always counts. A queued AWS job no size within the quota can hold fails here, as no node
-     * could ever take it.
+     * problems of the jobs running on AWS. A queued job the local machine could run counts only at
+     * [AwsConfig.nodeMinPriority] or above, and the one the local machine takes next, being free or about to give way
+     * to it ([Store.localNext]), is left to it; one only AWS can run always counts. A queued AWS job no size within the
+     * quota can hold fails here, as no node could ever take it.
      */
     private fun demands(): Pair<List<Demand>, List<Demand>> {
-        val macNext = store.macNext()
+        val localNext = store.localNext()
         val queued = store.nodeQueue().mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
-            if (job.id == macNext) return@mapNotNull null
+            if (job.id == localNext) return@mapNotNull null
             val awsOnly = spec.host == Experiments.AWS_HOST
             if (!awsOnly && job.priority < aws.nodeMinPriority) return@mapNotNull null
             val cores = Experiments.arms(spec).maxOf { it.cores }
@@ -654,9 +658,10 @@ class AwsWorker(
         return queued to running
     }
 
-    /** The pressure, in core-hours, that launches the first node: [AwsConfig.nodeLaunchMacHours] of the Mac's cores, so
-     *  a node launches only for a queue that would keep the Mac busy that long, never for a job or two. */
-    private val threshold: Double get() = NodePool.threshold(config.cores, aws.nodeLaunchMacHours)
+    /** The pressure, in core-hours, that launches the first node: [AwsConfig.nodeLaunchLocalHours] of the local
+     *  machine's cores, so a node launches only for a queue that would keep the local machine busy that long, never for
+     *  a job or two. */
+    private val threshold: Double get() = NodePool.threshold(config.cores, aws.nodeLaunchLocalHours)
 
     /** Launch a node when the pressure calls for one ([LaunchGate]), sized to what waits ([NodePool.size]). */
     private fun scale() {
@@ -833,7 +838,7 @@ class AwsWorker(
             val next = { if (System.currentTimeMillis() - node.launchedAt >= maxAge) null else problems.take() }
             val outcome = runner.dispatch(checkNotNull(store.job(job.id)), job.dir, host, next) { held -> problems.giveBack(held) }
             job.outcomes += outcome
-            if (outcome == Dispatched.LOST) runner.log(job.id, "node ${node.instance} was taken back by AWS")
+            if (outcome == Dispatched.LOST) runner.log(job.id, "node ${node.instance} was taken back by the cloud provider")
             healthy = outcome != Dispatched.LOST
         } catch (e: NotJoined) {
             runner.log(job.id, "node ${node.instance} did not join: ${e.message}")
@@ -944,13 +949,13 @@ class AwsWorker(
     }
 
     /**
-     * Put [jobId] back in the queue, saying [why], and place it again ([Placement.release]): the Mac may then take it
-     * over, before a node, as it may any job. One whose cancel was requested meanwhile ends cancelled instead.
+     * Put [jobId] back in the queue, saying [why], and place it again ([Placement.release]): the local machine may then
+     * take it over, before a node, as it may any job. One whose cancel was requested meanwhile ends cancelled instead.
      */
     private fun requeue(jobId: Long, why: String) {
         if (store.requeue(jobId) == Status.CANCELLED) return runner.cancel(jobId)
         runner.log(jobId, why)
-        if (Placement.release(store, config, jobId)) runner.log(jobId, "placed again: the Mac when it is free, else a node")
+        if (Placement.release(store, config, jobId)) runner.log(jobId, "placed again: locally when the local machine is free, else a cloud node")
     }
 
     /** [node] as a host for [job]'s cases: its files in their own directory, one case per two cores unless the job
@@ -1009,7 +1014,7 @@ class AwsWorker(
         for (job in store.active().filter { it.status == Status.RUNNING && it.experiment?.host == Experiments.AWS_HOST }) {
             store.requeueInterrupted(job.id)
             Files.deleteIfExists(config.jobDir(job.id).resolve(INSTANCES_FILE))
-            requeue(job.id, "the lab restarted while the job ran on AWS: queued again")
+            requeue(job.id, "the lab restarted while the job ran on a cloud node: queued again")
         }
         sweep()
     }

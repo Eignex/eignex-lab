@@ -40,21 +40,22 @@ data class ExperimentSpec(
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
     /**
-     * Where the cases may run, as the lab placed the job ([Placement]); a submitted value is ignored. `lab`, the Mac
-     * alone; `aws`, an AWS node alone ([AwsWorker]); `auto`, whichever of the Mac and a node is free first. Once
-     * taken it is where the job went.
+     * Where the cases may run, as the lab placed the job ([Placement]); a submitted value is ignored. `lab`, the local
+     * machine alone; `aws`, a cloud node alone ([AwsWorker]); `auto`, whichever of the local machine and a node is free
+     * first. Once taken it is where the job went.
      */
     val host: String = Experiments.LAB_HOST,
-    /** Set when an `auto` job is taken: its [host] is then where it went. On the Mac it gives way to any job placed on
-     *  the Mac alone. */
+    /** Set when an `auto` job is taken: its [host] is then where it went. On the local machine it gives way to any job
+     *  placed on the local machine alone. */
     val auto: Boolean = false,
-    /** Retired: the AWS node pool decides how many nodes work on a job. Read so older specs still parse; ignored. */
+    /** Retired: the cloud node pool decides how many nodes work on a job. Read so older specs still parse; ignored. */
     val machines: Int? = null,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
     val description: String = "",
-    /** Whole-CLI JFR and physical resource measurements, on the Mac or a node, returned with each case's files. */
+    /** Whole-CLI JFR and physical resource measurements, on the local machine or a node, returned with each case's
+     *  files. */
     val profileCli: Boolean = false,
     /**
      * With [profileCli], also record every JIT compilation of the CLI JVM ([CliMeasurements.options]): `jfr` records
@@ -77,8 +78,8 @@ data class ExperimentSpec(
     val script: String? = null,
     /** Retired with [script]. */
     val scriptFile: String? = null,
-    /** What the lab cut down to fit the Mac when it took the job ([Experiments.capToMac]), each in words; set by the
-     *  lab, not the submitter. */
+    /** What the lab cut down to fit the local machine when it took the job ([Experiments.capToLocal]), each in words;
+     *  set by the lab, not the submitter. */
     val capped: List<String> = emptyList(),
 )
 
@@ -142,9 +143,29 @@ data class Problem(
 data class Case(val problem: Int, val arm: Int, val seed: Long?, val repeat: Int = 0)
 
 object Experiments {
+    /** The stored host values: the local machine, a cloud node, and whichever is free first. */
     const val LAB_HOST = "lab"
     const val AWS_HOST = "aws"
     const val AUTO_HOST = "auto"
+    /** What the pages and messages call [LAB_HOST] and [AWS_HOST], also accepted wherever a host is given. */
+    const val LOCAL_HOST = "local"
+    const val CLOUD_HOST = "cloud"
+
+    /** [host] as the lab stores it: `local` is `lab` and `cloud` is `aws`; any other value as it is. Old jobs and
+     *  old clients keep the stored names, so nothing needs migrating. */
+    fun storedHost(host: String): String = when (host) {
+        LOCAL_HOST -> LAB_HOST
+        CLOUD_HOST -> AWS_HOST
+        else -> host
+    }
+
+    /** [host] in the words the pages and messages use: `local`, `cloud` or `auto`. */
+    fun hostWord(host: String): String = when (storedHost(host)) {
+        LAB_HOST -> LOCAL_HOST
+        AWS_HOST -> CLOUD_HOST
+        else -> host
+    }
+
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
      * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule
@@ -176,9 +197,10 @@ object Experiments {
     /**
      * The active job [spec] would split: one queued or running, not being cancelled, that runs the same arms, seeds,
      * repeats and profiling as [spec] and differs at most in its name, description and problems. One question is one
-     * experiment over all its problems; the lab bounds its runtime itself (per-case timeouts, placement on the Mac or
-     * AWS by load), and batches defeat that placement and the arms' pairing and scatter the results. Scheduled runs,
-     * confirmations and profile jobs are neither refused nor counted, and a cancelled job is no longer active.
+     * experiment over all its problems; the lab bounds its runtime itself (per-case timeouts, placement on the local
+     * machine or a cloud node by load), and batches defeat that placement and the arms' pairing and scatter the
+     * results. Scheduled runs, confirmations and profile jobs are neither refused nor counted, and a cancelled job is
+     * no longer active.
      */
     fun splitOf(spec: ExperimentSpec, active: List<Job>): Job? {
         if (exemptFromSplitting(spec)) return null
@@ -193,7 +215,7 @@ object Experiments {
     fun splitMessage(job: Job): String =
         "job ${job.id} (${job.name}) is already ${job.status.name.lowercase()} with these configs, seeds and repeats: " +
             "submit one experiment that covers all the problems instead of splitting it into batches. The lab bounds " +
-            "runtime itself (per-case timeouts, placement on the Mac or AWS by load), so don't split or cancel jobs to " +
+            "runtime itself (per-case timeouts, placement on the local machine or a cloud node by load), so don't split or cancel jobs to " +
             "keep them short; read partial results with `lab cases ${job.id}` while it runs"
 
     private fun exemptFromSplitting(spec: ExperimentSpec) = spec.isProfile || spec.isAnalysis || '@' in spec.name || Confirm.SUFFIX in spec.name
@@ -240,23 +262,23 @@ object Experiments {
     }
 
     /**
-     * [spec] cut down to fit the Mac, which every job the lab accepts must: each `processors` over [cores] becomes
-     * [cores], and a `parallel` over [maxParallel] becomes [maxParallel]. AWS is only overflow for the Mac's queue, so
-     * no job needs a node. A grid axis whose values the cap makes equal keeps one of them. What was cut is added to
-     * [ExperimentSpec.capped], which the submit response, the job log and the job page show.
+     * [spec] cut down to fit the local machine, which every job the lab accepts must: each `processors` over [cores]
+     * becomes [cores], and a `parallel` over [maxParallel] becomes [maxParallel]. The cloud is only overflow for the
+     * local machine's queue, so no job needs a node. A grid axis whose values the cap makes equal keeps one of them.
+     * What was cut is added to [ExperimentSpec.capped], which the submit response, the job log and the job page show.
      */
-    fun capToMac(spec: ExperimentSpec, cores: Int, maxParallel: Int): ExperimentSpec {
+    fun capToLocal(spec: ExperimentSpec, cores: Int, maxParallel: Int): ExperimentSpec {
         val notes = mutableListOf<String>()
         fun capCores(value: String): String {
             val asked = value.toIntOrNull()?.takeIf { it > cores } ?: return value
-            notes += "processors=$asked was asked, capped at the Mac's $cores cores"
+            notes += "processors=$asked was asked, capped at the local machine's $cores cores"
             return cores.toString()
         }
         fun cap(values: Map<String, String>): Map<String, String> =
             values["processors"]?.let { values + ("processors" to capCores(it)) } ?: values
         val grid = spec.grid.mapValues { (key, values) -> if (key == "processors") values.map(::capCores).distinct() else values }
         val parallel = spec.parallel?.takeIf { it > maxParallel }?.let {
-            notes += "parallel=$it was asked, capped at the Mac's $maxParallel"
+            notes += "parallel=$it was asked, capped at the local machine's $maxParallel"
             maxParallel
         } ?: spec.parallel
         val capped = spec.copy(base = cap(spec.base), configs = spec.configs.map(::cap), grid = grid, parallel = parallel)
@@ -285,7 +307,7 @@ object Experiments {
         spec.profile?.let { profile ->
             profile.runTimeoutSec?.let { timeout ->
                 require(timeout in 1..(Long.MAX_VALUE / 1_000_000_000)) { "profile.runTimeoutSec must be positive and fit a monotonic deadline" }
-                require(spec.host == LAB_HOST && !spec.auto) { "profile.runTimeoutSec requires explicit host=lab" }
+                require(storedHost(spec.host) == LAB_HOST && !spec.auto) { "profile.runTimeoutSec requires the local host (local, or lab)" }
             }
             require(MAIN.matches(profile.main)) { "profile.main must be a class in com.eignex.klause.bench.profile, not '${profile.main}'" }
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
