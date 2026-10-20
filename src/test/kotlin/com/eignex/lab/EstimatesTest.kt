@@ -117,12 +117,28 @@ class EstimatesTest {
         assertEquals("from run $first", estimate.note)
         assertEquals(30 * 2 / 60.0, estimate.coreHours, 1e-9)
 
-        // Another timeout is another experiment: no history, so the guess from its selection.
-        val different = next.copy(experiment = spec.copy(base = mapOf("timeout" to "1000")))
+        // Another timeout is another experiment: an ad hoc job then has no history, so the guess from its selection.
+        val different = next.copy(name = "mine", experiment = spec.copy(name = "mine", base = mapOf("timeout" to "1000")))
         assertNull(history.lookup(different))
         val fallback = Estimates.estimate(different, history::lookup, 8)!!
         assertEquals(10, fallback.cases)
         assertEquals(EstimateSource.TIMEOUT, fallback.source)
+    }
+
+    @Test
+    fun `a scheduled run whose experiment changed learns from its schedule's last run, marked as another experiment`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val old = spec.copy(name = "ref@aaaaaaaaa", base = spec.base + ("ref" to "a".repeat(40)))
+        val last = doneRun(store, file, "ref@aaaaaaaaa", old, cases = 30, caseMs = 120_000)
+        val history = EstimateHistory(store, cores = 8)
+
+        val edited = old.copy(name = "ref@bbbbbbbbb", base = mapOf("timeout" to "1000", "ref" to "b".repeat(40)))
+        val next = job(Status.QUEUED, CommandCounts(0, 0, 0, 0), name = "ref@bbbbbbbbb", experiment = edited)
+        assertEquals(CaseHistory(last, 30, 120_000.0, sameExperiment = false), history.lookup(next))
+        assertEquals("from run $last, an earlier experiment", Estimates.estimate(next, history::lookup, 8)!!.note)
+        // An ad hoc job has no schedule to fall back to.
+        assertNull(history.lookup(next.copy(name = "adhoc", experiment = edited.copy(name = "adhoc"))))
     }
 
     @Test

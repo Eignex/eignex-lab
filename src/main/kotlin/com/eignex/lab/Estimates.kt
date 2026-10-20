@@ -7,7 +7,7 @@ enum class EstimateSource { MEASURED, HISTORY, TIMEOUT }
  * What an earlier run of the same experiment measured, for a job that has not measured enough of its own: the run's
  * job, the cases it planned, and its mean wall time a case, null when it recorded none.
  */
-data class CaseHistory(val jobId: Long, val cases: Int, val meanCaseMs: Double?)
+data class CaseHistory(val jobId: Long, val cases: Int, val meanCaseMs: Double?, val sameExperiment: Boolean = true)
 
 /**
  * A job's remaining work: the [cases] left, the wall time a case is taken to need ([caseMs]), their core-hours, and
@@ -23,14 +23,15 @@ data class WorkEstimate(
     val source: EstimateSource,
     val history: Long? = null,
     val guessed: Boolean = false,
+    val sameExperiment: Boolean = true,
 ) {
     /** Where the numbers came from, in a few words for the queue page. */
     val note: String
         get() = when (source) {
             EstimateSource.MEASURED -> "measured"
-            EstimateSource.HISTORY -> "from run $history"
+            EstimateSource.HISTORY -> "from run $history" + if (sameExperiment) "" else ", an earlier experiment"
             EstimateSource.TIMEOUT -> when {
-                history != null -> "cases from run $history, upper bound"
+                history != null -> "cases from run $history${if (sameExperiment) "" else ", an earlier experiment"}, upper bound"
                 guessed -> "guessed, upper bound"
                 else -> "upper bound"
             }
@@ -114,7 +115,8 @@ object Estimates {
                 else -> timeoutCaseMs(spec) to EstimateSource.TIMEOUT
             }
             val coreHours = if (source == EstimateSource.TIMEOUT) cases * NodePool.meanCaseCoreHours(spec) else cases * ms * meanCores(spec) / MS_PER_HOUR
-            WorkEstimate(cases, ms, coreHours, cases * ms / concurrent / MS_PER_HOUR, source, fromEarlier?.jobId, guessed)
+            WorkEstimate(cases, ms, coreHours, cases * ms / concurrent / MS_PER_HOUR, source, fromEarlier?.jobId, guessed,
+                fromEarlier?.sameExperiment ?: true)
         }.getOrNull()
     }
 
@@ -152,17 +154,35 @@ class EstimateHistory(
     private var byKey: Map<String, List<Run>> = emptyMap()
     private var refreshedAt: Long? = null
 
+    /** Per schedule, its newest done run whatever its experiment, with when it was read. */
+    private val bySeries = HashMap<String, Pair<Long, CaseHistory?>>()
+
     /**
      * The run [job]'s estimate learns from: the newest done run of the same experiment, a run of the same schedule
-     * (or the same name) before any other. Null when there is none, or the store cannot be read.
+     * (or the same name) before any other. A scheduled run (`<schedule>@<sha>`) whose experiment changed since its
+     * schedule last ran falls back to that last run, marked as another experiment: an edit to a schedule seldom
+     * changes its size much, and a guess from its selections is far worse. Null when there is none, or the store
+     * cannot be read.
      */
     @Synchronized
     fun lookup(job: Job): CaseHistory? {
         val spec = job.experiment?.takeUnless { it.isScript } ?: return null
         runCatching { refresh() }.onFailure { println("estimates: history not read: ${it.message}") }
-        val matches = key(spec)?.let { byKey[it] } ?: return null
         val series = job.name.substringBefore('@')
-        return (matches.firstOrNull { it.series == series } ?: matches.first()).history
+        key(spec)?.let { byKey[it] }?.let { matches -> return (matches.firstOrNull { it.series == series } ?: matches.first()).history }
+        if ('@' !in job.name) return null
+        return runCatching { seriesRun(series) }.getOrNull()
+    }
+
+    private fun seriesRun(series: String): CaseHistory? {
+        val at = clock()
+        bySeries[series]?.takeIf { at - it.first < ttlMs }?.let { return it.second }
+        val history = store.lastDoneOfSeries(series)?.let { id ->
+            (runs[id]?.history ?: store.jobsByIds(listOf(id)).firstOrNull()?.let { Estimates.history(it, cores) })
+                ?.copy(sameExperiment = false)
+        }
+        bySeries[series] = at to history
+        return history
     }
 
     private fun refresh() {

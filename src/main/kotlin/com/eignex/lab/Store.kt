@@ -586,6 +586,17 @@ class Store(file: Path) {
         statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) else null }.toList() }
     }
 
+    /** The newest experiment of schedule [series] (named `<series>@<sha>`) that ended done, null when none did. */
+    @Synchronized
+    fun lastDoneOfSeries(series: String): Long? = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND experiment IS NOT NULL AND substr(name, 1, ?) = ? ORDER BY id DESC LIMIT 1",
+    ).use { statement ->
+        statement.setString(1, Status.DONE.name)
+        statement.setInt(2, series.length + 1)
+        statement.setString(3, "$series@")
+        statement.executeQuery().use { r -> if (r.next()) r.getLong(1) else null }
+    }
+
     /** The jobs [ids], without their commands, with their [Job.counts]. */
     @Synchronized
     fun jobsByIds(ids: Collection<Long>): List<Job> =
