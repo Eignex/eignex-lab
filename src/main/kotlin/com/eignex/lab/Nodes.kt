@@ -45,12 +45,13 @@ object NodePool {
 
     /**
      * Cases [spec] is expected to run before it is planned, when the selection is not known yet: per selection its
-     * `max`, else its `per-family` over [ASSUMED_FAMILIES] families, else [ASSUMED_SELECTION]; an exact problem list
-     * counts as it is. Times the arms, seeds and repeats. A profile job runs one case.
+     * `max`, else its `per-family` over [ASSUMED_FAMILIES] families, else [ASSUMED_SELECTION]; a selection naming one
+     * problem (`name`) and an exact problem list count as they are. Times the arms, seeds and repeats. A profile job runs one case.
      */
     fun estimatedCases(spec: ExperimentSpec): Int {
         if (spec.isProfile) return 1
         val problems = spec.problemList.size.takeIf { it > 0 } ?: spec.problems.sumOf { selection ->
+            if ("name" in selection) return@sumOf 1
             val max = selection["max"]?.toIntOrNull()
             val perFamily = selection["per-family"]?.toIntOrNull()?.times(ASSUMED_FAMILIES)
             listOfNotNull(max, perFamily).minOrNull() ?: ASSUMED_SELECTION
