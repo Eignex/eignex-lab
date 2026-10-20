@@ -613,11 +613,12 @@ class AwsWorker(
     /**
      * The work waiting for AWS, as [Demand]s: the queued jobs a node may take, in queue order, and the unclaimed
      * problems of the jobs running on AWS. A queued job the Mac could run counts only at [AwsConfig.nodeMinPriority] or
-     * above, and the one a free Mac takes next is left to it; one only AWS can run always counts. A queued AWS job no
-     * size within the quota can hold fails here, as no node could ever take it.
+     * above, and the one the Mac takes next, being free or about to give way to it ([Store.macNext]), is left to it;
+     * one only AWS can run always counts. A queued AWS job no size within the quota can hold fails here, as no node
+     * could ever take it.
      */
     private fun demands(): Pair<List<Demand>, List<Demand>> {
-        val macNext = if (store.macBusy()) null else store.peek()
+        val macNext = store.macNext()
         val queued = store.nodeQueue().mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
             if (job.id == macNext) return@mapNotNull null

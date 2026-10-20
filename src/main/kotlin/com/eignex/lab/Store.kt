@@ -571,11 +571,12 @@ class Store(file: Path) {
     }?.let { it.copy(commands = commands(it.id)) }
 
     /**
-     * The job the Mac works on: one left RUNNING there by a crashed runner first, else the queued, unpaused job with the
-     * highest priority among those placed on the Mac, else the first `auto` job ([nextAuto]), claimed. Among equals,
-     * the job whose series last finished a run longest ago goes first, one that never has before any that has, then
-     * the oldest: so a schedule that just ran cannot keep going ahead of one that has waited. A series is a schedule's
-     * runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
+     * The job the Mac works on: one left RUNNING there by a crashed runner first, else the first of its queue
+     * ([queueOrder]), claimed for the Mac when it is an `auto` job. The queue holds the jobs placed on the Mac alone and
+     * the `auto` ones no node has claimed, as one, by priority whatever their placement. Among equals, the job whose
+     * series last finished a run longest ago goes first, one that never has before any that has, then the oldest: so a
+     * schedule that just ran cannot keep going ahead of one that has waited. A series is a schedule's runs
+     * (`<schedule>@<sha>`), or an experiment's reruns under its name.
      */
     @Synchronized
     fun next(): Job? = transaction {
@@ -586,11 +587,15 @@ class Store(file: Path) {
             it.setString(2, Experiments.LAB_HOST)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
-        val id = running ?: queueOrder().firstOrNull() ?: nextAuto()?.also { claimed ->
-            // Taken where it goes: from now on it is the Mac's job, resumed there after a pause or a restart.
-            connection.prepareStatement("UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', json('true')) WHERE id = ?").use {
+        val id = running ?: queueOrder().firstOrNull()?.also { claimed ->
+            // An auto job is taken where it goes: from now on it is the Mac's job, resumed there after a pause or a
+            // restart, and `auto` marks that it could have gone elsewhere.
+            connection.prepareStatement(
+                "UPDATE jobs SET experiment = json_set(experiment, '\$.host', ?, '\$.auto', json('true')) WHERE id = ? AND $HOST = ?",
+            ).use {
                 it.setString(1, Experiments.LAB_HOST)
                 it.setLong(2, claimed)
+                it.setString(3, Experiments.AUTO_HOST)
                 it.executeUpdate()
             }
         }
@@ -616,9 +621,24 @@ class Store(file: Path) {
         it.executeUpdate()
     }
 
-    /** The job [next] would take now, without taking it: the Mac's own queue's first, else the first `auto` job. */
+    /** The job [next] would take now, without taking it: the first of the Mac's queue ([queueOrder]). */
     @Synchronized
-    fun peek(): Long? = queueOrder().firstOrNull() ?: nextAuto()
+    fun peek(): Long? = queueOrder().firstOrNull()
+
+    /**
+     * The job the Mac is about to take, which a node must leave to it: the first of its queue when the Mac is free, or
+     * when the job it runs gives way to that one between cases ([shouldYield]). Null when the Mac keeps what it runs.
+     */
+    @Synchronized
+    fun macNext(): Long? {
+        val first = peek() ?: return null
+        val running = connection.prepareStatement("SELECT priority FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1").use {
+            it.setString(1, Status.RUNNING.name)
+            it.setString(2, Experiments.LAB_HOST)
+            it.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else null }
+        } ?: return first
+        return first.takeIf { (job(it)?.priority ?: Int.MIN_VALUE) > running }
+    }
 
     /** Whether the Mac is running a job. */
     @Synchronized
@@ -628,22 +648,13 @@ class Store(file: Path) {
         it.executeQuery().use { rows -> rows.next() }
     }
 
-    /** The first `auto` job, which the Mac takes when nothing placed on it alone waits; a node may take it first. */
-    private fun nextAuto(): Long? = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER LIMIT 1",
-    ).use {
-        it.setString(1, Status.QUEUED.name)
-        it.setString(2, Experiments.AUTO_HOST)
-        it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
-    }
-
     /**
      * The queued, unpaused jobs an AWS node may take, `auto` and `aws` ones alike, in the order a node takes them: by
      * priority, then series, then age, as the Mac orders its own. Without their commands, with their counts.
      */
     @Synchronized
     fun nodeQueue(): List<Job> = jobsWhere(
-        "status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $NODE_ORDER",
+        "status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $QUEUE_ORDER",
         Status.QUEUED.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
     )
 
@@ -1109,41 +1120,45 @@ class Store(file: Path) {
         if (paused) 1 else 0, jobId, Status.QUEUED.name, Status.RUNNING.name,
     ) == 1
 
-    /** Whether running [jobId] should stop starting commands: it was paused, or a job it must give way to waits. */
+    /**
+     * Whether [jobId], running on the Mac, should stop starting commands: it was paused, or a job in the Mac's queue
+     * ([queueOrder]) has a strictly higher priority. Placement does not matter: a job placed on the Mac alone, one an
+     * `auto` job the Mac took, and an `auto` job no node has claimed all compete by priority alone, and an equal
+     * priority never preempts. A paused or cancelled job, or one a node claimed, does not count.
+     */
     @Synchronized
     fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
-        // A job queued for the host outranks any auto job the host took, whatever their priorities: an auto job gives
-        // way to it, and it never gives way to one. Among jobs of one kind the higher priority goes first.
         "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE status = ? " +
-            "AND cancel_requested = 0 AND paused = 0 AND $HOST = (SELECT $HOST FROM jobs WHERE id = ?) AND (" +
-            "(COALESCE(json_extract(experiment, '\$.auto'), 0) = COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) " +
-            "AND priority > (SELECT priority FROM jobs WHERE id = ?)) OR " +
-            "(COALESCE(json_extract(experiment, '\$.auto'), 0) = 0 AND " +
-            "COALESCE((SELECT json_extract(experiment, '\$.auto') FROM jobs WHERE id = ?), 0) = 1)))",
+            "AND cancel_requested = 0 AND paused = 0 AND id != ? AND $HOST IN (?, ?) " +
+            "AND priority > (SELECT priority FROM jobs WHERE id = ?))",
     ).use {
         it.setLong(1, jobId)
         it.setString(2, Status.QUEUED.name)
         it.setLong(3, jobId)
-        it.setLong(4, jobId)
-        it.setLong(5, jobId)
+        it.setString(4, Experiments.LAB_HOST)
+        it.setString(5, Experiments.AUTO_HOST)
         it.setLong(6, jobId)
         it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
     }
 
-    /** The queued, unpaused jobs placed on the Mac alone, or taken by it, in the order [next] takes them. */
+    /**
+     * The Mac's queue in the order [next] takes it: the queued, unpaused jobs placed on the Mac alone or taken by it,
+     * and the `auto` jobs no node has claimed, as one queue by priority, then series, then age.
+     */
     @Synchronized
     fun queueOrder(): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST = ? $QUEUE_ORDER",
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $QUEUE_ORDER",
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.setString(2, Experiments.LAB_HOST)
+        it.setString(3, Experiments.AUTO_HOST)
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
     }
 
     /** Every queued, unpaused job, wherever it may run, by priority, series and age: the queue as the pages show it. */
     @Synchronized
     fun queue(): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $NODE_ORDER",
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $QUEUE_ORDER",
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
@@ -1333,12 +1348,10 @@ private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.nam
 private const val PRIORITY_ORDER = "priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
     "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
 
-/** How the Mac orders its queue: a job placed on the Mac alone goes before an `auto` job the Mac took, whatever their
- *  priorities, since an `auto` job only fills a Mac that has nothing of its own to run. */
-private const val QUEUE_ORDER = "ORDER BY COALESCE(json_extract(jobs.experiment, '\$.auto'), 0), $PRIORITY_ORDER"
+/** How queues are ordered, the Mac's ([Store.queueOrder]), a node's ([Store.nodeQueue]) and the one the pages show
+ *  ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
+private const val QUEUE_ORDER = "ORDER BY $PRIORITY_ORDER"
 
-/** How a node orders the jobs it may take ([Store.nodeQueue]). */
-private const val NODE_ORDER = "ORDER BY $PRIORITY_ORDER"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"

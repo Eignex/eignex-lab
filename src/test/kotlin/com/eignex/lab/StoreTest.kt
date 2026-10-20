@@ -431,14 +431,63 @@ class StoreTest {
     }
 
     @Test
-    fun `a job queued for the lab machine goes before an auto job there, and an auto job running there gives way to it`() {
+    fun `an auto job the Mac took keeps running ahead of a lower priority Mac job, and gives way to a higher one`() {
         val store = store()
-        val auto = autoJob(store, "a", priority = 5)
+        val auto = autoJob(store, "a", priority = -1)
         assertEquals(auto, store.next()?.id)
-        assertEquals(false, store.shouldYield(auto))
-        store.create("sweep", "main", listOf("true" to 10L), priority = -2)
+        store.create("sweep@abc", "main", listOf("true" to 10L), priority = -2)
+        val before = store.shouldYield(auto)
+        store.create("ab", "main", listOf("true" to 10L))
 
-        assertEquals(true, store.shouldYield(auto))
+        assertEquals(listOf(false, true), listOf(before, store.shouldYield(auto)))
+    }
+
+    @Test
+    fun `a Mac job gives way to a queued auto job of higher priority, never to a lower or equal one`() {
+        val store = store()
+        val reference = autoJob(store, "klause-reference@abc", priority = -3, host = Experiments.LAB_HOST)
+        assertEquals(reference, store.next()?.id)
+        autoJob(store, "low", priority = -5)
+        val equal = autoJob(store, "equal", priority = -3)
+        val held = store.shouldYield(reference)
+        val high = autoJob(store, "high", priority = 3)
+
+        assertEquals(listOf(false, true), listOf(held, store.shouldYield(reference)))
+        assertEquals(listOf(high, equal), store.queueOrder().take(2))
+    }
+
+    @Test
+    fun `a paused, cancelled or node-claimed job does not make a Mac job give way`() {
+        val store = store()
+        val reference = autoJob(store, "klause-reference@abc", priority = -3, host = Experiments.LAB_HOST)
+        store.next()
+        val paused = autoJob(store, "paused", priority = 3)
+        store.setPaused(paused, true)
+        val cancelled = autoJob(store, "cancelled", priority = 3)
+        store.requestCancel(cancelled)
+        val claimed = autoJob(store, "claimed", priority = 3)
+        store.claimForNode(claimed)
+
+        assertEquals(listOf(true, Experiments.AWS_HOST), listOf(store.job(cancelled)!!.cancelRequested, store.job(claimed)!!.experiment!!.host))
+        assertEquals(false, store.shouldYield(reference))
+    }
+
+    @Test
+    fun `a Mac job that gives way to an auto job keeps its progress and resumes after it`() {
+        val store = store()
+        val reference = store.create("klause-reference@abc", "main", listOf("true" to 10L, "true" to 10L), priority = -3)
+        store.next()
+        store.commandStarted(reference, 0)
+        store.commandFinished(reference, 0, 0)
+        val high = autoJob(store, "high", priority = 3)
+        assertEquals(true, store.shouldYield(reference))
+        store.requeue(reference)
+
+        assertEquals(high, store.next()?.id)
+        assertEquals(Experiments.LAB_HOST, store.job(high)!!.experiment!!.host)
+        store.finish(high, Status.DONE)
+        assertEquals(reference, store.next()?.id)
+        assertEquals(listOf(Status.DONE, Status.QUEUED), store.job(reference)!!.commands.map { it.status })
     }
 
     @Test
@@ -476,24 +525,39 @@ class StoreTest {
         val mac = autoJob(store, "sweep@abc", priority = -5, host = Experiments.LAB_HOST)
 
         assertEquals(listOf(high, aws, low), store.nodeQueue().map { it.id })
-        assertEquals(mac, store.peek())
+        assertEquals(listOf(high, low, mac), store.queueOrder())
+        assertEquals(listOf(high, high), listOf(store.peek(), store.macNext()))
         assertEquals(listOf(high, aws, low, mac), store.queue())
         assertEquals(false, store.macBusy())
         store.next()
-        assertEquals(listOf(true, high), listOf(store.macBusy(), store.peek()))
+        assertEquals(listOf(true, low, null), listOf(store.macBusy(), store.peek(), store.macNext()))
     }
 
     @Test
-    fun `a Mac job never gives way to an auto job the Mac took, and goes before it in the queue`() {
+    fun `the Mac's next is left to it while the job it runs is about to give way to that one`() {
+        val store = store()
+        val reference = autoJob(store, "klause-reference@abc", priority = -3, host = Experiments.LAB_HOST)
+        store.next()
+        val low = autoJob(store, "low", priority = -5)
+        val held = store.macNext()
+        val high = autoJob(store, "high", priority = 3)
+
+        assertEquals(listOf(null, high), listOf(held, store.macNext()))
+        assertEquals(listOf(high, low), store.queueOrder())
+        assertEquals(true, store.shouldYield(reference))
+    }
+
+    @Test
+    fun `an auto job the Mac took and gave back competes with Mac jobs by priority`() {
         val store = store()
         val auto = autoJob(store, "a", priority = 5)
         assertEquals(auto, store.next()?.id)
         store.requeue(auto)
         val sweep = store.create("sweep@abc", "main", listOf("true" to 10L), priority = -2)
 
-        assertEquals(sweep, store.next()?.id)
-        assertEquals(false, store.shouldYield(sweep))
-        assertEquals(listOf(auto), store.queueOrder())
+        assertEquals(listOf(auto, sweep), store.queueOrder())
+        assertEquals(auto, store.next()?.id)
+        assertEquals(false, store.shouldYield(auto))
     }
 
     @Test

@@ -1153,7 +1153,8 @@ internal fun nodesLine(config: Config): String? {
 
 private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
-    // One queue, whatever runs each job: the Mac and the AWS nodes take from it as the lab places jobs.
+    // One queue by priority, whatever runs each job: the Mac and the AWS nodes take from it in this order as the lab
+    // places jobs, each passing over those it may not run.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
     return jobTable(config, ordered, positions, filterable = false)
