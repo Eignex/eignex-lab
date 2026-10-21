@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -36,6 +37,8 @@ class Runner(
     private val store: Store,
     /** How long a case stopped at its limit has between SIGTERM and SIGKILL; shorter only in tests. */
     private val stopGraceMs: Long = Experiments.STOP_GRACE_SEC * 1000,
+    /** What an analysis job downloads a saved-capture archive with; a test serves its own. */
+    private val archiveHttp: CaptureArchives.Http = CaptureArchives.Http.DEFAULT,
 ) {
     /** Every process the runner has started and not yet seen exit, so cancel and shutdown can reach them all. */
     private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
@@ -675,33 +678,83 @@ class Runner(
     internal fun analyze(job: Job) {
         val spec = checkNotNull(job.experiment?.analyze)
         val dir = config.jobDir(job.id).createDirectories()
-        val target = config.jobDir(spec.job)
-        CompilationReports.refusal(store.job(spec.job), target)?.let { refusal ->
+        if (spec.archive != null) return analyzeArchive(job, spec, dir)
+        val analysed = checkNotNull(spec.job)
+        val target = config.jobDir(analysed)
+        CompilationReports.refusal(store.job(analysed), target)?.let { refusal ->
             log(job.id, "job failed: $refusal")
             store.finish(job.id, Status.FAILED, refusal)
             return
         }
-        log(job.id, "analysing job ${spec.job}'s retained captures with the lab's ${spec.kind} analyser")
-        log(spec.job, "analysis job ${job.id} writes its compilation reports again from the retained captures")
+        log(job.id, "analysing job $analysed's retained captures with the lab's ${spec.kind} analyser")
+        log(analysed, "analysis job ${job.id} writes its compilation reports again from the retained captures")
         val indices = CompilationReports.profileDirs(target).mapNotNull { it.parent.name.toIntOrNull() }.distinct()
         val written = ArrayList<AnalysisEntry>()
         for (index in indices) {
             if (store.cancelRequested(job.id)) return cancel(job.id)
-            for ((profile, report) in reportCompilation(spec.job, index, target, analyzeJob = job.id)) {
-                written += AnalysisEntry(index, target.relativize(profile.resolve(CompilationReports.REPORT)).joinToString("/"),
-                    report.totals.compilations, report.totals.compilerMs, report.complete, (report.missing + report.incomplete).map { it.what })
+            for ((profile, report) in reportCompilation(analysed, index, target, analyzeJob = job.id)) {
+                written += analysisEntry(index, target, profile, report)
             }
         }
-        dir.resolve(CompilationReports.ANALYSIS).writeAtomically(
-            Json { encodeDefaults = true }.encodeToString(AnalysisResult.serializer(), AnalysisResult(spec.job, spec.kind, written)))
-        if (written.isEmpty()) {
-            val error = "job ${spec.job}'s captures could not be analysed: see its job.log"
+        finishAnalysis(job, dir, AnalysisResult(analysed, spec.kind, written), "job $analysed's captures could not be analysed: see its job.log",
+            "for job $analysed")
+    }
+
+    private fun analysisEntry(index: Int, root: Path, profile: Path, report: CompilationReport) = AnalysisEntry(
+        index, root.relativize(profile.resolve(CompilationReports.REPORT)).joinToString("/"), report.totals.compilations,
+        report.totals.compilerMs, report.complete, (report.missing + report.incomplete).map { it.what },
+        report.tasks?.let { root.relativize(profile.resolve(it.file)).joinToString("/") },
+    )
+
+    private fun finishAnalysis(job: Job, dir: Path, result: AnalysisResult, empty: String, of: String) {
+        dir.resolve(CompilationReports.ANALYSIS).writeAtomically(Json { encodeDefaults = true }.encodeToString(AnalysisResult.serializer(), result))
+        if (result.reports.isEmpty()) {
+            log(job.id, "job failed: $empty")
+            store.finish(job.id, Status.FAILED, empty)
+            return
+        }
+        store.finish(job.id, Status.DONE)
+        log(job.id, "job finished: ${result.reports.size} reports written $of")
+    }
+
+    /**
+     * Run analysis job [job] over the pinned archive [spec] names ([CaptureArchives]): download it into [dir], check it
+     * against its SHA-256, verify every member against its manifest, extract the profile directories' captures under
+     * [CaptureArchives.ROOT], and write each one's report and task records there, with the archive in their
+     * provenance. No original job is needed, nothing is built and no klause code runs; a refused archive fails the job,
+     * saying why.
+     */
+    private fun analyzeArchive(job: Job, spec: AnalyzeSpec, dir: Path) {
+        log(job.id, "analysing the captures in archive ${spec.archive} (sha256 ${spec.sha256}) with the lab's ${spec.kind} analyser")
+        val fetched = try {
+            CaptureArchives.fetch(spec, config, dir, archiveHttp)
+        } catch (e: Exception) {
+            if (e !is IOException && e !is EvidenceException && e !is IllegalArgumentException) throw e
+            val error = "archive refused: ${e.message}"
             log(job.id, "job failed: $error")
             store.finish(job.id, Status.FAILED, error)
             return
         }
-        store.finish(job.id, Status.DONE)
-        log(job.id, "job finished: ${written.size} reports written for job ${spec.job}")
+        val archive = fetched.provenance
+        log(job.id, "archive ${archive.name}: ${archive.bytes} bytes, sha256 ${archive.sha256} as pinned; ${archive.verifiedFiles} files verified " +
+            "against manifest ${archive.manifest} (sha256 ${archive.manifestSha256}); ${fetched.profiles.size} profile directories extracted")
+        val root = dir.resolve(CaptureArchives.ROOT)
+        val worker = CompilationReports.worker(job.id)
+        val written = ArrayList<AnalysisEntry>()
+        for (profile in fetched.profiles) {
+            if (store.cancelRequested(job.id)) return cancel(job.id)
+            val member = root.relativize(profile).joinToString("/")
+            val index = profile.parent.name.toInt()
+            runCatching {
+                val report = CompilationReports.analyzeAndWrite(profile, CaptureArchives.source(profile), worker, archive.copy(member = member))
+                val gaps = (report.missing + report.incomplete).joinToString { it.what }
+                log(job.id, "$member: ${report.totals.compilations} compilations, ${"%.1f".format(report.totals.compilerMs)} ms compiler time" +
+                    if (gaps.isEmpty()) "" else "; missing or incomplete: $gaps")
+                written += analysisEntry(index, dir, profile, report)
+            }.onFailure { log(job.id, "$member: compilation report not written: ${it.message}") }
+        }
+        finishAnalysis(job, dir, AnalysisResult(kind = spec.kind, reports = written, archive = archive),
+            "the archive holds no profile directory whose captures could be analysed", "from archive ${archive.name}")
     }
 
     /** A case of a reference arm adds its verdict to the reference results as it finishes, so a run cut short still

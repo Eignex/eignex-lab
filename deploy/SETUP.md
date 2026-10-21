@@ -99,30 +99,64 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   the instrumentation. Compare runtime between uninstrumented runs only.
 - After each case of such a job, the lab (not klause, and the same locally and for a node's case once its captures
   are back) writes `compilation-report.json` beside the captures in `cases/<index>/profile-<uuid>/`. It reads them with
-  the JDK's own JFR consumer and an XML stream reader. The report (`schemaVersion` 1, `kind: "compilation"`) holds:
-  - `totals`: the compilation count, compiler ms (the sum of the compilations' own durations, on the compiler
-    threads beside the solve), the longest compilation, succeeded, failed, OSR, code bytes and inlined bytes.
-  - `byTier` (compiler and level: C1 is tiers 1–3, C2 tier 4), `byKind` (`normal`, `osr`), `byStatus` (`succeeded`,
-    `failed`, `unknown`) and `failures` (each failure or bailout reason, with its count).
+  the JDK's own JFR consumer and an XML stream reader. The report (`schemaVersion` 2, `kind: "compilation"`) is a
+  summary; every compile id's own record is in `compilation-tasks.jsonl.gz` beside it (below). It holds:
+  - `totals`: the compilation count (every compile id a compiler took up), compiler ms (the sum of the compilations'
+    own durations, on the compiler threads beside the solve), the longest compilation, succeeded, failed (bailouts
+    included), OSR, code bytes and inlined bytes, and `bailouts`, `unknown` and `queuedOnly` (ids HotSpot queued that
+    no compiler took up: no compilation, so in none of the other counts).
+  - `byTier` (compiler and level: C1 is tiers 1–3, C2 tier 4), `byKind` (`normal`, `osr`), `byStatus` (`succeeded`;
+    `bailout`, a compilation the compiler gave up on and said why; `failed`, one that did not succeed and gave no
+    reason; `unknown`, one whose end neither capture saw) and `failures` (each failure or bailout reason, with its count).
   - `methods`: per compiled root (`holder.name(descriptor)`), its count, total and longest ms, tiers, OSR count,
     failures and code size. With the log it also holds `inlined` (each callee inlined into it, at any depth, with its
-    count) and `inlineFailures` (why calls were not inlined, by reason).
+    count, over all its compilations) and `inlineFailures` (why calls were not inlined, by reason). `byTier` keeps the
+    root's compilations apart by compiler, tier and kind (`normal` or `osr`): count, total and longest ms, how they
+    ended (counts that are zero are left out), code and inlined bytes, and their `compileIds`, which name their task
+    records. `queued` counts its ids that were only queued.
   - `jvmStatistics`: the JVM's own running totals from its last `jdk.CompilerStatistics` event. `log`: the log's task,
     inline and compiler-thread counts.
-  - `coverage`: how many compile ids each capture held, both, or only one; the first and last id; the ids in neither;
-    the recorded `jdk.Compilation` threshold; JFR events read; data lost; and log bytes.
+  - `coverage`: the two captures joined by compile id, exactly: how many ids JFR held, how many log tasks, both
+    (`matched`), JFR without a log task (`jfrOnly`), a log task without JFR (`logOnly`), and JFR with nothing at all in
+    the log (`jfrWithoutLogRecord`); the log's queued tasks (`logQueued`), installed code (`logNMethods`) and native
+    wrappers (`nativeWrappers`, ids that compile nothing); `queuedOnly`; the ids both captures hold but disagree on
+    (`disagreements`: method, level, OSR or success); the first and last id; the ids neither holds at all; the recorded
+    `jdk.Compilation` threshold; JFR events read; data lost; and log bytes.
   - `provenance`: the JVM (from `jdk.JVMInformation` and the VM's initial system properties: name, version, vendor,
-    arguments, flags, pid); the source (job, case, problem, arm, ref, commit); the worker (the lab release it ran on
-    with its sha, the host, when, and the analysis job if one asked); the execution (from `measurement.json` and
-    `resources.txt`); and every capture's size and SHA-256.
+    arguments, flags, pid); the source (job, case, problem, arm, ref, commit, and `from` when it was read from an
+    archived report); the worker (the lab release it ran on with its sha, the host, when, and the analysis job if one
+    asked); the execution (from `measurement.json` and `resources.txt`); every capture's size and SHA-256; and
+    `archive`, when the captures came from a pinned archive (below).
+  - `tasks`: the task records' file, `compilation-tasks.jsonl.gz`, with its record count, bytes and SHA-256.
   - `missing` and `incomplete`: each observation the captures lack, or hold only in part, with `what` and `why`.
     Examples: no recording; a recording that stops mid-chunk or has no JVM shutdown event; a `jdk.Compilation`
     threshold above zero; JFR data loss; startup compilations before the recording began (JFR alone always has these,
     and the log covers them); no or a cut-short log; a log without the compiler threads' logs; a case that exited
-    non-zero, such as one stopped at its limit. `complete` is true only when both lists are empty.
+    non-zero, such as one stopped at its limit. With both captures whole, the join adds `jfr-without-log-task` (JFR
+    compilations with no log task, so no inlining), `log-without-jfr` (compilations the log saw end after the recording
+    began with no `jdk.Compilation` event, such as those while JFR starts up or after its last chunk) and
+    `jfr-log-disagree`. `complete` is true only when both lists are empty.
 
-  The raw captures stay with the case. The job's Files page lists them with the report, and `lab cat` or `lab fetch`
-  gets them.
+  `compilation-tasks.jsonl.gz` holds one JSON line per compile id, in id order, never merged: a run compiles
+  thousands of tasks, each with its own inlining, which as JSON runs to tens of MB, so they stay out of the report,
+  which a page or `jq` then reads at once; gzipped they shrink about tenfold, and `zcat … | jq -c 'select(…)'` streams
+  them. The report names the file with its SHA-256, so a reader can tell the two belong together. A record has
+  `compileId`, `method`, `compiler`, `level`, `kind` (`normal`, `osr`) and `osrBci`; `status` (`succeeded`, `bailout`,
+  `failed`, `unknown`, or `queued` for an id never taken up) with `failure`; `join` (`matched`, `jfr-only`,
+  `log-only`, or `jfr`/`log` when the case had only that capture) and `observed` (each of `jfr`, `log-queued`,
+  `log-task`, `log-done`, `log-nmethod`, `log-not-entrant`); `attempt` (the how-manyth compilation of the method at
+  that compiler, tier and kind), `retryOf` (the id it compiles again, after a deoptimisation or a failure) and
+  `previous` (the method's compilation before, at any tier), with `notEntrant` (why its code was made not entrant);
+  `queuedAt`, `startedAt` and `endedAt` (the log's seconds since JVM start) and `jfrStartMs` (epoch ms); `ms` (JFR's
+  duration, else the log's), `jfrMs` and `logMs`; `bytecodeBytes`, `codeBytes` and `inlinedBytes`; `jfrEvents`;
+  `disagreements`; and `inlining`, that task's own decisions in the order the compiler made them, each with its
+  `depth` (1 for a call in the root), `caller`, `callee`, `bci`, `inlined`, `reason`, the callee's `bytes`, and `late`
+  for C2's late inlining. Fields the captures do not say are left out. Retries, bailouts, queued ids and ids in one
+  capture only each keep a record of their own.
+
+  A schema 1 report, from before, still reads (`CompilationReports.read`), with what schema 2 added left empty.
+  The raw captures stay with the case. The job's Files page lists them with the report and its task records, and
+  `lab cat` or `lab fetch` gets them.
 - `{"analyze": {"job": <id>, "kind": "compilation"}}` posted to `/experiments` (`lab analyze <id>`) queues an
   analysis job. It runs locally, where the captures are. It reruns the lab's analyser over an ended `profileCli`
   job's retained captures and writes each case's `compilation-report.json` afresh, with the analysis job in its
@@ -131,6 +165,39 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   plain `profileCli` job too, whose report then says its threshold kept only the slow compilations. It is refused,
   saying why, when the job has not ended, ran without `profileCli`, or has no captures left. That includes a job
   trimmed a week after it ended (see Disk), whose raw captures are gone while its reports and manifests stay.
+- `{"analyze": {"kind": "compilation", "archive": "<url or name>", "sha256": "<hex>"}}` (`lab analyze --archive
+  <url|name> --sha256 <hex>`) analyses the captures in a saved-capture archive instead, once their job is cleaned up:
+  a `campaign-evidence` archive (see Active campaign evidence) such as a release asset
+  `https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha256>.tar.gz`. Nothing is built, no
+  solver or klause code runs, and no original job is needed. Because the lab is reachable from the internet, the
+  archive is pinned and checked:
+  - `sha256` is required, 64 lowercase hex digits; the archive's own SHA-256 must equal it.
+  - `archive` is an HTTPS URL under an allowed prefix (`LAB_ARCHIVE_PREFIXES`, comma-separated, ending in `/`;
+    `https://github.com/Eignex/` unless set), with no credentials, query, fragment, port or `..`, naming a
+    `.tar.gz`; on github.com it must be a release asset. GitHub redirects a download to its asset hosts, and the
+    lab follows at most five redirects, each to HTTPS on the URL's own host or one of `LAB_ARCHIVE_REDIRECT_HOSTS`
+    (GitHub's asset hosts unless set). Or `archive` is a relative path under `$LAB_DATA/archives` on the lab, a
+    regular file inside it (no `..`, absolute paths or links out).
+  - The manifest is the `<campaign>-<sha256>.manifest.json` beside the archive unless `manifest` names another (by
+    the same rules); `manifestSha256` pins it too when given. It must name the pinned archive.
+  - The download stops at `LAB_ARCHIVE_MAX_MB` (2048) and the manifest's files at `LAB_ARCHIVE_MAX_UNPACKED_MB`
+    (16384) unpacked; a pax or long-name tar header holds at most 1 MiB.
+  - Before anything is extracted, every member is verified against the manifest as `campaign-evidence verify` does:
+    each file's size and SHA-256, no missing, extra or duplicate members, no traversal path, nothing but regular
+    files (links refused), and the catalog. Then only the profile directories' captures (`…/cases/<i>/profile-<id>/`
+    with `cli.jfr`, `hotspot-compilation.log[.gz]`, `measurement.json`, `resources.txt`, `solve-record.json`) are
+    extracted, into the analysis job's own `archive/<path in the archive>/`, each path checked again to stay inside.
+    A report the archive held beside them is extracted as `archived-compilation-report.json`.
+
+  The API refuses (409) an archive it may not fetch, saying why; the runner then fails the job, saying why, on a
+  download that runs over, a hash that differs from its pin, or a member that fails verification. Otherwise it writes
+  each profile directory's `compilation-report.json` and `compilation-tasks.jsonl.gz` beside its extracted captures,
+  and `analysis.json` (with `archive` instead of `job`) in its own directory; its page lists them. Each report's
+  `provenance.archive` names the archive URL, its SHA-256 and size, the manifest it was verified against with its
+  SHA-256 and the catalog's campaign, how many files verification matched, and the profile directory within the
+  archive (`member`). The case's job, problem, arm and commit come from the archived report, when one is there whose
+  captures are byte for byte these (`source.from` says so); without one, `missing` says the archive does not name them.
+  The downloaded `.tar.gz` is removed once extracted, and the verified manifest stays as `archive.manifest.json`.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 ### Profile jobs
@@ -407,8 +474,11 @@ SHA-256 with the review's pinned value, then verify **before extracting**:
 ```
 
 Verification streams every member without extraction and rejects altered bytes, missing
-or extra files, duplicate paths, traversal paths and nonregular members. Only a verified
+or extra files, duplicate paths, traversal paths and nonregular members; a member whose
+header gives another size than the manifest's is refused before its bytes are read. Only a verified
 archive should be extracted to an empty external directory for the retained analyzers.
+The lab's own compilation analyser runs over such an archive's profile captures as an analysis
+job, verifying it first (`lab analyze --archive <url> --sha256 <sha>`; see Experiments).
 Numerical/source rechecking runs on a separate analysis host with the retained dependencies;
 keep its execution identity and reports with the active evidence. Storage checks can run
 locally with `./gradlew test --tests com.eignex.lab.CampaignEvidenceTest`; the build gate
@@ -869,9 +939,11 @@ fetches the dependencies into the new home once.
 - From a cloud node, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
 - An ended job is trimmed a week after it ended, and sooner, largest first, while the disk has under 25 GB free: its
   `job.log`, `setup.log`, `sha`, commands' `.exit` and `.termination` files, `selection-*.jsonl` and each case's record (the `.json` in
-  `cases/<i>`) stay, as do profiled cases' `compilation-report.json` and `measurement.json` and an analysis job's
-  `analysis.json`, and everything else goes: raw solver output, case stdout and stderr, profiles' raw captures
-  (`cli.jfr`, the HotSpot log), `$OUT`. An analysis job of a trimmed job is refused. Every
+  `cases/<i>`) stay, as do profiled cases' `compilation-report.json`, `compilation-tasks.jsonl.gz` and
+  `measurement.json`, an analysis job's `analysis.json`, and an archive analysis's `archive.manifest.json` and the
+  reports, task records and manifests under its `archive/`, and everything else goes: raw solver output, case stdout
+  and stderr, profiles' raw captures (`cli.jfr`, the HotSpot log, extracted ones too), `$OUT`. An analysis job of a
+  trimmed job is refused; one of a pinned archive of its captures (`analyze.archive`) still runs. Every
   case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
   `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are
   never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within a week.
@@ -1036,6 +1108,8 @@ deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<
 deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, local first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
+deploy/lab analyze --archive https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha>.tar.gz --sha256 <sha>
+                              # the same over a pinned saved-capture archive, once job 7 is gone
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
 deploy/lab node start c7i.4xlarge   # start a cloud node now, past the pressure threshold
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
@@ -1058,7 +1132,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}` queues an analysis job instead (above); 409 when its captures are gone |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}`, or `{"analyze": {"archive": <url or name>, "sha256": <hex>}}`, queues an analysis job instead (above); 409 when its captures are gone, or the archive is unpinned or not allowed |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |

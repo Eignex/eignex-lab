@@ -1,0 +1,124 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<hotspot_log version='160 1' process='4242' time_ms='1792501576792'>
+<tty>
+<task_queued compile_id='10' method='Hot f (I)I' bytes='8' count='256' iicount='256' level='3' stamp='0.100' comment='tiered' hot_count='256'/>
+<nmethod compile_id='10' compiler='c1' level='3' method='Hot f (I)I' bytes='8' count='300' iicount='300' stamp='0.102'/>
+<task_queued compile_id='11' method='Hot f (I)I' bytes='8' count='9000' iicount='9000' stamp='0.200' comment='tiered' hot_count='9000'/>
+<nmethod compile_id='11' compiler='c2' level='4' method='Hot f (I)I' bytes='8' count='9100' iicount='9100' stamp='0.205'/>
+<make_not_entrant thread='7' reason='unstable_if' compile_id='11' compiler='c2' level='4' stamp='0.300'/>
+<task_queued compile_id='12' method='Hot f (I)I' bytes='8' count='20000' iicount='20000' stamp='0.400' comment='tiered' hot_count='20000'/>
+<nmethod compile_id='12' compiler='c2' level='4' method='Hot f (I)I' bytes='8' count='20100' iicount='20100' stamp='0.410'/>
+<task_queued compile_id='13' compile_kind='osr' method='Hot g (I)I' bytes='28' count='13' backedge_count='122670' iicount='13' osr_bci='4' stamp='0.500' comment='tiered' hot_count='122670'/>
+<nmethod compile_id='13' compile_kind='osr' compiler='c2' level='4' method='Hot g (I)I' bytes='28' count='14' backedge_count='130000' iicount='14' stamp='0.508'/>
+<task_queued compile_id='14' method='Hot h ()V' bytes='900' count='5000' iicount='5000' stamp='0.600' comment='tiered' hot_count='5000'/>
+<task_queued compile_id='15' method='Hot k ()V' bytes='40' count='256' iicount='256' level='3' stamp='0.700' comment='tiered' hot_count='256'/>
+<task_queued compile_id='16' method='Hot m ()V' bytes='12' count='256' iicount='256' level='2' stamp='0.800' comment='tiered' hot_count='256'/>
+<nmethod compile_id='16' compiler='c1' level='2' method='Hot m ()V' bytes='12' count='260' iicount='260' stamp='0.801'/>
+<task_queued compile_id='17' method='Hot n ()V' bytes='20' count='9000' iicount='9000' stamp='0.900' comment='tiered' hot_count='9000'/>
+<task_queued compile_id='19' method='Hot p ()V' bytes='30' count='256' iicount='256' level='3' stamp='0.950' comment='tiered' hot_count='256'/>
+<nmethod compile_id='20' compile_kind='c2n' compiler='' level='0' method='java.lang.Object hashCode ()I' bytes='0' count='1' iicount='1' stamp='0.960'/>
+<tty_done stamp='1.000'/>
+</tty>
+<compilation_log thread='7001'>
+<start_compile_thread name='C1 CompilerThread0' thread='7001' process='4242' stamp='0.050'/>
+<task compile_id='10' method='Hot f (I)I' bytes='8' count='256' iicount='256' level='3' stamp='0.100'>
+<type id='1210' name='int'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1387' holder='1386' name='f' return='1210' arguments='1210' flags='8' bytes='8' iicount='256'/>
+<parse method='1387' stamp='0.100'>
+<parse_done stamp='0.101'/>
+</parse>
+<task_done success='1' nmsize='240' count='300' stamp='0.102'/>
+</task>
+<task compile_id='15' method='Hot k ()V' bytes='40' count='256' iicount='256' level='3' stamp='0.700'>
+<type id='1212' name='void'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1390' holder='1386' name='k' return='1212' flags='8' bytes='40' iicount='256'/>
+<parse method='1390' stamp='0.700'>
+</parse>
+<task_done success='0' nmsize='0' count='256' stamp='0.703'/>
+</task>
+<task compile_id='16' method='Hot m ()V' bytes='12' count='256' iicount='256' level='2' stamp='0.800'>
+<type id='1212' name='void'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1391' holder='1386' name='m' return='1212' flags='8' bytes='12' iicount='256'/>
+<parse method='1391' stamp='0.800'>
+</parse>
+<task_done success='1' nmsize='128' count='260' stamp='0.801'/>
+</task>
+<task compile_id='19' method='Hot p ()V' bytes='30' count='256' iicount='256' level='3' stamp='0.950'>
+<type id='1212' name='void'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1392' holder='1386' name='p' return='1212' flags='8' bytes='30' iicount='256'/>
+<parse method='1392' stamp='0.950'>
+</parse>
+</task>
+</compilation_log>
+<compilation_log thread='7002'>
+<start_compile_thread name='C2 CompilerThread0' thread='7002' process='4242' stamp='0.050'/>
+<task compile_id='11' method='Hot f (I)I' bytes='8' count='9000' iicount='9000' stamp='0.200'>
+<type id='1210' name='int'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1387' holder='1386' name='f' return='1210' arguments='1210' flags='8' bytes='8' compile_id='10' compiler='c1' level='3' iicount='9000'/>
+<parse method='1387' uses='9000.000000' stamp='0.200'>
+<parse_done stamp='0.201'/>
+</parse>
+<task_done success='1' nmsize='112' count='9100' stamp='0.205'/>
+</task>
+<task compile_id='12' method='Hot f (I)I' bytes='8' count='20000' iicount='20000' stamp='0.400'>
+<type id='1210' name='int'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1387' holder='1386' name='f' return='1210' arguments='1210' flags='8' bytes='8' iicount='20000'/>
+<parse method='1387' uses='20000.000000' stamp='0.400'>
+<parse_done stamp='0.401'/>
+</parse>
+<task_done success='1' nmsize='120' count='20100' stamp='0.410'/>
+</task>
+<task compile_id='13' compile_kind='osr' method='Hot g (I)I' bytes='28' count='13' backedge_count='126755' iicount='13' osr_bci='4' stamp='0.500'>
+<type id='1210' name='int'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1388' holder='1386' name='g' return='1210' arguments='1210' flags='8' bytes='28' iicount='14'/>
+<parse method='1388' uses='14.000000' osr_bci='4' stamp='0.500'>
+<bc code='184' bci='9'/>
+<method id='1387' holder='1386' name='f' return='1210' arguments='1210' flags='8' bytes='8' compile_id='12' compiler='c2' level='4' iicount='103178'/>
+<call method='1387' count='73849' prof_factor='1.000000' inline='1'/>
+<inline_success reason='inline (hot)'/>
+<parse method='1387' uses='129236.000000' stamp='0.501'>
+<bc code='184' bci='3'/>
+<klass id='1223' name='java.lang.Math' flags='17'/>
+<method id='1393' holder='1223' name='abs' return='1210' arguments='1210' flags='9' bytes='11' iicount='500'/>
+<call method='1393' count='500' prof_factor='1.000000' inline='1'/>
+<inline_success reason='intrinsic'/>
+</parse>
+<bc code='182' bci='20'/>
+<method id='1394' holder='1386' name='big' return='1210' arguments='1210' flags='1' bytes='400' iicount='40'/>
+<call method='1394' count='40' prof_factor='1.000000'/>
+<inline_fail reason='hot method too big'/>
+<method id='1395' holder='1386' name='late' return='1210' flags='1' bytes='6' iicount='40'/>
+<parse_done stamp='0.502'/>
+</parse>
+<late_inline method='1395' inline_id='1'>
+<jvms bci='24' method='1388'/>
+</late_inline>
+<parse method='1395' stamp='0.503'>
+<bc code='182' bci='2'/>
+<method id='1396' holder='1386' name='leaf' return='1210' flags='1' bytes='5' iicount='40'/>
+<call method='1396' count='40' prof_factor='1.000000' inline='1'/>
+<inline_success reason='inline (hot)'/>
+<parse method='1396' stamp='0.503'>
+</parse>
+</parse>
+<task_done success='1' nmsize='1160' count='245' backedge_count='2441006' inlined_bytes='13' stamp='0.508'/>
+</task>
+<task compile_id='14' method='Hot h ()V' bytes='900' count='5000' iicount='5000' stamp='0.600'>
+<type id='1212' name='void'/>
+<klass id='1386' name='Hot' flags='1'/>
+<method id='1389' holder='1386' name='h' return='1212' flags='8' bytes='900' iicount='5000'/>
+<parse method='1389' stamp='0.600'>
+</parse>
+<failure reason='out of nodes during matching'/>
+<task_done success='0' nmsize='0' count='5000' stamp='0.640'/>
+</task>
+</compilation_log>
+<hotspot_log_done stamp='1.021'/>
+</hotspot_log>
