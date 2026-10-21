@@ -449,13 +449,13 @@ object Experiments {
             else ReferenceFilterMode.DECIDED
 
     /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
-     *  `$JOB_DIR/cases/<index>`. The source-validation request reaches only a format the bench checks
-     *  ([SourceValidation.forCase]). */
+     *  `$JOB_DIR/cases/<index>`. The source-validation request stays with the lab, which checks the case itself
+     *  ([SourceValidation.forBench]). */
     fun command(worktree: String, problem: Problem, arm: Arm, seed: Long?, index: Int, corpus: String): String {
         val args = buildList {
             add("suite=${problem.suite}")
             add("problem=${problem.problem}")
-            for ((key, value) in SourceValidation.forCase(arm.values, problem.format).toSortedMap()) {
+            for ((key, value) in SourceValidation.forBench(arm.values).toSortedMap()) {
                 when {
                     key == "ref" -> Unit
                     key.startsWith(PARAM) -> add("param=${key.removePrefix(PARAM)}=$value")

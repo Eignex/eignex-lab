@@ -22,8 +22,10 @@ import java.util.concurrent.Future
 object Checkers {
     fun of(config: Config): SourceChecker {
         val solchecker = Solchecker(dir(config))
+        val minizinc = MiniZincInstall()
+        val dolmen = Dolmen(dir(config))
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary)),
+        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(minizinc::tool), SmtChecker(dolmen::binary)),
         locator = SourceLocator(config.corpusDir.toFile()),
         workRoot = dir(config).resolve("tmp"),
     )

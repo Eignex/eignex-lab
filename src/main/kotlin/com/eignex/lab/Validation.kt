@@ -22,10 +22,8 @@ enum class WitnessCheck(val word: String) {
 
 /**
  * Source-witness validation, asked for by an arm with `param.source-validation=true`, as every scheduled Klause run
- * does ([scheduled]). The lab checks the formats in [LAB_FORMATS] itself after each case, with established external
- * checkers ([com.eignex.lab.checker]), and does not pass the request on to the bench for them; the bench still checks
- * the other formats in [FORMATS] it was asked to, until the lab checks them too. The bench fails a case of any other
- * format that asks, so the request reaches only the formats it checks ([forCase]).
+ * does ([scheduled]). The lab checks each case itself, with established external checkers ([com.eignex.lab.checker]),
+ * and never passes the request on to the bench, which only solves and records the witness ([forBench]).
  */
 object SourceValidation {
     const val PARAM = "param.source-validation"
@@ -36,13 +34,6 @@ object SourceValidation {
      * it ([SCHEDULED]), so their fingerprints stay those of the runs before.
      */
     const val GZIP_PARAM = "param.source-validation-gzip"
-
-    /** The [Problem.format]s the bench checks, as `klause-bench select` names them. */
-    val FORMATS = setOf("MINIZINC", "XCSP3", "MPS", "SMTLIB")
-
-    /** The [Problem.format]s the lab checks itself ([com.eignex.lab.checker.SourceChecker]): the request stays with the
-     *  lab for them and never reaches the bench. */
-    val LAB_FORMATS = setOf("XCSP3", "MPS")
 
     /** The policy of a record whose claims are the solver's own report. */
     const val UNCHECKED_POLICY = "reported-result-v1"
@@ -78,15 +69,11 @@ object SourceValidation {
     fun requested(spec: ExperimentSpec): Boolean = Experiments.arms(spec).firstOrNull()?.let { requested(it.values) } == true
 
     /**
-     * An arm's [values] as a case of [format] passes them to the bench: without the validation keys for a format the
-     * lab checks itself ([LAB_FORMATS]) or the bench does not check, and never with [GZIP_PARAM]. The bench then
-     * reports the solver's claim as it is (`reported-result-v1`), for the lab to check or to leave unchecked; a problem
-     * with no recorded format counts as unchecked.
+     * An arm's [values] as a case passes them to the bench: without the validation request, which the lab consumes
+     * itself. The bench then reports the solver's claim as it is (`reported-result-v1`), with the final witness the
+     * lab checks.
      */
-    fun forCase(values: Map<String, String>, format: String): Map<String, String> = when (format.uppercase()) {
-        !in FORMATS, in LAB_FORMATS -> values - PARAM - GZIP_PARAM
-        else -> values - GZIP_PARAM
-    }
+    fun forBench(values: Map<String, String>): Map<String, String> = values - PARAM - GZIP_PARAM
 
     /** How far the lab's own verdict, of [state] ([com.eignex.lab.checker.LabCheck]), checked a claim: a check that
      *  could not run, or that no external checker covers, leaves the solver's report standing, unchecked. */

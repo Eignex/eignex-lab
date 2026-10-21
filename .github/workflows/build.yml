@@ -23,7 +23,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
       # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
       # rather than skipping when a tool cannot be had): GMP for building the MIPLIB solchecker.
-      - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd libegl1 libgl1
+      # MiniZinc with Gecode, the bundle a cloud node installs.
+      - run: |
+          sudo mkdir -p /opt/minizinc
+          curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/2.9.7/MiniZincIDE-2.9.7-bundle-linux-x86_64.tgz |
+            sudo tar -xz -C /opt/minizinc --strip-components=1
+          echo /opt/minizinc/bin >> "$GITHUB_PATH"
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"

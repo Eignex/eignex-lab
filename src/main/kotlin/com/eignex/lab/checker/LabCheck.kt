@@ -55,4 +55,6 @@ data class LabCheck(
 object Policies {
     const val XCSP3 = "lab-xcsp3-solution-checker-2.5-v1"
     const val MPS = "lab-mps-solchecker-1.0.4-v1"
+    const val MINIZINC = "lab-minizinc-gecode-v1"
+    const val SMTLIB = "lab-smtlib-dolmen-0.10-v1"
 }

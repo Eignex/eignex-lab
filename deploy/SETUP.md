@@ -359,16 +359,16 @@ for it the same way.
 **The lab checks witnesses itself, with established external checkers only** (package `checker`). After each case
 of an arm that asked, the lab reads the case's whole record (the `finalWitness` klause-bench keeps, its claimed
 objective, its `sourceHashes`), finds the original source in its own corpus, runs the format's external checker over
-the two, and stores the verdict beside the case. klause-bench only solves and records the witness: for the formats the
-lab checks, the request is consumed by the lab and never forwarded to the bench (`SourceValidation.forCase`), so their
-records say `reported-result-v1`. The bench's own in-house checkers are no longer used for those formats and will be
-removed in a klause PR.
+the two, and stores the verdict beside the case. klause-bench only solves and records the witness: the request is
+consumed by the lab and never forwarded to the bench (`SourceValidation.forBench`), so new records say
+`reported-result-v1`. The bench's own in-house checkers are no longer used and will be removed in a klause PR.
 
 | Format | Checker (licence) | Policy | Unchecked, and why |
 | --- | --- | --- | --- |
 | XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
 | MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin) | `lab-mps-solchecker-1.0.4-v1` | a value with no exact decimal of under 32 characters (solchecker reads only those, so a fraction such as `1/3` is not rounded for it); an MPS file solchecker cannot read, in its words |
-| MiniZinc, SMT-LIB | still checked by klause-bench (below) until the lab checks them | the bench's | as the bench says |
+| MiniZinc (integer) | MiniZinc with Gecode (`minizinc --solver gecode`; MiniZinc MPL-2.0, Gecode MIT) | `lab-minizinc-gecode-v1` | floats: no external exact checker for floats (a witness with `% klause-exact:`, `% klause-coordinate:` or `% klause-float-` lines, a float approximation, or a model with `var float` variables); a witness naming FlatZinc-introduced variables (`X_INTRODUCED_*`), which only Klause's own compilation maps back to the model; a witness MiniZinc cannot read as data for the model (integers for an enum-typed array), in its words |
+| SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary | `lab-smtlib-dolmen-0.10-v1` | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
 
 - **XCSP3.** The witness is the record's `finalWitness` with its leading `v ` removed: the final `<instantiation>`.
@@ -401,6 +401,29 @@ removed in a klause PR.
   build tree are deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is
   tried again ten minutes later.
 
+- **MiniZinc.** The witness is the record's last DZN block, its `%` comment lines and its `_objective` removed,
+  passed as one more data file after the original model and data, so every output variable is fixed to its claimed
+  value: `minizinc --solver gecode --allow-multiple-assignments --output-mode dzn --output-objective -a --time-limit
+  60000`, with the collection's include directories. A completion is `valid` for a satisfaction claim, and for an
+  optimisation claim when a completion's `_objective` equals the claimed one exactly; `=====UNSATISFIABLE=====` is
+  `invalid`; a search that ends (`==========`) with every completion worse than the claimed objective is `invalid`; a
+  type or syntax error reading the witness as the model's data is `unsupported`, any other failure (a solver that will
+  not start) `not-run`; no completion within the limit is `unknown`, and a run past it `not-run`. MiniZinc is the one on `PATH` (`LAB_MINIZINC` overrides it): on the Mac Homebrew's link into the
+  MiniZincIDE bundle (MiniZinc 2.10.1, Gecode 6.4.0); its version and the Gecode version go into `checkerVersion`.
+  Many current witnesses name `X_INTRODUCED_*` variables, the FlatZinc names of output arrays: klause-bench records the
+  solver's FlatZinc-level DZN, and mapping it back takes Klause's own compilation, so those stay unchecked until the
+  bench records the model-level DZN (through the `.ozn` it already compiles). Over jobs 7140 and later's 66 MiniZinc
+  witnesses, 33 check `valid` and 33 are unsupported: 30 for `X_INTRODUCED_*`, 2 enum-typed arrays, 1 float model.
+
+- **SMT-LIB.** The witness is the record's last `( … )` model block. Dolmen runs with `--check-model=true
+  --strict=false --time=30s --size=4G --report-style=minimal --warn=-all` on the original problem, the response
+  `sat` and the model on standard input: exit 0 with no output is `valid`, exit 6 with `E:bad-model` `invalid`, a run
+  past 35 s `not-run`, anything else `unknown` (such as `E:unbound-id` for a model with `root-obj` algebraic numbers).
+  The lab downloads the pinned release binary once into `$LAB_DATA/checkers/dolmen-0.10/dolmen`, checked against its
+  SHA-256: `dolmen-linux-amd64` (`bab3e9a1…b675`) on Linux, `dolmen-macos-amd64` (`2141ed2e…47a1`, an arm64 Mach-O
+  despite its name) on the Mac. Over jobs 7140 and later's SMT-LIB witnesses in the lab's corpus, Dolmen accepts 76
+  and cannot decide 18; none is rejected.
+
 The source is found in the lab's corpus (`LAB_CORPUS`), for a case run on a cloud node as for a local one: the files
 a plan resolved, if it did (a reference arm's), moved from a node's corpus root to the lab's, else a file of the
 problem's name in its collection. A file counts only when its plain bytes hash to the record's `sourceHashes`, so an edited or renamed corpus
@@ -424,10 +447,9 @@ format the lab checks, whether or not it asked for validation, each verdict repl
 is built and no solver runs; its records stay in the database however the job was trimmed. The job's page and
 `recheck.json` say how many cases got which verdict. Use it to backfill, as for job 7151.
 
-For the formats the lab does not check yet, klause-bench still checks: MiniZinc integer and SMT-LIB sources (MiniZinc
-float runs are always checked). `param.source-validation-gzip=true`, which let the bench's MPS check keep 64 MiB of
-solver stdout, is never forwarded now: the lab checks MPS from the record's final witness. Scheduled runs still carry
-it, so their fingerprints and trend lines stay those of the runs before.
+`param.source-validation-gzip=true`, which let the bench's MPS check keep 64 MiB of solver stdout, is never forwarded
+either: the lab checks MPS from the record's final witness. Scheduled runs still carry both keys, so their fingerprints
+and trend lines stay those of the runs before.
 
 Klause builds no longer package the MIPLIB solchecker (`-Pbench.mpsSolchecker`) and never download it, locally or on
 a node: the lab provisions its own. A node restores a commit's build from `builds/verified-v2-plain/<sha>.tar.zst`, or
@@ -435,9 +457,6 @@ from `builds/verified-v2/<sha>.tar.zst`, kept from when builds packaged the chec
 never run; it publishes the plain one. Old records from benches built without the checker (`missing packaged MIPLIB
 solchecker`, jobs 7068 and 7075) still read `unchecked`, keeping the solver's reported result, and a recheck gives them
 the lab's verdict.
-
-The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, so the lab passes the request
-only to the cases of a format the bench still checks, in any experiment.
 
 The request is part of the spec's fingerprint, but not of its trend line: the check runs after the solve and changes
 nothing the solver does, so a schedule's checked runs continue the line its unchecked runs drew, each run marked
@@ -467,6 +486,12 @@ cell reads:
   back from `reportedFeasible`, `reportedObjective` and `reportedProven` (its time from the producer record the check
   kept). This is read when a page is drawn, so existing records, such as the 13 MPS cases of jobs 7068 and 7075, read
   this way without any rewrite.
+Checkers on each host: the lab checks every case on the local machine, so only it needs them. xcsp3-tools comes with
+the lab itself (a Maven dependency); solchecker is built and Dolmen downloaded on first use into
+`$LAB_DATA/checkers/`, which then holds only the two binaries (about 15 MB on the Mac); MiniZinc with Gecode is the MiniZincIDE
+bundle already installed. Cloud nodes need none of them (their `/opt/minizinc` bundle, which has Gecode, serves the
+bench). A tool that cannot be had makes its checks `not-run`, saying why, never a failed job.
+
 - `check indeterminate`: the checker ran and could not decide (lab `unknown`, which keeps the claim's credit; bench
   `unknown` for unsupported syntax, residual constraints, a checker limit or timeout), the reason and the reported
   claim on hover. A bench MPS point that could not be checked earns no solution credit, so it reads `unknown` with
