@@ -1250,6 +1250,7 @@ background to be told when a job is done.
 deploy/lab run restarts-ab.json
 deploy/lab ls
 deploy/lab cases 7            # each case: status, arm, problem, result
+deploy/lab cases 7 --json     # each case whole as JSON Lines, final witness and lab check included
 deploy/lab tail 7             # the last 8 kB of the job's log: planning, commands, exits
 deploy/lab tail 7 0           # the last 8 kB of case 0's stdout; `err` for stderr
 deploy/lab csv 7 > 7.csv
@@ -1260,11 +1261,21 @@ deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7'
 deploy/lab recheck 7151       # check job 7151's solution claims again with the lab's source checkers; no solver runs
 deploy/lab analyze --archive https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha>.tar.gz --sha256 <sha>
                               # the same over a pinned saved-capture archive, once job 7 is gone
-deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
+deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP, with lab-cases.jsonl
 deploy/lab node start c7i.4xlarge   # start a cloud node now, past the pressure threshold
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
 deploy/lab cancel 7
 ```
+
+`lab cases <id> --json` exports every case for auditing as JSON Lines (`GET /experiments/<id>/cases.jsonl`), one
+case per line in index order, not a JSON array: `index`, `status`, `problem`, `arm`, `seed`, `repeat`, `instrumented`
+and the full `record`, its `finalWitness` included and the lab's verdict as `record.labCheck` (`policy`, `state`,
+`reason`, `checker`, `checkerVersion`, `checkerSha256`, `sourceSha256`, `witnessSha256`, `checkedAt`, `elapsedMs`;
+absent for a case the lab has not checked). The server streams it a page of cases at a time, so a job of thousands
+of cases with large witnesses needs no more memory than a few of them; read it with `jq -c 'select(...)'` or
+`jq -s` to make one array. `lab fetch <id>` writes the same export as `lab-cases.jsonl` in the fetched directory,
+fetched afresh each time since a recheck replaces the verdicts, so a fetched job carries its lab checks with it; the
+job's own `cases/<n>/record.json` files are the bench's records and do not.
 
 The browser page at `http://<server>:8420/` shows the running and queued experiments, with each queued one's place
 in line and the cases running now, then the schedules and the history. The history filters by text and by state, a
@@ -1286,6 +1297,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
+| `GET` | `/experiments/{id}/cases.jsonl` | every case whole as JSON Lines (`application/x-ndjson`), one per line, its record's `finalWitness` and `labCheck` included; streamed a page of cases at a time |
 | `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON |
 | `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |

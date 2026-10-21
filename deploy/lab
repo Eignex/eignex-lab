@@ -26,6 +26,9 @@
 #                                                            job <id>'s stored records (the solution claims in the formats the
 #                                                            lab checks), each verdict replacing the case's earlier one; no solver runs
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
+#   lab cases <id> --json                                   every case whole as JSON Lines, one per line: index, arm, seed,
+#                                                            repeat, problem, status and the full record, its finalWitness
+#                                                            and the lab's verdict (record.labCheck) included
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
 #                                                            satisfied infeasible unknown
@@ -56,7 +59,8 @@
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
 #   lab files <id>                                           list a job's files: its log, setup log, records, case output
 #   lab cat <id> <path> [tail-bytes]                         print one of them (job.log, setup.log, cases/<n>/record.json…)
-#   lab fetch <id> [dest]                                    download the job's output directory over HTTP
+#   lab fetch <id> [dest]                                    download the job's output directory over HTTP, and its cases with
+#                                                            their lab checks as lab-cases.jsonl (as lab cases --json)
 #   lab corpus                                               rsync the local bench corpus to the server
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
 #   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
@@ -123,9 +127,14 @@ recheck)
   [[ "${1:-}" =~ ^[1-9][0-9]*$ && $# -eq 1 ]] || { echo "usage: lab recheck <job id>" >&2; exit 2; }
   jq -n --argjson job "$1" '{recheck: {job: $job}}' |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
-cases) curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
+cases)
+  # --json prints JSON Lines: each case whole, one per line, streamed as the server reads them.
+  if [[ "${1:-}" == --json ]]; then set -- "${2:-}" --json; fi
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || { echo "usage: lab cases <id> [--json]" >&2; exit 2; }
+  if [[ "${2:-}" == --json ]]; then curl -fsS -N "$url/experiments/$1/cases.jsonl"
+  else curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
       (.seed // "-"), (if .record == null then "-" else
-        "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv' ;;
+        "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv'; fi ;;
 csv)
   if [[ -z "${2:-}" ]]; then curl -fsS "$url/experiments/$1/cases.csv"
   else curl -fsS -G "$url/experiments/$1/bench.csv" --data-urlencode "arm=$2" ${3:+--data-urlencode "seed=$3"}; fi ;;
@@ -192,7 +201,12 @@ fetch)
     [[ -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
     mkdir -p "$dest/$(dirname "$path")"
     curl -fsS -o "$dest/$path" "$url/jobs/$1/files/$path"
-  done ;;
+  done
+  # The cases as the lab's database holds them, lab checks included, which the job's files do not have. Fetched afresh
+  # every time, since a recheck replaces the verdicts; a job with no cases gets none.
+  curl -fsS -o "$dest/lab-cases.jsonl.part" "$url/experiments/$1/cases.jsonl"
+  if [[ -s "$dest/lab-cases.jsonl.part" ]]; then mv "$dest/lab-cases.jsonl.part" "$dest/lab-cases.jsonl"
+  else rm -f "$dest/lab-cases.jsonl.part"; fi ;;
 corpus) rsync -az --info=progress2 "$corpus/" "$host:.cache/klause-bench/corpus/" ;;
 ssh) job="$1"; n="${2:-0}"; shift; shift || true
   # Instances are reached only from the server, which holds the key; their host keys are remembered by instance id,
