@@ -20,11 +20,14 @@ import java.util.concurrent.Future
 
 /** The lab's checkers as this machine provisions them: one adapter per format, the sources from its own corpus. */
 object Checkers {
-    fun of(config: Config): SourceChecker = SourceChecker(
-        adapters = listOf(Xcsp3Checker()),
+    fun of(config: Config): SourceChecker {
+        val solchecker = Solchecker(dir(config))
+        return SourceChecker(
+        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary)),
         locator = SourceLocator(config.corpusDir.toFile()),
         workRoot = dir(config).resolve("tmp"),
     )
+    }
 
     /** Where the lab keeps its checker binaries (`$LAB_DATA/checkers`), and only those: scratch inputs go under `tmp`
      *  and are deleted after each check. */

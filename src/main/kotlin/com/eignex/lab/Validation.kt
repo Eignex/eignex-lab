@@ -1,7 +1,5 @@
 package com.eignex.lab
 
-import java.util.concurrent.CancellationException
-
 /**
  * How far a Klause case's solution claim was checked against its original source, as its record says. Witness
  * checking speaks for the solution alone: an accepted witness is a valid solution, and says nothing of a proof of
@@ -33,9 +31,9 @@ object SourceValidation {
     const val PARAM = "param.source-validation"
 
     /**
-     * Compressed stdout custody for MPS checks: the plain policy leaves a point unchecked once the solver's stdout,
-     * which holds every incumbent it printed, passes 8 MiB; this one admits 64 MiB decoded. The bench accepts it only
-     * on a Klause MPS case that also asks for [PARAM].
+     * Compressed stdout custody for the bench's MPS checks, which admitted 64 MiB of solver stdout instead of 8 MiB.
+     * The lab checks MPS itself from the record's final witness, so it is never forwarded; scheduled runs still carry
+     * it ([SCHEDULED]), so their fingerprints stay those of the runs before.
      */
     const val GZIP_PARAM = "param.source-validation-gzip"
 
@@ -44,8 +42,7 @@ object SourceValidation {
 
     /** The [Problem.format]s the lab checks itself ([com.eignex.lab.checker.SourceChecker]): the request stays with the
      *  lab for them and never reaches the bench. */
-    val LAB_FORMATS = setOf("XCSP3")
-    private const val GZIP_FORMAT = "MPS"
+    val LAB_FORMATS = setOf("XCSP3", "MPS")
 
     /** The policy of a record whose claims are the solver's own report. */
     const val UNCHECKED_POLICY = "reported-result-v1"
@@ -82,13 +79,12 @@ object SourceValidation {
 
     /**
      * An arm's [values] as a case of [format] passes them to the bench: without the validation keys for a format the
-     * lab checks itself ([LAB_FORMATS]) or the bench does not check, and without [GZIP_PARAM] except on MPS. The bench
-     * then reports the solver's claim as it is (`reported-result-v1`), for the lab to check or to leave unchecked; a
-     * problem with no recorded format counts as unchecked.
+     * lab checks itself ([LAB_FORMATS]) or the bench does not check, and never with [GZIP_PARAM]. The bench then
+     * reports the solver's claim as it is (`reported-result-v1`), for the lab to check or to leave unchecked; a problem
+     * with no recorded format counts as unchecked.
      */
     fun forCase(values: Map<String, String>, format: String): Map<String, String> = when (format.uppercase()) {
         !in FORMATS, in LAB_FORMATS -> values - PARAM - GZIP_PARAM
-        GZIP_FORMAT -> values
         else -> values - GZIP_PARAM
     }
 
@@ -116,7 +112,7 @@ object SourceValidation {
     /**
      * The parts of an `unknown` validation's reason the bench writes when the checker itself could not run or crashed,
      * rather than when it ran and could not decide: the MIPLIB solchecker missing from the bench jar (`missing packaged
-     * MIPLIB solchecker`, from a bench built without [MPS_CHECKER_BUILD]) or failing its own integrity checks, a checker
+     * MIPLIB solchecker`, from a bench built without `-Pbench.mpsSolchecker`) or failing its own integrity checks, a checker
      * executable that would not start (Java's `Cannot run program`), and an XCSP3 checker process that exited without a
      * verdict. The record has no structured field for this, so the reason decides. `source checking failed:` alone is no
      * sign: the bench writes it before an unsupported MPS input or a number the checker cannot read, which is a check
@@ -137,74 +133,4 @@ object SourceValidation {
      * the reason, where a check that ran and could not decide stays indeterminate.
      */
     fun checkerFault(reason: String?): Boolean = reason != null && CHECKER_FAULTS.any { it in reason }
-
-    /**
-     * The Gradle property that packages the MIPLIB solchecker into the bench jar. Since klause b417cf18b packaging is
-     * opt-in, and a bench built without it ends every MPS check `unknown` with `missing packaged MIPLIB solchecker`.
-     * Commits from before the property packaged the checker unconditionally, and Gradle ignores a project property no
-     * build script reads.
-     */
-    const val MPS_CHECKER_BUILD = "-Pbench.mpsSolchecker"
-
-    /**
-     * Whether a build for [spec] packages the MIPLIB solchecker ([MPS_CHECKER_BUILD]). The bench runs it only for an MPS
-     * case that asks for [PARAM], so a build needs it only when some Klause arm asks for validation, as every scheduled
-     * run and confirmation does ([scheduled]), and the job may hold MPS problems. Which problems a selection picks is
-     * known only after `klause-bench select` has run on the build, so any selection counts as possibly MPS; only a job
-     * with a fixed problem list, each with a format other than MPS, is known to hold none. A problem with no recorded
-     * format may still be given one when its files are resolved, so it counts as possibly MPS too.
-     */
-    fun needsMpsChecker(spec: ExperimentSpec): Boolean {
-        if (spec.isAnalysis) return false
-        val validated = Experiments.arms(spec).any { it.values["backend"] != REFERENCE_BACKEND && requested(it.values) }
-        if (!validated) return false
-        if (spec.isProfile || spec.problems.isNotEmpty()) return true
-        return spec.problemList.any { it.format.isBlank() || it.format.equals(GZIP_FORMAT, ignoreCase = true) }
-    }
-
-    /** The Gradle task that downloads the MIPLIB checker's sources: the one step of a checker build that needs the
-     *  network beyond Gradle's own dependencies. */
-    const val MPS_CHECKER_DOWNLOAD_TASK = ":klause-bench:prepareMpsSolchecker"
-
-    private val FAILED_TASK = Regex("Execution failed for task '([^']+)'")
-
-    /**
-     * Whether a failed build's [output] says only the MIPLIB checker download failed ([MPS_CHECKER_DOWNLOAD_TASK]), as
-     * an HTTP 503 from miplib.zib.de does: Gradle names every task that failed, and this is the only one. A build
-     * failing anywhere else, compiling the checker included, or failing without naming a task, is no such failure.
-     */
-    fun checkerDownloadFailed(output: String): Boolean =
-        FAILED_TASK.findAll(output).map { it.groupValues[1] }.toSet() == setOf(MPS_CHECKER_DOWNLOAD_TASK)
-
-    /**
-     * One try of a build that packages the MIPLIB checker when [checker]: [build] runs it, with the checker or without,
-     * and throws when it fails, [output] then giving what it printed. A checker build's last try ([lastTry]) that failed
-     * only on the checker's download ([checkerDownloadFailed]) runs again without it, after [skipped] hears of it: the
-     * job goes ahead with its MPS cases reading unchecked, as [checkerFault] says of a missing packaged checker, which is
-     * better than failing a job whose other cases need no checker over a download a passing outage broke. Any other
-     * failure, or one with tries left, is rethrown for the next try. Returns whether the build that succeeded packages
-     * the checker.
-     */
-    fun buildWithChecker(
-        checker: Boolean,
-        lastTry: Boolean,
-        skipped: () -> Unit,
-        output: () -> String,
-        build: (checker: Boolean) -> Unit,
-    ): Boolean {
-        try {
-            build(checker)
-            return checker
-        } catch (e: Exception) {
-            if (!checker || !lastTry || e is CancellationException || e is ProfileRunTimeout || !checkerDownloadFailed(output())) throw e
-        }
-        skipped()
-        build(false)
-        return false
-    }
-
-    /** What a job's log says when its build goes ahead without the MIPLIB checker, whose download kept failing. */
-    fun checkerSkipped(what: String, tries: Int): String =
-        "the MIPLIB solchecker download failed on all $tries tries; building $what without it, so this job's MPS cases " +
-            "read unchecked (missing packaged MIPLIB solchecker), keeping the solver's reported result"
 }

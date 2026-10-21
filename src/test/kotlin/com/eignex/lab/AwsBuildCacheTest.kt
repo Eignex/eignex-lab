@@ -51,28 +51,23 @@ class AwsBuildCacheTest {
     fun `a failed actual build stops setup before cache publication or provenance`() = fixture { root ->
         val tree = root.resolve("worktree").apply { mkdirs() }
         tree.resolve("gradlew").apply { writeText("#!/bin/sh\nexit 42\n"); setExecutable(true) }
-        val steps = AwsBuildCache.worktree(tree.path, 2, listOf("s3://bucket/build"), "region", mpsChecker = true).joinToString("\n")
+        val steps = AwsBuildCache.worktree(tree.path, 2, listOf("s3://bucket/build"), "region").joinToString("\n")
         assertEquals(42, run(root, steps, failedDownload = true))
         assertFalse(root.resolve("uploaded").exists())
         assertFalse(tree.resolve("klause-bench/build/provenance.json").exists())
     }
 
     @Test
-    fun `a job without the checker reuses a build without it, and one that needs it builds anew`() = fixture { root ->
+    fun `a build is reused from a plain archive or one from when the checker was packaged`() = fixture { root ->
         pack(root, installs(root))
         val tree = root.resolve("worktree").apply { mkdirs() }
         tree.resolve("gradlew").apply { writeText("#!/bin/sh\necho \"\$@\" > gradle-args\nexit 42\n"); setExecutable(true) }
-        val plain = AwsBuildCache.archives("bucket", "abc", mpsChecker = false)
-        fun steps(checker: Boolean) = AwsBuildCache.worktree(tree.path, 2, AwsBuildCache.archives("bucket", "abc", checker), "region", checker)
-            .joinToString("\n")
+        val archives = AwsBuildCache.archives("bucket", "abc")
+        val steps = AwsBuildCache.worktree(tree.path, 2, archives, "region").joinToString("\n")
 
-        assertEquals(0, run(root, steps(checker = false), held = plain.last()))
+        assertEquals(0, run(root, steps, held = archives.last()))
         assertFalse(tree.resolve("gradle-args").exists())
-        assertEquals(42, run(root, steps(checker = true), held = plain.last()))
-        assertTrue("-Pbench.mpsSolchecker" in tree.resolve("gradle-args").readText())
-        // One with the checker serves a job without it too.
-        tree.resolve("gradle-args").delete()
-        assertEquals(0, run(root, steps(checker = false), held = AwsBuildCache.archives("bucket", "abc", true).single()))
+        assertEquals(0, run(root, steps, held = archives.first()))
         assertFalse(tree.resolve("gradle-args").exists())
     }
 

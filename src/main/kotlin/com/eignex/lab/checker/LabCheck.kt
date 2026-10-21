@@ -54,4 +54,5 @@ data class LabCheck(
 /** The lab's checking policies, one per format and checker version: a new checker or a new rule is a new policy. */
 object Policies {
     const val XCSP3 = "lab-xcsp3-solution-checker-2.5-v1"
+    const val MPS = "lab-mps-solchecker-1.0.4-v1"
 }

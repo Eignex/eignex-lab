@@ -367,7 +367,8 @@ removed in a klause PR.
 | Format | Checker (licence) | Policy | Unchecked, and why |
 | --- | --- | --- | --- |
 | XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
-| MPS, MiniZinc, SMT-LIB | still checked by klause-bench (below) until the lab checks them | the bench's | as the bench says |
+| MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin) | `lab-mps-solchecker-1.0.4-v1` | a value with no exact decimal of under 32 characters (solchecker reads only those, so a fraction such as `1/3` is not rounded for it); an MPS file solchecker cannot read, in its words |
+| MiniZinc, SMT-LIB | still checked by klause-bench (below) until the lab checks them | the bench's | as the bench says |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
 
 - **XCSP3.** The witness is the record's `finalWitness` with its leading `v ` removed: the final `<instantiation>`.
@@ -377,6 +378,28 @@ removed in a klause PR.
   no violated constraint and no invalid objective is `valid`; anything it lists is `invalid`, with the first
   constraints it names; an exception is `unknown`, in its words. Job 7151's `circuit` witnesses, which the bench's
   checker left `check indeterminate`, are `valid` under it.
+
+- **MPS.** The witness is the record's final `v name=value …` line (decimals or `p/q`), written as a SOL file:
+  `=obj= <claimed objective>` (`exactObjective`) then one `name value` line per variable, each value as its exact
+  decimal. solchecker reads the original MPS file as it is, nothing rewritten, a `.zst` one decompressed through a pipe
+  so no plain copy lands on disk, and checks bounds, integrality, every row and the objective in exact rational
+  arithmetic with its own default tolerances: 1e-5 absolute for rows, objective and integrality (the code's default,
+  `Rational(1, 100000)`; its README still says 1e-4). Its `Check SOL: Integrality 1 Constraints 1 Objective 1` is
+  `valid`; any 0 is `invalid`, naming what failed and its maximum violations; no verdict line (`Read MPS: 0`, an
+  assertion it aborts on) is `unsupported`, with its output; over 120 s is `not-run`. Over jobs 7159 and 7068's 113
+  Klause MPS witnesses it accepts every one, including the 13 the bench left unchecked or unreadable (`ex9`'s lower
+  bounds after upper bounds among them).
+
+  The lab builds solchecker itself, once per host, from the archive pinned by SHA-256
+  `37b21a7f1ee968aed60675fb070c9286eccc6a953c8bc50120c9246b052b47b9`. It downloads it from the lab's own mirror, the
+  klause-lab release [`upstream-miplib2017-testscript-v1.0.4`](https://github.com/Eignex/klause-lab/releases/tag/upstream-miplib2017-testscript-v1.0.4)
+  (the unmodified upstream bytes, recovered from a retained copy matching klause's build pin while
+  `miplib.zib.de/downloads` answered HTTP 503, with its MIT `LICENSE` and `SHA256SUMS`), and from
+  https://miplib.zib.de/downloads/miplib2017-testscript-v1.0.4.zip only when the mirror cannot be reached; either is
+  checked against the pin. It compiles the four `checker/src` files with `c++ -O2 … -lgmp -lz` (Homebrew's `gmp` on the
+  Mac) and keeps only the binary, `$LAB_DATA/checkers/solchecker-1.0.4/solchecker`, under 1 MB: the archive and the
+  build tree are deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is
+  tried again ten minutes later.
 
 The source is found in the lab's corpus (`LAB_CORPUS`), for a case run on a cloud node as for a local one: the files
 a plan resolved, if it did (a reference arm's), moved from a node's corpus root to the lab's, else a file of the
@@ -401,27 +424,20 @@ format the lab checks, whether or not it asked for validation, each verdict repl
 is built and no solver runs; its records stay in the database however the job was trimmed. The job's page and
 `recheck.json` say how many cases got which verdict. Use it to backfill, as for job 7151.
 
-For the formats the lab does not check yet, klause-bench still checks: MiniZinc integer, MPS and SMT-LIB sources
-(MiniZinc float runs are always checked), and `param.source-validation-gzip=true` lets an MPS check keep up to 64 MiB
-of solver stdout, all its incumbents, instead of leaving the point unchecked past 8 MiB.
+For the formats the lab does not check yet, klause-bench still checks: MiniZinc integer and SMT-LIB sources (MiniZinc
+float runs are always checked). `param.source-validation-gzip=true`, which let the bench's MPS check keep 64 MiB of
+solver stdout, is never forwarded now: the lab checks MPS from the record's final witness. Scheduled runs still carry
+it, so their fingerprints and trend lines stay those of the runs before.
 
-MPS checks run the upstream MIPLIB solchecker, which klause-bench packages into its jar only when built with
-`-Pbench.mpsSolchecker` (opt-in since klause b417cf18b; earlier commits always packaged it, and ignore the property).
-The lab passes it only for a job that may check an MPS case (`SourceValidation.needsMpsChecker`), locally (`Runner.kt`,
-`klauseBuildTasks`) and on nodes (`AwsBuildCache.kt`): some Klause arm asks for `param.source-validation=true`, as
-every scheduled run and confirmation does, and the job may hold MPS problems. Selections are resolved only by the
-built bench, so any selection counts as possibly MPS; only a fixed problem list (a confirmation's) whose every problem
-has a recorded format other than MPS builds without it. A job that asks for no validation builds without it and never
-downloads it. Building it needs a C++ compiler and the GMP and zlib headers: Homebrew's `gmp` on the Mac,
-`build-essential`, `libgmp-dev` and `zlib1g-dev` on a node. A bench built without the checker leaves every MPS check
-`unknown` with `MPS source checking failed: missing packaged MIPLIB solchecker`, as jobs 7068 and 7075 did, which reads
-`unchecked`, keeping the solver's reported result (below). The checker's sources come from `miplib.zib.de` during the
-build (`:klause-bench:prepareMpsSolchecker`); when a build's last try failed only on that download
-(`SourceValidation.checkerDownloadFailed`), as with job 7087's HTTP 503s, the build goes ahead once more without it and
-the job's log says so.
+Klause builds no longer package the MIPLIB solchecker (`-Pbench.mpsSolchecker`) and never download it, locally or on
+a node: the lab provisions its own. A node restores a commit's build from `builds/verified-v2-plain/<sha>.tar.zst`, or
+from `builds/verified-v2/<sha>.tar.zst`, kept from when builds packaged the checker, whose packaged checker is simply
+never run; it publishes the plain one. Old records from benches built without the checker (`missing packaged MIPLIB
+solchecker`, jobs 7068 and 7075) still read `unchecked`, keeping the solver's reported result, and a recheck gives them
+the lab's verdict.
 
-The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, and the gzip flag on
-anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment.
+The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, so the lab passes the request
+only to the cases of a format the bench still checks, in any experiment.
 
 The request is part of the spec's fingerprint, but not of its trend line: the check runs after the solve and changes
 nothing the solver does, so a schedule's checked runs continue the line its unchecked runs drew, each run marked
@@ -913,8 +929,8 @@ pressure leaves out.
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
   the role `klause-lab-instance`, which may read and write only that bucket.
 - The bucket also holds Gradle's dependency cache and wrapper distribution as one archive, restored before every build
-  and refreshed after one, and each commit's built distributions: `builds/verified-v2/<sha>.tar.zst` with the MIPLIB
-  solchecker packaged, `builds/verified-v2-plain/<sha>.tar.zst` without it. An instance that finds its commit there
+  and refreshed after one, and each commit's built distributions: `builds/verified-v2-plain/<sha>.tar.zst`, or
+  `builds/verified-v2/<sha>.tar.zst` from when builds packaged the MIPLIB solchecker (which then goes unused). An instance that finds its commit there
   unpacks it instead of building, so a commit is built once across every job and instance. A job that needs the
   checker reuses only the first; one that does not tries the first, then the second, and publishes a build of its own
   to the second. A node also remembers which commits it built, with or without the checker and a profiling launcher
@@ -928,7 +944,8 @@ pressure leaves out.
   is published. Supported provenance capture must succeed and write a nonempty manifest. Publication packs a
   complete local archive before uploading, so a failed tar cannot stream an incomplete installation into S3.
 - A node boots Ubuntu 24.04 with a JDK 25 and MiniZinc, clones klause and builds every commit its job's arms name.
-  The build toolchain includes C++ and the GMP and zlib development headers for the native MIPLIB checker.
+  The build toolchain includes C++ and the GMP and zlib development headers, which the bench's MIPLIB checker once
+  needed; a node checks nothing itself, since the lab checks every case's witness on the local machine.
   SSH remembers each host key by region and EC2 instance ID, since AWS reuses public addresses after termination.
   A new instance at a reused address may enroll its key; a changed key on the same instance is refused. So a plain
   `ssh ubuntu@<address>` with the lab's `known_hosts` finds no key for the address and refuses in batch mode; reach a
