@@ -185,7 +185,9 @@ object Experiments {
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
      * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule
-     * shares one fingerprint and an edited one starts another.
+     * shares one fingerprint and an edited one starts another. Where it runs ([ExperimentSpec.host] and
+     * [ExperimentSpec.auto]) is left out too: a schedule moved between the local machine and the cloud, or a run taken
+     * by either, still measures the same thing, and a stored spec that names any host matches one that names another.
      */
     fun fingerprint(spec: ExperimentSpec): String {
         val measured = spec.copy(
@@ -199,6 +201,8 @@ object Experiments {
             machines = null,
             priority = 0,
             confirm = false,
+            host = LAB_HOST,
+            auto = false,
             profile = spec.profile?.copy(runTimeoutSec = null),
             capped = emptyList(),
         )

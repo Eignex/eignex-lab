@@ -365,7 +365,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // It may go anywhere again, wherever it was taken last time: a planned one's commands are rewritten for the
             // host that takes it.
             store.job(id)?.takeIf { retried }?.let { job ->
-                if (job.commands.isEmpty()) job.experiment?.let { store.place(id, Placement.host(it, it.name, config)) }
+                if (job.commands.isEmpty()) job.experiment?.let { store.place(id, Placement.host(it, job.name, config, store.schedules())) }
                 else Placement.release(store, config, id)
             }
             call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled job can be retried")
@@ -551,6 +551,10 @@ private fun requireDescription(spec: ExperimentSpec) = require(spec.description.
 
 private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     requireDescription(experiment)
+    // A schedule's host says only whether its runs may go to the cloud ([Placement.cloudOptIn]); the lab places them.
+    require(Experiments.storedHost(experiment.host) in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
+        "host must be local, cloud or auto (or lab or aws, their older names)"
+    }
     Experiments.validate(experiment, config.maxParallel, config.cores)
     require(Experiments.arms(experiment).none { "ref" in it.values }) {
         "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"

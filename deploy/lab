@@ -152,7 +152,7 @@ reschedule)
   # `-` for the experiment or the interval keeps it; next-in-hours sets when the schedule is next checked.
   experiment=null; [[ "${2:--}" != - ]] && experiment=$(cat "$2")
   interval="${3:--}"; [[ "$interval" == - ]] && interval=null
-  next=null; [[ -n "${4:-}" ]] && next=$(awk -v h="$4" 'BEGIN { printf "%d", h * 3600 }')
+  next=null; [[ -n "${4:-}" && "$4" != - ]] && next=$(awk -v h="$4" 'BEGIN { printf "%d", h * 3600 }')
   jq -n --argjson interval "$interval" --argjson experiment "$experiment" --argjson next "$next" \
     '{intervalSec: $interval, experiment: $experiment, nextCheckInSec: $next}' |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/schedules/$1"; echo ;;

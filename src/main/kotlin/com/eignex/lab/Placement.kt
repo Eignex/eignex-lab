@@ -15,19 +15,37 @@ object Placement {
      * confirmations, which the sweeps and the trend compare against each other on one machine; reference runs, which
      * need the local machine's reference solvers; exact problem lists, which only confirmations use; a profile with a
      * whole-run deadline, which the local machine enforces on its own processes; and an analysis job, which reads
-     * captures kept on the local machine.
+     * captures kept on the local machine. [cloudSchedule] says [name] is a run of a schedule that opts in to the cloud
+     * ([Placement.cloudSchedule]): such a run may go to either unless another of these reasons holds, and its
+     * confirmations still stay.
      */
-    fun localOnly(spec: ExperimentSpec, name: String): Boolean =
-        '@' in name || Confirm.SUFFIX in name || spec.problemList.isNotEmpty() || spec.profile?.runTimeoutSec != null || spec.isAnalysis ||
-            runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND }
+    fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean =
+        ('@' in name && !cloudSchedule) || Confirm.SUFFIX in name || spec.problemList.isNotEmpty() || spec.profile?.runTimeoutSec != null ||
+            spec.isAnalysis || runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND }
+
+    /**
+     * Whether a schedule's saved [spec] opts its runs in to the cloud: its host is `auto`, or `cloud` (`aws`), which
+     * still lets the local machine take a run first. `local` (`lab`), the default, keeps them on the local machine.
+     * Where a run goes is not what it measures ([Experiments.fingerprint]), so opting in keeps the schedule's trend.
+     */
+    fun cloudOptIn(spec: ExperimentSpec): Boolean = Experiments.storedHost(spec.host) in setOf(Experiments.AUTO_HOST, Experiments.AWS_HOST)
+
+    /** Whether job [name] is a run (`<schedule>@<sha>`, not a confirmation) of one of [schedules] that opts in to the
+     *  cloud ([cloudOptIn]), as its schedule's current spec says. */
+    fun cloudSchedule(name: String, schedules: List<Schedule>): Boolean =
+        '@' in name && Confirm.SUFFIX !in name &&
+            schedules.any { it.name == name.substringBefore('@') && cloudOptIn(it.experiment) }
 
     /** The host [spec] named [name] is placed on: `lab` when only the local machine may or can run it, `auto`
      *  otherwise, a `profileCli` job included, which both measure alike ([CliMeasurements]). */
-    fun host(spec: ExperimentSpec, name: String, awsFits: Boolean): String =
-        if (localOnly(spec, name) || !awsFits) Experiments.LAB_HOST else Experiments.AUTO_HOST
+    fun host(spec: ExperimentSpec, name: String, awsFits: Boolean, cloudSchedule: Boolean = false): String =
+        if (localOnly(spec, name, cloudSchedule) || !awsFits) Experiments.LAB_HOST else Experiments.AUTO_HOST
 
-    /** [host] with the lab's own limits: the cloud settings and the sizes within the quota. */
-    fun host(spec: ExperimentSpec, name: String, config: Config): String = host(spec, name, awsFits(spec, config.aws))
+    /** [host] with the lab's own limits: the cloud settings and the sizes within the quota. [schedules], the lab's
+     *  schedules, say whether a scheduled run's schedule opts in to the cloud ([cloudSchedule]); a submitted job is
+     *  placed without them, so its name alone never takes it off the local machine. */
+    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): String =
+        host(spec, name, awsFits(spec, config.aws), cloudSchedule(name, schedules))
 
     /** Whether a node can run [spec]: the lab has cloud settings, and some size within the quota holds its largest
      *  case. */
@@ -40,19 +58,23 @@ object Placement {
     /**
      * Place again every queued job by the rules above, run at the runner's start. One that has not been planned is cut
      * down to fit the local machine first ([Experiments.capToLocal]): a job queued before the lab capped jobs may ask
-     * for more cores than the local machine has, or name a host its submitter chose. A planned one placed on `aws` is
-     * [release]d: one a node gave back before nodes released them. Returns the ids moved or cut down.
+     * for more cores than the local machine has, or name a host its submitter chose. A scheduled run is placed by its
+     * schedule's current spec, so one queued before its schedule opted in to the cloud, or out of it, follows the
+     * change. A planned one placed on `aws` is [release]d: one a node gave back before nodes released them. Returns
+     * the ids moved or cut down.
      */
-    fun replaceQueued(store: Store, config: Config): List<Long> =
-        store.active(withCommands = false).filter { it.status == Status.QUEUED }.mapNotNull { job ->
+    fun replaceQueued(store: Store, config: Config): List<Long> {
+        val schedules = store.schedules()
+        return store.active(withCommands = false).filter { it.status == Status.QUEUED }.mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
             if (job.total > 0) return@mapNotNull job.id.takeIf { spec.host == Experiments.AWS_HOST && release(store, config, job.id) }
             val capped = Experiments.capToLocal(spec, config.cores, config.maxParallel)
-            val host = host(capped, job.name, config)
+            val host = host(capped, job.name, config, schedules)
             if (host == spec.host && capped == spec || !store.place(job.id, host, capped)) return@mapNotNull null
             if (capped.parallel != spec.parallel) capped.parallel?.let { store.setParallel(job.id, it) }
             job.id
         }
+    }
 
     /**
      * Place queued, planned job [jobId] again by the rules above, once a node gave it back: the local machine, first in
@@ -62,7 +84,7 @@ object Placement {
     fun release(store: Store, config: Config, jobId: Long): Boolean {
         val job = store.job(jobId)?.takeIf { it.status == Status.QUEUED } ?: return false
         val spec = job.experiment ?: return false
-        val host = host(spec, job.name, config)
+        val host = host(spec, job.name, config, store.schedules())
         return host != spec.host && store.release(jobId, host)
     }
 }

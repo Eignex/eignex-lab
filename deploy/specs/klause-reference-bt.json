@@ -27,6 +27,7 @@
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
   ],
   "base": {"timeout": "60000", "engine": "cp", "param.source-validation": "true", "param.source-validation-gzip": "true"},
+  "host": "auto",
   "priority": -4,
   "confirm": true
 }
