@@ -311,7 +311,8 @@ GitHub not answering through the retries, fails the job. GitHub allows 60 unauth
 
 The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
 worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
-command per case: a `klause-bench solve-one` of one problem in one arm's worktree. Every arm of a problem runs back to
+command per case: a `klause-bench solve-one` of one problem in one arm's worktree, or for a reference arm the lab's own
+`klause-lab reference` on the problem's files (see Reference results). Every arm of a problem runs back to
 back, in an order rotated per problem, so drift and pauses spread evenly over the arms; with seeds or repeats the arms
 alternate, every arm running once per seed and repeat before the next (A, B, A, B, not A, A, B, B). A case always solves (the
 bench result cache is off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
@@ -516,6 +517,12 @@ WCNF, the cp-sat image for XCSP3, z3 for SMT-LIB, SCIP for MPS, cp-sat for MiniZ
 to the reference results as it finishes, keyed by collection and problem; a stronger result already there stays. So
 `{"problems": {"suite": "satlib"}, "base": {"backend": "reference", "timeout": "60000"}}` fills in clasp's verdicts
 on all of SATLIB.
+
+The lab runs reference solvers itself (`klause-lab reference`, from the current release in `LAB_LAUNCHER`, by
+default `$LAB_DATA/releases/current/bin/klause-lab`), so a reference case runs no klause code. The bench is built only
+to select the problems and resolve their files (`select files=true`), and a job whose arms are all reference arms skips
+the klause CLI build. z3, cvc5, kissat, HiGHS and `minizinc` come from `PATH`; `LAB_Z3`, `LAB_CVC5`, `LAB_KISSAT` and
+`LAB_HIGHS` name another binary, and `LAB_Z3_MEMORY_MB` (default 2048) caps z3's memory.
 
 `deploy/specs/reference-qfnra.json` runs all frozen `qfnra-core-v1` and
 `qfnra-holdout-v1` polynomial-real inputs with Z3 at ten seconds/P1 and three
@@ -952,7 +959,8 @@ fetches the dependencies into the new home once.
 
 ## What a case runs in
 
-A case runs `klause-bench solve-one` in its arm's worktree, with this environment:
+A case runs `klause-bench solve-one` in its arm's worktree, or `klause-lab reference` for a reference arm, with this
+environment:
 
 | variable | value |
 | --- | --- |
@@ -987,16 +995,12 @@ run with the bench result cache off, so it serves only the bench's own tooling.
 The containerised reference solvers (SCIP, clasp, the XCSP3 cp-sat image) need Docker. `install.sh` picks it up
 by itself: on macOS it installs a boot-time colima daemon when colima is installed (`brew install colima docker`), on
 Linux it uses the system Docker. The runner then waits for `docker info` to answer before it takes a job. Set
-`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once on the server. SCIP and clasp build from a klause checkout:
+`LAB_DOCKER=none` in `lab.env` to opt out. Build the images once on the server, from this repository (the XCSP3 one is described in
+[images/xcsp3-cpsat](../images/xcsp3-cpsat/README.md)):
 
 ```sh
-docker build -t klause-scip klause-bench/scip
-docker build -t klause-clasp klause-bench/clasp
-```
-
-The XCSP3 image builds from this repository; see [images/xcsp3-cpsat](../images/xcsp3-cpsat/README.md):
-
-```sh
+docker build -t klause-scip images/scip
+docker build -t klause-clasp images/clasp
 docker build -t klause-xcsp3-cpsat:source-preserving-v2 images/xcsp3-cpsat
 ```
 

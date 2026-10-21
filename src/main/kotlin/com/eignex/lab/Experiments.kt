@@ -140,7 +140,8 @@ data class Arm(val label: String, val values: Map<String, String>) {
     val cores: Int get() = values["processors"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
 }
 
-/** One problem as `klause-bench select` names it. */
+/** One problem as `klause-bench select` names it, with the [model] and [data] files and MiniZinc [includeDirs] that
+ *  `select files=true` resolves, which a reference arm's cases solve without the bench. */
 @Serializable
 data class Problem(
     val suite: String,
@@ -149,6 +150,9 @@ data class Problem(
     val family: String = "",
     val format: String = "",
     val category: String = "",
+    val model: String? = null,
+    val data: String? = null,
+    val includeDirs: List<String> = emptyList(),
 )
 
 /** The case at one index of an experiment's commands. */
@@ -459,6 +463,26 @@ object Experiments {
             "if [ -f build/provenance.json ]; then export KLAUSE_BENCH_PROVENANCE=\"\$PWD/build/provenance.json\"; " +
             "else unset KLAUSE_BENCH_PROVENANCE; fi && JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
             "exec ./build/install/klause-bench/bin/klause-bench solve-one $args out=\"\$JOB_DIR/cases/$index\""
+    }
+
+    /** The arm values a reference case takes: the solver, its budget, workers and whether it keeps to the model's
+     *  search. Klause's own options mean nothing to a reference solver. */
+    private val REFERENCE_KEYS = listOf("solver", "timeout", "processors", "fixed")
+
+    /** The command that runs one reference case with the lab's own [launcher] ([com.eignex.lab.reference.ReferenceCli]),
+     *  on the files `select files=true` resolved for [problem], writing its record under `$JOB_DIR/cases/<index>`. */
+    fun referenceCommand(launcher: String, problem: Problem, arm: Arm, seed: Long?, index: Int): String {
+        val model = requireNotNull(problem.model) { "no resolved files for ${problem.suite}/${problem.problem}" }
+        val args = buildList {
+            add("problem=${problem.problem}")
+            add("format=${problem.format}")
+            add("model=$model")
+            problem.data?.let { add("data=$it") }
+            problem.includeDirs.forEach { add("include=$it") }
+            for (key in REFERENCE_KEYS) arm.values[key]?.let { add("$key=$it") }
+            if (seed != null) add("solver-seed=$seed")
+        }.joinToString(" ") { quote(it) }
+        return "exec ${quote(launcher)} reference $args out=\"\$JOB_DIR/cases/$index\""
     }
 
     /**

@@ -320,4 +320,44 @@ class RunnerTest {
         assertFalse(lab.dir.resolve("0.exit").exists())
         assertEquals(Status.RUNNING, lab.store.job(lab.id)!!.commands.single().status)
     }
+
+    @Test
+    fun `a reference job plans lab-native cases on the files the bench resolves by name`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val problem = Problem("smtlib-qfnra", "hong/hong_13", collection = "smtlib-qfnra", format = "SMTLIB")
+        val spec = ExperimentSpec("ref", base = mapOf("backend" to "reference", "solver" to "cvc5"),
+            problemList = listOf(problem))
+        val id = store.create("ref", "main", emptyList(), experiment = spec)
+        val asked = ArrayList<String>()
+        val host = object : ExecutionHost by ResolvingHost {
+            override fun select(worktree: String, args: String): List<String> {
+                asked += args
+                return if ("files=true" in args) {
+                    listOf("""{"suite":"smtlib-qfnra","problem":"hong/hong_13","format":"SMTLIB","model":"/c/hong_13.smt2.zst"}""")
+                } else {
+                    emptyList()
+                }
+            }
+        }
+
+        Runner(config, store).plan(store.job(id)!!, spec, Experiments.arms(spec), mapOf("main" to "abc"), "abc",
+            config.jobDir(id), host)
+
+        val command = store.job(id)!!.commands.single().cmd
+        assertTrue(command.startsWith("exec '${config.launcher}' reference "))
+        assertTrue("'model=/c/hong_13.smt2.zst'" in command && "'solver=cvc5'" in command)
+        assertTrue(asked.any { "'name=hong/hong_13'" in it && "'files=true'" in it })
+    }
+
+    private object ResolvingHost : ExecutionHost {
+        override val cores = 4
+        override val maxParallel = 4
+        override val corpus = ""
+        override val yieldsToUpdates = false
+        override val yieldsToPriority = false
+        override fun worktree(sha: String) = ""
+        override fun select(worktree: String, args: String) = emptyList<String>()
+        override fun run(command: Command, dir: Path): Int = 0
+    }
 }

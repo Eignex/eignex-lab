@@ -19,6 +19,8 @@ dependencies {
     implementation("io.ktor:ktor-server-status-pages:$ktor")
     // Same pin as klause, so the startup check sees the backend the solves bind.
     implementation("com.eignex:koblas:0.1.1-20260918.215912-232")
+    // The MPS reader the SCIP and HiGHS references judge their claims against: the parse klause itself solves.
+    implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation(kotlin("test"))

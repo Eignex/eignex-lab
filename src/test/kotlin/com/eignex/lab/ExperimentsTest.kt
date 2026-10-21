@@ -236,6 +236,22 @@ class ExperimentsTest {
     }
 
     @Test
+    fun `a reference case runs the lab's own launcher on the problem's resolved files`() {
+        val arm = Arm("ref", mapOf("backend" to "reference", "solver" to "chuffed", "timeout" to "60000", "lp" to "on"))
+        val problem = Problem("hakank", "golf", format = "MINIZINC", model = "/c/golf.mzn", data = "/c/golf.dzn",
+            includeDirs = listOf("/c/lib"))
+
+        val command = Experiments.referenceCommand("/lab/bin/klause-lab", problem, arm, 4, 2)
+
+        assertEquals(
+            "exec '/lab/bin/klause-lab' reference 'problem=golf' 'format=MINIZINC' 'model=/c/golf.mzn' " +
+                "'data=/c/golf.dzn' 'include=/c/lib' 'solver=chuffed' 'timeout=60000' 'solver-seed=4' " +
+                "out=\"\$JOB_DIR/cases/2\"",
+            command,
+        )
+    }
+
+    @Test
     fun `an invalid exact policy is refused`() {
         assertFailsWith<IllegalArgumentException> {
             Experiments.validate(spec(base = mapOf("exact" to "yes")), maxParallel = 4)
