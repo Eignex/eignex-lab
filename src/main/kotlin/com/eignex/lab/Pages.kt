@@ -1079,7 +1079,11 @@ internal fun problemPage(report: ProblemReport, repoUrl: String): String = build
         }
         append("</table></div>")
     }
-    append("<h2>Lab runs <small>${report.runs.size} cases</small></h2>")
+    append("<h2>Lab runs <small>${report.totalRuns} cases")
+    if (report.runs.size < report.totalRuns) {
+        append(", the newest ${report.runs.size} shown: <a href=\"/problem${query("collection" to report.collection, "problem" to report.problem, "all" to "1")}\">show all</a>")
+    }
+    append("</small></h2>")
     if (report.runs.isEmpty()) {
         append("<p class=\"muted\">No experiment has run this problem.</p>")
     } else {

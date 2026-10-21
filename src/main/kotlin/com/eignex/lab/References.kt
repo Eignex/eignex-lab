@@ -64,7 +64,14 @@ data class ProblemRun(
 
 /** A problem as its inspection page shows it: every reference row and every lab run. */
 @Serializable
-data class ProblemReport(val collection: String, val problem: String, val references: List<Reference>, val runs: List<ProblemRun>)
+data class ProblemReport(
+    val collection: String,
+    val problem: String,
+    val references: List<Reference>,
+    val runs: List<ProblemRun>,
+    /** Every case of the problem, of which [runs] may hold only the newest. */
+    val totalRuns: Int = runs.size,
+)
 
 /** What a reference verdict can be filtered to, with the condition on a `reference_rows` row that selects it. */
 enum class ReferenceVerdict(val label: String, internal val sql: String) {

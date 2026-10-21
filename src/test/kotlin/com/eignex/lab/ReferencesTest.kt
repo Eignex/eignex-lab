@@ -97,6 +97,11 @@ class ReferencesTest {
         val runs = store.problemRuns("c", "q")
 
         assertEquals(listOf(id to 1), runs.map { it.job to it.case })
+        // A second job's case of q comes first, and a limit keeps only the newest.
+        val next = store.create("f", "main", emptyList(), experiment = ExperimentSpec("f", listOf(mapOf("suite" to "s"))))
+        store.plan(next, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(2, 1, emptyList()), listOf("true" to 1L, "true" to 1L))
+        assertEquals(listOf(next to 1), store.problemRuns("c", "q", limit = 1).map { it.job to it.case })
+        assertEquals(2, store.problemRunCount("c", "q"))
     }
 
     @Test
