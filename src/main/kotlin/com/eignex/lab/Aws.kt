@@ -69,15 +69,17 @@ data class AwsConfig(
     val nodeSustainMin: Long = 10,
     /** The least time between two launches. */
     val nodeCooldownMin: Long = 5,
-    /** The largest node the pool launches, in vCPUs, unless a case itself needs more cores ([NodePool.size]). */
+    /** The largest node the pool launches, by hand or not, in vCPUs. Every job is capped to the local machine's cores,
+     *  so no case needs more than a node of this size holds; more load is met by more nodes, not larger ones. */
     val nodeMaxVcpus: Int = 16,
 ) {
-    /** The sizes a job can get, smallest first: [instanceType] and the larger sizes of its family the quota allows. */
+    /** The sizes a node can be, smallest first: [instanceType] and the larger sizes of its family up to
+     *  [nodeMaxVcpus], within the quota. */
     val sizes: List<InstanceSize>
         get() {
             val family = instanceType.substringBefore('.')
             val smallest = SIZE_VCPUS[instanceType.substringAfter('.')] ?: return listOf(InstanceSize(instanceType, DEFAULT_SIZE_VCPUS))
-            return SIZE_VCPUS.entries.filter { (_, vcpus) -> vcpus in smallest..vcpuQuota }
+            return SIZE_VCPUS.entries.filter { (_, vcpus) -> vcpus in smallest..minOf(vcpuQuota, maxOf(nodeMaxVcpus, smallest)) }
                 .map { (size, vcpus) -> InstanceSize("$family.$size", vcpus) }
         }
 
