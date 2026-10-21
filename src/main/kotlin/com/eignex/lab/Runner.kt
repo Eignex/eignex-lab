@@ -42,8 +42,6 @@ class Runner(
     private val store: Store,
     /** How long a case stopped at its limit has between SIGTERM and SIGKILL; shorter only in tests. */
     private val stopGraceMs: Long = Experiments.STOP_GRACE_SEC * 1000,
-    /** What an analysis job downloads a saved-capture archive with; a test serves its own. */
-    private val archiveHttp: CaptureArchives.Http = CaptureArchives.Http.DEFAULT,
     /** The lab's source checkers ([com.eignex.lab.checker]); a test gives its own. */
     sourceChecker: () -> SourceChecker = { Checkers.of(config) },
 ) {
@@ -818,16 +816,16 @@ class Runner(
     }
 
     /**
-     * Run analysis job [job] over the pinned archive [spec] names ([CaptureArchives]): download it into [dir], check it
-     * against its SHA-256, verify every member against its manifest, extract the profile directories' captures under
-     * [CaptureArchives.ROOT], and write each one's report and task records there, with the archive in their
-     * provenance. No original job is needed, nothing is built and no klause code runs; a refused archive fails the job,
+     * Run analysis job [job] over the pinned archive [spec] names ([CaptureArchives]), a file under the lab's archive
+     * directory: check it against its SHA-256, verify every member against its manifest, extract the profile
+     * directories' captures under [CaptureArchives.ROOT], and write each one's report and task records there, with the
+     * archive in their provenance. No original job is needed, nothing is built and no klause code runs; a refused archive fails the job,
      * saying why.
      */
     private fun analyzeArchive(job: Job, spec: AnalyzeSpec, dir: Path) {
         log(job.id, "analysing the captures in archive ${spec.archive} (sha256 ${spec.sha256}) with the lab's ${spec.kind} analyser")
         val fetched = try {
-            CaptureArchives.fetch(spec, config, dir, archiveHttp)
+            CaptureArchives.fetch(spec, config, dir)
         } catch (e: Exception) {
             if (e !is IOException && e !is EvidenceException && e !is IllegalArgumentException) throw e
             val error = "archive refused: ${e.message}"

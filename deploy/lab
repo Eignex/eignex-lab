@@ -17,9 +17,9 @@
 #                                                            retained captures of ended profileCli job <id>, writing each case's
 #                                                            compilation-report.json afresh; no build, no solver, no klause code.
 #                                                            Refused once the job was trimmed (a week after it ended)
-#   lab analyze --archive <url|name> --sha256 <hex> [--manifest <url|name>] [--manifest-sha256 <hex>]
+#   lab analyze --archive <name> --sha256 <hex> [--manifest <name>] [--manifest-sha256 <hex>]
 #                                                            the same over a pinned saved-capture archive (a campaign-evidence
-#                                                            .tar.gz release asset of Eignex, or a file under $LAB_DATA/archives)
+#                                                            .tar.gz, a path under $LAB_DATA/archives on the lab; never a URL)
 #                                                            and its .manifest.json, once the job itself is gone; the archive is
 #                                                            checked against its sha256 and verified before anything is extracted
 #   lab recheck <id>                                        queue a recheck job: the lab's source checkers run again over ended
@@ -106,7 +106,7 @@ profile)
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;
 analyze)
-  usage="usage: lab analyze <job id> | lab analyze --archive <url|name> --sha256 <hex> [--manifest <url|name>] [--manifest-sha256 <hex>]"
+  usage="usage: lab analyze <job id> | lab analyze --archive <name under \$LAB_DATA/archives> --sha256 <hex> [--manifest <name>] [--manifest-sha256 <hex>]"
   if [[ "${1:-}" =~ ^[1-9][0-9]*$ && $# -eq 1 ]]; then
     jq -n --argjson job "$1" '{analyze: {job: $job, kind: "compilation"}}' |
       curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo
