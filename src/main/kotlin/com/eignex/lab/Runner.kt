@@ -416,13 +416,13 @@ class Runner(
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
-            // A schedule's runs stay on the local machine ([Placement.localOnly]), whatever host its experiment once
-            // named.
             // Every scheduled Klause run asks for source validation ([SourceValidation.scheduled]), whatever spec the
             // schedule was saved with.
             val experiment = SourceValidation.scheduled(schedule.experiment)
-            val spec = experiment.copy(name = name, base = experiment.base + ("ref" to sha),
-                host = Experiments.LAB_HOST, auto = false, machines = null)
+            val run = experiment.copy(name = name, base = experiment.base + ("ref" to sha))
+            // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
+            // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
+            val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)), auto = false, machines = null)
             val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")

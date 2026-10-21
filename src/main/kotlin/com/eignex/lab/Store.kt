@@ -831,9 +831,9 @@ class Store(file: Path) {
     /**
      * Change schedule [id]: a new [experiment]; a new [intervalSec]; and [nextCheckAt], when its next check is due
      * (epoch ms). Unset fields stay. An experiment that measures something else ([Experiments.fingerprint]) forgets the
-     * last commit, so the next check queues it at the ref's commit; one that only changes how it runs or is described
-     * does not. A schedule keeps its phase otherwise, so staggered schedules stay apart. False when there is no such
-     * schedule.
+     * last commit, so the next check queues it at the ref's commit; one that only changes how it runs, where it may run
+     * ([Placement.cloudOptIn]) or how it is described is saved, and its next run follows it, but queues no extra run.
+     * A schedule keeps its phase otherwise, so staggered schedules stay apart. False when there is no such schedule.
      */
     @Synchronized
     fun updateSchedule(id: Long, experiment: ExperimentSpec?, intervalSec: Long?, nextCheckAt: Long? = null): Boolean = transaction {

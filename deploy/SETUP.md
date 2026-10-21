@@ -615,12 +615,13 @@ run still queued or going is not doubled, the launch waiting for it. `lab schedu
 last commit and job; `lab unschedule <id>` removes one. `lab reschedule <id> <experiment.json|-> [interval-sec|-]
 [next-in-hours]` changes a schedule in place; `-` keeps a field. A new experiment forgets the last commit, so the
 schedule queues it at the ref's commit on its next check, once a run still going has ended; `lab check` makes that
-now. The schedule keeps its phase unless `next-in-hours` sets when it is next checked, which is how schedules are
+now. One that changes only how it runs, such as its `host` ([Running on cloud nodes](#running-on-cloud-nodes)),
+priority or description, is saved and followed by the next run, but queues no extra run. The schedule keeps its phase unless `next-in-hours` sets when it is next checked, which is how schedules are
 staggered.
 
 The Regression trend shows the runs of the schedule's current experiment: a run of an edited one measured something
-else. Runs match when their experiments agree on selections, arms, seeds and repeats (name, priority and `parallel` do
-not count) and they planned the same problems, so a named set redrawn in place, or a selection the reference filter
+else. Runs match when their experiments agree on selections, arms, seeds and repeats (name, priority, `parallel` and
+where they ran do not count) and they planned the same problems, so a named set redrawn in place, or a selection the reference filter
 shifts, starts a new line just as an edited spec does. `show them` brings back the earlier runs, each change of experiment marked by a dashed line.
 
 Planning logs each selection: its arguments, how many problems the bench selected, how many the reference filter
@@ -666,7 +667,8 @@ on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection
 [source-witness validation](#source-witness-validation):
 `klause-reference.json` (the default sequential portfolio, daily), and every 3 days, staggered a day apart so one
 runs per day: `klause-reference-ls.json` (local search only), `klause-reference-bt.json` (backtracking only) and
-`klause-reference-parallel.json` (the portfolio on 4 cores). Their MiniZinc Challenge selection is
+`klause-reference-parallel.json` (the portfolio on 4 cores). The four opt in to the cloud (`"host": "auto"`, see
+[Running on cloud nodes](#running-on-cloud-nodes)); `status-sweep` stays local. Their MiniZinc Challenge selection is
 `mzn-bench-compatible-v1`, the suite whose models the installed MiniZinc compiler accepts, so a model it cannot
 compile is left out by the bench before the lab's reference filter and caps rather than failing as a case; the daily
 run also takes every problem of `smtlib-qfnra-source-canonical-v1`, the canonical-syntax variants of the frozen QF_NRA
@@ -683,6 +685,17 @@ cloud spot node, then an on-demand node, with fixed exceptions:
 
 - Scheduled runs (`<schedule>@<sha>`) and their confirmations (`~confirm`), reference runs (an arm with
   `backend=reference`), exact problem lists and profiles with a `runTimeoutSec` stay on the local machine only.
+- A schedule may opt its runs in to the cloud: `"host": "auto"` (or `"cloud"`) in its saved experiment places each run
+  `auto`, local or cloud, unless it has reference-backend arms or another reason above keeps it local. `"local"`
+  (`lab`) or no host keeps the runs local. Its confirmations stay local: they rerun exact problem lists and compare
+  both commits in one job. The four `klause-reference*` schedules opt in; `status-sweep` does not. A submitted job's
+  host is still ignored, so only a schedule's saved spec can opt in. Runs already queued and not yet planned follow
+  their schedule's current spec when the runner next starts, both ways. Where a run goes is not what it measures, so
+  the schedule's trend and its confirmations carry on across the change; but a trend whose runs ran on different
+  machines mixes their speeds: outcomes (solved, proven, objective) stay comparable, while timing comparisons across
+  runs get noisier. Each run records where it ran (its `host`, `lab` or `aws`, with `auto` marking that it could have
+  gone elsewhere), shown on its job page. An opted-in run still goes to a node only at priority `nodeMinPriority` or
+  above (below).
 - Every job fits the local machine: a `processors` over the local machine's cores (`LAB_CORES`), in `base`, a config or the grid, and a
   `parallel` over its limit (`LAB_MAX_PARALLEL`) are cut down to them at submit. The response's `notes`, the job log
   and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. So no

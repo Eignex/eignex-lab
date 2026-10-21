@@ -1,8 +1,11 @@
 package com.eignex.lab
 
+import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class PlacementTest {
     private val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d")
@@ -90,5 +93,90 @@ class PlacementTest {
         assertEquals(listOf("8"), listOf(store.job(big)!!.experiment!!.base["processors"]))
         assertEquals(listOf("processors=12 was asked, capped at the local machine's 8 cores"), store.job(big)!!.experiment!!.capped)
         assertEquals(emptyList(), Placement.replaceQueued(store, config))
+    }
+
+    private fun committed(file: String) = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
+
+    @Test
+    fun `a schedule that opts in to the cloud places its runs local or cloud, and its confirmations local`() {
+        val config = config()
+        val store = Store(config.database)
+        store.createSchedule("ref", "main", spec.copy(name = "ref", host = Experiments.AUTO_HOST), 3600)
+        store.createSchedule("aliased", "main", spec.copy(name = "aliased", host = Experiments.CLOUD_HOST), 3600)
+        store.createSchedule("status-sweep", "main", spec.copy(name = "status-sweep"), 3600)
+        store.createSchedule("pinned", "main", spec.copy(name = "pinned", host = Experiments.LOCAL_HOST), 3600)
+        store.createSchedule("refs", "main", spec.copy(name = "refs", host = Experiments.AUTO_HOST,
+            base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), 3600)
+        val schedules = store.schedules()
+        val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
+
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "ref@abc123", config, schedules))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "aliased@abc123", config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "status-sweep@abc123", config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "pinned@abc123", config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(reference, "refs@abc123", config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, Confirm.name("ref", "abc123", 7), config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config(aws = false), schedules))
+        // A submitted job is placed without the schedules: a name alone does not take it off the local machine.
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config))
+    }
+
+    @Test
+    fun `the committed klause-reference schedules opt in to the cloud, and the status sweep does not`() {
+        val klause = listOf("klause-reference.json", "klause-reference-ls.json", "klause-reference-bt.json", "klause-reference-parallel.json")
+        for (file in klause) assertTrue(Placement.cloudOptIn(committed(file)), file)
+        assertFalse(Placement.cloudOptIn(committed("status-sweep.json")))
+        assertFalse(Placement.cloudOptIn(committed("reference.json")))
+    }
+
+    @Test
+    fun `where a run goes is not what it measures, so an old local run matches a new one that may go to the cloud`() {
+        val stored = Json.decodeFromString<ExperimentSpec>(
+            """{"name": "ref@abc", "problems": [{"suite": "s"}], "base": {"ref": "abc"}, "host": "lab", "description": "d"}""")
+        val taken = stored.copy(name = "ref@def", base = mapOf("ref" to "def"), host = Experiments.AWS_HOST, auto = true)
+        val opted = committed("klause-reference.json")
+
+        assertEquals(Experiments.fingerprint(stored), Experiments.fingerprint(stored.copy(host = Experiments.AUTO_HOST)))
+        assertEquals(Experiments.fingerprint(stored), Experiments.fingerprint(taken))
+        assertEquals(Experiments.trendFingerprint(stored), Experiments.trendFingerprint(taken))
+        assertEquals(Experiments.fingerprint(stored, listOf(Problem("s", "p"))), Experiments.fingerprint(taken, listOf(Problem("s", "p"))))
+        assertEquals(Experiments.trendFingerprint(opted), Experiments.trendFingerprint(opted.copy(host = Experiments.LAB_HOST)))
+    }
+
+    @Test
+    fun `a reschedule that changes only the host is saved without queueing an extra run`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val local = committed("klause-reference.json").copy(host = Experiments.LAB_HOST)
+        val id = store.createSchedule("klause-reference", "main", local, 86400)
+        store.scheduleRan(id, "abc", 1)
+
+        store.updateSchedule(id, committed("klause-reference.json"), intervalSec = null)
+
+        val schedule = store.schedules().single()
+        assertEquals("abc", schedule.lastSha)
+        assertTrue(Placement.cloudOptIn(schedule.experiment))
+    }
+
+    @Test
+    fun `queued runs follow their schedule's current host when the runner starts, both ways`() {
+        val config = config()
+        val store = Store(config.database)
+        val id = store.createSchedule("ref", "main", spec.copy(name = "ref"), 3600)
+        store.createSchedule("sweep", "main", spec.copy(name = "sweep"), 3600)
+        val run = store.create("ref@abc", "abc", emptyList(), experiment = spec.copy(name = "ref@abc", host = Experiments.LAB_HOST))
+        val sweep = store.create("sweep@abc", "abc", emptyList(), experiment = spec.copy(name = "sweep@abc", host = Experiments.LAB_HOST))
+        val confirmation = Confirm.name("ref", "abc", 1)
+        val confirm = store.create(confirmation, "abc", emptyList(), experiment = spec.copy(name = confirmation, host = Experiments.LAB_HOST))
+        val planned = store.create("ref@def", "def", listOf("true" to 10L), experiment = spec.copy(name = "ref@def", host = Experiments.LAB_HOST))
+        fun hosts() = listOf(run, sweep, confirm, planned).map { store.job(it)!!.experiment!!.host }
+
+        assertEquals(emptyList(), Placement.replaceQueued(store, config))
+        store.updateSchedule(id, spec.copy(name = "ref", host = Experiments.AUTO_HOST), intervalSec = null)
+        assertEquals(listOf(run), Placement.replaceQueued(store, config))
+        assertEquals(listOf(Experiments.AUTO_HOST, Experiments.LAB_HOST, Experiments.LAB_HOST, Experiments.LAB_HOST), hosts())
+        store.updateSchedule(id, spec.copy(name = "ref", host = Experiments.LOCAL_HOST), intervalSec = null)
+        assertEquals(listOf(run), Placement.replaceQueued(store, config))
+        assertEquals(List(4) { Experiments.LAB_HOST }, hosts())
     }
 }

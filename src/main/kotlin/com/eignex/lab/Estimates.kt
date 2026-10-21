@@ -198,7 +198,6 @@ class EstimateHistory(
         byKey = ids.mapNotNull { id -> runs[id]?.takeIf { it.key != null && it.history != null } }.groupBy { it.key!! }
     }
 
-    /** An experiment's fingerprint without where it was placed to run, which taking a job changes. */
-    private fun key(spec: ExperimentSpec): String? =
-        runCatching { Experiments.fingerprint(spec.copy(host = Experiments.LAB_HOST, auto = false)) }.getOrNull()
+    /** An experiment's fingerprint, which leaves out where it was placed to run, which taking a job changes. */
+    private fun key(spec: ExperimentSpec): String? = runCatching { Experiments.fingerprint(spec) }.getOrNull()
 }
