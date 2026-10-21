@@ -208,6 +208,12 @@ private fun experimentSection(
         append("<p class=\"note\">Instrumented runs (profileCompilation): every compilation was recorded, so times here include ")
         append("that overhead and are no runtime measurement. Each case's compilation report is among its files.</p>")
     }
+    if (mixesValidation(comparison.arms)) {
+        append("<p class=\"error\">These arms ran under different validation policies (source-checked or unchecked, marked ")
+        append("below): an unchecked solver report counts as a solution or proof just as a source-checked witness does, and a ")
+        append("check that rejected or could not decide a claim counts it as no solution. Solved, proven and score differences ")
+        append("between them may measure the checking, not the solver; compare claims between arms of one policy.</p>")
+    }
     append("<h2>${if (compared) "Arms" else "Results"} <small>${cases.map { it.problem }.distinct().size} problems")
     if (seeds.size > 1) append(" × ${seeds.size} seeds")
     if (repeats > 1) append(" × $repeats repeats")
@@ -224,7 +230,7 @@ private fun experimentSection(
         val commit = commitUrl(config.repoUrl, planned.sha)?.let { "<a href=\"$it\">${planned.sha.take(9)}</a>" } ?: planned.sha.take(9)
         val versus = paired[summary.label]?.let(::versus) ?: "<span class=\"muted\">baseline</span>"
         val instrumented = if (summary.instrumented > 0) " <span class=\"PARTIAL\" title=\"profileCompilation: times are no runtime measurement\">instrumented</span>" else ""
-        append("<tr><td><b>${esc(summary.label)}</b>$instrumented<br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
+        append("<tr><td><b>${esc(summary.label)}</b>$instrumented${witnessLabel(summary)}<br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
         append("<td><code>$commit</code></td><td>${provenance(summary)}</td>")
         append("<td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")
         append("<td class=\"num\">${estimate(armStats.solved, "%.1f")}</td><td class=\"num\">${summary.proven}</td>")
@@ -408,8 +414,11 @@ private fun referenceVerdict(r: Reference?): String {
 }
 
 /** One outcome in a word: the objective (starred when proven), sat, infeasible, unknown, unsupported, a load error, or
- *  the case's status when it left no record; a reason shows on hover. */
-private fun verdict(outcome: Outcome?, status: Status): String = when {
+ *  the case's status when it left no record; a reason shows on hover. A Klause solution claim carries how far its
+ *  witness was checked ([witnessMark]). */
+internal fun verdict(outcome: Outcome?, status: Status): String = outcomeWord(outcome, status) + witnessMark(outcome)
+
+private fun outcomeWord(outcome: Outcome?, status: Status): String = when {
     outcome == null -> "<span class=\"${status.name}\">${status.name.lowercase()}</span>"
     outcome.error -> "<span class=\"FAILED\">error</span>"
     outcome.unsupported != null -> "<span class=\"PARTIAL\" title=\"${esc(outcome.unsupported)}\">unsupported</span>"
@@ -425,6 +434,48 @@ private fun verdict(outcome: Outcome?, status: Status): String = when {
     outcome.feasible == null -> "<span class=\"muted\">unknown</span>"
     outcome.optimize && outcome.objective != null -> number(outcome.objective) + if (outcome.proven) "*" else ""
     else -> "sat"
+}
+
+/**
+ * How far a Klause solution claim was checked against its original source, as a small word beside its verdict:
+ * `checked` for a witness the source accepted, `unchecked` for the solver's own report, `check indeterminate` for a
+ * check that could not decide, the reason and policy on hover. An accepted witness is a valid solution; a proof of
+ * optimality beside it (the star) is still the solver's own claim. Nothing for an outcome with no solution claim, for
+ * another solver's, or where the verdict already says it (an invalid solution, a float grid).
+ */
+internal fun witnessMark(outcome: Outcome?): String {
+    if (outcome == null || outcome.error || outcome.unsupported != null || outcome.loadError != null) return ""
+    if (!outcome.claimedSolution || outcome.floatApproximation) return ""
+    val policy = outcome.validationPolicy?.let { " (policy $it)" }.orEmpty()
+    return when (outcome.witness) {
+        WitnessCheck.ACCEPTED -> " <small class=\"DONE\" title=\"${esc("witness accepted against the original source$policy: " +
+            "the solution is valid; a proof of optimality is the solver's own claim")}\">checked</small>"
+        WitnessCheck.UNCHECKED -> " <small class=\"muted\" title=\"${esc("the solver's own report$policy: no independent " +
+            "source check was asked for or performed")}\">unchecked</small>"
+        WitnessCheck.INDETERMINATE -> {
+            val reported = buildList {
+                add("reported ${outcome.reportedObjective?.let { "objective $it" } ?: "a solution"}")
+                if (outcome.reportedProven) add("proven")
+            }.joinToString(", ")
+            val reason = outcome.sourceValidationReason ?: "no result recorded"
+            " <small class=\"PARTIAL\" title=\"${esc("the source check could not decide$policy: $reason; $reported")}\">" +
+                "check indeterminate</small>"
+        }
+        WitnessCheck.INVALID, null -> ""
+    }
+}
+
+/** An arm's witness checks in a word beside its label, the counts on hover; nothing when it claimed no solution. */
+private fun witnessLabel(summary: ArmSummary): String {
+    val counts = summary.witnesses
+    if (counts.isEmpty()) return ""
+    val title = esc(WitnessCheck.entries.filter { (counts[it] ?: 0) > 0 }.joinToString(", ") { "${counts[it]} ${it.word}" } +
+        " Klause solutions; a checked witness is a valid solution, not a checked proof")
+    return when {
+        (counts[WitnessCheck.ACCEPTED] ?: 0) > 0 || (counts[WitnessCheck.INDETERMINATE] ?: 0) > 0 ->
+            " <span class=\"DONE\" title=\"$title\">source-checked</span>"
+        else -> " <span class=\"muted\" title=\"$title\">unchecked</span>"
+    }
 }
 
 private fun number(value: Double) = if (value == Math.rint(value) && kotlin.math.abs(value) < 1e15) value.toLong().toString() else value.toString()
@@ -491,6 +542,10 @@ internal fun trendPage(
         append(" · $earlier earlier runs of a different experiment left out: <a href=\"/trend${query("name" to name, "all" to "1")}\">show them</a>")
     }
     val specs = runs.map { it.spec }.distinct().size
+    if (runs.any { it.sourceChecked } && runs.any { !it.sourceChecked }) {
+        append(" · runs marked unchecked report the solver's own claims; checked ones asked for source-witness validation, ")
+        append("a separate experiment")
+    }
     if (all && specs > 1) {
         append(" · $specs experiments, each change marked by a dashed line: <a href=\"/trend${query("name" to name)}\">current only</a>")
     }
@@ -519,7 +574,8 @@ internal fun trendPage(
     append("<th class=\"num\">PAR-2 s</th></tr>")
     for (run in runs.asReversed()) {
         val commit = commitUrl(repoUrl, run.sha)?.let { "<a href=\"$it\">${run.sha.take(9)}</a>" } ?: run.sha.take(9)
-        append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a>${if (run.finished) "" else " <small class=\"muted\">running</small>"}</td>")
+        append("<tr><td><a href=\"/jobs/${run.job}\">${run.job}</a>${if (run.finished) "" else " <small class=\"muted\">running</small>"}")
+        append("${trendWitness(run)}</td>")
         append("<td><code>$commit</code></td><td>${ago(run.at)}</td><td class=\"num\">${run.problems}</td>")
         append("<td class=\"num\">${percent(run.solved.value)} <small class=\"muted\">${percent(run.solved.low)}–${percent(run.solved.high)}</small></td>")
         append("<td class=\"num\">${percent(run.proven)}</td><td class=\"num\">${run.unsupported}</td><td class=\"num\">${run.errors}</td>")
@@ -539,6 +595,14 @@ internal fun trendPage(
     append(TREND_SCRIPT)
     append("</body></html>")
 }
+
+/** Whether a trend run's solution claims were checked against their sources, as a small word with its meaning on hover. */
+private fun trendWitness(run: TrendRun): String =
+    if (run.sourceChecked) {
+        " <small class=\"DONE\" title=\"asked for source-witness validation: its solutions in checked formats are source-checked\">checked</small>"
+    } else {
+        " <small class=\"muted\" title=\"no source-witness validation asked for: its solutions are the solver's own reports\">unchecked</small>"
+    }
 
 /** A run against the one before it: lost and gained, the sign test when it is telling, and what reruns confirmed. */
 private fun flipCell(run: TrendRun): String = buildString {
@@ -720,6 +784,7 @@ private const val TREND_SCRIPT = """<script>
   function show(r, evt, suite) {
     const rows = [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
+      ['witnesses', r.sourceChecked ? 'source-checked' : 'unchecked solver reports'],
       ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
       ['proven', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
@@ -977,6 +1042,14 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
     if (board.total.problems == 0) {
         append("<p class=\"muted\">None of this run's problems has a reference verdict${if (view.filters.isEmpty()) "" else " under these filters"}.</p>")
         return@buildString
+    }
+    if (view.witnesses.isNotEmpty()) {
+        val counts = WitnessCheck.entries.filter { (view.witnesses[it] ?: 0) > 0 }.joinToString(", ") { "${view.witnesses[it]} ${it.word}" }
+        append("<p class=\"muted\">Klause's solutions in this run: $counts. ")
+        if ((view.witnesses[WitnessCheck.UNCHECKED] ?: 0) > 0) {
+            append("An unchecked solution is the solver's own report and scores as a source-checked one does. ")
+        }
+        append("A checked witness makes the solution valid, not its proof.</p>")
     }
     append("<div class=\"scroll\"><table class=\"board\"><tr><th>${esc(view.by.label)}</th><th class=\"num\">problems</th>")
     for (solver in board.solvers) append("<th class=\"num\">${esc(solver)}</th>")

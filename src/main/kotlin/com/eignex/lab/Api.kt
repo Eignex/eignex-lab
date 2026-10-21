@@ -121,7 +121,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
     for (schedule in store.schedules()) {
-        val experiment = Experiments.fingerprint(schedule.experiment)
+        val experiment = Experiments.fingerprint(SourceValidation.scheduled(schedule.experiment))
         trendCache.refreshLater("${schedule.name}/$experiment") { Trend.runs(store, schedule.name, trendCache, experiment = experiment) }
     }
     routing {
@@ -194,7 +194,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
             // By default only the runs of the schedule's current experiment, and only those are read: a run of an
             // earlier one measured something else, and plotted alongside reads as a regression.
-            val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(it.experiment) }
+            // As the schedule runs it ([SourceValidation.scheduled]): a saved spec without the validation request
+            // still names its checked runs.
+            val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(SourceValidation.scheduled(it.experiment)) }
             val all = call.parameters["all"] != null || current == null
             val computing = ArrayList<Long>()
             val runs = name?.let { Trend.runs(store, it, trendCache, experiment = current.takeUnless { all }, missing = computing) }.orEmpty()
@@ -754,6 +756,8 @@ internal class ScoreboardView(
     /** A cell's problems, when one was opened: its group and reference solver, and the problems worst first. */
     val cell: Pair<String, String>?,
     val problems: List<ScoreProblem>,
+    /** The arm's Klause solution claims by how far each was checked against its source ([WitnessCheck]). */
+    val witnesses: Map<WitnessCheck, Int> = emptyMap(),
 )
 
 /** The scoreboard for [params]: `job` (default the latest klause-reference run), `arm`, `by`, a filter per dimension
@@ -800,7 +804,9 @@ internal fun scoreboardView(
     val board = Scoreboard.board(cases, arm, references, features, by, filters, scoring)
     val cell = params["against"]?.let { against -> (params["group"] ?: "all") to against }
     val opened = cell?.let { (group, against) -> Scoreboard.problems(cases, arm, references, features, by, group, against, filters, scoring) }.orEmpty()
-    return ScoreboardView(runs, job, planned.map { it.arm.label }, label, by, filters, scoring, options, board, cell, opened)
+    val witnesses = cases.mapNotNull { Outcome.of(it.record) }.filter { it.claimedSolution }.mapNotNull { it.witness }
+        .groupingBy { it }.eachCount()
+    return ScoreboardView(runs, job, planned.map { it.arm.label }, label, by, filters, scoring, options, board, cell, opened, witnesses)
 }
 
 /** The newest cases the problem page shows unless `all` is asked for. */

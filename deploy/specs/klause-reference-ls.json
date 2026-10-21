@@ -26,7 +26,7 @@
     {"suite": "smtlib-qfnra-core-v1", "per-family": "1000000"},
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
   ],
-  "base": {"timeout": "60000", "engine": "ls"},
+  "base": {"timeout": "60000", "engine": "ls", "param.source-validation": "true", "param.source-validation-gzip": "true"},
   "priority": -4,
   "confirm": true
 }

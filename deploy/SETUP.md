@@ -53,7 +53,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 60000), `backend`, `engine`,
   `processors`, `lp`, `presolve`, `fixed`, `exact`, and `param.<name>` for `--param <name>=<value>`. `exact=true` forwards
   klause-cli's `--exact` flag; omit it or use `false` for the default policy. An arm without a `label` is
-  named by the values that set it apart.
+  named by the values that set it apart. `param.source-validation=true` asks the bench for independent source-witness
+  validation (see [Source-witness validation](#source-witness-validation)).
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
@@ -275,7 +276,52 @@ An experiment's page (its job id) compares the arms:
   better than a proven optimum;
 - every problem across the arms, the best cell marked, optionally only the rows where arms differ. A cell reads
   the objective (starred when proven), `sat`, `infeasible`, `unknown`, `unsupported` or `load error` (the reason on
-  hover), or the case's status when it left no record, such as `failed` for a run killed by its timeout.
+  hover), or the case's status when it left no record, such as `failed` for a run killed by its timeout. A Klause
+  solution claim also says how far its witness was checked (below).
+
+### Source-witness validation
+
+Every scheduled Klause run, `status-sweep` and the four `klause-reference*` schedules, and their confirmations, asks
+klause-bench to check each final witness against the original source: `param.source-validation=true` covers MiniZinc
+integer, XCSP3, MPS and SMT-LIB sources (MiniZinc float runs are always checked), and
+`param.source-validation-gzip=true` lets an MPS check keep up to 64 MiB of solver stdout, all its incumbents, instead of
+leaving the point unchecked past 8 MiB. The committed specs say so in `base`, and the runner adds both to every Klause
+schedule's base whenever it queues a run (`Validation.kt`, `SourceValidation.scheduled`), overriding a config or grid
+value, so a schedule saved without them needs no edit. A schedule of reference-solver runs, a profile and an analysis
+are left alone.
+
+The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, and the gzip
+flag on anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment. Those
+other cases run unchecked, as their records' `reported-result-v1` says.
+
+The request is part of the experiment, so it is in the spec's fingerprint. A schedule's first checked run starts a new
+experiment: the Regression trend shows the checked runs from then on, and `show them` brings back the earlier, unchecked
+ones behind a dashed line, each run marked `checked` or `unchecked` in the runs table and on hover. A confirmation is
+queued only against an earlier run of the same experiment, so a checked run is never confirmed against an unchecked one.
+`lab reschedule` with a committed spec that differs from the saved one only by the validation request counts it as
+unchanged and queues no extra run.
+
+A case's record says how its claims were judged: `validationPolicy` names the policy, `reported-result-v1` for the
+solver's own report, and under a checking policy `stats.sourceValidation` is `valid`, `invalid` or `unknown`, with
+`stats.sourceValidationReason`. A check that withdrew a claim keeps the original one in `stats.reportedFeasible`,
+`reportedObjective` and `reportedProven`. A verdict cell then reads:
+
+- `checked`: the source accepted the witness, so the solution is valid. Witness checking is not proof checking: a
+  star beside it is still the solver's own optimality claim, and an infeasibility claim has no witness to check.
+- `unchecked`: the solver's own report, no check asked for or performed (`reported-result-v1`), such as every
+  scheduled run from before validation, and the unchecked formats of a checked run.
+- `check indeterminate`: the checker could not decide (unsupported syntax, residual constraints, a checker limit or
+  timeout), the reason and the reported claim on hover. An MPS point that could not be checked earns no solution
+  credit, so it reads `unknown` with this mark.
+- `invalid solution`: the source rejected the witness; it earns no credit.
+
+An undecided case has no mark. The arms table labels each arm `source-checked` or `unchecked`, with its counts on hover,
+and warns when arms met under different validation policies, problem by problem: an unchecked report counts as a
+solution or proof just as a checked witness does, and a check that withdrew a claim counts it as no solution, so their
+difference may measure the checking. `/compare` across jobs gets the same warning. The scoreboard says how many of its
+run's Klause solutions were checked, unchecked and indeterminate. Reference rows come only from `backend=reference`
+arms, the reference solvers' own verdicts with their own `validation`, never from a Klause run, so witness validation
+does not change what becomes a reference.
 
 `lab compare <id> <id>...` gives the address of the same view over several experiments, each arm named by its job,
 problems paired by suite and name. A scheduled run's page links to the comparison with the run before it.
@@ -538,7 +584,8 @@ reference-filtered: it was drawn from the reference and is meant to stay put. Th
 from `select features=true` output and the reference results; give it absolute paths, since it runs in this checkout.
 
 `deploy/specs/` holds the experiments the lab runs: `status-sweep.json` (schedule, every 120 s, the default engine
-on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection, one per engine:
+on `set=sweep` at 10 s, kept fast), and the 60 s runs over the broader selection, one per engine, all with
+[source-witness validation](#source-witness-validation):
 `klause-reference.json` (the default sequential portfolio, daily), and every 3 days, staggered a day apart so one
 runs per day: `klause-reference-ls.json` (local search only), `klause-reference-bt.json` (backtracking only) and
 `klause-reference-parallel.json` (the portfolio on 4 cores). Their MiniZinc Challenge selection is

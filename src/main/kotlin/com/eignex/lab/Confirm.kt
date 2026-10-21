@@ -155,10 +155,11 @@ object Confirm {
     /** The name of the confirmation of run [job] of [series] at [after]: the run's id keeps two runs of one commit apart. */
     fun name(series: String, after: String, job: Long) = "$series$SUFFIX@${after.take(SHA_LENGTH)}-$job"
 
-    /** The confirmation of [flips] in run [job] of [spec] at [after], against the earlier run at [before]. */
+    /** The confirmation of [flips] in run [job] of [spec] at [after], against the earlier run at [before]. Both
+     *  commits ask for source validation, as every scheduled run does ([SourceValidation.scheduled]). */
     fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long): ExperimentSpec {
         val config = spec.configs.firstOrNull().orEmpty() - "ref" - "label"
-        return ExperimentSpec(
+        return SourceValidation.scheduled(ExperimentSpec(
             name = name(series, after, job),
             description = "Confirms run $job's flips against the run before it at ${before.take(SHA_LENGTH)}: " +
                 "${flips.lost.size} feasibility lost and ${flips.gained.size} gained; " +
@@ -175,7 +176,7 @@ object Confirm {
             // One above its run's schedule, so it settles the run before that schedule's next run starts.
             priority = spec.priority + 1,
             confirm = true,
-        )
+        ))
     }
 
     /** What a finished confirmation found: the flips its repeats agree with, each way. */

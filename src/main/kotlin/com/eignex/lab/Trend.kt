@@ -19,6 +19,11 @@ data class TrendRun(
     val spec: String,
     /** The run's spec alone ([Experiments.fingerprint]), which the schedule's current spec is matched by. */
     val experiment: String = "",
+    /**
+     * Whether the run asked for source-witness validation ([SourceValidation.requested]). The request is part of its
+     * [experiment], so checked and unchecked runs never share a line; this says which side of that change a run is on.
+     */
+    val sourceChecked: Boolean = false,
     /** When the run finished, or was queued while it has not. */
     val at: Long,
     val finished: Boolean,
@@ -183,6 +188,7 @@ object Trend {
             sha = job.sha ?: job.ref,
             spec = job.experiment?.let { Experiments.fingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
             experiment = job.experiment?.let(Experiments::fingerprint).orEmpty(),
+            sourceChecked = job.experiment?.let { SourceValidation.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,
             finished = job.status !in ACTIVE,
             cases = own.size,

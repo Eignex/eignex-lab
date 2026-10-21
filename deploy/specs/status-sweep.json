@@ -2,6 +2,6 @@
   "name": "status-sweep",
   "description": "Per-commit regression check: the default engine on the sweep set (147 problems over 11 themes, kept for results that vary from commit to commit) at 10 s.",
   "problems": [{"set": "sweep"}],
-  "base": {"timeout": "10000"},
+  "base": {"timeout": "10000", "param.source-validation": "true", "param.source-validation-gzip": "true"},
   "priority": -2
 }

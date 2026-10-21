@@ -837,7 +837,10 @@ class Store(file: Path) {
         val old = schedules().firstOrNull { it.id == id }?.experiment
         val found = update("UPDATE schedules SET interval_sec = COALESCE(?, interval_sec) WHERE id = ?", intervalSec, id) == 1
         if (found && experiment != null) {
-            val changed = old == null || Experiments.fingerprint(old) != Experiments.fingerprint(experiment)
+            // Compared as the schedule runs them ([SourceValidation.scheduled]), so saving the validation request a
+            // schedule already gets queues no extra run.
+            val changed = old == null ||
+                Experiments.fingerprint(SourceValidation.scheduled(old)) != Experiments.fingerprint(SourceValidation.scheduled(experiment))
             update(
                 "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?" + (if (changed) ", last_sha = NULL" else "") + " WHERE id = ?",
                 Json.encodeToString(experiment), experiment.parallel ?: 0, experiment.priority, id,
@@ -1432,6 +1435,7 @@ internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = r
 internal val SCORING_STATS = listOf(
     "sourceValidation", "sourceValidationReason", "floatApproximation", "referenceError", "unsupported", "loadError",
     "solveTime", "profile", "solvePipeline", "referenceVersion", "validation", "dualBound",
+    "reportedFeasible", "reportedObjective", "reportedProven",
 )
 
 /** A case record as [Store.scoringCases] reads it: cut down in SQLite, and left whole when it is not valid JSON. */
