@@ -697,7 +697,12 @@ agnostic words (`local`, `cloud`, `auto`). The queue shows them as `local only`,
 takes the first job it may run in that order when it is free, whatever the placement: jobs placed locally and
 `auto` jobs no node has claimed compete by priority alone. A job running locally, placed there or an `auto` job it
 took, gives way between its cases to any such queued job of strictly higher priority; an equal priority never
-preempts, and a paused, cancelled or node-claimed job does not count. So an a/b at priority 0 goes ahead of a status
+preempts, and a paused, cancelled or node-claimed job does not count. One tie-break applies while a cloud node is up or launching:
+at equal priority the local machine takes `local only` jobs before `local or cloud` ones, ahead of series and age,
+since the node can take the `auto` jobs and local-only work need not wait behind them; with no node up or launching
+the order stays priority, series and age, as holding the `auto` jobs back would gain nothing. Priority decides first
+either way, and the tie-break only picks which job starts next: it never preempts. The queue page reads whether a node
+is up from the worker's `aws/nodes.json` (when fresh), so its `#n in the queue` follows the same rule, best effort. So an a/b at priority 0 goes ahead of a status
 sweep (-2) or a reference run (-3, -4) even when the pressure is too low to launch a node, and the run it interrupted
 resumes later with its finished cases kept. An `auto` job is taken by whichever comes first, the free local machine or a free
 node (a node leaves to the local machine the job it takes next, when it is free or about to give way to that job); once taken

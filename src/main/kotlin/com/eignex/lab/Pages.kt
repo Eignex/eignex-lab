@@ -1431,6 +1431,14 @@ internal fun readPoolReport(config: Config): NodePoolReport? {
     val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
     return runCatching { NODE_JSON.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull()
 }
+/**
+ * Whether the cloud worker's pool [report] says a node is up or launching, as the runner orders its queue by
+ * ([Store.next]). This process has no node of its own to ask, so the queue page reads the report, and only a fresh
+ * one: the page's order is then the runner's at best, a poll behind it at worst.
+ */
+internal fun nodesUp(report: NodePoolReport?, now: Long): Boolean =
+    report != null && now - report.updatedAt <= STALE_REPORT_MS && (report.nodes.isNotEmpty() || report.launching > 0)
+
 private const val MS_PER_MIN = 60_000L
 /** A pool report older than this says how old it is: the worker rewrites it on every poll. */
 private const val STALE_REPORT_MS = 2 * 60_000L

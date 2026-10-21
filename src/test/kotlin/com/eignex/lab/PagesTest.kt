@@ -430,6 +430,29 @@ class PagesTest {
         }
     }
 
+    @Test
+    fun `the queue page puts local-only jobs first at equal priority only while the report shows a node`() {
+        val config = lab()
+        val store = Store(config.database)
+        store.create("older-auto", "main", emptyList(), experiment = ExperimentSpec("older-auto", listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
+        store.create("local-only", "main", emptyList(), experiment = ExperimentSpec("local-only", listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val node = NodeReport("i-1", "c7i.2xlarge", "spot", "idle")
+        testApplication {
+            application { api(config, store, host) }
+            suspend fun first(report: NodePoolReport): String {
+                writeReport(config, report)
+                val index = client.get("/") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+                return if (index.indexOf("local-only") < index.indexOf("older-auto")) "local-only" else "older-auto"
+            }
+
+            assertEquals("local-only", first(NodePoolReport(now(), 0.0, 0, listOf(node))))
+            assertEquals("local-only", first(NodePoolReport(now(), 0.0, 1, emptyList())))
+            assertEquals("older-auto", first(NodePoolReport(now(), 0.0, 0, emptyList())))
+            // A report the worker has not rewritten for minutes says nothing about the nodes now.
+            assertEquals("older-auto", first(NodePoolReport(now() - 10 * 60_000L, 0.0, 0, listOf(node))))
+        }
+    }
+
     /** A lab of [cores] cores, with AWS settings when [aws] is not null (extra `aws.properties` lines). */
     private fun lab(cores: Int = 4, aws: String? = ""): Config {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = cores)
