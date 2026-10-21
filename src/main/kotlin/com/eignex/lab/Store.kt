@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
@@ -154,17 +155,23 @@ data class Schedule(
  * The job queue, persisted in SQLite so that neither a crashed runner nor a reboot loses queued or finished work.
  * Every state change is one transaction; WAL mode lets the API read while the runner writes.
  */
-class Store(file: Path) {
+class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
+    /** Present while a [vacuum] runs: a write in any process waits for it to end instead of failing after
+     *  [busyTimeoutMs] ([waitWhileBusy]). */
+    internal val vacuumMarker: Path = file.resolveSibling("${file.fileName}-vacuum")
+
     // IMMEDIATE takes the write lock at BEGIN. A deferred transaction that reads and then writes cannot wait for a
     // lock the other process holds, and fails with SQLITE_BUSY instead of honouring the busy timeout.
     private val connection: Connection = DriverManager.getConnection(
         "jdbc:sqlite:$file",
         Properties().apply { setProperty("transaction_mode", "IMMEDIATE") },
     ).apply {
+        org.sqlite.BusyHandler.setHandler(this, waitWhileBusy())
         createStatement().use {
             it.execute("PRAGMA journal_mode=WAL")
             it.execute("PRAGMA synchronous=FULL")
-            it.execute("PRAGMA busy_timeout=10000")
+            // A checkpointed write-ahead log is cut back to this, so one large write, a vacuum's, does not keep its size.
+            it.execute("PRAGMA journal_size_limit=$WAL_LIMIT_BYTES")
             it.execute(
                 """CREATE TABLE IF NOT EXISTS jobs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, ref TEXT NOT NULL, sha TEXT,
@@ -201,6 +208,10 @@ class Store(file: Path) {
                     arm_idx INTEGER NOT NULL, seed INTEGER, record TEXT, repeat INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (job_id, idx))""",
             )
+            // Each distinct build provenance once, which the case records refer to by its sha256 ([StoredRecords]).
+            it.execute("CREATE TABLE IF NOT EXISTS provenances (sha TEXT PRIMARY KEY, provenance TEXT NOT NULL)")
+            // The one-time compaction's progress ([DbCompaction]), one row.
+            it.execute("CREATE TABLE IF NOT EXISTS compaction (id INTEGER PRIMARY KEY CHECK (id = 0), state TEXT NOT NULL)")
             it.execute(
                 """CREATE TABLE IF NOT EXISTS reference_rows (
                     collection TEXT NOT NULL, problem TEXT NOT NULL, solver TEXT NOT NULL, maximize INTEGER NOT NULL,
@@ -248,6 +259,24 @@ class Store(file: Path) {
             if ("source_identity" !in columns) it.execute("ALTER TABLE reference_rows ADD COLUMN source_identity TEXT")
         }
         retireReferences(this)
+    }
+
+    /**
+     * SQLite's busy handler: retry a locked database for [busyTimeoutMs], as `busy_timeout` would, and for as long as
+     * a [vacuum] runs, which holds the write lock for minutes, as told by [vacuumMarker]. A marker older than
+     * [VACUUM_MAX_MS] is left over from a vacuum that died and is ignored.
+     */
+    private fun waitWhileBusy() = object : org.sqlite.BusyHandler() {
+        private var since = 0L
+
+        override fun callback(tries: Int): Int {
+            val now = System.currentTimeMillis()
+            if (tries == 0) since = now
+            val vacuuming = runCatching { now - Files.getLastModifiedTime(vacuumMarker).toMillis() < VACUUM_MAX_MS }.getOrDefault(false)
+            if (now - since >= busyTimeoutMs && !vacuuming) return 0
+            Thread.sleep(minOf(tries + 1L, BUSY_SLEEP_MS))
+            return 1
+        }
     }
 
     private fun retireReferences(database: Connection) {
@@ -375,7 +404,9 @@ class Store(file: Path) {
         }
         planRows(id, arms, problems, records.map { it.first }, sources.map { CaseCommand(it, 0L) })
         update("UPDATE commands SET status = ? WHERE job_id = ?", Status.DONE.name, id)
-        records.forEachIndexed { index, (_, record) -> update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, id, index) }
+        records.forEachIndexed { index, (_, record) ->
+            update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", storedRecord(record), id, index)
+        }
         id
     }
 
@@ -439,19 +470,134 @@ class Store(file: Path) {
         }
     }
 
-    /** Keep the record a case wrote; a lab check of the record it replaces goes with it. */
+    /** Keep the record a case wrote, compacted ([StoredRecords]); a lab check of the record it replaces goes with it. */
     @Synchronized
-    fun caseRecord(jobId: Long, index: Int, record: String) =
-        update("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", record, jobId, index)
+    fun caseRecord(jobId: Long, index: Int, record: String): Int = transaction {
+        update("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", storedRecord(record), jobId, index)
+    }
 
-    /** Case [index]'s whole record as stored, final witness and all: what a source check reads. */
+    /** [record] as it is stored ([StoredRecords.compact]), its provenance kept once in `provenances`. In a transaction. */
+    private fun storedRecord(record: String): String {
+        val compacted = StoredRecords.compact(record) ?: return record
+        compacted.provenance?.let { (sha, json) -> keepProvenance(sha, json) }
+        return compacted.text
+    }
+
+    private fun keepProvenance(sha: String, json: String) =
+        update("INSERT OR IGNORE INTO provenances (sha, provenance) VALUES (?, ?)", sha, json)
+
+    /** Case [index]'s whole record, final witness and provenance and all: what a source check reads. */
     @Synchronized
     fun caseRecordText(jobId: Long, index: Int): String? =
         connection.prepareStatement("SELECT record FROM cases WHERE job_id = ? AND idx = ?").use { statement ->
             statement.setLong(1, jobId)
             statement.setInt(2, index)
             statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
+        }?.let { text ->
+            if (StoredRecords.PROVENANCE_REF !in text) text
+            else StoredRecords.inflate(recordOf(text), ::provenance)?.toString() ?: text
         }
+
+    /** The build provenance kept under [sha], parsed; the most recently read are kept ([PROVENANCES]). */
+    private fun provenance(sha: String): JsonElement? = provenances[sha] ?: connection.prepareStatement(
+        "SELECT provenance FROM provenances WHERE sha = ?",
+    ).use { statement ->
+        statement.setString(1, sha)
+        statement.executeQuery().use { r -> if (r.next()) recordOf(r.getString(1)) else null }
+    }?.also { provenances[sha] = it }
+
+    private val provenances = object : LinkedHashMap<String, JsonElement>(PROVENANCES, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JsonElement>) = size > PROVENANCES
+    }
+
+    /** The compaction's progress ([DbCompaction]): where it is, or a fresh state before it started. */
+    @Synchronized
+    fun compaction(): Compaction = connection.prepareStatement("SELECT state FROM compaction WHERE id = 0").use { statement ->
+        statement.executeQuery().use { r -> if (r.next()) Json.decodeFromString<Compaction>(r.getString(1)) else Compaction() }
+    }
+
+    private fun saveCompaction(state: Compaction) = update(
+        "INSERT INTO compaction (id, state) VALUES (0, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state",
+        Json.encodeToString(state),
+    )
+
+    /** Start the compaction: count the cases it has to go over. */
+    @Synchronized
+    fun startCompaction(): Compaction = transaction {
+        val total = connection.prepareStatement("SELECT count(*) FROM cases WHERE record IS NOT NULL").use { s ->
+            s.executeQuery().use { r -> r.next(); r.getInt(1) }
+        }
+        compaction().copy(total = total, startedAt = now()).also(::saveCompaction)
+    }
+
+    /**
+     * Compact the next [limit] stored case records after the compaction's cursor ([StoredRecords.compact]) and move the
+     * cursor past them, in one transaction. The records are read and compacted outside the store's lock, and a record
+     * that changed meanwhile is left as its writer stored it, compacted. Once a batch finds fewer than [limit], the
+     * compaction is done: every record written since it started was written compacted.
+     */
+    fun compactBatch(limit: Int): Compaction {
+        val cursor = compaction().cursor
+        val rows = synchronized(this) {
+            connection.prepareStatement(
+                "SELECT rowid, record FROM cases WHERE rowid > ? AND record IS NOT NULL ORDER BY rowid LIMIT ?",
+            ).use { s ->
+                s.setLong(1, cursor)
+                s.setInt(2, limit)
+                s.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) to r.getString(2) else null }.toList() }
+            }
+        }
+        val compacted = rows.map { (rowid, text) -> Triple(rowid, text, StoredRecords.compact(text)) }
+        return synchronized(this) {
+            transaction {
+                var state = compaction()
+                for ((rowid, text, record) in compacted) {
+                    if (record == null) continue
+                    record.provenance?.let { (sha, json) -> keepProvenance(sha, json) }
+                    if (update("UPDATE cases SET record = ? WHERE rowid = ? AND record = ?", record.text, rowid, text) == 1) {
+                        state = state.copy(changed = state.changed + 1, bytesBefore = state.bytesBefore + utf8Length(text),
+                            bytesAfter = state.bytesAfter + utf8Length(record.text))
+                    }
+                }
+                state = state.copy(cursor = rows.lastOrNull()?.first ?: state.cursor, scanned = state.scanned + rows.size,
+                    migratedAt = if (rows.size < limit) now() else null)
+                saveCompaction(state)
+                state
+            }
+        }
+    }
+
+    private fun utf8Length(text: String): Long = text.toByteArray(Charsets.UTF_8).size.toLong()
+
+    /** Keep what the last vacuum did, or why it was skipped. */
+    @Synchronized
+    fun vacuumOutcome(outcome: String) = transaction { saveCompaction(compaction().copy(vacuum = outcome, vacuumAt = now())) }
+
+    /** The database's size and free pages as SQLite counts them, its kept provenances and the compaction's progress. */
+    @Synchronized
+    fun database(): DatabaseReport {
+        fun pragma(name: String) = connection.createStatement().use { s -> s.executeQuery("PRAGMA $name").use { r -> r.next(); r.getLong(1) } }
+        val provenances = connection.prepareStatement("SELECT count(*) FROM provenances").use { s -> s.executeQuery().use { r -> r.next(); r.getInt(1) } }
+        return DatabaseReport(pragma("page_size"), pragma("page_count"), pragma("freelist_count"), provenances, compaction())
+    }
+
+    /**
+     * VACUUM the database, giving its free pages back to the disk, then checkpoint the write-ahead log it went through
+     * and cut it back. It holds the write lock throughout: this store's other callers wait on its lock, and every other
+     * process's writes wait while [vacuumMarker] is there ([waitWhileBusy]). Readers in other processes go on reading.
+     */
+    @Synchronized
+    fun vacuum() {
+        Files.writeString(vacuumMarker, "${now()}\n")
+        try {
+            connection.createStatement().use { s ->
+                s.execute("VACUUM")
+                s.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            }
+        } finally {
+            Files.deleteIfExists(vacuumMarker)
+        }
+    }
 
     /**
      * Keep the lab's verdict on case [index]'s solution claim ([com.eignex.lab.checker.LabCheck]), as JSON, replacing
@@ -515,14 +661,14 @@ class Store(file: Path) {
 
     /** Every case of an experiment in command order, with its problem, arm, status and record. */
     @Synchronized
-    fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId)
+    fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId, whole = true)
 
     /**
      * At most [limit] of [cases], whole, from case index [from] on. A large job's records, final witnesses included,
      * can run to megabytes each, so an export reads them a page at a time instead of all at once.
      */
     @Synchronized
-    fun cases(jobId: Long, from: Int, limit: Int): List<CaseResult> = casesWith("c.record", jobId, from, limit)
+    fun cases(jobId: Long, from: Int, limit: Int): List<CaseResult> = casesWith("c.record", jobId, from, limit, whole = true)
 
     /**
      * [cases] with each record cut to what scoring and the trend read: its stats only [SCORING_STATS], and none of its
@@ -550,8 +696,9 @@ class Store(file: Path) {
             statement.executeQuery().use { r -> if (r.next()) Status.valueOf(r.getString(1)) to r.longOrNull("finished_at") else null }
         }
 
+    /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
     @Synchronized
-    private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1): List<CaseResult> = connection.prepareStatement(
+    private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = connection.prepareStatement(
         """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
@@ -567,7 +714,9 @@ class Store(file: Path) {
                 if (!rows.next()) return@generateSequence null
                 CaseResult(
                     rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
-                    rows.getString(4), rows.longOrNull("seed"), withLabCheck(rows.getString(6)?.let(::recordOf), rows.getString(9)),
+                    rows.getString(4), rows.longOrNull("seed"),
+                    withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
+                        rows.getString(9)),
                     rows.getInt(7), rows.getInt(8) != 0,
                 )
             }.toList()
@@ -1563,12 +1712,25 @@ private const val PRODUCER_RECORD = "sourceValidationProducerRecordJson"
 
 /** A case record as [Store.scoringCases] reads it: cut down in SQLite, and left whole when it is not valid JSON. */
 private val SCORING_RECORD = """CASE WHEN c.record IS NULL OR NOT json_valid(c.record) THEN c.record ELSE
-    json_set(json_remove(c.record, '$.buildProvenance', '$.finalWitness', '$.attribution'), '$.stats',
+    json_set(json_remove(c.record, '$.buildProvenance', '$.buildProvenanceRef', '$.finalWitness', '$.attribution'), '$.stats',
         json((SELECT json_group_object(key, CASE WHEN key = '$PRODUCER_RECORD'
                   THEN '' || json_object('timeToBestMs', json_extract(value, '$.timeToBestMs')) ELSE value END)
               FROM json_each(c.record, '$.stats')
               WHERE key IN (${SCORING_STATS.joinToString(", ") { "'$it'" }})
                   OR (key = '$PRODUCER_RECORD' AND json_extract(c.record, '$.feasible') IS NULL AND json_valid(value))))) END"""
+
+/** How long a write waits for a locked database, unless a vacuum holds it ([Store.vacuum]). */
+private const val BUSY_TIMEOUT_MS = 10_000L
+private const val BUSY_SLEEP_MS = 20L
+
+/** The longest a vacuum is waited for; a marker older than this was left by one that died. */
+private const val VACUUM_MAX_MS = 2 * 3_600_000L
+
+/** What a checkpointed write-ahead log is cut back to. */
+private const val WAL_LIMIT_BYTES = 64L shl 20
+
+/** How many parsed build provenances a store keeps. */
+private const val PROVENANCES = 64
 
 /** How many finished jobs' scoring cases [Store.scoringCases] keeps. */
 private const val SCORING_JOBS = 48

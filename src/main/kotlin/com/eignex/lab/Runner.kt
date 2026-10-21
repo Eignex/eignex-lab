@@ -115,6 +115,10 @@ class Runner(
             held = { store.holds().mapTo(HashSet()) { it.job } },
             graceMs = config.trimGraceMs, criticalFreeBytes = config.trimCriticalFreeBytes,
         ).start()
+        // The case records stored before each build provenance was kept once are compacted, a batch at a time, and
+        // the database vacuumed once no job runs ([DbCompaction]).
+        DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } })
+            .start()
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
         // priorities then decide when it runs.
         thread(isDaemon = true, name = "schedules") {
