@@ -207,6 +207,17 @@ object Experiments {
         hash(fingerprint(spec) + "\n" + problems.map { "${it.suite}/${it.problem}" }.sorted().joinToString("\n"))
 
     /**
+     * A schedule's trend line: the [fingerprint] without the source-validation request ([SourceValidation.unrequested]).
+     * The check runs after the solve and changes nothing it does, so checked and unchecked runs of one spec stay one
+     * line, each marked as it was checked; confirmations still compare only runs of the same [fingerprint].
+     */
+    fun trendFingerprint(spec: ExperimentSpec): String = fingerprint(SourceValidation.unrequested(spec))
+
+    /** [trendFingerprint] over the [problems] a run planned, as [fingerprint] with problems is. */
+    fun trendFingerprint(spec: ExperimentSpec, problems: Collection<Problem>): String =
+        fingerprint(SourceValidation.unrequested(spec), problems)
+
+    /**
      * The active job [spec] would split: one queued or running, not being cancelled, that runs the same arms, seeds,
      * repeats and profiling as [spec] and differs at most in its name, description and problems. One question is one
      * experiment over all its problems; the lab bounds its runtime itself (per-case timeouts, placement on the local

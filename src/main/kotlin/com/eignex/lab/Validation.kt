@@ -45,15 +45,22 @@ object SourceValidation {
     /**
      * [spec] as a schedule runs it: a Klause experiment with [SCHEDULED] in its base, overriding any config or grid
      * value of those keys, so every run and confirmation of a schedule asks for source validation whatever spec it was
-     * saved with. A reference run, a profile and an analysis are left as they are. The request is measured: it is part
-     * of the [Experiments.fingerprint], so the first checked run of a schedule starts a new experiment in its trend and
-     * is never compared with an unchecked one. Applying it twice changes nothing.
+     * saved with. A reference run, a profile and an analysis are left as they are. The request is part of the
+     * [Experiments.fingerprint], so a checked run is never confirmed against an unchecked one; the trend leaves it out
+     * ([Experiments.trendFingerprint]), since the check changes nothing the solver does, and marks each run instead.
+     * Applying it twice changes nothing.
      */
     fun scheduled(spec: ExperimentSpec): ExperimentSpec {
         if (spec.isProfile || spec.isAnalysis || spec.isScript) return spec
         if (Experiments.arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) return spec
         val keys = SCHEDULED.keys
         return spec.copy(base = spec.base + SCHEDULED, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
+    }
+
+    /** [spec] without the validation request, wherever it was set: what the solver itself was asked to do. */
+    fun unrequested(spec: ExperimentSpec): ExperimentSpec {
+        val keys = SCHEDULED.keys
+        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
     }
 
     /** Whether an arm's [values] ask for source validation. */

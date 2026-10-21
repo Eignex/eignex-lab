@@ -361,10 +361,11 @@ The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for val
 flag on anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment. Those
 other cases run unchecked, as their records' `reported-result-v1` says.
 
-The request is part of the experiment, so it is in the spec's fingerprint. A schedule's first checked run starts a new
-experiment: the Regression trend shows the checked runs from then on, and `show them` brings back the earlier, unchecked
-ones behind a dashed line, each run marked `checked` or `unchecked` in the runs table and on hover. A confirmation is
-queued only against an earlier run of the same experiment, so a checked run is never confirmed against an unchecked one.
+The request is part of the spec's fingerprint, but not of its trend line: the check runs after the solve and changes
+nothing the solver does, so a schedule's checked runs continue the line its unchecked runs drew, each run marked
+`checked` or `unchecked` in the runs table and on hover. A confirmation is queued only against an earlier run of the
+same fingerprint, so a checked run is never confirmed against an unchecked one: a schedule's first checked run queues
+none.
 `lab reschedule` with a committed spec that differs from the saved one only by the validation request counts it as
 unchanged and queues no extra run.
 

@@ -5,6 +5,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -83,6 +84,17 @@ class ValidationTest {
         assertEquals(listOf("true", "true"), listOf(arm.values[SourceValidation.PARAM], arm.values[SourceValidation.GZIP_PARAM]))
         assertEquals(reference, SourceValidation.scheduled(reference))
         assertEquals(profile, SourceValidation.scheduled(profile))
+    }
+
+    @Test
+    fun `a checked run stays on its schedule's trend line, but is never confirmed against an unchecked one`() {
+        val unchecked = ExperimentSpec("s", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "10000"))
+        val checked = SourceValidation.scheduled(unchecked)
+
+        assertEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(checked))
+        assertNotEquals(Experiments.fingerprint(unchecked), Experiments.fingerprint(checked))
+        // Another timeout is another line still.
+        assertNotEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(unchecked.copy(base = mapOf("timeout" to "60000"))))
     }
 
     @Test

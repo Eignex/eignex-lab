@@ -15,9 +15,9 @@ data class SuiteShare(val problems: Int, val solved: Double)
 data class TrendRun(
     val job: Long,
     val sha: String,
-    /** The run's spec and problems ([Experiments.fingerprint] of both): runs that share one measured the same thing. */
+    /** The run's spec and problems ([Experiments.trendFingerprint] of both): runs that share one measured the same thing. */
     val spec: String,
-    /** The run's spec alone ([Experiments.fingerprint]), which the schedule's current spec is matched by. */
+    /** The run's spec alone ([Experiments.trendFingerprint]), which the schedule's current spec is matched by. */
     val experiment: String = "",
     /**
      * Whether the run asked for source-witness validation ([SourceValidation.requested]). The request is part of its
@@ -81,7 +81,7 @@ object Trend {
         name: String,
         cache: TrendCache? = null,
         refreshing: Boolean = false,
-        /** Only the runs of this experiment ([Experiments.fingerprint]); null for every run. */
+        /** Only the runs of this experiment ([Experiments.trendFingerprint]); null for every run. */
         experiment: String? = null,
         /**
          * For a page load: a finished run [cache] has no point for yet is not computed here but added to this, left out,
@@ -92,7 +92,7 @@ object Trend {
     ): List<TrendRun> {
         // Filtered by experiment before any case is read: a run's experiment is its spec's alone.
         val jobs = scheduled(store, name)
-            .filter { job -> experiment == null || job.experiment?.let(Experiments::fingerprint) == experiment }
+            .filter { job -> experiment == null || job.experiment?.let(Experiments::trendFingerprint) == experiment }
         val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX, withCommands = false)
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
             .associateBy { it.name }
@@ -186,8 +186,8 @@ object Trend {
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
-            spec = job.experiment?.let { Experiments.fingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
-            experiment = job.experiment?.let(Experiments::fingerprint).orEmpty(),
+            spec = job.experiment?.let { Experiments.trendFingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
+            experiment = job.experiment?.let(Experiments::trendFingerprint).orEmpty(),
             sourceChecked = job.experiment?.let { SourceValidation.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,
             finished = job.status !in ACTIVE,
