@@ -40,8 +40,9 @@ class SourceLocator(
         val collection = problem.collection.ifEmpty { problem.suite }
         val root = File(corpus, collection)
         check(root.isDirectory) { "collection $collection is not in the lab's corpus ($corpus)" }
-        val name = stem(problem.problem.substringAfterLast('/'))
-        val named = candidates(collection, root, name)
+        // A name may keep a suffix its file's stem does too (`B737NG-600-01-Anon.json` for `….json.dzn`).
+        val last = problem.problem.substringAfterLast('/')
+        val named = listOf(stem(last), last).distinct().flatMap { candidates(collection, root, it) }.distinct()
         val includes = problem.includeDirs.flatMap(::moved).filter { it.isDirectory }.ifEmpty { libraries(root) }
         if (dataHash == null) {
             val model = pick(named, modelHash, "model of ${problem.problem}", root)
