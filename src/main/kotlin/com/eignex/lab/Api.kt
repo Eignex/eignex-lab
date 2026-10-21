@@ -121,7 +121,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
     for (schedule in store.schedules()) {
-        val experiment = Experiments.fingerprint(SourceValidation.scheduled(schedule.experiment))
+        val experiment = Experiments.trendFingerprint(schedule.experiment)
         trendCache.refreshLater("${schedule.name}/$experiment") { Trend.runs(store, schedule.name, trendCache, experiment = experiment) }
     }
     routing {
@@ -199,9 +199,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
             // By default only the runs of the schedule's current experiment, and only those are read: a run of an
             // earlier one measured something else, and plotted alongside reads as a regression.
-            // As the schedule runs it ([SourceValidation.scheduled]): a saved spec without the validation request
-            // still names its checked runs.
-            val current = schedules.firstOrNull { it.name == name }?.let { Experiments.fingerprint(SourceValidation.scheduled(it.experiment)) }
+            // One line whether or not a run was source-checked ([Experiments.trendFingerprint]); each run says which.
+            val current = schedules.firstOrNull { it.name == name }?.let { Experiments.trendFingerprint(it.experiment) }
             val all = call.parameters["all"] != null || current == null
             val computing = ArrayList<Long>()
             val runs = name?.let { Trend.runs(store, it, trendCache, experiment = current.takeUnless { all }, missing = computing) }.orEmpty()
