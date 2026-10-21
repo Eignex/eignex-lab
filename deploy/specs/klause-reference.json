@@ -25,7 +25,8 @@
     {"suite": "smtlib-qfnra", "per-family": "3", "max": "60", "seed": "1"},
     {"suite": "smtlib-qfnra-core-v1", "per-family": "1000000"},
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"},
-    {"suite": "smtlib-qfnra-source-canonical-v1", "per-family": "1000000", "reference": "any"}
+    {"suite": "smtlib-qfnra-source-canonical-v1", "per-family": "1000000", "reference": "any"},
+    {"suite": "satcomp-compact-v1", "per-family": "3", "max": "60", "seed": "1", "reference": "any"}
   ],
   "base": {"timeout": "60000", "param.source-validation": "true", "param.source-validation-gzip": "true"},
   "host": "auto",
