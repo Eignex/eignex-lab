@@ -438,8 +438,9 @@ private fun outcomeWord(outcome: Outcome?, status: Status): String = when {
 
 /**
  * How far a Klause solution claim was checked against its original source, as a small word beside its verdict:
- * `checked` for a witness the source accepted, `unchecked` for the solver's own report, `check indeterminate` for a
- * check that could not decide, the reason and policy on hover. An accepted witness is a valid solution; a proof of
+ * `checked` for a witness the source accepted, `unchecked` for the solver's own report (with the reason when a check
+ * was asked for and its checker could not run), `check indeterminate` for a check that could not decide, the reason and
+ * policy on hover. An accepted witness is a valid solution; a proof of
  * optimality beside it (the star) is still the solver's own claim. Nothing for an outcome with no solution claim, for
  * another solver's, or where the verdict already says it (an invalid solution, a float grid).
  */
@@ -450,8 +451,11 @@ internal fun witnessMark(outcome: Outcome?): String {
     return when (outcome.witness) {
         WitnessCheck.ACCEPTED -> " <small class=\"DONE\" title=\"${esc("witness accepted against the original source$policy: " +
             "the solution is valid; a proof of optimality is the solver's own claim")}\">checked</small>"
-        WitnessCheck.UNCHECKED -> " <small class=\"muted\" title=\"${esc("the solver's own report$policy: no independent " +
-            "source check was asked for or performed")}\">unchecked</small>"
+        WitnessCheck.UNCHECKED -> {
+            val why = if (outcome.sourceValidation == "unknown") "the source checker could not run: ${outcome.sourceValidationReason}"
+                else "no independent source check was asked for or performed"
+            " <small class=\"muted\" title=\"${esc("the solver's own report$policy: $why")}\">unchecked</small>"
+        }
         WitnessCheck.INDETERMINATE -> {
             val reported = buildList {
                 add("reported ${outcome.reportedObjective?.let { "objective $it" } ?: "a solution"}")

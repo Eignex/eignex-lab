@@ -358,6 +358,14 @@ schedule's base whenever it queues a run (`Validation.kt`, `SourceValidation.sch
 value, so a schedule saved without them needs no edit. A schedule of reference-solver runs, a profile and an analysis
 are left alone.
 
+MPS checks run the upstream MIPLIB solchecker, which klause-bench packages into its jar only when built with
+`-Pbench.mpsSolchecker` (opt-in since klause b417cf18b; earlier commits always packaged it, and ignore the property).
+Every Klause build the lab makes passes it, locally (`Runner.kt`, `klauseBuildTasks`) and on nodes (`AwsBuildCache.kt`),
+so building needs a C++ compiler and the GMP and zlib headers: Homebrew's `gmp` on the Mac, `build-essential`,
+`libgmp-dev` and `zlib1g-dev` on a node. A reference-only experiment builds the bench without it. A bench built
+without the checker leaves every MPS check `unknown` with `MPS source checking failed: missing packaged MIPLIB
+solchecker`, as jobs 7068 and 7075 did.
+
 The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, and the gzip
 flag on anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment. Those
 other cases run unchecked, as their records' `reported-result-v1` says.
@@ -378,7 +386,16 @@ solver's own report, and under a checking policy `stats.sourceValidation` is `va
 - `checked`: the source accepted the witness, so the solution is valid. Witness checking is not proof checking: a
   star beside it is still the solver's own optimality claim, and an infeasibility claim has no witness to check.
 - `unchecked`: the solver's own report, no check asked for or performed (`reported-result-v1`), such as every
-  scheduled run from before validation, and the unchecked formats of a checked run.
+  scheduled run from before validation, and the unchecked formats of a checked run. A check that was asked for but
+  whose checker could not run or crashed also reads `unchecked`, with the reason on hover: the claim it withdrew is
+  read back from `reportedFeasible`, `reportedObjective` and `reportedProven` (its time from the producer record the
+  check kept) and scores as the solver reported it. The record has no field that says so, so the reason decides
+  (`SourceValidation.checkerFault`): a missing packaged checker (`missing packaged`), a packaged checker failing its
+  own integrity checks, an executable that would not start (`Cannot run program`), and an XCSP3 checker process that
+  ended without a verdict (`source checker failed:`, `malformed source checker result`). `source checking failed:`
+  alone is not such a sign, since the bench writes it before inputs the checker ran on and could not read. This is
+  read when a page is drawn, so existing records, such as the 13 MPS cases of jobs 7068 and 7075, read this way
+  without any rewrite once the lab restarts on it.
 - `check indeterminate`: the checker could not decide (unsupported syntax, residual constraints, a checker limit or
   timeout), the reason and the reported claim on hover. An MPS point that could not be checked earns no solution
   credit, so it reads `unknown` with this mark.
@@ -835,7 +852,8 @@ pressure leaves out.
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
   the role `klause-lab-instance`, which may read and write only that bucket.
 - The bucket also holds Gradle's dependency cache and wrapper distribution as one archive, restored before every build
-  and refreshed after one, and each commit's built distributions (`builds/verified-v1/<sha>.tar.zst`): an instance that finds its
+  and refreshed after one, and each commit's built distributions (`builds/verified-v2/<sha>.tar.zst`; v2 since builds
+  package the MIPLIB solchecker): an instance that finds its
   commit there unpacks it instead of building, so a commit is built once across every job and instance.
 - Build and Gradle archives use a verified cache namespace; older archives are left intact and are not reused.
   Downloads and extraction are staged. Failed transfers, truncated archives, missing bootstrap classes, missing

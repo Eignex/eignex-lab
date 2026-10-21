@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import kotlinx.serialization.Serializable
 import kotlin.math.abs
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -63,8 +64,15 @@ data class Outcome(
             val fields = record as? JsonObject ?: return null
             fun field(name: String) = fields[name]?.takeUnless { it is JsonObject }?.jsonPrimitive
             val validation = stat(fields, "sourceValidation")
+            val reason = stat(fields, "sourceValidationReason")
             val approximation = stat(fields, "floatApproximation") == "true"
-            val reportedFeasible = field("feasible")?.booleanOrNull
+            // A checker that never ran withdrew nothing: the solver's own claim stands, unchecked ([SourceValidation.checkerFault]).
+            val restored = validation == "unknown" && SourceValidation.checkerFault(reason) &&
+                field("feasible")?.booleanOrNull == null && stat(fields, "reportedFeasible") in setOf("true", "false")
+            val reportedFeasible = if (restored) stat(fields, "reportedFeasible")?.toBooleanStrictOrNull() else field("feasible")?.booleanOrNull
+            val objective = if (restored) stat(fields, "reportedObjective")?.toDoubleOrNull() else field("objective")?.doubleOrNull
+            val proven = if (restored) stat(fields, "reportedProven") == "true" else field("proven")?.booleanOrNull ?: false
+            val timeToBest = field("timeToBestMs")?.longOrNull ?: if (restored) producerTimeToBestMs(fields) else null
             val policy = (fields["validationPolicy"] as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
             val rejected = validation == "invalid" ||
                 (approximation && (reportedFeasible == false || (reportedFeasible == true && validation != "valid")))
@@ -72,18 +80,18 @@ data class Outcome(
                 optimize = field("kind")?.content == "optimize",
                 maximize = field("maximize")?.booleanOrNull ?: false,
                 feasible = if (rejected) null else reportedFeasible,
-                objective = if (rejected) null else field("objective")?.doubleOrNull,
-                proven = !rejected && !approximation && (field("proven")?.booleanOrNull ?: false),
-                timeToBestMs = if (rejected) null else field("timeToBestMs")?.longOrNull,
+                objective = if (rejected) null else objective,
+                proven = !rejected && !approximation && proven,
+                timeToBestMs = if (rejected) null else timeToBest,
                 budgetMs = field("budgetMs")?.longOrNull ?: 0,
                 error = field("command")?.content == "ERROR" || stat(fields, "referenceError") != null,
                 unsupported = stat(fields, "unsupported"),
                 loadError = stat(fields, "loadError"),
                 sourceValidation = validation,
-                sourceValidationReason = stat(fields, "sourceValidationReason"),
+                sourceValidationReason = reason,
                 floatApproximation = approximation,
                 validationPolicy = policy,
-                witness = if (field("solver")?.content == KLAUSE) SourceValidation.check(validation, policy) else null,
+                witness = if (field("solver")?.content == KLAUSE) SourceValidation.check(validation, policy, reason) else null,
                 claimedSolution = reportedFeasible == true || stat(fields, "reportedFeasible") == "true",
                 reportedObjective = stat(fields, "reportedObjective")?.takeUnless { it == "null" },
                 reportedProven = stat(fields, "reportedProven") == "true",
@@ -98,6 +106,15 @@ data class Outcome(
 
         private fun stat(fields: JsonObject, name: String): String? =
             ((fields["stats"] as? JsonObject)?.get(name) as? JsonPrimitive)?.content
+
+        /**
+         * The solver's time to its best solution from the producer record an MPS or SMT check keeps
+         * (`sourceValidationProducerRecordJson`), for a claim a check withdrew along with its time. A scoring record
+         * carries only that field of it ([SCORING_STATS]).
+         */
+        private fun producerTimeToBestMs(fields: JsonObject): Long? = stat(fields, "sourceValidationProducerRecordJson")
+            ?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() as? JsonObject }
+            ?.get("timeToBestMs")?.let { it as? JsonPrimitive }?.longOrNull
     }
 }
 
