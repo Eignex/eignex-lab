@@ -245,10 +245,11 @@ open class Ssh(
      * scripts it runs (a build, a select, a sync) pick up where a cut-off run left them. A refused connection, as from an
      * instance still booting, is returned at once for its caller to wait out.
      */
-    fun exec(script: String, timeoutSec: Long): Pair<Int, String> {
+    fun exec(script: String, timeoutSec: Long, cancellable: Boolean = true): Pair<Int, String> {
+        val cancelled = if (cancellable) cancelled else { { false } }
         var attempt = 1
         while (true) {
-            val (exit, out) = execOnce(script, timeoutSec)
+            val (exit, out) = execOnce(script, timeoutSec, cancelled)
             if (exit != SSH_FAILED || !NETWORK.containsMatchIn(out) || attempt >= NETWORK_RETRY.attempts || cancelled()) return exit to out
             val until = System.currentTimeMillis() + NETWORK_RETRY.delayAfter(attempt)
             while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
@@ -256,15 +257,25 @@ open class Ssh(
         }
     }
 
-    private fun execOnce(script: String, timeoutSec: Long): Pair<Int, String> {
-        val process = start(script)
+    /**
+     * Run [script] once. A cancelled one is stopped on the instance too, not only its SSH connection, whose end leaves
+     * a command without a terminal running: SSH starts the remote command in a session of its own, so the script first
+     * writes its process group to a file, and on a cancel the group gets SIGTERM, then SIGKILL two seconds later.
+     */
+    private fun execOnce(script: String, timeoutSec: Long, cancelled: () -> Boolean): Pair<Int, String> {
+        val group = "/tmp/klause-lab-step-${UUID.randomUUID()}"
+        val process = start("ps -o pgid= -p $$ > $group; bash -c ${quote(script)}; e=$?; rm -f $group; exit ${'$'}e")
         val output = StringBuilder()
         val reader = thread(isDaemon = true) { output.append(process.inputStream.bufferedReader().readText()) }
         val deadline = System.currentTimeMillis() + timeoutSec * MS_PER_SEC
         while (!process.waitFor(POLL_MS, TimeUnit.MILLISECONDS)) {
             if (cancelled()) {
                 process.destroyForcibly()
-                error("cancelled")
+                runCatching {
+                    execOnce("g=$(tr -d ' ' < $group 2>/dev/null) && [ -n \"${'$'}g\" ] && " +
+                        "{ kill -TERM -- -${'$'}g; sleep 2; kill -KILL -- -${'$'}g; } 2>/dev/null; rm -f $group; true", STOP_TIMEOUT_SEC) { false }
+                }
+                throw JobCancelled("cancelled on $instance")
             }
             if (System.currentTimeMillis() > deadline) {
                 process.destroyForcibly()
@@ -307,6 +318,8 @@ open class Ssh(
         private const val POLL_MS = 1000L
         private const val MS_PER_SEC = 1000L
         private const val OUTPUT_CHARS = 3000
+        /** The most stopping a cancelled script's process group on the instance may take. */
+        private const val STOP_TIMEOUT_SEC = 30L
     }
 }
 
@@ -442,7 +455,7 @@ class AwsHost(
                 Termination.record(Termination.file(dir, i),
                     if (cancelled()) Termination.CANCEL else Termination.timeout(command.timeoutSec))
                 process.destroyForcibly()
-                ssh.exec("pkill -f -- '${jobDir.removePrefix("$HOME/")}/cases/$i([^0-9]|${'$'})' || true", KILL_TIMEOUT_SEC)
+                ssh.exec("pkill -f -- '${jobDir.removePrefix("$HOME/")}/cases/$i([^0-9]|${'$'})' || true", KILL_TIMEOUT_SEC, cancellable = false)
                 return if (cancelled()) CANCELLED else TIMEOUT
             }
         }
@@ -875,17 +888,30 @@ class AwsWorker(
             if (outcome == Dispatched.LOST) runner.log(job.id, "node ${node.instance} was taken back by the cloud provider")
             healthy = outcome != Dispatched.LOST
         } catch (e: NotJoined) {
-            runner.log(job.id, "node ${node.instance} did not join: ${e.message}")
+            // A cancel stopped the node's setup, on the node too ([Ssh]): it is fit to take the next job.
+            healthy = store.cancelRequested(job.id)
+            if (healthy) stopped(node, job) else runner.log(job.id, "node ${node.instance} did not join: ${e.message}")
         } catch (e: Exception) {
-            // The job's own setup, or a case failing to run, fails the job; its other nodes take no more of it.
-            if (!store.cancelRequested(job.id)) job.failure = job.failure ?: e
+            // The job's own setup, or a case failing to run, fails the job; its other nodes take no more of it. A
+            // cancel stopped what ran on the node, which then takes the next job rather than retire.
+            if (store.cancelRequested(job.id)) {
+                healthy = true
+                stopped(node, job)
+            } else {
+                job.failure = job.failure ?: e
+            }
             job.problems?.clear()
         } finally {
             leave(node, job)
         }
         // Its case files came back as each case ended; the next job on this node starts from an empty directory.
-        if (healthy) runCatching { host.ssh.exec("rm -rf ${quote(job.remoteDir)}", SSH_STEP_SEC) }
+        if (healthy) runCatching { host.ssh.exec("rm -rf ${quote(job.remoteDir)}", SSH_STEP_SEC, cancellable = false) }
         return healthy
+    }
+
+    /** Say that a cancel stopped what [node] did for [job]. */
+    private fun stopped(node: Node, job: AwsJob) {
+        runner.log(job.id, "cancel requested — stopped ${node.instance} (${node.doing}); it takes the next job")
     }
 
     /** A helper's setup failing: the job goes on without it. */
