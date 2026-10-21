@@ -22,6 +22,9 @@
 #                                                            .tar.gz release asset of Eignex, or a file under $LAB_DATA/archives)
 #                                                            and its .manifest.json, once the job itself is gone; the archive is
 #                                                            checked against its sha256 and verified before anything is extracted
+#   lab recheck <id>                                        queue a recheck job: the lab's source checkers run again over ended
+#                                                            job <id>'s stored records (the solution claims in the formats the
+#                                                            lab checks), each verdict replacing the case's earlier one; no solver runs
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's bench result table
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
@@ -116,6 +119,10 @@ analyze)
         + (if $manifest_sha == "" then {} else {manifestSha256: $manifest_sha} end))}' |
       curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo
   fi ;;
+recheck)
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ && $# -eq 1 ]] || { echo "usage: lab recheck <job id>" >&2; exit 2; }
+  jq -n --argjson job "$1" '{recheck: {job: $job}}' |
+    curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 cases) curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
       (.seed // "-"), (if .record == null then "-" else
         "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv' ;;

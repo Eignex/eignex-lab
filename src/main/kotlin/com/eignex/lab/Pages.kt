@@ -452,14 +452,17 @@ internal fun witnessMark(outcome: Outcome?): String {
         WitnessCheck.ACCEPTED -> " <small class=\"DONE\" title=\"${esc("witness accepted against the original source$policy: " +
             "the solution is valid; a proof of optimality is the solver's own claim")}\">checked</small>"
         WitnessCheck.UNCHECKED -> {
-            val why = if (outcome.sourceValidation == "unknown") "the source checker could not run: ${outcome.sourceValidationReason}"
-                else "no independent source check was asked for or performed"
+            val why = when (outcome.sourceValidation) {
+                "unknown", "not-run" -> "the source checker could not run: ${outcome.sourceValidationReason}"
+                "unsupported" -> "no external checker covers it: ${outcome.sourceValidationReason}"
+                else -> "no independent source check was asked for or performed"
+            }
             " <small class=\"muted\" title=\"${esc("the solver's own report$policy: $why")}\">unchecked</small>"
         }
         WitnessCheck.INDETERMINATE -> {
             val reported = buildList {
-                add("reported ${outcome.reportedObjective?.let { "objective $it" } ?: "a solution"}")
-                if (outcome.reportedProven) add("proven")
+                add("reported ${(outcome.reportedObjective ?: outcome.objective?.let(::number))?.let { "objective $it" } ?: "a solution"}")
+                if (outcome.reportedProven || outcome.proven) add("proven")
             }.joinToString(", ")
             val reason = outcome.sourceValidationReason ?: "no result recorded"
             " <small class=\"PARTIAL\" title=\"${esc("the source check could not decide$policy: $reason; $reported")}\">" +
@@ -990,6 +993,20 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
 /** An analysis job: the job whose captures it analysed, and the reports it wrote, once it has. */
 private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
     val analyze = spec.analyze ?: return@buildString
+    if (analyze.kind == AnalyzeSpec.CHECK) {
+        append("<h2>Recheck</h2><p>The lab's source checkers, run again over the stored records of job ")
+        append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>: each Klause solution claim in a format the lab checks gets a ")
+        append("fresh verdict, which its pages, trend and comparisons then read. Nothing was built and no solver ran.</p>")
+        val result = config.jobDir(job.id).resolve(com.eignex.lab.checker.CaseChecks.RESULT).toFile().takeIf { it.isFile }
+            ?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(com.eignex.lab.checker.RecheckResult.serializer(), it.readText()) }.getOrNull() }
+        if (result == null) {
+            append("<p class=\"muted\">${if (job.status in ACTIVE) "Not finished." else "No result written: see job.log."}</p>")
+        } else {
+            val states = result.states.entries.joinToString(", ") { "${it.value} ${esc(it.key)}" }.ifEmpty { "none" }
+            append("<p>${result.checked} of ${result.cases} cases checked: $states; policies ${esc(result.policies.joinToString())}.</p>")
+        }
+        return@buildString
+    }
     if (analyze.archive != null) {
         val link = if ("://" in analyze.archive) "<a href=\"${esc(analyze.archive)}\">${esc(analyze.archive.substringAfterLast('/'))}</a>"
             else "<code>${esc(analyze.archive)}</code>"

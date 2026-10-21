@@ -131,7 +131,7 @@ class ValidationTest {
     }
 
     @Test
-    fun `the request reaches only the formats the bench checks, and the gzip custody only MPS`() {
+    fun `the request reaches only the formats the bench still checks, and the gzip custody only MPS`() {
         val arm = Arm("base", mapOf("timeout" to "10000") + SourceValidation.SCHEDULED)
         fun command(format: String) = Experiments.command("/w/7", Problem("s", "p", format = format), arm, null, 0, "/corpus")
 
@@ -139,6 +139,9 @@ class ValidationTest {
         assertFalse("source-validation-gzip" in command("MINIZINC"))
         assertContains(command("MPS"), "'param=source-validation=true' 'param=source-validation-gzip=true'")
         for (format in listOf("DIMACS", "OPB", "WCNF", "")) assertFalse("source-validation" in command(format), format)
+        // The lab checks these itself: the bench reports the claim as it is.
+        for (format in SourceValidation.LAB_FORMATS) assertFalse("source-validation" in command(format), format)
+        assertFalse("source-validation" in command("XCSP3"))
     }
 
     @Test

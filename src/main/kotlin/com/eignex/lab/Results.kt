@@ -28,7 +28,7 @@ object Results {
                 outcome?.proven?.toString().orEmpty(), outcome?.timeToBestMs?.toString().orEmpty(),
                 if (outcome?.feasible == true) field("timeToFirstFeasibleMs") else "",
                 outcome?.solveTimeMs?.toString().orEmpty(), outcome?.timeMs?.toString().orEmpty(), field("budgetMs"), (field("command") == "ERROR").toString(),
-                stat("unsupported"), stat("loadError"), stat("sourceValidation"), stat("floatApproximation"),
+                stat("unsupported"), stat("loadError"), outcome?.sourceValidation.orEmpty(), stat("floatApproximation"),
                 field("buildFingerprint"), field("validationPolicy"),
             )
             appendLine(row.joinToString(",") { cell(it) })

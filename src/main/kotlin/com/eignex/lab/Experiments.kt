@@ -115,6 +115,9 @@ data class AnalyzeSpec(
 ) {
     companion object {
         const val COMPILATION = "compilation"
+        /** The lab's source checkers ([com.eignex.lab.checker]) run again over an ended job's records: a recheck. */
+        const val CHECK = "check"
+        val KINDS = setOf(COMPILATION, CHECK)
     }
 }
 
@@ -322,7 +325,8 @@ object Experiments {
         requireOptions(spec)
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
         spec.analyze?.let { analyze ->
-            require(analyze.kind == AnalyzeSpec.COMPILATION) { "analyze.kind must be '${AnalyzeSpec.COMPILATION}', not '${analyze.kind}'" }
+            require(analyze.kind in AnalyzeSpec.KINDS) { "analyze.kind must be one of ${AnalyzeSpec.KINDS}, not '${analyze.kind}'" }
+            require(analyze.kind != AnalyzeSpec.CHECK || analyze.archive == null) { "a recheck names a job, not an archive" }
             require((analyze.job == null) != (analyze.archive == null)) { "analyze names a job or an archive, one of them" }
             analyze.job?.let { require(it > 0) { "analyze.job must name a job" } }
             if (analyze.archive == null) {

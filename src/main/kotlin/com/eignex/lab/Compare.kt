@@ -31,6 +31,8 @@ data class Outcome(
     val solveTimeMs: Long? = null,
     /** The solve's wall-clock time, as the bench timed its subprocess; null in records from before it was kept. */
     val elapsedMs: Long? = null,
+    /** The check's verdict: the lab's ([com.eignex.lab.checker.LabCheck.state]) where it checked, else the bench's
+     *  `sourceValidation` statistic (`valid`, `invalid`, `unknown`). */
     val sourceValidation: String? = null,
     val sourceValidationReason: String? = null,
     val floatApproximation: Boolean = false,
@@ -63,11 +65,16 @@ data class Outcome(
         fun of(record: JsonElement?): Outcome? {
             val fields = record as? JsonObject ?: return null
             fun field(name: String) = fields[name]?.takeUnless { it is JsonObject }?.jsonPrimitive
-            val validation = stat(fields, "sourceValidation")
-            val reason = stat(fields, "sourceValidationReason")
+            // The lab's own verdict ([com.eignex.lab.checker.LabCheck]) speaks for the claim where there is one; the
+            // bench's check, if it made one, only for records the lab has not checked.
+            val lab = fields["labCheck"] as? JsonObject
+            fun labField(name: String) = (lab?.get(name) as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
+            val validation = if (lab != null) labField("state") else stat(fields, "sourceValidation")
+            val reason = if (lab != null) labField("reason") else stat(fields, "sourceValidationReason")
             val approximation = stat(fields, "floatApproximation") == "true"
             // A checker that never ran withdrew nothing: the solver's own claim stands, unchecked ([SourceValidation.checkerFault]).
-            val restored = validation == "unknown" && SourceValidation.checkerFault(reason) &&
+            // A lab verdict is judged on the solver's own claim, which a bench check may have withdrawn.
+            val restored = (lab != null || (validation == "unknown" && SourceValidation.checkerFault(reason))) &&
                 field("feasible")?.booleanOrNull == null && stat(fields, "reportedFeasible") in setOf("true", "false")
             val reportedFeasible = if (restored) stat(fields, "reportedFeasible")?.toBooleanStrictOrNull() else field("feasible")?.booleanOrNull
             val objective = if (restored) stat(fields, "reportedObjective")?.toDoubleOrNull() else field("objective")?.doubleOrNull
@@ -91,7 +98,8 @@ data class Outcome(
                 sourceValidationReason = reason,
                 floatApproximation = approximation,
                 validationPolicy = policy,
-                witness = if (field("solver")?.content == KLAUSE) SourceValidation.check(validation, policy, reason) else null,
+                witness = if (field("solver")?.content != KLAUSE) null
+                    else if (lab != null) SourceValidation.labCheck(validation) else SourceValidation.check(validation, policy, reason),
                 claimedSolution = reportedFeasible == true || stat(fields, "reportedFeasible") == "true",
                 reportedObjective = stat(fields, "reportedObjective")?.takeUnless { it == "null" },
                 reportedProven = stat(fields, "reportedProven") == "true",

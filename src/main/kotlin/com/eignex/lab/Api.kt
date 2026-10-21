@@ -163,7 +163,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             spec.analyze?.let { analyze ->
                 val job = analyze.job
                 val refusal = withContext(Dispatchers.IO) {
-                    if (job != null) CompilationReports.refusal(store.job(job), config.jobDir(job)) else CaptureArchives.refusal(analyze, config)
+                    when {
+                        analyze.kind == AnalyzeSpec.CHECK -> com.eignex.lab.checker.CaseChecks.refusal(store.job(checkNotNull(job)))
+                        job != null -> CompilationReports.refusal(store.job(job), config.jobDir(job))
+                        else -> CaptureArchives.refusal(analyze, config)
+                    }
                 }
                 val what = if (job != null) "job $job" else "archive ${analyze.archive}"
                 if (refusal != null) {
@@ -171,7 +175,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                     return@post
                 }
                 val id = store.create(spec.name, DEFAULT_REF, emptyList(), 1, spec.priority, spec)
-                val note = if (job != null) "analyses job $job's retained captures on the local machine; no solver runs"
+                val note = if (analyze.kind == AnalyzeSpec.CHECK) "checks job $job's solution claims again on the local machine; no solver runs"
+                    else if (job != null) "analyses job $job's retained captures on the local machine; no solver runs"
                     else "downloads, checks against its sha256, verifies and analyses the archive's captures on the local machine; no solver runs"
                 call.respond(HttpStatusCode.Created, Created(id, listOf(note), placementNote(spec.host), Experiments.hostWord(spec.host)))
                 return@post
@@ -524,7 +529,17 @@ private fun placementNote(host: String): String = when (host) {
  * [body] with an analysis job's name and description filled in when it gives none, so `{"analyze": {"job": 12}}`, or
  * `{"analyze": {"archive": …, "sha256": …}}`, is a whole submission; any other body as it is.
  */
-internal fun analysisDefaults(body: JsonObject): JsonObject {
+internal fun analysisDefaults(given: JsonObject): JsonObject {
+    // `{"recheck": {"job": N}}` is an analysis of kind `check` ([AnalyzeSpec.CHECK]).
+    val body = (given["recheck"] as? JsonObject)?.let { recheck ->
+        val job = recheck["job"] ?: return given
+        val defaults = mapOf(
+            "name" to kotlinx.serialization.json.JsonPrimitive("recheck-$job"),
+            "description" to kotlinx.serialization.json.JsonPrimitive("Check job $job's solution claims again with the lab's source checkers"),
+        )
+        JsonObject(defaults.filterKeys { it !in given } + (given - "recheck") +
+            ("analyze" to JsonObject(mapOf("job" to job, "kind" to kotlinx.serialization.json.JsonPrimitive(AnalyzeSpec.CHECK)))))
+    } ?: given
     val analyze = body["analyze"] as? JsonObject ?: return body
     val job = (analyze["job"] as? kotlinx.serialization.json.JsonPrimitive)?.content
     val archive = (analyze["archive"] as? kotlinx.serialization.json.JsonPrimitive)?.content

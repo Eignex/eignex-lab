@@ -4,6 +4,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
@@ -222,6 +225,9 @@ class Store(file: Path) {
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("phase" !in commandColumns) it.execute("ALTER TABLE commands ADD COLUMN phase TEXT")
+            // The lab's own verdict on a case's solution claim ([com.eignex.lab.checker.LabCheck]), beside its record.
+            val caseColumns = it.executeQuery("PRAGMA table_info(cases)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
+            if ("lab_check" !in caseColumns) it.execute("ALTER TABLE cases ADD COLUMN lab_check TEXT")
             val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("version" !in columns) {
                 it.execute("ALTER TABLE reference_rows ADD COLUMN version TEXT NOT NULL DEFAULT ''")
@@ -427,9 +433,28 @@ class Store(file: Path) {
         }
     }
 
+    /** Keep the record a case wrote; a lab check of the record it replaces goes with it. */
     @Synchronized
     fun caseRecord(jobId: Long, index: Int, record: String) =
-        update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", record, jobId, index)
+        update("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", record, jobId, index)
+
+    /** Case [index]'s whole record as stored, final witness and all: what a source check reads. */
+    @Synchronized
+    fun caseRecordText(jobId: Long, index: Int): String? =
+        connection.prepareStatement("SELECT record FROM cases WHERE job_id = ? AND idx = ?").use { statement ->
+            statement.setLong(1, jobId)
+            statement.setInt(2, index)
+            statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
+        }
+
+    /**
+     * Keep the lab's verdict on case [index]'s solution claim ([com.eignex.lab.checker.LabCheck]), as JSON, replacing
+     * any earlier one. Every reader of the case sees it as its record's `labCheck` ([withLabCheck]).
+     */
+    fun caseCheck(jobId: Long, index: Int, check: String) {
+        synchronized(this) { update("UPDATE cases SET lab_check = ? WHERE job_id = ? AND idx = ?", check, jobId, index) }
+        synchronized(scoring) { scoring.remove(jobId) }
+    }
 
     /** [cases] without their records: what rewriting a job's commands for another host reads. */
     @Synchronized
@@ -477,7 +502,7 @@ class Store(file: Path) {
         for (index in again) {
             update("UPDATE commands SET status = ?, exit_code = NULL, started_at = NULL, finished_at = NULL, phase = NULL " +
                 "WHERE job_id = ? AND idx = ?", Status.QUEUED.name, jobId, index)
-            update("UPDATE cases SET record = NULL WHERE job_id = ? AND idx = ?", jobId, index)
+            update("UPDATE cases SET record = NULL, lab_check = NULL WHERE job_id = ? AND idx = ?", jobId, index)
         }
         again
     }
@@ -514,7 +539,7 @@ class Store(file: Path) {
 
     @Synchronized
     private fun casesWith(record: String, jobId: Long): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED FROM cases c
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -527,7 +552,7 @@ class Store(file: Path) {
                 if (!rows.next()) return@generateSequence null
                 CaseResult(
                     rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
-                    rows.getString(4), rows.longOrNull("seed"), rows.getString(6)?.let(::recordOf),
+                    rows.getString(4), rows.longOrNull("seed"), withLabCheck(rows.getString(6)?.let(::recordOf), rows.getString(9)),
                     rows.getInt(7), rows.getInt(8) != 0,
                 )
             }.toList()
@@ -940,7 +965,7 @@ class Store(file: Path) {
     fun problemRuns(collection: String, problem: String, limit: Int? = null): List<ProblemRun> = connection.prepareStatement(
         // The record as scoring reads it: the page shows each run's outcome and time, not its witness or provenance,
         // which can make one problem's runs tens of megabytes.
-        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, $SCORING_RECORD
+        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, $SCORING_RECORD, c.lab_check
            FROM problems p
            JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
@@ -959,7 +984,7 @@ class Store(file: Path) {
                 ProblemRun(
                     job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
                     sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
-                    status = Status.valueOf(r.getString(9)), record = r.getString(10)?.let(::recordOf),
+                    status = Status.valueOf(r.getString(9)), record = withLabCheck(r.getString(10)?.let(::recordOf), r.getString(11)),
                 )
             }.toList()
         }
@@ -1444,6 +1469,19 @@ private const val LOCAL_FIRST_ORDER = "ORDER BY priority DESC, CASE WHEN $HOST =
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()
+
+/**
+ * [record] as every reader sees it once the lab has checked its claim: with the verdict, [check], as its `labCheck`,
+ * and the verdict's policy as its `validationPolicy`, the bench's own kept as `benchValidationPolicy`. A case the lab
+ * has not checked reads as its record alone, as do a record or a check that do not parse.
+ */
+internal fun withLabCheck(record: JsonElement?, check: String?): JsonElement? {
+    if (check == null || record !is JsonObject) return record
+    val verdict = runCatching { Json.parseToJsonElement(check) }.getOrNull() as? JsonObject ?: return record
+    val policy = verdict["policy"] as? JsonPrimitive ?: return record
+    return JsonObject(record + mapOf("labCheck" to verdict, "validationPolicy" to policy,
+        "benchValidationPolicy" to (record["validationPolicy"] ?: JsonNull)))
+}
 
 /** The stats scoring, the trend and the scoreboard read from a case record ([Outcome.of], [Scoreboard.profiles]). */
 internal val SCORING_STATS = listOf(
