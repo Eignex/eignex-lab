@@ -366,7 +366,7 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 | Format | Checker (licence) | Policy | Unchecked, and why |
 | --- | --- | --- | --- |
 | XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
-| MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin) | `lab-mps-solchecker-1.0.4-v1` | a value with no exact decimal of under 32 characters (solchecker reads only those, so a fraction such as `1/3` is not rounded for it); an MPS file solchecker cannot read, in its words |
+| MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin), built with the lab's input-limit patch as `1.0.4+klause-lab-longnum-1` | `lab-mps-solchecker-1.0.4-longnum-v1` | a value with no exact decimal of at most 4095 characters (solchecker reads only decimals, so a fraction such as `1/3` is not rounded for it, nor a longer decimal cut); a SOL line over 8190 characters; an MPS file solchecker cannot read, in its words |
 | MiniZinc (integer) | MiniZinc with Gecode (`minizinc --solver gecode`; MiniZinc MPL-2.0, Gecode MIT) | `lab-minizinc-gecode-v1` | floats: no external exact checker for floats (a witness with `% klause-exact:`, `% klause-coordinate:` or `% klause-float-` lines, a float approximation, or a model with `var float` variables); a witness naming FlatZinc-introduced variables (`X_INTRODUCED_*`), which only Klause's own compilation maps back to the model; a witness MiniZinc cannot read as data for the model (integers for an enum-typed array), in its words |
 | SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary | `lab-smtlib-dolmen-0.10-v1` | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
@@ -381,7 +381,8 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 
 - **MPS.** The witness is the record's final `v name=value …` line (decimals or `p/q`), written as a SOL file:
   `=obj= <claimed objective>` (`exactObjective`) then one `name value` line per variable, each value as its exact
-  decimal. solchecker reads the original MPS file as it is, nothing rewritten, a `.zst` one decompressed through a pipe
+  plain decimal (no exponent) of at most 4095 characters, the patched solchecker's limit; a value without one stays
+  `unsupported`, saying so, and is never rounded. solchecker reads the original MPS file as it is, nothing rewritten, a `.zst` one decompressed through a pipe
   so no plain copy lands on disk, and checks bounds, integrality, every row and the objective in exact rational
   arithmetic with its own default tolerances: 1e-5 absolute for rows, objective and integrality (the code's default,
   `Rational(1, 100000)`; its README still says 1e-4). Its `Check SOL: Integrality 1 Constraints 1 Objective 1` is
@@ -396,10 +397,26 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
   (the unmodified upstream bytes, recovered from a retained copy matching klause's build pin while
   `miplib.zib.de/downloads` answered HTTP 503, with its MIT `LICENSE` and `SHA256SUMS`), and from
   https://miplib.zib.de/downloads/miplib2017-testscript-v1.0.4.zip only when the mirror cannot be reached; either is
-  checked against the pin. It compiles the four `checker/src` files with `c++ -O2 … -lgmp -lz` (Homebrew's `gmp` on the
-  Mac) and keeps only the binary, `$LAB_DATA/checkers/solchecker-1.0.4/solchecker`, under 1 MB: the archive and the
-  build tree are deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is
-  tried again ten minutes later.
+  checked against the pin. It applies the lab's patch (below) with `patch -p1`, compiles the four `checker/src` files
+  with `c++ -O2 … -lgmp -lz` (Homebrew's `gmp` on the Mac) and keeps only the binary,
+  `$LAB_DATA/checkers/solchecker-1.0.4+klause-lab-longnum-1/solchecker`, under 1 MB: the archive and the build tree are
+  deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is tried again ten
+  minutes later. An unpatched binary left in `solchecker-1.0.4/` from before is never used and can be deleted.
+
+  The patch, `src/main/resources/com/eignex/lab/checker/solchecker-1.0.4-longnum.patch` (SHA-256
+  `c0cf7c98c63029468072bad151a8ff93f986bfc051f49a66cdcfd6a205f611e5`, checked before it is applied), changes four
+  constants and nothing else. solchecker parses every number into an exact GMP rational (`mpq_set_str` on the digits,
+  the decimal point and exponent turned into a power-of-ten denominator), so its precision was never the obstacle: it
+  only asserted that a number is under 32 characters, and its fixed buffers matched that. The patch raises
+  `assert(strlen(num) < 32)` to `< 4096` in `Rational::fromString`, the static I/O buffer the digits are expanded
+  into and rationals printed from from 1024 to 16384 bytes (with `toString`'s matching assert), and `SOL_MAX_LINELEN`,
+  the SOL reader's line buffer, from 1024 to 8192. A plain decimal of 4095 characters expands to at most about 8200
+  in that buffer. Parsing, arithmetic and tolerances are upstream's. The binary's version is
+  `1.0.4+klause-lab-longnum-1`, its directory is named after it, and each verdict records it with the patch's SHA-256
+  as `checkerVersion` and the binary's SHA-256 as `checkerSha256`, under the policy
+  `lab-mps-solchecker-1.0.4-longnum-v1`. Job 7165's Bell3a points (cases 25, 26, 27, 30 and 31, witness SHA-256
+  `b7038bec…`), whose objective `1564851723957962726619/1759218604441600` has a 53-character exact decimal, were
+  `unsupported` under upstream's limit and are `valid` under the patched build.
 
 - **MiniZinc.** The witness is the record's last DZN block, its `%` comment lines and its `_objective` removed,
   passed as one more data file after the original model and data, so every output variable is fixed to its claimed
