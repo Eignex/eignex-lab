@@ -3,6 +3,7 @@ package com.eignex.lab
 import kotlinx.serialization.Serializable
 import kotlin.math.abs
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -32,6 +33,15 @@ data class Outcome(
     val sourceValidation: String? = null,
     val sourceValidationReason: String? = null,
     val floatApproximation: Boolean = false,
+    /** The record's `validationPolicy`: how its claims were judged, `reported-result-v1` for the solver's own report. */
+    val validationPolicy: String? = null,
+    /** How far a Klause record's solution claim was checked ([SourceValidation.check]); null for another solver's. */
+    val witness: WitnessCheck? = null,
+    /** Whether the solver claimed a solution, as it reported it before any check withdrew the claim. */
+    val claimedSolution: Boolean = false,
+    /** The solver's own objective and proof claim, kept by a check that withdrew them ([claimedSolution]). */
+    val reportedObjective: String? = null,
+    val reportedProven: Boolean = false,
 ) {
     /** Solved beats unsolved, and proven (an optimum, or infeasibility) beats merely solved. */
     val rank: Int get() = when {
@@ -55,6 +65,7 @@ data class Outcome(
             val validation = stat(fields, "sourceValidation")
             val approximation = stat(fields, "floatApproximation") == "true"
             val reportedFeasible = field("feasible")?.booleanOrNull
+            val policy = (fields["validationPolicy"] as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
             val rejected = validation == "invalid" ||
                 (approximation && (reportedFeasible == false || (reportedFeasible == true && validation != "valid")))
             return Outcome(
@@ -71,6 +82,11 @@ data class Outcome(
                 sourceValidation = validation,
                 sourceValidationReason = stat(fields, "sourceValidationReason"),
                 floatApproximation = approximation,
+                validationPolicy = policy,
+                witness = if (field("solver")?.content == KLAUSE) SourceValidation.check(validation, policy) else null,
+                claimedSolution = reportedFeasible == true || stat(fields, "reportedFeasible") == "true",
+                reportedObjective = stat(fields, "reportedObjective")?.takeUnless { it == "null" },
+                reportedProven = stat(fields, "reportedProven") == "true",
                 solveTimeMs = stat(fields, "solveTime")?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
                     ?.let { (it * MS_PER_S).toLong() },
                 elapsedMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 },
@@ -78,6 +94,7 @@ data class Outcome(
         }
 
         private const val MS_PER_S = 1000.0
+        private const val KLAUSE = "klause"
 
         private fun stat(fields: JsonObject, name: String): String? =
             ((fields["stats"] as? JsonObject)?.get(name) as? JsonPrimitive)?.content
@@ -106,7 +123,17 @@ data class ArmSummary(
     val missingProvenance: Int = 0,
     /** Its cases from an instrumented job ([ExperimentSpec.instrumented]), whose times are no runtime measurement. */
     val instrumented: Int = 0,
+    /** Its Klause solution claims by how far each was checked against its source ([WitnessCheck]). */
+    val witnesses: Map<WitnessCheck, Int> = emptyMap(),
+    /** Contests (problem, seed, repeat) where its record's validation policy differs from the first arm's. */
+    val validationMismatches: Int = 0,
 )
+
+/**
+ * Whether [arms] met on problems under different validation policies: one side's solver report counted as a solution
+ * or proof against the other's checked witness, and a check that withdrew a claim counted as no solution.
+ */
+fun mixesValidation(arms: List<ArmSummary>): Boolean = arms.any { it.validationMismatches > 0 }
 
 /** Whether [arms] mix instrumented and uninstrumented runs, whose times a comparison must not set side by side. */
 fun mixesInstrumented(arms: List<ArmSummary>): Boolean {
@@ -160,11 +187,13 @@ object Compare {
             val own = outcomes.filter { it.first.arm == label }.map { it.second }
             var score = 0.0
             var (wins, losses, ties) = Triple(0, 0, 0)
+            var mismatches = 0
             for (contest in contests.values) {
                 val mine = contest[label] ?: continue
                 for ((other, theirs) in contest) if (other != label) score += points(mine, theirs)
                 val baseline = contest[labels.first()]
                 if (label != labels.first() && baseline != null) {
+                    if (mine.validationPolicy != baseline.validationPolicy) mismatches++
                     val (gained, conceded) = points(mine, baseline) to points(baseline, mine)
                     when {
                         gained > conceded -> wins++
@@ -182,6 +211,8 @@ object Compare {
                 missingProvenance = cases.count { it.arm == label && it.record != null &&
                     (provenanceValue(it, "buildFingerprint") == null || provenanceValue(it, "validationPolicy") == null) },
                 instrumented = outcomes.count { it.first.arm == label && it.first.instrumented },
+                witnesses = own.filter { it.claimedSolution }.mapNotNull { it.witness }.groupingBy { it }.eachCount(),
+                validationMismatches = mismatches,
             )
         }
         return Comparison(arms, disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))

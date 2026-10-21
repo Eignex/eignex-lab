@@ -27,7 +27,7 @@
     {"suite": "smtlib-qfnra-source-canonical-v1", "per-family": "1000000", "reference": "any"},
     {"suite": "satlib", "per-family": "3", "max": "60", "seed": "1"}
   ],
-  "base": {"timeout": "60000"},
+  "base": {"timeout": "60000", "param.source-validation": "true", "param.source-validation-gzip": "true"},
   "priority": -3,
   "confirm": true
 }

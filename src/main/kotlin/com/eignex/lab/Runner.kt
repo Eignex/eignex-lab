@@ -413,7 +413,10 @@ class Runner(
             val name = "${schedule.name}@${sha.take(9)}"
             // A schedule's runs stay on the local machine ([Placement.localOnly]), whatever host its experiment once
             // named.
-            val spec = schedule.experiment.copy(name = name, base = schedule.experiment.base + ("ref" to sha),
+            // Every scheduled Klause run asks for source validation ([SourceValidation.scheduled]), whatever spec the
+            // schedule was saved with.
+            val experiment = SourceValidation.scheduled(schedule.experiment)
+            val spec = experiment.copy(name = name, base = experiment.base + ("ref" to sha),
                 host = Experiments.LAB_HOST, auto = false, machines = null)
             val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
