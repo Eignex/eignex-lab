@@ -791,7 +791,8 @@ class AwsWorker(
         var job: Long? = null
         @Volatile
         var ip = ""
-        /** The commits built on it, each keyed with whether a profiling launcher was installed for it. */
+        /** The commits built on it, each keyed with whether a profiling launcher was installed for it and whether it
+         *  packages the MIPLIB solchecker ([AwsBuildCache.builtKey]). */
         val built: MutableSet<String> = Collections.synchronizedSet(HashSet())
     }
 
@@ -943,10 +944,11 @@ class AwsWorker(
 
     /** Build each of [shas] the node has not built yet for a job like [job]. */
     private fun build(node: Node, host: AwsHost, job: AwsJob, shas: List<String>) {
-        val missing = shas.filter { "$it:${job.spec.profileCli}" !in node.built }
+        val profileCli = job.spec.profileCli
+        val missing = shas.filter { !AwsBuildCache.hasBuilt(node.built, it, profileCli, job.mpsChecker) }
         if (missing.isEmpty()) return
-        setup(job, host, missing)
-        missing.forEach { node.built += "$it:${job.spec.profileCli}" }
+        val packaged = setup(job, host, missing)
+        missing.forEach { AwsBuildCache.rebuilt(node.built, it, profileCli, packaged) }
     }
 
     /** [node] is done with [job]; the job's last node ends it as its nodes' outcomes say. */
@@ -1013,6 +1015,10 @@ class AwsWorker(
         val dir: Path = config.jobDir(id).createDirectories()
         val log: File = dir.resolve("setup.log").toFile().apply { appendText("") }
         val remoteDir = "${AwsHost.HOME}/jobs/$id"
+        /** Whether its builds package the MIPLIB solchecker ([SourceValidation.needsMpsChecker]); off once one went ahead
+         *  without it, so nodes that join later do not wait out the same outage. */
+        @Volatile
+        var mpsChecker: Boolean = SourceValidation.needsMpsChecker(spec)
         /** Guarded by [claimLock]. */
         val workers = LinkedHashSet<Node>()
         val outcomes: MutableList<Dispatched> = Collections.synchronizedList(ArrayList())
@@ -1088,10 +1094,13 @@ class AwsWorker(
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
     }
 
-    /** Clone the repository and build each of [shas] on [host]. */
-    private fun setup(job: AwsJob, host: AwsHost, shas: List<String>) {
+    /**
+     * Clone the repository and build each of [shas] on [host], with the MIPLIB solchecker when [job] needs it, unless its
+     * download keeps failing ([SourceValidation.buildWithChecker]). Returns whether the builds package it.
+     */
+    private fun setup(job: AwsJob, host: AwsHost, shas: List<String>): Boolean {
         runner.log(job.id, "${host.instance}: building ${shas.joinToString { it.take(SHA_LOG) }}")
-        val script = buildString {
+        fun script(mpsChecker: Boolean) = buildString {
             appendLine("set -euo pipefail; ${AwsHost.ENV}")
             appendLine(AwsBuildCache.functions)
             appendLine("mkdir -p ~/work ~/corpus")
@@ -1111,8 +1120,8 @@ class AwsWorker(
             for (sha in shas) {
                 val worktree = host.worktree(sha)
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
-                val archive = bucket?.let { "s3://$it/${AwsBuildCache.BUILDS}/$sha.tar.zst" }
-                AwsBuildCache.worktree(worktree, host.cores, archive, aws.region).forEach(::appendLine)
+                val archives = bucket?.let { AwsBuildCache.archives(it, sha, mpsChecker) }.orEmpty()
+                AwsBuildCache.worktree(worktree, host.cores, archives, aws.region, mpsChecker).forEach(::appendLine)
                 finishWorktree(worktree, job.spec.profileCli).forEach(::appendLine)
                 appendLine("validate_lab_provenance ${quote(worktree)}")
             }
@@ -1121,12 +1130,24 @@ class AwsWorker(
                 appendLine("wait ${'$'}sync || true")
             }
         }
-        runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) {
-            val (exit, out) = host.ssh.exec(script, BUILD_TIMEOUT_SEC)
-            job.log.appendText("[${host.instance}] $out\n")
-            check(exit == 0) { "build on ${host.instance} failed (exit $exit); see setup.log" }
+        var tries = 0
+        val packaged = runner.withRetry(job.id, "building on ${host.instance}", config.buildRetry) {
+            tries++
+            var out = ""
+            SourceValidation.buildWithChecker(
+                job.mpsChecker, lastTry = tries >= config.buildRetry.attempts,
+                skipped = { runner.log(job.id, SourceValidation.checkerSkipped("on ${host.instance}", tries)) },
+                output = { out },
+            ) { checker ->
+                val (exit, output) = host.ssh.exec(script(checker), BUILD_TIMEOUT_SEC)
+                out = output
+                job.log.appendText("[${host.instance}] $output\n")
+                check(exit == 0) { "build on ${host.instance} failed (exit $exit); see setup.log" }
+            }
         }
+        if (!packaged) job.mpsChecker = false
         runner.log(job.id, "${host.instance}: built")
+        return packaged
     }
 
     /** What a fresh instance runs at first boot: its power-off deadline, then a JDK, MiniZinc and the tools a build and

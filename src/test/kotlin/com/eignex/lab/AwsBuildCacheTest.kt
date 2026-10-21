@@ -29,18 +29,7 @@ class AwsBuildCacheTest {
 
     @Test
     fun `complete solver installs restore but a corrupt library does not`() = fixture { root ->
-        val content = root.resolve("content").apply { mkdirs() }
-        for ((relative, name, main) in listOf(
-            Triple("klause-cli/build/install/klause-cli-jvm", "klause-cli", "com/eignex/klause/cli/MainKt.class"),
-            Triple("klause-bench/build/install/klause-bench", "klause-bench", "com/eignex/klause/bench/target/BenchCli.class"),
-        )) {
-            val dist = content.resolve(relative)
-            dist.resolve("bin").mkdirs(); dist.resolve("lib").mkdirs()
-            dist.resolve("bin/$name").apply { writeText("#!/bin/sh\nCLASSPATH=\$APP_HOME/lib/main.jar\n"); setExecutable(true) }
-            ZipOutputStream(dist.resolve("lib/main.jar").outputStream()).use { zip ->
-                zip.putNextEntry(ZipEntry(main)); zip.write(byteArrayOf(0)); zip.closeEntry()
-            }
-        }
+        val content = installs(root)
         pack(root, content)
         val target = root.resolve("target").apply { mkdirs() }
         assertEquals(0, run(root, "restore_lab_cache s3://bucket/cache ${quote(target.path)} install region"))
@@ -62,10 +51,29 @@ class AwsBuildCacheTest {
     fun `a failed actual build stops setup before cache publication or provenance`() = fixture { root ->
         val tree = root.resolve("worktree").apply { mkdirs() }
         tree.resolve("gradlew").apply { writeText("#!/bin/sh\nexit 42\n"); setExecutable(true) }
-        val steps = AwsBuildCache.worktree(tree.path, 2, "s3://bucket/build", "region").joinToString("\n")
+        val steps = AwsBuildCache.worktree(tree.path, 2, listOf("s3://bucket/build"), "region", mpsChecker = true).joinToString("\n")
         assertEquals(42, run(root, steps, failedDownload = true))
         assertFalse(root.resolve("uploaded").exists())
         assertFalse(tree.resolve("klause-bench/build/provenance.json").exists())
+    }
+
+    @Test
+    fun `a job without the checker reuses a build without it, and one that needs it builds anew`() = fixture { root ->
+        pack(root, installs(root))
+        val tree = root.resolve("worktree").apply { mkdirs() }
+        tree.resolve("gradlew").apply { writeText("#!/bin/sh\necho \"\$@\" > gradle-args\nexit 42\n"); setExecutable(true) }
+        val plain = AwsBuildCache.archives("bucket", "abc", mpsChecker = false)
+        fun steps(checker: Boolean) = AwsBuildCache.worktree(tree.path, 2, AwsBuildCache.archives("bucket", "abc", checker), "region", checker)
+            .joinToString("\n")
+
+        assertEquals(0, run(root, steps(checker = false), held = plain.last()))
+        assertFalse(tree.resolve("gradle-args").exists())
+        assertEquals(42, run(root, steps(checker = true), held = plain.last()))
+        assertTrue("-Pbench.mpsSolchecker" in tree.resolve("gradle-args").readText())
+        // One with the checker serves a job without it too.
+        tree.resolve("gradle-args").delete()
+        assertEquals(0, run(root, steps(checker = false), held = AwsBuildCache.archives("bucket", "abc", true).single()))
+        assertFalse(tree.resolve("gradle-args").exists())
     }
 
     @Test
@@ -166,18 +174,39 @@ class AwsBuildCacheTest {
         try { block(root) } finally { root.deleteRecursively() }
     }
 
+    /** Complete CLI and bench installs under `root/content`, as a build leaves them. */
+    private fun installs(root: java.io.File): java.io.File {
+        val content = root.resolve("content").apply { mkdirs() }
+        for ((relative, name, main) in listOf(
+            Triple("klause-cli/build/install/klause-cli-jvm", "klause-cli", "com/eignex/klause/cli/MainKt.class"),
+            Triple("klause-bench/build/install/klause-bench", "klause-bench", "com/eignex/klause/bench/target/BenchCli.class"),
+        )) {
+            val dist = content.resolve(relative)
+            dist.resolve("bin").mkdirs(); dist.resolve("lib").mkdirs()
+            dist.resolve("bin/$name").apply { writeText("#!/bin/sh\nCLASSPATH=\$APP_HOME/lib/main.jar\n"); setExecutable(true) }
+            ZipOutputStream(dist.resolve("lib/main.jar").outputStream()).use { zip ->
+                zip.putNextEntry(ZipEntry(main)); zip.write(byteArrayOf(0)); zip.closeEntry()
+            }
+        }
+        return content
+    }
+
     private fun pack(root: java.io.File, content: java.io.File) {
         assertEquals(0, ProcessBuilder("tar", "-c", "-C", content.path, "-f", root.resolve("archive").path, ".").start().waitFor())
     }
 
-    private fun run(root: java.io.File, command: String, failedDownload: Boolean = false): Int {
+    /** Runs [command] with an `aws` whose every download is `root/archive`, or only one of [held] when it is set, and
+     *  whose uploads append their destinations to `root/uploaded`. */
+    private fun run(root: java.io.File, command: String, failedDownload: Boolean = false, held: String? = null): Int {
         val bin = root.resolve("bin").apply { mkdirs() }
         bin.resolve("zstd").apply {
             writeText("#!/bin/sh\nif [ \"\$1\" = -dcq ]; then cat \"\$2\"; else cat; fi\n"); setExecutable(true)
         }
+        val download = "cp ${quote(root.resolve("archive").path)} \"\$4\""
+        val downloads = if (held == null) "s3://*) $download;;" else "${quote(held)}) $download;; s3://*) exit 1;;"
         bin.resolve("aws").apply {
             writeText(if (failedDownload) "#!/bin/sh\nprintf partial > \"\$4\"; exit 1\n" else
-                "#!/bin/sh\ncase \"\$3\" in s3://*) cp ${quote(root.resolve("archive").path)} \"\$4\";; *) touch ${quote(root.resolve("uploaded").path)};; esac\n")
+                "#!/bin/sh\ncase \"\$3\" in $downloads *) echo \"\$4\" >> ${quote(root.resolve("uploaded").path)};; esac\n")
             setExecutable(true)
         }
         val script = "set -euo pipefail\n" + AwsBuildCache.functions + "\n" + command
