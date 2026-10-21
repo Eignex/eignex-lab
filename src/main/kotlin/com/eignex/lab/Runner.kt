@@ -462,8 +462,6 @@ class Runner(
         val (arms, shas) = resolveArms(job, spec, log)
         val primary = shas.getValue(arms.first().ref)
         val referenceOnly = arms.all { it.values["backend"] == REFERENCE_BACKEND }
-        // Off once a build went ahead without the checker, so the job's other commits do not wait out the same outage.
-        var mpsChecker = SourceValidation.needsMpsChecker(spec)
         removeWorktree(job.id)
         for (sha in shas.values.distinct()) {
             val path = experimentWorktree(job.id, sha, primary)
@@ -476,27 +474,18 @@ class Runner(
                 }
             }
             linkShared(path)
-            var tries = 0
             withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
-                tries++
-                var start = log.length()
-                mpsChecker = SourceValidation.buildWithChecker(
-                    mpsChecker, lastTry = tries >= config.buildRetry.attempts,
-                    skipped = { log(job.id, SourceValidation.checkerSkipped(sha.take(9), tries)) },
-                    output = { logSince(log, start) },
-                ) { checker ->
-                    start = log.length()
-                    try {
-                        sh(log, path.toFile(),
-                            "./gradlew ${klauseBuildTasks(referenceOnly, checker)} --max-workers=${config.gradleWorkers} -q" +
-                                if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
-                    } catch (e: Exception) {
-                        if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
-                            log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
-                            clearTransforms(path.toFile())
-                        }
-                        throw e
+                val start = log.length()
+                try {
+                    sh(log, path.toFile(),
+                        "./gradlew ${klauseBuildTasks(referenceOnly)} --max-workers=${config.gradleWorkers} -q" +
+                            if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
+                } catch (e: Exception) {
+                    if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
+                        log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
+                        clearTransforms(path.toFile())
                     }
+                    throw e
                 }
                 // A profileCli job's launcher goes in before the provenance manifest describes the build, as on a node.
                 if (spec.profileCli) sh(log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
@@ -1189,16 +1178,12 @@ class Runner(
 }
 
 /**
- * The Gradle tasks that build a Klause commit for an experiment: the CLI and the bench, with the MIPLIB solchecker
- * packaged into the bench ([SourceValidation.MPS_CHECKER_BUILD]) when [mpsChecker] says its MPS cases are to be
- * source-checked ([SourceValidation.needsMpsChecker]). A reference experiment runs the lab's own launcher and builds
- * the bench only to select and resolve its problems, so it needs neither the CLI nor the checker.
+ * The Gradle tasks that build a Klause commit for an experiment: the CLI and the bench. A reference experiment runs
+ * the lab's own launcher and builds the bench only to select and resolve its problems, so it needs no CLI. No checker
+ * is packaged into the bench: the lab checks witnesses itself ([com.eignex.lab.checker]).
  */
-internal fun klauseBuildTasks(referenceOnly: Boolean, mpsChecker: Boolean): String = when {
-    referenceOnly -> ":klause-bench:installDist"
-    mpsChecker -> ":klause-cli:installJvmDist :klause-bench:installDist ${SourceValidation.MPS_CHECKER_BUILD}"
-    else -> ":klause-cli:installJvmDist :klause-bench:installDist"
-}
+internal fun klauseBuildTasks(referenceOnly: Boolean): String =
+    if (referenceOnly) ":klause-bench:installDist" else ":klause-cli:installJvmDist :klause-bench:installDist"
 
 /**
  * [command] wrapped so that it leads a new session, and so its own process group. perl is the portable way to

@@ -21,7 +21,12 @@ jobs:
           distribution: temurin
           java-version: 25
       - uses: gradle/actions/setup-gradle@v6
+      # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
+      # rather than skipping when a tool cannot be had): GMP for building the MIPLIB solchecker.
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd
       - run: ./gradlew check
+        env:
+          LAB_REQUIRE_CHECKERS: "1"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

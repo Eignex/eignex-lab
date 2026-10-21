@@ -4,31 +4,27 @@ package com.eignex.lab
 internal object AwsBuildCache {
     val functions: String = requireNotNull(AwsBuildCache::class.java.getResource("/aws-build-cache.sh")).readText()
     /**
-     * Where a commit's validated installs that package the MIPLIB solchecker ([SourceValidation.MPS_CHECKER_BUILD]) are
-     * kept, by commit. A v1 archive of a commit since packaging became opt-in has none, so none is reused.
+     * Where a commit's validated installs that package the MIPLIB solchecker were kept, by commit, while the bench
+     * checked MPS witnesses itself. Such an install still serves: the checker it packages is never run.
      */
     const val BUILDS = "builds/verified-v2"
-    /** Where a commit's validated installs without the MIPLIB solchecker are kept, by commit. */
+    /** Where a commit's validated installs without the MIPLIB solchecker are kept, by commit: every build now. */
     const val PLAIN_BUILDS = "builds/verified-v2-plain"
     const val GRADLE = "gradle/verified-v1/home.tar.zst"
 
     /**
      * The archives in [bucket] a build of [sha] may be restored from, in the order they are tried; the build publishes
-     * to the last. A build with the checker serves a job that needs none, but one without it never serves a job that
-     * does ([SourceValidation.needsMpsChecker]).
+     * to the last, the plain one. An install from when builds packaged the MIPLIB solchecker serves as well.
      */
-    fun archives(bucket: String, sha: String, mpsChecker: Boolean): List<String> {
-        val checked = "s3://$bucket/$BUILDS/$sha.tar.zst"
-        return if (mpsChecker) listOf(checked) else listOf(checked, "s3://$bucket/$PLAIN_BUILDS/$sha.tar.zst")
-    }
+    fun archives(bucket: String, sha: String): List<String> =
+        listOf("s3://$bucket/$BUILDS/$sha.tar.zst", "s3://$bucket/$PLAIN_BUILDS/$sha.tar.zst")
 
     /**
-     * The steps that put [path]'s build in place: restored from the first of [archives] that validates, else built,
-     * with the MIPLIB solchecker when [mpsChecker], and published to the last of them. With no [archives] it is always
-     * built.
+     * The steps that put [path]'s build in place: restored from the first of [archives] that validates, else built and
+     * published to the last of them. With no [archives] it is always built.
      */
-    fun worktree(path: String, cores: Int, archives: List<String>, region: String, mpsChecker: Boolean): List<String> {
-        val build = "(cd ${quote(path)} && ./gradlew ${klauseBuildTasks(referenceOnly = false, mpsChecker)} -q --max-workers=$cores)"
+    fun worktree(path: String, cores: Int, archives: List<String>, region: String): List<String> {
+        val build = "(cd ${quote(path)} && ./gradlew ${klauseBuildTasks(referenceOnly = false)} -q --max-workers=$cores)"
         val validate = "validate_lab_cache ${quote(path)} install"
         if (archives.isEmpty()) return listOf(build, validate)
         val restore = archives.joinToString(" || ") { "restore_lab_cache ${quote(it)} ${quote(path)} install ${quote(region)}" }
@@ -48,20 +44,16 @@ internal object AwsBuildCache {
         )
     }
 
-    /** What a node's set of built commits holds for [sha] built with or without a profiling launcher and the checker. */
-    fun builtKey(sha: String, profileCli: Boolean, mpsChecker: Boolean): String = "$sha:$profileCli:$mpsChecker"
+    /** What a node's set of built commits holds for [sha] built with or without a profiling launcher. */
+    fun builtKey(sha: String, profileCli: Boolean): String = "$sha:$profileCli"
 
-    /**
-     * Whether a node that built what [built] holds has [sha] ready for a job with [profileCli] that needs the checker
-     * when [mpsChecker]: built for it with the checker, or, when it needs none, without.
-     */
-    fun hasBuilt(built: Set<String>, sha: String, profileCli: Boolean, mpsChecker: Boolean): Boolean =
-        builtKey(sha, profileCli, true) in built || !mpsChecker && builtKey(sha, profileCli, false) in built
+    /** Whether a node that built what [built] holds has [sha] ready for a job with [profileCli]. */
+    fun hasBuilt(built: Set<String>, sha: String, profileCli: Boolean): Boolean = builtKey(sha, profileCli) in built
 
-    /** [built] after [sha] was built again for [profileCli] with the checker or without ([mpsChecker]): a rebuild replaces
-     *  whatever the worktree held before, so its other entries go. */
-    fun rebuilt(built: MutableSet<String>, sha: String, profileCli: Boolean, mpsChecker: Boolean) = synchronized(built) {
+    /** [built] after [sha] was built again for [profileCli]: a rebuild replaces whatever the worktree held before, so
+     *  its other entries go. */
+    fun rebuilt(built: MutableSet<String>, sha: String, profileCli: Boolean) = synchronized(built) {
         built.removeAll { it.substringBefore(':') == sha }
-        built += builtKey(sha, profileCli, mpsChecker)
+        built += builtKey(sha, profileCli)
     }
 }

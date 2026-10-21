@@ -131,17 +131,17 @@ class ValidationTest {
     }
 
     @Test
-    fun `the request reaches only the formats the bench still checks, and the gzip custody only MPS`() {
+    fun `the request reaches only the formats the bench still checks, and the gzip custody never`() {
         val arm = Arm("base", mapOf("timeout" to "10000") + SourceValidation.SCHEDULED)
         fun command(format: String) = Experiments.command("/w/7", Problem("s", "p", format = format), arm, null, 0, "/corpus")
 
         assertContains(command("MINIZINC"), "'param=source-validation=true'")
         assertFalse("source-validation-gzip" in command("MINIZINC"))
-        assertContains(command("MPS"), "'param=source-validation=true' 'param=source-validation-gzip=true'")
         for (format in listOf("DIMACS", "OPB", "WCNF", "")) assertFalse("source-validation" in command(format), format)
         // The lab checks these itself: the bench reports the claim as it is.
         for (format in SourceValidation.LAB_FORMATS) assertFalse("source-validation" in command(format), format)
         assertFalse("source-validation" in command("XCSP3"))
+        assertFalse("source-validation" in command("MPS"))
     }
 
     @Test
@@ -267,120 +267,34 @@ class ValidationTest {
     }
 
     @Test
-    fun `a Klause build packages the MIPLIB solchecker when asked, locally and on a node`() {
-        assertContains(klauseBuildTasks(referenceOnly = false, mpsChecker = true), ":klause-bench:installDist -Pbench.mpsSolchecker")
-        assertContains(klauseBuildTasks(referenceOnly = false, mpsChecker = true), ":klause-cli:installJvmDist")
-        assertEquals(":klause-cli:installJvmDist :klause-bench:installDist", klauseBuildTasks(referenceOnly = false, mpsChecker = false))
-        assertEquals(":klause-bench:installDist", klauseBuildTasks(referenceOnly = true, mpsChecker = true))
-        val node = AwsBuildCache.worktree("/w/abc", 4, AwsBuildCache.archives("bucket", "abc", true), "eu-north-1", true)
-        assertTrue(node.any { "./gradlew" in it && "-Pbench.mpsSolchecker" in it && ":klause-cli:installJvmDist" in it }, node.joinToString("\n"))
-        assertTrue(AwsBuildCache.worktree("/w/abc", 4, emptyList(), "eu-north-1", true).first().contains("-Pbench.mpsSolchecker"))
-        val plain = AwsBuildCache.worktree("/w/abc", 4, AwsBuildCache.archives("bucket", "abc", false), "eu-north-1", false)
-        assertTrue(plain.none { "-Pbench.mpsSolchecker" in it }, plain.joinToString("\n"))
-        assertEquals("builds/verified-v2", AwsBuildCache.BUILDS)
-    }
-
-    /** Job 7087: a WCNF comparison with no validation asked for, which failed setup on the checker's download. */
-    private val wcnf = ExperimentSpec("wcnf-compare", listOf(mapOf("suite" to "mse-wcnf", "max" to "6")),
-        base = mapOf("timeout" to "60000"), configs = listOf(mapOf("ref" to "aaa"), mapOf("ref" to "bbb")))
-
-    @Test
-    fun `only a job that may source-check an MPS case builds the MIPLIB solchecker`() {
-        fun tasks(spec: ExperimentSpec) = klauseBuildTasks(
-            Experiments.arms(spec).all { it.values["backend"] == REFERENCE_BACKEND }, SourceValidation.needsMpsChecker(spec))
-
-        assertFalse(SourceValidation.needsMpsChecker(wcnf))
-        assertFalse("mpsSolchecker" in tasks(wcnf), tasks(wcnf))
-        // A scheduled run, or a confirmation, asks for validation, and its selections may pick MPS problems.
-        val scheduled = SourceValidation.scheduled(wcnf)
-        assertTrue(SourceValidation.needsMpsChecker(scheduled))
-        assertContains(tasks(scheduled), SourceValidation.MPS_CHECKER_BUILD)
-        // Asked for in one arm only.
-        assertTrue(SourceValidation.needsMpsChecker(wcnf.copy(configs = listOf(mapOf("ref" to "aaa"),
-            mapOf("ref" to "bbb", SourceValidation.PARAM to "true")))))
-        val reference = ExperimentSpec("r", listOf(mapOf("suite" to "miplib")),
-            base = mapOf("backend" to REFERENCE_BACKEND, SourceValidation.PARAM to "true"))
-        assertFalse(SourceValidation.needsMpsChecker(reference))
-        assertEquals(":klause-bench:installDist", tasks(reference))
-        val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
-        assertFalse(SourceValidation.needsMpsChecker(profile))
-        assertTrue(SourceValidation.needsMpsChecker(profile.copy(base = mapOf(SourceValidation.PARAM to "true"))))
-        // A fixed problem list says each problem's format: a validated one without MPS needs no checker.
-        val listed = scheduled.copy(problems = emptyList(), problemList = listOf(
-            Problem("mse-wcnf", "a", format = "WCNF"), Problem("xcsp3-cop", "b", format = "XCSP3")))
-        assertFalse(SourceValidation.needsMpsChecker(listed))
-        assertTrue(SourceValidation.needsMpsChecker(listed.copy(problemList = listed.problemList + Problem("miplib", "c", format = "mps"))))
-        assertTrue(SourceValidation.needsMpsChecker(listed.copy(problemList = listed.problemList + Problem("miplib", "c"))))
+    fun `a Klause build never packages the MIPLIB solchecker, which the lab runs itself`() {
+        assertEquals(":klause-cli:installJvmDist :klause-bench:installDist", klauseBuildTasks(referenceOnly = false))
+        assertEquals(":klause-bench:installDist", klauseBuildTasks(referenceOnly = true))
+        val node = AwsBuildCache.worktree("/w/abc", 4, AwsBuildCache.archives("bucket", "abc"), "eu-north-1")
+        assertTrue(node.none { "mpsSolchecker" in it }, node.joinToString("\n"))
+        // A job that asks for validation builds as one that does not: job 7087's kind of checker download is gone.
+        val scheduled = SourceValidation.scheduled(ExperimentSpec("wcnf-compare", listOf(mapOf("suite" to "mse-wcnf"))))
+        assertTrue(SourceValidation.requested(scheduled))
+        assertFalse("source-validation" in Experiments.command("/w", Problem("miplib", "a", format = "MPS"),
+            Experiments.arms(scheduled).single(), null, 0, "/corpus"))
     }
 
     @Test
-    fun `a build with the checker serves a job without it, never the other way round`() {
-        assertEquals(listOf("s3://b/builds/verified-v2/abc.tar.zst"), AwsBuildCache.archives("b", "abc", mpsChecker = true))
+    fun `a build from when the checker was packaged still serves, and every build publishes plain`() {
         assertEquals(listOf("s3://b/builds/verified-v2/abc.tar.zst", "s3://b/builds/verified-v2-plain/abc.tar.zst"),
-            AwsBuildCache.archives("b", "abc", mpsChecker = false))
-        val plain = AwsBuildCache.worktree("/w/abc", 4, AwsBuildCache.archives("b", "abc", false), "r", false).joinToString("\n")
-        assertContains(plain, "publish_lab_cache 's3://b/builds/verified-v2-plain/abc.tar.zst'")
-        val checked = AwsBuildCache.worktree("/w/abc", 4, AwsBuildCache.archives("b", "abc", true), "r", true).joinToString("\n")
-        assertFalse("verified-v2-plain" in checked, checked)
+            AwsBuildCache.archives("b", "abc"))
+        val steps = AwsBuildCache.worktree("/w/abc", 4, AwsBuildCache.archives("b", "abc"), "r").joinToString("\n")
+        assertContains(steps, "restore_lab_cache 's3://b/builds/verified-v2/abc.tar.zst'")
+        assertContains(steps, "publish_lab_cache 's3://b/builds/verified-v2-plain/abc.tar.zst'")
 
         val built = HashSet<String>()
-        AwsBuildCache.rebuilt(built, "abc", profileCli = false, mpsChecker = false)
-        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = false, mpsChecker = false))
-        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = false, mpsChecker = true))
-        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = true, mpsChecker = false))
-        AwsBuildCache.rebuilt(built, "abc", profileCli = false, mpsChecker = true)
-        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = false, mpsChecker = true))
-        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = false, mpsChecker = false))
-        // Rebuilt without it, the worktree no longer has the checker.
-        AwsBuildCache.rebuilt(built, "abc", profileCli = true, mpsChecker = false)
-        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = false, mpsChecker = false))
-        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = true, mpsChecker = true))
-        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = true, mpsChecker = false))
-    }
-
-    /** Job 7087's setup log, trimmed: the checker's download answered HTTP 503. */
-    private val checkerDownload503 = """
-        FAILURE: Build failed with an exception.
-
-        * What went wrong:
-        Execution failed for task ':klause-bench:prepareMpsSolchecker'.
-        > Server returned HTTP response code: 503 for URL: https://miplib.zib.de/downloads/miplib2017-testscript-v1.0.4.zip
-    """.trimIndent()
-
-    @Test
-    fun `a build that fails only on the checker download goes ahead without it on its last try`() {
-        assertTrue(SourceValidation.checkerDownloadFailed(checkerDownload503))
-        val twoFailures = checkerDownload503 + "\n\n* What went wrong:\nExecution failed for task ':klause-core:compileKotlin'.\n"
-        assertFalse(SourceValidation.checkerDownloadFailed(twoFailures))
-        assertFalse(SourceValidation.checkerDownloadFailed(checkerDownload503.replace("prepareMpsSolchecker", "compileMpsSolchecker")))
-        assertFalse(SourceValidation.checkerDownloadFailed("Could not resolve all files for configuration ':klause-bench:runtimeClasspath'."))
-
-        fun attempt(checker: Boolean, lastTry: Boolean, output: String, plainFails: Boolean = false): Pair<Result<Boolean>, List<String>> {
-            val calls = ArrayList<String>()
-            val result = runCatching {
-                SourceValidation.buildWithChecker(checker, lastTry, skipped = { calls += "warned" }, output = { output }) { c ->
-                    calls += if (c) "with" else "without"
-                    if (c || plainFails) error("build failed")
-                }
-            }
-            return result to calls
-        }
-        // Tries left: retried as before.
-        attempt(true, lastTry = false, checkerDownload503).let { (result, calls) ->
-            assertTrue(result.isFailure); assertEquals(listOf("with"), calls)
-        }
-        // The last try goes ahead without the checker, and the job's log says so.
-        attempt(true, lastTry = true, checkerDownload503).let { (result, calls) ->
-            assertEquals(false, result.getOrThrow()); assertEquals(listOf("with", "warned", "without"), calls)
-        }
-        // Any other failure still fails the build.
-        attempt(true, lastTry = true, twoFailures).let { (result, calls) ->
-            assertTrue(result.isFailure); assertEquals(listOf("with"), calls)
-        }
-        attempt(true, lastTry = true, checkerDownload503, plainFails = true).let { (result, calls) ->
-            assertTrue(result.isFailure); assertEquals(listOf("with", "warned", "without"), calls)
-        }
-        assertContains(SourceValidation.checkerSkipped("abc", 3), "missing packaged MIPLIB solchecker")
+        AwsBuildCache.rebuilt(built, "abc", profileCli = false)
+        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = false))
+        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = true))
+        AwsBuildCache.rebuilt(built, "abc", profileCli = true)
+        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = false))
+        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = true))
+        // Old records whose bench lacked the checker still read unchecked.
         assertTrue(SourceValidation.checkerFault("MPS source checking failed: missing packaged MIPLIB solchecker"))
     }
 
