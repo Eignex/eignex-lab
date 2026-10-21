@@ -548,6 +548,60 @@ class StoreTest {
     }
 
     @Test
+    fun `while a node is up the local machine takes a local-only job before an older auto job of equal priority`() {
+        val store = store()
+        val auto = autoJob(store, "auto")
+        val local = autoJob(store, "local", host = Experiments.LAB_HOST)
+
+        assertEquals(listOf(local, auto), store.queueOrder(nodesUp = true))
+        assertEquals(listOf(local, local), listOf(store.peek(nodesUp = true), store.localNext(nodesUp = true)))
+        assertEquals(listOf(local, auto), store.queue(nodesUp = true))
+        assertEquals(local, store.next(nodesUp = true)?.id)
+        assertEquals(listOf(auto), store.nodeQueue().map { it.id })
+    }
+
+    @Test
+    fun `with no node up or launching the older auto job goes first at equal priority`() {
+        val store = store()
+        val auto = autoJob(store, "auto")
+        val local = autoJob(store, "local", host = Experiments.LAB_HOST)
+
+        assertEquals(listOf(auto, local), store.queueOrder(nodesUp = false))
+        assertEquals(listOf(auto, auto), listOf(store.peek(nodesUp = false), store.localNext(nodesUp = false)))
+        assertEquals(listOf(auto, local), store.queue(nodesUp = false))
+        assertEquals(auto, store.next(nodesUp = false)?.id)
+    }
+
+    @Test
+    fun `a higher-priority auto job goes ahead of a local-only one whether or not a node is up`() {
+        for (nodesUp in listOf(false, true)) {
+            val store = store()
+            val local = autoJob(store, "local", host = Experiments.LAB_HOST)
+            val auto = autoJob(store, "auto", priority = 1)
+
+            assertEquals(listOf(auto, local), store.queueOrder(nodesUp), "nodesUp=$nodesUp")
+            assertEquals(auto, store.next(nodesUp)?.id, "nodesUp=$nodesUp")
+        }
+    }
+
+    @Test
+    fun `the local machine's next agrees with the job it takes whether or not a node is up`() {
+        for (nodesUp in listOf(false, true)) {
+            val store = store()
+            autoJob(store, "auto")
+            autoJob(store, "sweep@abc", host = Experiments.LAB_HOST)
+            autoJob(store, "low", priority = -1, host = Experiments.LAB_HOST)
+
+            val next = store.localNext(nodesUp)
+            assertEquals(next, store.next(nodesUp)?.id, "nodesUp=$nodesUp")
+            // Busy at equal priority: nothing is about to be taken, and the running job keeps the machine.
+            assertEquals(null, store.localNext(nodesUp), "nodesUp=$nodesUp")
+            val running = store.active(withCommands = false).single { it.status == Status.RUNNING }.id
+            assertEquals(false, store.shouldYield(running), "nodesUp=$nodesUp")
+        }
+    }
+
+    @Test
     fun `an auto job the local machine took and gave back competes with local jobs by priority`() {
         val store = store()
         val auto = autoJob(store, "a", priority = 5)

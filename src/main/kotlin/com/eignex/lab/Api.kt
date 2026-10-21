@@ -129,7 +129,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
-            val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name, store.queue(), estimates::lookup)
+            val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name,
+                store.queue(nodesUp = config.aws != null && nodesUp(readPoolReport(config), now())), estimates::lookup)
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {

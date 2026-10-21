@@ -643,11 +643,12 @@ class AwsWorker(
      * The work waiting for AWS, as [Demand]s: the queued jobs a node may take, in queue order, and the unclaimed
      * problems of the jobs running on AWS. A queued job the local machine could run counts only at
      * [AwsConfig.nodeMinPriority] or above, and the one the local machine takes next, being free or about to give way
-     * to it ([Store.localNext]), is left to it; one only AWS can run always counts. A queued AWS job no size within the
+     * to it ([Store.localNext], told whether a node is up or launching as the runner's [Store.next] is), is left to it;
+     * one only AWS can run always counts. A queued AWS job no size within the
      * quota can hold fails here, as no node could ever take it.
      */
     private fun demands(): Pair<List<Demand>, List<Demand>> {
-        val localNext = store.localNext()
+        val localNext = store.localNext(active)
         val queued = store.nodeQueue().mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
             if (job.id == localNext) return@mapNotNull null

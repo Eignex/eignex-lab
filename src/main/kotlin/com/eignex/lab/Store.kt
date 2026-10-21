@@ -621,10 +621,12 @@ class Store(file: Path) {
      * local machine alone and the `auto` ones no node has claimed, as one, by priority whatever their placement. Among
      * equals, the job whose series last finished a run longest ago goes first, one that never has before any that has,
      * then the oldest: so a schedule that just ran cannot keep going ahead of one that has waited. A series is a
-     * schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name.
+     * schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name. While [nodesUp], a cloud node is
+     * up or launching to take the `auto` jobs, so among equal priorities the jobs placed on the local machine alone go
+     * first, before series and age decide.
      */
     @Synchronized
-    fun next(): Job? = transaction {
+    fun next(nodesUp: Boolean = false): Job? = transaction {
         val running = connection.prepareStatement(
             "SELECT id FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1",
         ).use {
@@ -632,7 +634,7 @@ class Store(file: Path) {
             it.setString(2, Experiments.LAB_HOST)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
-        val id = running ?: queueOrder().firstOrNull()?.also { claimed ->
+        val id = running ?: queueOrder(nodesUp).firstOrNull()?.also { claimed ->
             // An auto job is taken where it goes: from now on it is the local machine's job, resumed there after a
             // pause or a restart, and `auto` marks that it could have gone elsewhere.
             connection.prepareStatement(
@@ -668,16 +670,17 @@ class Store(file: Path) {
 
     /** The job [next] would take now, without taking it: the first of the local machine's queue ([queueOrder]). */
     @Synchronized
-    fun peek(): Long? = queueOrder().firstOrNull()
+    fun peek(nodesUp: Boolean = false): Long? = queueOrder(nodesUp).firstOrNull()
 
     /**
      * The job the local machine is about to take, which a node must leave to it: the first of its queue when the local
      * machine is free, or when the job it runs gives way to that one between cases ([shouldYield]). Null when the local
-     * machine keeps what it runs.
+     * machine keeps what it runs. [nodesUp] is what [next] is given, whether a cloud node is up or launching, so the two
+     * agree on the job.
      */
     @Synchronized
-    fun localNext(): Long? {
-        val first = peek() ?: return null
+    fun localNext(nodesUp: Boolean = false): Long? {
+        val first = peek(nodesUp) ?: return null
         val running = connection.prepareStatement("SELECT priority FROM jobs WHERE status = ? AND $HOST = ? ORDER BY id LIMIT 1").use {
             it.setString(1, Status.RUNNING.name)
             it.setString(2, Experiments.LAB_HOST)
@@ -1210,10 +1213,12 @@ class Store(file: Path) {
     /**
      * The local machine's queue in the order [next] takes it: the queued, unpaused jobs placed on the local machine
      * alone or taken by it, and the `auto` jobs no node has claimed, as one queue by priority, then series, then age.
+     * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities ([LOCAL_FIRST_ORDER]).
      */
     @Synchronized
-    fun queueOrder(): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $QUEUE_ORDER",
+    fun queueOrder(nodesUp: Boolean = false): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) " +
+            if (nodesUp) LOCAL_FIRST_ORDER else QUEUE_ORDER,
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.setString(2, Experiments.LAB_HOST)
@@ -1221,10 +1226,14 @@ class Store(file: Path) {
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
     }
 
-    /** Every queued, unpaused job, wherever it may run, by priority, series and age: the queue as the pages show it. */
+    /**
+     * Every queued, unpaused job, wherever it may run, by priority, series and age: the queue as the pages show it.
+     * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities, as [queueOrder].
+     */
     @Synchronized
-    fun queue(): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 $QUEUE_ORDER",
+    fun queue(nodesUp: Boolean = false): List<Long> = connection.prepareStatement(
+        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
+            if (nodesUp) LOCAL_FIRST_ORDER else QUEUE_ORDER,
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
@@ -1413,13 +1422,13 @@ private const val TIMED = "(status IN ('DONE', 'FAILED') AND started_at IS NOT N
 private const val SERIES_J = "CASE WHEN instr(jobs.name, '@') > 0 THEN substr(jobs.name, 1, instr(jobs.name, '@') - 1) ELSE jobs.name END"
 private const val SERIES_R = "CASE WHEN instr(r.name, '@') > 0 THEN substr(r.name, 1, instr(r.name, '@') - 1) ELSE r.name END"
 
-/** How queued jobs are ordered: by priority, then the series that last finished a run longest ago, then age. */
-private const val PRIORITY_ORDER = "priority DESC, (SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
+/** How queued jobs of equal priority are ordered: the series that last finished a run longest ago first, then age. */
+private const val SERIES_ORDER = "(SELECT MAX(r.finished_at) FROM jobs r WHERE r.finished_at IS NOT NULL " +
     "AND r.status = 'DONE' AND $SERIES_R = $SERIES_J), id"
 
 /** How queues are ordered, the local machine's ([Store.queueOrder]), a node's ([Store.nodeQueue]) and the one the pages
  *  show ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
-private const val QUEUE_ORDER = "ORDER BY $PRIORITY_ORDER"
+private const val QUEUE_ORDER = "ORDER BY priority DESC, $SERIES_ORDER"
 
 
 /** Whether job `j` is instrumented ([ExperimentSpec.instrumented]), as 1 or 0. */
@@ -1427,6 +1436,11 @@ private const val INSTRUMENTED = "(json_extract(j.experiment, '\$.profileCompila
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
+
+/** The local machine's order while a cloud node is up or launching: by priority, then the jobs placed on the local
+ *  machine alone before those a node may take, then series and age. A node can take the `auto` jobs, so local-only
+ *  work need not wait behind them; with no node coming, the tie-break would only hold the `auto` jobs back. */
+private const val LOCAL_FIRST_ORDER = "ORDER BY priority DESC, CASE WHEN $HOST = 'lab' THEN 0 ELSE 1 END, $SERIES_ORDER"
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()

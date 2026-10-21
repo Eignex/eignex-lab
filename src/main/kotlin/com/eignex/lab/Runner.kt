@@ -120,7 +120,8 @@ class Runner(
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
-            val job = store.next()
+            // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
+            val job = store.next(nodesUp = awsActive())
             if (job == null) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
@@ -371,7 +372,8 @@ class Runner(
     /** Whether a lab update waits: the AWS worker then starts no new job, so the running ones drain and it can land. */
     internal fun updateWaiting(): Boolean = updater.due()
 
-    /** Whether a cloud job is running, which holds a lab update back. */
+    /** Whether a cloud node is up or launching ([AwsWorker.active]), which holds a lab update back and puts the
+     *  local-only jobs first among equal priorities ([Store.next]); always false without AWS settings. */
     private var awsActive: () -> Boolean = { false }
 
     /** Cores the running cases at [indices] of [job] hold. */
