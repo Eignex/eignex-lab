@@ -398,12 +398,16 @@ class Runner(
      * finds it unmoved fetches nothing and checks can come every minute or two; the mirror is fetched only when it
      * moved, or for a ref origin does not advertise, such as a commit.
      */
-    private fun enqueueScheduled() {
+    internal fun enqueueScheduled() {
         val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
         for (schedule in due) {
             store.scheduleChecked(schedule.id, now())
-            // A launch asked for while the last run is still going waits for it rather than queueing a second.
-            if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
+            // A launch asked for while the last run is still going waits for it rather than queueing a second, and
+            // stays due, so it queues on the first poll after that run ends instead of a whole interval later.
+            if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) {
+                if (schedule.launchRequested) store.checkNow(schedule.id)
+                continue
+            }
             val advertised = advertised(schedule.ref)
             if (!schedule.launchRequested && advertised != null && advertised == schedule.lastSha) continue
             val fetched = runCatching {

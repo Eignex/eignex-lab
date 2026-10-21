@@ -558,7 +558,13 @@ internal fun trendPage(
     }
     append("</p></header>")
     if (runs.isEmpty()) {
-        append("<p class=\"muted\">No run of this schedule's current experiment has results yet.</p></body></html>")
+        append("<p class=\"muted\">")
+        append(when {
+            computing > 0 -> "Computing ${if (all) "its runs" else "this experiment's runs"}; they appear here as they are ready."
+            all -> "No run of this schedule has results yet."
+            else -> "No run of this schedule's current experiment has results yet."
+        })
+        append("</p>$TREND_RELOAD</body></html>")
         return@buildString
     }
     append("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">x-axis</span>")
@@ -598,6 +604,7 @@ internal fun trendPage(
     // Every field, defaults included: the script reads each run's fields without guarding for absent ones.
     append(trendJson.encodeToString(runs).replace("</", "<\\/"))
     append("</script>")
+    append(TREND_RELOAD)
     append(SCRIPT)
     append(TREND_SCRIPT)
     append("</body></html>")
@@ -1743,6 +1750,30 @@ private const val TAIL_BYTES = 65_536
 internal enum class Tab(val label: String, val href: String) {
     QUEUE("Queue", "/"), REGRESSION("Regression", "/trend"), REFERENCE("Reference", "/references")
 }
+
+/**
+ * The trend page has no live parts for [refresh] to swap: its charts are drawn once from its data. While points are
+ * still being computed ([trendPage]'s `computing`, which marks the page live), it reloads whole once the page the
+ * server would serve now has more runs, so the points appear without the reader asking again.
+ */
+private const val TREND_RELOAD = """<script>
+if (document.body.hasAttribute('data-refresh')) {
+  const shown = document.getElementById('trend-data');
+  const count = shown ? JSON.parse(shown.textContent).length : 0;
+  const poll = setInterval(async function () {
+    if (document.hidden) return;
+    try {
+      const response = await fetch(location.href, {headers: {Accept: 'text/html'}});
+      if (!response.ok) return;
+      const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const data = fresh.getElementById('trend-data');
+      const now = data ? JSON.parse(data.textContent).length : 0;
+      if (now !== count) location.reload();
+      else if (!fresh.body.hasAttribute('data-refresh')) clearInterval(poll);
+    } catch (e) {}
+  }, 5000);
+}
+</script>"""
 
 private fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE) = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE</style></head>

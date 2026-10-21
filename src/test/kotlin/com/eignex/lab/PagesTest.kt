@@ -309,6 +309,20 @@ class PagesTest {
     }
 
     @Test
+    fun `a trend still computing its points says so and reloads itself as they arrive`() {
+        val computing = trendPage("sweep", emptyList(), "https://example.com/repo", earlier = 0, all = true, computing = 4)
+        assertContains(computing, "Computing its runs; they appear here as they are ready.")
+        assertContains(computing, "<body data-refresh")
+        assertContains(computing, "location.reload()")
+        assertFalse("current experiment" in computing)
+
+        assertContains(trendPage("sweep", emptyList(), "https://example.com/repo", all = true), "No run of this schedule has results yet.")
+        val current = trendPage("sweep", emptyList(), "https://example.com/repo", earlier = 3)
+        assertContains(current, "No run of this schedule's current experiment has results yet.")
+        assertFalse("<body data-refresh" in current)
+    }
+
+    @Test
     fun `a running AWS case's phase reads as what the lab is doing`() {
         val backoff = CasePhase(CasePhase.Phase.RETRY_BACKOFF, 0, attempt = 2, attempts = 8, retryAt = 90_000)
         val transfer = CasePhase(CasePhase.Phase.TRANSFERRING_OUTPUT, 0, elapsedMs = 10_175)
