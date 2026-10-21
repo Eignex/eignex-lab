@@ -54,16 +54,21 @@ class CaseChecks(
     private val pool = Executors.newSingleThreadExecutor { Thread(it, "source-checks").apply { isDaemon = true } }
     private val pending = ConcurrentHashMap<Long, MutableList<Future<*>>>()
 
-    /** Case [index] of [jobId] has kept its record: check it later when its arm asked for validation and the lab checks
-     *  its format. */
+    /**
+     * Case [index] of [jobId] has kept its record: check it later when its arm asked for validation and the lab checks
+     * its format. Nothing here fails the case or its job: a checker the lab cannot even set up is logged, and the case
+     * keeps the solver's claim, unchecked.
+     */
     fun afterCase(jobId: Long, index: Int) {
-        val (problem, arm) = store.caseOf(jobId, index) ?: return
-        if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(arm.values)) return
-        if (!checker.covers(problem.format)) return
-        val future = pool.submit {
-            runCatching { check(jobId, index, problem) }.onFailure { log(jobId, "case $index: source check failed: ${it.message}") }
-        }
-        pending.computeIfAbsent(jobId) { Collections.synchronizedList(mutableListOf()) }.add(future)
+        runCatching {
+            val (problem, arm) = store.caseOf(jobId, index) ?: return
+            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(arm.values)) return
+            if (!checker.covers(problem.format)) return
+            val future = pool.submit {
+                runCatching { check(jobId, index, problem) }.onFailure { log(jobId, "case $index: source check failed: ${it.message}") }
+            }
+            pending.computeIfAbsent(jobId) { Collections.synchronizedList(mutableListOf()) }.add(future)
+        }.onFailure { log(jobId, "case $index: source check not queued: ${it.message}") }
     }
 
     /** Wait for [jobId]'s queued checks to end. */

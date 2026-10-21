@@ -45,6 +45,11 @@ data class Outcome(
     /** The solver's own objective and proof claim, kept by a check that withdrew them ([claimedSolution]). */
     val reportedObjective: String? = null,
     val reportedProven: Boolean = false,
+    /**
+     * Whether a checker accepted the witness: the lab's verdict, or the bench's where the lab's decided nothing, so a
+     * lab check that failed never undoes the bench's acceptance. Only a float approximation's claim needs it to count.
+     */
+    val accepted: Boolean = false,
 ) {
     /** Solved beats unsolved, and proven (an optimum, or infeasibility) beats merely solved. */
     val rank: Int get() = when {
@@ -69,20 +74,24 @@ data class Outcome(
             // bench's check, if it made one, only for records the lab has not checked.
             val lab = fields["labCheck"] as? JsonObject
             fun labField(name: String) = (lab?.get(name) as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
-            val validation = if (lab != null) labField("state") else stat(fields, "sourceValidation")
+            val bench = stat(fields, "sourceValidation")
+            val validation = if (lab != null) labField("state") else bench
             val reason = if (lab != null) labField("reason") else stat(fields, "sourceValidationReason")
             val approximation = stat(fields, "floatApproximation") == "true"
-            // A checker that never ran withdrew nothing: the solver's own claim stands, unchecked ([SourceValidation.checkerFault]).
-            // A lab verdict is judged on the solver's own claim, which a bench check may have withdrawn.
-            val restored = (lab != null || (validation == "unknown" && SourceValidation.checkerFault(reason))) &&
-                field("feasible")?.booleanOrNull == null && stat(fields, "reportedFeasible") in setOf("true", "false")
+            // Only a rejection withdraws a claim ([SourceValidation.rejects]): the solver's own claim, which a bench
+            // check moved aside when it could not decide or could not run, is read back whatever the check said, and
+            // the verdict in force rejects it or leaves it standing.
+            val restored = withdrawn(fields)
             val reportedFeasible = if (restored) stat(fields, "reportedFeasible")?.toBooleanStrictOrNull() else field("feasible")?.booleanOrNull
             val objective = if (restored) stat(fields, "reportedObjective")?.toDoubleOrNull() else field("objective")?.doubleOrNull
             val proven = if (restored) stat(fields, "reportedProven") == "true" else field("proven")?.booleanOrNull ?: false
             val timeToBest = field("timeToBestMs")?.longOrNull ?: if (restored) producerTimeToBestMs(fields) else null
             val policy = (fields["validationPolicy"] as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
-            val rejected = validation == "invalid" ||
-                (approximation && (reportedFeasible == false || (reportedFeasible == true && validation != "valid")))
+            val accepted = validation == "valid" || (!SourceValidation.rejects(validation) && bench == "valid")
+            // A float approximation's claim is on a grid, not on the source: it counts only once a checker accepts it,
+            // with or without a failed check beside it.
+            val rejected = SourceValidation.rejects(validation) ||
+                (approximation && (reportedFeasible == false || (reportedFeasible == true && !accepted)))
             return Outcome(
                 optimize = field("kind")?.content == "optimize",
                 maximize = field("maximize")?.booleanOrNull ?: false,
@@ -103,11 +112,19 @@ data class Outcome(
                 claimedSolution = reportedFeasible == true || stat(fields, "reportedFeasible") == "true",
                 reportedObjective = stat(fields, "reportedObjective")?.takeUnless { it == "null" },
                 reportedProven = stat(fields, "reportedProven") == "true",
+                accepted = accepted,
                 solveTimeMs = stat(fields, "solveTime")?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
                     ?.let { (it * MS_PER_S).toLong() },
                 elapsedMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 },
             )
         }
+
+        /**
+         * Whether a bench check moved [fields]' claim aside: no claim of its own in the record, the solver's kept in
+         * `stats.reportedFeasible` and beside it. [of] reads it back; [Confirm] reads its exact objective back.
+         */
+        internal fun withdrawn(fields: JsonObject): Boolean =
+            (fields["feasible"] as? JsonPrimitive)?.booleanOrNull == null && stat(fields, "reportedFeasible") in setOf("true", "false")
 
         private const val MS_PER_S = 1000.0
         private const val KLAUSE = "klause"
@@ -156,7 +173,7 @@ data class ArmSummary(
 
 /**
  * Whether [arms] met on problems under different validation policies: one side's solver report counted as a solution
- * or proof against the other's checked witness, and a check that withdrew a claim counted as no solution.
+ * or proof against the other's checked witness, and a rejected claim counted as no solution.
  */
 fun mixesValidation(arms: List<ArmSummary>): Boolean = arms.any { it.validationMismatches > 0 }
 

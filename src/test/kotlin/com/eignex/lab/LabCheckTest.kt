@@ -88,7 +88,11 @@ class LabCheckTest {
 
     @Test
     fun `a lab verdict speaks for the solver's claim that a bench check withdrew`() {
-        assertNull(outcome(withdrawn, null).feasible)
+        // The bench's check could not decide, so the claim stands without a lab verdict too, marked indeterminate.
+        val undecidedByBench = outcome(withdrawn, null)
+        assertEquals(listOf(true, 81.0, 5000L), listOf(undecidedByBench.feasible, undecidedByBench.objective, undecidedByBench.timeToBestMs))
+        assertEquals(WitnessCheck.INDETERMINATE, undecidedByBench.witness)
+        assertNull(outcome(withdrawn, LabCheck.INVALID).feasible)
         val accepted = outcome(withdrawn, LabCheck.VALID)
         assertEquals(listOf(true, 81.0, 5000L), listOf(accepted.feasible, accepted.objective, accepted.timeToBestMs))
         assertEquals(WitnessCheck.ACCEPTED, accepted.witness)

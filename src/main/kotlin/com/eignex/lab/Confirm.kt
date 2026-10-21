@@ -123,26 +123,21 @@ object Confirm {
     }
 
     /**
-     * Exact text is authoritative: malformed exact text cannot fall back to a rounded display value. A claim the lab
-     * restores after its checker could not run ([SourceValidation.checkerFault]), or judges itself (a `labCheck`), is
-     * read from the solver's own report.
+     * Exact text is authoritative: malformed exact text cannot fall back to a rounded display value. A claim a bench
+     * check moved aside ([Outcome.withdrawn]) is read from the solver's own report, as [Outcome.of] reads it, so a
+     * check that did not reject it changes no objective here either.
      */
     private fun objective(case: CaseResult): Exact? {
         val record = case.record as? JsonObject ?: return null
+        val reported = Outcome.withdrawn(record)
         val stats = record["stats"] as? JsonObject
-        fun stat(name: String) = (stats?.get(name) as? JsonPrimitive)?.content?.takeUnless { it == "null" }
-        if ((record["objective"] as? JsonPrimitive)?.content.let { it == null || it == "null" } &&
-            (record["labCheck"] is JsonObject ||
-                stat("sourceValidation") == "unknown" && SourceValidation.checkerFault(stat("sourceValidationReason")))
-        ) {
-            return stat("reportedExactObjective")?.let(Exact::parse)
-        }
-        val rawExact = record["exactObjective"]
+        val rawExact = if (reported) stats?.get("reportedExactObjective") else record["exactObjective"]
         if (rawExact != null && rawExact !is JsonPrimitive) return null
         val exact = rawExact as? JsonPrimitive
         val text = exact?.content?.takeUnless { it == "null" }
         if (text != null) return Exact.parse(text)
-        val value = (record["objective"] as? JsonPrimitive)?.content ?: return null
+        val value = ((if (reported) stats?.get("reportedObjective") else record["objective"]) as? JsonPrimitive)
+            ?.content?.takeUnless { it == "null" } ?: return null
         return runCatching {
             val decimal = BigDecimal(value)
             val scale = decimal.scale()

@@ -423,9 +423,9 @@ private fun outcomeWord(outcome: Outcome?, status: Status): String = when {
     outcome.error -> "<span class=\"FAILED\">error</span>"
     outcome.unsupported != null -> "<span class=\"PARTIAL\" title=\"${esc(outcome.unsupported)}\">unsupported</span>"
     outcome.loadError != null -> "<span class=\"FAILED\" title=\"${esc(outcome.loadError)}\">load error</span>"
-    outcome.sourceValidation == "invalid" ->
+    SourceValidation.rejects(outcome.sourceValidation) ->
         "<span class=\"FAILED\" title=\"${esc(outcome.sourceValidationReason.orEmpty())}\">invalid solution</span>"
-    outcome.floatApproximation && outcome.sourceValidation != "valid" ->
+    outcome.floatApproximation && !outcome.accepted ->
         "<span class=\"PARTIAL\" title=\"${esc(outcome.sourceValidationReason.orEmpty())}\">unchecked grid</span>"
     outcome.floatApproximation && outcome.feasible == true ->
         "<span title=\"source-checked grid witness; source optimality unproved\">" +

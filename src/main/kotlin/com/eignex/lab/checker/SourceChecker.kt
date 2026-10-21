@@ -27,8 +27,8 @@ interface FormatChecker {
     /** The tool, for [LabCheck.checker]. */
     val checker: String
 
-    /** Check [case] with scratch directory [work], which is deleted afterwards. A thrown exception is a check that
-     *  could not run ([LabCheck.NOT_RUN]). */
+    /** Check [case] with scratch directory [work], which is deleted afterwards. Anything thrown is a check that could
+     *  not run ([LabCheck.NOT_RUN]), with what was thrown as the reason; a checker that hangs past its time is too. */
     fun check(case: CheckCase, work: File): Verdict
 }
 
@@ -36,7 +36,9 @@ interface FormatChecker {
  * The dispatcher: picks the [adapters] entry for a case's format, finds its original source in the lab's corpus
  * ([locator]), and runs it over the final witness the case's record kept. Only a Klause record that claims a solution
  * is checked; anything else has no witness to check and gets no verdict. Every scratch file goes under [workRoot] and
- * is deleted when the check ends, whatever it decided.
+ * is deleted when the check ends, whatever it decided. Whatever goes wrong while checking, here or in an adapter, is a
+ * verdict of [LabCheck.NOT_RUN] with the reason, never a failure: the case keeps its record and status, and a check
+ * that did not run leaves the solver's claim counting as it was reported ([com.eignex.lab.SourceValidation.rejects]).
  */
 class SourceChecker(
     private val adapters: List<FormatChecker>,
@@ -67,20 +69,28 @@ class SourceChecker(
             checkerVersion = verdict.version, checkerSha256 = verdict.sha256, witnessSha256 = witness?.let { sha256(it.toByteArray()) },
             sourceSha256 = hashes, checkedAt = started, elapsedMs = clock() - started,
         )
+        return try {
+            run(adapter, problem, record, witness, hashes)
+        } catch (e: InterruptedException) {
+            throw e
+        } catch (e: Throwable) {
+            if (e is VirtualMachineError && e !is StackOverflowError) throw e
+            Verdict(LabCheck.NOT_RUN, "the checker could not run: ${e.message ?: e::class.simpleName}")
+        }.let(::done)
+    }
+
+    /** [adapter]'s verdict on [record]'s [witness], in a scratch directory deleted afterwards. */
+    private fun run(adapter: FormatChecker, problem: Problem, record: JsonObject, witness: String?, hashes: Map<String, String>): Verdict {
         if (witness.isNullOrBlank()) {
-            return done(Verdict(LabCheck.NOT_RUN, "the record kept no final witness (the bench keeps one of at most 8 MiB)"))
+            return Verdict(LabCheck.NOT_RUN, "the record kept no final witness (the bench keeps one of at most 8 MiB)")
         }
         val sources = locator.locate(problem, hashes).getOrElse {
-            return done(Verdict(LabCheck.NOT_RUN, "original source not found on the lab: ${it.message}"))
+            return Verdict(LabCheck.NOT_RUN, "original source not found on the lab: ${it.message}")
         }
         workRoot.mkdirs()
         val work = Files.createTempDirectory(workRoot.toPath(), "check-").toFile()
         return try {
-            done(adapter.check(CheckCase(record, sources, witness), work))
-        } catch (e: InterruptedException) {
-            throw e
-        } catch (e: Exception) {
-            done(Verdict(LabCheck.NOT_RUN, "the checker could not run: ${e.message ?: e::class.simpleName}"))
+            adapter.check(CheckCase(record, sources, witness), work)
         } finally {
             work.deleteRecursively()
         }

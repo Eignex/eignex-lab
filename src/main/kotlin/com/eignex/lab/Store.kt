@@ -1501,7 +1501,7 @@ internal val SCORING_STATS = listOf(
 
 /**
  * The producer record an MPS or SMT check keeps, a JSON text of tens of kilobytes. Scoring reads only its time to the
- * best solution, for a claim the check withdrew and the lab restores ([SourceValidation.checkerFault]), so a scoring
+ * best solution, for a claim the check withdrew and the lab restores ([Outcome.withdrawn]), so a scoring
  * record carries it cut to that one field, and only where the record's own claim was withdrawn.
  */
 private const val PRODUCER_RECORD = "sourceValidationProducerRecordJson"

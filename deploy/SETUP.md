@@ -450,6 +450,24 @@ collection the lab runs. Checks run one at a time on a background thread while t
 ends only once its cases' checks are stored. Scratch inputs go under `$LAB_DATA/checkers/tmp` and are deleted after
 each check; only the verdict is kept.
 
+**A failed check never changes a result.** Only a definite rejection, a verdict of `invalid`, changes how a Klause
+result counts: the claim is withdrawn and the case reads `invalid solution`. Every other outcome of a check leaves the
+result exactly as the solver reported it (feasible or infeasible, proven or not, its objective and time to it, solved
+or unsolved) in the job page, the trend, confirmation flips, the scoreboard, the stats, comparisons and the
+reference comparison, and only adds a mark: `unchecked` for a checker that could not run (`not-run`: a missing tool
+or source, a failed download, a crash, a timeout, or any exception the dispatcher or an adapter throws) or that does
+not cover the claim (`unsupported`), and `check indeterminate`, with the reason on hover, for one that ran and could
+not decide (`unknown`). A checker that throws or hangs never fails its case or its job: the case keeps its record and
+status, and the verdict is `not-run` with the reason. The same holds for records the bench checked itself: a bench
+`unknown` that moved the solver's claim aside into `stats.reportedFeasible`, `reportedObjective`,
+`reportedExactObjective` and `reportedProven` is read back as the solver's claim, whatever the reason (job 7068's
+`ex9`, whose input the bench's checker could not read, counts its objective 81, marked `check indeterminate`); only a
+bench `invalid` withdraws it. Where the lab has a verdict it speaks instead of the bench's, so a lab check that fails
+leaves the solver's claim standing even over a bench rejection; a float approximation keeps the credit a bench
+acceptance gave it unless the lab rejects it. One rule, `SourceValidation.rejects` read by `Outcome.of`, decides
+this for every reader, and confirmations read a withdrawn claim's exact objective the same way
+(`CheckerInvariantTest`).
+
 **Where verdicts are.** In the `lab_check` column of the case's row in `lab.db`, as JSON: `policy`, `state`
 (`valid`, `invalid`, `unknown`, `not-run` or `unsupported`), `reason`, `checker`, `checkerVersion`, `checkerSha256`
 (the jar or binary that ran), `witnessSha256`, `sourceSha256` (as checked, keyed like `sourceHashes`), `checkedAt` and
@@ -473,7 +491,8 @@ a node: the lab provisions its own. A node restores a commit's build from `build
 from `builds/verified-v2/<sha>.tar.zst`, kept from when builds packaged the checker, whose packaged checker is simply
 never run; it publishes the plain one. Old records from benches built without the checker (`missing packaged MIPLIB
 solchecker`, jobs 7068 and 7075) still read `unchecked`, keeping the solver's reported result, and a recheck gives them
-the lab's verdict.
+the lab's verdict. Records where the bench's checker ran and could not decide keep the solver's result too, marked
+`check indeterminate`.
 
 The request is part of the spec's fingerprint, but not of its trend line: the check runs after the solve and changes
 nothing the solver does, so a schedule's checked runs continue the line its unchecked runs drew, each run marked
@@ -487,7 +506,7 @@ A case's verdict cell says how its claim was judged: by the lab's verdict where 
 `validationPolicy` (`reported-result-v1` for the solver's own report) and, under a bench checking policy, its
 `stats.sourceValidation` (`valid`, `invalid` or `unknown`) with `stats.sourceValidationReason`. A bench check that
 withdrew a claim keeps the original one in `stats.reportedFeasible`, `reportedObjective` and `reportedProven`, which a
-lab verdict judges in its place. Old records keep displaying as they did, labelled with their old policy. A verdict
+lab verdict judges in its place, and which counts as reported unless the verdict in force is `invalid`. Old records keep displaying as they did, labelled with their old policy. A verdict
 cell reads:
 
 - `checked`: the source accepted the witness (lab `valid`, or bench `valid`), so the solution is valid and earns its
@@ -509,17 +528,16 @@ the lab itself (a Maven dependency); solchecker is built and Dolmen downloaded o
 bundle already installed. Cloud nodes need none of them (their `/opt/minizinc` bundle, which has Gecode, serves the
 bench). A tool that cannot be had makes its checks `not-run`, saying why, never a failed job.
 
-- `check indeterminate`: the checker ran and could not decide (lab `unknown`, which keeps the claim's credit; bench
-  `unknown` for unsupported syntax, residual constraints, a checker limit or timeout), the reason and the reported
-  claim on hover. A bench MPS point that could not be checked earns no solution credit, so it reads `unknown` with
-  this mark.
+- `check indeterminate`: the checker ran and could not decide (lab `unknown`; bench `unknown` for unsupported
+  syntax, residual constraints, a checker limit or timeout), the reason and the reported claim on hover. The claim
+  keeps its credit as reported, a bench MPS point the bench withdrew included (job 7068's `ex9`).
 - `invalid solution`: the source rejected the witness, or the claimed objective (lab or bench `invalid`); it earns no
   credit.
 
 An undecided case has no mark. The arms table labels each arm `source-checked` or `unchecked`, with its counts on hover,
 and warns when arms met under different validation policies, problem by problem: an unchecked report counts as a
-solution or proof just as a checked witness does, and a check that withdrew a claim counts it as no solution, so their
-difference may measure the checking. `/compare` across jobs gets the same warning. The scoreboard says how many of its
+solution or proof just as a checked witness does, and a rejected claim counts as no solution, so their difference may
+measure the checking. `/compare` across jobs gets the same warning. The scoreboard says how many of its
 run's Klause solutions were checked, unchecked and indeterminate. Reference rows come only from `backend=reference`
 arms, the reference solvers' own verdicts with their own `validation`, never from a Klause run, so witness validation
 does not change what becomes a reference.
