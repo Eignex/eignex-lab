@@ -6,6 +6,8 @@ import java.nio.file.Path
 /**
  * Holds the queue while the data directory's disk has less than [minFreeBytes] free. A job started on a full disk
  * fails in setup, and every job queued behind it would fail the same way within seconds; held, they wait for space.
+ * Below the same floor, by default, [JobTrim] trims just-ended jobs despite their grace, so the queue waits only on
+ * downloads' holds, which lapse within hours.
  */
 class DiskGuard(private val minFreeBytes: Long, private val freeBytes: () -> Long) {
     private var holding = false

@@ -109,8 +109,13 @@ class Runner(
                 .onSuccess { if (it > 0) println("bound $it reference rows to their runs' source files") }
                 .onFailure { println("binding reference rows failed: ${it.message}") }
         }
-        // Ended jobs' bulk goes after a week, or sooner when the disk runs low ([JobTrim]).
-        JobTrim(config.dataDir.resolve("jobs"), store::ended, { freeBytes(config.dataDir) }, ::log).start()
+        // Ended jobs' bulk goes after a week, or sooner when the disk runs low, past its grace and never while a download
+        // holds the job ([JobTrim]).
+        JobTrim(
+            config.dataDir.resolve("jobs"), store::ended, { freeBytes(config.dataDir) }, ::log,
+            held = { store.holds().mapTo(HashSet()) { it.job } },
+            graceMs = config.trimGraceMs, criticalFreeBytes = config.trimCriticalFreeBytes,
+        ).start()
         // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
         // priorities then decide when it runs.
         thread(isDaemon = true, name = "schedules") {

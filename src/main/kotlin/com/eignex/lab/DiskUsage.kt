@@ -23,6 +23,8 @@ data class DiskReport(
     val docker: List<DockerUsage> = emptyList(),
     /** The last Docker cleanup ([DockerCleanup]), null before the first. */
     val dockerCleanup: DockerCleanupRun? = null,
+    /** The downloads' holds that have not lapsed ([Hold]), read when the report is served, not measured. */
+    val holds: List<Hold> = emptyList(),
 )
 
 /**

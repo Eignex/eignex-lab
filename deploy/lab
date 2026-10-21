@@ -60,7 +60,12 @@
 #   lab files <id>                                           list a job's files: its log, setup log, records, case output
 #   lab cat <id> <path> [tail-bytes]                         print one of them (job.log, setup.log, cases/<n>/record.json…)
 #   lab fetch <id> [dest]                                    download the job's output directory over HTTP, and its cases with
-#                                                            their lab checks as lab-cases.jsonl (as lab cases --json)
+#                                                            their lab checks as lab-cases.jsonl (as lab cases --json). It
+#                                                            holds the job first, so the lab's disk trim leaves its files
+#                                                            alone, downloads the one listing it took, and releases the hold
+#                                                            however it ends (a killed fetch's hold lapses after 2 h). A
+#                                                            listed file it cannot download fails it: it fetches the rest,
+#                                                            writes lab-fetch-missing.json naming each one, and exits 1
 #   lab corpus                                               rsync the local bench corpus to the server
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
 #   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
@@ -196,17 +201,55 @@ tail)
 files) curl -fsS "$url/jobs/$1/files" | jq -r '.[] | "\(.bytes)\t\(.path)"' ;;
 cat) curl -fsS "$url/jobs/$1/files/$2${3:+?tail=$3}" ;;
 fetch)
-  dest="${2:-lab-jobs/$1}"; mkdir -p "$dest"
-  curl -fsS "$url/jobs/$1/files" | jq -r '.[] | "\(.path)\t\(.bytes)"' | while IFS=$'\t' read -r path bytes; do
+  [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || { echo "usage: lab fetch <id> [dest]" >&2; exit 2; }
+  id="$1" dest="${2:-lab-jobs/$1}"; mkdir -p "$dest"
+  receipt="$dest/lab-fetch-missing.json"
+  # A hold keeps the lab's disk trim off the job's files while they download. It is taken before the listing, renewed
+  # as the download goes on, and released however the fetch ends; one a killed client leaves lapses after 2 h.
+  hold=$(curl -fsS -X POST "$url/jobs/$id/hold" | jq -r .id) && [[ "$hold" =~ ^[0-9a-f]+$ ]] ||
+    { echo "lab fetch: could not hold job $id's files for the download" >&2; exit 1; }
+  release() { curl -fsS -o /dev/null -X DELETE "$url/jobs/$id/hold/$hold" || echo "lab fetch: hold $hold on job $id not released; it lapses on its own" >&2; }
+  trap release EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # The files are listed once, under the hold, and exactly that list is downloaded.
+  listing=$(curl -fsS "$url/jobs/$id/files" | jq -r '.[] | "\(.path)\t\(.bytes)"')
+  renewed=$SECONDS missing="" listed=0
+  while IFS=$'\t' read -r path bytes; do
+    [[ -n "$path" ]] || continue
+    listed=$((listed + 1))
+    if (( SECONDS - renewed > 600 )); then
+      # A lapsed hold cannot be renewed; a new one takes its place.
+      curl -fsS -o /dev/null -X POST "$url/jobs/$id/hold/$hold" ||
+        hold=$(curl -fsS -X POST "$url/jobs/$id/hold" | jq -r .id) ||
+        echo "lab fetch: could not renew the hold on job $id" >&2
+      renewed=$SECONDS
+    fi
     [[ -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
     mkdir -p "$dest/$(dirname "$path")"
-    curl -fsS -o "$dest/$path" "$url/jobs/$1/files/$path"
-  done
+    code=$(curl -sS -o "$dest/$path.part" -w '%{http_code}' "$url/jobs/$id/files/$path") || true
+    if [[ "$code" == 200 ]]; then
+      mv "$dest/$path.part" "$dest/$path"
+    else
+      rm -f "$dest/$path.part"
+      missing+="$path"$'\t'"$bytes"$'\t'"${code:-000}"$'\n'
+      echo "lab fetch: $path, listed with $bytes bytes, could not be downloaded (HTTP ${code:-000})" >&2
+    fi
+  done <<< "$listing"
   # The cases as the lab's database holds them, lab checks included, which the job's files do not have. Fetched afresh
   # every time, since a recheck replaces the verdicts; a job with no cases gets none.
-  curl -fsS -o "$dest/lab-cases.jsonl.part" "$url/experiments/$1/cases.jsonl"
+  curl -fsS -o "$dest/lab-cases.jsonl.part" "$url/experiments/$id/cases.jsonl"
   if [[ -s "$dest/lab-cases.jsonl.part" ]]; then mv "$dest/lab-cases.jsonl.part" "$dest/lab-cases.jsonl"
-  else rm -f "$dest/lab-cases.jsonl.part"; fi ;;
+  else rm -f "$dest/lab-cases.jsonl.part"; fi
+  # A listed file that could not be downloaded fails the fetch, with a receipt naming each one beside what did arrive.
+  if [[ -n "$missing" ]]; then
+    printf '%s' "$missing" | jq -R -s --argjson job "$id" --argjson listed "$listed" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "$url" \
+      '{job: $job, url: $url, fetchedAt: $at, listed: $listed,
+        missing: [split("\n")[] | select(. != "") | split("\t") | {path: .[0], bytes: (.[1] | tonumber), httpStatus: .[2]}]}' > "$receipt"
+    echo "lab fetch: job $id is incomplete: $(jq '.missing | length' "$receipt") of $listed listed files missing; see $receipt" >&2
+    exit 1
+  fi
+  rm -f "$receipt" ;;
 corpus) rsync -az --info=progress2 "$corpus/" "$host:.cache/klause-bench/corpus/" ;;
 ssh) job="$1"; n="${2:-0}"; shift; shift || true
   # Instances are reached only from the server, which holds the key; their host keys are remembered by instance id,

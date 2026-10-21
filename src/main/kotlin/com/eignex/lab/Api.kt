@@ -22,6 +22,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
 import io.ktor.server.response.respondTextWriter
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -135,7 +136,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
-            if (call.wantsHtml()) call.respondText(diskPage(disk.latest), ContentType.Text.Html) else call.respond(disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList()))
+            val holds = store.holds()
+            if (call.wantsHtml()) {
+                call.respondText(diskPage(disk.latest, holds), ContentType.Text.Html)
+            } else {
+                call.respond((disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList())).copy(holds = holds))
+            }
         }
         get("/health") {
             val jobs = store.active(withCommands = false)
@@ -310,6 +316,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases)),
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
+                        holds = store.holds().filter { it.job == job.id },
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
@@ -480,6 +487,22 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val deleted = store.deleteSchedule(call.parameters["id"]!!.toLong())
             call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")
         }
+        // A download's hold on a job's files: the trim leaves the job alone until it is released or lapses ([Hold]).
+        // `?ttlSec=` asks for less than the 2 h a hold lasts, never more; a long download renews it instead.
+        post("/jobs/{id}/hold") {
+            val id = call.jobId(store) ?: return@post
+            call.respond(HttpStatusCode.Created, store.hold(id, holdMs(call.parameters["ttlSec"])))
+        }
+        post("/jobs/{id}/hold/{lease}") {
+            val id = call.jobId(store) ?: return@post
+            val hold = store.renewHold(id, call.parameters["lease"]!!, holdMs(call.parameters["ttlSec"]))
+            if (hold == null) call.respond(HttpStatusCode.NotFound, "no such hold, or it lapsed") else call.respond(hold)
+        }
+        delete("/jobs/{id}/hold/{lease}") {
+            val id = call.jobId(store) ?: return@delete
+            val released = store.releaseHold(id, call.parameters["lease"]!!)
+            call.respond(if (released) HttpStatusCode.OK else HttpStatusCode.NotFound, if (released) "released" else "no such hold")
+        }
         get("/jobs/{id}/files") {
             val id = call.jobId(store) ?: return@get
             val files = jobFiles(config.jobDir(id))
@@ -514,6 +537,14 @@ private const val MAX_COMPARED = 6
 private const val CASES_PAGE = 32
 /** The most a `?tail=` read returns, so one request cannot pull a whole large file into memory. */
 private const val MAX_TAIL_BYTES = 16L * 1024 * 1024
+
+/** A hold's length from its `ttlSec` parameter: [JobTrim.HOLD_MS] when none is given, and never more. */
+private fun holdMs(ttlSec: String?): Long {
+    if (ttlSec == null) return JobTrim.HOLD_MS
+    val seconds = ttlSec.toLongOrNull()
+    require(seconds != null && seconds in 1..JobTrim.HOLD_MS / 1000) { "ttlSec must be 1 to ${JobTrim.HOLD_MS / 1000} seconds" }
+    return seconds * 1000
+}
 
 /** The worktrees job [id] built, its own and those of its other commits; the mirror forgets them at its next prune. */
 private fun worktrees(config: Config, id: Long): List<File> =

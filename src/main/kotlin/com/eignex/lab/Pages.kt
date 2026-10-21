@@ -67,6 +67,8 @@ internal fun jobPage(
     showCommands: Boolean = true,
     previous: Long? = null,
     references: Map<Pair<String, String>, Reference> = emptyMap(),
+    /** The downloads' holds on this job that have not lapsed ([Hold]). */
+    holds: List<Hold> = emptyList(),
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
@@ -104,6 +106,9 @@ internal fun jobPage(
         if (File(dir, log).isFile) append(" · <a href=\"/jobs/${job.id}/files/$log\">$log</a>")
     }
     append(" · <a href=\"/jobs/${job.id}?json\">json</a></dd>")
+    holds.maxOfOrNull { it.expiresAt }?.let { end ->
+        append("<dt>held</dt><dd>held for download until ${clockTime(end)}: the disk's trim leaves its files alone</dd>")
+    }
     append("</dl>")
     job.error?.let { append("<pre class=\"error\">${esc(it)}</pre>") }
     if (job.status == Status.FAILED || job.status == Status.CANCELLED) {
@@ -1235,9 +1240,19 @@ private fun select(name: String, any: String, options: List<Pair<String, String>
 }
 
 /** What takes the lab machine's disk, largest first, as [DiskUsage] last measured it. */
-internal fun diskPage(report: DiskReport?): String = buildString {
+internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList()): String = buildString {
     append(head("disk · klause lab", live = false))
     append("<header><h1>Disk</h1></header>")
+    if (holds.isNotEmpty()) {
+        append("<h2>Held for download</h2><p class=\"muted\">The trim leaves these jobs' files alone until each hold is ")
+        append("released or lapses, however low the disk.</p>")
+        append("<div class=\"scroll\"><table><tr><th>job</th><th>hold</th><th>taken</th><th>until</th></tr>")
+        for (hold in holds) {
+            append("<tr><td><a href=\"/jobs/${hold.job}\">${hold.job}</a></td><td><code>${esc(hold.id.take(8))}</code></td>")
+            append("<td>${ago(hold.createdAt)}</td><td>${clockTime(hold.expiresAt)}</td></tr>")
+        }
+        append("</table></div>")
+    }
     if (report == null) {
         append("<p class=\"muted\">Not measured yet: the first measurement runs at startup and takes a few minutes.</p></body></html>")
         return@buildString
@@ -1673,6 +1688,10 @@ private fun output(jobId: Long, dir: File, name: String, running: Boolean): Stri
 
 private val clock = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
 private val stamp = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault())
+
+/** A time to come, as a clock time; the exact time is in the tooltip. */
+private fun clockTime(millis: Long): String =
+    "<span title=\"${stamp.format(Instant.ofEpochMilli(millis))}\">${clock.format(Instant.ofEpochMilli(millis))}</span>"
 
 /** How long ago, for the last day, then the date; the exact time is in the tooltip. */
 private fun ago(millis: Long?): String {
