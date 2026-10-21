@@ -44,6 +44,12 @@ data class Config(
     val updateCheckSec: Long = env("LAB_UPDATE_CHECK_SEC", "300").toLong(),
     /** Free space the data directory's disk must have before the runner starts a job. */
     val minFreeBytes: Long = env("LAB_MIN_FREE_GB", "10").toLong() * BYTES_PER_GB,
+    /** How long after a job ended a low disk leaves its files alone ([JobTrim]), so a download soon after it ends,
+     *  held or not, finds them all. */
+    val trimGraceMs: Long = env("LAB_TRIM_GRACE_HOURS", "6").toLong() * MS_PER_HOUR,
+    /** Below this much free, a low disk trims jobs still in their grace too, though never a held one: the queue's floor
+     *  ([minFreeBytes]) unless set, so a queue held for space is never kept waiting on a grace. */
+    val trimCriticalFreeBytes: Long = env("LAB_TRIM_CRITICAL_FREE_GB", (minFreeBytes / BYTES_PER_GB).toString()).toLong() * BYTES_PER_GB,
     /** The longest an experiment may take, every case using its whole budget, before it needs `"confirm": true`. */
     val maxExperimentHours: Long = env("LAB_MAX_EXPERIMENT_HOURS", "24").toLong(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
@@ -127,6 +133,7 @@ data class Config(
 }
 
 private const val MS_PER_SEC = 1000L
+private const val MS_PER_HOUR = 3_600_000L
 private const val BYTES_PER_MB = 1024L * 1024
 
 private fun env(name: String, default: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default

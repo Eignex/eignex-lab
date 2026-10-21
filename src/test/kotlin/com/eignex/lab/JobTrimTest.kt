@@ -68,4 +68,82 @@ class JobTrimTest {
         assertFalse(Files.exists(small.resolve(JobTrim.MARKER)))
         assertTrue(Files.exists(jobs.resolve("1/0.out")))
     }
+
+    @Test
+    fun `a held job is not trimmed by age, and is once its hold ends, the trim's log naming it while held`() {
+        val jobs = Files.createTempDirectory("jobs")
+        val old = job(jobs, 1, 1000)
+        val now = 30 * day
+        var held = setOf(1L)
+        val reports = mutableListOf<String>()
+        val trim = JobTrim(jobs, { listOf(1L to now - 8 * day) }, { Long.MAX_VALUE }, { _, _ -> }, { now }, held = { held }, report = { reports += it })
+
+        assertEquals(0L, trim.run())
+        assertTrue(Files.exists(old.resolve("0.out")))
+        assertEquals(listOf("job trim: skipped held job 1: held for download"), reports)
+
+        held = emptySet()
+        assertEquals(3000L, trim.run())
+        assertTrue(Files.exists(old.resolve(JobTrim.MARKER)))
+    }
+
+    @Test
+    fun `a low disk leaves a held job and one within its grace alone, and trims them once the hold ends or the grace passes`() {
+        val jobs = Files.createTempDirectory("jobs")
+        val heldJob = job(jobs, 1, 5000)
+        val recent = job(jobs, 2, 4000)
+        val past = job(jobs, 3, 10)
+        var now = 30 * day
+        var held = setOf(1L)
+        val reports = mutableListOf<String>()
+        val free = JobTrim.TARGET_FREE_BYTES - 1
+        val trim = JobTrim(
+            jobs, { listOf(1L to 30 * day - 8 * 3_600_000L, 2L to 30 * day - 3_600_000L, 3L to 30 * day - 7 * 3_600_000L) },
+            { free }, { _, _ -> }, { now }, held = { held }, graceMs = 6 * 3_600_000L, criticalFreeBytes = 5 * BYTES_PER_GB,
+            report = { reports += it },
+        )
+
+        trim.run()
+        assertFalse(Files.exists(heldJob.resolve(JobTrim.MARKER)))
+        assertFalse(Files.exists(recent.resolve(JobTrim.MARKER)))
+        assertTrue(Files.exists(past.resolve(JobTrim.MARKER)))
+        assertEquals(listOf("job trim: skipped held job 1: held for download"), reports)
+
+        held = emptySet()
+        trim.run()
+        assertTrue(Files.exists(heldJob.resolve(JobTrim.MARKER)))
+        assertFalse(Files.exists(recent.resolve(JobTrim.MARKER)))
+
+        now += 6 * 3_600_000L
+        trim.run()
+        assertTrue(Files.exists(recent.resolve(JobTrim.MARKER)))
+    }
+
+    @Test
+    fun `a critically low disk trims a job within its grace, but never a held one`() {
+        val jobs = Files.createTempDirectory("jobs")
+        val heldJob = job(jobs, 1, 5000)
+        val recent = job(jobs, 2, 4000)
+        val now = 30 * day
+        val reports = mutableListOf<String>()
+        val trim = JobTrim(
+            jobs, { listOf(1L to now - 60_000L, 2L to now - 60_000L) }, { BYTES_PER_GB }, { _, _ -> }, { now },
+            held = { setOf(1L) }, graceMs = 6 * 3_600_000L, criticalFreeBytes = 5 * BYTES_PER_GB, report = { reports += it },
+        )
+
+        trim.run()
+
+        assertFalse(Files.exists(heldJob.resolve(JobTrim.MARKER)))
+        assertTrue(Files.exists(heldJob.resolve("0.out")))
+        assertTrue(Files.exists(recent.resolve(JobTrim.MARKER)))
+        assertEquals(listOf("job trim: skipped held job 1: held for download"), reports)
+    }
+
+    @Test
+    fun `the critical floor defaults to the queue's, so a held queue never waits on a grace`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, minFreeBytes = 12 * BYTES_PER_GB)
+        assertEquals(config.minFreeBytes, config.trimCriticalFreeBytes)
+        assertEquals(JobTrim.DEFAULT_CRITICAL_FREE_BYTES, Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null).trimCriticalFreeBytes)
+        assertEquals(JobTrim.DEFAULT_GRACE_MS, Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null).trimGraceMs)
+    }
 }

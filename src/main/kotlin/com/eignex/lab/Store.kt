@@ -214,6 +214,12 @@ class Store(file: Path) {
                     collection TEXT NOT NULL, problem TEXT NOT NULL, themes TEXT NOT NULL, structure TEXT, logic TEXT,
                     PRIMARY KEY (collection, problem))""",
             )
+            // Downloads' holds on jobs' files ([Hold]): here, not in the API's memory, so the runner's trim sees them and
+            // a restart keeps them.
+            it.execute(
+                """CREATE TABLE IF NOT EXISTS holds (
+                    id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)""",
+            )
             // [referencesStamp] reads the newest row on every reference and trend page load.
             it.execute("CREATE INDEX IF NOT EXISTS reference_rows_updated ON reference_rows (updated_at)")
             // [problemRuns] finds one problem's cases across every job; without this it reads every problem row.
@@ -585,6 +591,43 @@ class Store(file: Path) {
         listOf(Status.DONE, Status.FAILED, Status.CANCELLED).forEachIndexed { i, s -> statement.setString(i + 1, s.name) }
         statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) to r.getLong(2) else null }.toList() }
     }
+
+    /**
+     * A new hold on job [jobId]'s files for [ttlMs] from [at] ([Hold]). Lapsed holds are forgotten here, so the table
+     * keeps no more than the downloads of the last few hours.
+     */
+    @Synchronized
+    fun hold(jobId: Long, ttlMs: Long, at: Long = now()): Hold = transaction {
+        update("DELETE FROM holds WHERE expires_at <= ?", at)
+        val hold = Hold(newHoldId(), jobId, at, at + ttlMs)
+        update("INSERT INTO holds (id, job_id, created_at, expires_at) VALUES (?, ?, ?, ?)", hold.id, hold.job, hold.createdAt, hold.expiresAt)
+        hold
+    }
+
+    /** Hold [id] on job [jobId] extended to [ttlMs] from [at]; null when there is no such hold or it has lapsed. */
+    @Synchronized
+    fun renewHold(jobId: Long, id: String, ttlMs: Long, at: Long = now()): Hold? {
+        val renewed = update("UPDATE holds SET expires_at = ? WHERE id = ? AND job_id = ? AND expires_at > ?", at + ttlMs, id, jobId, at)
+        return if (renewed == 0) null else holdsWhere("id = ?", id).single()
+    }
+
+    /** Releases hold [id] on job [jobId]; false when there was no such hold, lapsed or not. */
+    @Synchronized
+    fun releaseHold(jobId: Long, id: String): Boolean = update("DELETE FROM holds WHERE id = ? AND job_id = ?", id, jobId) > 0
+
+    /** The holds that have not lapsed at [at], by job, then by when they lapse. */
+    @Synchronized
+    fun holds(at: Long = now()): List<Hold> = holdsWhere("expires_at > ? ORDER BY job_id, expires_at", at)
+
+    private fun holdsWhere(where: String, vararg values: Any?): List<Hold> =
+        connection.prepareStatement("SELECT * FROM holds WHERE $where").use { statement ->
+            values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
+            statement.executeQuery().use { r ->
+                generateSequence {
+                    if (r.next()) Hold(r.getString("id"), r.getLong("job_id"), r.getLong("created_at"), r.getLong("expires_at")) else null
+                }.toList()
+            }
+        }
 
     /** Every queued or running job, oldest first; without [withCommands], with their [Job.counts] instead. */
     @Synchronized
@@ -1447,6 +1490,18 @@ class Store(file: Path) {
 }
 
 fun now(): Long = System.currentTimeMillis()
+
+/**
+ * A download's hold on job [job]'s files: until it lapses at [expiresAt], [JobTrim] leaves the job alone, however
+ * short the disk. `lab fetch` takes one before it lists the files and releases it when done; one a crashed client
+ * leaves behind lapses on its own.
+ */
+@Serializable
+data class Hold(val id: String, val job: Long, val createdAt: Long, val expiresAt: Long)
+
+private val holdIds = java.security.SecureRandom()
+
+private fun newHoldId(): String = ByteArray(16).also(holdIds::nextBytes).joinToString("") { "%02x".format(it) }
 
 /** A finished command that recorded when it started and ended, in SQL. */
 private const val TIMED = "(status IN ('DONE', 'FAILED') AND started_at IS NOT NULL AND finished_at IS NOT NULL)"

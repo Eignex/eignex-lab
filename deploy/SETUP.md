@@ -1134,6 +1134,19 @@ fetches the dependencies into the new home once.
   case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
   `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are
   never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within a week.
+- A low disk leaves a job alone for `LAB_TRIM_GRACE_HOURS` (6) after it ended, so a download soon after the end finds
+  every file, held or not. Only below `LAB_TRIM_CRITICAL_FREE_GB` free does it trim jobs still in their grace, largest
+  first, until the disk is above that again. That floor defaults to `LAB_MIN_FREE_GB`, the queue's: whenever the queue
+  is held for space, the grace no longer applies, so the trim frees what it can and the queue resumes, instead of
+  waiting hours on a grace. Set it lower to keep just-ended jobs longer on a disk that runs near the floor.
+- A job a download holds is never trimmed, neither by age nor on a low disk, a critically low one included. `lab
+  fetch` holds the job before it lists the files (`POST /jobs/{id}/hold`) and releases it when it is done or fails.
+  A hold lasts 2 h unless renewed, and the client renews it every 10 minutes of a long download; a fetch killed
+  outright leaves one that simply lapses, so a crashed client cannot keep a job forever. A hold outlives a critical
+  disk on purpose: it is short and explicit, and meanwhile the queue is held below `LAB_MIN_FREE_GB`, so no new job
+  fills the disk. Holds are in the database, so a restart keeps them. The job's page says "held for download until
+  …", `/disk` lists every hold, and each trim that passes over a held job names it in the runner's log (`job trim:
+  skipped held job …: held for download`).
 - Docker's old reference images and build cache are pruned weekly, and sooner on a low disk (see Docker cleanup).
 
 ## What a case runs in
@@ -1296,7 +1309,7 @@ deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7'
 deploy/lab recheck 7151       # check job 7151's solution claims again with the lab's source checkers; no solver runs
 deploy/lab analyze --archive https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha>.tar.gz --sha256 <sha>
                               # the same over a pinned saved-capture archive, once job 7 is gone
-deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP, with lab-cases.jsonl
+deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP, held from the trim, with lab-cases.jsonl
 deploy/lab node start c7i.4xlarge   # start a cloud node now, past the pressure threshold
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
 deploy/lab cancel 7
@@ -1311,6 +1324,13 @@ of cases with large witnesses needs no more memory than a few of them; read it w
 `jq -s` to make one array. `lab fetch <id>` writes the same export as `lab-cases.jsonl` in the fetched directory,
 fetched afresh each time since a recheck replaces the verdicts, so a fetched job carries its lab checks with it; the
 job's own `cases/<n>/record.json` files are the bench's records and do not.
+
+`lab fetch` holds the job first (see Disk), so the lab's trim cannot change its files mid-download, lists them once
+under the hold and downloads exactly that list, skipping files already there at their listed size; it releases the
+hold however it ends, an error or Ctrl-C included. A listed file it still cannot download (a 404, say) does not end the
+fetch silently: it downloads the rest and `lab-cases.jsonl`, writes `lab-fetch-missing.json` in the fetched directory
+(`job`, `url`, `fetchedAt`, `listed`, and `missing`: each file's `path`, listed `bytes` and `httpStatus`), and exits 1.
+A later fetch that gets everything removes the receipt.
 
 The browser page at `http://<server>:8420/` shows the running and queued experiments, with each queued one's place
 in line and the cases running now, then the schedules and the history. The history filters by text and by state, a
@@ -1328,6 +1348,10 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
+| `POST` | `/jobs/{id}/hold` | hold the job's files for a download (see Disk) → 201 `{"id", "job", "createdAt", "expiresAt"}`; 2 h, or `?ttlSec=` up to 7200 |
+| `POST` | `/jobs/{id}/hold/{lease}` | renew a hold for another 2 h (or `?ttlSec=`) → the hold; 404 when it was released or lapsed |
+| `DELETE` | `/jobs/{id}/hold/{lease}` | release a hold; 404 when there is none |
+| `GET` | `/disk` | what takes the disk, with the active `holds` |
 | `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}`, or `{"analyze": {"archive": <url or name>, "sha256": <hex>}}`, queues an analysis job instead (above); 409 when its captures are gone, or the archive is unpinned or not allowed. `{"recheck": {"job": <id>}}` queues a recheck job (see Source-witness validation); 409 while that job is still active |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
@@ -1348,5 +1372,9 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/cloud/nodes` | `{"size"?, "market"?}`: start a cloud node by hand (see Running on cloud nodes); 202 when requested, 409 with the reason when refused |
 
 A browser (`Accept: text/html`) gets a page for `/jobs/{id}` and `/jobs/{id}/files`; `?json` gets the data instead.
+
+The hold calls are writes like any other: they need the password, and a browser's cross-site request is refused
+(`Sec-Fetch-Site` other than `same-origin` or `none`, or an `Origin` of another host). curl sends neither header, so
+`lab fetch` passes as the client's other writes do.
 
 The API has no authentication. Keep it on the LAN.

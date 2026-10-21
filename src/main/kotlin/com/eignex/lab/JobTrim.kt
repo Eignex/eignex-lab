@@ -15,6 +15,12 @@ import kotlin.io.path.name
  * every case's record is in the database too. A job is trimmed [MAX_AGE_MS] after it ended, and sooner, largest
  * first, whenever the disk has less than [TARGET_FREE_BYTES] free. A trimmed job gets a `trimmed` file saying when and
  * how much, and is never trimmed again; its log says so too. Queued and running jobs are never touched.
+ *
+ * A low disk leaves a job alone for [graceMs] after it ended, so a download soon after the end finds every file, unless
+ * the disk has less than [criticalFreeBytes] free. A job a download holds ([Hold], [held]) is never trimmed, neither by
+ * age nor on a low disk, critically low included: a hold is short and explicit, and lapses on its own, so it bounds how
+ * long a job is kept, and the queue is held meanwhile ([DiskGuard]) so no new job fills the disk. Each run names the
+ * held jobs it would otherwise have trimmed.
  */
 class JobTrim(
     private val jobsDir: Path,
@@ -23,22 +29,41 @@ class JobTrim(
     private val freeBytes: () -> Long,
     private val log: (Long, String) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The jobs a download holds now; asked again just before each trim, so a hold taken meanwhile still counts. */
+    private val held: () -> Set<Long> = { emptySet() },
+    private val graceMs: Long = DEFAULT_GRACE_MS,
+    private val criticalFreeBytes: Long = DEFAULT_CRITICAL_FREE_BYTES,
+    /** The trim's own log: the runner's output. */
+    private val report: (String) -> Unit = ::println,
 ) {
     /** Trim what is due now; returns the bytes freed. */
     fun run(): Long {
         val now = clock()
+        val skipped = sortedSetOf<Long>()
         val candidates = ended().filter { (id, _) -> jobDir(id).let { Files.isDirectory(it) && !Files.exists(it.resolve(MARKER)) } }
-        var freed = candidates.filter { (_, at) -> now - at >= MAX_AGE_MS }.sumOf { (id, _) -> trim(id, "it ended over a week ago") }
+        var freed = candidates.filter { (_, at) -> now - at >= MAX_AGE_MS }
+            .sumOf { (id, _) -> if (id in held()) 0L.also { skipped += id } else trim(id, "it ended over a week ago") }
         if (freeBytes() < TARGET_FREE_BYTES) {
-            val rest = candidates.filter { (id, _) -> !Files.exists(jobDir(id).resolve(MARKER)) }
-                .map { (id, _) -> id to removable(jobDir(id)).sumOf { size(it) } }
-                .filter { it.second > 0 }
-                .sortedByDescending { it.second }
-            for ((id, _) in rest) {
+            val (past, recent) = candidates.filter { (id, _) -> !Files.exists(jobDir(id).resolve(MARKER)) }
+                .map { (id, at) -> Triple(id, at, removable(jobDir(id)).sumOf { size(it) }) }
+                .filter { it.third > 0 }
+                .sortedByDescending { it.third }
+                .partition { (_, at, _) -> now - at >= graceMs }
+            for ((id, _, _) in past) {
                 if (freeBytes() >= TARGET_FREE_BYTES) break
-                freed += trim(id, "the disk had under ${TARGET_FREE_BYTES / BYTES_PER_GB} GB free")
+                if (id in held()) skipped += id else freed += trim(id, "the disk had under ${TARGET_FREE_BYTES / BYTES_PER_GB} GB free")
+            }
+            // Jobs that ended within the grace go only when the disk is critically low, and then only until it is not.
+            for ((id, _, _) in recent) {
+                if (freeBytes() >= criticalFreeBytes) break
+                if (id in held()) {
+                    skipped += id
+                } else {
+                    freed += trim(id, "the disk had under ${criticalFreeBytes / BYTES_PER_GB} GB free, too little to wait out its grace")
+                }
             }
         }
+        if (skipped.isNotEmpty()) report("job trim: skipped held job${if (skipped.size == 1) "" else "s"} ${skipped.joinToString()}: held for download")
         return freed
     }
 
@@ -47,7 +72,6 @@ class JobTrim(
         Executors.newSingleThreadScheduledExecutor { Thread(it, "job-trim").apply { isDaemon = true } }
             .scheduleWithFixedDelay({ runCatching { run() }.onFailure { println("job trim: ${it.message}") } }, 1, INTERVAL_MIN, TimeUnit.MINUTES)
     }
-
     private fun jobDir(id: Long) = jobsDir.resolve(id.toString())
 
     private fun trim(id: Long, why: String): Long {
@@ -76,6 +100,12 @@ class JobTrim(
         const val MAX_AGE_MS = 7 * 24 * 3_600_000L
         const val TARGET_FREE_BYTES = 25 * BYTES_PER_GB
         const val INTERVAL_MIN = 30L
+        /** `LAB_TRIM_GRACE_HOURS`'s default. */
+        const val DEFAULT_GRACE_MS = 6 * 3_600_000L
+        /** `LAB_TRIM_CRITICAL_FREE_GB`'s default, that of `LAB_MIN_FREE_GB`. */
+        const val DEFAULT_CRITICAL_FREE_BYTES = 10 * BYTES_PER_GB
+        /** How long a download's hold lasts, unless renewed: both its default and the longest one may ask for. */
+        const val HOLD_MS = 2 * 3_600_000L
         private const val BYTES_PER_MB = 1_000_000L
 
         /**
