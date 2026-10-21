@@ -630,10 +630,11 @@ Nodes launch on pressure, with damping:
   idle beside a profile job it may not run retires after `nodeIdleMin`, and an on-demand node then launches. A
   profile alone is far under the threshold (one of 3 minutes on all 10 of the local machine's cores is under a core-hour) and
   waits for the local machine or an on-demand node already up; profiles run locally unless a large backlog waits.
-- Node size is chosen at launch and kept small: the smallest size of the family (`instanceType`, then `4xlarge`,
-  `8xlarge`, …) that has the cores the largest waiting case needs (its `processors`) and covers this node's share of
-  the pressure (pressure over the nodes up plus this one) within two hours, at most `nodeMaxVcpus` (16, a
-  `c7i.4xlarge`) unless a case itself needs more. More pressure is met by another node later, through the damping,
+- Node size is chosen at launch and kept small: the smallest size of the family (`instanceType`, then `4xlarge`, …)
+  that has the cores the largest waiting case needs (its `processors`) and covers this node's share of the pressure
+  (pressure over the nodes up plus this one) within two hours. No node, automatic or started by hand, is larger than
+  `nodeMaxVcpus` (16, a `c7i.4xlarge`): every job is capped to the local machine's cores, so no case needs more. More
+  pressure is met by another node later, through the damping,
   rather than one large node up front. So a few core-hours get a `c7i.2xlarge`, a larger backlog a `c7i.4xlarge`, and
   a backlog beyond that a second node.
 - A node runs one case per two physical cores unless the job sets `parallel`, which on cloud nodes counts per node, within

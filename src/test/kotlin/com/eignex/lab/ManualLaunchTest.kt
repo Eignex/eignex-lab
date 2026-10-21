@@ -83,7 +83,7 @@ class ManualLaunchTest {
         assertEquals(listOf(409, 409, 409), listOf(update.first, stale.first, missing.first))
         assertContains(stale.second, "is the runner up?")
         assertEquals(listOf(400, 400), listOf(unknown.first, market.first))
-        assertContains(unknown.second, "size must be one of c7i.2xlarge, c7i.4xlarge, c7i.8xlarge")
+        assertContains(unknown.second, "size must be one of c7i.2xlarge, c7i.4xlarge,")
         assertEquals(409, twice.first)
         assertContains(twice.second, "already requested")
         // Right after any launch, a second press is refused as a repeat of the first.
