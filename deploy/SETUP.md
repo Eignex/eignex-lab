@@ -165,22 +165,17 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   plain `profileCli` job too, whose report then says its threshold kept only the slow compilations. It is refused,
   saying why, when the job has not ended, ran without `profileCli`, or has no captures left. That includes a job
   trimmed a week after it ended (see Disk), whose raw captures are gone while its reports and manifests stay.
-- `{"analyze": {"kind": "compilation", "archive": "<url or name>", "sha256": "<hex>"}}` (`lab analyze --archive
-  <url|name> --sha256 <hex>`) analyses the captures in a saved-capture archive instead, once their job is cleaned up:
-  a `campaign-evidence` archive (see Active campaign evidence) such as a release asset
-  `https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha256>.tar.gz`. Nothing is built, no
-  solver or klause code runs, and no original job is needed. Because the lab is reachable from the internet, the
-  archive is pinned and checked:
+- `{"analyze": {"kind": "compilation", "archive": "<name>", "sha256": "<hex>"}}` (`lab analyze --archive <name>
+  --sha256 <hex>`) analyses the captures in a saved-capture archive instead, once their job is cleaned up: a
+  `campaign-evidence` archive (see Saved-capture archives) that whoever runs the lab put under `$LAB_DATA/archives`.
+  Nothing is downloaded or built, no solver or klause code runs, and no original job is needed. The archive is pinned
+  and checked:
   - `sha256` is required, 64 lowercase hex digits; the archive's own SHA-256 must equal it.
-  - `archive` is an HTTPS URL under an allowed prefix (`LAB_ARCHIVE_PREFIXES`, comma-separated, ending in `/`;
-    `https://github.com/Eignex/` unless set), with no credentials, query, fragment, port or `..`, naming a
-    `.tar.gz`; on github.com it must be a release asset. GitHub redirects a download to its asset hosts, and the
-    lab follows at most five redirects, each to HTTPS on the URL's own host or one of `LAB_ARCHIVE_REDIRECT_HOSTS`
-    (GitHub's asset hosts unless set). Or `archive` is a relative path under `$LAB_DATA/archives` on the lab, a
-    regular file inside it (no `..`, absolute paths or links out).
+  - `archive` is a relative path under `$LAB_DATA/archives` on the lab, naming a `.tar.gz`, a regular file inside it
+    (no `..`, absolute paths or links out). A URL is refused (400): the lab fetches no archive from anywhere.
   - The manifest is the `<campaign>-<sha256>.manifest.json` beside the archive unless `manifest` names another (by
     the same rules); `manifestSha256` pins it too when given. It must name the pinned archive.
-  - The download stops at `LAB_ARCHIVE_MAX_MB` (2048) and the manifest's files at `LAB_ARCHIVE_MAX_UNPACKED_MB`
+  - The archive may be at most `LAB_ARCHIVE_MAX_MB` (2048) and the manifest's files `LAB_ARCHIVE_MAX_UNPACKED_MB`
     (16384) unpacked; a pax or long-name tar header holds at most 1 MiB.
   - Before anything is extracted, every member is verified against the manifest as `campaign-evidence verify` does:
     each file's size and SHA-256, no missing, extra or duplicate members, no traversal path, nothing but regular
@@ -189,15 +184,16 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
     extracted, into the analysis job's own `archive/<path in the archive>/`, each path checked again to stay inside.
     A report the archive held beside them is extracted as `archived-compilation-report.json`.
 
-  The API refuses (409) an archive it may not fetch, saying why; the runner then fails the job, saying why, on a
-  download that runs over, a hash that differs from its pin, or a member that fails verification. Otherwise it writes
+  The API refuses (409) an archive it cannot analyse, saying why; the runner then fails the job, saying why, on an
+  archive over the limits, a hash that differs from its pin, or a member that fails verification. Otherwise it writes
   each profile directory's `compilation-report.json` and `compilation-tasks.jsonl.gz` beside its extracted captures,
   and `analysis.json` (with `archive` instead of `job`) in its own directory; its page lists them. Each report's
-  `provenance.archive` names the archive URL, its SHA-256 and size, the manifest it was verified against with its
-  SHA-256 and the catalog's campaign, how many files verification matched, and the profile directory within the
-  archive (`member`). The case's job, problem, arm and commit come from the archived report, when one is there whose
-  captures are byte for byte these (`source.from` says so); without one, `missing` says the archive does not name them.
-  The downloaded `.tar.gz` is removed once extracted, and the verified manifest stays as `archive.manifest.json`.
+  `provenance.archive` names the archive by its path under `$LAB_DATA/archives` (as `url`), its SHA-256 and size, the
+  manifest it was verified against with its SHA-256 and the catalog's campaign, how many files verification matched,
+  and the profile directory within the archive (`member`). The case's job, problem, arm and commit come from the
+  archived report, when one is there whose captures are byte for byte these (`source.from` says so); without one,
+  `missing` says the archive does not name them. The archive stays where it was, and the verified manifest is copied
+  in as `archive.manifest.json`.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
 ### Profile jobs
@@ -392,15 +388,15 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
   bounds after upper bounds among them).
 
   The lab builds solchecker itself, once per host, from the archive pinned by SHA-256
-  `37b21a7f1ee968aed60675fb070c9286eccc6a953c8bc50120c9246b052b47b9`. It downloads it from the lab's own mirror, the
-  klause-lab release [`upstream-miplib2017-testscript-v1.0.4`](https://github.com/Eignex/klause-lab/releases/tag/upstream-miplib2017-testscript-v1.0.4)
-  (the unmodified upstream bytes, recovered from a retained copy matching klause's build pin while
-  `miplib.zib.de/downloads` answered HTTP 503, with its MIT `LICENSE` and `SHA256SUMS`), and from
-  https://miplib.zib.de/downloads/miplib2017-testscript-v1.0.4.zip only when the mirror cannot be reached; either is
-  checked against the pin. It applies the lab's patch (below) with `patch -p1`, compiles the four `checker/src` files
-  with `c++ -O2 … -lgmp -lz` (Homebrew's `gmp` on the Mac) and keeps only the binary,
-  `$LAB_DATA/checkers/solchecker-1.0.4+klause-lab-longnum-1/solchecker`, under 1 MB: the archive and the build tree are
-  deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is tried again ten
+  `37b21a7f1ee968aed60675fb070c9286eccc6a953c8bc50120c9246b052b47b9`, so no network is needed. The archive is bundled
+  with the lab, `src/main/resources/com/eignex/lab/checker/miplib2017-testscript-v1.0.4.zip` (89,885 bytes), with
+  its MIT license beside it as `miplib2017-testscript-LICENSE` (Copyright 2019 Zuse Institute Berlin). Provenance:
+  these are the unmodified upstream bytes of `miplib2017-testscript-v1.0.4.zip`, as published at
+  `miplib.zib.de/downloads`, recovered from a retained copy matching klause's build pin while that site answered
+  HTTP 503; the lab checks them against the pin before unpacking them. It applies the lab's patch (below) with
+  `patch -p1`, compiles the four `checker/src` files with `c++ -O2 … -lgmp -lz` (Homebrew's `gmp` on the Mac) and
+  keeps only the binary, `$LAB_DATA/checkers/solchecker-1.0.4+klause-lab-longnum-1/solchecker`, under 1 MB: the build
+  tree is deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is tried again ten
   minutes later. An unpatched binary left in `solchecker-1.0.4/` from before is never used and can be deleted.
 
   The patch, `src/main/resources/com/eignex/lab/checker/solchecker-1.0.4-longnum.patch` (SHA-256
@@ -548,26 +544,23 @@ problems paired by suite and name. A scheduled run's page links to the compariso
 `lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as the bench writes
 `output/<config>.csv`, for `bench credit` and the `output/` scripts.
 
-## Active campaign evidence
+## Saved-capture archives
 
-Active campaigns publish reviewed snapshots as assets on a prerelease in this public
-repository, tagged `active-evidence-<campaign>`. The release page is the stable reviewer
-link; its download URLs require no lab access or signed URL. Assets remain available until
-explicitly retired, independently of CI artifact expiry and lab job/instance deletion.
-These are campaign data releases, not server distributions. Keep one release per active
-campaign and use `--latest=false` so it does not replace the latest server release.
+A profiled job's raw captures are trimmed a week after it ends (see Disk). To keep a campaign's evidence for later
+review or analysis, pack it into a content-addressed archive with the lab's `campaign-evidence` command
+(`CampaignEvidence.kt`), and keep the archive and its manifest outside both repositories. No raw or generated
+campaign data belongs in either repository. An archive placed under `$LAB_DATA/archives` on the lab can be analysed
+there by `lab analyze --archive <name> --sha256 <sha>` (see Experiments).
 
-Stage only needed evidence under the shared external
-`klause-evidence/campaigns/<campaign>/publication/`, outside every repository. Review
-redistribution permissions and exclude credentials before publishing. Include experiment
-specifications and actual selection, raw records/stdout/profiles, executed source and
-installed-build/runtime hashes, validation provenance, and separately generated summaries
-with their analyzer and execution identity. Preserve original bytes and retained hash
-manifests. A requested revision alone does not identify the executed binary. Record missing
-captures and unsupported checks explicitly; packaging does not strengthen solver claims.
+Stage only the needed evidence in a directory outside every repository, such as
+`klause-evidence/campaigns/<campaign>/publication/`. Exclude credentials. Include experiment specifications and actual
+selection, raw records/stdout/profiles, executed source and installed-build/runtime hashes, validation provenance, and
+separately generated summaries with their analyzer and execution identity. Preserve original bytes and retained hash
+manifests. A requested revision alone does not identify the executed binary. Record missing captures and unsupported
+checks explicitly; packaging does not strengthen solver claims.
 
-Add `catalog.json` to the staged tree. It describes the current reason for retaining the
-bundle, links its owning issues/PRs, and names evidence files relative to that tree:
+Add `catalog.json` to the staged tree. It describes the reason for retaining the bundle, links its owning issues/PRs,
+and names evidence files relative to that tree:
 
 ```json
 {
@@ -587,69 +580,38 @@ bundle, links its owning issues/PRs, and names evidence files relative to that t
 }
 ```
 
-Role lists identify entry points, not every file; all staged files are included. Empty
-roles require an omission reason. For multiple experiments, list each one's entry points
-and explain coverage in the bundle. The lab's `campaign-evidence` command (`CampaignEvidence.kt`)
-needs only the lab's own build. It packages regular files deterministically, rejects symlinks and output
-inside the input tree, hashes every file, and verifies the completed archive. Run from this
-checkout (no solver build or measurement is involved):
+Role lists identify entry points, not every file; all staged files are included. Empty roles require an omission
+reason. For multiple experiments, list each one's entry points and explain coverage in the bundle. The command needs
+only the lab's own build. It packages regular files deterministically, rejects symlinks and output inside the input
+tree, hashes every file, and verifies the completed archive. Run from this checkout (no solver build or measurement is
+involved):
 
 ```sh
 ./gradlew -q run --args='campaign-evidence pack /absolute/path/to/publication /absolute/path/to/assets'
 ```
 
-The command prints two paths: `<campaign>-<archive-sha256>.tar.gz` and its
-`.manifest.json`. The manifest includes the catalog, archive identity and every member's
-size/SHA-256. Snapshot names cannot be overwritten. Hash verification establishes byte
-identity and completeness against the reviewed manifest, not authenticity or numerical
-correctness; pin the manifest's own SHA-256 in the review alongside its download link.
-
-Publish the two generated paths with `gh`, targeting the reviewed lab tooling commit.
-Write release notes outside the repository describing scope, analyzer/source-check
-provenance and limitations, with the manifest SHA-256 and owning review links:
+The command prints two paths: `<campaign>-<archive-sha256>.tar.gz` and its `.manifest.json`. The manifest includes
+the catalog, archive identity and every member's size/SHA-256. Hash verification establishes byte identity and
+completeness against the reviewed manifest, not authenticity or numerical correctness; pin the manifest's own SHA-256
+in the review. Verify a copy **before extracting** it:
 
 ```sh
-gh release create active-evidence-lp-ceiling /absolute/path/to/assets/lp-ceiling-<sha>.tar.gz \
-  /absolute/path/to/assets/lp-ceiling-<sha>.manifest.json --repo Eignex/klause-lab \
-  --target <lab-commit> --prerelease --latest=false --title 'Active evidence: LP ceiling' \
-  --notes-file /absolute/path/to/release-notes.md
+./gradlew -q run --args='campaign-evidence verify /absolute/path/to/<campaign>-<sha>.tar.gz
+  /absolute/path/to/<campaign>-<sha>.manifest.json'
 ```
 
-Before claiming acceptance, download both assets from the release's public
-`https://github.com/Eignex/klause-lab/releases/download/<tag>/<asset>` URLs with `curl -fL`
-without credentials into a fresh external directory. Compare the downloaded manifest's
-SHA-256 with the review's pinned value, then verify **before extracting**:
+Verification streams every member without extraction and rejects altered bytes, missing or extra files, duplicate
+paths, traversal paths and nonregular members; a member whose header gives another size than the manifest's is refused
+before its bytes are read. Only a verified archive should be extracted to an empty directory for the retained
+analyzers. The lab's own compilation analyser runs over such an archive's profile captures as an analysis job,
+verifying it first, once both files are copied under `$LAB_DATA/archives`. Numerical/source rechecking runs on a
+separate analysis host with the retained dependencies; keep its execution identity and reports with the evidence.
+Storage checks can run locally with `./gradlew test --tests com.eignex.lab.CampaignEvidenceTest`; the build gate also
+runs these tests.
 
-```sh
-./gradlew -q run --args='campaign-evidence verify /absolute/path/to/download/<campaign>-<sha>.tar.gz
-  /absolute/path/to/download/<campaign>-<sha>.manifest.json'
-```
-
-Verification streams every member without extraction and rejects altered bytes, missing
-or extra files, duplicate paths, traversal paths and nonregular members; a member whose
-header gives another size than the manifest's is refused before its bytes are read. Only a verified
-archive should be extracted to an empty external directory for the retained analyzers.
-The lab's own compilation analyser runs over such an archive's profile captures as an analysis
-job, verifying it first (`lab analyze --archive <url> --sha256 <sha>`; see Experiments).
-Numerical/source rechecking runs on a separate analysis host with the retained dependencies;
-keep its execution identity and reports with the active evidence. Storage checks can run
-locally with `./gradlew test --tests com.eignex.lab.CampaignEvidenceTest`; the build gate
-also runs these tests.
-
-For an updated snapshot, upload new content-addressed assets with `gh release upload`
-without `--clobber`, verify their anonymous downloads, and update the release notes and
-review links. Remove superseded assets only after confirming no active review still needs
-them. Keep the release mutable: immutable releases would prevent required retirement.
-When all owning work has promoted its useful conclusions, reusable tools or regression
-fixtures, update issue/PR links to those durable results and delete the obsolete release
-and tag with `gh release delete <tag> --repo Eignex/klause-lab --cleanup-tag --yes`.
-Confirm the release and tag are absent through the GitHub API. Cached redirects and
-already-issued downloads can remain accessible after deletion; a fresh asset request
-can be checked with a unique query string. Deletion does not promise immediate download
-revocation. Delete its external staging/download copies and ended lab jobs with `deploy/lab rm <id>`
-after checking their remaining consumers. Do not delete a shared job another active
-campaign needs. Do not move retired bundles into a historical archive. No raw/generated
-campaign data or measurement workflows belong in either repository.
+When all owning work has promoted its useful conclusions, reusable tools or regression fixtures, update issue/PR links
+to those durable results, then delete the archive's copies and ended lab jobs with `deploy/lab rm <id>` after checking
+their remaining consumers. Do not delete a shared job another active campaign needs.
 
 ## Reference results
 
@@ -1307,8 +1269,8 @@ deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the ca
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
 deploy/lab recheck 7151       # check job 7151's solution claims again with the lab's source checkers; no solver runs
-deploy/lab analyze --archive https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha>.tar.gz --sha256 <sha>
-                              # the same over a pinned saved-capture archive, once job 7 is gone
+deploy/lab analyze --archive <campaign>-<sha>.tar.gz --sha256 <sha>
+                              # the same over a pinned saved-capture archive under $LAB_DATA/archives, once job 7 is gone
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP, held from the trim, with lab-cases.jsonl
 deploy/lab node start c7i.4xlarge   # start a cloud node now, past the pressure threshold
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
@@ -1352,7 +1314,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/hold/{lease}` | renew a hold for another 2 h (or `?ttlSec=`) → the hold; 404 when it was released or lapsed |
 | `DELETE` | `/jobs/{id}/hold/{lease}` | release a hold; 404 when there is none |
 | `GET` | `/disk` | what takes the disk, with the active `holds` |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}`, or `{"analyze": {"archive": <url or name>, "sha256": <hex>}}`, queues an analysis job instead (above); 409 when its captures are gone, or the archive is unpinned or not allowed. `{"recheck": {"job": <id>}}` queues a recheck job (see Source-witness validation); 409 while that job is still active |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}`, or `{"analyze": {"archive": <name under $LAB_DATA/archives>, "sha256": <hex>}}`, queues an analysis job instead (above); 400 for an unpinned archive or a URL, 409 when its captures are gone or the archive is not there. `{"recheck": {"job": <id>}}` queues a recheck job (see Source-witness validation); 409 while that job is still active |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |

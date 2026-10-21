@@ -9,13 +9,11 @@ import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.name
-import kotlin.io.path.readBytes
 import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -38,7 +36,6 @@ class CaptureArchivesTest {
     private val sample = checkNotNull(javaClass.getResource("/compilation/tasks.log")).readText()
     private val profile = "evidence/returned-files/cases/0/profile-a"
     private val source = SourceProvenance(6971, 0, "s/p", "control", "main", "5".repeat(40))
-    private val release = "https://github.com/Eignex/klause-lab/releases/download/active-evidence-test"
 
     @AfterTest
     fun cleanUp() {
@@ -110,17 +107,6 @@ class CaptureArchivesTest {
         return checkNotNull(store.next())
     }
 
-    /** GitHub as a test serves it: a release asset URL redirects to the asset host, which serves [assets] by name. */
-    private fun github(assets: Map<String, ByteArray>, redirect: String = "https://release-assets.githubusercontent.com/assets/") =
-        CaptureArchives.Http { uri ->
-            val name = uri.path.substringAfterLast('/')
-            when {
-                uri.host == "github.com" -> CaptureArchives.Response(302, redirect + name, null, ByteArrayInputStream(ByteArray(0)))
-                name in assets -> assets.getValue(name).let { CaptureArchives.Response(200, null, it.size.toLong(), ByteArrayInputStream(it)) }
-                else -> CaptureArchives.Response(404, null, null, ByteArrayInputStream(ByteArray(0)))
-            }
-        }
-
     @Test
     fun `an analysis job analyses a pinned local archive's captures into its own directory, with no original job`() {
         val (archive, _) = packed()
@@ -148,7 +134,7 @@ class CaptureArchivesTest {
         assertContains(report.provenance.source?.from.orEmpty(), "archived")
         assertFalse(report.missing.any { it.what == "source" }, report.missing.toString())
         assertEquals(9, CompilationReports.readTasks(dir.resolve(checkNotNull(entry.tasks))).size)
-        assertFalse(dir.resolve("download").exists())
+        assertTrue(dir.resolve(CaptureArchives.ROOT).resolve(profile).resolve(CliMeasurements.COMPILATION_LOG).exists())
         assertTrue(archive.exists(), "a lab-local archive stays where it was")
         val page = jobPage(config, store.job(job.id)!!, failedOnly = false)
         assertContains(page, "pinned archive <code>${archive.name}</code>")
@@ -157,20 +143,19 @@ class CaptureArchivesTest {
     }
 
     @Test
-    fun `a release asset is downloaded through GitHub's redirect into the analysis job's directory`() {
-        val (archive, manifest) = packed(temp.resolve("assets"))
-        val url = "$release/${archive.name}"
-        val job = analysisJob(AnalyzeSpec(archive = url, sha256 = shaOf(archive), manifestSha256 = CompilationReports.sha256(manifest)))
+    fun `a pinned manifest named by its own path in a subdirectory is the one verified against`() {
+        val (archive, manifest) = packed(config.archiveDir.resolve("compilation-test"))
+        val named = "compilation-test/${archive.name}"
+        val manifestNamed = "compilation-test/${manifest.name}"
+        val job = analysisJob(AnalyzeSpec(archive = named, sha256 = shaOf(archive), manifest = manifestNamed,
+            manifestSha256 = CompilationReports.sha256(manifest)))
 
-        Runner(config, store, archiveHttp = github(mapOf(archive.name to archive.readBytes(), manifest.name to manifest.readBytes()))).analyze(job)
+        Runner(config, store).analyze(job)
 
         assertEquals(Status.DONE, store.job(job.id)!!.status, store.job(job.id)!!.error)
-        val dir = config.jobDir(job.id)
-        val result = Json.decodeFromString(AnalysisResult.serializer(), Files.readString(dir.resolve(CompilationReports.ANALYSIS)))
-        assertEquals(url, result.archive?.url)
-        assertEquals("$release/${manifest.name}", result.archive?.manifest)
-        assertFalse(dir.resolve("download").exists(), "the download goes once extracted")
-        assertTrue(dir.resolve(CaptureArchives.ROOT).resolve(profile).resolve(CliMeasurements.COMPILATION_LOG).exists())
+        val result = Json.decodeFromString(AnalysisResult.serializer(), Files.readString(config.jobDir(job.id).resolve(CompilationReports.ANALYSIS)))
+        assertEquals(named, result.archive?.url)
+        assertEquals(manifestNamed, result.archive?.manifest)
     }
 
     @Test
@@ -219,7 +204,7 @@ class CaptureArchivesTest {
     }
 
     @Test
-    fun `an archive over the size limits is refused, by its length, as it streams, and by what it unpacks to`() {
+    fun `an archive over the size limits is refused, by its size and by what it unpacks to`() {
         val (archive, manifest) = packed(temp.resolve("assets"))
         val spec = AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive))
         Files.createDirectories(config.archiveDir)
@@ -229,54 +214,40 @@ class CaptureArchivesTest {
         assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, small, temp.resolve("j1")) }.message.orEmpty(), "over the lab's")
         val unpacked = config.copy(archiveMaxUnpackedBytes = 100)
         assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, unpacked, temp.resolve("j2")) }.message.orEmpty(), "unpacks to")
-        // A download says its length, or does not and runs over as it streams.
-        val target = temp.resolve("download.tar.gz")
-        val big = ByteArray(1000)
-        val said = CaptureArchives.Http { CaptureArchives.Response(200, null, 1000, ByteArrayInputStream(big)) }
-        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.download(URI("$release/x.tar.gz"), target, 100, config, said) }.message.orEmpty(),
-            "1000 bytes, over")
-        val unsaid = CaptureArchives.Http { CaptureArchives.Response(200, null, null, ByteArrayInputStream(big)) }
-        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.download(URI("$release/x.tar.gz"), target, 100, config, unsaid) }.message.orEmpty(),
-            "runs over")
-        assertFalse(target.exists(), "a download cut off is removed")
     }
 
     @Test
-    fun `only HTTPS release assets under an allowed prefix are fetched, and redirects only to GitHub's asset hosts`() {
+    fun `only a regular file under the lab's archive directory is analysed, never a URL`() {
         val sha = "a".repeat(64)
-        fun refusal(url: String) = CaptureArchives.refusal(AnalyzeSpec(archive = url, sha256 = sha), config)
-        assertNull(refusal("$release/a.tar.gz"))
-        assertContains(refusal("http://github.com/Eignex/klause-lab/releases/download/t/a.tar.gz")!!, "must be https")
-        assertContains(refusal("https://evil.example/Eignex/a.tar.gz")!!, "only from https://github.com/Eignex/")
-        assertContains(refusal("https://github.com/someone/klause-lab/releases/download/t/a.tar.gz")!!, "only from")
-        assertContains(refusal("https://github.com/Eignex/klause-lab/archive/main.tar.gz")!!, "release asset")
-        assertContains(refusal("$release/a.tar.gz?x=1")!!, "no credentials, query")
-        assertContains(refusal("https://user@github.com/Eignex/klause-lab/releases/download/t/a.tar.gz")!!, "no credentials")
-        assertContains(refusal("https://github.com/Eignex/klause-lab/releases/download/t/../../x/a.tar.gz")!!, "plain path")
-        assertContains(refusal("$release/a.zip")!!, "must end in .tar.gz")
+        fun refusal(name: String) = CaptureArchives.refusal(AnalyzeSpec(archive = name, sha256 = sha), config)
+        val (archive, manifest) = packed()
+        assertNull(refusal(archive.name))
+        assertContains(refusal("https://example.org/evidence/a.tar.gz")!!, "not a URL")
+        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name, sha256 = sha, manifest = "https://example.org/a.manifest.json"), config)!!,
+            "not a URL")
+        assertContains(refusal("a.zip")!!, "must end in .tar.gz")
         assertContains(refusal("../a.tar.gz")!!, "unsafe path")
+        assertContains(refusal("/etc/a.tar.gz")!!, "unsafe path")
         assertContains(refusal("missing.tar.gz")!!, "no missing.tar.gz in the lab's archive directory")
-        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = "$release/a.tar.gz"), config)!!, "must pin")
-        val other = config.copy(archivePrefixes = listOf("https://mirror.example/evidence/"))
-        assertNull(CaptureArchives.refusal(AnalyzeSpec(archive = "https://mirror.example/evidence/a.tar.gz", sha256 = sha), other))
-        // GitHub's redirect to anywhere but its asset hosts is not followed.
-        val evil = github(emptyMap(), redirect = "https://evil.example/")
-        assertContains(assertFailsWith<ArchiveException> {
-            CaptureArchives.download(URI("$release/a.tar.gz"), temp.resolve("a.tar.gz"), 100, config, evil)
-        }.message.orEmpty(), "not allowed")
-        val plain = github(emptyMap(), redirect = "http://release-assets.githubusercontent.com/")
-        assertContains(assertFailsWith<ArchiveException> {
-            CaptureArchives.download(URI("$release/a.tar.gz"), temp.resolve("a.tar.gz"), 100, config, plain)
-        }.message.orEmpty(), "not allowed")
+        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name), config)!!, "must pin")
+        // A link out of the archive directory is not followed, and an archive needs its manifest beside it.
+        val outside = temp.resolve("outside.tar.gz").also { Files.copy(archive, it) }
+        Files.createSymbolicLink(config.archiveDir.resolve("linked.tar.gz"), outside)
+        assertContains(refusal("linked.tar.gz")!!, "not a regular file inside")
+        Files.delete(manifest)
+        assertContains(refusal(archive.name)!!, "no manifest")
     }
 
     @Test
-    fun `an analysis spec names a job or a pinned archive, and the API refuses an archive it may not fetch`() {
+    fun `an analysis spec names a job or a pinned lab-local archive, and the API refuses an archive it cannot analyse`() {
         fun valid(analyze: AnalyzeSpec) = runCatching { Experiments.validate(ExperimentSpec("a", description = "d", analyze = analyze), 4) }
-        assertTrue(valid(AnalyzeSpec(archive = "$release/a.tar.gz", sha256 = "a".repeat(64))).isSuccess)
-        assertContains(valid(AnalyzeSpec(archive = "$release/a.tar.gz")).exceptionOrNull()?.message.orEmpty(), "must pin")
-        assertContains(valid(AnalyzeSpec(archive = "$release/a.tar.gz", sha256 = "A".repeat(64))).exceptionOrNull()?.message.orEmpty(), "must pin")
-        assertContains(valid(AnalyzeSpec(7, archive = "$release/a.tar.gz", sha256 = "a".repeat(64))).exceptionOrNull()?.message.orEmpty(), "one of them")
+        assertTrue(valid(AnalyzeSpec(archive = "a.tar.gz", sha256 = "a".repeat(64))).isSuccess)
+        assertContains(valid(AnalyzeSpec(archive = "a.tar.gz")).exceptionOrNull()?.message.orEmpty(), "must pin")
+        assertContains(valid(AnalyzeSpec(archive = "a.tar.gz", sha256 = "A".repeat(64))).exceptionOrNull()?.message.orEmpty(), "must pin")
+        assertContains(valid(AnalyzeSpec(archive = "https://example.org/a.tar.gz", sha256 = "a".repeat(64))).exceptionOrNull()?.message.orEmpty(), "not URLs")
+        assertContains(valid(AnalyzeSpec(archive = "a.tar.gz", sha256 = "a".repeat(64), manifest = "https://example.org/a.manifest.json"))
+            .exceptionOrNull()?.message.orEmpty(), "not URLs")
+        assertContains(valid(AnalyzeSpec(7, archive = "a.tar.gz", sha256 = "a".repeat(64))).exceptionOrNull()?.message.orEmpty(), "one of them")
         assertContains(valid(AnalyzeSpec()).exceptionOrNull()?.message.orEmpty(), "one of them")
         assertContains(valid(AnalyzeSpec(7, sha256 = "a".repeat(64))).exceptionOrNull()?.message.orEmpty(), "pin an archive")
         val (archive, _) = packed()
@@ -287,11 +258,14 @@ class CaptureArchivesTest {
                 setBody(body)
             }
 
-            val refused = analyze("""{"analyze": {"archive": "https://evil.example/a.tar.gz", "sha256": "${"a".repeat(64)}"}}""")
+            val url = analyze("""{"analyze": {"archive": "https://example.org/a.tar.gz", "sha256": "${"a".repeat(64)}"}}""")
+            val refused = analyze("""{"analyze": {"archive": "missing.tar.gz", "sha256": "${"a".repeat(64)}"}}""")
             val queued = analyze("""{"analyze": {"archive": "${archive.name}", "sha256": "${shaOf(archive)}"}}""")
 
+            assertEquals(HttpStatusCode.BadRequest, url.status)
+            assertContains(url.bodyAsText(), "not URLs")
             assertEquals(HttpStatusCode.Conflict, refused.status)
-            assertContains(refused.bodyAsText(), "cannot analyse archive https://evil.example/a.tar.gz: archives are fetched only from")
+            assertContains(refused.bodyAsText(), "cannot analyse archive missing.tar.gz: no missing.tar.gz in the lab's archive directory")
             assertEquals(HttpStatusCode.Created, queued.status, queued.bodyAsText())
             val job = store.jobs(10, null, null, withCommands = false).single()
             assertEquals("analyze-archive-${shaOf(archive).take(12)}", job.name)

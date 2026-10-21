@@ -156,6 +156,22 @@ class MpsCheckerTest {
     }
 
     @Test
+    fun `the bundled upstream archive is the pinned one, with its license, and one that differs is never built`() {
+        val archive = checkNotNull(Solchecker::class.java.getResourceAsStream(Solchecker.ARCHIVE)).use { it.readBytes() }
+        assertEquals(89_885, archive.size)
+        assertEquals(Solchecker.ARCHIVE_SHA256, sha256(archive))
+        val license = checkNotNull(Solchecker::class.java.getResourceAsStream("miplib2017-testscript-LICENSE")).use { it.readBytes() }
+        assertContains(license.decodeToString(), "Copyright 2019 Zuse Institute Berlin")
+
+        val dir = Files.createTempDirectory("checkers").toFile()
+        val other = Solchecker(dir, archive = Solchecker.PATCH)
+        assertContains(assertFailsWith<IllegalStateException> { other.binary() }.message!!, "differs from its pin")
+        val missing = Solchecker(Files.createTempDirectory("checkers").toFile(), archive = "absent.zip")
+        assertContains(assertFailsWith<IllegalStateException> { missing.binary() }.message!!, "is not packaged")
+        assertEquals(emptyList(), dir.walkTopDown().filter { it.isFile }.toList())
+    }
+
+    @Test
     fun `the packaged patch is the pinned one and only raises upstream's input limits`() {
         val patch = checkNotNull(Solchecker::class.java.getResourceAsStream(Solchecker.PATCH)).use { it.readBytes() }
         assertEquals(Solchecker.PATCH_SHA256, sha256(patch))

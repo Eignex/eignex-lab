@@ -3,7 +3,6 @@ package com.eignex.lab.checker
 import java.io.File
 import java.math.BigDecimal
 import java.math.BigInteger
-import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.zip.ZipFile
@@ -14,14 +13,14 @@ import java.util.zip.ZipFile
  * binary under `<dir>/solchecker-<VERSION>/`. The patch, pinned by [PATCH_SHA256], only raises three fixed input
  * limits: a number may be 4095 characters rather than 31, the I/O buffer it is expanded into 16384 bytes rather than
  * 1024, and a SOL line 8190 characters rather than 1022. Parsing and the exact GMP arithmetic are upstream's. The
- * archive comes from the lab's own mirror, a klause-lab release asset holding the unmodified upstream bytes, and from
- * miplib.zib.de only when the mirror cannot be reached; either is checked against the pin. The archive and the build
- * tree are deleted once the binary is built. A build that fails is not tried again for [RETRY_MS], so a broken
- * toolchain or an outage costs each check a message, not a build.
+ * archive is bundled with the lab as the resource [ARCHIVE], the unmodified upstream bytes, so the build needs no
+ * network; it is checked against the pin before it is unpacked. The build tree is deleted once the binary is built. A
+ * build that fails is not tried again for [RETRY_MS], so a broken toolchain costs each check a message, not a build.
  */
 class Solchecker(
     private val dir: File,
-    private val urls: List<String> = listOf(MIRROR_URL, UPSTREAM_URL),
+    /** The bundled upstream archive, a resource beside this class. */
+    private val archive: String = ARCHIVE,
     private val compiler: String = "c++",
     private val patcher: String = "patch",
     /** Where the compiler finds GMP and zlib besides the system's. */
@@ -52,14 +51,13 @@ class Solchecker(
         val tmp = File(dir, "tmp").apply { mkdirs() }
         val work = Files.createTempDirectory(tmp.toPath(), "solchecker-build-").toFile()
         try {
-            val archive = File(work, "miplib2017-testscript-v$UPSTREAM_VERSION.zip")
-            val errors = mutableListOf<String>()
-            val fetched = urls.any { url ->
-                runCatching { download(url, archive) }.onFailure { errors += "$url: ${it.message}" }.isSuccess
-            }
-            check(fetched) { "the pinned archive could not be fetched (${errors.joinToString("; ")})" }
+            val zipped = File(work, ARCHIVE)
+            checkNotNull(Solchecker::class.java.getResourceAsStream(archive)) { "the archive $archive is not packaged" }
+                .use { input -> zipped.outputStream().use { input.copyTo(it) } }
+            val sha = sha256(zipped)
+            check(sha == ARCHIVE_SHA256) { "the archive $archive has SHA-256 $sha, which differs from its pin" }
             val sources = File(work, "src").apply { mkdirs() }
-            ZipFile(archive).use { zip ->
+            ZipFile(zipped).use { zip ->
                 for (name in SOURCES + HEADERS) {
                     val entry = checkNotNull(zip.getEntry("checker/src/$name")) { "checker/src/$name is not in the archive" }
                     zip.getInputStream(entry).use { input -> File(sources, name).outputStream().use { input.copyTo(it) } }
@@ -83,13 +81,6 @@ class Solchecker(
         }
     }
 
-    private fun download(url: String, archive: File) {
-        val connection = URI(url).toURL().openConnection().apply { connectTimeout = 30_000; readTimeout = 30_000 }
-        connection.getInputStream().use { input -> archive.outputStream().use { input.copyTo(it) } }
-        val sha = sha256(archive)
-        check(sha == ARCHIVE_SHA256) { "SHA-256 $sha differs from the pin" }
-    }
-
     companion object {
         /** The upstream release the sources come from. */
         const val UPSTREAM_VERSION = "1.0.4"
@@ -101,11 +92,10 @@ class Solchecker(
         const val PATCH_SHA256 = "c0cf7c98c63029468072bad151a8ff93f986bfc051f49a66cdcfd6a205f611e5"
         /** The checker version each verdict records: the binary's identity and the patch it was built with. */
         const val CHECKER_VERSION = "$VERSION (patch sha256 $PATCH_SHA256)"
+        /** The upstream archive, byte for byte as Zuse Institute Berlin published it: a resource beside this class, with
+         *  its MIT license beside it as `miplib2017-testscript-LICENSE`. */
+        const val ARCHIVE = "miplib2017-testscript-v$UPSTREAM_VERSION.zip"
         const val ARCHIVE_SHA256 = "37b21a7f1ee968aed60675fb070c9286eccc6a953c8bc50120c9246b052b47b9"
-        /** The lab's mirror of the upstream archive, byte for byte (release `upstream-miplib2017-testscript-v1.0.4`). */
-        const val MIRROR_URL = "https://github.com/Eignex/klause-lab/releases/download/upstream-miplib2017-testscript-v1.0.4/" +
-            "miplib2017-testscript-v1.0.4.zip"
-        const val UPSTREAM_URL = "https://miplib.zib.de/downloads/miplib2017-testscript-v1.0.4.zip"
         const val RETRY_MS = 10 * 60_000L
         private const val BUILD_TIMEOUT_MS = 300_000L
         private val SOURCES = listOf("main.cpp", "gmputils.cpp", "model.cpp", "mpsinput.cpp")

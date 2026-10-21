@@ -100,9 +100,9 @@ data class ProfileMain(
 
 /**
  * What an analysis job reruns: the analyser of [kind] (`compilation`, the only one) over [job]'s retained captures, or
- * over the captures in a saved-capture [archive] ([CaptureArchives]): an HTTPS URL of an allowed release asset, or a
- * path under the lab's archive directory. An archive is pinned by its [sha256]; its [manifest] is the
- * `.manifest.json` beside it unless named, and [manifestSha256] pins that too when given.
+ * over the captures in a saved-capture [archive] ([CaptureArchives]), a path under the lab's archive directory. An
+ * archive is pinned by its [sha256]; its [manifest] is the `.manifest.json` beside it unless named, and
+ * [manifestSha256] pins that too when given.
  */
 @Serializable
 data class AnalyzeSpec(
@@ -336,6 +336,9 @@ object Experiments {
             } else {
                 require(analyze.sha256 != null && SHA256.matches(analyze.sha256)) {
                     "analyze.sha256 must pin the archive: its SHA-256 as 64 lowercase hex digits"
+                }
+                require(listOfNotNull(analyze.archive, analyze.manifest).none { "://" in it }) {
+                    "analyze.archive and analyze.manifest name files under the lab's archive directory (\$LAB_DATA/archives), not URLs"
                 }
             }
             require(

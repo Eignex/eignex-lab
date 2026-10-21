@@ -184,7 +184,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 val id = store.create(spec.name, DEFAULT_REF, emptyList(), 1, spec.priority, spec)
                 val note = if (analyze.kind == AnalyzeSpec.CHECK) "checks job $job's solution claims again on the local machine; no solver runs"
                     else if (job != null) "analyses job $job's retained captures on the local machine; no solver runs"
-                    else "downloads, checks against its sha256, verifies and analyses the archive's captures on the local machine; no solver runs"
+                    else "checks the lab-local archive against its sha256, verifies it and analyses its captures on the local machine; no solver runs"
                 call.respond(HttpStatusCode.Created, Created(id, listOf(note), placementNote(spec.host), Experiments.hostWord(spec.host)))
                 return@post
             }
