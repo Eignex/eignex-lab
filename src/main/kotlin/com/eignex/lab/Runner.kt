@@ -488,7 +488,8 @@ class Runner(
                 }
                 // A profileCli job's launcher goes in before the provenance manifest describes the build, as on a node.
                 if (spec.profileCli) sh(log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
-                sh(log, path.toFile(), Experiments.captureProvenance(path.toString()))
+                // The manifest describes the CLI and bench a Klause case runs; a reference case runs neither.
+                if (!referenceOnly) sh(log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
