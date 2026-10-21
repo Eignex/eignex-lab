@@ -213,6 +213,11 @@ class Store(file: Path) {
             )
             // [referencesStamp] reads the newest row on every reference and trend page load.
             it.execute("CREATE INDEX IF NOT EXISTS reference_rows_updated ON reference_rows (updated_at)")
+            // [problemRuns] finds one problem's cases across every job; without this it reads every problem row.
+            it.execute(
+                "CREATE INDEX IF NOT EXISTS problems_identity ON problems " +
+                    "(json_extract(problem, '$.collection'), json_extract(problem, '$.problem'))",
+            )
             val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
@@ -916,7 +921,9 @@ class Store(file: Path) {
     /** Every case of any experiment that ran one problem, newest experiment first. */
     @Synchronized
     fun problemRuns(collection: String, problem: String): List<ProblemRun> = connection.prepareStatement(
-        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, c.record
+        // The record as scoring reads it: the page shows each run's outcome and time, not its witness or provenance,
+        // which can make one problem's runs tens of megabytes.
+        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, $SCORING_RECORD
            FROM problems p
            JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
