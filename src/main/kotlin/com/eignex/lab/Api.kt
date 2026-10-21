@@ -21,6 +21,7 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
+import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -267,6 +268,22 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
+        // Every case whole, as JSON Lines: its record with its final witness and the lab's verdict as `labCheck`. It is
+        // read and written a page of cases at a time, so a job of thousands of cases with large witnesses streams out
+        // without being held in memory, and the store is free between pages.
+        get("/experiments/{id}/cases.jsonl") {
+            val id = call.parameters["id"]!!.toLong()
+            call.respondTextWriter(ContentType("application", "x-ndjson")) {
+                var from = 0
+                while (true) {
+                    val page = withContext(Dispatchers.IO) { store.cases(id, from, CASES_PAGE) }
+                    for (case in page) write(DefaultJson.encodeToString(CaseResult.serializer(), case) + "\n")
+                    flush()
+                    if (page.size < CASES_PAGE) break
+                    from = page.last().index + 1
+                }
+            }
+        }
         get("/experiments/{id}/stats") {
             val id = call.parameters["id"]!!.toLong()
             call.respond(Stats.of(store.arms(id).map { it.arm.label }, store.cases(id)))
@@ -493,6 +510,8 @@ private const val MIN_SCHEDULE_SEC = 60L
 /** Jobs a page of the history, and a `/jobs` list by default, shows. */
 private const val PAGE_SIZE = 50
 private const val MAX_COMPARED = 6
+/** Cases `/experiments/{id}/cases.jsonl` reads from the store at once. */
+private const val CASES_PAGE = 32
 /** The most a `?tail=` read returns, so one request cannot pull a whole large file into memory. */
 private const val MAX_TAIL_BYTES = 16L * 1024 * 1024
 

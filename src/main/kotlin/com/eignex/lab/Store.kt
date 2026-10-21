@@ -512,6 +512,13 @@ class Store(file: Path) {
     fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId)
 
     /**
+     * At most [limit] of [cases], whole, from case index [from] on. A large job's records, final witnesses included,
+     * can run to megabytes each, so an export reads them a page at a time instead of all at once.
+     */
+    @Synchronized
+    fun cases(jobId: Long, from: Int, limit: Int): List<CaseResult> = casesWith("c.record", jobId, from, limit)
+
+    /**
      * [cases] with each record cut to what scoring and the trend read: its stats only [SCORING_STATS], and none of its
      * build provenance, final witness or attribution. A record runs to tens of kilobytes, nearly all of it provenance,
      * so SQLite cuts it before it is parsed here. A finished job's are kept between calls ([SCORING_JOBS] of them), its
@@ -538,15 +545,17 @@ class Store(file: Path) {
         }
 
     @Synchronized
-    private fun casesWith(record: String, jobId: Long): List<CaseResult> = connection.prepareStatement(
+    private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1): List<CaseResult> = connection.prepareStatement(
         """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
            JOIN jobs j ON j.id = c.job_id
-           WHERE c.job_id = ? ORDER BY c.idx""",
+           WHERE c.job_id = ? AND c.idx >= ? ORDER BY c.idx LIMIT ?""",
     ).use { statement ->
         statement.setLong(1, jobId)
+        statement.setInt(2, from)
+        statement.setInt(3, limit)
         statement.executeQuery().use { rows ->
             generateSequence {
                 if (!rows.next()) return@generateSequence null
