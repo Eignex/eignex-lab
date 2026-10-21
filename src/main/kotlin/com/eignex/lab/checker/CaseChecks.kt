@@ -77,6 +77,11 @@ class CaseChecks(
         for (future in futures) runCatching { future.get() }
     }
 
+    /** Stop waiting for [jobId]'s queued checks, as a cancelled job does: they still run and keep their verdicts. */
+    fun release(jobId: Long) {
+        pending.remove(jobId)
+    }
+
     /** Check case [index] of [jobId], a case of [problem], from its whole stored record, and keep the verdict. */
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
         val text = store.caseRecordText(jobId, index) ?: return null

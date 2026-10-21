@@ -7,6 +7,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
@@ -140,28 +141,34 @@ class Runner(
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
-            if (job.experiment?.profile?.runTimeoutSec != null) {
-                workWithDeadline(job)
-                continue
-            }
-            if (job.experiment?.isAnalysis == true) {
-                runCatching { analyze(job) }.onFailure { e ->
-                    if (stopping) return
-                    log(job.id, "job failed: ${e.message}")
-                    store.finish(job.id, Status.FAILED, e.message ?: e.toString())
-                }
-                continue
-            }
-            runCatching { work(job) }.onFailure { e ->
-                if (stopping) return
-                // A cancel that lands while a setup step waits to retry ends the wait; it is a cancel, not a failure.
-                if (store.cancelRequested(job.id)) return@onFailure cancel(job.id)
-                log(job.id, "job failed: ${e.message}")
-                store.cancelRemaining(job.id)
-                store.finish(job.id, Status.FAILED, e.message ?: e.toString())
-                runCatching { removeWorktree(job.id) }
-            }
+            if (!runJob(job)) return
         }
+    }
+
+    /** Run the [job] the queue handed out to its end, or to a yield. False when the runner is stopping meanwhile. */
+    internal fun runJob(job: Job): Boolean {
+        if (job.experiment?.profile?.runTimeoutSec != null) {
+            workWithDeadline(job)
+            return true
+        }
+        if (job.experiment?.isAnalysis == true) {
+            runCatching { analyze(job) }.onFailure { e ->
+                if (stopping) return false
+                log(job.id, "job failed: ${e.message}")
+                store.finish(job.id, Status.FAILED, e.message ?: e.toString())
+            }
+            return true
+        }
+        runCatching { work(job) }.onFailure { e ->
+            if (stopping) return false
+            // A cancel stops the setup step running, or ends a wait to retry one; it is a cancel, not a failure.
+            if (store.cancelRequested(job.id)) return@onFailure cancel(job.id)
+            log(job.id, "job failed: ${e.message}")
+            store.cancelRemaining(job.id)
+            store.finish(job.id, Status.FAILED, e.message ?: e.toString())
+            runCatching { removeWorktree(job.id) }
+        }
+        return true
     }
 
     private fun work(claimed: Job) {
@@ -279,6 +286,11 @@ class Runner(
         val pool = Executors.newCachedThreadPool()
         var cancelled = false
         var yielding = false
+        fun cancelling(running: Int) {
+            if (cancelled) return
+            cancelled = true
+            log(job.id, "cancel requested — stopping $running running ${if (running == 1) "case" else "cases"}")
+        }
         try {
             while (pending.isNotEmpty() || active.isNotEmpty()) {
                 ProfileRunDeadline.checkActive()
@@ -289,7 +301,7 @@ class Runner(
                     val exit = active.getValue(index).get()
                     active.remove(index)
                     if (exit == CANCELLED_EXIT) {
-                        cancelled = true
+                        cancelling(active.size + 1)
                     } else {
                         store.commandFinished(job.id, index, exit)
                         finished += index
@@ -301,8 +313,9 @@ class Runner(
                 // Another problem only once this host has room for a case of it, so the problems left go to whichever
                 // host frees up first, a host added later included.
                 if (!cancelled && !yielding && active.size < host.parallel(store.parallel(job.id))) take()
-                // Each running command sees the request and kills its own tree; the job ends once they have.
-                if (!cancelled && store.cancelRequested(job.id)) cancelled = true
+                // Each running command sees the request within a second and kills its own tree; the job ends once
+                // they have.
+                if (!cancelled && store.cancelRequested(job.id)) cancelling(active.size)
                 if (cancelled) {
                     if (active.isEmpty()) return Dispatched.CANCELLED
                 } else if (yielding || (pending.isNotEmpty() && (yields(job.id, host) || host.yieldsToUpdates && updateDue(job.id)))) {
@@ -338,8 +351,9 @@ class Runner(
         } finally {
             pool.shutdown()
             pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
-            // A job ends with its cases' checks kept, so what reads it next (a confirmation, a trend) sees them.
-            if (!stopping) checks.await(job.id)
+            // A job ends with its cases' checks kept, so what reads it next (a confirmation, a trend) sees them. A
+            // cancelled one ends at once; its checks finish in the background.
+            if (cancelled) checks.release(job.id) else if (!stopping) checks.await(job.id)
         }
     }
 
@@ -479,14 +493,14 @@ class Runner(
                     // What a failed try left would make the next one refuse the path.
                     removeTree(path)
                     path.parent.createDirectories()
-                    sh(log, config.mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
+                    sh(job.id, log, config.mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
                 }
             }
             linkShared(path)
             withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
                 val start = log.length()
                 try {
-                    sh(log, path.toFile(),
+                    sh(job.id, log, path.toFile(),
                         "./gradlew ${klauseBuildTasks(referenceOnly)} --max-workers=${config.gradleWorkers} -q" +
                             if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
                 } catch (e: Exception) {
@@ -497,9 +511,9 @@ class Runner(
                     throw e
                 }
                 // A profileCli job's launcher goes in before the provenance manifest describes the build, as on a node.
-                if (spec.profileCli) sh(log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
+                if (spec.profileCli) sh(job.id, log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
                 // The manifest describes the CLI and bench a Klause case runs; a reference case runs neither.
-                if (!referenceOnly) sh(log, path.toFile(), Experiments.captureProvenance(path.toString()))
+                if (!referenceOnly) sh(job.id, log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
@@ -513,7 +527,7 @@ class Runner(
     internal fun resolveArms(job: Job, spec: ExperimentSpec, log: File): Pair<List<Arm>, Map<String, String>> {
         val planned = store.arms(job.id)
         val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
-        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(log) } }
+        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(job.id, log) } }
         val shas = synchronized(mirrorLock) {
             planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
         }
@@ -587,7 +601,11 @@ class Runner(
                 val features = host.select(worktree, Experiments.selectArgs(asked)).filter { it.startsWith("{") }
                     .map { lenient.decodeFromString<ProblemFeatures>(it) }.filter { it.themes.isNotEmpty() }
                 store.putFeatures(features)
-            }.onFailure { log(job.id, "classifying $suite's problems failed, they stay unclassified: ${it.message}") }
+            }.onFailure {
+                // A cancel stops the job, not only the classifying.
+                if (it is CancellationException) throw it
+                log(job.id, "classifying $suite's problems failed, they stay unclassified: ${it.message}")
+            }
         }
     }
 
@@ -677,7 +695,7 @@ class Runner(
             val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
             val out = Files.createTempFile("select", ".jsonl")
             try {
-                sh(log, File(worktree, "klause-bench"),
+                sh(job.id, log, File(worktree, "klause-bench"),
                     "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
                         "select $args > ${quote(out.toString())}")
                 return out.toFile().readLines()
@@ -848,11 +866,11 @@ class Runner(
         store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$jobId")
     }
 
-    private fun fetchMirror(log: File) {
+    private fun fetchMirror(jobId: Long, log: File) {
         if (!config.mirror.exists()) {
-            sh(log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+            sh(jobId, log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
         }
-        sh(log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+        sh(jobId, log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
     }
 
     private fun resolve(ref: String): String =
@@ -1026,8 +1044,8 @@ class Runner(
     internal fun cancel(jobId: Long) {
         store.cancelRemaining(jobId)
         store.finish(jobId, Status.CANCELLED)
-        removeWorktree(jobId)
         log(jobId, "job cancelled")
+        removeWorktree(jobId)
     }
 
     /** Remove the job's worktree and, for an experiment, the ones it built other commits in. */
@@ -1069,12 +1087,25 @@ class Runner(
             while (now() < until) {
                 ProfileRunDeadline.checkActive()
                 while (stopping) Thread.sleep(CANCEL_POLL_MS)
-                check(jobId == null || !store.cancelRequested(jobId)) { "cancelled while waiting to retry $what" }
+                if (jobId != null && store.cancelRequested(jobId)) throw JobCancelled("cancelled while waiting to retry $what")
                 Thread.sleep((until - now()).coerceIn(1, CANCEL_POLL_MS))
             }
         },
-        step = { ProfileRunDeadline.checkActive(); step().also { ProfileRunDeadline.checkActive() } },
+        step = {
+            ProfileRunDeadline.checkActive()
+            // What a cancel of the step then says it stopped ([sh]).
+            val outer = currentStep.get()
+            currentStep.set(what)
+            try {
+                step().also { ProfileRunDeadline.checkActive() }
+            } finally {
+                currentStep.set(outer)
+            }
+        },
     )
+
+    /** The [withRetry] step this thread runs, as its log names it. */
+    private val currentStep = ThreadLocal<String?>()
 
     /** Whether the build output [log] wrote after [from] says a Gradle transform's file is missing: a cache whose
      *  records outlived the files they name, which every later build would trip on the same way. */
@@ -1093,30 +1124,66 @@ class Runner(
 
     /** Stop the lab's Gradle daemons and remove its transform caches, which the next build rebuilds. */
     private fun clearTransforms(worktree: File) {
-        runCatching { sh(File.createTempFile("gradle-stop", ".log"), worktree, "./gradlew --stop -q") }
+        runCatching { sh(null, File.createTempFile("gradle-stop", ".log"), worktree, "./gradlew --stop -q") }
         config.gradleHome.resolve("caches").toFile().listFiles().orEmpty()
             .map { it.resolve("transforms") }.filter { it.isDirectory }.forEach { it.deleteRecursively() }
     }
 
-    private fun sh(log: File, dir: File, cmd: String) {
+    /**
+     * Run setup step [cmd] of job [jobId] in [dir], its output appended to [log]. The step's cancel is checked every
+     * [CANCEL_POLL_MS] while it runs: a cancelled step's process group is stopped ([stopStep]) and [JobCancelled]
+     * thrown, which no retry tries again.
+     */
+    internal fun sh(jobId: Long?, log: File, dir: File, cmd: String) {
         ProfileRunDeadline.checkActive()
+        if (jobId != null) checkCancel(jobId, cmd)
         log.appendText("$ $cmd\n")
         val builder = ProcessBuilder(inSession("bash", "-c", cmd)).directory(dir)
             .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log))
         if (config.javaHome.isNotBlank()) builder.environment()["JAVA_HOME"] = config.javaHome
         builder.environment()["GRADLE_USER_HOME"] = config.gradleHome.toString()
         val process = start(builder, log.toPath().resolveSibling("setup.pid"))
-        val finished = try {
-            process.waitFor(config.setupTimeoutSec, TimeUnit.SECONDS)
+        val deadline = now() + config.setupTimeoutSec * MS_PER_SEC
+        var timedOut = false
+        try {
+            while (!process.waitFor(CANCEL_POLL_MS, TimeUnit.MILLISECONDS)) {
+                if (stopping) break
+                if (jobId != null && store.cancelRequested(jobId)) {
+                    log(jobId, "cancel requested — stopping ${currentStep.get() ?: "setup step: $cmd"}")
+                    stopStep(process)
+                    throw JobCancelled("cancelled while ${currentStep.get() ?: "running setup step: $cmd"}")
+                }
+                if (now() > deadline) {
+                    timedOut = true
+                    break
+                }
+            }
         } finally {
             running.remove(process)
         }
         while (stopping) Thread.sleep(CANCEL_POLL_MS)
-        if (!finished) {
-            killTree(process)
+        if (timedOut) {
+            stopStep(process)
             error("setup step timed out: $cmd")
         }
         check(process.exitValue() == 0) { "setup step failed (${process.exitValue()}): $cmd — see setup.log" }
+    }
+
+    /** Throw [JobCancelled] before [what] starts when job [jobId]'s cancel was requested. */
+    private fun checkCancel(jobId: Long, what: String) {
+        if (store.cancelRequested(jobId)) throw JobCancelled("cancelled before ${currentStep.get() ?: what}")
+    }
+
+    /**
+     * Stop a setup step: SIGTERM to its process group, [SETUP_GRACE_MS] for it to go, then SIGKILL. Only the group:
+     * a Gradle daemon the step's client started leaves the group for a session of its own and stays for the next
+     * build, which [killTree]'s walk of the descendants would kill as well. The daemon sees its client go and cancels
+     * that client's build.
+     */
+    private fun stopStep(process: Process) {
+        stopGroups(listOf(process.pid()), SETUP_GRACE_MS)
+        process.destroyForcibly()
+        process.waitFor(KILL_WAIT_SEC, TimeUnit.SECONDS)
     }
 
     /** Run a git command the runner needs beside the cases (a schedule's check, removing a worktree) in the
@@ -1173,6 +1240,8 @@ class Runner(
         /** How far back a run looks for the run before it of the same experiment. */
         const val PREVIOUS_RUNS = 50
         const val KILL_WAIT_SEC = 10L
+        /** How long a cancelled or timed-out setup step has between SIGTERM and SIGKILL. */
+        const val SETUP_GRACE_MS = 2000L
         const val CANCELLED_EXIT = -1000
         const val TIMEOUT_EXIT = -1001
         const val DISPATCH_POLL_MS = 100L
@@ -1305,6 +1374,9 @@ internal fun Path.writeAtomically(text: String) {
 }
 
 internal enum class Dispatched { FINISHED, CANCELLED, YIELDED, LOST }
+
+/** A job's step stopped, or not started, because the job's cancel was requested: never retried ([retrying]). */
+class JobCancelled(message: String) : CancellationException(message)
 
 /** Characters a `name=` selection reads as a glob, so a problem named with one cannot be asked for exactly. */
 private val GLOB_CHARS = setOf('*', '?', '[', ',')
