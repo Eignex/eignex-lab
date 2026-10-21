@@ -16,6 +16,9 @@ data class Config(
     val passwordHash: String? = System.getenv("LAB_PASSWORD_HASH")?.takeIf { it.isNotBlank() } ?: Password.bundled(),
     /** The GitHub users whose branches the lab builds, besides `main` ([Trust]). */
     val trustedUsers: Set<String> = env("LAB_TRUSTED_USERS", "rasros").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
+    /** The lab's own launcher, which a reference arm's cases run ([com.eignex.lab.reference.ReferenceCli]): the
+     *  current release, so a case needs no klause build. */
+    val launcher: String = env("LAB_LAUNCHER", "$dataDir/releases/current/bin/klause-lab"),
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
     val corpusDir: Path = Path(env("LAB_CORPUS", "${System.getProperty("user.home")}/.cache/klause-bench/corpus")),
     val port: Int = env("LAB_PORT", "8420").toInt(),

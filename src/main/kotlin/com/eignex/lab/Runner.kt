@@ -447,6 +447,9 @@ class Runner(
         log.writeText("")
         val (arms, shas) = resolveArms(job, spec, log)
         val primary = shas.getValue(arms.first().ref)
+        // A reference case runs the lab's own launcher; the bench is built only to select and resolve the problems.
+        val tasks = if (arms.all { it.values["backend"] == REFERENCE_BACKEND }) ":klause-bench:installDist"
+            else ":klause-cli:installJvmDist :klause-bench:installDist"
         removeWorktree(job.id)
         for (sha in shas.values.distinct()) {
             val path = experimentWorktree(job.id, sha, primary)
@@ -463,7 +466,7 @@ class Runner(
                 val start = log.length()
                 runCatching {
                     sh(log, path.toFile(),
-                        "./gradlew :klause-cli:installJvmDist :klause-bench:installDist --max-workers=${config.gradleWorkers} -q" +
+                        "./gradlew $tasks --max-workers=${config.gradleWorkers} -q" +
                             if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
                 }.onFailure { e ->
                     if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
@@ -509,7 +512,42 @@ class Runner(
         val problems = spec.problemList.ifEmpty { selectProblems(job, spec, host.worktree(primary), budgetMs, dir, host) }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
         classify(job, problems, host.worktree(primary), host)
-        planCases(job, spec, arms, shas, problems, host)
+        val solved = if (arms.any { it.values["backend"] == REFERENCE_BACKEND }) {
+            withFiles(job, problems, host.worktree(primary), host)
+        } else {
+            problems
+        }
+        planCases(job, spec, arms, shas, solved, host)
+    }
+
+    /**
+     * [problems] with the files `select files=true` resolves, which a reference arm's cases solve without the bench.
+     * Asked by name, one suite at a time, so a named problem list resolves as a selection does.
+     */
+    private fun withFiles(job: Job, problems: List<Problem>, worktree: String, host: ExecutionHost): List<Problem> {
+        val resolved = HashMap<Pair<String, String>, Problem>()
+        for ((suite, group) in problems.filter { it.model == null }.groupBy { it.suite }) {
+            val names = group.map { it.problem }
+            require(names.none { name -> name.any { it in GLOB_CHARS } }) {
+                "a reference case needs each problem named exactly; $suite has a pattern among ${names.joinToString()}"
+            }
+            val asked = mapOf("suite" to suite, "name" to names.joinToString(","), "per-family" to "1000000",
+                "files" to "true")
+            val lines = withRetry(job.id, "resolving $suite's problem files", config.buildRetry) {
+                host.select(worktree, Experiments.selectArgs(asked))
+            }
+            for (problem in lines.filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }) {
+                resolved[problem.suite to problem.problem] = problem
+            }
+        }
+        return problems.map { problem ->
+            if (problem.model != null) return@map problem
+            val files = requireNotNull(resolved[problem.suite to problem.problem]) {
+                "the bench resolved no files for ${problem.suite}/${problem.problem}"
+            }
+            problem.copy(format = problem.format.ifEmpty { files.format }, model = files.model, data = files.data,
+                includeDirs = files.includeDirs)
+        }
     }
 
     /**
@@ -582,6 +620,7 @@ class Runner(
     private fun caseCommand(spec: ExperimentSpec, arm: Arm, problem: Problem, seed: Long?, index: Int, worktree: String, host: ExecutionHost): String {
         val profile = spec.profile
         return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus)
+        else if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, seed, index)
         else Experiments.command(worktree, problem, arm, seed, index, host.corpus)
     }
 

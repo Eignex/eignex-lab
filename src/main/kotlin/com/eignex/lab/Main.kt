@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import com.eignex.lab.reference.ReferenceCli
 import kotlin.io.path.createDirectories
 import kotlin.system.exitProcess
 
@@ -8,7 +9,8 @@ import kotlin.system.exitProcess
  * separate processes on purpose: a solve that takes the runner down leaves the queue inspectable, and the service
  * manager restarts the runner, which resumes where the store says it was. `campaign-evidence` ([CampaignEvidence]) and
  * `make-sets` ([MakeSets]) are tools run by hand from a checkout, on any host, and `docker-cleanup` ([DockerCleanup])
- * prunes the lab machine's Docker now instead of at the runner's next cleanup.
+ * prunes the lab machine's Docker now instead of at the runner's next cleanup. `reference` ([ReferenceCli]) runs one
+ * reference-solver case, as a reference arm's case command calls it.
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
@@ -16,6 +18,7 @@ fun main(args: Array<String>) {
         "campaign-evidence" -> exitProcess(CampaignEvidence.main(args.drop(1)))
         "make-sets" -> exitProcess(MakeSets.main(args.drop(1)))
         "docker-cleanup" -> exitProcess(dockerCleanupNow())
+        "reference" -> exitProcess(ReferenceCli.main(args.drop(1)))
     }
     if (mode == "password") {
         // A new password and the hash to commit as src/main/resources/lab-password; the password goes to the clients.
@@ -25,7 +28,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: klause-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup")
+        System.err.println("usage: klause-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference")
         exitProcess(2)
     }
     val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->
