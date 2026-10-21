@@ -84,12 +84,16 @@ class JobTrim(
          */
         fun keeps(relative: Path): Boolean {
             val name = relative.name
+            val reports = setOf(CompilationReports.REPORT, CompilationReports.TASKS, CliMeasurements.MANIFEST)
+            // An archive analysis's reports, at their captures' paths in the archive.
+            if (relative.nameCount >= 4 && relative.getName(0).toString() == CaptureArchives.ROOT) {
+                return relative.parent.name.startsWith("profile-") && name in reports
+            }
             return when (relative.nameCount) {
-                1 -> name in setOf("job.log", "setup.log", "sha", MARKER, CompilationReports.ANALYSIS) || name.endsWith(".exit") ||
-                    name.endsWith(".termination") || (name.startsWith("selection-") && name.endsWith(".jsonl"))
+                1 -> name in setOf("job.log", "setup.log", "sha", MARKER, CompilationReports.ANALYSIS, CaptureArchives.MANIFEST) ||
+                    name.endsWith(".exit") || name.endsWith(".termination") || (name.startsWith("selection-") && name.endsWith(".jsonl"))
                 3 -> relative.getName(0).toString() == "cases" && name.endsWith(".json")
-                4 -> relative.getName(0).toString() == "cases" && relative.getName(2).toString().startsWith("profile-") &&
-                    name in setOf(CompilationReports.REPORT, CliMeasurements.MANIFEST)
+                4 -> relative.getName(0).toString() == "cases" && relative.getName(2).toString().startsWith("profile-") && name in reports
                 else -> false
             }
         }

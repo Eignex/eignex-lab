@@ -98,9 +98,21 @@ data class ProfileMain(
     val runTimeoutSec: Long? = null,
 )
 
-/** What an analysis job reruns: the analyser of [kind] (`compilation`, the only one) over [job]'s retained captures. */
+/**
+ * What an analysis job reruns: the analyser of [kind] (`compilation`, the only one) over [job]'s retained captures, or
+ * over the captures in a saved-capture [archive] ([CaptureArchives]): an HTTPS URL of an allowed release asset, or a
+ * path under the lab's archive directory. An archive is pinned by its [sha256]; its [manifest] is the
+ * `.manifest.json` beside it unless named, and [manifestSha256] pins that too when given.
+ */
 @Serializable
-data class AnalyzeSpec(val job: Long, val kind: String = COMPILATION) {
+data class AnalyzeSpec(
+    val job: Long? = null,
+    val kind: String = COMPILATION,
+    val archive: String? = null,
+    val sha256: String? = null,
+    val manifest: String? = null,
+    val manifestSha256: String? = null,
+) {
     companion object {
         const val COMPILATION = "compilation"
     }
@@ -292,7 +304,17 @@ object Experiments {
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
         spec.analyze?.let { analyze ->
             require(analyze.kind == AnalyzeSpec.COMPILATION) { "analyze.kind must be '${AnalyzeSpec.COMPILATION}', not '${analyze.kind}'" }
-            require(analyze.job > 0) { "analyze.job must name a job" }
+            require((analyze.job == null) != (analyze.archive == null)) { "analyze names a job or an archive, one of them" }
+            analyze.job?.let { require(it > 0) { "analyze.job must name a job" } }
+            if (analyze.archive == null) {
+                require(analyze.sha256 == null && analyze.manifest == null && analyze.manifestSha256 == null) {
+                    "analyze.sha256 and analyze.manifest pin an archive: name one with analyze.archive"
+                }
+            } else {
+                require(analyze.sha256 != null && SHA256.matches(analyze.sha256)) {
+                    "analyze.sha256 must pin the archive: its SHA-256 as 64 lowercase hex digits"
+                }
+            }
             require(
                 spec.profile == null && spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.base.isEmpty() &&
                     spec.configs == listOf(emptyMap<String, String>()) && spec.grid.isEmpty() && spec.seeds.isEmpty() &&
@@ -545,6 +567,7 @@ object Experiments {
     const val STOP_GRACE_SEC = 30L
     /** A class under klause's package: what a profile job may name as its main. */
     private val MAIN = Regex("com\\.eignex\\.klause\\.bench\\.profile\\.[A-Za-z_][A-Za-z0-9_]*")
+    private val SHA256 = Regex("[0-9a-f]{64}")
     /** An option's name as the bench reads it. */
     private val OPTION = Regex("[A-Za-z][A-Za-z0-9._-]*")
     /** Options the lab sets for each case itself, which an arm or a selection may not: what to solve and where its

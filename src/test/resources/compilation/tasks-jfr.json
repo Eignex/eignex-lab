@@ -1,0 +1,13 @@
+{
+  "comment": "The jdk.Compilation and jdk.CompilationFailure events a recording beside tasks.log would hold: the JDK cannot write made-up JDK events, so a test builds the capture from these.",
+  "compilations": [
+    {"id": 10, "method": "Hot.f(I)I", "compiler": "c1", "level": 3, "osr": false, "succeeded": true, "ms": 1.5, "codeBytes": 240, "inlinedBytes": 0, "startMs": 1792501576892},
+    {"id": 11, "method": "Hot.f(I)I", "compiler": "c2", "level": 4, "osr": false, "succeeded": true, "ms": 4.0, "codeBytes": 112, "inlinedBytes": 0, "startMs": 1792501576992},
+    {"id": 12, "method": "Hot.f(I)I", "compiler": "c2", "level": 4, "osr": false, "succeeded": true, "ms": 9.5, "codeBytes": 120, "inlinedBytes": 0, "startMs": 1792501577192},
+    {"id": 13, "method": "Hot.g(I)I", "compiler": "c2", "level": 4, "osr": true, "succeeded": true, "ms": 7.25, "codeBytes": 1160, "inlinedBytes": 13, "startMs": 1792501577292},
+    {"id": 14, "method": "Hot.h()V", "compiler": "c2", "level": 4, "osr": false, "succeeded": false, "ms": 40.0, "codeBytes": 0, "inlinedBytes": 0, "startMs": 1792501577392},
+    {"id": 15, "method": "Hot.k()V", "compiler": "c1", "level": 3, "osr": false, "succeeded": false, "ms": 3.0, "codeBytes": 0, "inlinedBytes": 0, "startMs": 1792501577492},
+    {"id": 18, "method": "Hot.q()V", "compiler": "c1", "level": 1, "osr": false, "succeeded": true, "ms": 0.5, "codeBytes": 96, "inlinedBytes": 0, "startMs": 1792501577692}
+  ],
+  "failures": {"14": "out of nodes during matching"}
+}

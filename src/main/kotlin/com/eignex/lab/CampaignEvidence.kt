@@ -112,12 +112,14 @@ internal object CampaignEvidence {
                 if (!member.regular || name in seen || name !in expected)
                     throw EvidenceException("unexpected, duplicate or nonregular member: $name")
                 seen += name
+                val file = expected.getValue(name)
+                // The size first, so a header claiming more than the manifest is refused before its bytes are read.
+                if (member.size != number(file["size"])) throw EvidenceException("file hash or size differs: $name")
                 val digest = MessageDigest.getInstance("SHA-256")
                 val keep = if (name == "catalog.json") ByteArrayOutputStream() else null
                 bundle.content { block, length -> digest.update(block, 0, length); keep?.write(block, 0, length) }
                 keep?.let { catalogBytes = it.toByteArray() }
-                val file = expected.getValue(name)
-                if (member.size != number(file["size"]) || hex(digest.digest()) != string(file["sha256"]))
+                if (hex(digest.digest()) != string(file["sha256"]))
                     throw EvidenceException("file hash or size differs: $name")
             }
         }
@@ -498,6 +500,7 @@ internal class TarReader(private val input: InputStream) {
     }
 
     private fun payload(size: Long): ByteArray {
+        if (size !in 0..MAX_HEADER_PAYLOAD) throw EvidenceException("tar header payload of $size bytes")
         val bytes = input.readNBytes(Math.toIntExact(size))
         if (bytes.size.toLong() != size) throw EvidenceException("unexpected end of data")
         val rest = (TarWriter.BLOCK - size % TarWriter.BLOCK) % TarWriter.BLOCK
@@ -533,5 +536,10 @@ internal class TarReader(private val input: InputStream) {
         }
         val text = field(block, at, length).trim()
         return if (text.isEmpty()) 0 else text.toLongOrNull(8) ?: throw EvidenceException("invalid tar number")
+    }
+
+    private companion object {
+        /** The most a pax or GNU long-name header may hold: names and sizes, never file data. */
+        const val MAX_HEADER_PAYLOAD = 1L shl 20
     }
 }

@@ -160,14 +160,19 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             Experiments.validate(spec, config.maxParallel, config.cores)
             // An analysis needs its job's captures: refused now, saying why, when they are gone or the job has not ended.
             spec.analyze?.let { analyze ->
-                val refusal = withContext(Dispatchers.IO) { CompilationReports.refusal(store.job(analyze.job), config.jobDir(analyze.job)) }
+                val job = analyze.job
+                val refusal = withContext(Dispatchers.IO) {
+                    if (job != null) CompilationReports.refusal(store.job(job), config.jobDir(job)) else CaptureArchives.refusal(analyze, config)
+                }
+                val what = if (job != null) "job $job" else "archive ${analyze.archive}"
                 if (refusal != null) {
-                    call.respond(HttpStatusCode.Conflict, "cannot analyse job ${analyze.job}: $refusal")
+                    call.respond(HttpStatusCode.Conflict, "cannot analyse $what: $refusal")
                     return@post
                 }
                 val id = store.create(spec.name, DEFAULT_REF, emptyList(), 1, spec.priority, spec)
-                call.respond(HttpStatusCode.Created, Created(id, listOf("analyses job ${analyze.job}'s retained captures on the local machine; no solver runs"),
-                    placementNote(spec.host), Experiments.hostWord(spec.host)))
+                val note = if (job != null) "analyses job $job's retained captures on the local machine; no solver runs"
+                    else "downloads, checks against its sha256, verifies and analyses the archive's captures on the local machine; no solver runs"
+                call.respond(HttpStatusCode.Created, Created(id, listOf(note), placementNote(spec.host), Experiments.hostWord(spec.host)))
                 return@post
             }
             // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
@@ -516,16 +521,26 @@ private fun placementNote(host: String): String = when (host) {
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */
 /**
- * [body] with an analysis job's name and description filled in when it gives none, so `{"analyze": {"job": 12}}` is a
- * whole submission; any other body as it is.
+ * [body] with an analysis job's name and description filled in when it gives none, so `{"analyze": {"job": 12}}`, or
+ * `{"analyze": {"archive": …, "sha256": …}}`, is a whole submission; any other body as it is.
  */
 internal fun analysisDefaults(body: JsonObject): JsonObject {
     val analyze = body["analyze"] as? JsonObject ?: return body
-    val job = (analyze["job"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: return body
-    val defaults = mapOf(
-        "name" to kotlinx.serialization.json.JsonPrimitive("analyze-$job"),
-        "description" to kotlinx.serialization.json.JsonPrimitive("Rerun the lab's compilation analyser over job $job's retained captures"),
-    )
+    val job = (analyze["job"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+    val archive = (analyze["archive"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+    val sha = (analyze["sha256"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+    val defaults = when {
+        job != null -> mapOf(
+            "name" to kotlinx.serialization.json.JsonPrimitive("analyze-$job"),
+            "description" to kotlinx.serialization.json.JsonPrimitive("Rerun the lab's compilation analyser over job $job's retained captures"),
+        )
+        archive != null -> mapOf(
+            "name" to kotlinx.serialization.json.JsonPrimitive("analyze-archive-${sha.orEmpty().take(12)}"),
+            "description" to kotlinx.serialization.json.JsonPrimitive("Run the lab's compilation analyser over the captures in the pinned archive " +
+                archive.substringAfterLast('/')),
+        )
+        else -> return body
+    }
     return JsonObject(defaults.filterKeys { it !in body } + body)
 }
 

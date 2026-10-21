@@ -986,20 +986,38 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
 /** An analysis job: the job whose captures it analysed, and the reports it wrote, once it has. */
 private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
     val analyze = spec.analyze ?: return@buildString
-    append("<h2>Analysis</h2><p>The lab's ${esc(analyze.kind)} analyser, run again over the retained captures of job ")
-    append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>, writing each case's ${CompilationReports.REPORT} afresh. Nothing ")
-    append("was built and no solver ran.</p>")
+    if (analyze.archive != null) {
+        val link = if ("://" in analyze.archive) "<a href=\"${esc(analyze.archive)}\">${esc(analyze.archive.substringAfterLast('/'))}</a>"
+            else "<code>${esc(analyze.archive)}</code>"
+        append("<h2>Analysis</h2><p>The lab's ${esc(analyze.kind)} analyser, run over the captures in the pinned archive $link ")
+        append("(sha256 <code>${esc(analyze.sha256.orEmpty())}</code>), checked against its pin and verified against its manifest, ")
+        append("writing each case's ${CompilationReports.REPORT} into this job's files. Nothing was built and no solver ran.</p>")
+    } else {
+        append("<h2>Analysis</h2><p>The lab's ${esc(analyze.kind)} analyser, run again over the retained captures of job ")
+        append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>, writing each case's ${CompilationReports.REPORT} afresh. Nothing ")
+        append("was built and no solver ran.</p>")
+    }
+    // A schema 1 analysis.json, from before archives, reads too: it always names its job.
     val result = config.jobDir(job.id).resolve(CompilationReports.ANALYSIS).toFile().takeIf { it.isFile }
         ?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() }
     if (result == null) {
         append("<p class=\"muted\">${if (job.status in ACTIVE) "Not finished." else "No reports written: see job.log."}</p>")
         return@buildString
     }
+    result.archive?.let { archive ->
+        append("<p>Archive <code>${esc(archive.name)}</code>: ${archive.bytes} bytes, ${archive.verifiedFiles} files verified against manifest ")
+        append("<code>${esc(archive.manifest.substringAfterLast('/'))}</code> (sha256 <code>${esc(archive.manifestSha256)}</code>)")
+        archive.campaign?.let { append(", campaign <code>${esc(it)}</code>") }
+        append(".</p>")
+    }
+    val files = result.job ?: job.id
     append("<div class=\"scroll\"><table><tr><th>case</th><th class=\"num\">compilations</th><th class=\"num\">compiler ms</th>")
     append("<th>report</th><th>missing or incomplete</th></tr>")
     for (entry in result.reports) {
         append("<tr><td>${entry.case}</td><td class=\"num\">${entry.compilations}</td><td class=\"num\">${"%.1f".format(entry.compilerMs)}</td>")
-        append("<td><a href=\"/jobs/${result.job}/files/${entry.report}\">${esc(entry.report)}</a></td>")
+        append("<td><a href=\"/jobs/$files/files/${entry.report}\">${esc(entry.report)}</a>")
+        entry.tasks?.let { append(" · <a href=\"/jobs/$files/files/$it\">tasks</a>") }
+        append("</td>")
         append("<td>${if (entry.complete) "<span class=\"muted\">none</span>" else "<span class=\"PARTIAL\">${esc(entry.markers.joinToString(", "))}</span>"}</td></tr>")
     }
     append("</table></div>")

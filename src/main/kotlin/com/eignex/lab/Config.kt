@@ -71,12 +71,32 @@ data class Config(
     /** Worktree-relative directories every job shares, separated by `:`. */
     val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "klause-bench/build/bench-cache")
         .split(':').map { it.trim() }.filter { it.isNotEmpty() },
+    /**
+     * The HTTPS prefixes an analysis job may fetch a saved-capture archive from ([CaptureArchives]), separated by `,`:
+     * Eignex's GitHub release assets unless `LAB_ARCHIVE_PREFIXES` says otherwise. Each ends in `/`.
+     */
+    val archivePrefixes: List<String> = env("LAB_ARCHIVE_PREFIXES", "https://github.com/Eignex/")
+        .split(',').map { it.trim() }.filter { it.isNotEmpty() },
+    /** The hosts an archive's download may be redirected to, besides its own: where GitHub serves release assets from. */
+    val archiveRedirectHosts: Set<String> = env("LAB_ARCHIVE_REDIRECT_HOSTS",
+        "objects.githubusercontent.com,release-assets.githubusercontent.com,github-releases.githubusercontent.com")
+        .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
+    /** The largest archive an analysis job downloads. */
+    val archiveMaxBytes: Long = env("LAB_ARCHIVE_MAX_MB", "2048").toLong() * BYTES_PER_MB,
+    /** The most an archive may unpack to, by its manifest, which also bounds what an analysis job extracts of it. */
+    val archiveMaxUnpackedBytes: Long = env("LAB_ARCHIVE_MAX_UNPACKED_MB", "16384").toLong() * BYTES_PER_MB,
 ) {
     init {
         require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
             "LAB_SHARED_PATHS entries must stay inside the worktree: $sharedPaths"
         }
+        require(archivePrefixes.all { it.startsWith("https://") && it.endsWith("/") && it.count { c -> c == '/' } >= 3 }) {
+            "LAB_ARCHIVE_PREFIXES entries must be https://<host>/... prefixes ending in /: $archivePrefixes"
+        }
     }
+
+    /** Saved-capture archives an analysis job may name by a path under it, instead of a URL ([CaptureArchives]). */
+    val archiveDir: Path get() = dataDir.resolve("archives")
 
     val sharedDir: Path get() = dataDir.resolve("shared")
     /**
@@ -104,5 +124,6 @@ data class Config(
 }
 
 private const val MS_PER_SEC = 1000L
+private const val BYTES_PER_MB = 1024L * 1024
 
 private fun env(name: String, default: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default
