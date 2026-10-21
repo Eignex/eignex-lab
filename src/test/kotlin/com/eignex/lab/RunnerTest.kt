@@ -14,6 +14,25 @@ import kotlin.test.assertEquals
 
 class RunnerTest {
     @Test
+    fun `a launch asked for while the last run is still queued stays due instead of waiting out the interval`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("ref", listOf(mapOf("suite" to "s")))
+        val id = store.createSchedule("ref", "main", spec, 3 * 86400)
+        val last = store.create("ref@abc", "abc", emptyList(), experiment = spec)
+        store.scheduleRan(id, "abc", last)
+        store.launchNow(id)
+
+        Runner(config, store).enqueueScheduled()
+
+        val schedule = store.schedules().single()
+        // No second run while the first is queued, but the launch is still asked for and the schedule is still due.
+        assertEquals(last, schedule.lastJob)
+        assertTrue(schedule.launchRequested)
+        assertEquals(null, schedule.checkedAt)
+    }
+
+    @Test
     fun `a whole run timeout fails the profile and preserves its output after cleanup`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
