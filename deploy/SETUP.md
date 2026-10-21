@@ -746,9 +746,13 @@ runs per day: `klause-reference-ls.json` (local search only), `klause-reference-
 `mzn-bench-compatible-v1`, the suite whose models the installed MiniZinc compiler accepts, so a model it cannot
 compile is left out by the bench before the lab's reference filter and caps rather than failing as a case; the daily
 run also takes every problem of `smtlib-qfnra-source-canonical-v1`, the canonical-syntax variants of the frozen QF_NRA
-cores, whatever their reference. `reference.json` is the one-off reference run, and `reference-<solver>.json` the one-off runs of the second reference
+cores, whatever their reference. All but the local-search run end with `satcomp-compact-v1`, 40 SAT Competition CNF
+instances Kissat decided in 5-120 s, likewise whatever their reference: the default `decided` filter would drop every
+one the reference took over 5 s on, which is nearly all of them. Local search cannot prove its 20 UNSAT problems, so
+its run leaves the suite out. `reference.json` is the one-off reference run, and `reference-<solver>.json` the one-off runs of the second reference
 solvers (HiGHS, kissat, Chuffed, cvc5) over the problems each has no verdict on, and `reference-scip.json` SCIP's
-over the MPS problems it has no current verdict on (its stale rows count as none). Change
+over the MPS problems it has no current verdict on (its stale rows count as none). `reference-kissat-satcomp.json` is
+kissat's run over `satcomp-compact-v1` at 300 s, the budget those instances need. Change
 a schedule by editing its file and running `lab reschedule`. A schedule's phase is its last check: the runner checks
 it again one interval later, so staggered schedules stay a day apart; `lab reschedule <id> - - <hours>` moves one.
 
