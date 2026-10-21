@@ -918,9 +918,20 @@ class Store(file: Path) {
             statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
         }.sortedWith { a, b -> if (References.stronger(a, b)) -1 else if (References.stronger(b, a)) 1 else 0 }
 
-    /** Every case of any experiment that ran one problem, newest experiment first. */
+    /** How many cases of any experiment ran one problem. */
     @Synchronized
-    fun problemRuns(collection: String, problem: String): List<ProblemRun> = connection.prepareStatement(
+    fun problemRunCount(collection: String, problem: String): Int = connection.prepareStatement(
+        """SELECT count(*) FROM problems p JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
+           WHERE json_extract(p.problem, '$.collection') = ? AND json_extract(p.problem, '$.problem') = ?""",
+    ).use { statement ->
+        statement.setString(1, collection)
+        statement.setString(2, problem)
+        statement.executeQuery().use { r -> if (r.next()) r.getInt(1) else 0 }
+    }
+
+    /** The cases of one problem across every job, newest job first; with [limit], only that many. */
+    @Synchronized
+    fun problemRuns(collection: String, problem: String, limit: Int? = null): List<ProblemRun> = connection.prepareStatement(
         // The record as scoring reads it: the page shows each run's outcome and time, not its witness or provenance,
         // which can make one problem's runs tens of megabytes.
         """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, $SCORING_RECORD
@@ -930,10 +941,12 @@ class Store(file: Path) {
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
            JOIN jobs j ON j.id = c.job_id
            WHERE json_extract(p.problem, '$.collection') = ? AND json_extract(p.problem, '$.problem') = ?
-           ORDER BY j.id DESC, a.idx, c.seed, c.repeat""",
+           ORDER BY j.id DESC, a.idx, c.seed, c.repeat
+           LIMIT ?""",
     ).use { statement ->
         statement.setString(1, collection)
         statement.setString(2, problem)
+        statement.setInt(3, limit ?: -1)
         statement.executeQuery().use { r ->
             generateSequence {
                 if (!r.next()) return@generateSequence null

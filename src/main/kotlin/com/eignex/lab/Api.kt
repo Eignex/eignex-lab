@@ -230,7 +230,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/problem") {
             val collection = requireNotNull(call.parameters["collection"]) { "collection is required" }
             val problem = requireNotNull(call.parameters["problem"]) { "problem is required" }
-            val report = ProblemReport(collection, problem, store.referenceRows(collection, problem), store.problemRuns(collection, problem))
+            // Each case's record is read whole, so a problem many jobs ran (hundreds of cases) shows its newest unless
+            // all are asked for.
+            val limit = if (call.parameters["all"] != null) null else PROBLEM_RUNS
+            val runs = store.problemRuns(collection, problem, limit)
+            val total = if (limit != null && runs.size >= limit) store.problemRunCount(collection, problem) else runs.size
+            val report = ProblemReport(collection, problem, store.referenceRows(collection, problem), runs, total)
             if (call.wantsHtml()) call.respondText(problemPage(report, config.repoUrl), ContentType.Text.Html) else call.respond(report)
         }
         get("/experiments/{id}/reference") {
@@ -797,3 +802,6 @@ internal fun scoreboardView(
     val opened = cell?.let { (group, against) -> Scoreboard.problems(cases, arm, references, features, by, group, against, filters, scoring) }.orEmpty()
     return ScoreboardView(runs, job, planned.map { it.arm.label }, label, by, filters, scoring, options, board, cell, opened)
 }
+
+/** The newest cases the problem page shows unless `all` is asked for. */
+private const val PROBLEM_RUNS = 100
