@@ -14,7 +14,10 @@ enum class WitnessCheck(val word: String) {
      * checker covers the claim (a lab check `unsupported`).
      */
     UNCHECKED("unchecked"),
-    /** A source check ran and could not decide: unsupported syntax, an incomplete witness, a checker limit or timeout. */
+    /**
+     * A source check ran and could not decide: unsupported syntax, an incomplete witness, a checker limit or timeout.
+     * The solver's claim counts as it reported it, as an unchecked one does ([SourceValidation.rejects]).
+     */
     INDETERMINATE("check indeterminate"),
     /** The checker rejected the witness. */
     INVALID("invalid"),
@@ -75,6 +78,18 @@ object SourceValidation {
      */
     fun forBench(values: Map<String, String>): Map<String, String> = values - PARAM - GZIP_PARAM
 
+    /**
+     * The one check verdict that changes how a Klause result counts: a definite rejection of its witness. Every other
+     * outcome of a check, accepted, undecided (`unknown`), not run (`not-run`, a checker that threw included),
+     * `unsupported`, or none at all, leaves the solver's reported claim standing as it is: feasibility, proof,
+     * objective and time to it, and so whether the case is solved. Such a check only adds a mark ([WitnessCheck]).
+     * [Outcome.of] holds to this for the lab's verdicts and the bench's alike, so the trend, confirmation flips, the
+     * scoreboard, the stats and comparisons, which all count through it, never move on a check that failed.
+     */
+    fun rejects(state: String?): Boolean = state == INVALID
+
+    private const val INVALID = "invalid"
+
     /** How far the lab's own verdict, of [state] ([com.eignex.lab.checker.LabCheck]), checked a claim: a check that
      *  could not run, or that no external checker covers, leaves the solver's report standing, unchecked. */
     fun labCheck(state: String?): WitnessCheck = when (state) {
@@ -88,6 +103,7 @@ object SourceValidation {
      * The check behind a record's claims: its `sourceValidation` statistic when the bench checked (`valid`, `invalid`,
      * `unknown`), otherwise unchecked under [UNCHECKED_POLICY] or no policy at all, and indeterminate under a checking
      * policy that left no result. An `unknown` whose [reason] says the checker never ran ([checkerFault]) is unchecked.
+     * Only the mark depends on it: any `unknown` keeps the solver's claim, which the bench's check withdrew ([rejects]).
      */
     fun check(sourceValidation: String?, policy: String?, reason: String? = null): WitnessCheck = when (sourceValidation) {
         "valid" -> WitnessCheck.ACCEPTED
@@ -115,9 +131,9 @@ object SourceValidation {
     )
 
     /**
-     * Whether an `unknown` validation's [reason] says the source checker never ran or crashed ([CHECKER_FAULTS]). Such
-     * a case is the solver's own report, unchecked: the lab keeps the claim the check withdrew ([Outcome.of]) and shows
-     * the reason, where a check that ran and could not decide stays indeterminate.
+     * Whether an `unknown` validation's [reason] says the source checker never ran or crashed ([CHECKER_FAULTS]). It
+     * picks the mark alone: such a case reads `unchecked` with the reason, and a check that ran and could not decide
+     * `check indeterminate`. Either way the lab keeps the claim the bench's check withdrew ([rejects], [Outcome.of]).
      */
     fun checkerFault(reason: String?): Boolean = reason != null && CHECKER_FAULTS.any { it in reason }
 }

@@ -39,7 +39,7 @@ class ValidationTest {
         "sourceValidationScope":"xcsp3-source","floatApproximation":"false","reportedFeasible":"true",
         "reportedObjective":"1436.0","reportedProven":"false"}}"""
 
-    /** Job 7004: an MPS point the checker could not decide, which the bench gives no solution credit. */
+    /** Job 7004: an MPS point the checker could not decide, which the bench withdrew and the lab keeps the credit of. */
     private val withdrawn = """{"problem":"bell3a","solver":"klause","kind":"optimize","maximize":false,
         "feasible":null,"objective":null,"exactObjective":null,"proven":false,"timeToBestMs":null,"budgetMs":5000,
         "command":"klause-cli","validationPolicy":"mps-miplib2017-point-v1","stats":{"solveTime":"4.883",
@@ -61,7 +61,7 @@ class ValidationTest {
         "reportedExactObjective":"-16","reportedProven":"false",
         "sourceValidationProducerRecordJson":"{\"problem\":\"opt1217\",\"feasible\":true,\"objective\":-16.0,\"timeToBestMs\":3651,\"proven\":false}"}}"""
 
-    /** Job 7068, case 55 (miplib2010/ex9), trimmed: the checker ran and could not read the input, so no credit. */
+    /** Job 7068, case 55 (miplib2010/ex9), trimmed: the checker ran and could not read the input; the claim stands. */
     private val unreadable = """{"problem":"ex9","solver":"klause","budgetMs":10000,"kind":"optimize","maximize":false,
         "feasible":null,"objective":null,"timeToBestMs":null,"proven":false,"command":"klause-cli","elapsedMs":10200,
         "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"solveTime":"9.5","sourceValidation":"unknown",
@@ -158,7 +158,7 @@ class ValidationTest {
         val checked = verdict(outcome(accepted), Status.DONE)
         val reported = verdict(outcome(unchecked), Status.DONE)
         val undecided = verdict(outcome(indeterminate), Status.DONE)
-        val uncredited = verdict(outcome(withdrawn), Status.DONE)
+        val restored = verdict(outcome(withdrawn), Status.DONE)
 
         assertTrue(checked.startsWith("8* <small class=\"DONE\""), checked)
         assertContains(checked, ">checked</small>")
@@ -169,8 +169,8 @@ class ValidationTest {
         assertTrue(undecided.startsWith("1436 <small class=\"PARTIAL\""), undecided)
         assertContains(undecided, "expression SET is outside checker arithmetic auditing")
         assertContains(undecided, ">check indeterminate</small>")
-        assertContains(uncredited, ">unknown</span> <small class=\"PARTIAL\"")
-        assertContains(uncredited, "reported objective 892384.9959999999")
+        assertTrue(restored.startsWith("892384.9959999999 <small class=\"PARTIAL\""), restored)
+        assertContains(restored, "reported objective 892384.9959999999")
         assertEquals("<span class=\"FAILED\" title=\"source constraints reject candidate\">invalid solution</span>",
             verdict(outcome(rejected), Status.DONE))
     }
@@ -192,13 +192,13 @@ class ValidationTest {
     }
 
     @Test
-    fun `a checker that ran and could not decide stays indeterminate, and a rejection stays invalid`() {
-        val withheld = outcome(unreadable)
-        val cell = verdict(withheld, Status.DONE)
+    fun `a checker that ran and could not decide keeps the claim, marked indeterminate, and a rejection stays invalid`() {
+        val kept = outcome(unreadable)
+        val cell = verdict(kept, Status.DONE)
 
-        assertEquals(null, withheld.feasible)
-        assertEquals(WitnessCheck.INDETERMINATE, withheld.witness)
-        assertContains(cell, ">unknown</span> <small class=\"PARTIAL\"")
+        assertEquals(listOf(true, 81.0, false, 1), listOf(kept.feasible, kept.objective, kept.proven, kept.rank))
+        assertEquals(WitnessCheck.INDETERMINATE, kept.witness)
+        assertTrue(cell.startsWith("81 <small class=\"PARTIAL\""), cell)
         assertContains(cell, "lower bounds following upper bounds are unsupported; reported objective 81.0")
         assertContains(cell, ">check indeterminate</small>")
         assertEquals(WitnessCheck.INDETERMINATE, outcome(indeterminate).witness)
@@ -238,7 +238,7 @@ class ValidationTest {
     }
 
     @Test
-    fun `a scoring record keeps the claim a missing checker withdrew, and its time, but not the whole producer record`() {
+    fun `a scoring record keeps the claim a bench check withdrew, and its time, but not the whole producer record`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val problems = listOf(Problem("miplib2003", "opt1217", format = "MPS"), Problem("miplib2010", "ex9", format = "MPS"),
             Problem("s", "rubiks", format = "MINIZINC"))
@@ -256,7 +256,7 @@ class ValidationTest {
 
         assertEquals(listOf(true, -16.0, 3651L), listOf(kept.feasible, kept.objective, kept.timeToBestMs))
         assertEquals(WitnessCheck.UNCHECKED, kept.witness)
-        assertEquals(null, Outcome.of(scoring[1].record)!!.feasible)
+        assertEquals(listOf(true, 81.0), Outcome.of(scoring[1].record)!!.let { listOf(it.feasible, it.objective) })
         // A record whose claim stands needs none of its producer record.
         assertFalse("sourceValidationProducerRecordJson" in scoring[2].record.toString())
         assertEquals(2614L, Outcome.of(scoring[2].record)!!.timeToBestMs)

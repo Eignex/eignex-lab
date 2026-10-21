@@ -139,7 +139,7 @@ class TrendTest {
     }
 
     @Test
-    fun `a solution whose checker could not run counts in its theme, one the checker could not decide does not`() {
+    fun `a solution whose checker could not run or could not decide counts in its theme`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val id = run(store, "sweep@aaa", listOf(false, false, false))
         fun mps(reason: String) = """{"solver":"klause","kind":"optimize","maximize":false,"feasible":null,"objective":null,
@@ -155,7 +155,7 @@ class TrendTest {
         val run = Trend.runs(store, "sweep").single()
 
         assertEquals(3, run.themes.getValue("linear-real").problems)
-        assertEquals(2.0 / 3, run.themes.getValue("linear-real").solved)
+        assertEquals(1.0, run.themes.getValue("linear-real").solved)
     }
 
     @Test
