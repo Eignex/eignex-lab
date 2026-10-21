@@ -360,11 +360,23 @@ are left alone.
 
 MPS checks run the upstream MIPLIB solchecker, which klause-bench packages into its jar only when built with
 `-Pbench.mpsSolchecker` (opt-in since klause b417cf18b; earlier commits always packaged it, and ignore the property).
-Every Klause build the lab makes passes it, locally (`Runner.kt`, `klauseBuildTasks`) and on nodes (`AwsBuildCache.kt`),
-so building needs a C++ compiler and the GMP and zlib headers: Homebrew's `gmp` on the Mac, `build-essential`,
-`libgmp-dev` and `zlib1g-dev` on a node. A reference-only experiment builds the bench without it. A bench built
+The lab passes it only for a job that may check an MPS case (`SourceValidation.needsMpsChecker`), locally (`Runner.kt`,
+`klauseBuildTasks`) and on nodes (`AwsBuildCache.kt`): some Klause arm asks for `param.source-validation=true`, as
+every scheduled run and confirmation does, and the job may hold MPS problems. Selections are resolved only by the
+built bench, so any selection counts as possibly MPS; only a fixed problem list (a confirmation's) whose every problem
+has a recorded format other than MPS builds without it. A job that asks for no validation, such as WCNF comparison
+7087, a reference-only experiment and a profile that does not ask, builds without it and never downloads it: the
+bench runs the checker only for an MPS case that asks for validation. Building it needs a C++ compiler and the GMP and
+zlib headers: Homebrew's `gmp` on the Mac, `build-essential`, `libgmp-dev` and `zlib1g-dev` on a node. A bench built
 without the checker leaves every MPS check `unknown` with `MPS source checking failed: missing packaged MIPLIB
-solchecker`, as jobs 7068 and 7075 did.
+solchecker`, as jobs 7068 and 7075 did, which reads `unchecked`, keeping the solver's reported result (below).
+
+The checker's sources come from `miplib.zib.de` during the build (`:klause-bench:prepareMpsSolchecker`). A build
+that fails is retried as any build is (`buildRetry`); when its last try failed and Gradle names that download task as
+the only one that failed (`SourceValidation.checkerDownloadFailed`), as with job 7087's HTTP 503s, the build goes
+ahead once more without the checker and the job's log says so: its MPS cases then read `unchecked`, while its other
+cases are unaffected. Any other failure, compiling the checker included, still fails setup. The job's other commits,
+and nodes that join it later, then build without the checker too rather than wait out the same outage.
 
 The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, and the gzip
 flag on anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment. Those
@@ -852,9 +864,14 @@ pressure leaves out.
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
   the role `klause-lab-instance`, which may read and write only that bucket.
 - The bucket also holds Gradle's dependency cache and wrapper distribution as one archive, restored before every build
-  and refreshed after one, and each commit's built distributions (`builds/verified-v2/<sha>.tar.zst`; v2 since builds
-  package the MIPLIB solchecker): an instance that finds its
-  commit there unpacks it instead of building, so a commit is built once across every job and instance.
+  and refreshed after one, and each commit's built distributions: `builds/verified-v2/<sha>.tar.zst` with the MIPLIB
+  solchecker packaged, `builds/verified-v2-plain/<sha>.tar.zst` without it. An instance that finds its commit there
+  unpacks it instead of building, so a commit is built once across every job and instance. A job that needs the
+  checker reuses only the first; one that does not tries the first, then the second, and publishes a build of its own
+  to the second. A node also remembers which commits it built, with or without the checker and a profiling launcher
+  (`AwsBuildCache.builtKey`): a build with the checker serves a later job without it on the same node, one without it
+  is rebuilt for a job that needs it. Locally every setup builds in a fresh worktree, so nothing built without the
+  checker is reused for a job that needs it.
 - Build and Gradle archives use a verified cache namespace; older archives are left intact and are not reused.
   Downloads and extraction are staged. Failed transfers, truncated archives, missing bootstrap classes, missing
   launchers/main classes, corrupt JARs or incomplete launcher classpaths reject the cache without contaminating

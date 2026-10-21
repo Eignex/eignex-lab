@@ -449,7 +449,9 @@ class Runner(
         log.writeText("")
         val (arms, shas) = resolveArms(job, spec, log)
         val primary = shas.getValue(arms.first().ref)
-        val tasks = klauseBuildTasks(referenceOnly = arms.all { it.values["backend"] == REFERENCE_BACKEND })
+        val referenceOnly = arms.all { it.values["backend"] == REFERENCE_BACKEND }
+        // Off once a build went ahead without the checker, so the job's other commits do not wait out the same outage.
+        var mpsChecker = SourceValidation.needsMpsChecker(spec)
         removeWorktree(job.id)
         for (sha in shas.values.distinct()) {
             val path = experimentWorktree(job.id, sha, primary)
@@ -462,18 +464,27 @@ class Runner(
                 }
             }
             linkShared(path)
+            var tries = 0
             withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
-                val start = log.length()
-                runCatching {
-                    sh(log, path.toFile(),
-                        "./gradlew $tasks --max-workers=${config.gradleWorkers} -q" +
-                            if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
-                }.onFailure { e ->
-                    if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
-                        log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
-                        clearTransforms(path.toFile())
+                tries++
+                var start = log.length()
+                mpsChecker = SourceValidation.buildWithChecker(
+                    mpsChecker, lastTry = tries >= config.buildRetry.attempts,
+                    skipped = { log(job.id, SourceValidation.checkerSkipped(sha.take(9), tries)) },
+                    output = { logSince(log, start) },
+                ) { checker ->
+                    start = log.length()
+                    try {
+                        sh(log, path.toFile(),
+                            "./gradlew ${klauseBuildTasks(referenceOnly, checker)} --max-workers=${config.gradleWorkers} -q" +
+                                if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
+                    } catch (e: Exception) {
+                        if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
+                            log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
+                            clearTransforms(path.toFile())
+                        }
+                        throw e
                     }
-                    throw e
                 }
                 // A profileCli job's launcher goes in before the provenance manifest describes the build, as on a node.
                 if (spec.profileCli) sh(log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
@@ -1035,14 +1046,18 @@ class Runner(
 
     /** Whether the build output [log] wrote after [from] says a Gradle transform's file is missing: a cache whose
      *  records outlived the files they name, which every later build would trip on the same way. */
-    private fun brokenTransforms(log: File, from: Long): Boolean = runCatching {
+    private fun brokenTransforms(log: File, from: Long): Boolean =
+        logSince(log, from).let { "FileNotFoundException" in it && "/transforms/" in it }
+
+    /** What [log] holds after [from], at most [MAX_BUILD_LOG_SCAN] bytes of it; empty when it cannot be read. */
+    private fun logSince(log: File, from: Long): String = runCatching {
         java.io.RandomAccessFile(log, "r").use { raf ->
             raf.seek(minOf(from, raf.length()))
             val bytes = ByteArray((raf.length() - raf.filePointer).coerceAtMost(MAX_BUILD_LOG_SCAN).toInt())
             raf.readFully(bytes)
-            String(bytes).let { "FileNotFoundException" in it && "/transforms/" in it }
+            String(bytes)
         }
-    }.getOrDefault(false)
+    }.getOrDefault("")
 
     /** Stop the lab's Gradle daemons and remove its transform caches, which the next build rebuilds. */
     private fun clearTransforms(worktree: File) {
@@ -1141,13 +1156,15 @@ class Runner(
 
 /**
  * The Gradle tasks that build a Klause commit for an experiment: the CLI and the bench, with the MIPLIB solchecker
- * packaged into the bench ([SourceValidation.MPS_CHECKER_BUILD]) so its MPS cases can be source-checked. A reference
- * experiment runs the lab's own launcher and builds the bench only to select and resolve its problems, so it needs
- * neither the CLI nor the checker.
+ * packaged into the bench ([SourceValidation.MPS_CHECKER_BUILD]) when [mpsChecker] says its MPS cases are to be
+ * source-checked ([SourceValidation.needsMpsChecker]). A reference experiment runs the lab's own launcher and builds
+ * the bench only to select and resolve its problems, so it needs neither the CLI nor the checker.
  */
-internal fun klauseBuildTasks(referenceOnly: Boolean): String =
-    if (referenceOnly) ":klause-bench:installDist"
-    else ":klause-cli:installJvmDist :klause-bench:installDist ${SourceValidation.MPS_CHECKER_BUILD}"
+internal fun klauseBuildTasks(referenceOnly: Boolean, mpsChecker: Boolean): String = when {
+    referenceOnly -> ":klause-bench:installDist"
+    mpsChecker -> ":klause-cli:installJvmDist :klause-bench:installDist ${SourceValidation.MPS_CHECKER_BUILD}"
+    else -> ":klause-cli:installJvmDist :klause-bench:installDist"
+}
 
 /**
  * [command] wrapped so that it leads a new session, and so its own process group. perl is the portable way to
