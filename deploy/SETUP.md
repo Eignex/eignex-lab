@@ -1110,6 +1110,16 @@ fetches the dependencies into the new home once.
   …", `/disk` lists every hold, and each trim that passes over a held job names it in the runner's log (`job trim:
   skipped held job …: held for download`).
 - Docker's old reference images and build cache are pruned weekly, and sooner on a low disk (see Docker cleanup).
+- The database keeps each distinct build provenance once, in its `provenances` table, and a case record refers to it
+  by sha256 as `buildProvenanceRef`; every reader of a whole record (the job and compare pages, the cases exports,
+  `lab cases --json`, `lab fetch`) gets the provenance back in its place. A record's
+  `stats.sourceValidationProducerRecordJson` is kept cut to its `timeToBestMs` (see the cases export). Records stored
+  before this are compacted by the runner in the background, 500 a transaction with a second between, resuming where it
+  was after a restart. Once they all are, and whenever the database has 1 GiB or more of free pages, the runner runs a
+  VACUUM to give the space back, when no job runs and the disk has twice the vacuumed size free (SQLite writes a
+  temporary copy and, in WAL mode, the whole result through the write-ahead log); otherwise it logs why and looks
+  again every 15 minutes. While it runs, writes from the API wait for it rather than fail, and reads go on. `/disk`
+  shows the database's size and free pages, and the compaction's progress and last vacuum.
 
 ## What a case runs in
 
@@ -1285,7 +1295,11 @@ absent for a case the lab has not checked). The server streams it a page of case
 of cases with large witnesses needs no more memory than a few of them; read it with `jq -c 'select(...)'` or
 `jq -s` to make one array. `lab fetch <id>` writes the same export as `lab-cases.jsonl` in the fetched directory,
 fetched afresh each time since a recheck replaces the verdicts, so a fetched job carries its lab checks with it; the
-job's own `cases/<n>/record.json` files are the bench's records and do not.
+job's own `cases/<n>/record.json` files are the bench's records and do not. The export's `buildProvenance` is the
+record's own, which the database keeps once per distinct provenance (see Disk). Its
+`stats.sourceValidationProducerRecordJson` is not: the database keeps the producer record an MPS or SMT check wrote
+cut to `{"timeToBestMs": …}`, the one field the lab reads, so `stats.sourceValidationRecordSha256` no longer matches
+it. The whole producer record is in the bench's record, the job's `cases/<n>/*.json`, which a trim keeps.
 
 `lab fetch` holds the job first (see Disk), so the lab's trim cannot change its files mid-download, lists them once
 under the hold and downloads exactly that list, skipping files already there at their listed size; it releases the
@@ -1318,7 +1332,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
-| `GET` | `/experiments/{id}/cases.jsonl` | every case whole as JSON Lines (`application/x-ndjson`), one per line, its record's `finalWitness` and `labCheck` included; streamed a page of cases at a time |
+| `GET` | `/experiments/{id}/cases.jsonl` | every case whole as JSON Lines (`application/x-ndjson`), one per line, its record's `finalWitness`, `buildProvenance` and `labCheck` included and its producer record cut to `timeToBestMs`; streamed a page of cases at a time |
 | `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON |
 | `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |

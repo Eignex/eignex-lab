@@ -1246,10 +1246,11 @@ private fun select(name: String, any: String, options: List<Pair<String, String>
     append("</select>")
 }
 
-/** What takes the lab machine's disk, largest first, as [DiskUsage] last measured it. */
-internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList()): String = buildString {
+/** What takes the lab machine's disk, largest first, as [DiskUsage] last measured it, and the [database] as it is now. */
+internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList(), database: DatabaseReport? = null): String = buildString {
     append(head("disk · klause lab", live = false))
     append("<header><h1>Disk</h1></header>")
+    if (database != null) append(databaseSection(database))
     if (holds.isNotEmpty()) {
         append("<h2>Held for download</h2><p class=\"muted\">The trim leaves these jobs' files alone until each hold is ")
         append("released or lapses, however low the disk.</p>")
@@ -1280,6 +1281,26 @@ internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList()): Str
     }
     append(dockerSection(report))
     append("</body></html>")
+}
+
+/** The disk page's database part: the file's size and free pages, its kept provenances and the [DbCompaction]'s progress. */
+private fun databaseSection(database: DatabaseReport): String = buildString {
+    val compaction = database.compaction
+    append("<h2>Database</h2><p>${size(database.bytes)}, ${size(database.freeBytes)} of it free pages a vacuum gives back")
+    append(" · ${database.provenances} distinct build provenances kept once</p>")
+    val progress = when {
+        compaction.migratedAt != null -> "done ${ago(compaction.migratedAt)}"
+        compaction.startedAt == null -> "not started"
+        else -> "${compaction.scanned} of ${compaction.total ?: "?"} case records" +
+            (compaction.total?.takeIf { it > 0 }?.let { " (${minOf(100, compaction.scanned * 100 / it)}%)" } ?: "")
+    }
+    append("<ul><li>compaction: ${esc(progress)}")
+    if (compaction.changed > 0) {
+        append(", ${compaction.changed} records ${size(compaction.bytesBefore)} → ${size(compaction.bytesAfter)}")
+    }
+    append("</li>")
+    compaction.vacuum?.let { append("<li>vacuum ${ago(compaction.vacuumAt)}: ${esc(it)}</li>") }
+    append("</ul>")
 }
 
 /** The disk page's Docker part: what Docker holds and what the last [DockerCleanup] did. Empty when neither is known. */

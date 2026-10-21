@@ -25,6 +25,8 @@ data class DiskReport(
     val dockerCleanup: DockerCleanupRun? = null,
     /** The downloads' holds that have not lapsed ([Hold]), read when the report is served, not measured. */
     val holds: List<Hold> = emptyList(),
+    /** The database as SQLite counts it and its compaction ([DbCompaction]), read when the report is asked for. */
+    val database: DatabaseReport? = null,
 )
 
 /**

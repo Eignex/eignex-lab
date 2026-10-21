@@ -137,10 +137,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/disk") {
             val holds = store.holds()
+            val database = withContext(Dispatchers.IO) { runCatching { store.database() }.getOrNull() }
             if (call.wantsHtml()) {
-                call.respondText(diskPage(disk.latest, holds), ContentType.Text.Html)
+                call.respondText(diskPage(disk.latest, holds, database), ContentType.Text.Html)
             } else {
-                call.respond((disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList())).copy(holds = holds))
+                call.respond((disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList())).copy(holds = holds, database = database))
             }
         }
         get("/health") {
@@ -274,7 +275,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
-        // Every case whole, as JSON Lines: its record with its final witness and the lab's verdict as `labCheck`. It is
+        // Every case whole, as JSON Lines: its record with its final witness, its build provenance and the lab's verdict
+        // as `labCheck`, its producer record as the database keeps it, cut to its time to best ([StoredRecords]). It is
         // read and written a page of cases at a time, so a job of thousands of cases with large witnesses streams out
         // without being held in memory, and the store is free between pages.
         get("/experiments/{id}/cases.jsonl") {
