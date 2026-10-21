@@ -1,0 +1,48 @@
+klause-lab patch longnum-1 to the MIPLIB 2017 solchecker 1.0.4 (miplib2017-testscript-v1.0.4.zip, checker/src).
+It raises three fixed input limits and changes nothing else; numbers are still parsed into exact GMP rationals:
+- a number read: strlen < 32 -> < 4096 characters (the assert in Rational::fromString);
+- the shared I/O buffer numbers are expanded into and printed from: 1024 -> 16384 bytes (and toString's assert);
+- a SOL file line: SOL_MAX_LINELEN 1024 -> 8192 bytes.
+
+--- a/gmputils.cpp
++++ b/gmputils.cpp
+@@ -175,7 +175,7 @@
+    int   fraction = 0;
+ 
+    assert(num != NULL);
+-   assert(strlen(num) <  32);
++   assert(strlen(num) <  4096);
+ 
+    // Skip initial whitespace
+    while(isspace(*num))
+@@ -224,7 +224,7 @@
+ std::string Rational::toString() const
+ {
+    // assure the buffer is big enough to store the result
+-   assert( mpz_sizeinbase(mpq_numref(number), 10 ) + mpz_sizeinbase(mpq_denref(number), 10) + 3 < 1024 );
++   assert( mpz_sizeinbase(mpq_numref(number), 10 ) + mpz_sizeinbase(mpq_denref(number), 10) + 3 < 16384 );
+ 
+    mpq_get_str(buffer, 10, number);
+    return std::string(buffer);
+--- a/gmputils.h
++++ b/gmputils.h
+@@ -172,7 +172,7 @@
+     * static buffer for I/O operations
+     * if a number does not fit in here, it does not fit in a double either
+     */
+-   static char buffer[1024];
++   static char buffer[16384];
+ };
+ 
+ #endif /* GMPUTILS_H */
+--- a/model.cpp
++++ b/model.cpp
+@@ -13,7 +13,7 @@
+ #include <iomanip>
+ #include <cmath>
+ 
+-#define SOL_MAX_LINELEN 1024
++#define SOL_MAX_LINELEN 8192
+ #define BLANK           ' '
+ 
+ Var::Var(const char* _name, VarType _type, const Rational& _lb, const Rational& _ub, const Rational& _obj)

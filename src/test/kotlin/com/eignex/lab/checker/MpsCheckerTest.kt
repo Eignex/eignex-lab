@@ -70,10 +70,24 @@ class MpsCheckerTest {
         assertEquals("2.5", MpsChecker.decimal("2.50"))
         assertEquals("-3", MpsChecker.decimal("-3"))
         assertContains(assertFailsWith<IllegalArgumentException> { MpsChecker.decimal("1/3") }.message!!, "no exact decimal")
-        assertContains(assertFailsWith<IllegalArgumentException> { MpsChecker.decimal("0.1234567890123456789012345678901") }.message!!,
-            "under 32 characters")
-        assertFailsWith<IllegalArgumentException> { MpsChecker.solution("v X=1 X=2", "1") }
+        assertEquals("100000000000000000000000000000000000000000", MpsChecker.decimal("1e41"))
+        assertEquals("0.1234567890123456789012345678901", MpsChecker.decimal("0.1234567890123456789012345678901"))
         assertFailsWith<IllegalArgumentException> { MpsChecker.solution("X=1", "1") }
+    }
+
+    @Test
+    fun `a long exact value is written whole up to the patched solchecker's limit, and refused past it`() {
+        // Job 7165's Bell3a objective: a denominator of 2^44 * 100, so an exact decimal of 53 characters.
+        assertEquals("889515.2199999999576328946204739622771739959716796875", MpsChecker.decimal("1564851723957962726619/1759218604441600"))
+        val longest = "0." + "1".repeat(MpsChecker.MAX_NUMBER - 2)
+        assertEquals(longest, MpsChecker.decimal(longest))
+        for (over in listOf(longest + "1", "1/" + java.math.BigInteger.TWO.pow(4100), "1e5000", "1e-5000", "1e999999999")) {
+            assertContains(assertFailsWith<IllegalArgumentException> { MpsChecker.decimal(over) }.message!!,
+                "no exact decimal of at most 4095 characters")
+        }
+        val name = "X".repeat(MpsChecker.MAX_LINE)
+        assertContains(assertFailsWith<IllegalArgumentException> { MpsChecker.solution("v $name=1", "1") }.message!!, "over 8190 characters")
+        assertFailsWith<IllegalArgumentException> { MpsChecker.solution("v X=1 X=2", "1") }
     }
 
     @Test
@@ -83,10 +97,14 @@ class MpsCheckerTest {
         fun check(binary: File, timeoutMs: Long = MpsChecker.TIMEOUT_MS) =
             assertNotNull(checker({ binary }, timeoutMs).check(problem, record(witness, "2", model)))
 
-        val valid = check(fake("Read MPS: 1\nCheck SOL: Integrality 1 Constraints 1 Objective 1\nMaximum violations: Integrality 0 Constraints 0 Objective 0"))
+        val accepting = fake("Read MPS: 1\nCheck SOL: Integrality 1 Constraints 1 Objective 1\nMaximum violations: Integrality 0 Constraints 0 Objective 0")
+        val valid = check(accepting)
         assertEquals(LabCheck.VALID, valid.state, valid.reason)
         assertEquals(Policies.MPS, valid.policy)
-        assertEquals(Solchecker.VERSION, valid.checkerVersion)
+        // The verdict names the patched build: its version, the patch's digest and the binary's own.
+        assertEquals("lab-mps-solchecker-1.0.4-longnum-v1", valid.policy)
+        assertEquals("1.0.4+klause-lab-longnum-1 (patch sha256 ${Solchecker.PATCH_SHA256})", valid.checkerVersion)
+        assertEquals(sha256(accepting), valid.checkerSha256)
         val invalid = check(fake("Check SOL: Integrality 1 Constraints 0 Objective 0"))
         assertEquals(LabCheck.INVALID, invalid.state)
         assertContains(invalid.reason, "bounds or constraints and objective 2")
@@ -128,17 +146,41 @@ class MpsCheckerTest {
      * The real solchecker, built from the pinned archive: CI installs GMP so this runs there (`LAB_REQUIRE_CHECKERS=1`);
      * elsewhere it runs where the build succeeds. `SOLCHECKER_FLAGS` adds compiler flags, for GMP in another prefix.
      */
-    @Test
-    fun `the real MIPLIB solchecker accepts a feasible point and rejects violations and a wrong objective`() {
-        val dir = Files.createTempDirectory("checkers").toFile()
+    private fun realSolchecker(dir: File = Files.createTempDirectory("checkers").toFile()): Solchecker {
         val flags = System.getenv("SOLCHECKER_FLAGS")?.split(' ')?.filter { it.isNotBlank() }.orEmpty()
         val solchecker = Solchecker(dir, flags = Solchecker.INCLUDES + flags)
         val built = runCatching { solchecker.binary() }
         if (System.getenv("LAB_REQUIRE_CHECKERS") == "1") built.getOrThrow()
         assumeTrue(built.isSuccess, "solchecker could not be built here: ${built.exceptionOrNull()?.message}")
-        // Only the binary is kept: no archive, no build tree.
-        assertEquals(listOf("solchecker-1.0.4/solchecker"), dir.walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.toList())
-        assertEquals(built.getOrThrow(), solchecker.binary())
+        return solchecker
+    }
+
+    @Test
+    fun `the packaged patch is the pinned one and only raises upstream's input limits`() {
+        val patch = checkNotNull(Solchecker::class.java.getResourceAsStream(Solchecker.PATCH)).use { it.readBytes() }
+        assertEquals(Solchecker.PATCH_SHA256, sha256(patch))
+        // The diff follows a header of plain prose.
+        val changed = patch.decodeToString().lines().dropWhile { !it.startsWith("--- ") }.filter { (it.startsWith("+") || it.startsWith("-")) && !it.startsWith("+++") && !it.startsWith("---") }
+        assertEquals(listOf(
+            "-   assert(strlen(num) <  32);",
+            "+   assert(strlen(num) <  4096);",
+            "-   assert( mpz_sizeinbase(mpq_numref(number), 10 ) + mpz_sizeinbase(mpq_denref(number), 10) + 3 < 1024 );",
+            "+   assert( mpz_sizeinbase(mpq_numref(number), 10 ) + mpz_sizeinbase(mpq_denref(number), 10) + 3 < 16384 );",
+            "-   static char buffer[1024];",
+            "+   static char buffer[16384];",
+            "-#define SOL_MAX_LINELEN 1024",
+            "+#define SOL_MAX_LINELEN 8192",
+        ), changed)
+    }
+
+    @Test
+    fun `the real MIPLIB solchecker accepts a feasible point and rejects violations and a wrong objective`() {
+        val dir = Files.createTempDirectory("checkers").toFile()
+        val solchecker = realSolchecker(dir)
+        // Only the patched binary is kept, under its own version: no archive, no build tree, no unpatched build reused.
+        assertEquals(listOf("solchecker-1.0.4+klause-lab-longnum-1/solchecker"),
+            dir.walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.toList())
+        assertEquals(solchecker.binary(), solchecker.binary())
         val model = model()
         fun check(witness: String, objective: String) = checker(solchecker::binary).check(problem, record(witness, objective, model))!!
 
@@ -152,5 +194,55 @@ class MpsCheckerTest {
         model("this is no MPS file\n")
         val unreadable = checker(solchecker::binary).check(problem, record("v X=1 Y=0", "1", File(corpus, "miplib-test/tiny.mps")))!!
         assertTrue(unreadable.state == LabCheck.UNSUPPORTED || unreadable.state == LabCheck.INVALID, unreadable.toString())
+    }
+
+    /** Values past upstream's 31 characters reach the patched solchecker whole and get its verdict either way. */
+    @Test
+    fun `the patched solchecker judges long exact values, up to the limit`() {
+        val solchecker = realSolchecker()
+        val model = model()
+        fun check(witness: String, objective: String) = checker(solchecker::binary).check(problem, record(witness, objective, model))!!
+
+        // Y = 1759218604441599/1759218604441600, a denominator of 2^44 * 100 as in job 7165's Bell3a points.
+        val y = check("v X=1 Y=1759218604441599/1759218604441600", "2638827906662399/879609302220800")
+        assertEquals(LabCheck.VALID, y.state, y.reason)
+        val decimal = check("v X=1 Y=0.9999999999999994315658113919198513031005859375", "2.999999999999998863131622783839702606201171875")
+        assertEquals(LabCheck.VALID, decimal.state, decimal.reason)
+        val wrong = check("v X=1 Y=0.9999999999999994315658113919198513031005859375", "3.0000999999999999999999999999999999999999")
+        assertEquals(LabCheck.INVALID, wrong.state, wrong.reason)
+        assertContains(wrong.reason, "objective")
+        val longest = check("v X=1 Y=0.${"1".repeat(MpsChecker.MAX_NUMBER - 2)}", "1.${"2".repeat(MpsChecker.MAX_NUMBER - 2)}")
+        assertEquals(LabCheck.VALID, longest.state, longest.reason)
+        val over = check("v X=1 Y=0.${"1".repeat(MpsChecker.MAX_NUMBER - 1)}", "1.${"2".repeat(MpsChecker.MAX_NUMBER - 1)}")
+        assertEquals(LabCheck.UNSUPPORTED, over.state)
+        assertContains(over.reason, "no exact decimal of at most 4095 characters")
+    }
+
+    /**
+     * Job 7165's Bell3a witness (cases 25, 26, 27, 30 and 31, all with this one), checked against miplib3's bell3a.mps
+     * where the lab's corpus (`LAB_CORPUS`) holds it. Its objective and several coordinates have exact decimals of up
+     * to 53 characters, which left them unsupported under upstream's 31.
+     */
+    @Test
+    fun `job 7165's Bell3a witness gets a real verdict from the patched solchecker`() {
+        val corpus = File(System.getenv("LAB_CORPUS") ?: "${System.getProperty("user.home")}/.cache/klause-bench/corpus")
+        assumeTrue(File(corpus, "miplib3-mps").isDirectory, "the lab corpus has no miplib3-mps here")
+        val witness = checkNotNull(javaClass.getResource("/checker/bell3a-job7165.witness")).readText()
+        assertEquals("b7038bec98ed5a09759f861a4322c970cbccfcde048c57c5122c2eb2ab5557df", sha256(witness.toByteArray()))
+        val solchecker = realSolchecker()
+        val bell3a = Problem("miplib3", "bell3a", collection = "miplib3-mps", format = "MPS")
+        val record = buildJsonObject {
+            put("problem", "bell3a")
+            put("solver", "klause")
+            put("kind", "optimize")
+            put("feasible", true)
+            put("exactObjective", "1564851723957962726619/1759218604441600")
+            put("finalWitness", witness)
+            put("sourceHashes", buildJsonObject { put("model", "1ada0bcc162defc9d8f17769920d3531d6e9f8c69f466e3eb165939ae845fd43") })
+        }
+        val check = SourceChecker(listOf(MpsChecker(solchecker::binary)), SourceLocator(corpus), work).check(bell3a, record)!!
+
+        assertEquals(LabCheck.VALID, check.state, check.reason)
+        assertEquals(Policies.MPS, check.policy)
     }
 }

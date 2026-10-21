@@ -10,16 +10,20 @@ import java.util.zip.ZipFile
 
 /**
  * The MIPLIB 2017 solution checker (`solchecker`, from `miplib2017-testscript-v1.0.4.zip`, MIT, Zuse Institute Berlin),
- * built once from the archive pinned by [ARCHIVE_SHA256] and kept as the one binary under `<dir>/solchecker-1.0.4/`.
- * The archive comes from the lab's own mirror, a klause-lab release asset holding the unmodified upstream bytes, and
- * from miplib.zib.de only when the mirror cannot be reached; either is checked against the pin. The archive and the
- * build tree are deleted once the binary is built. A build that fails is not tried again for [RETRY_MS], so a broken
+ * built once from the archive pinned by [ARCHIVE_SHA256] with the lab's patch [PATCH] applied, and kept as the one
+ * binary under `<dir>/solchecker-<VERSION>/`. The patch, pinned by [PATCH_SHA256], only raises three fixed input
+ * limits: a number may be 4095 characters rather than 31, the I/O buffer it is expanded into 16384 bytes rather than
+ * 1024, and a SOL line 8190 characters rather than 1022. Parsing and the exact GMP arithmetic are upstream's. The
+ * archive comes from the lab's own mirror, a klause-lab release asset holding the unmodified upstream bytes, and from
+ * miplib.zib.de only when the mirror cannot be reached; either is checked against the pin. The archive and the build
+ * tree are deleted once the binary is built. A build that fails is not tried again for [RETRY_MS], so a broken
  * toolchain or an outage costs each check a message, not a build.
  */
 class Solchecker(
     private val dir: File,
     private val urls: List<String> = listOf(MIRROR_URL, UPSTREAM_URL),
     private val compiler: String = "c++",
+    private val patcher: String = "patch",
     /** Where the compiler finds GMP and zlib besides the system's. */
     private val flags: List<String> = INCLUDES,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -48,7 +52,7 @@ class Solchecker(
         val tmp = File(dir, "tmp").apply { mkdirs() }
         val work = Files.createTempDirectory(tmp.toPath(), "solchecker-build-").toFile()
         try {
-            val archive = File(work, "miplib2017-testscript-v$VERSION.zip")
+            val archive = File(work, "miplib2017-testscript-v$UPSTREAM_VERSION.zip")
             val errors = mutableListOf<String>()
             val fetched = urls.any { url ->
                 runCatching { download(url, archive) }.onFailure { errors += "$url: ${it.message}" }.isSuccess
@@ -61,6 +65,12 @@ class Solchecker(
                     zip.getInputStream(entry).use { input -> File(sources, name).outputStream().use { input.copyTo(it) } }
                 }
             }
+            val patch = File(work, PATCH)
+            checkNotNull(Solchecker::class.java.getResourceAsStream(PATCH)) { "the patch $PATCH is not packaged" }
+                .use { input -> patch.outputStream().use { input.copyTo(it) } }
+            check(sha256(patch) == PATCH_SHA256) { "the patch $PATCH differs from its pin" }
+            val patched = ToolProcess.run(listOf(patcher, "-p1", "-d", sources.path, "-i", patch.path), work, BUILD_TIMEOUT_MS)
+            check(patched.exit == 0) { "$patcher could not apply $PATCH (exit ${patched.exit}): ${patched.tail()}" }
             val out = File(work, "solchecker")
             val command = listOf(compiler, "-O2") + flags + listOf("-o", out.path) + SOURCES.map { File(sources, it).path } + listOf("-lgmp", "-lz")
             val run = ToolProcess.run(command, work, BUILD_TIMEOUT_MS)
@@ -81,7 +91,16 @@ class Solchecker(
     }
 
     companion object {
-        const val VERSION = "1.0.4"
+        /** The upstream release the sources come from. */
+        const val UPSTREAM_VERSION = "1.0.4"
+        /** The binary's identity, the upstream release and the lab's patch, which also names its directory so a binary
+         *  built otherwise is never reused. */
+        const val VERSION = "$UPSTREAM_VERSION+klause-lab-longnum-1"
+        /** The lab's patch to the upstream sources, a resource beside this class. */
+        const val PATCH = "solchecker-1.0.4-longnum.patch"
+        const val PATCH_SHA256 = "c0cf7c98c63029468072bad151a8ff93f986bfc051f49a66cdcfd6a205f611e5"
+        /** The checker version each verdict records: the binary's identity and the patch it was built with. */
+        const val CHECKER_VERSION = "$VERSION (patch sha256 $PATCH_SHA256)"
         const val ARCHIVE_SHA256 = "37b21a7f1ee968aed60675fb070c9286eccc6a953c8bc50120c9246b052b47b9"
         /** The lab's mirror of the upstream archive, byte for byte (release `upstream-miplib2017-testscript-v1.0.4`). */
         const val MIRROR_URL = "https://github.com/Eignex/klause-lab/releases/download/upstream-miplib2017-testscript-v1.0.4/" +
@@ -101,9 +120,10 @@ class Solchecker(
  * of the model is rewritten. The witness is the record's final `v name=value …` line, written as a SOL file with the
  * claimed objective as `=obj=`; solchecker checks bounds, integrality, every row and the objective in exact rational
  * arithmetic with its default tolerances, 1e-5 absolute for rows, objective and integrality alike (the code's default;
- * its README still says 1e-4). solchecker reads only decimals of under 32 characters, so a value with no such exact
- * decimal (a fraction like 1/3) leaves the claim unsupported rather than checked against a rounding of it. A file
- * solchecker cannot read, or a run it aborts, is unsupported in its own words.
+ * its README still says 1e-4). Each value is written as its exact plain decimal, which the patched solchecker reads up
+ * to [MAX_NUMBER] characters, so a value with no exact decimal (a fraction like 1/3) or only a longer one leaves the
+ * claim unsupported rather than checked against a rounding of it; so does a SOL line over [MAX_LINE] characters. A
+ * file solchecker cannot read, or a run it aborts, is unsupported in its own words.
  */
 class MpsChecker(private val solchecker: () -> File, private val timeoutMs: Long = TIMEOUT_MS) : FormatChecker {
     override val format = "MPS"
@@ -113,7 +133,7 @@ class MpsChecker(private val solchecker: () -> File, private val timeoutMs: Long
     override fun check(case: CheckCase, work: File): Verdict {
         val binary = solchecker()
         val sha = sha256(binary)
-        fun verdict(state: String, reason: String) = Verdict(state, reason, Solchecker.VERSION, sha)
+        fun verdict(state: String, reason: String) = Verdict(state, reason, Solchecker.CHECKER_VERSION, sha)
         val objective = case.claimedObjective ?: return verdict(LabCheck.UNKNOWN, "the record holds no claimed objective to check")
         val sol = runCatching { solution(case.witness, objective) }.getOrElse { return verdict(LabCheck.UNSUPPORTED, it.message.orEmpty()) }
         val file = File(work, "witness.sol").apply { writeText(sol) }
@@ -142,26 +162,36 @@ class MpsChecker(private val solchecker: () -> File, private val timeoutMs: Long
         const val TIMEOUT_MS = 120_000L
         private val CHECK = Regex("""Check SOL: Integrality (\d) Constraints (\d) Objective (\d)""")
         private val NUMBER = Regex("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[+-]?[0-9]+/[0-9]+")
-        /** solchecker's own limit: it asserts every number it reads is shorter. */
-        private const val MAX_NUMBER = 31
+        /** The longest number the patched solchecker reads (upstream's was 31): it asserts every one is shorter than
+         *  4096 characters. */
+        const val MAX_NUMBER = 4095
+        /** The longest SOL line the patched solchecker reads whole, without its newline (upstream's was 1022). */
+        const val MAX_LINE = 8190
 
         /** The SOL file of witness `v name=value …` with objective [objective]; throws, saying why, on what solchecker
          *  cannot read exactly. */
         fun solution(witness: String, objective: String): String = buildString {
             val tokens = witness.trim().split(Regex("\\s+"))
             require(tokens.firstOrNull() == "v") { "the witness is not a `v name=value` line" }
-            appendLine("=obj= ${decimal(objective)}")
+            fun line(text: String) {
+                require(text.length <= MAX_LINE) {
+                    "the SOL line for ${text.substringBefore(' ').take(64)} is over $MAX_LINE characters, solchecker's input limit"
+                }
+                appendLine(text)
+            }
+            line("=obj= ${decimal(objective)}")
             val seen = HashSet<String>()
             for (token in tokens.drop(1)) {
                 val at = token.lastIndexOf('=')
                 require(at > 0 && at < token.length - 1) { "malformed coordinate $token" }
                 val name = token.substring(0, at)
                 require(seen.add(name)) { "variable $name assigned twice" }
-                appendLine("$name ${decimal(token.substring(at + 1))}")
+                line("$name ${decimal(token.substring(at + 1))}")
             }
         }
 
-        /** [text], a decimal or a fraction, as the exact decimal solchecker reads. */
+        /** [text], a decimal or a fraction, as the exact plain decimal solchecker reads, with no exponent for it to
+         *  expand. */
         fun decimal(text: String): String {
             require(NUMBER.matches(text)) { "value $text is not a number" }
             val value = if ('/' in text) {
@@ -170,10 +200,14 @@ class MpsChecker(private val solchecker: () -> File, private val timeoutMs: Long
                 runCatching { BigDecimal(p).divide(BigDecimal(q)) }
                     .getOrElse { throw IllegalArgumentException("value $text has no exact decimal, and solchecker reads decimals only") }
             } else BigDecimal(text)
-            val plain = value.stripTrailingZeros().let { if (it.scale() < 0) it.setScale(0) else it }.toPlainString()
-            val shortest = listOf(plain, value.stripTrailingZeros().toString()).minBy { it.length }
-            require(shortest.length <= MAX_NUMBER) { "value $text has no exact decimal under 32 characters, solchecker's input limit" }
-            return shortest
+            val digits = value.stripTrailingZeros()
+            val tooLong = { "value ${text.take(64)}${if (text.length > 64) "…" else ""} has no exact decimal of at most $MAX_NUMBER " +
+                "characters, solchecker's input limit" }
+            // A scale this far out means more digits than the limit, so a huge exponent is never written out.
+            require(digits.scale() in -MAX_NUMBER..MAX_NUMBER, tooLong)
+            val plain = (if (digits.scale() < 0) digits.setScale(0) else digits).toPlainString()
+            require(plain.length <= MAX_NUMBER, tooLong)
+            return plain
         }
     }
 }
