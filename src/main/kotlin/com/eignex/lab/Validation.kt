@@ -11,8 +11,9 @@ enum class WitnessCheck(val word: String) {
     /** The final witness was accepted against the original source: the solution is valid. */
     ACCEPTED("checked"),
     /**
-     * The solver's own report: no source check was asked for or performed, as under `reported-result-v1`, or one was
-     * asked for and the checker could not run ([SourceValidation.checkerFault]).
+     * The solver's own report: no source check was asked for or performed, as under `reported-result-v1`; one was
+     * asked for and the checker could not run ([SourceValidation.checkerFault], a lab check `not-run`); or no external
+     * checker covers the claim (a lab check `unsupported`).
      */
     UNCHECKED("unchecked"),
     /** A source check ran and could not decide: unsupported syntax, an incomplete witness, a checker limit or timeout. */
@@ -22,10 +23,11 @@ enum class WitnessCheck(val word: String) {
 }
 
 /**
- * The independent source-witness validation klause-bench performs when an arm asks for it with
- * `param.source-validation=true`: MiniZinc integer, XCSP3, MPS and SMT-LIB sources, each under its own validation
- * policy. Every scheduled Klause run asks for it ([scheduled]); the lab passes the request only to cases whose format
- * the bench checks ([forCase]), since the bench fails a case of any other format that asks.
+ * Source-witness validation, asked for by an arm with `param.source-validation=true`, as every scheduled Klause run
+ * does ([scheduled]). The lab checks the formats in [LAB_FORMATS] itself after each case, with established external
+ * checkers ([com.eignex.lab.checker]), and does not pass the request on to the bench for them; the bench still checks
+ * the other formats in [FORMATS] it was asked to, until the lab checks them too. The bench fails a case of any other
+ * format that asks, so the request reaches only the formats it checks ([forCase]).
  */
 object SourceValidation {
     const val PARAM = "param.source-validation"
@@ -39,6 +41,10 @@ object SourceValidation {
 
     /** The [Problem.format]s the bench checks, as `klause-bench select` names them. */
     val FORMATS = setOf("MINIZINC", "XCSP3", "MPS", "SMTLIB")
+
+    /** The [Problem.format]s the lab checks itself ([com.eignex.lab.checker.SourceChecker]): the request stays with the
+     *  lab for them and never reaches the bench. */
+    val LAB_FORMATS = setOf("XCSP3")
     private const val GZIP_FORMAT = "MPS"
 
     /** The policy of a record whose claims are the solver's own report. */
@@ -76,13 +82,23 @@ object SourceValidation {
 
     /**
      * An arm's [values] as a case of [format] passes them to the bench: without the validation keys for a format the
-     * bench does not check, and without [GZIP_PARAM] except on MPS. Such a case runs unchecked, as its record's
-     * `reported-result-v1` says, instead of failing; a problem with no recorded format counts as unchecked.
+     * lab checks itself ([LAB_FORMATS]) or the bench does not check, and without [GZIP_PARAM] except on MPS. The bench
+     * then reports the solver's claim as it is (`reported-result-v1`), for the lab to check or to leave unchecked; a
+     * problem with no recorded format counts as unchecked.
      */
     fun forCase(values: Map<String, String>, format: String): Map<String, String> = when (format.uppercase()) {
-        !in FORMATS -> values - PARAM - GZIP_PARAM
+        !in FORMATS, in LAB_FORMATS -> values - PARAM - GZIP_PARAM
         GZIP_FORMAT -> values
         else -> values - GZIP_PARAM
+    }
+
+    /** How far the lab's own verdict, of [state] ([com.eignex.lab.checker.LabCheck]), checked a claim: a check that
+     *  could not run, or that no external checker covers, leaves the solver's report standing, unchecked. */
+    fun labCheck(state: String?): WitnessCheck = when (state) {
+        "valid" -> WitnessCheck.ACCEPTED
+        "invalid" -> WitnessCheck.INVALID
+        "unknown" -> WitnessCheck.INDETERMINATE
+        else -> WitnessCheck.UNCHECKED
     }
 
     /**

@@ -19,6 +19,10 @@ import kotlin.io.path.isSymbolicLink
 import kotlin.io.path.name
 import kotlin.io.path.writeText
 import kotlinx.serialization.json.Json
+import com.eignex.lab.checker.CaseChecks
+import com.eignex.lab.checker.Checkers
+import com.eignex.lab.checker.RecheckResult
+import com.eignex.lab.checker.SourceChecker
 
 /**
  * Works the queue one job at a time. Each job checks its ref out into a fresh worktree, builds klause-cli, and
@@ -39,7 +43,12 @@ class Runner(
     private val stopGraceMs: Long = Experiments.STOP_GRACE_SEC * 1000,
     /** What an analysis job downloads a saved-capture archive with; a test serves its own. */
     private val archiveHttp: CaptureArchives.Http = CaptureArchives.Http.DEFAULT,
+    /** The lab's source checkers ([com.eignex.lab.checker]); a test gives its own. */
+    sourceChecker: () -> SourceChecker = { Checkers.of(config) },
 ) {
+    /** Checks each finished case's solution claim with the lab's own external checkers, off the dispatch thread. */
+    internal val checks = CaseChecks(store, sourceChecker, ::log)
+
     /** Every process the runner has started and not yet seen exit, so cancel and shutdown can reach them all. */
     private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
 
@@ -280,6 +289,7 @@ class Runner(
                         store.commandFinished(job.id, index, exit)
                         finished += index
                         keepRecord(job.id, index, dir)
+                        checks.afterCase(job.id, index)
                         if (job.experiment?.instrumented == true) reportCompilation(job.id, index, dir)
                     }
                 }
@@ -323,6 +333,8 @@ class Runner(
         } finally {
             pool.shutdown()
             pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
+            // A job ends with its cases' checks kept, so what reads it next (a confirmation, a trend) sees them.
+            if (!stopping) checks.await(job.id)
         }
     }
 
@@ -729,6 +741,7 @@ class Runner(
     internal fun analyze(job: Job) {
         val spec = checkNotNull(job.experiment?.analyze)
         val dir = config.jobDir(job.id).createDirectories()
+        if (spec.kind == AnalyzeSpec.CHECK) return recheck(job, checkNotNull(spec.job), dir)
         if (spec.archive != null) return analyzeArchive(job, spec, dir)
         val analysed = checkNotNull(spec.job)
         val target = config.jobDir(analysed)
@@ -749,6 +762,26 @@ class Runner(
         }
         finishAnalysis(job, dir, AnalysisResult(analysed, spec.kind, written), "job $analysed's captures could not be analysed: see its job.log",
             "for job $analysed")
+    }
+
+    /**
+     * Run recheck job [job]: the lab's source checkers over ended job [target]'s stored records, each verdict replacing
+     * the case's earlier one, and a summary in [CaseChecks.RESULT]. Nothing is built and no solver runs.
+     */
+    private fun recheck(job: Job, target: Long, dir: Path) {
+        CaseChecks.refusal(store.job(target))?.let { refusal ->
+            log(job.id, "job failed: $refusal")
+            store.finish(job.id, Status.FAILED, refusal)
+            return
+        }
+        log(job.id, "checking job $target's records again with the lab's source checkers")
+        log(target, "recheck job ${job.id} checks this job's solution claims again with the lab's source checkers")
+        val result = checks.recheck(target) { store.cancelRequested(job.id) }
+        if (store.cancelRequested(job.id)) return cancel(job.id)
+        dir.resolve(CaseChecks.RESULT).writeAtomically(Json { encodeDefaults = true }.encodeToString(RecheckResult.serializer(), result))
+        val states = result.states.entries.joinToString(", ") { "${it.value} ${it.key}" }.ifEmpty { "none" }
+        log(job.id, "job finished: ${result.checked} of job $target's ${result.cases} cases in checked formats have a lab verdict: $states")
+        store.finish(job.id, Status.DONE)
     }
 
     private fun analysisEntry(index: Int, root: Path, profile: Path, report: CompilationReport) = AnalysisEntry(

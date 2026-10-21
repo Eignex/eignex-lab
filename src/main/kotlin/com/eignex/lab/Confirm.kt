@@ -124,14 +124,16 @@ object Confirm {
 
     /**
      * Exact text is authoritative: malformed exact text cannot fall back to a rounded display value. A claim the lab
-     * restores after its checker could not run ([SourceValidation.checkerFault]) is read from the solver's own report.
+     * restores after its checker could not run ([SourceValidation.checkerFault]), or judges itself (a `labCheck`), is
+     * read from the solver's own report.
      */
     private fun objective(case: CaseResult): Exact? {
         val record = case.record as? JsonObject ?: return null
         val stats = record["stats"] as? JsonObject
         fun stat(name: String) = (stats?.get(name) as? JsonPrimitive)?.content?.takeUnless { it == "null" }
         if ((record["objective"] as? JsonPrimitive)?.content.let { it == null || it == "null" } &&
-            stat("sourceValidation") == "unknown" && SourceValidation.checkerFault(stat("sourceValidationReason"))
+            (record["labCheck"] is JsonObject ||
+                stat("sourceValidation") == "unknown" && SourceValidation.checkerFault(stat("sourceValidationReason")))
         ) {
             return stat("reportedExactObjective")?.let(Exact::parse)
         }

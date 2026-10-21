@@ -53,8 +53,8 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 60000), `backend`, `engine`,
   `processors`, `lp`, `presolve`, `fixed`, `exact`, and `param.<name>` for `--param <name>=<value>`. `exact=true` forwards
   klause-cli's `--exact` flag; omit it or use `false` for the default policy. An arm without a `label` is
-  named by the values that set it apart. `param.source-validation=true` asks the bench for independent source-witness
-  validation (see [Source-witness validation](#source-witness-validation)).
+  named by the values that set it apart. `param.source-validation=true` asks for independent source-witness
+  validation, which the lab performs with external checkers (see [Source-witness validation](#source-witness-validation)).
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
 - `repeats` (default 1, at most 100) runs each (problem, configuration, seed) that many times, identically, which
   measures the machine's timing noise apart from the seed's.
@@ -350,13 +350,60 @@ An experiment's page (its job id) compares the arms:
 ### Source-witness validation
 
 Every scheduled Klause run, `status-sweep` and the four `klause-reference*` schedules, and their confirmations, asks
-klause-bench to check each final witness against the original source: `param.source-validation=true` covers MiniZinc
-integer, XCSP3, MPS and SMT-LIB sources (MiniZinc float runs are always checked), and
-`param.source-validation-gzip=true` lets an MPS check keep up to 64 MiB of solver stdout, all its incumbents, instead of
-leaving the point unchecked past 8 MiB. The committed specs say so in `base`, and the runner adds both to every Klause
-schedule's base whenever it queues a run (`Validation.kt`, `SourceValidation.scheduled`), overriding a config or grid
-value, so a schedule saved without them needs no edit. A schedule of reference-solver runs, a profile and an analysis
-are left alone.
+for an independent check of each final witness against the original source with `param.source-validation=true`. The
+committed specs say so in `base`, and the runner adds it to every Klause schedule's base whenever it queues a run
+(`Validation.kt`, `SourceValidation.scheduled`), overriding a config or grid value, so a schedule saved without it
+needs no edit. A schedule of reference-solver runs, a profile and an analysis are left alone. Any experiment may ask
+for it the same way.
+
+**The lab checks witnesses itself, with established external checkers only** (package `checker`). After each case
+of an arm that asked, the lab reads the case's whole record (the `finalWitness` klause-bench keeps, its claimed
+objective, its `sourceHashes`), finds the original source in its own corpus, runs the format's external checker over
+the two, and stores the verdict beside the case. klause-bench only solves and records the witness: for the formats the
+lab checks, the request is consumed by the lab and never forwarded to the bench (`SourceValidation.forCase`), so their
+records say `reported-result-v1`. The bench's own in-house checkers are no longer used for those formats and will be
+removed in a klause PR.
+
+| Format | Checker (licence) | Policy | Unchecked, and why |
+| --- | --- | --- | --- |
+| XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
+| MPS, MiniZinc, SMT-LIB | still checked by klause-bench (below) until the lab checks them | the bench's | as the bench says |
+| DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
+
+- **XCSP3.** The witness is the record's `finalWitness` with its leading `v ` removed: the final `<instantiation>`.
+  For an optimisation claim its `cost` is set to the claimed objective (`exactObjective`), which the checker compares
+  with the objective it computes from the instantiation. The checker runs in a child JVM from the lab's own classpath
+  with `-Xmx2g` and a 60 s limit, so a hang or an out-of-memory costs that check alone. Its verdict is taken as it is:
+  no violated constraint and no invalid objective is `valid`; anything it lists is `invalid`, with the first
+  constraints it names; an exception is `unknown`, in its words. Job 7151's `circuit` witnesses, which the bench's
+  checker left `check indeterminate`, are `valid` under it.
+
+The source is found in the lab's corpus (`LAB_CORPUS`), for a case run on a cloud node as for a local one: the files
+a plan resolved, if it did (a reference arm's), moved from a node's corpus root to the lab's, else a file of the
+problem's name in its collection. A file counts only when its plain bytes hash to the record's `sourceHashes`, so an edited or renamed corpus
+file is never checked against in the source's place. The check runs on the lab, not on the node, so a node needs no
+checker and the verdict comes from one place; it needs the collection in the lab's corpus, which holds every
+collection the lab runs. Checks run one at a time on a background thread while the job's other cases solve, and a job
+ends only once its cases' checks are stored. Scratch inputs go under `$LAB_DATA/checkers/tmp` and are deleted after
+each check; only the verdict is kept.
+
+**Where verdicts are.** In the `lab_check` column of the case's row in `lab.db`, as JSON: `policy`, `state`
+(`valid`, `invalid`, `unknown`, `not-run` or `unsupported`), `reason`, `checker`, `checkerVersion`, `checkerSha256`
+(the jar or binary that ran), `witnessSha256`, `sourceSha256` (as checked, keyed like `sourceHashes`), `checkedAt` and
+`elapsedMs`. Every reader sees it as the record's `labCheck` (`/experiments/<id>/cases` included), with the record's
+`validationPolicy` read as the verdict's policy and the bench's kept as `benchValidationPolicy`. A new record for the
+case (a rerun) drops it. `not-run` replaces the reason-matching of the bench's checker faults for new records: a
+missing tool or source, a download that failed, a checker that crashed or ran out of time.
+
+**Rechecking.** `{"recheck": {"job": <id>}}` posted to `/experiments` (`lab recheck <id>`) queues a recheck job on the
+local machine: the lab's checkers run again over ended job `<id>`'s stored records, every Klause solution claim in a
+format the lab checks, whether or not it asked for validation, each verdict replacing the case's earlier one. Nothing
+is built and no solver runs; its records stay in the database however the job was trimmed. The job's page and
+`recheck.json` say how many cases got which verdict. Use it to backfill, as for job 7151.
+
+For the formats the lab does not check yet, klause-bench still checks: MiniZinc integer, MPS and SMT-LIB sources
+(MiniZinc float runs are always checked), and `param.source-validation-gzip=true` lets an MPS check keep up to 64 MiB
+of solver stdout, all its incumbents, instead of leaving the point unchecked past 8 MiB.
 
 MPS checks run the upstream MIPLIB solchecker, which klause-bench packages into its jar only when built with
 `-Pbench.mpsSolchecker` (opt-in since klause b417cf18b; earlier commits always packaged it, and ignore the property).
@@ -364,23 +411,17 @@ The lab passes it only for a job that may check an MPS case (`SourceValidation.n
 `klauseBuildTasks`) and on nodes (`AwsBuildCache.kt`): some Klause arm asks for `param.source-validation=true`, as
 every scheduled run and confirmation does, and the job may hold MPS problems. Selections are resolved only by the
 built bench, so any selection counts as possibly MPS; only a fixed problem list (a confirmation's) whose every problem
-has a recorded format other than MPS builds without it. A job that asks for no validation, such as WCNF comparison
-7087, a reference-only experiment and a profile that does not ask, builds without it and never downloads it: the
-bench runs the checker only for an MPS case that asks for validation. Building it needs a C++ compiler and the GMP and
-zlib headers: Homebrew's `gmp` on the Mac, `build-essential`, `libgmp-dev` and `zlib1g-dev` on a node. A bench built
-without the checker leaves every MPS check `unknown` with `MPS source checking failed: missing packaged MIPLIB
-solchecker`, as jobs 7068 and 7075 did, which reads `unchecked`, keeping the solver's reported result (below).
+has a recorded format other than MPS builds without it. A job that asks for no validation builds without it and never
+downloads it. Building it needs a C++ compiler and the GMP and zlib headers: Homebrew's `gmp` on the Mac,
+`build-essential`, `libgmp-dev` and `zlib1g-dev` on a node. A bench built without the checker leaves every MPS check
+`unknown` with `MPS source checking failed: missing packaged MIPLIB solchecker`, as jobs 7068 and 7075 did, which reads
+`unchecked`, keeping the solver's reported result (below). The checker's sources come from `miplib.zib.de` during the
+build (`:klause-bench:prepareMpsSolchecker`); when a build's last try failed only on that download
+(`SourceValidation.checkerDownloadFailed`), as with job 7087's HTTP 503s, the build goes ahead once more without it and
+the job's log says so.
 
-The checker's sources come from `miplib.zib.de` during the build (`:klause-bench:prepareMpsSolchecker`). A build
-that fails is retried as any build is (`buildRetry`); when its last try failed and Gradle names that download task as
-the only one that failed (`SourceValidation.checkerDownloadFailed`), as with job 7087's HTTP 503s, the build goes
-ahead once more without the checker and the job's log says so: its MPS cases then read `unchecked`, while its other
-cases are unaffected. Any other failure, compiling the checker included, still fails setup. The job's other commits,
-and nodes that join it later, then build without the checker too rather than wait out the same outage.
-
-The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, and the gzip
-flag on anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment. Those
-other cases run unchecked, as their records' `reported-result-v1` says.
+The bench fails a case of any other format (DIMACS, OPB, WCNF) that asks for validation, and the gzip flag on
+anything but MPS, so the lab passes them only to the cases whose format takes them, in any experiment.
 
 The request is part of the spec's fingerprint, but not of its trend line: the check runs after the solve and changes
 nothing the solver does, so a schedule's checked runs continue the line its unchecked runs drew, each run marked
@@ -390,28 +431,32 @@ none.
 `lab reschedule` with a committed spec that differs from the saved one only by the validation request counts it as
 unchanged and queues no extra run.
 
-A case's record says how its claims were judged: `validationPolicy` names the policy, `reported-result-v1` for the
-solver's own report, and under a checking policy `stats.sourceValidation` is `valid`, `invalid` or `unknown`, with
-`stats.sourceValidationReason`. A check that withdrew a claim keeps the original one in `stats.reportedFeasible`,
-`reportedObjective` and `reportedProven`. A verdict cell then reads:
+A case's verdict cell says how its claim was judged: by the lab's verdict where there is one, else by the record's
+`validationPolicy` (`reported-result-v1` for the solver's own report) and, under a bench checking policy, its
+`stats.sourceValidation` (`valid`, `invalid` or `unknown`) with `stats.sourceValidationReason`. A bench check that
+withdrew a claim keeps the original one in `stats.reportedFeasible`, `reportedObjective` and `reportedProven`, which a
+lab verdict judges in its place. Old records keep displaying as they did, labelled with their old policy. A verdict
+cell reads:
 
-- `checked`: the source accepted the witness, so the solution is valid. Witness checking is not proof checking: a
-  star beside it is still the solver's own optimality claim, and an infeasibility claim has no witness to check.
-- `unchecked`: the solver's own report, no check asked for or performed (`reported-result-v1`), such as every
-  scheduled run from before validation, and the unchecked formats of a checked run. A check that was asked for but
-  whose checker could not run or crashed also reads `unchecked`, with the reason on hover: the claim it withdrew is
-  read back from `reportedFeasible`, `reportedObjective` and `reportedProven` (its time from the producer record the
-  check kept) and scores as the solver reported it. The record has no field that says so, so the reason decides
+- `checked`: the source accepted the witness (lab `valid`, or bench `valid`), so the solution is valid and earns its
+  credit as claimed. Witness checking is not proof checking: a star beside it is still the solver's own optimality
+  claim, and an infeasibility claim has no witness to check.
+- `unchecked`: the solver's own report, credited as claimed, with the reason on hover. No check asked for or
+  performed (`reported-result-v1`), such as every scheduled run from before validation and the unchecked formats of a
+  checked run; a lab check `not-run` (the checker could not run) or `unsupported` (no external checker covers the
+  claim); or a bench check whose checker could not run or crashed. The last is told by the bench's reason
   (`SourceValidation.checkerFault`): a missing packaged checker (`missing packaged`), a packaged checker failing its
   own integrity checks, an executable that would not start (`Cannot run program`), and an XCSP3 checker process that
-  ended without a verdict (`source checker failed:`, `malformed source checker result`). `source checking failed:`
-  alone is not such a sign, since the bench writes it before inputs the checker ran on and could not read. This is
-  read when a page is drawn, so existing records, such as the 13 MPS cases of jobs 7068 and 7075, read this way
-  without any rewrite once the lab restarts on it.
-- `check indeterminate`: the checker could not decide (unsupported syntax, residual constraints, a checker limit or
-  timeout), the reason and the reported claim on hover. An MPS point that could not be checked earns no solution
-  credit, so it reads `unknown` with this mark.
-- `invalid solution`: the source rejected the witness; it earns no credit.
+  ended without a verdict (`source checker failed:`, `malformed source checker result`), the claim it withdrew read
+  back from `reportedFeasible`, `reportedObjective` and `reportedProven` (its time from the producer record the check
+  kept). This is read when a page is drawn, so existing records, such as the 13 MPS cases of jobs 7068 and 7075, read
+  this way without any rewrite.
+- `check indeterminate`: the checker ran and could not decide (lab `unknown`, which keeps the claim's credit; bench
+  `unknown` for unsupported syntax, residual constraints, a checker limit or timeout), the reason and the reported
+  claim on hover. A bench MPS point that could not be checked earns no solution credit, so it reads `unknown` with
+  this mark.
+- `invalid solution`: the source rejected the witness, or the claimed objective (lab or bench `invalid`); it earns no
+  credit.
 
 An undecided case has no mark. The arms table labels each arm `source-checked` or `unchecked`, with its counts on hover,
 and warns when arms met under different validation policies, problem by problem: an unchecked report counts as a
@@ -1166,6 +1211,7 @@ deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<
 deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, local first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
+deploy/lab recheck 7151       # check job 7151's solution claims again with the lab's source checkers; no solver runs
 deploy/lab analyze --archive https://github.com/Eignex/klause-lab/releases/download/<tag>/<campaign>-<sha>.tar.gz --sha256 <sha>
                               # the same over a pinned saved-capture archive, once job 7 is gone
 deploy/lab fetch 7            # download jobs/7/ to ./lab-jobs/7 over HTTP
@@ -1190,7 +1236,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |
 | `GET` | `/jobs/{id}/files/{path}` | one file; `?tail=<bytes>` for the end of a growing log |
-| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}`, or `{"analyze": {"archive": <url or name>, "sha256": <hex>}}`, queues an analysis job instead (above); 409 when its captures are gone, or the archive is unpinned or not allowed |
+| `POST` | `/experiments` | an experiment spec (above) → `{"id", "placement", "host"}`: where the lab placed it, in words, and as `local`, `cloud` or `auto` (the job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`); a branch or tag origin lacks is refused; the job it queues plans its cases when it starts. `{"analyze": {"job": <id>}}`, or `{"analyze": {"archive": <url or name>, "sha256": <hex>}}`, queues an analysis job instead (above); 409 when its captures are gone, or the archive is unpinned or not allowed. `{"recheck": {"job": <id>}}` queues a recheck job (see Source-witness validation); 409 while that job is still active |
 | `GET` | `/experiments/{id}/arms` | each arm's configuration and the commit it built |
 | `GET` | `/experiments/{id}/cases` | each case's problem, arm, seed, status and result record |
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |

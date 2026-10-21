@@ -1,0 +1,92 @@
+package com.eignex.lab.checker
+
+import com.eignex.lab.Problem
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import java.io.File
+import java.nio.file.Files
+
+/** One case as an adapter checks it: its full record, its original source files, and the final witness it kept. */
+data class CheckCase(val record: JsonObject, val sources: SourceFiles, val witness: String) {
+    fun field(name: String): String? = (record[name] as? JsonPrimitive)?.takeUnless { it.content == "null" }?.content
+    val optimize: Boolean get() = field("kind") == "optimize"
+
+    /** The claimed objective as exact text: the record's `exactObjective`, else an integral `objective`. */
+    val claimedObjective: String? get() = field("exactObjective")
+        ?: (record["stats"] as? JsonObject)?.let { (it["reportedExactObjective"] as? JsonPrimitive)?.content?.takeUnless { v -> v == "null" } }
+        ?: field("objective")?.toBigDecimalOrNull()?.takeIf { it.stripTrailingZeros().scale() <= 0 }?.toBigInteger()?.toString()
+}
+
+/** An adapter's verdict, with the checker version and binary it ran. */
+data class Verdict(val state: String, val reason: String, val version: String? = null, val sha256: String? = null)
+
+/** One external checker for one source format ([format], as `klause-bench select` names it). */
+interface FormatChecker {
+    val format: String
+    val policy: String
+    /** The tool, for [LabCheck.checker]. */
+    val checker: String
+
+    /** Check [case] with scratch directory [work], which is deleted afterwards. A thrown exception is a check that
+     *  could not run ([LabCheck.NOT_RUN]). */
+    fun check(case: CheckCase, work: File): Verdict
+}
+
+/**
+ * The dispatcher: picks the [adapters] entry for a case's format, finds its original source in the lab's corpus
+ * ([locator]), and runs it over the final witness the case's record kept. Only a Klause record that claims a solution
+ * is checked; anything else has no witness to check and gets no verdict. Every scratch file goes under [workRoot] and
+ * is deleted when the check ends, whatever it decided.
+ */
+class SourceChecker(
+    private val adapters: List<FormatChecker>,
+    private val locator: SourceLocator,
+    private val workRoot: File,
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
+    /** The formats the lab checks itself. */
+    val formats: Set<String> get() = adapters.map { it.format }.toSet()
+
+    fun covers(format: String): Boolean = adapters.any { it.format.equals(format, ignoreCase = true) }
+
+    /** The lab's verdict on [record], a case of [problem]; null when there is no Klause solution claim to check or no
+     *  checker for its format. */
+    fun check(problem: Problem, record: JsonObject): LabCheck? {
+        val adapter = adapters.firstOrNull { it.format.equals(problem.format, ignoreCase = true) } ?: return null
+        if ((record["solver"] as? JsonPrimitive)?.content != KLAUSE) return null
+        val stats = record["stats"] as? JsonObject
+        val claimed = (record["feasible"] as? JsonPrimitive)?.content == "true" ||
+            (stats?.get("reportedFeasible") as? JsonPrimitive)?.content == "true"
+        if (!claimed) return null
+        val started = clock()
+        val witness = (record["finalWitness"] as? JsonPrimitive)?.takeUnless { it.content == "null" }?.content
+        val hashes = (record["sourceHashes"] as? JsonObject)?.mapValues { (_, v) -> (v as? JsonPrimitive)?.content.orEmpty() }
+            ?.filterValues { it.isNotEmpty() }.orEmpty()
+        fun done(verdict: Verdict) = LabCheck(
+            policy = adapter.policy, state = verdict.state, reason = verdict.reason.take(REASON_CAP), checker = adapter.checker,
+            checkerVersion = verdict.version, checkerSha256 = verdict.sha256, witnessSha256 = witness?.let { sha256(it.toByteArray()) },
+            sourceSha256 = hashes, checkedAt = started, elapsedMs = clock() - started,
+        )
+        if (witness.isNullOrBlank()) {
+            return done(Verdict(LabCheck.NOT_RUN, "the record kept no final witness (the bench keeps one of at most 8 MiB)"))
+        }
+        val sources = locator.locate(problem, hashes).getOrElse {
+            return done(Verdict(LabCheck.NOT_RUN, "original source not found on the lab: ${it.message}"))
+        }
+        workRoot.mkdirs()
+        val work = Files.createTempDirectory(workRoot.toPath(), "check-").toFile()
+        return try {
+            done(adapter.check(CheckCase(record, sources, witness), work))
+        } catch (e: InterruptedException) {
+            throw e
+        } catch (e: Exception) {
+            done(Verdict(LabCheck.NOT_RUN, "the checker could not run: ${e.message ?: e::class.simpleName}"))
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    companion object {
+        const val KLAUSE = "klause"
+    }
+}
