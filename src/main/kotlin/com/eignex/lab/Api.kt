@@ -804,4 +804,4 @@ internal fun scoreboardView(
 }
 
 /** The newest cases the problem page shows unless `all` is asked for. */
-private const val PROBLEM_RUNS = 100
+private const val PROBLEM_RUNS = 20
