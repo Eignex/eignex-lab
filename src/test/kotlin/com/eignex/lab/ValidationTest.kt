@@ -47,6 +47,28 @@ class ValidationTest {
         "sourceValidationScope":"ground-original-mps-witness","floatApproximation":"false","reportedFeasible":"true",
         "reportedObjective":"892384.9959999999","reportedProven":"false"}}"""
 
+    /**
+     * Job 7068, case 48 (miplib2003/opt1217), trimmed: a bench built without the MIPLIB solchecker withdrew the
+     * solver's solution, though the checker never ran. Its producer record is cut to the fields the lab reads.
+     */
+    private val checkerMissing = """{"problem":"opt1217","solver":"klause","engine":null,"processors":1,"search":"free",
+        "seed":3,"budgetMs":10000,"kind":"optimize","maximize":false,"feasible":null,"objective":null,"timeToBestMs":null,
+        "timeToFirstFeasibleMs":null,"proven":false,"gitSha":"b417cf18b074785b295b14141aa868b15135d36b",
+        "command":"klause-cli --format mps opt1217.mps.zst -t 10000 -r 3 -s -a --output-objective","elapsedMs":10168,
+        "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"sourceConclusion":"satisfiable","solveTime":"9.162",
+        "sourceValidation":"unknown","sourceValidationReason":"MPS source checking failed: missing packaged MIPLIB solchecker",
+        "sourceValidationScope":"ground-original-mps-witness","reportedFeasible":"true","reportedObjective":"-16.0",
+        "reportedExactObjective":"-16","reportedProven":"false",
+        "sourceValidationProducerRecordJson":"{\"problem\":\"opt1217\",\"feasible\":true,\"objective\":-16.0,\"timeToBestMs\":3651,\"proven\":false}"}}"""
+
+    /** Job 7068, case 55 (miplib2010/ex9), trimmed: the checker ran and could not read the input, so no credit. */
+    private val unreadable = """{"problem":"ex9","solver":"klause","budgetMs":10000,"kind":"optimize","maximize":false,
+        "feasible":null,"objective":null,"timeToBestMs":null,"proven":false,"command":"klause-cli","elapsedMs":10200,
+        "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"solveTime":"9.5","sourceValidation":"unknown",
+        "sourceValidationReason":"MPS source checking failed: lower bounds following upper bounds are unsupported",
+        "sourceValidationScope":"ground-original-mps-witness","reportedFeasible":"true","reportedObjective":"81.0",
+        "reportedExactObjective":"81","reportedProven":"false"}}"""
+
     private fun outcome(record: String) = Outcome.of(Json.parseToJsonElement(record))!!
 
     private fun case(arm: String, problem: String, record: String) =
@@ -151,6 +173,105 @@ class ValidationTest {
         assertContains(uncredited, "reported objective 892384.9959999999")
         assertEquals("<span class=\"FAILED\" title=\"source constraints reject candidate\">invalid solution</span>",
             verdict(outcome(rejected), Status.DONE))
+    }
+
+    @Test
+    fun `a checker that could not run leaves the solver's claim standing, unchecked, with the reason on hover`() {
+        val kept = outcome(checkerMissing)
+
+        assertEquals(true, kept.feasible)
+        assertEquals(-16.0, kept.objective)
+        assertEquals(3651L, kept.timeToBestMs)
+        assertEquals(1, kept.rank)
+        assertEquals(WitnessCheck.UNCHECKED, kept.witness)
+        val cell = verdict(kept, Status.DONE)
+        assertTrue(cell.startsWith("-16 <small class=\"muted\""), cell)
+        assertContains(cell, "the source checker could not run: MPS source checking failed: missing packaged MIPLIB solchecker")
+        assertContains(cell, ">unchecked</small>")
+        assertFalse("unknown" in cell.substringBefore("<small"), cell)
+    }
+
+    @Test
+    fun `a checker that ran and could not decide stays indeterminate, and a rejection stays invalid`() {
+        val withheld = outcome(unreadable)
+        val cell = verdict(withheld, Status.DONE)
+
+        assertEquals(null, withheld.feasible)
+        assertEquals(WitnessCheck.INDETERMINATE, withheld.witness)
+        assertContains(cell, ">unknown</span> <small class=\"PARTIAL\"")
+        assertContains(cell, "lower bounds following upper bounds are unsupported; reported objective 81.0")
+        assertContains(cell, ">check indeterminate</small>")
+        assertEquals(WitnessCheck.INDETERMINATE, outcome(indeterminate).witness)
+        assertEquals(WitnessCheck.INVALID, outcome(rejected).witness)
+        assertEquals(null, outcome(rejected).feasible)
+        // A rejection whose reason happens to name the checker is still a rejection.
+        val named = outcome(rejected.replace("source constraints reject candidate", "source checker failed: rejected"))
+        assertEquals(null, named.feasible)
+        assertContains(verdict(named, Status.DONE), "invalid solution")
+    }
+
+    @Test
+    fun `only reasons that say the checker never ran or crashed count as a checker fault`() {
+        val faults = listOf(
+            "MPS source checking failed: missing packaged MIPLIB solchecker",
+            "MPS source checking failed: missing packaged MIPLIB LICENSE",
+            "MPS source checking failed: packaged checker exceeds limit",
+            "MPS source checking failed: checker executable changed or cleanup failed",
+            "source checking failed: Cannot run program \"minizinc\": error=2, No such file or directory",
+            "source checker failed: Exception in thread \"main\" java.lang.OutOfMemoryError",
+            "malformed source checker result",
+        )
+        val undecided = listOf(
+            "MPS source checking failed: lower bounds following upper bounds are unsupported",
+            "MPS source checking failed: number outside upstream decimal input",
+            "source checking cannot complete: expression SET is outside checker arithmetic auditing",
+            "source compilation leaves residual variables or constraints",
+            "source checker timed out",
+            "MIPLIB checking incomplete or unsupported",
+        )
+
+        for (reason in faults) assertTrue(SourceValidation.checkerFault(reason), reason)
+        for (reason in undecided) assertFalse(SourceValidation.checkerFault(reason), reason)
+        assertFalse(SourceValidation.checkerFault(null))
+        assertEquals(WitnessCheck.UNCHECKED, SourceValidation.check("unknown", "mps-miplib2017-point-gzip-v1", faults[0]))
+        assertEquals(WitnessCheck.INDETERMINATE, SourceValidation.check("unknown", "mps-miplib2017-point-gzip-v1", undecided[0]))
+    }
+
+    @Test
+    fun `a scoring record keeps the claim a missing checker withdrew, and its time, but not the whole producer record`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val problems = listOf(Problem("miplib2003", "opt1217", format = "MPS"), Problem("miplib2010", "ex9", format = "MPS"),
+            Problem("s", "rubiks", format = "MINIZINC"))
+        val id = store.create("j", "sha", emptyList(), experiment = ExperimentSpec("j", listOf(mapOf("suite" to "s"))))
+        store.next()
+        store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(problems.size, 1, emptyList()),
+            problems.map { "true" to 1L })
+        val producer = "\"sourceValidationProducerRecordJson\":\"{\\\"timeToBestMs\\\":2614,\\\"padding\\\":\\\"${"x".repeat(1000)}\\\"}\""
+        store.caseRecord(id, 0, checkerMissing)
+        store.caseRecord(id, 1, unreadable)
+        store.caseRecord(id, 2, accepted.replace("\"sourceValidation\":", "$producer,\"sourceValidation\":"))
+
+        val scoring = store.scoringCases(id)
+        val kept = Outcome.of(scoring[0].record)!!
+
+        assertEquals(listOf(true, -16.0, 3651L), listOf(kept.feasible, kept.objective, kept.timeToBestMs))
+        assertEquals(WitnessCheck.UNCHECKED, kept.witness)
+        assertEquals(null, Outcome.of(scoring[1].record)!!.feasible)
+        // A record whose claim stands needs none of its producer record.
+        assertFalse("sourceValidationProducerRecordJson" in scoring[2].record.toString())
+        assertEquals(2614L, Outcome.of(scoring[2].record)!!.timeToBestMs)
+        assertEquals(Stats.of(listOf("base"), store.cases(id)).arms.single().solved, Stats.of(listOf("base"), scoring).arms.single().solved)
+    }
+
+    @Test
+    fun `every Klause build packages the MIPLIB solchecker, locally and on a node, under a new build cache`() {
+        assertContains(klauseBuildTasks(referenceOnly = false), ":klause-bench:installDist -Pbench.mpsSolchecker")
+        assertContains(klauseBuildTasks(referenceOnly = false), ":klause-cli:installJvmDist")
+        assertEquals(":klause-bench:installDist", klauseBuildTasks(referenceOnly = true))
+        val node = AwsBuildCache.worktree("/w/abc", 4, "s3://bucket/${AwsBuildCache.BUILDS}/abc.tar.zst", "eu-north-1")
+        assertTrue(node.any { "./gradlew" in it && "-Pbench.mpsSolchecker" in it && ":klause-cli:installJvmDist" in it }, node.joinToString("\n"))
+        assertTrue(AwsBuildCache.worktree("/w/abc", 4, null, "eu-north-1").first().contains("-Pbench.mpsSolchecker"))
+        assertEquals("builds/verified-v2", AwsBuildCache.BUILDS)
     }
 
     @Test

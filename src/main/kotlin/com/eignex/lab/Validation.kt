@@ -8,7 +8,10 @@ package com.eignex.lab
 enum class WitnessCheck(val word: String) {
     /** The final witness was accepted against the original source: the solution is valid. */
     ACCEPTED("checked"),
-    /** The solver's own report: no source check was asked for or performed, as under `reported-result-v1`. */
+    /**
+     * The solver's own report: no source check was asked for or performed, as under `reported-result-v1`, or one was
+     * asked for and the checker could not run ([SourceValidation.checkerFault]).
+     */
     UNCHECKED("unchecked"),
     /** A source check ran and could not decide: unsupported syntax, an incomplete witness, a checker limit or timeout. */
     INDETERMINATE("check indeterminate"),
@@ -83,12 +86,45 @@ object SourceValidation {
     /**
      * The check behind a record's claims: its `sourceValidation` statistic when the bench checked (`valid`, `invalid`,
      * `unknown`), otherwise unchecked under [UNCHECKED_POLICY] or no policy at all, and indeterminate under a checking
-     * policy that left no result.
+     * policy that left no result. An `unknown` whose [reason] says the checker never ran ([checkerFault]) is unchecked.
      */
-    fun check(sourceValidation: String?, policy: String?): WitnessCheck = when (sourceValidation) {
+    fun check(sourceValidation: String?, policy: String?, reason: String? = null): WitnessCheck = when (sourceValidation) {
         "valid" -> WitnessCheck.ACCEPTED
         "invalid" -> WitnessCheck.INVALID
-        "unknown" -> WitnessCheck.INDETERMINATE
+        "unknown" -> if (checkerFault(reason)) WitnessCheck.UNCHECKED else WitnessCheck.INDETERMINATE
         else -> if (policy == null || policy == UNCHECKED_POLICY) WitnessCheck.UNCHECKED else WitnessCheck.INDETERMINATE
     }
+
+    /**
+     * The parts of an `unknown` validation's reason the bench writes when the checker itself could not run or crashed,
+     * rather than when it ran and could not decide: the MIPLIB solchecker missing from the bench jar (`missing packaged
+     * MIPLIB solchecker`, from a bench built without [MPS_CHECKER_BUILD]) or failing its own integrity checks, a checker
+     * executable that would not start (Java's `Cannot run program`), and an XCSP3 checker process that exited without a
+     * verdict. The record has no structured field for this, so the reason decides. `source checking failed:` alone is no
+     * sign: the bench writes it before an unsupported MPS input or a number the checker cannot read, which is a check
+     * that ran and could not decide.
+     */
+    private val CHECKER_FAULTS = listOf(
+        "missing packaged ",
+        "packaged checker exceeds limit",
+        "checker executable changed or cleanup failed",
+        "Cannot run program ",
+        "source checker failed: ",
+        "malformed source checker result",
+    )
+
+    /**
+     * Whether an `unknown` validation's [reason] says the source checker never ran or crashed ([CHECKER_FAULTS]). Such
+     * a case is the solver's own report, unchecked: the lab keeps the claim the check withdrew ([Outcome.of]) and shows
+     * the reason, where a check that ran and could not decide stays indeterminate.
+     */
+    fun checkerFault(reason: String?): Boolean = reason != null && CHECKER_FAULTS.any { it in reason }
+
+    /**
+     * The Gradle property that packages the MIPLIB solchecker into the bench jar. Since klause b417cf18b packaging is
+     * opt-in, and a bench built without it ends every MPS check `unknown` with `missing packaged MIPLIB solchecker`.
+     * Commits from before the property packaged the checker unconditionally, and Gradle ignores a project property no
+     * build script reads.
+     */
+    const val MPS_CHECKER_BUILD = "-Pbench.mpsSolchecker"
 }

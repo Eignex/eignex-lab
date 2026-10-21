@@ -139,6 +139,26 @@ class TrendTest {
     }
 
     @Test
+    fun `a solution whose checker could not run counts in its theme, one the checker could not decide does not`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = run(store, "sweep@aaa", listOf(false, false, false))
+        fun mps(reason: String) = """{"solver":"klause","kind":"optimize","maximize":false,"feasible":null,"objective":null,
+            "timeToBestMs":null,"proven":false,"budgetMs":1000,"validationPolicy":"mps-miplib2017-point-gzip-v1",
+            "stats":{"sourceValidation":"unknown","sourceValidationReason":"$reason","reportedFeasible":"true",
+            "reportedObjective":"-16.0","reportedProven":"false"}}"""
+        store.caseRecord(id, 0, """{"solver":"klause","kind":"optimize","feasible":true,"objective":3,"timeToBestMs":5,"budgetMs":1000,
+            "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"sourceValidation":"valid"}}""")
+        store.caseRecord(id, 1, mps("MPS source checking failed: missing packaged MIPLIB solchecker"))
+        store.caseRecord(id, 2, mps("MPS source checking failed: lower bounds following upper bounds are unsupported"))
+        store.putFeatures((0..2).map { ProblemFeatures("", "p$it", listOf("linear-real")) })
+
+        val run = Trend.runs(store, "sweep").single()
+
+        assertEquals(3, run.themes.getValue("linear-real").problems)
+        assertEquals(2.0 / 3, run.themes.getValue("linear-real").solved)
+    }
+
+    @Test
     fun `a run's solved problems are counted by theme, a problem of several themes in each`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         run(store, "sweep@aaa", listOf(true, false))

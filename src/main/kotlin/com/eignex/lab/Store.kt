@@ -1449,14 +1449,24 @@ internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = r
 internal val SCORING_STATS = listOf(
     "sourceValidation", "sourceValidationReason", "floatApproximation", "referenceError", "unsupported", "loadError",
     "solveTime", "profile", "solvePipeline", "referenceVersion", "validation", "dualBound",
-    "reportedFeasible", "reportedObjective", "reportedProven",
+    "reportedFeasible", "reportedObjective", "reportedExactObjective", "reportedProven",
 )
+
+/**
+ * The producer record an MPS or SMT check keeps, a JSON text of tens of kilobytes. Scoring reads only its time to the
+ * best solution, for a claim the check withdrew and the lab restores ([SourceValidation.checkerFault]), so a scoring
+ * record carries it cut to that one field, and only where the record's own claim was withdrawn.
+ */
+private const val PRODUCER_RECORD = "sourceValidationProducerRecordJson"
 
 /** A case record as [Store.scoringCases] reads it: cut down in SQLite, and left whole when it is not valid JSON. */
 private val SCORING_RECORD = """CASE WHEN c.record IS NULL OR NOT json_valid(c.record) THEN c.record ELSE
     json_set(json_remove(c.record, '$.buildProvenance', '$.finalWitness', '$.attribution'), '$.stats',
-        json((SELECT json_group_object(key, value) FROM json_each(c.record, '$.stats')
-              WHERE key IN (${SCORING_STATS.joinToString(", ") { "'$it'" }})))) END"""
+        json((SELECT json_group_object(key, CASE WHEN key = '$PRODUCER_RECORD'
+                  THEN '' || json_object('timeToBestMs', json_extract(value, '$.timeToBestMs')) ELSE value END)
+              FROM json_each(c.record, '$.stats')
+              WHERE key IN (${SCORING_STATS.joinToString(", ") { "'$it'" }})
+                  OR (key = '$PRODUCER_RECORD' AND json_extract(c.record, '$.feasible') IS NULL AND json_valid(value))))) END"""
 
 /** How many finished jobs' scoring cases [Store.scoringCases] keeps. */
 private const val SCORING_JOBS = 48

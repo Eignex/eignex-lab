@@ -449,9 +449,7 @@ class Runner(
         log.writeText("")
         val (arms, shas) = resolveArms(job, spec, log)
         val primary = shas.getValue(arms.first().ref)
-        // A reference case runs the lab's own launcher; the bench is built only to select and resolve the problems.
-        val tasks = if (arms.all { it.values["backend"] == REFERENCE_BACKEND }) ":klause-bench:installDist"
-            else ":klause-cli:installJvmDist :klause-bench:installDist"
+        val tasks = klauseBuildTasks(referenceOnly = arms.all { it.values["backend"] == REFERENCE_BACKEND })
         removeWorktree(job.id)
         for (sha in shas.values.distinct()) {
             val path = experimentWorktree(job.id, sha, primary)
@@ -1140,6 +1138,16 @@ class Runner(
         const val DOCKER_LOG_EVERY_MS = 60_000L
     }
 }
+
+/**
+ * The Gradle tasks that build a Klause commit for an experiment: the CLI and the bench, with the MIPLIB solchecker
+ * packaged into the bench ([SourceValidation.MPS_CHECKER_BUILD]) so its MPS cases can be source-checked. A reference
+ * experiment runs the lab's own launcher and builds the bench only to select and resolve its problems, so it needs
+ * neither the CLI nor the checker.
+ */
+internal fun klauseBuildTasks(referenceOnly: Boolean): String =
+    if (referenceOnly) ":klause-bench:installDist"
+    else ":klause-cli:installJvmDist :klause-bench:installDist ${SourceValidation.MPS_CHECKER_BUILD}"
 
 /**
  * [command] wrapped so that it leads a new session, and so its own process group. perl is the portable way to
