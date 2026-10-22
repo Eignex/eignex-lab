@@ -372,6 +372,7 @@ class AwsHost(
     private val measureCliResources: Boolean = false,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
+    override val id get() = instance
     override val corpus = "$HOME/corpus"
     override val yieldsToUpdates = false
     override val yieldsToPriority = false
@@ -885,7 +886,8 @@ class AwsWorker(
             // Past its age a node takes no more problems, so it retires before it powers itself off mid-case.
             val maxAge = NodePool.maxAgeMs(aws.maxHours)
             val next = { if (System.currentTimeMillis() - node.launchedAt >= maxAge) null else problems.take() }
-            val outcome = runner.dispatch(checkNotNull(store.job(job.id)), job.dir, host, next) { held -> problems.giveBack(held) }
+            val current = checkNotNull(store.job(job.id))
+            val outcome = runner.dispatch(current, job.dir, host, next, runner.render(current, host)) { held -> problems.giveBack(held) }
             job.outcomes += outcome
             if (outcome == Dispatched.LOST) runner.log(job.id, "node ${node.instance} was taken back by the cloud provider")
             healthy = outcome != Dispatched.LOST
@@ -947,7 +949,7 @@ class AwsWorker(
             }
         } else {
             fetchCorpora(host, primary, selections)
-            runner.adopt(current, spec, host)
+            runner.adopt(current)
         }
         store.setup(job.id, primary)
         // Unset, a job runs one case per two physical cores of each node ([AwsHost]'s limit); this is what the pages show.

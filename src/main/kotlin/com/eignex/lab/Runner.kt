@@ -236,7 +236,8 @@ class Runner(
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
-        return dispatch(job, dir)
+        val host = LocalHost(job, job.sha.orEmpty(), dir.resolve("setup.log").toFile())
+        return dispatch(job, dir, host, render = render(job, host))
     }
 
     private fun finishWork(job: Job, outcome: Dispatched) {
@@ -276,6 +277,8 @@ class Runner(
          * when this host has room for another case, null once every problem is taken. Null runs every queued case.
          */
         next: (() -> Collection<Int>?)? = null,
+        /** Each case's command as [host] runs it ([render]); as planned when not given. */
+        render: (Command) -> Command = { it },
         /** Told the cases this host held, started or not, when the host went away ([HostLost]): they go back to the
          *  queue [next] reads, and the dispatch ends [Dispatched.LOST] rather than failing the job. The cases it
          *  finished of an iteration it did not finish go back with them, to run again beside the rest of it
@@ -337,9 +340,9 @@ class Runner(
                     while (pending.isNotEmpty() && active.size < limit &&
                         (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
                     ) {
-                        val command = pending.removeFirst()
+                        val command = render(pending.removeFirst())
                         ProfileRunDeadline.checkActive()
-                        store.commandStarted(job.id, command.index)
+                        store.commandStarted(job.id, command.index, host.id, command.cmd)
                         active[command.index] = pool.submit(ProfileRunDeadline.task { host.run(command, dir) })
                     }
                 }
@@ -526,7 +529,7 @@ class Runner(
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
-        else adopt(job, spec, LocalHost(job, primary, log))
+        else adopt(job)
         dir.resolve("sha").writeAtomically(primary)
         return primary
     }
@@ -674,20 +677,34 @@ class Runner(
     }
 
     /**
-     * Take over planned [job] on [host], which sets it up afresh: the local machine taking a job a node planned, or a
-     * node claiming one again. Every iteration left part done runs again whole here ([Store.requeueSplitIterations]),
-     * and the queued commands are written again for this host's worktrees and corpus, since the plan named the paths of
-     * the host that made it. The finished cases and their results stay.
+     * Take over planned [job], which sets it up afresh: the local machine taking a job a node planned, or a node claiming
+     * one again. Every iteration left part done runs again whole here ([Store.requeueSplitIterations]); the finished
+     * cases and their results stay. Its commands need no rewriting: each is rendered for the host that runs it
+     * ([render]).
      */
-    internal fun adopt(job: Job, spec: ExperimentSpec, host: ExecutionHost) {
+    internal fun adopt(job: Job) {
         val again = store.requeueSplitIterations(job.id)
         if (again.isNotEmpty()) log(job.id, "cases ${again.joinToString()} run again: their iterations were only part done elsewhere")
+    }
+
+    /**
+     * [job]'s commands as [host] runs them. A plan stores each case host-independently, its problem, arm (with the commit
+     * it resolved to) and seed ([Store.casePlan]), beside a command line written for the host that planned it; a host
+     * renders the line for itself as it starts the case, with its own worktrees and corpus, and the store keeps what
+     * it ran ([Store.commandStarted]). So any host can run any case of a planned job, and none has to rewrite the plan
+     * when it takes the job over. A command with no planned case (a job of plain commands) runs as it was written.
+     */
+    internal fun render(job: Job, host: ExecutionHost): (Command) -> Command {
+        val spec = job.experiment ?: return { it }
         val arms = store.arms(job.id).associateBy { it.arm.label }
-        val commands = store.casePlan(job.id).filter { it.status == Status.QUEUED }.associate { case ->
-            val planned = arms.getValue(case.arm)
-            case.index to caseCommand(spec, planned.arm, case.problem, case.seed, case.index, host.worktree(planned.sha), host)
+        if (arms.isEmpty()) return { it }
+        val cases = store.casePlan(job.id).associateBy { it.index }
+        return { command ->
+            cases[command.index]?.let { case ->
+                val planned = arms.getValue(case.arm)
+                command.copy(cmd = caseCommand(spec, planned.arm, case.problem, case.seed, case.index, host.worktree(planned.sha), host))
+            } ?: command
         }
-        store.rewriteCommands(job.id, commands)
     }
 
     /** The lab machine itself: worktrees under the data directory, the shared corpus cache, the lab's core budget. */

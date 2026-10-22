@@ -9,6 +9,9 @@ import java.nio.file.Path
  * the job's local directory.
  */
 interface ExecutionHost {
+    /** Which machine it is, as each case records where it ran ([Command.host]): [LOCAL], or a cloud node's instance. */
+    val id: String get() = LOCAL
+
     /** Cores the running cases may hold together. */
     val cores: Int
 
@@ -36,6 +39,13 @@ interface ExecutionHost {
     /** Run [command] to its end and return its exit (a cancel or a timeout has its own); its record is then under
      *  `<dir>/cases/<index>/`. */
     fun run(command: Command, dir: Path): Int
+
+    companion object {
+        /** The local machine, as a case records where it ran. */
+        const val LOCAL = "local"
+        /** A cloud node the lab no longer knows, as a case that ran on one before cases recorded their node reads. */
+        const val CLOUD = "cloud"
+    }
 }
 
 /**
