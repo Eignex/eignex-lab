@@ -1120,10 +1120,15 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
     append("result for; green above one half, red below. <i>best</i> takes the strongest trusted reference verdict on each problem. ")
     if (view.by == Dimension.CLASS) append("The class is klause's own profile of the model; a run that reported none takes one from the source's logic or the pipeline that solved it. ")
     append("Open a cell for its problems, klause's losses first.</p>")
+    append("<p class=\"muted\">A cell reads klause's budget against the reference's. The score measures quality against stored ")
+    append("reference verdicts: time splits an equal result only where the budgets are equal and klause ran on one core, and a cell ")
+    append("marked <span class=\"PARTIAL\">quality only</span> has problems whose reference had another budget, which it does not ")
+    append("correct for. For relative speed, run a lab a/b experiment with both solvers as arms at the same budget.</p>")
     val (group, against) = view.cell ?: return@buildString
     append("<h3>${esc(group)} against ${esc(against)} <small>${view.problems.size} problems · ")
     append("<a href=\"${link("group" to null, "against" to null)}\">close</a></small></h3>")
-    append("<div class=\"scroll\"><table><tr><th>problem</th><th class=\"num\">klause</th><th class=\"num\">${esc(against)}</th><th>timed</th></tr>")
+    append("<div class=\"scroll\"><table><tr><th>problem</th><th class=\"num\">klause</th><th class=\"num\">${esc(against)}</th>")
+    append("<th class=\"num\">budgets</th><th>timed</th></tr>")
     for (p in view.problems) {
         val cls = when {
             p.klause > p.reference -> "DONE"
@@ -1132,19 +1137,55 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
         }
         append("<tr><td><a class=\"plain\" href=\"${problemLink(p.problem.collection, p.problem.problem)}\"><code>${esc(p.problem.collection)}/")
         append("${esc(p.problem.problem)}</code></a></td><td class=\"num $cls\">${"%.2f".format(p.klause)}</td>")
-        append("<td class=\"num\">${"%.2f".format(p.reference)}</td><td class=\"muted\">${if (p.timed) "yes" else "no"}</td></tr>")
+        append("<td class=\"num\">${"%.2f".format(p.reference)}</td>")
+        append("<td class=\"num\">${Scoreboard.seconds(p.budgetMs)} vs ${Scoreboard.seconds(p.referenceBudgetMs)}</td>")
+        val differ = p.budgetMs != p.referenceBudgetMs
+        append("<td class=\"${if (differ) "PARTIAL" else "muted"}\">${if (p.timed) "yes" else "no, ${esc(p.untimed.orEmpty())}"}</td></tr>")
     }
     append("</table></div>")
 }
 
-/** One scoreboard cell: klause's share, tinted green above one half and red below, the stronger the further off. */
+/**
+ * One scoreboard cell: klause's share, tinted green above one half and red below, the stronger the further off, then
+ * klause's budget against the reference's (a range when its problems had several) and a quality-only mark when they differ.
+ */
 private fun scoreCell(cell: ScoreCell?, href: String): String {
     val share = cell?.share ?: return "<td class=\"num muted\">${if (cell == null || cell.problems == 0) "" else "–"}</td>"
     val strength = (kotlin.math.abs(share - HALF_SHARE) * 2 * MAX_TINT).toInt()
     val tint = "background:color-mix(in srgb, var(--${if (share >= HALF_SHARE) "ok" else "bad"}) $strength%, transparent)"
-    return "<td class=\"num\" style=\"$tint\"><a class=\"plain\" href=\"$href\" title=\"klause ${"%.1f".format(cell.klause)} " +
-        "against ${"%.1f".format(cell.reference)} over ${cell.problems} problems\">${"%.2f".format(share)} " +
-        "<small class=\"muted\">${cell.problems}</small></a></td>"
+    val perBudget = cell.referenceBudgets.entries.joinToString(", ") { (ms, n) -> "${Scoreboard.seconds(ms)} on $n" }
+    return buildString {
+        append("<td class=\"num\" style=\"$tint\"><a class=\"plain\" href=\"$href\" title=\"klause ${"%.1f".format(cell.klause)} ")
+        append("against ${"%.1f".format(cell.reference)} over ${cell.problems} problems")
+        if (cell.referenceBudgets.size > 1) append("; reference budgets: $perBudget")
+        append("\">${"%.2f".format(share)} <small class=\"muted\">${cell.problems}</small>")
+        budgets(cell)?.let { append("<br><small class=\"muted\">$it</small>") }
+        append("</a>")
+        if (cell.budgetsDiffer) append("<br><small class=\"PARTIAL\" title=\"${esc(qualityOnly(cell))}\">quality only, budgets differ</small>")
+        append("</td>")
+    }
+}
+
+/** A cell's budgets: klause's against the reference's, or the range of the reference's when they vary. */
+internal fun budgets(cell: ScoreCell): String? {
+    val mine = cell.budgetMs ?: return null
+    val theirs = cell.referenceBudgets.keys.takeIf { it.isNotEmpty() } ?: return null
+    val range = if (theirs.size == 1) Scoreboard.seconds(theirs.first())
+        else "${Scoreboard.seconds(theirs.min()).removeSuffix(" s")}–${Scoreboard.seconds(theirs.max())}"
+    return "${Scoreboard.seconds(mine)} vs $range"
+}
+
+/** Why a cell whose budgets differ compares quality alone, and which way the reference's budget leans. */
+private fun qualityOnly(cell: ScoreCell): String {
+    val mine = cell.budgetMs ?: 0
+    val other = cell.referenceBudgets.filterKeys { it != mine }
+    val lean = when {
+        other.keys.all { it > mine } -> "the reference had a longer budget, so its proofs and objectives had more time"
+        other.keys.all { it < mine } -> "the reference had a shorter budget, so klause's proofs and objectives had more time"
+        else -> "the reference had longer budgets on some and shorter on others"
+    }
+    return "Time splits no equal result on the ${other.values.sum()} of ${cell.problems} problems whose reference verdict had " +
+        "another budget than klause's ${Scoreboard.seconds(mine)}, and $lean. The score compares quality, not speed."
 }
 
 private const val HALF_SHARE = 0.5

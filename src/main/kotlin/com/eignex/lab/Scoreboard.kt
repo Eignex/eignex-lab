@@ -35,11 +35,27 @@ enum class Dimension(val label: String) {
     DIFFICULTY("difficulty"),
 }
 
-/** One arm's Borda points against one reference over a group's problems, and the reference's points against it. */
+/**
+ * One arm's Borda points against one reference over a group's problems, and the reference's points against it, with
+ * the arm's budget and how many of the problems the reference decided under each of its budgets.
+ */
 @Serializable
-data class ScoreCell(val klause: Double, val reference: Double, val problems: Int) {
+data class ScoreCell(
+    val klause: Double,
+    val reference: Double,
+    val problems: Int,
+    val budgetMs: Long? = null,
+    val referenceBudgets: Map<Long, Int> = emptyMap(),
+) {
     /** klause's share of the points awarded; null when neither side scored. */
     val share: Double? get() = (klause + reference).takeIf { it > 0 }?.let { klause / it }
+
+    /**
+     * Whether any of the reference's verdicts had another budget than the arm. Time splits none of those problems'
+     * equal results, so the cell compares quality alone, and a longer reference budget gave its proofs and objectives
+     * more time.
+     */
+    val budgetsDiffer: Boolean get() = referenceBudgets.keys.any { it != budgetMs }
 }
 
 /** One group's row: a cell per reference solver, [BEST] the strongest trusted verdict of any. */
@@ -55,6 +71,12 @@ data class ScoreProblem(
     val reference: Double,
     /** Whether time split an equal result: the run had the reference's budget on one core. */
     val timed: Boolean,
+    /** The arm's budget. */
+    val budgetMs: Long = 0,
+    /** The budget the reference's verdict had. */
+    val referenceBudgetMs: Long = 0,
+    /** Why time did not split an equal result: the budgets differ, the run had several cores, or local-search scoring. */
+    val untimed: String? = null,
 )
 
 @Serializable
@@ -156,7 +178,8 @@ object Scoreboard {
             members.size,
             solvers.associateWith { solver ->
                 val points = members.mapNotNull { it.second[solver] }
-                ScoreCell(points.sumOf { it.klause }, points.sumOf { it.reference }, points.size)
+                ScoreCell(points.sumOf { it.klause }, points.sumOf { it.reference }, points.size, arm.timeoutMs,
+                    points.groupingBy { it.referenceBudgetMs }.eachCount().toSortedMap())
             },
         )
         val groups = scored.flatMap { entry ->
@@ -219,7 +242,13 @@ object Scoreboard {
 
     /** The arm's [runs] of [problem] against [reference]: each side's points averaged over the runs. */
     private fun score(problem: Problem, solver: String, runs: List<Outcome>, reference: Reference, arm: Arm, scoring: Scoring): ScoreProblem {
-        val timed = scoring == Scoring.COMPLETE && arm.timeoutMs == reference.budgetMs && arm.cores == 1
+        val untimed = when {
+            arm.timeoutMs != reference.budgetMs -> "budgets differ: ${seconds(arm.timeoutMs)} vs ${seconds(reference.budgetMs)}"
+            scoring == Scoring.INCOMPLETE -> "local-search scoring"
+            arm.cores != 1 -> "run on ${arm.cores} cores"
+            else -> null
+        }
+        val timed = untimed == null
         val theirs = runs.map { mine ->
             Outcome(
                 optimize = mine.optimize,
@@ -239,8 +268,15 @@ object Scoreboard {
             klause = pairs.map { (mine, ref) -> points(mine, ref, timed, scoring) }.average(),
             reference = pairs.map { (mine, ref) -> points(ref, mine, timed, scoring) }.average(),
             timed = timed,
+            budgetMs = arm.timeoutMs,
+            referenceBudgetMs = reference.budgetMs,
+            untimed = untimed,
         )
     }
+
+    /** A budget in seconds as the scoreboard shows it: `10 s`, `1.5 s`. */
+    fun seconds(ms: Long): String =
+        if (ms % SECOND == 0L) "${ms / SECOND} s" else "${"%.1f".format(java.util.Locale.ROOT, ms / SECOND.toDouble())} s"
 
     /**
      * Points [a] earns against [b] by the MiniZinc Challenge rule of [scoring], which ranks the two results in

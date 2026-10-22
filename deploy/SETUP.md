@@ -660,6 +660,18 @@ beating a proven reference optimum.
 It also lists the worse incumbents: each problem an arm solved to a worse objective than the reference, with its gap,
 the largest first; a schedule's trend counts them per run.
 
+The Reference tab leads with a scoreboard (`/references?job=<id>`): one arm of a finished run against every reference
+solver by the MiniZinc Challenge's pairwise Borda rule, a row per group of problems (class, theme, suite and so on)
+and a cell per solver, opened with `&against=<solver>` for its problems, klause's losses first. It measures quality
+against stored reference verdicts: proofs first, then the better objective. Time splits an equal result only when the
+arm's budget equals the reference verdict's and the arm ran on one core; otherwise the point is split evenly. Each cell
+shows klause's budget against the reference's (`10 s vs 60 s`, or a range such as `10 s vs 10–60 s` when its problems'
+verdicts had several, the count per budget on hover), and a cell with any problem whose reference had another budget
+is marked `quality only, budgets differ`. The score keeps the reference's proofs and better objectives even when they
+came from a longer budget, so a 10 s sweep against 60 s verdicts reads lower than a same-budget comparison would. The
+drill-down shows both budgets per problem and why time did not split it (`budgets differ: 10 s vs 60 s`, several cores,
+or local-search scoring). For relative speed, run an a/b experiment with klause and a reference arm at the same budget.
+
 An arm with `"backend": "reference"` runs each problem's reference solver instead of klause: clasp for DIMACS, OPB and
 WCNF, the cp-sat image for XCSP3, z3 for SMT-LIB, SCIP for MPS, cp-sat for MiniZinc. Each such case adds its verdict
 to the reference results as it finishes, keyed by collection and problem; a stronger result already there stays. So
