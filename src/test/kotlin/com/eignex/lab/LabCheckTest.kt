@@ -49,6 +49,15 @@ class LabCheckTest {
         Outcome.of(withLabCheck(Json.parseToJsonElement(record), state?.let { check(it, reason) }))!!
 
     @Test
+    fun `historical lab verdicts should have no retained checker inputs`() {
+        val historical = """{"policy":"lab-smtlib-z3-algebraic-4.16.0-v2","state":"valid","reason":"checked","checker":"z3"}"""
+
+        val parsed = LabCheck.parse(historical)!!
+
+        assertTrue(parsed.inputs.isEmpty())
+    }
+
+    @Test
     fun `each lab verdict maps to its mark, credit and policy`() {
         val valid = outcome(claim, LabCheck.VALID)
         assertEquals(WitnessCheck.ACCEPTED, valid.witness)

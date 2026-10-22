@@ -170,6 +170,30 @@ class SmtAlgebraicCheckTest {
     }
 
     @Test
+    fun `algebraic check inputs should survive scratch cleanup and diagnostic truncation`() {
+        val names = (0 until 160).map { "|value $it|" }
+        val declarations = names.joinToString("") { "(declare-const $it Real)\n" }
+        val prefix = source.readText().substringBeforeLast("(check-sat)") + "; UTF-8 input: \u03bb\n" + declarations
+        source.writeText("$prefix(check-sat)\n(exit)\n")
+        val witness = model(root(2), root(2)).dropLast(1) +
+            names.joinToString("") { "(define-fun $it () Real 0)\n" } + ")"
+        val pins = "(assert (= x ${root(2)}))\n(assert (= |y| ${root(2)}))\n" +
+            names.joinToString("") { "(assert (= $it 0))\n" }
+        val checks = checker(unbound, { fakeZ3("echo sat") })
+
+        val checked = checks.check(problem, record(witness))!!
+
+        assertEquals(LabCheck.VALID, checked.state, checked.reason)
+        val retained = assertIs<LabCheck>(LabCheck.parse(checked.json())).inputs.single()
+        assertEquals("$prefix\n$pins(check-sat)\n(exit)\n", retained.text)
+        assertEquals(sha256(retained.text.toByteArray()), retained.sha256)
+        assertEquals(mapOf(retained.path to retained.sha256), checked.resourceReceipts.last().inputFiles)
+        assertFalse(File(retained.path).exists())
+        assertTrue(retained.text.length > DIAGNOSTIC_CAP)
+        assertFalse(checked.diagnostic!!.contains(names.last()))
+    }
+
+    @Test
     fun `pinning cuts the source at its one check-sat and needs a value for every declared constant`() {
         val text = source.readText()
         val pinned = assertIs<Z3AlgebraicCheck.Pinned.Input>(Z3AlgebraicCheck.pin(text, "sat\n" + model("1", "2")))

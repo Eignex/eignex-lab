@@ -59,9 +59,10 @@ class Z3AlgebraicCheck(private val install: () -> Z3Tool, private val timeoutMs:
         val tool = install()
         val policy = policy(tool.version)
         var receipts = dolmen.resourceReceipts
+        var inputs = dolmen.inputs
         fun verdict(state: String, reason: String, diagnostic: String) =
             Verdict(state, reason, tool.version, tool.sha256, policy, CHECKER,
-                "dolmen: ${dolmen.state}: ${dolmen.reason}\n$diagnostic", receipts)
+                "dolmen: ${dolmen.state}: ${dolmen.reason}\n$diagnostic", receipts, inputs)
         val pinned = try {
             when (val got = pin(CorpusFiles.readText(case.sources.model), case.witness)) {
                 is Pinned.Refused -> return verdict(got.state, got.reason, "no Z3 run")
@@ -71,6 +72,7 @@ class Z3AlgebraicCheck(private val install: () -> Z3Tool, private val timeoutMs:
             return verdict(LabCheck.UNKNOWN, "the source or model is not readable SMT-LIB: ${e.message}", "no Z3 run")
         }
         val input = File(work, "pinned.smt2").apply { writeText(pinned.text) }
+        inputs = inputs + CheckedInput(input.canonicalPath, sha256(input), pinned.text)
         val seconds = ((timeoutMs - GRACE_MS) / 1000).coerceAtLeast(1)
         val command = listOf(tool.executable.path, "-T:$seconds", "-memory:${tool.memoryMb}", "-smt2", input.name)
         val run = ToolProcess.run(command, work, timeoutMs,
