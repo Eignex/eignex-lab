@@ -202,7 +202,7 @@ class WaitingTest {
             assertEquals(JsonNull, running.getValue("waiting"))
             val waiting = jobs[2]
             assertEquals(setOf("id", "name", "status", "placement", "host", "priority", "paused", "cancelRequested", "queuePosition",
-                "localPosition", "estimate", "waiting", "doing"), waiting.keys)
+                "localPosition", "estimate", "waiting", "doing", "hosts"), waiting.keys)
             assertEquals(JsonNull, waiting.getValue("doing"))
             assertEquals("local or cloud", waiting.getValue("placement").jsonPrimitive.content)
             assertEquals("auto", waiting.getValue("host").jsonPrimitive.content)

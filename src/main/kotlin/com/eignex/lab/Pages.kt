@@ -25,6 +25,8 @@ internal fun indexPage(
     caseHistory: (Job) -> CaseHistory? = { null },
     /** Why each queued job waits ([Waiting.waiting]), by job. */
     waiting: Map<Long, String> = emptyMap(),
+    /** Each running job's hosts and their parts ([Store.hostProgress]), by job. */
+    hosts: Map<Long, List<HostProgress>> = emptyMap(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
@@ -36,7 +38,7 @@ internal fun indexPage(
             Estimates.estimate(job, caseHistory, config.cores, config.maxParallel)?.let { job.id to it }
         }.toMap()
         append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(config, active, estimates)}</div>")
-        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates, waiting)}</div></section>")
+        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates, waiting, hosts)}</div></section>")
         if (schedules.isNotEmpty()) {
             append("<section><h2>Schedules</h2><div id=\"schedules\" data-live>${schedulesTable(schedules)}</div></section>")
         }
@@ -73,6 +75,8 @@ internal fun jobPage(
     holds: List<Hold> = emptyList(),
     /** Why the job waits, while it is queued ([Waiting.waiting]). */
     waiting: String? = null,
+    /** Each host's part of the job ([Store.hostProgress]). */
+    hosts: List<HostProgress> = emptyList(),
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
@@ -97,7 +101,12 @@ internal fun jobPage(
         append(phases.joinToString("<br>") { (index, phase) -> "case $index: ${esc(phaseText(phase, now()))}" })
         append("</dd>")
     }
-    append("<dt>where</dt><dd>${hostCell(config, job)}</dd>")
+    append("<dt>where</dt><dd>${hostCell(config, job, hosts)}</dd>")
+    if (hosts.size > 1 || hosts.any { it.host != ExecutionHost.LOCAL }) {
+        // One job's iterations may run on different machines, every arm of one iteration on the same one.
+        append("<dt>hosts</dt><dd>${hosts.joinToString("<br>") { esc(it.text()) }}")
+        append("<br><small class=\"muted\">each iteration's arms ran on one machine; timing across iterations mixes machines</small></dd>")
+    }
     job.experiment?.capped?.takeIf { it.isNotEmpty() }?.let { caps ->
         append("<dt>capped</dt><dd>${caps.joinToString("<br>") { esc(it) }}</dd>")
     }
@@ -1589,18 +1598,19 @@ private fun estimateText(config: Config, job: Job, estimate: WorkEstimate?): Str
 
 private fun activeTable(
     config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>, waiting: Map<Long, String>,
+    hosts: Map<Long, List<HostProgress>> = emptyMap(),
 ): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
     // One queue by priority, whatever runs each job: the local machine and the cloud nodes take from it in this order
     // as the lab places jobs, each passing over those it may not run.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
-    return jobTable(config, ordered, positions, filterable = false, estimates = estimates, waiting = waiting)
+    return jobTable(config, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts)
 }
 
 private fun jobTable(
     config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
-    waiting: Map<Long, String> = emptyMap(),
+    waiting: Map<Long, String> = emptyMap(), hosts: Map<Long, List<HostProgress>> = emptyMap(),
 ): String = buildString {
     if (jobs.isEmpty()) return "<p class=\"muted\">No jobs.</p>"
     append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>")
@@ -1625,7 +1635,7 @@ private fun jobTable(
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${hostCell(config, job)}</td><td>${statusCell(job, positions[job.id], waiting[job.id])}</td>")
+        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id], waiting[job.id])}</td>")
         append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
@@ -1685,13 +1695,21 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
 }
 
 /**
- * Where a job runs, as the lab placed it: the local machine alone, the local machine or a cloud node (whichever is free
- * first), the cloud alone; once taken, where it went, and on the cloud the nodes working on it.
+ * Where a job runs, as the lab placed it: the local machine alone, shared by the local machine and cloud nodes, or the
+ * cloud alone; while it runs, the hosts on it now ("local + 2 nodes": the local machine when it works on it, and the
+ * nodes) and each host's part of it ([hosts]).
  */
-private fun hostCell(config: Config, job: Job): String {
+private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = emptyList()): String {
     val spec = job.experiment
+    val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
+        ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     if (spec?.host == Experiments.AUTO_HOST) {
-        return "<span class=\"where\" title=\"placed by the lab: the local machine when it is free, else a cloud node\">local or cloud</span>"
+        val where = "<span class=\"where\" title=\"shared by the lab: the local machine and cloud nodes each run whole iterations of it\">local or cloud</span>"
+        if (job.status != Status.RUNNING) return where
+        val on = Waiting.hostsText(job.local, instances.size)
+        val parts = hosts.takeIf { it.size > 1 }?.joinToString(" · ") { it.text() }
+        return "$where<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">${esc(on)}" +
+            (parts?.let { "<br>${esc(it)}" } ?: "") + "</small>"
     }
     if (spec?.host != Experiments.AWS_HOST) {
         val note = when {
@@ -1701,8 +1719,6 @@ private fun hostCell(config: Config, job: Job): String {
         }
         return "<span class=\"where\">local</span>$note"
     }
-    val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
-        ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     // Each line: instance, type, and how it was bought (spot or on-demand).
     val shapes = instances.map { it.split(' ') }.groupingBy { "${it.getOrNull(1) ?: "instance"} ${it.getOrNull(2) ?: ""}".trim() }.eachCount()
     val detail = when {

@@ -939,6 +939,9 @@ builds the job's commits itself first: the local machine in its own worktrees, a
 - One job's iterations may run on different machines. A comparison within an iteration is fair, both arms on one
   machine; timing across iterations (an arm's total time, a trend point) mixes the machines' speeds. Each case's
   `host` says where it ran (job page, `lab cases`, the case CSV).
+- The queue page's `where` cell of a running shared job says which hosts are on it now ("local + 2 nodes") and, once
+  more than one host ran its cases, each host's part ("local 40 done, 2 running · i-0abc 36 done, 2 running"); the job
+  page lists the same under `hosts`, and `lab placement` / `GET /placement` give it as `hosts` and in `doing`.
 - When the lab restarts, a shared job left running goes back to the queue, every case its hosts held queued again and
   each iteration left part done queued whole; an `auto` job a single host took before jobs were shared (stored as `lab`
   or `aws` with `auto` set) becomes shared again, its finished cases keeping the host that ran them.

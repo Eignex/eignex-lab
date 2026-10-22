@@ -117,6 +117,16 @@ data class Job(
 
 enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
 
+/**
+ * One host's part of a job: its cases finished ([done], failed ones included), [running], and [claimed] but not started.
+ * [host] is [ExecutionHost.LOCAL] or a cloud node's instance id.
+ */
+@Serializable
+data class HostProgress(val host: String, val done: Int, val running: Int, val claimed: Int = 0) {
+    /** In a few words: `local 10 done, 2 running`. */
+    fun text(): String = "$host $done done" + (if (running > 0) ", $running running" else "") + (if (claimed > 0) ", $claimed claimed" else "")
+}
+
 /** An experiment arm as planned: its configuration and the commit its ref resolved to. */
 @Serializable
 data class PlannedArm(val arm: Arm, val sha: String)
@@ -751,6 +761,22 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         "status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) AND $NOT_PROFILE AND EXISTS $UNCLAIMED $QUEUE_ORDER",
         Status.RUNNING.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
     ).map { it to unclaimed(it.id) }
+
+    /** Each host's part of the jobs [ids] ([HostProgress]), the local machine first, then the nodes by name; a case that
+     *  ran before cases recorded their host is left out. */
+    @Synchronized
+    fun hostProgress(ids: Collection<Long>): Map<Long, List<HostProgress>> = if (ids.isEmpty()) emptyMap() else
+        connection.prepareStatement(
+            "SELECT job_id, host, SUM(status IN ('DONE', 'FAILED')), SUM(status = 'RUNNING'), SUM(status = 'QUEUED') FROM commands " +
+                "WHERE job_id IN (${ids.joinToString(",") { "?" }}) AND host IS NOT NULL GROUP BY job_id, host " +
+                "ORDER BY job_id, host != '${ExecutionHost.LOCAL}', host",
+        ).use { statement ->
+            ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
+            statement.executeQuery().use { r ->
+                generateSequence { if (r.next()) r.getLong(1) to HostProgress(r.getString(2), r.getInt(3), r.getInt(4), r.getInt(5)) else null }
+                    .groupBy({ it.first }, { it.second })
+            }
+        }
 
     /** Say whether the local machine works on [jobId] now ([Job.local]). */
     @Synchronized

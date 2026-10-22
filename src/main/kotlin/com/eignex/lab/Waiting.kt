@@ -88,6 +88,8 @@ data class JobPlacement(
     val estimate: PlacementEstimate? = null,
     val waiting: String? = null,
     val doing: String? = null,
+    /** Each host's part of a running job, wherever its cases ran ([HostProgress]): a shared job may run on several. */
+    val hosts: List<HostProgress> = emptyList(),
 )
 
 /**
@@ -273,7 +275,8 @@ object Waiting {
         val queue = store.queue(nodesUp = config.aws != null && nodesUp(view.pool, at))
         val positions = queue.withIndex().associate { (index, id) -> id to index + 1 }
         val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
-        val jobs = ordered.map { placement(config, it, view, positions[it.id], history) }
+        val progress = store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id })
+        val jobs = ordered.map { placement(config, it, view, positions[it.id], history, progress[it.id].orEmpty()) }
         val cloud = config.aws?.let { cloudSummary(view.pool, it, config.cores, at) }
         return PlacementReport(at, config.aws != null && nodesUp(view.pool, at), cloud, view.pool, view.local, jobs)
     }
@@ -290,20 +293,21 @@ object Waiting {
     }
 
     /** Where [job] may run and why it waits or what it does, by [view]; [position] is its place in the whole queue. */
-    fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?): JobPlacement {
+    fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
+                  hosts: List<HostProgress> = emptyList()): JobPlacement {
         val host = job.experiment?.host ?: Experiments.LAB_HOST
         val estimate = if (job.status in ACTIVE) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
         val local = view.localQueue.indexOf(job.id).takeIf { it >= 0 }?.plus(1)
         val doing = when (job.status) {
             Status.QUEUED -> null
-            Status.RUNNING -> runningOn(job, view)
+            Status.RUNNING -> runningOn(job, view) + (if (hosts.size > 1) "; by host: ${hosts.joinToString(", ") { it.text() }}" else "")
             else -> "ended ${job.status}"
         }
         return JobPlacement(
             job.id, job.name, job.status, Placement.where(host), Experiments.hostWord(host), job.priority, job.paused, job.cancelRequested,
             position.takeIf { job.status == Status.QUEUED }, local,
             estimate?.let { PlacementEstimate(it.cases, it.coreHours, it.localHours, it.note) },
-            if (job.status == Status.QUEUED) waiting(job, view) else null, doing,
+            if (job.status == Status.QUEUED) waiting(job, view) else null, doing, hosts,
         )
     }
 

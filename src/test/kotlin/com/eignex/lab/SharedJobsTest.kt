@@ -231,6 +231,30 @@ class SharedJobsTest {
     }
 
     @Test
+    fun `the queue page, the job page and the placement report show each host's part of a shared job`() {
+        val id = sharedJob(problems = 3)
+        store.next()
+        for ((holder, done) in listOf(ExecutionHost.LOCAL to true, "i-1" to true, "i-1" to false)) {
+            val claimed = store.claimIteration(id, holder)!!
+            claimed.forEach { store.commandStarted(id, it, holder) }
+            if (done) claimed.forEach { store.commandFinished(id, it, 0) }
+        }
+        config.jobDir(id).toFile().mkdirs()
+        config.jobDir(id).resolve(AwsWorker.INSTANCES_FILE).toFile().writeText("i-1 c7i.2xlarge spot\n")
+        val job = store.job(id)!!
+        val hosts = store.hostProgress(listOf(id))
+
+        assertEquals(listOf(HostProgress("local", 2, 0), HostProgress("i-1", 2, 2)), hosts[id])
+        val index = indexPage(config, HostReport("Test", 4, "java", "engine", false, emptyList()), listOf(job), emptyList(), emptyList(), 50,
+            null, null, hosts = hosts)
+        assertTrue("local + 1 node<br>local 2 done · i-1 2 done, 2 running" in index, index)
+        val page = jobPage(config, job, failedOnly = false, hosts = hosts.getValue(id))
+        assertTrue("<dt>hosts</dt><dd>local 2 done<br>i-1 2 done, 2 running" in page, page)
+        val doing = Waiting.placement(config, job, QueueView(emptyList(), null, null, null, null, 8), null, { null }, hosts.getValue(id)).doing!!
+        assertTrue(doing.endsWith("; by host: local 2 done, i-1 2 done, 2 running"), doing)
+    }
+
+    @Test
     fun `the placement report says a job runs on the local machine and its nodes`() {
         val id = sharedJob(problems = 2)
         val job = store.next()!!
@@ -238,7 +262,7 @@ class SharedJobsTest {
             NodeReport("i-2", "c7i.2xlarge", "spot", "joining job $id", id)))
         val view = QueueView(emptyList(), null, Waiting.localWork(job, config.jobDir(id)), pool, null, 8)
 
-        val doing = Waiting.placement(config, job, view, null) { null }.doing!!
+        val doing = Waiting.placement(config, job, view, null, { null }).doing!!
 
         assertTrue(doing.startsWith("on local + 2 nodes: the local machine: "), doing)
         assertTrue(doing.endsWith("; 2 cloud nodes: c7i.2xlarge spot running job $id, c7i.2xlarge spot joining job $id"), doing)
