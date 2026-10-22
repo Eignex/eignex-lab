@@ -136,7 +136,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val view = if (before == null && name == null) Waiting.view(config, store) else null
             val waiting = view?.let { v -> active.filter { it.status == Status.QUEUED }.associate { it.id to Waiting.waiting(it, v) } }.orEmpty()
             val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
-                store.queue(nodesUp = config.aws != null && nodesUp(view?.pool ?: readPoolReport(config), now())), estimates::lookup, waiting)
+                store.queue(nodesUp = config.aws != null && nodesUp(view?.pool ?: readPoolReport(config), now())), estimates::lookup, waiting,
+                store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }))
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
@@ -171,7 +172,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val id = call.parameters["id"]!!.toLong()
             val placement = withContext(Dispatchers.IO) {
                 Waiting.report(config, store, estimates::lookup).jobs.firstOrNull { it.id == id }
-                    ?: store.jobsByIds(listOf(id)).firstOrNull()?.let { Waiting.placement(config, it, Waiting.view(config, store), null, estimates::lookup) }
+                    ?: store.jobsByIds(listOf(id)).firstOrNull()?.let {
+                        Waiting.placement(config, it, Waiting.view(config, store), null, estimates::lookup, store.hostProgress(listOf(id))[id].orEmpty())
+                    }
             }
             if (placement == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(placement)
         }
@@ -340,6 +343,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
                         waiting = if (job.status == Status.QUEUED) Waiting.waiting(job, Waiting.view(config, store)) else null,
+                        hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }

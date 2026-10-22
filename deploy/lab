@@ -52,8 +52,10 @@
 #                                                            pool's pressure against the next threshold, sustain wait, cooldown
 #                                                            and launch blocker; the local machine's job and its phase (its
 #                                                            setup step, or its cases); each active job's placement, priority,
-#                                                            place in the local queue, estimate and reason. With an id, that
-#                                                            job's alone; --json prints the lab's JSON (GET /placement)
+#                                                            place in the local queue, estimate and reason; a running job's
+#                                                            hosts ("local + 2 nodes") with each host's cases done and running.
+#                                                            With an id, that job's alone; --json prints the lab's JSON
+#                                                            (GET /placement)
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
 #   lab host <id> local|cloud|auto                          operators only: override where a queued, unplanned job may run
@@ -188,7 +190,8 @@ placement)
         + (if .localPosition then ", #\(.localPosition) in the local queue" else "" end),
       (if .estimate then "estimate: \(est)" else empty end),
       (if .waiting then "waiting: \(.waiting)" else empty end),
-      (if .doing then "doing: \(.doing)" else empty end)' <<< "$placement"; fi
+      (if .doing then "doing: \(.doing)" else empty end),
+      (if (.hosts // []) | length > 0 then "hosts: " + ([.hosts[] | "\(.host) \(.done) done, \(.running) running"] | join("; ")) else empty end)' <<< "$placement"; fi
   else
     report=$(curl -fsS "$url/placement")
     if (( json )); then jq . <<< "$report"
