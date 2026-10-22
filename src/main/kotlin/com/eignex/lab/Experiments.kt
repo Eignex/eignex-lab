@@ -404,6 +404,14 @@ object Experiments {
             require(arm.values["exact"]?.toBooleanStrictOrNull() != null || "exact" !in arm.values) {
                 "exact must be true or false"
             }
+            val backend = arm.values["backend"]
+            require(backend == null || backend == KLAUSE_BACKEND || backend == REFERENCE_BACKEND) {
+                "backend must be $KLAUSE_BACKEND (the default) or $REFERENCE_BACKEND, not '$backend'"
+            }
+            for (key in REFERENCE_ONLY_KEYS) {
+                require(key !in arm.values || backend == REFERENCE_BACKEND) { "'$key' is for reference arms; it needs backend=$REFERENCE_BACKEND" }
+            }
+            require(arm.values["fixed"]?.toBooleanStrictOrNull() != null || "fixed" !in arm.values) { "fixed must be true or false" }
         }
         require(arms(spec).map { it.label }.distinct().size == arms(spec).size) { "config labels must be unique" }
     }
@@ -452,17 +460,17 @@ object Experiments {
             else ReferenceFilterMode.DECIDED
 
     /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
-     *  `$JOB_DIR/cases/<index>`. The source-validation request stays with the lab, which checks the case itself
-     *  ([SourceValidation.forBench]). */
+     *  `$JOB_DIR/cases/<index>`. Only Klause's own options ([BENCH_KEYS] and `param.*`) go to the bench: the solver
+     *  choice (`backend`, `solver`, `fixed`) and `ref` are the lab's, and the source-validation request stays with the
+     *  lab, which checks the case itself ([SourceValidation.forBench]). */
     fun command(worktree: String, problem: Problem, arm: Arm, seed: Long?, index: Int, corpus: String): String {
         val args = buildList {
             add("suite=${problem.suite}")
             add("problem=${problem.problem}")
             for ((key, value) in SourceValidation.forBench(arm.values).toSortedMap()) {
                 when {
-                    key == "ref" -> Unit
                     key.startsWith(PARAM) -> add("param=${key.removePrefix(PARAM)}=$value")
-                    else -> add("$key=$value")
+                    key in BENCH_KEYS -> add("$key=$value")
                 }
             }
             if (seed != null) add("solver-seed=$seed")
@@ -601,6 +609,12 @@ object Experiments {
     private const val UNCAPPED = 1_000_000
     private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
     private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact")
+    /** The arm keys `klause-bench solve-one` takes, besides `param.*`. */
+    private val BENCH_KEYS = setOf("timeout", "engine", "processors", "lp", "presolve", "exact")
+    /** The arm keys only a reference arm (`backend=reference`) takes: its solver and whether it keeps to the model's search. */
+    private val REFERENCE_ONLY_KEYS = listOf("solver", "fixed")
+    /** The `backend` a Klause arm may name; leaving it out means the same. */
+    private const val KLAUSE_BACKEND = "klause"
     private const val CASE_OVERHEAD_SEC = 120L
     /** A profile job's time limit when it gives no `timeout`. */
     const val PROFILE_TIMEOUT_MS = 600_000L
