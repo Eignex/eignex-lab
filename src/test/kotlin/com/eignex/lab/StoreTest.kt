@@ -12,6 +12,30 @@ class StoreTest {
     private fun store() = Store(Files.createTempDirectory("lab").resolve("lab.db"))
 
     @Test
+    fun `each case says where it ran, one run before the lab recorded that reading as its job's host`() {
+        val store = store()
+        fun job(host: String): Long {
+            val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = host)
+            val id = store.create("e", "main", emptyList(), experiment = spec)
+            store.plan(id, listOf(PlannedArm(Arm("a", emptyMap()), "sha")), listOf(Problem("s", "p")), Experiments.cases(1, 1, listOf(1, 2, 3)),
+                List(3) { "true" to 1L })
+            return id
+        }
+        val local = job(Experiments.LAB_HOST)
+        val cloud = job(Experiments.AWS_HOST)
+        for (id in listOf(local, cloud)) {
+            store.commandStarted(id, 0)
+            store.commandFinished(id, 0, 0)
+            store.commandStarted(id, 1, "i-7", "echo rendered")
+        }
+
+        assertEquals(listOf("local", "i-7", null), store.cases(local).map { it.host })
+        assertEquals(listOf("cloud", "i-7", null), store.cases(cloud).map { it.host })
+        assertEquals(listOf(null, "i-7", null), store.job(local)!!.commands.map { it.host })
+        assertEquals("echo rendered", store.job(local)!!.commands[1].cmd)
+    }
+
+    @Test
     fun `reclaiming a bounded profile retains its interrupted running allowance`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)

@@ -25,10 +25,11 @@
 #   lab recheck <id>                                        queue a recheck job: the lab's source checkers run again over ended
 #                                                            job <id>'s stored records (the solution claims in the formats the
 #                                                            lab checks), each verdict replacing the case's earlier one; no solver runs
-#   lab cases <id>                                          an experiment's cases: status, arm, problem, result
+#   lab cases <id>                                          an experiment's cases: status, arm, problem, result, host
 #   lab cases <id> --json                                   every case whole as JSON Lines, one per line: index, arm, seed,
-#                                                            repeat, problem, status and the full record, its finalWitness
-#                                                            and the lab's verdict (record.labCheck) included
+#                                                            repeat, problem, status, host (local, or the cloud node's
+#                                                            instance) and the full record, its finalWitness and the lab's
+#                                                            verdict (record.labCheck) included
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's results as CSV
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
 #                                                            satisfied infeasible unknown
@@ -147,7 +148,8 @@ cases)
   if [[ "${2:-}" == --json ]]; then curl -fsS -N "$url/experiments/$1/cases.jsonl"
   else curl -fsS "$url/experiments/$1/cases" | jq -r '.[] | [.index, .status, .arm, (if .problem.suite == "" then .problem.problem else "\(.problem.suite)/\(.problem.problem)" end),
       (.seed // "-"), (if .record == null then "-" else
-        "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end)] | @tsv'; fi ;;
+        "feasible=\(.record.feasible) objective=\(.record.objective) proven=\(.record.proven) best=\(.record.timeToBestMs)ms" end),
+      (.host // "-")] | @tsv'; fi ;;
 csv)
   if [[ -z "${2:-}" ]]; then curl -fsS "$url/experiments/$1/cases.csv"
   else curl -fsS -G "$url/experiments/$1/bench.csv" --data-urlencode "arm=$2" ${3:+--data-urlencode "seed=$3"}; fi ;;

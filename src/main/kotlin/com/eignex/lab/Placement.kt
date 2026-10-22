@@ -7,7 +7,7 @@ package com.eignex.lab
  * [ExperimentSpec.host] records the decision for the queue: `lab` for a job only the local machine runs, `auto` for one
  * whichever is free first takes (`aws`, for one only a node runs, is left to an operator's override); the taker then
  * sets it to where the job went. A planned job a node gives back is placed again ([release]), and whichever host takes
- * it next rewrites its queued commands for itself ([Runner.adopt]).
+ * it next renders each case's command for itself as it starts it ([Runner.render]).
  */
 object Placement {
     /**
@@ -106,7 +106,7 @@ object Placement {
 
     /**
      * Place queued, planned job [jobId] again by the rules above, once a node gave it back: the local machine, first in
-     * the lab's order, may then take it over, rewriting its queued commands for itself ([Runner.adopt]), and a node may
+     * the lab's order, may then take it over, rendering each case's command for itself ([Runner.render]), and a node may
      * still when pressure calls for one. False when it stays where it was.
      */
     fun release(store: Store, config: Config, jobId: Long): Boolean {

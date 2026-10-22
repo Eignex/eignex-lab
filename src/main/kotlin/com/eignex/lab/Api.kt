@@ -414,8 +414,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/jobs/{id}/retry") {
             val id = call.parameters["id"]!!.toLong()
             val retried = store.retry(id)
-            // It may go anywhere again, wherever it was taken last time: a planned one's commands are rewritten for the
-            // host that takes it.
+            // It may go anywhere again, wherever it was taken last time: a planned one's commands are rendered for the
+            // host that runs each case ([Runner.render]).
             store.job(id)?.takeIf { retried }?.let { job ->
                 if (job.commands.isEmpty()) job.experiment?.let { store.place(id, Placement.host(it, job.name, config, store.schedules())) }
                 else Placement.release(store, config, id)

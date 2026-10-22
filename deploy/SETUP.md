@@ -322,6 +322,12 @@ alternate, every arm running once per seed and repeat before the next (A, B, A, 
 bench's result cache is turned off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
 /experiments/<id>/cases`.
 
+The plan stores each case host-independently: its problem, its arm with the commit the arm's ref resolved to, its seed
+and repeat. The command line a case runs is rendered from that by the host that runs it, as it starts the case, with
+that host's own worktrees and corpus cache, and the store keeps the line that ran and the host it ran on (`host`: `local`
+or a cloud node's instance id). So any host can run any case of a planned job without rewriting the plan; the job page's
+command table shows each case's host, as do `lab cases` and the case CSV's `host` column.
+
 After building each commit, setup captures the installed CLI and Java runtime hashes in a provenance
 manifest when that bench revision supports it. Each case validates the installed files' metadata and
 adds its runtime options to the identity, avoiding a full runtime hash in every JVM. A cloud node's setup also
@@ -1388,8 +1394,9 @@ requested". `lab placement <id>` prints one job's placement, estimate and reason
 included), then the newest 30 others (`lab ls <n>` for n).
 
 `lab cases <id> --json` exports every case for auditing as JSON Lines (`GET /experiments/<id>/cases.jsonl`), one
-case per line in index order, not a JSON array: `index`, `status`, `problem`, `arm`, `seed`, `repeat`, `instrumented`
-and the full `record`, its `finalWitness` included and the lab's verdict as `record.labCheck` (`policy`, `state`,
+case per line in index order, not a JSON array: `index`, `status`, `problem`, `arm`, `seed`, `repeat`, `instrumented`,
+`host` (where the case ran: `local`, or the cloud node's instance id; `cloud` for a node case that ran before the lab
+recorded which node) and the full `record`, its `finalWitness` included and the lab's verdict as `record.labCheck` (`policy`, `state`,
 `reason`, `checker`, `checkerVersion`, `checkerSha256`, `sourceSha256`, `witnessSha256`, `checkedAt`, `elapsedMs`,
 `diagnostic`; absent for a case the lab has not checked). The server streams it a page of cases at a time, so a job of thousands
 of cases with large witnesses needs no more memory than a few of them; read it with `jq -c 'select(...)'` or
