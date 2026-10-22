@@ -8,7 +8,7 @@ import java.io.FileInputStream
 import java.io.PrintStream
 
 /**
- * XCSP3 witnesses, checked by the official XCSP3 solution checker (`org.xcsp:xcsp3-tools` 2.5, MIT,
+ * XCSP3 witnesses, checked by the official XCSP3 solution checker (MIT, built from pinned upstream sources,
  * `org.xcsp.parser.callbacks.SolutionChecker`), whose verdict is taken as it is. It runs in a child JVM on the lab's
  * own classpath ([Xcsp3CheckMain]), with a heap cap and a time limit, so a checker that hangs or runs out of memory
  * costs this check and nothing else. An optimisation claim's instantiation carries the claimed objective as its
@@ -44,7 +44,9 @@ class Xcsp3Checker(
     }
 
     companion object {
-        const val VERSION = "2.5"
+        val VERSION: String = requireNotNull(SolutionChecker::class.java.`package`.implementationVersion) {
+            "the packaged XCSP3 checker must identify its upstream revision"
+        }
         const val TIMEOUT_MS = 60_000L
         const val HEAP = "2g"
         internal const val MARKER = "LAB-CHECK\t"
@@ -79,7 +81,7 @@ object Xcsp3CheckMain {
         System.setOut(PrintStream(captured, true))
         System.setErr(PrintStream(captured, true))
         val (state, reason) = try {
-            val checker = FileInputStream(args[1]).use { SolutionChecker(false, args[0], it) }
+            val checker = FileInputStream(args[1]).use { SolutionChecker(args[0], it, null, null, false) }
             val violated = checker.violatedCtrs.orEmpty()
             val objectives = checker.invalidObjs.orEmpty()
             if (violated.isEmpty() && objectives.isEmpty()) {

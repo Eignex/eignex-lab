@@ -43,7 +43,7 @@ class LabCheckTest {
         "sourceValidationProducerRecordJson":"{\"timeToBestMs\":5000}"}}"""
 
     private fun check(state: String, reason: String = "because") =
-        LabCheck(Policies.XCSP3, state, reason, "xcsp3-tools SolutionChecker", "2.5").json()
+        LabCheck(Policies.XCSP3, state, reason, "xcsp3-tools SolutionChecker", Xcsp3Checker.VERSION).json()
 
     private fun outcome(record: String, state: String?, reason: String = "because") =
         Outcome.of(withLabCheck(Json.parseToJsonElement(record), state?.let { check(it, reason) }))!!
