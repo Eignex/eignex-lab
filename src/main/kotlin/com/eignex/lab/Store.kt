@@ -470,6 +470,17 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         }
     }
 
+    /** The klause commit case [index] of [jobId] ran: the one its arm was planned at. */
+    @Synchronized
+    fun caseSha(jobId: Long, index: Int): String? = connection.prepareStatement(
+        """SELECT a.sha FROM cases c JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
+           WHERE c.job_id = ? AND c.idx = ?""",
+    ).use { statement ->
+        statement.setLong(1, jobId)
+        statement.setInt(2, index)
+        statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
+    }
+
     /** Keep the record a case wrote, compacted ([StoredRecords]); a lab check of the record it replaces goes with it. */
     @Synchronized
     fun caseRecord(jobId: Long, index: Int, record: String): Int = transaction {

@@ -144,6 +144,7 @@ class LabCheckTest {
         store.plan(target, listOf(PlannedArm(Arm("a", emptyMap()), "sha"), PlannedArm(Arm("b", emptyMap()), "sha")), problems,
             Experiments.cases(2, 2, emptyList()), List(4) { "true" to 1L })
         val cases = store.casePlan(target)
+        assertEquals("sha", store.caseSha(target, cases.first().index), "a case's checks read repository files at its arm's commit")
         for (case in cases) {
             store.commandStarted(target, case.index)
             store.commandFinished(target, case.index, 0)

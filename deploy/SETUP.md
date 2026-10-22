@@ -478,7 +478,18 @@ a plan resolved, if it did (a reference arm's), moved from a node's corpus root 
 problem's name in its collection. A file counts only when its plain bytes hash to the record's `sourceHashes`, so an edited or renamed corpus
 file is never checked against in the source's place. The check runs on the lab, not on the node, so a node needs no
 checker and the verdict comes from one place; it needs the collection in the lab's corpus, which holds every
-collection the lab runs. Checks run one at a time on a background thread while the job's other cases solve, and a job
+collection the lab runs.
+
+A problem the klause repository carries itself, such as the bench's `klause-bench/smoke-corpus` (a collection under
+`klause-bench/`, or a planned file under a worktree, the lab's `$LAB_DATA/work/<job>[@<sha>]` or a node's
+`/home/ubuntu/work/<sha>`, whose prefix is cut to leave the repository path), is never looked for in the corpus. It
+is read at the commit the case's arm was pinned to (`arms.sha`), not at `main`: from the job's worktree of that commit
+while it is still there, else from the lab's mirror (`$LAB_DATA/repo.git`, `git cat-file blob <sha>:<path>`) into the
+check's scratch directory, deleted with it. The same hash rule holds: a file whose bytes do not hash to the record's
+`sourceHashes`, a record without one, or a path the commit lacks leaves the case `not-run`, saying so, and the file as
+it is on any other commit never stands in. A case run on a cloud node is checked the same way on the lab once its
+record is back. Job 7407's 24 `degeneracy/degree-drop` records, `not-run` before this, all check `valid` under Dolmen
+this way. Checks run one at a time on a background thread while the job's other cases solve, and a job
 ends only once its cases' checks are stored. Scratch inputs go under `$LAB_DATA/checkers/tmp` and are deleted after
 each check; only the verdict is kept.
 

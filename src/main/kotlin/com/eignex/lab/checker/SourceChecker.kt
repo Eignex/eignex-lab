@@ -63,9 +63,9 @@ class SourceChecker(
 
     fun covers(format: String): Boolean = adapters.any { it.format.equals(format, ignoreCase = true) }
 
-    /** The lab's verdict on [record], a case of [problem]; null when there is no Klause solution claim to check or no
-     *  checker for its format. */
-    fun check(problem: Problem, record: JsonObject): LabCheck? {
+    /** The lab's verdict on [record], a case of [problem] run at klause [revision]; null when there is no Klause
+     *  solution claim to check or no checker for its format. */
+    fun check(problem: Problem, record: JsonObject, revision: Revision? = null): LabCheck? {
         val adapter = adapters.firstOrNull { it.format.equals(problem.format, ignoreCase = true) } ?: return null
         if ((record["solver"] as? JsonPrimitive)?.content != KLAUSE) return null
         val stats = record["stats"] as? JsonObject
@@ -83,7 +83,7 @@ class SourceChecker(
             elapsedMs = clock() - started, diagnostic = verdict.diagnostic?.take(DIAGNOSTIC_CAP),
         )
         return try {
-            run(adapter, problem, record, witness, hashes)
+            run(adapter, problem, record, witness, hashes, revision)
         } catch (e: InterruptedException) {
             throw e
         } catch (e: Throwable) {
@@ -92,17 +92,19 @@ class SourceChecker(
         }.let(::done)
     }
 
-    /** [adapter]'s verdict on [record]'s [witness], in a scratch directory deleted afterwards. */
-    private fun run(adapter: FormatChecker, problem: Problem, record: JsonObject, witness: String?, hashes: Map<String, String>): Verdict {
+    /** [adapter]'s verdict on [record]'s [witness], in a scratch directory deleted afterwards with any source read
+     *  into it. */
+    private fun run(adapter: FormatChecker, problem: Problem, record: JsonObject, witness: String?, hashes: Map<String, String>,
+                    revision: Revision?): Verdict {
         if (witness.isNullOrBlank()) {
             return Verdict(LabCheck.NOT_RUN, "the record kept no final witness (the bench keeps one of at most 8 MiB)")
-        }
-        val sources = locator.locate(problem, hashes).getOrElse {
-            return Verdict(LabCheck.NOT_RUN, "original source not found on the lab: ${it.message}")
         }
         workRoot.mkdirs()
         val work = Files.createTempDirectory(workRoot.toPath(), "check-").toFile()
         return try {
+            val sources = locator.locate(problem, hashes, revision, work).getOrElse {
+                return Verdict(LabCheck.NOT_RUN, "original source not found on the lab: ${it.message}")
+            }
             adapter.check(CheckCase(record, sources, witness), work)
         } finally {
             work.deleteRecursively()

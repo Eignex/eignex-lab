@@ -13,20 +13,29 @@ data class SourceFiles(val model: File, val data: File? = null, val includeDirs:
  * plan resolved (`select files=true`), moved from another host's corpus root ([foreignRoots]) to this one, else a
  * search of the problem's collection by file name. A file counts only when its plain bytes hash to what the case's
  * record says it solved (`sourceHashes`), so a renamed, edited or recompressed corpus can never be checked against
- * in its place. Nothing here downloads: a collection the lab's corpus lacks leaves the case unchecked.
+ * in its place. Nothing here downloads: a collection the lab's corpus lacks leaves the case unchecked. A problem the
+ * klause repository itself carries, such as the bench's smoke corpus, is read at the case's pinned commit by
+ * [fixtures] instead, never from the corpus.
  */
 class SourceLocator(
     private val corpus: File,
     private val foreignRoots: List<String> = listOf(NODE_CORPUS),
     private val hash: (File) -> String = CorpusFiles::sha256,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val fixtures: RepositoryFixtures? = null,
 ) {
     private val indexes = ConcurrentHashMap<String, Pair<Long, Map<String, List<File>>>>()
 
-    /** [problem]'s files with the plain-byte digests [hashes] (`model`, and `data` for MiniZinc); a failure says why. */
-    fun locate(problem: Problem, hashes: Map<String, String>): Result<SourceFiles> = runCatching {
+    /**
+     * [problem]'s files with the plain-byte digests [hashes] (`model`, and `data` for MiniZinc); a failure says why.
+     * A repository file is read at [revision], into [scratch] when no worktree of that commit holds it.
+     */
+    fun locate(problem: Problem, hashes: Map<String, String>, revision: Revision? = null, scratch: File? = null): Result<SourceFiles> = runCatching {
         val modelHash = hashes["model"]
         val dataHash = hashes["data"]
+        if (fixtures != null && fixtures.owns(problem)) {
+            return@runCatching fixtures.locate(problem, modelHash, revision, checkNotNull(scratch) { "no scratch directory to read a repository file into" })
+        }
         val planned = problem.model?.let { model ->
             val m = moved(model).firstOrNull { matches(it, modelHash) }
             val d = problem.data?.let { data -> moved(data).firstOrNull { matches(it, dataHash) } }
