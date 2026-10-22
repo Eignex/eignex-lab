@@ -5,8 +5,8 @@ package com.eignex.lab
  * then a cloud node ([AwsWorker]). Every job fits the local machine, its cores and `parallel` capped to it at submit
  * ([Experiments.capToLocal]): the cloud is overflow for the local machine's queue, launched on pressure alone. Its
  * [ExperimentSpec.host] records the decision for the queue: `lab` for a job only the local machine runs, `auto` for one
- * whichever is free first takes (`aws`, for one only a node runs, is left to an operator's override); the taker then
- * sets it to where the job went. A planned job a node gives back is placed again ([release]), and whichever host takes
+ * the local machine and cloud nodes share, each running whole iterations of it (`aws`, for one only nodes run, is left
+ * to an operator's override). A planned job a node gives back is placed again ([release]), and whichever host takes
  * it next renders each case's command for itself as it starts it ([Runner.render]).
  */
 object Placement {

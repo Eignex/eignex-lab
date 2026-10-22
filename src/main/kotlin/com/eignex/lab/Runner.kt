@@ -93,6 +93,8 @@ class Runner(
         val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
         // A job requeued with its cancel requested, before a requeue ended such a job, would wait for a host forever.
         runCatching { store.queuedCancels().forEach(::cancel) }.onFailure { println("cancelling requeued jobs failed: ${it.message}") }
+        // Shared jobs left running lost their hosts with the restart: they go back to the queue, before any host takes work.
+        runCatching { recoverShared() }.onFailure { println("recovering shared jobs failed: ${it.message}") }
         // Jobs queued before the lab placed them itself may name a host their submitter chose: placed again by the rules.
         runCatching { Placement.replaceQueued(store, config) }
             .onSuccess { if (it.isNotEmpty()) println("placed queued jobs again by the lab's rules: $it") }
@@ -138,7 +140,10 @@ class Runner(
                 continue
             }
             // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
-            val job = store.next(nodesUp = awsActive())
+            // A shared job is taken, or joined while nodes run it, under the crews' lock, so it cannot end meanwhile.
+            val job = synchronized(crews.lock) {
+                store.next(nodesUp = awsActive(), exclude = crews.failing())?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
+            }
             if (job == null) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
@@ -149,6 +154,7 @@ class Runner(
 
     /** Run the [job] the queue handed out to its end, or to a yield. False when the runner is stopping meanwhile. */
     internal fun runJob(job: Job): Boolean {
+        if (shared(job)) return runShared(job)
         if (job.experiment?.profile?.runTimeoutSec != null) {
             workWithDeadline(job)
             return true
@@ -217,8 +223,19 @@ class Runner(
 
     private fun executeWork(claimed: Job): Dispatched {
         val dir = config.jobDir(claimed.id).createDirectories()
+        val job = prepare(claimed, dir)
+        val host = LocalHost(job, job.sha.orEmpty(), dir.resolve("setup.log").toFile())
+        return dispatch(job, dir, host, render = render(job, host))
+    }
+
+    /**
+     * Get [claimed] ready to run its cases on the local machine: what a crashed runner left of it here is killed and
+     * queued again, and the job is set up when it was not, or its worktree is gone ([setupExperiment]): built, and
+     * planned when no host has planned it yet. The job as it then stands.
+     */
+    private fun prepare(claimed: Job, dir: Path): Job {
         killOrphan(dir.resolve("setup.pid"))
-        claimed.commands.filter { it.status == Status.RUNNING }.forEach {
+        claimed.commands.filter { it.status == Status.RUNNING && (it.host == null || it.host == ExecutionHost.LOCAL) }.forEach {
             killOrphan(dir.resolve("${it.index}.pid"), Termination.file(dir, it.index))
         }
         store.requeueInterrupted(claimed.id)
@@ -236,8 +253,125 @@ class Runner(
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
         }
-        val host = LocalHost(job, job.sha.orEmpty(), dir.resolve("setup.log").toFile())
-        return dispatch(job, dir, host, render = render(job, host))
+        return job
+    }
+
+    /** The hosts on each shared job in this process, the local machine and the cloud nodes alike ([Crews]). */
+    internal val crews = Crews()
+
+    /** Whether [job] is shared: a `local or cloud` (`auto`) or cloud (`aws`) one, whose iterations every host that may
+     *  run it pulls from the store, rather than a job one host runs whole. */
+    internal fun shared(job: Job): Boolean = job.experiment?.let {
+        (it.host == Experiments.AUTO_HOST || it.host == Experiments.AWS_HOST) && !it.isAnalysis
+    } == true
+
+    /**
+     * Run the local machine's part of shared [job], which it took from the queue or joined while cloud nodes run it:
+     * set it up here (build its commits, and plan it when no host has), then pull its iterations one at a time
+     * ([Store.claimIteration]) beside any nodes on it, as many cases at once as the job's `parallel`, until none is
+     * left, it yields to a higher priority or a pause, or it is cancelled. Then it leaves the job, ending it when it was
+     * the last host on it ([leave]). A setup that fails while other hosts run the job leaves it to them. False when the
+     * runner is stopping meanwhile.
+     */
+    private fun runShared(job: Job): Boolean {
+        var outcome: Dispatched? = null
+        var dispatching = false
+        try {
+            val dir = config.jobDir(job.id).createDirectories()
+            val ready = prepare(job, dir)
+            val host = LocalHost(ready, ready.sha.orEmpty(), dir.resolve("setup.log").toFile())
+            dispatching = true
+            outcome = dispatch(ready, dir, host, { if (crews.failed(job.id)) null else store.claimIteration(job.id, host.id) },
+                render(ready, host))
+        } catch (e: Throwable) {
+            if (stopping) return false
+            when {
+                store.cancelRequested(job.id) -> outcome = Dispatched.CANCELLED
+                !dispatching && crews.hosts(job.id).size > 1 && (store.job(job.id)?.total ?: 0) > 0 ->
+                    log(job.id, "the local machine could not set the job up and leaves it to the hosts on it: ${e.message}")
+                else -> crews.fail(job.id, e)
+            }
+        }
+        store.setLocal(job.id, false)
+        leave(job.id, ExecutionHost.LOCAL, outcome)
+        return true
+    }
+
+    /**
+     * [host] leaves shared job [jobId], its part ended [outcome] (null when it ran none). The last host to leave ends the
+     * job by what the parts say: cancelled when it was cancelled; failed when a host failed it; done when every case
+     * has run, whoever ran it; else queued again (paused, yielded, its nodes lost or retired with iterations left),
+     * placed by the rules ([Placement.release]) for whichever host takes it next.
+     */
+    internal fun leave(jobId: Long, host: String, outcome: Dispatched?) = synchronized(crews.lock) {
+        val crew = crews.leave(jobId, host, outcome)
+        if (crew == null) {
+            val others = crews.hosts(jobId)
+            if (others.isNotEmpty()) log(jobId, "${hostName(host)} leaves the job; ${others.joinToString { hostName(it) }} still on it")
+            return@synchronized
+        }
+        runCatching { end(jobId, crew) }.onFailure { println("ending job $jobId failed: ${it.message}") }
+    }
+
+    private fun hostName(host: String) = if (host == ExecutionHost.LOCAL) "the local machine" else "node $host"
+
+    private fun end(jobId: Long, crew: Crews.Crew) {
+        val job = store.job(jobId)?.takeIf { it.status == Status.RUNNING } ?: return
+        val failure = crew.failure
+        when {
+            job.cancelRequested || Dispatched.CANCELLED in crew.outcomes -> cancel(jobId)
+            failure != null -> {
+                log(jobId, "job failed: ${failure.message}")
+                store.cancelRemaining(jobId)
+                store.finish(jobId, Status.FAILED, failure.message ?: failure.toString())
+                runCatching { removeWorktree(jobId) }
+            }
+            job.commands.isNotEmpty() && job.commands.none { it.status == Status.QUEUED || it.status == Status.RUNNING } -> {
+                store.finish(jobId, Status.DONE)
+                runCatching { removeWorktree(jobId) }
+                log(jobId, "job finished")
+                runCatching { queueConfirmation(job) }.onFailure { log(jobId, "could not queue a confirmation: ${it.message}") }
+            }
+            else -> {
+                if (store.requeue(jobId) == Status.CANCELLED) return cancel(jobId)
+                log(jobId, if (job.paused) "job paused between iterations; taken up again on resume"
+                    else "no host left on the job with iterations to run: queued again")
+                if (Placement.release(store, config, jobId)) log(jobId, "placed again: locally when the local machine is free, else a cloud node")
+            }
+        }
+    }
+
+    /**
+     * At start, before any host takes work: a job taken whole by one host before jobs were shared (an `auto` job the
+     * local machine or a node took) is shared again where the rules still allow it ([Store.share]); and each shared
+     * job left running, whose hosts went with the restart, has what the local machine ran of it killed, every case its
+     * hosts held given back, each iteration left part done queued again whole, and goes back to the queue
+     * ([Store.recoverShared]). The local machine and the nodes then take it up again by priority.
+     */
+    internal fun recoverShared() {
+        val schedules = store.schedules()
+        for (job in store.active(withCommands = false)) {
+            val spec = job.experiment ?: continue
+            if (!spec.auto || spec.host == Experiments.AUTO_HOST) continue
+            if (Placement.host(spec, job.name, config, schedules) == Experiments.AUTO_HOST && store.share(job.id)) {
+                log(job.id, "shared: the local machine and cloud nodes may each run its iterations")
+            }
+        }
+        for (job in store.active().filter { it.status == Status.RUNNING && shared(it) }) {
+            val dir = config.jobDir(job.id)
+            runCatching { killOrphan(dir.resolve("setup.pid")) }
+            job.commands.filter { it.status == Status.RUNNING && (it.host == null || it.host == ExecutionHost.LOCAL) }.forEach {
+                runCatching { killOrphan(dir.resolve("${it.index}.pid"), Termination.file(dir, it.index)) }
+            }
+            store.recoverShared(job.id)
+            Files.deleteIfExists(dir.resolve(AwsWorker.INSTANCES_FILE))
+            if (store.requeue(job.id) == Status.CANCELLED) {
+                cancel(job.id)
+                continue
+            }
+            log(job.id, "the lab restarted while the job ran: queued again")
+            Placement.release(store, config, job.id)
+        }
     }
 
     private fun finishWork(job: Job, outcome: Dispatched) {
@@ -273,8 +407,10 @@ class Runner(
         dir: Path,
         host: ExecutionHost = LocalHost(job, "", File("/dev/null")),
         /**
-         * Where the cases come from when a job is split over several hosts: the next problem's case indices, taken
-         * when this host has room for another case, null once every problem is taken. Null runs every queued case.
+         * Where the cases come from when a job is shared by several hosts: the next iteration's case indices this
+         * host claimed ([Store.claimIteration]), taken when it has room for another case, null once none is left.
+         * Null runs every queued case. With it, a yield or a pause lets the iterations this host started finish and
+         * gives back the ones it did not start.
          */
         next: (() -> Collection<Int>?)? = null,
         /** Each case's command as [host] runs it ([render]); as planned when not given. */
@@ -288,13 +424,20 @@ class Runner(
         // [next] hands out only cases left to run, which a host that started earlier can hold as running.
         val queued = job.commands.filter { it.status == Status.QUEUED || next != null }.associateBy { it.index }
         val pending = ArrayDeque(if (next == null) queued.values else emptyList())
-        // Cases already started elsewhere, or finished, are not in [queued]: a problem with none left is skipped.
+        // The iteration each case [next] handed out came with, and the iterations this host has started a case of.
+        val iterationOf = HashMap<Int, Int>()
+        val started = HashSet<Int>()
+        var iterations = 0
         fun take() {
-            if (next != null) while (pending.isEmpty()) next()?.mapNotNullTo(pending) { queued[it] } ?: break
+            if (next != null) while (pending.isEmpty()) {
+                val claimed = next()?.mapNotNull { queued[it] } ?: break
+                iterations++
+                claimed.forEach { iterationOf[it.index] = iterations }
+                pending.addAll(claimed)
+            }
         }
         take()
         val active = LinkedHashMap<Int, Future<Int>>()
-        val finished = mutableSetOf<Int>()
         val pool = Executors.newCachedThreadPool()
         var cancelled = false
         var yielding = false
@@ -316,7 +459,6 @@ class Runner(
                         cancelling(active.size + 1)
                     } else {
                         store.commandFinished(job.id, index, exit)
-                        finished += index
                         keepRecord(job.id, index, dir)
                         checks.afterCase(job.id, index)
                         if (job.experiment?.instrumented == true) reportCompilation(job.id, index, dir)
@@ -331,28 +473,25 @@ class Runner(
                 if (cancelled) {
                     if (active.isEmpty()) return Dispatched.CANCELLED
                 } else if (yielding || (pending.isNotEmpty() && (yields(job.id, host) || host.yieldsToUpdates && updateDue(job.id)))) {
+                    // A shared job's iteration this host started runs to its end here, so its arms stay on one
+                    // machine; the iterations it claimed and did not start go back whole for any host to take.
+                    if (!yielding && next != null) pending.removeAll { iterationOf[it.index] !in started }
                     yielding = true
-                    if (active.isEmpty()) return Dispatched.YIELDED
-                } else {
-                    // Within the job's case limit and the lab's core budget, in order: a case too big for the cores
-                    // left waits for room rather than letting smaller later ones jump it. One case always may run.
-                    val limit = host.parallel(store.parallel(job.id))
-                    while (pending.isNotEmpty() && active.size < limit &&
-                        (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
-                    ) {
-                        val command = render(pending.removeFirst())
-                        ProfileRunDeadline.checkActive()
-                        store.commandStarted(job.id, command.index, host.id, command.cmd)
-                        active[command.index] = pool.submit(ProfileRunDeadline.task { host.run(command, dir) })
+                    if (active.isEmpty() && (next == null || pending.isEmpty())) {
+                        if (next != null) store.unclaim(job.id, host.id, whole = true)
+                        return Dispatched.YIELDED
                     }
+                    if (next != null) start(job, dir, host, pending, active, pool, render, iterationOf, started)
+                } else {
+                    start(job, dir, host, pending, active, pool, render, iterationOf, started)
                 }
                 Thread.sleep(DISPATCH_POLL_MS)
             }
             return Dispatched.FINISHED
         } catch (e: ExecutionException) {
             if (e.cause is HostLost && lost != null) {
-                store.requeueCommands(job.id, active.keys)
-                val held = active.keys + pending.map { it.index } + store.requeueSplitIterations(job.id, finished)
+                // What it held goes back, every iteration it did not finish whole ([Store.unclaim]).
+                val held = store.unclaim(job.id, host.id, whole = true)
                 lost(held)
                 log(job.id, "${e.cause?.message}: cases ${held.sorted().joinToString()} go back to the queue")
                 return Dispatched.LOST
@@ -366,6 +505,27 @@ class Runner(
             // A job ends with its cases' checks kept, so what reads it next (a confirmation, a trend) sees them. A
             // cancelled one ends at once; its checks finish in the background.
             if (cancelled) checks.release(job.id) else if (!stopping) checks.await(job.id)
+        }
+    }
+
+    /**
+     * Start what [pending] holds of [job] on [host], in order, within the job's case limit and the host's core budget: a
+     * case too big for the cores left waits for room rather than letting smaller later ones jump it. One case always
+     * may run. Each is rendered for [host] as it starts ([render]), and its iteration marked started.
+     */
+    private fun start(
+        job: Job, dir: Path, host: ExecutionHost, pending: ArrayDeque<Command>, active: MutableMap<Int, Future<Int>>,
+        pool: java.util.concurrent.ExecutorService, render: (Command) -> Command, iterationOf: Map<Int, Int>, started: MutableSet<Int>,
+    ) {
+        val limit = host.parallel(store.parallel(job.id))
+        while (pending.isNotEmpty() && active.size < limit &&
+            (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
+        ) {
+            val command = render(pending.removeFirst())
+            iterationOf[command.index]?.let(started::add)
+            ProfileRunDeadline.checkActive()
+            store.commandStarted(job.id, command.index, host.id, command.cmd)
+            active[command.index] = pool.submit(ProfileRunDeadline.task { host.run(command, dir) })
         }
     }
 
@@ -529,6 +689,13 @@ class Runner(
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
+        // A shared job runs on other hosts meanwhile, each holding whole iterations: its corpora come down before its
+        // cases start, so cases that read one collection never fetch it side by side.
+        else if (shared(job)) spec.problems.forEachIndexed { index, selection ->
+            withRetry(job.id, "fetching the corpora of selection $index", config.buildRetry) {
+                LocalHost(job, primary, log).let { it.select(it.worktree(primary), Experiments.selectArgs(selection)) }
+            }
+        }
         else adopt(job)
         dir.resolve("sha").writeAtomically(primary)
         return primary
@@ -1126,7 +1293,7 @@ class Runner(
             currentStep.set(what)
             // And what the placement report says the local machine's setup of the job is doing ([SetupStep]), until
             // the step ends; a cloud node's steps, which have no setup marker to replace, are left out.
-            val dir = jobId?.let(config::jobDir)?.takeIf { SetupStep.raw(it) != null }
+            val dir = jobId?.takeIf { nodeSetup.get() != true }?.let(config::jobDir)?.takeIf { SetupStep.raw(it) != null }
             val before = dir?.let(SetupStep::raw)
             dir?.let { SetupStep.write(it, what) }
             try {
@@ -1137,6 +1304,20 @@ class Runner(
             }
         },
     )
+
+    /** Whether this thread sets a job up on a cloud node ([onNode]), whose steps leave the placement report's
+     *  ([SetupStep]) alone: the local machine may set up the same job at once. */
+    private val nodeSetup = ThreadLocal<Boolean>()
+
+    /** Run [block], a cloud node's setup of a job, so its retried steps write no [SetupStep]. */
+    internal fun <T> onNode(block: () -> T): T {
+        nodeSetup.set(true)
+        try {
+            return block()
+        } finally {
+            nodeSetup.remove()
+        }
+    }
 
     /** The [withRetry] step this thread runs, as its log names it. */
     private val currentStep = ThreadLocal<String?>()

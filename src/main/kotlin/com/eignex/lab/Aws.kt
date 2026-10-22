@@ -583,9 +583,11 @@ class AwsHost(
 /**
  * Runs AWS work on a pool of nodes: EC2 instances the lab launches when the queue's pressure calls for one
  * ([NodePool], [LaunchGate]), so none runs while nothing waits for AWS. A node, once booted, takes work until there is
- * none for it: it first joins a job already running on AWS that still has problems no node has taken, building that
- * job's commits, and otherwise claims the next queued job it may run. The nodes on one job share its problems through
- * its [ProblemQueue], every arm of a problem on the node that took it, so each comparison is made on one machine.
+ * none for it: it first joins a shared job already running that still has iterations no host has claimed, wherever it
+ * runs, the local machine included, building that job's commits, and otherwise claims the next queued job it may run.
+ * Every host on a job pulls its iterations from the store one at a time ([Store.claimIteration]), every arm of an
+ * iteration on the host that claimed it, so each comparison is made on one machine; the hosts on a job are its crew
+ * ([Crews]), and the last to leave ends it ([Runner.leave]).
  * Records come back as cases end, so the job's page, comparisons and CSVs read as a local job's. A node with nothing
  * to take for [AwsConfig.nodeIdleMin] minutes is terminated; one the lab lost track of powers itself off after
  * [AwsConfig.maxHours], and the worker terminates any lab instance that is not one of its nodes.
@@ -614,11 +616,6 @@ class AwsWorker(
     /** The finished runs the pressure's estimates learn from ([Estimates]), so it counts realistic work rather than
      *  every case's whole timeout. */
     private val history = EstimateHistory(store, config.cores)
-    /** The jobs running on AWS, each with the nodes working on it. */
-    private val jobs = ConcurrentHashMap<Long, AwsJob>()
-    /** Held while a node chooses and takes work, and while a job's last node lets it go: two nodes never claim one
-     *  job, and none joins a job as it ends. */
-    private val claimLock = Any()
     private val gate = LaunchGate()
     /** The pressure at the last poll, in core-hours; a launch waiting for spot gives up once it is gone. */
     @Volatile
@@ -656,12 +653,13 @@ class AwsWorker(
     }
 
     /**
-     * The work waiting for AWS, as [Demand]s: the queued jobs a node may take, in queue order, and the unclaimed
-     * problems of the jobs running on AWS. A queued job the local machine could run counts only at
-     * [AwsConfig.nodeMinPriority] or above, and the one the local machine takes next, being free or about to give way
-     * to it ([Store.localNext], told whether a node is up or launching as the runner's [Store.next] is), is left to it;
-     * one only AWS can run always counts. A queued AWS job no size within the
-     * quota can hold fails here, as no node could ever take it.
+     * The work waiting for a node, as [Demand]s: the queued jobs a node may take, in queue order, and the iterations no
+     * host has claimed of the shared jobs running, wherever they run, the local machine included ([Store.helpable]). The
+     * one the local machine takes next, being free or about to give way to it ([Store.localNext], told whether a node
+     * is up or launching as the runner's [Store.next] is), is left to it. Work the local machine could run below
+     * [AwsConfig.nodeMinPriority] is marked [Demand.belowFloor]: it launches no node, but a node already up with nothing
+     * else to do takes it ([NodePool.pick]). A queued AWS job no size within the quota can hold fails here, as no node
+     * could ever take it.
      */
     private fun demands(): Pair<List<Demand>, List<Demand>> {
         val localNext = store.localNext(active)
@@ -669,7 +667,6 @@ class AwsWorker(
             val spec = job.experiment ?: return@mapNotNull null
             if (job.id == localNext) return@mapNotNull null
             val awsOnly = spec.host == Experiments.AWS_HOST
-            if (Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority)) return@mapNotNull null
             val cores = Experiments.arms(spec).maxOf { it.cores }
             if (aws.sizeFor(cores) == null) {
                 if (awsOnly) store.claimForNode(job.id)?.let {
@@ -677,9 +674,16 @@ class AwsWorker(
                 }
                 return@mapNotNull null
             }
-            Demand(job.id, Estimates.pressureCoreHours(job, history::lookup, config.cores), cores, spec.isProfile, job.priority)
+            Demand(job.id, Estimates.pressureCoreHours(job, history::lookup, config.cores), cores, spec.isProfile, job.priority,
+                Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority))
         }
-        val running = jobs.values.mapNotNull { it.demand() }
+        val failing = runner.crews.failing()
+        val running = store.helpable().mapNotNull { (job, unclaimed) ->
+            val spec = job.experiment ?: return@mapNotNull null
+            if (job.id in failing) return@mapNotNull null
+            Demand(job.id, unclaimed * Estimates.caseCoreHours(job, history::lookup), Experiments.arms(spec).maxOf { it.cores },
+                priority = job.priority, belowFloor = Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority))
+        }
         return queued to running
     }
 
@@ -690,9 +694,9 @@ class AwsWorker(
 
     /** Launch a node when the pressure calls for one ([LaunchGate]), sized to what waits ([NodePool.size]). */
     private fun scale() {
-        val (queued, running) = demands()
+        val (queued, running) = demands().let { (q, r) -> q.filter { !it.belowFloor } to r.filter { !it.belowFloor } }
         val all = queued + running
-        pressure = all.sumOf { it.coreHours }
+        pressure = NodePool.pressure(all)
         // A waiting update needs every node gone; launching another would hold it back indefinitely.
         val count = nodes.size + launching.get()
         val size = all.maxOfOrNull { it.cores }?.let { cores ->
@@ -854,41 +858,42 @@ class AwsWorker(
     }
 
     /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While an update
-     *  waits, a node only joins jobs already running, so they drain. */
-    private fun take(node: Node): AwsJob? = synchronized(claimLock) {
+     *  waits, a node only joins jobs already running, so they drain. Under the crews' lock ([Crews]), which the local
+     *  machine takes and joins jobs under too, so no job ends while a node joins it. */
+    private fun take(node: Node): AwsJob? = synchronized(runner.crews.lock) {
         val (queued, running) = demands()
         val work = NodePool.pick(node.shape, running, if (runner.updateWaiting()) emptyList() else queued) ?: return null
         val job = when (work) {
-            is NodeWork.Help -> jobs[work.jobId] ?: return null
-            is NodeWork.Claim -> {
-                val claimed = store.claimForNode(work.jobId) ?: return null
-                AwsJob(claimed.id, checkNotNull(claimed.experiment), node).also { jobs[claimed.id] = it }
-            }
+            is NodeWork.Help -> store.job(work.jobId)?.takeIf { it.status == Status.RUNNING } ?: return null
+            is NodeWork.Claim -> store.claimForNode(work.jobId) ?: return null
         }
-        job.workers += node
+        runner.crews.join(job.id, node.instance)
         node.job = job.id
-        writeInstances(job)
-        job
+        writeInstances(job.id)
+        AwsJob(job.id, checkNotNull(job.experiment))
     }
 
     /**
-     * Work on [job] on [node]: set it up (the node that claimed it plans it), then run its cases until no problem is
-     * left for this node. False when the node should retire: its work failed, or AWS took it back.
+     * Work on [job] on [node]: set it up (build its commits; plan it when no host has), then pull its iterations from
+     * the store ([Store.claimIteration]) beside the other hosts on it, the local machine included, until none is left
+     * for this node. False when the node should retire: its work failed, or AWS took it back.
      */
     private fun work(node: Node, job: AwsJob): Boolean {
         val host = host(node, job)
         var healthy = false
+        var outcome: Dispatched? = null
         try {
-            if (job.claimedBy === node) start(node, host, job) else join(node, host, job)
+            runner.onNode { setUp(node, host, job) }
             node.doing = "running job ${job.id}"
             report()
-            val problems = checkNotNull(job.problems)
-            // Past its age a node takes no more problems, so it retires before it powers itself off mid-case.
+            // Past its age a node takes no more iterations, so it retires before it powers itself off mid-case.
             val maxAge = NodePool.maxAgeMs(aws.maxHours)
-            val next = { if (System.currentTimeMillis() - node.launchedAt >= maxAge) null else problems.take() }
+            val next = {
+                if (System.currentTimeMillis() - node.launchedAt >= maxAge || runner.crews.failed(job.id)) null
+                else store.claimIteration(job.id, node.instance)
+            }
             val current = checkNotNull(store.job(job.id))
-            val outcome = runner.dispatch(current, job.dir, host, next, runner.render(current, host)) { held -> problems.giveBack(held) }
-            job.outcomes += outcome
+            outcome = runner.dispatch(current, job.dir, host, next, runner.render(current, host)) { }
             if (outcome == Dispatched.LOST) runner.log(job.id, "node ${node.instance} was taken back by the cloud provider")
             healthy = outcome != Dispatched.LOST
         } catch (e: NotJoined) {
@@ -896,17 +901,19 @@ class AwsWorker(
             healthy = store.cancelRequested(job.id)
             if (healthy) stopped(node, job) else runner.log(job.id, "node ${node.instance} did not join: ${e.message}")
         } catch (e: Exception) {
-            // The job's own setup, or a case failing to run, fails the job; its other nodes take no more of it. A
+            // The job's own setup, or a case failing to run, fails the job; its other hosts take no more of it. A
             // cancel stopped what ran on the node, which then takes the next job rather than retire.
             if (store.cancelRequested(job.id)) {
                 healthy = true
+                outcome = Dispatched.CANCELLED
                 stopped(node, job)
             } else {
-                job.failure = job.failure ?: e
+                runner.crews.fail(job.id, e)
             }
-            job.problems?.clear()
         } finally {
-            leave(node, job)
+            node.job = null
+            runner.leave(job.id, node.instance, outcome)
+            writeInstances(job.id)
         }
         // Its case files came back as each case ended; the next job on this node starts from an empty directory.
         if (healthy) runCatching { host.ssh.exec("rm -rf ${quote(job.remoteDir)}", SSH_STEP_SEC, cancellable = false) }
@@ -921,20 +928,29 @@ class AwsWorker(
     /** A helper's setup failing: the job goes on without it. */
     private class NotJoined(cause: Throwable) : Exception(cause.message, cause)
 
-    /** The claiming node's setup: resolve and build the job's commits, plan it if it never was, then open its problems
-     *  to every node. */
-    private fun start(node: Node, host: AwsHost, job: AwsJob) {
-        node.doing = "setting up job ${job.id}"
+    /**
+     * The node's setup of [job]: resolve and build its commits, then plan it when no host has, or else fetch the corpora
+     * its selections read, so its cases never fetch one side by side. The node that plans it pushes what it fetched to
+     * the corpus bucket for the other hosts. A setup that fails while other hosts run the planned job is [NotJoined]:
+     * the job goes on without this node.
+     */
+    private fun setUp(node: Node, host: AwsHost, job: AwsJob) {
         val current = checkNotNull(store.job(job.id))
         val spec = job.spec
-        runner.log(job.id, "taken by node ${node.instance} (${node.size.type}, ${node.market})")
-        val (arms, shas) = runner.resolveArms(current, spec, job.log)
-        val primary = shas.getValue(arms.first().ref)
-        build(node, host, job, shas.values.distinct())
-        val selections = spec.problems.map { Experiments.selectArgs(it) }
-        if (current.commands.isEmpty()) {
+        val planned = current.commands.isNotEmpty()
+        node.doing = if (planned) "joining job ${job.id}" else "setting up job ${job.id}"
+        runner.log(job.id, "${if (planned) "joined" else "taken"} by node ${node.instance} (${node.size.type}, ${node.market})")
+        try {
+            val (arms, shas) = runner.resolveArms(current, spec, job.log)
+            val primary = shas.getValue(arms.first().ref)
+            build(node, host, job, shas.values.distinct())
+            if (planned) {
+                fetchCorpora(host, primary, spec.problems.map { Experiments.selectArgs(it) })
+                return
+            }
             runner.log(job.id, "${node.instance}: planning, which fetches the corpora the selections read")
             runner.plan(current, spec, arms, shas, primary, job.dir, host)
+            store.setup(job.id, primary)
             aws.corpusBucket?.let { bucket ->
                 // Right after planning, before other nodes fetch: they then pull what this one fetched from the bucket
                 // instead of each fetching it from its source, and no case is running to slow the upload.
@@ -947,29 +963,12 @@ class AwsWorker(
                 runCatching { host.ssh.run("${AwsBuildCache.functions}\n$compress; push_lab_corpus $bucket ${aws.region} ~/corpus", S3_PUSH_TIMEOUT_SEC) }
                     .onFailure { runner.log(job.id, "corpus push failed, other nodes fetch upstream: ${it.message}") }
             }
-        } else {
-            fetchCorpora(host, primary, selections)
-            runner.adopt(current)
-        }
-        store.setup(job.id, primary)
-        // Unset, a job runs one case per two physical cores of each node ([AwsHost]'s limit); this is what the pages show.
-        if (spec.parallel == null) store.setParallel(job.id, defaultParallel(node.size))
-        job.setup = JobSetup(shas.values.distinct(), primary, selections)
-        job.problems = ProblemQueue(store.cases(job.id))
-        runner.log(job.id, "running ${job.problems?.size} problems; free nodes join to share them")
-    }
-
-    /** A node joining a job that is running: build its commits and fetch its corpora, then take problems too. */
-    private fun join(node: Node, host: AwsHost, job: AwsJob) {
-        node.doing = "joining job ${job.id}"
-        val setup = checkNotNull(job.setup)
-        try {
-            build(node, host, job, setup.shas)
-            fetchCorpora(host, setup.primary, setup.selections)
+            runner.log(job.id, "planned; the local machine and free nodes may join to share its iterations")
         } catch (e: Exception) {
-            throw NotJoined(e)
+            if (e is JobCancelled) throw e
+            if (runner.crews.hosts(job.id).size > 1 && (store.job(job.id)?.total ?: 0) > 0) throw NotJoined(e)
+            throw e
         }
-        runner.log(job.id, "node ${node.instance} (${node.size.type}, ${node.market}) joined")
     }
 
     /** Build each of [shas] the node has not built yet for a job like [job]. */
@@ -979,48 +978,6 @@ class AwsWorker(
         if (missing.isEmpty()) return
         setup(job, host, missing)
         missing.forEach { AwsBuildCache.rebuilt(node.built, it, measuresCli) }
-    }
-
-    /** [node] is done with [job]; the job's last node ends it as its nodes' outcomes say. */
-    private fun leave(node: Node, job: AwsJob) = synchronized(claimLock) {
-        job.workers -= node
-        node.job = null
-        writeInstances(job)
-        if (job.workers.isNotEmpty()) return@synchronized
-        jobs.remove(job.id)
-        runCatching { end(job) }.onFailure { println("aws: ending job ${job.id} failed: ${it.message}") }
-    }
-
-    private fun end(job: AwsJob) {
-        val current = store.job(job.id) ?: return
-        val failure = job.failure
-        when {
-            store.cancelRequested(job.id) || Dispatched.CANCELLED in job.outcomes -> runner.cancel(job.id)
-            failure != null -> {
-                runner.log(job.id, "job failed: ${failure.message}")
-                store.cancelRemaining(job.id)
-                store.finish(job.id, Status.FAILED, failure.message ?: failure.toString())
-            }
-            current.paused || Dispatched.YIELDED in job.outcomes ->
-                requeue(job.id, "job paused between commands; taken up again on resume")
-            // Its nodes were taken back by AWS or retired with cases left: the next free node takes it up again.
-            current.commands.any { it.status == Status.QUEUED } ->
-                requeue(job.id, "no node left on the job with cases to run: queued again")
-            else -> {
-                store.finish(job.id, Status.DONE)
-                runner.log(job.id, "job finished")
-            }
-        }
-    }
-
-    /**
-     * Put [jobId] back in the queue, saying [why], and place it again ([Placement.release]): the local machine may then
-     * take it over, before a node, as it may any job. One whose cancel was requested meanwhile ends cancelled instead.
-     */
-    private fun requeue(jobId: Long, why: String) {
-        if (store.requeue(jobId) == Status.CANCELLED) return runner.cancel(jobId)
-        runner.log(jobId, why)
-        if (Placement.release(store, config, jobId)) runner.log(jobId, "placed again: locally when the local machine is free, else a cloud node")
     }
 
     /** [node] as a host for [job]'s cases: its files in their own directory, one case per two cores unless the job
@@ -1038,31 +995,11 @@ class AwsWorker(
         store.cancelRequested(job.id)
     }
 
-    /** What a node needs of a job it joins, once the node that claimed it has set it up. */
-    private data class JobSetup(val shas: List<String>, val primary: String, val selections: List<String>)
-
-    /** A job running on AWS: the nodes on it, its problems once set up, and how each node's part of it ended. */
-    private inner class AwsJob(val id: Long, val spec: ExperimentSpec, val claimedBy: Node) {
+    /** A job a node works on: where its files are, here and on the node. */
+    private inner class AwsJob(val id: Long, val spec: ExperimentSpec) {
         val dir: Path = config.jobDir(id).createDirectories()
         val log: File = dir.resolve("setup.log").toFile().apply { appendText("") }
         val remoteDir = "${AwsHost.HOME}/jobs/$id"
-        /** Guarded by [claimLock]. */
-        val workers = LinkedHashSet<Node>()
-        val outcomes: MutableList<Dispatched> = Collections.synchronizedList(ArrayList())
-        @Volatile
-        var setup: JobSetup? = null
-        @Volatile
-        var problems: ProblemQueue? = null
-        @Volatile
-        var failure: Throwable? = null
-
-        /** Its unclaimed work, while another node could join it. */
-        fun demand(): Demand? {
-            val queue = problems?.takeIf { !it.isEmpty() && failure == null } ?: return null
-            val current = store.job(id)?.takeIf { !it.paused && !it.cancelRequested } ?: return null
-            return Demand(id, queue.cases * Estimates.caseCoreHours(current, history::lookup), Experiments.arms(spec).maxOf { it.cores },
-                spec.isProfile, current.priority)
-        }
     }
 
     /** Terminate [node] and hand its vCPUs back. */
@@ -1075,13 +1012,9 @@ class AwsWorker(
         runCatching { report() }
     }
 
-    /** After a restart: jobs left running on AWS go back in the queue, and every lab instance, no node now, goes. */
+    /** After a restart every lab instance, no node now, goes; the jobs they ran went back to the queue before the
+     *  worker started ([Runner.recoverShared]). */
     private fun recover() {
-        for (job in store.active().filter { it.status == Status.RUNNING && it.experiment?.host == Experiments.AWS_HOST }) {
-            store.requeueInterrupted(job.id)
-            Files.deleteIfExists(config.jobDir(job.id).resolve(INSTANCES_FILE))
-            requeue(job.id, "the lab restarted while the job ran on a cloud node: queued again")
-        }
         sweep()
     }
 
@@ -1105,9 +1038,9 @@ class AwsWorker(
 
     /** The nodes working on [job], one a line (instance, type, market), while it has any: what the pages and `lab ssh`
      *  read. */
-    private fun writeInstances(job: AwsJob) {
-        val file = config.jobDir(job.id).resolve(INSTANCES_FILE)
-        val lines = job.workers.map { "${it.instance} ${it.size.type} ${it.market}" }
+    private fun writeInstances(jobId: Long) {
+        val file = config.jobDir(jobId).resolve(INSTANCES_FILE)
+        val lines = nodes.values.filter { it.job == jobId }.sortedBy { it.launchedAt }.map { "${it.instance} ${it.size.type} ${it.market}" }
         if (lines.isEmpty()) Files.deleteIfExists(file) else file.toFile().writeText(lines.joinToString("\n", postfix = "\n"))
     }
 
@@ -1234,33 +1167,5 @@ class AwsWorker(
         private const val MS_PER_SEC = 1000L
         /** A fresh instance takes a few minutes to boot and install: tries every 20 s, up to about 15 minutes. */
         private val BOOT_WAIT = Backoff(attempts = 45, baseMs = 20_000, maxMs = 20_000)
-    }
-}
-
-/** A job's problems not yet taken by an instance, in plan order, each as the indices of its cases: every arm, seed and
- *  repeat of a problem goes to the instance that takes it, so each comparison is made on one machine. */
-internal class ProblemQueue(cases: List<CaseResult>) {
-    private val left = ArrayDeque(cases.filter { it.status == Status.QUEUED }
-        .groupBy { it.problem.suite to it.problem.problem }.values.map { group -> group.map { it.index } })
-
-    val size: Int @Synchronized get() = left.size
-
-    /** The cases of the problems left: the work no node has taken, which the pool's pressure counts. */
-    val cases: Int @Synchronized get() = left.sumOf { it.size }
-
-    @Synchronized
-    fun take(): List<Int>? = left.removeFirstOrNull()
-
-    @Synchronized
-    fun isEmpty(): Boolean = left.isEmpty()
-
-    /** Drop every problem left: the job failed, and its nodes take no more of it. */
-    @Synchronized
-    fun clear() = left.clear()
-
-    /** Cases a lost host held, back at the front: the next host with room takes them first. */
-    @Synchronized
-    fun giveBack(indices: Collection<Int>) {
-        if (indices.isNotEmpty()) left.addFirst(indices.sorted())
     }
 }

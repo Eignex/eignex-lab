@@ -4,7 +4,9 @@ import kotlinx.serialization.Serializable
 
 /**
  * What one job asks of the cloud node pool: its estimated core-hours of work no node or the local machine has started,
- * the cores its largest case holds, and whether it is a profile job, which only an on-demand node may run.
+ * the cores its largest case holds, and whether it is a profile job, which only an on-demand node may run. A
+ * [belowFloor] job, work the local machine could run below [AwsConfig.nodeMinPriority], launches no node: it is not
+ * pressure, but a node already up with nothing else to do takes it.
  */
 data class Demand(
     val jobId: Long,
@@ -12,13 +14,14 @@ data class Demand(
     val cores: Int,
     val profile: Boolean = false,
     val priority: Int = 0,
+    val belowFloor: Boolean = false,
 )
 
 /** A node as the work selection sees it: the cores its cases may hold, and whether it was bought on demand. */
 data class NodeShape(val cores: Int, val onDemand: Boolean)
 
-/** What a free node does next: help a job already running on cloud nodes with its unclaimed problems, or claim a queued
- *  one. */
+/** What a free node does next: help a shared job already running, wherever, with its unclaimed iterations, or claim a
+ *  queued one. */
 sealed interface NodeWork {
     val jobId: Long
 
@@ -75,9 +78,8 @@ object NodePool {
      *  twice it per node already there. */
     fun nextThreshold(threshold: Double, nodes: Int): Double = threshold * if (nodes == 0) 1.0 else 2.0 * nodes
 
-    /** The pressure on the pool: every demand's core-hours, the ones at [minPriority] or above. */
-    fun pressure(demands: List<Demand>, minPriority: Int): Double =
-        demands.filter { it.priority >= minPriority }.sumOf { it.coreHours }
+    /** The pressure on the pool: every demand's core-hours but the ones below the priority floor, which launch no node. */
+    fun pressure(demands: List<Demand>): Double = demands.filter { !it.belowFloor }.sumOf { it.coreHours }
 
     /**
      * The size of a new node, or null when none fits the vCPUs left of the quota: the smallest size that has the
@@ -95,15 +97,20 @@ object NodePool {
     }
 
     /**
-     * What a free node of [node]'s shape takes next. First a job running on cloud nodes that still has unclaimed
-     * problems ([helpable], highest priority first), joining it; else the first of [queued] (in queue order) it may
-     * claim. A job fits when its largest case's cores fit the node, and a profile job only an on-demand node runs.
-     * [excluded] is the job the local machine takes next when it is free, which a node leaves to it.
+     * What a free node of [node]'s shape takes next. First a shared job running that still has unclaimed iterations
+     * ([helpable], highest priority first), joining it; else the first of [queued] (in queue order) it may claim. Work
+     * at or above the priority floor goes first; only when there is none does the node take [Demand.belowFloor] work,
+     * by the same rules, so a node already up never idles while such work waits behind the local machine's queue. A job
+     * fits when its largest case's cores fit the node, and a profile job only an on-demand node runs. [excluded] is the
+     * job the local machine takes next when it is free, which a node leaves to it.
      */
     fun pick(node: NodeShape, helpable: List<Demand>, queued: List<Demand>, excluded: Long? = null): NodeWork? {
         fun fits(d: Demand) = d.cores <= node.cores && (!d.profile || node.onDemand)
-        helpable.filter(::fits).maxByOrNull { it.priority }?.let { return NodeWork.Help(it.jobId) }
-        return queued.firstOrNull { it.jobId != excluded && fits(it) }?.let { NodeWork.Claim(it.jobId) }
+        for (below in listOf(false, true)) {
+            helpable.filter { it.belowFloor == below && fits(it) }.maxByOrNull { it.priority }?.let { return NodeWork.Help(it.jobId) }
+            queued.firstOrNull { it.belowFloor == below && it.jobId != excluded && fits(it) }?.let { return NodeWork.Claim(it.jobId) }
+        }
+        return null
     }
 
     /**

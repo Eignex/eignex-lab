@@ -164,7 +164,8 @@ object Waiting {
                 when {
                     aws == null -> parts += "cloud: the lab has no cloud settings"
                     Placement.belowFloor(host, job.priority, aws.nodeMinPriority) ->
-                        parts += "below the cloud priority floor (priority ${job.priority} < ${aws.nodeMinPriority}): local only in practice"
+                        parts += "below the cloud priority floor (priority ${job.priority} < ${aws.nodeMinPriority}): " +
+                            "no node launches for it, but an idle node takes it"
                     // The local machine takes it next; the cloud worker leaves it to it.
                     job.id == view.localNext -> Unit
                     else -> parts += cloud(job, view, aws)
@@ -281,9 +282,7 @@ object Waiting {
     fun view(config: Config, store: Store, at: Long = now()): QueueView {
         val pool = readPoolReport(config)
         val up = config.aws != null && nodesUp(pool, at)
-        val running = store.active(withCommands = false).firstOrNull {
-            it.status == Status.RUNNING && (it.experiment?.host ?: Experiments.LAB_HOST) == Experiments.LAB_HOST
-        }
+        val running = store.active(withCommands = false).firstOrNull { it.status == Status.RUNNING && it.local }
         val free = runCatching { freeBytes(config.dataDir) }.getOrNull()
         val diskHeld = free?.takeIf { it < config.minFreeBytes }?.let { "${size(it)} free, under the ${size(config.minFreeBytes)} it keeps" }
         return QueueView(store.queueOrder(up), store.localNext(up), running?.let { localWork(it, config.jobDir(it.id)) }, pool, config.aws,
@@ -297,8 +296,7 @@ object Waiting {
         val local = view.localQueue.indexOf(job.id).takeIf { it >= 0 }?.plus(1)
         val doing = when (job.status) {
             Status.QUEUED -> null
-            Status.RUNNING -> if (host == Experiments.AWS_HOST) cloudDoing(job, view.pool)
-                else "on the local machine: " + (view.local?.takeIf { it.id == job.id }?.doing ?: "running")
+            Status.RUNNING -> runningOn(job, view)
             else -> "ended ${job.status}"
         }
         return JobPlacement(
@@ -309,12 +307,27 @@ object Waiting {
         )
     }
 
-    /** Where cloud job [job] runs, by the nodes the [pool] report says work on it. */
-    private fun cloudDoing(job: Job, pool: NodePoolReport?): String {
-        val nodes = pool?.nodes.orEmpty().filter { it.job == job.id }
-        return if (nodes.isEmpty()) "on the cloud" else "on ${nodes.size} cloud ${if (nodes.size == 1) "node" else "nodes"}: " +
-            nodes.joinToString(", ") { "${it.type} ${it.market} ${it.doing}" }
+    /**
+     * Where running [job] runs and what each host does: the local machine when it works on it ([Job.local]), and the
+     * cloud nodes the pool report says work on it. A shared job can run on both at once, each host on whole iterations.
+     */
+    private fun runningOn(job: Job, view: QueueView): String {
+        val nodes = view.pool?.nodes.orEmpty().filter { it.job == job.id }
+        val local = "the local machine: " + (view.local?.takeIf { it.id == job.id }?.doing ?: "running")
+        val cloud = "${nodes.size} cloud ${if (nodes.size == 1) "node" else "nodes"}: " + nodes.joinToString(", ") { "${it.type} ${it.market} ${it.doing}" }
+        return when {
+            job.local && nodes.isNotEmpty() -> "on ${hostsText(true, nodes.size)}: $local; $cloud"
+            job.local -> "on $local"
+            nodes.isNotEmpty() -> "on $cloud"
+            job.experiment?.host == Experiments.AWS_HOST -> "on the cloud"
+            else -> "running, no host on it now"
+        }
     }
+
+    /** The hosts on a running job in a few words: `local`, `2 nodes`, `local + 2 nodes`. */
+    fun hostsText(local: Boolean, nodes: Int): String =
+        listOfNotNull("local".takeIf { local }, nodes.takeIf { it > 0 }?.let { "$it ${if (it == 1) "node" else "nodes"}" })
+            .joinToString(" + ").ifEmpty { "no host" }
 
     /** What the cloud worker reports an idle node doing ([NodeReport.doing]). */
     private const val IDLE = "idle"
