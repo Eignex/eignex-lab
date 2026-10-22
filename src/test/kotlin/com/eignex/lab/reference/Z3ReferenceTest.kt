@@ -74,6 +74,29 @@ class Z3ReferenceTest {
     }
 
     @Test
+    fun `incomplete resources should not establish either reference verdict`() {
+        for (answer in listOf("sat", "unsat")) {
+            val result = Z3Reference.parse("$answer\n", 7, cmd, resourcesQualified = false)
+
+            assertNull(result.feasible)
+            assertFalse(result.proven)
+            assertEquals("resource-rejected", result.stats["referenceStatus"])
+            assertEquals("$answer\n", result.rawOutput)
+        }
+    }
+
+    @Test
+    fun `stderr beside a reference verdict should leave it undecided`() {
+        for (answer in listOf("sat", "unsat")) {
+            val result = Z3Reference.parse("$answer\n", 7, cmd, stderr = "diagnostic")
+
+            assertNull(result.feasible)
+            assertFalse(result.proven)
+            assertEquals("error", result.stats["referenceStatus"])
+        }
+    }
+
+    @Test
     fun `native timeout should be distinct from an unknown verdict`() {
         val r = Z3Reference.parse("timeout\n", 10_000, cmd)
 

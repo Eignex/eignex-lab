@@ -4,9 +4,11 @@ import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
-/** What an external checker process did: its exit, what it wrote (cut to [ToolProcess.OUTPUT_CAP]), and whether it
- *  ran out of time. */
-data class ToolRun(val exit: Int?, val stdout: String, val stderr: String, val timedOut: Boolean, val elapsedMs: Long) {
+/** An external checker's exit, bounded output and deadline outcome, with [resources] for bounded SMT runs. */
+data class ToolRun(
+    val exit: Int?, val stdout: String, val stderr: String, val timedOut: Boolean, val elapsedMs: Long,
+    val resources: ToolResourceReceipt? = null,
+) {
     /** Its output's last lines, for a reason. */
     fun tail(lines: Int = 6): String = (stdout + "\n" + stderr).lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
         .toList().takeLast(lines).joinToString(" / ").take(REASON_CAP)
@@ -21,7 +23,15 @@ internal const val DIAGNOSTIC_CAP = 2_000
 object ToolProcess {
     const val OUTPUT_CAP = 1 shl 20
 
-    fun run(command: List<String>, dir: File, timeoutMs: Long, stdin: File? = null, env: Map<String, String> = emptyMap()): ToolRun {
+    fun run(
+        command: List<String>, dir: File, timeoutMs: Long, stdin: File? = null, env: Map<String, String> = emptyMap(),
+        limits: ToolLimits? = null,
+        inputFiles: List<File> = emptyList(),
+    ): ToolRun {
+        if (limits != null) {
+            require(limits.timeoutMs == timeoutMs)
+            return BoundedToolProcess.run(command, dir, limits, stdin, env, inputFiles)
+        }
         val out = File(dir, "tool.stdout")
         val err = File(dir, "tool.stderr")
         val started = System.nanoTime()

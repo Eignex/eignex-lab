@@ -72,12 +72,14 @@ class SmtAlgebraicCheckTest {
 
         val valid = checks.check(problem, record(model(root(2), root(2))))!!
         assertEquals(LabCheck.VALID, valid.state, valid.reason + "\n" + valid.diagnostic)
-        assertEquals("lab-smtlib-z3-algebraic-${z3.version}-v1", valid.policy)
+        assertEquals("lab-smtlib-z3-algebraic-${z3.version}-v2", valid.policy)
         assertEquals("z3", valid.checker)
         assertEquals(z3.version, valid.checkerVersion)
         assertEquals(z3.sha256, valid.checkerSha256)
         assertEquals(mapOf("model" to sha256(source)), valid.sourceSha256)
         assertEquals(sha256(model(root(2), root(2)).toByteArray()), valid.witnessSha256)
+        assertEquals(2, valid.resourceReceipts.size)
+        assertTrue(valid.resourceReceipts.all { it.qualified() })
         val diagnostic = valid.diagnostic!!
         assertContains(diagnostic, "dolmen: unknown: Dolmen could not decide (exit 4): E:unbound-id")
         assertContains(diagnostic, "-smt2 pinned.smt2")
@@ -143,6 +145,28 @@ class SmtAlgebraicCheckTest {
         assertEquals(LabCheck.UNKNOWN, hang.state)
         assertContains(hang.reason, "Z3 did not finish")
         assertContains(hang.diagnostic!!, "none (killed)")
+    }
+
+    @Test
+    fun `failed Z3 exits should not validate or reject an algebraic witness`() {
+        val algebraic = record(model(root(2), root(2)))
+        for (answer in listOf("sat", "unsat")) {
+            val check = checker(unbound, { fakeZ3("echo $answer; exit 1") }).check(problem, algebraic)!!
+
+            assertEquals(LabCheck.UNKNOWN, check.state)
+            assertEquals(1, check.resourceReceipts.last().exit)
+        }
+    }
+
+    @Test
+    fun `Z3 diagnostics beside a verdict should leave an algebraic witness unknown`() {
+        val algebraic = record(model(root(2), root(2)))
+        for (answer in listOf("sat", "unsat")) {
+            val check = checker(unbound, { fakeZ3("echo diagnostic >&2; echo $answer") }).check(problem, algebraic)!!
+
+            assertEquals(LabCheck.UNKNOWN, check.state)
+            assertContains(check.reason, "did not exit cleanly")
+        }
     }
 
     @Test

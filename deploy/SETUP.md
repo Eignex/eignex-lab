@@ -372,7 +372,7 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 | XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
 | MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin), built with the lab's input-limit patch as `1.0.4+klause-lab-longnum-1` | `lab-mps-solchecker-1.0.4-longnum-v1` | a value with no exact decimal of at most 4095 characters (solchecker reads only decimals, so a fraction such as `1/3` is not rounded for it, nor a longer decimal cut); a SOL line over 8190 characters; an MPS file solchecker cannot read, in its words |
 | MiniZinc (integer) | MiniZinc with Gecode (`minizinc --solver gecode`; MiniZinc MPL-2.0, Gecode MIT) | `lab-minizinc-gecode-v1` | floats: no external exact checker for floats (a witness with `% klause-exact:`, `% klause-coordinate:` or `% klause-float-` lines, a float approximation, or a model with `var float` variables); a witness naming FlatZinc-introduced variables (`X_INTRODUCED_*`), which only Klause's own compilation maps back to the model; a witness MiniZinc cannot read as data for the model (integers for an enum-typed array), in its words |
-| SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary; for a model with algebraic numbers (`root-obj`) Dolmen cannot read, Z3 (MIT) | `lab-smtlib-dolmen-0.10-v1`; `lab-smtlib-z3-algebraic-<z3 version>-v1` (such as `lab-smtlib-z3-algebraic-4.16.0-v1`) for Z3's verdicts | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts; an incremental source or one with uninterpreted functions, for the Z3 path |
+| SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary; for a model with algebraic numbers (`root-obj`) Dolmen cannot read, Z3 (MIT) | `lab-smtlib-dolmen-0.10-v2`; `lab-smtlib-z3-algebraic-<z3 version>-v2` for Z3's verdicts | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts; an incremental source or one with uninterpreted functions, for the Z3 path |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
 
 - **XCSP3.** The witness is the record's `finalWitness` with its leading `v ` removed: the final `<instantiation>`.
@@ -444,6 +444,16 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
   SHA-256: `dolmen-linux-amd64` (`bab3e9a1…b675`) on Linux, `dolmen-macos-amd64` (`2141ed2e…47a1`, an arm64 Mach-O
   despite its name) on the Mac. Over jobs 7140 and later's SMT-LIB witnesses in the lab's corpus, Dolmen accepts 76
   and cannot decide 18; none is rejected.
+
+  SMT child tools run under an OS resource envelope. CPU and core-file limits apply on both platforms; Linux also
+  applies a 4 GiB address-space limit and a 1 MiB file limit. macOS applies a 512 KiB file limit
+  ([POSIX shell units](https://www.gnu.org/software/bash/manual/html_node/Bash-Builtins.html)), samples the resident
+  set of the process and its descendants against 4 GiB, and retains `/usr/bin/time -l`'s kernel high-water observation.
+  Missing or ambiguous memory evidence, incomplete child cleanup, a deadline or output at the file limit cannot
+  earn a validated verdict. Each `labCheck.resourceReceipts` entry keeps the actual wrapper and tool commands,
+  limits, exit, deadline outcome, memory evidence, input-file and stdin hashes, and bounded output sizes and hashes.
+  An algebraic fallback retains both invocations in order and requires a clean Z3 exit and stderr.
+  Older records without receipts retain their recorded policy and carry no resource-envelope qualification.
 
   **Algebraic models.** For nonlinear real problems Klause writes an irrational value as Z3 does, `(root-obj p i)`:
   the `i`-th real root, counted from the smallest, of the univariate polynomial `p` in `x`, such as `(root-obj (+ (- 1)
@@ -694,6 +704,13 @@ default `$LAB_DATA/releases/current/bin/klause-lab`), so a reference case runs n
 to select the problems and resolve their files (`select files=true`), and a job whose arms are all reference arms skips
 the klause CLI build. z3, cvc5, kissat, HiGHS and `minizinc` come from `PATH`; `LAB_Z3`, `LAB_CVC5`, `LAB_KISSAT` and
 `LAB_HIGHS` name another binary, and `LAB_Z3_MEMORY_MB` (default 2048) caps z3's memory; the algebraic SMT-LIB checker uses the same z3.
+
+Whole-source Z3 references use `smt-reference-v4` and the same bounded SMT process runner as witness checking.
+Their OS CPU limit is the requested timeout rounded up to seconds, their wall deadline adds 5 s, and their memory
+and file limits follow the platform rules above. `stats.referenceResourceReceipt` retains the serialized receipt;
+`stats.referenceResourceQualified` says whether it is complete. Incomplete resources leave the verdict undecided,
+even when the retained output contains `sat` or `unsat`. Each reference record keeps the actual wrapper command and
+the original source's hash; reference process receipts do not qualify older records retroactively.
 
 `deploy/specs/reference-qfnra.json` runs all frozen `qfnra-core-v1` and
 `qfnra-holdout-v1` polynomial-real inputs with Z3 at ten seconds/P1 and three

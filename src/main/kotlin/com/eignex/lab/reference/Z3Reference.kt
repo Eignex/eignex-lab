@@ -1,10 +1,14 @@
 package com.eignex.lab.reference
 
+import com.eignex.lab.checker.ToolLimits
+import com.eignex.lab.checker.ToolProcess
+import com.eignex.lab.checker.ToolResourceReceipt
 import java.io.File
+import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.serialization.json.Json
 
 internal object Z3Reference {
     private val binary by lazy {
@@ -22,7 +26,8 @@ internal object Z3Reference {
         require(it > 0) { "z3 memory limit must be positive" }
     }
     private const val EXIT_WAIT_MS = 5_000L
-    private const val POLICY = "smt-reference-v3"
+    private const val POLICY = "smt-reference-v4"
+    private val resourceJson = Json { encodeDefaults = true }
     private val options = listOf("-model", "sat.threads=1", "parallel.enable=false", "pp.decimal=false")
 
     fun available(): Boolean = runCatching { NativeReference.available(binary.path) }.getOrDefault(false)
@@ -57,42 +62,25 @@ internal object Z3Reference {
             val cmd = listOf(
                 binary.path, "-T:${(budget.timeoutMillis / 1000).coerceAtLeast(1)}", "-memory:$memoryMb", "-smt2",
             ) + options + "-file:${file.absolutePath}"
-            val startNanos = System.nanoTime()
-            val proc = ProcessBuilder(cmd).start()
-            proc.outputStream.close()
-            val stderr = StringBuilder()
-            val drain = Thread { proc.errorStream.bufferedReader().use { stderr.append(it.readText()) } }.apply {
-                isDaemon = true
-                start()
-            }
-            val killed = AtomicBoolean(false)
-            val watchdog = Thread {
-                runCatching {
-                    if (!proc.waitFor(budget.timeoutMillis * 2 + 20_000, TimeUnit.MILLISECONDS)) {
-                        killed.set(true)
-                        proc.destroyForcibly()
-                    }
-                }
-            }.apply {
-                isDaemon = true
-                start()
-            }
+            val work = Files.createTempDirectory("z3-reference").toFile()
             try {
-                val stdout = proc.inputStream.bufferedReader().use { it.readText() }
-                proc.waitFor()
-                drain.join()
-                val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
-                parse(stdout, elapsedMs, cmd, stderr.toString(), proc.exitValue(), killed.get()).let { result ->
+                val limits = ToolLimits((budget.timeoutMillis / 1000 + if (budget.timeoutMillis % 1000 == 0L) 0 else 1).coerceAtLeast(1),
+                    budget.timeoutMillis + 5_000)
+                val run = ToolProcess.run(cmd, work, limits.timeoutMs, limits = limits, inputFiles = listOf(file))
+                val receipt = checkNotNull(run.resources)
+                parse(run.stdout, run.elapsedMs, receipt.command, run.stderr, run.exit ?: 137, run.timedOut,
+                    resourcesQualified = receipt.qualified()).let { result ->
                     result.copy(stats = result.stats + mapOf(
                         "referenceVersion" to identity,
                         "referenceBinary" to binary.path,
                         "referenceModelFormat" to "root-obj-requested",
                         "referenceValidation" to "solver-reported",
+                        "referenceResourceReceipt" to resourceJson.encodeToString(ToolResourceReceipt.serializer(), receipt),
+                        "referenceResourceQualified" to receipt.qualified().toString(),
                     ))
                 }
             } finally {
-                watchdog.interrupt()
-                if (proc.isAlive) proc.destroyForcibly()
+                work.deleteRecursively()
             }
         }
 
@@ -103,13 +91,16 @@ internal object Z3Reference {
         stderr: String = "",
         exitCode: Int = 0,
         killed: Boolean = false,
+        resourcesQualified: Boolean = true,
     ): ReferenceResult {
         val verdict = stdout.lineSequence().map { it.trim() }
             .lastOrNull { it == "sat" || it == "unsat" || it == "unknown" }
         val error = stdout.lineSequence().any { it.trimStart().startsWith("(error ") }
         val status = when {
             killed || stdout.lineSequence().any { it.trim() == "timeout" } -> "timeout"
+            !resourcesQualified -> "resource-rejected"
             error -> "error"
+            stderr.isNotBlank() -> "error"
             exitCode != 0 && verdict != "unknown" -> "error"
             else -> verdict ?: "error"
         }
@@ -134,6 +125,7 @@ internal object Z3Reference {
                 put("referenceWatchdogKilled", killed.toString())
                 put("referenceStderr", stderr)
                 if (status == "error") put("referenceError", "solver output or exit did not establish a verdict")
+                if (status == "resource-rejected") put("referenceError", "SMT tool resource envelope was incomplete or exceeded")
             },
             rawOutput = stdout,
             command = cmd.joinToString(" "),
