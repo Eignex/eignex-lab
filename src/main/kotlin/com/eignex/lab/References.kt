@@ -10,7 +10,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import java.security.MessageDigest
 
-/** A reference solver's verdict on one problem, as `klause-bench/reference/<solver>.csv` records it. */
+/** A reference solver's verdict on one problem, as a reference arm's case records it ([References.of]). */
 @Serializable
 data class Reference(
     val solver: String,
@@ -138,7 +138,7 @@ const val REFERENCE_BACKEND = "reference"
 /** How reference results merge and how an experiment measures up to them. */
 object References {
     /**
-     * A reference arm's case record as a reference row, timed as `bench reference` times its rows: a proof by its solve
+     * A reference arm's case record as a reference row, timed by what it shows: a proof by its solve
      * time, an unproven solution by its time to the first one, anything else by the whole budget. Null for a record
      * of a run that never solved: an error, or a problem that did not load.
      */

@@ -467,8 +467,9 @@ object Experiments {
             }
             if (seed != null) add("solver-seed=$seed")
         }.joinToString(" ") { quote(it) }
-        // The result cache would replay an earlier run's timings: a case always solves. The corpus cap stays off so
-        // no case evicts a collection another case is reading.
+        // An older bench keeps a result cache that would replay an earlier run's timings: a case always solves, and a
+        // bench without the cache ignores the property. The corpus cap stays off so no case evicts a collection another
+        // case is reading.
         val opts = "-Dklause.bench.cache=false -Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$worktree"
         return "cd ${quote("$worktree/klause-bench")} && " +
             "if [ -f build/provenance.json ]; then export KLAUSE_BENCH_PROVENANCE=\"\$PWD/build/provenance.json\"; " +

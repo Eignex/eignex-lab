@@ -49,7 +49,7 @@ class DiskUsage(private val config: Config) {
         return listOf(
             "job files" to data.resolve("jobs"),
             "job worktrees" to data.resolve("work"),
-            "shared results cache" to data.resolve("shared"),
+            "shared worktree directories" to data.resolve("shared"),
             "releases" to data.resolve("releases"),
             "repository mirror" to data.resolve("repo.git"),
             "logs" to data.resolve("logs"),
