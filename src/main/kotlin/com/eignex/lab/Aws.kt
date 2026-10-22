@@ -368,6 +368,8 @@ class AwsHost(
     private val parallel: Int? = null,
     /** The job's [ExperimentSpec.profileCompilation]: what its profiled CLI records of compilation, and brings back. */
     private val compilation: String? = null,
+    /** Collect process resources without requesting a JVM recording. */
+    private val measureCliResources: Boolean = false,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val corpus = "$HOME/corpus"
@@ -423,9 +425,9 @@ class AwsHost(
 
     private fun runOnce(command: Command, dir: Path, attempt: Int): Int {
         val i = command.index
-        val measurementId = if (profileCli) UUID.randomUUID().toString() else null
+        val measurementId = if (profileCli || measureCliResources) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { "$jobDir/cases/$i/profile-$it" }
-        val options = profile?.let { CliMeasurements.options(it, compilation) }.orEmpty()
+        val options = profile?.takeIf { profileCli }?.let { CliMeasurements.options(it, compilation) }.orEmpty()
         val runtimeOptions = "$solveJavaOpts -XX:ActiveProcessorCount=${command.cores}".trim()
         val javaOptions = "$runtimeOptions $options".trim()
         val script = """
@@ -476,7 +478,7 @@ class AwsHost(
         val kernel = text.substringBefore("$RECORD\n").lines().filter { it.startsWith(KERNEL) }.map { it.removePrefix(KERNEL) }
         Termination.remote(exit, System.currentTimeMillis() - started, command.timeoutSec, kernel)
             ?.let { Termination.record(Termination.file(dir, i), it) }
-        val keepsOutput = keepsOutput(result, record.isNotEmpty(), profileCli || profileJob)
+        val keepsOutput = keepsOutput(result, record.isNotEmpty(), profileCli || measureCliResources || profileJob)
         if (profileJob || keepsOutput || profile != null) {
             val elapsedMs = runCatching { Json.parseToJsonElement(record).jsonObject["elapsedMs"]?.jsonPrimitive?.longOrNull }.getOrNull()
             report(command, CasePhase.Phase.TRANSFERRING_OUTPUT, attempt, elapsedMs = elapsedMs)
@@ -494,8 +496,8 @@ class AwsHost(
         if (profile != null) {
             val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
             CliMeasurements.writeManifest(files, i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions,
-                record, macOs = false, compilation = compilation)
-            for (name in CliMeasurements.artifacts(compilation)) {
+                record, macOs = false, compilation = compilation, profileCli = profileCli)
+            for (name in CliMeasurements.artifacts(compilation, profileCli)) {
                 // HotSpot's compilation log runs to hundreds of MB, and compresses tenfold: it comes back gzipped.
                 if (name == CliMeasurements.COMPILATION_LOG) {
                     ssh.downloadStream("gzip -1 -c -- ${quote("$profile/$name")}", files.resolve(CliMeasurements.COMPILATION_LOG_GZ), LOG_TRANSFER_SEC)
@@ -970,11 +972,11 @@ class AwsWorker(
 
     /** Build each of [shas] the node has not built yet for a job like [job]. */
     private fun build(node: Node, host: AwsHost, job: AwsJob, shas: List<String>) {
-        val profileCli = job.spec.profileCli
-        val missing = shas.filter { !AwsBuildCache.hasBuilt(node.built, it, profileCli) }
+        val measuresCli = job.spec.measuresCli
+        val missing = shas.filter { !AwsBuildCache.hasBuilt(node.built, it, measuresCli) }
         if (missing.isEmpty()) return
         setup(job, host, missing)
-        missing.forEach { AwsBuildCache.rebuilt(node.built, it, profileCli) }
+        missing.forEach { AwsBuildCache.rebuilt(node.built, it, measuresCli) }
     }
 
     /** [node] is done with [job]; the job's last node ends it as its nodes' outcomes say. */
@@ -1029,6 +1031,7 @@ class AwsWorker(
         jobDir = job.remoteDir,
         parallel = if (job.spec.parallel == null) defaultParallel(node.size) else null,
         compilation = job.spec.profileCompilation,
+        measureCliResources = job.spec.measureCliResources,
     ) {
         store.cancelRequested(job.id)
     }
@@ -1141,7 +1144,7 @@ class AwsWorker(
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
                 val archives = bucket?.let { AwsBuildCache.archives(it, sha) }.orEmpty()
                 AwsBuildCache.worktree(worktree, host.cores, archives, aws.region).forEach(::appendLine)
-                finishWorktree(worktree, job.spec.profileCli).forEach(::appendLine)
+                finishWorktree(worktree, job.spec.measuresCli).forEach(::appendLine)
                 appendLine("validate_lab_provenance ${quote(worktree)}")
             }
             if (bucket != null) {
@@ -1177,7 +1180,7 @@ class AwsWorker(
 
     companion object {
         /**
-         * The steps after a commit's build is in place in [worktree]: a profiling job's launcher, then the provenance
+         * The steps after a commit's build is in place in [worktree]: a measurement launcher, then the provenance
          * manifest, which must describe the files the cases will run, launcher included. Both come after the build cache
          * upload, so the cached distributions stay the plain ones.
          */

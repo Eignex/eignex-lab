@@ -169,6 +169,17 @@ class ConfirmTest {
     }
 
     @Test
+    fun `a confirmation preserves ordinary CLI resource measurement`() {
+        val sweep = ExperimentSpec("s", listOf(mapOf("suite" to "s")), parallel = 1, measureCliResources = true)
+        val flips = Flips(lost = listOf(Problem("s", "p")))
+
+        val spec = Confirm.spec("s", sweep, "before", "after", flips, job = 7)
+
+        assertTrue(spec.measureCliResources && !spec.profileCli)
+        Experiments.validate(spec, maxParallel = 6)
+    }
+
+    @Test
     fun `an objective that moved without a proof is not rerun, a lost solution or proof is`() {
         val worse = Confirm.flips(listOf(optimization("3")), listOf(optimization("5")))
 

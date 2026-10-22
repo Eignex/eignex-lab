@@ -184,6 +184,21 @@ class ExperimentsTest {
     }
 
     @Test
+    fun `CLI resource measurement requires serial native cases and keeps recording disabled`() {
+        val measured = spec().copy(measureCliResources = true, parallel = 1)
+
+        for (host in listOf("lab", "auto", "aws")) Experiments.validate(measured.copy(host = host), maxParallel = 4)
+        assertTrue(measured.measuresCli)
+        assertFalse(measured.profileCli || measured.instrumented)
+        assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(measured))
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(measured.copy(parallel = 2), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(measured.copy(profileCli = true), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> {
+            Experiments.validate(measured.copy(configs = listOf(mapOf("backend" to "reference"))), maxParallel = 4)
+        }
+    }
+
+    @Test
     fun `compilation profiling needs CLI profiling, names a known mode, and marks the experiment instrumented`() {
         val profiled = spec().copy(profileCli = true, parallel = 1)
 
@@ -213,6 +228,7 @@ class ExperimentsTest {
             analysis.copy(problems = listOf(mapOf("suite" to "s"))),
             analysis.copy(base = mapOf("ref" to "main")),
             analysis.copy(profileCli = true),
+            analysis.copy(measureCliResources = true),
             analysis.copy(profile = ProfileMain("com.eignex.klause.bench.profile.Tool")),
         )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxParallel = 4) }
         val defaulted = Json.decodeFromJsonElement(ExperimentSpec.serializer(),
@@ -650,6 +666,7 @@ class ExperimentsTest {
             batched.copy(base = mapOf("timeout" to "20000")),
             batched.copy(base = emptyMap()),
             batched.copy(profileCli = true, parallel = 1),
+            batched.copy(measureCliResources = true, parallel = 1),
         )) assertNull(Experiments.splitOf(spec, active), spec.toString())
     }
 

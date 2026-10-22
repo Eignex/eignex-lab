@@ -180,6 +180,7 @@ object Confirm {
             seeds = spec.seeds,
             repeats = REPEATS,
             parallel = spec.parallel,
+            measureCliResources = spec.measureCliResources,
             // One above its run's schedule, so it settles the run before that schedule's next run starts.
             priority = spec.priority + 1,
             confirm = true,

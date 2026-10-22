@@ -519,8 +519,8 @@ class Runner(
                     }
                     throw e
                 }
-                // A profileCli job's launcher goes in before the provenance manifest describes the build, as on a node.
-                if (spec.profileCli) sh(job.id, log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
+                // The measurement launcher goes in before provenance describes the installed build, as on a node.
+                if (spec.measuresCli) sh(job.id, log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
                 // The manifest describes the CLI and bench a Klause case runs; a reference case runs neither.
                 if (!referenceOnly) sh(job.id, log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
@@ -912,12 +912,14 @@ class Runner(
             .directory(work)
             .redirectOutput(dir.resolve("${command.index}.out").toFile())
             .redirectError(dir.resolve("${command.index}.err").toFile())
-        // A profileCli case's CLI records JFR and its resources into a directory of its own under the case, as on a node.
-        val measurementId = if (job.experiment?.profileCli == true) UUID.randomUUID().toString() else null
+        // Each CLI invocation owns its resource artifacts and any requested recording, as on a node.
+        val profileCli = job.experiment?.profileCli == true
+        val measurementId = if (job.experiment?.measuresCli == true) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { dir.resolve("$CASES/${command.index}/profile-$it").createDirectories() }
         val compilation = job.experiment?.profileCompilation
         val runtimeOptions = "${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores}".trim()
-        val javaOptions = ("$runtimeOptions " + profile?.let { CliMeasurements.options(it.toString(), compilation) }.orEmpty()).trim()
+        val options = profile?.takeIf { profileCli }?.let { CliMeasurements.options(it.toString(), compilation) }.orEmpty()
+        val javaOptions = "$runtimeOptions $options".trim()
         builder.environment().apply {
             put("JOB_DIR", dir.toString())
             // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
@@ -942,7 +944,7 @@ class Runner(
                     val record = dir.resolve(CASES).resolve(command.index.toString()).toFile()
                         .listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     CliMeasurements.writeManifest(profile, command.index, 1, requireNotNull(measurementId), Experiments.LAB_HOST,
-                        command.cmd, exit, javaOptions, record, CliMeasurements.localMacOs, compilation)
+                        command.cmd, exit, javaOptions, record, CliMeasurements.localMacOs, compilation, profileCli)
                 }.onFailure { log(job.id, "case ${command.index}: measurement manifest not written: ${it.message}") }
             }
         } finally {

@@ -21,9 +21,10 @@ internal object CliMeasurements {
     const val COMPILATION_LOG_GZ = "$COMPILATION_LOG.gz"
     val artifacts = listOf(JFR, RESOURCES)
 
-    /** The files a case's CLI writes into its profile directory, the compilation log among them when [compilation] logs. */
-    fun artifacts(compilation: String?): List<String> =
-        artifacts + if (compilation == Experiments.COMPILATION_JFR_LOG) listOf(COMPILATION_LOG) else emptyList()
+    /** The measured CLI's artifacts, with a recording and compilation log only when requested. */
+    fun artifacts(compilation: String?, profileCli: Boolean = true): List<String> =
+        (if (profileCli) artifacts else listOf(RESOURCES)) +
+            if (compilation == Experiments.COMPILATION_JFR_LOG) listOf(COMPILATION_LOG) else emptyList()
 
     /** Whether the lab itself runs on macOS, as the lab Mac does: its own profiling launcher is then the macOS one. */
     val localMacOs: Boolean get() = System.getProperty("os.name").orEmpty().startsWith("Mac")
@@ -54,7 +55,7 @@ internal object CliMeasurements {
         else "GNU time peak RSS of the CLI process, KiB"
 
     /**
-     * The step that installs the profiling launcher in [worktree]'s CLI: with `KLAUSE_LAB_PROFILE_DIR` set, the CLI
+     * The step that installs the measurement launcher in [worktree]'s CLI: with `KLAUSE_LAB_PROFILE_DIR` set, the CLI
      * runs under a measurement that writes `resources.txt` there, with the same keys in the same units on both
      * systems (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`). On Linux, an AWS node, GNU time
      * measures it, and `setpriv --pdeathsig` makes the CLI die with its timer. On macOS ([macOs]), the lab Mac, which
@@ -91,13 +92,15 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
     }
 
     /**
-     * Keep a profiled case's measurement beside its artifacts in [files]: [record], the case's solve record as it came
+     * Keep a measured case's manifest beside its artifacts in [files]: [record], the case's solve record as it came
      * back, as `solve-record.json`, and the manifest (`measurement.json`) saying where and how it ran.
      */
     fun writeManifest(
         files: Path, index: Int, attempt: Int, measurementId: String, instance: String, command: String, exit: Int,
         javaOptions: String, record: String?, macOs: Boolean, compilation: String? = null,
+        profileCli: Boolean = true,
     ) {
+        require(profileCli || compilation == null) { "compilation recording requires CLI profiling" }
         val recordHash = record?.takeIf { it.isNotEmpty() }?.let { snapshot ->
             files.resolve("solve-record.json").toFile().writeText(snapshot)
             MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -106,8 +109,11 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
             CliMeasurementManifest.serializer(),
             CliMeasurementManifest(
                 index, attempt, measurementId, instance, command, exit, javaOptions, recordHash, memory = memory(macOs),
-                instrumented = compilation != null, instrumentation = instrumentation(compilation), compilation = compilation,
-                artifacts = artifacts(compilation) + if (recordHash == null) emptyList() else listOf("solve-record.json"),
+                instrumented = compilation != null,
+                instrumentation = if (profileCli) instrumentation(compilation) else "external-time",
+                compilation = compilation,
+                allocation = if (profileCli) "JFR weighted allocation samples; statistical estimate" else "not collected",
+                artifacts = artifacts(compilation, profileCli) + if (recordHash == null) emptyList() else listOf("solve-record.json"),
             ),
         ))
     }
