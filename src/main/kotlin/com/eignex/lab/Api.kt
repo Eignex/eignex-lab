@@ -132,11 +132,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
             val active = store.active(withCommands = false)
-            // Why each queued job waits, by the rules `GET /placement` reports with ([Waiting]); only the front page has them.
-            val view = if (before == null && name == null) Waiting.view(config, store) else null
-            val waiting = view?.let { v -> active.filter { it.status == Status.QUEUED }.associate { it.id to Waiting.waiting(it, v) } }.orEmpty()
+            // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
             val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
-                store.queue(nodesUp = config.aws != null && nodesUp(view?.pool ?: readPoolReport(config), now())), estimates::lookup, waiting,
+                store.queue(nodesUp = config.aws != null && nodesUp(readPoolReport(config), now())), estimates::lookup, emptyMap(),
                 store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }))
             call.respondText(page, ContentType.Text.Html)
         }
@@ -342,7 +340,6 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
-                        waiting = if (job.status == Status.QUEUED) Waiting.waiting(job, Waiting.view(config, store)) else null,
                         hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
                     )
                     call.respondText(page, ContentType.Text.Html)

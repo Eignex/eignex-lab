@@ -109,7 +109,8 @@ class WaitingTest {
         assertEquals("cloud: 1 launching; pressure 9.0 of 16 core-h for node 2, below the launch threshold", cloud(pool(9.0, launching = 1)))
         assertEquals("cloud: a free node takes it at its next poll", cloud(pool(nodes = listOf(node.copy(doing = "idle", job = null)))))
         assertEquals("cloud: no pool report yet", Waiting.waiting(job(5, Experiments.AWS_HOST), view(pool = null)))
-        assertContains(cloud(pool(at = now() - 10 * 60_000)), "(pool report 10 min old)")
+        // The view keeps its own clock, so a slow run may round the age up a minute.
+        assertContains(cloud(pool(at = now() - 10 * 60_000)), Regex("""\(pool report 1[01] min old\)"""))
         assertEquals("placed on the cloud, but the lab has no cloud settings", Waiting.waiting(job(5, Experiments.AWS_HOST), view(aws = null)))
     }
 
@@ -223,8 +224,9 @@ class WaitingTest {
 
             // The queue page and the job page give the same reason.
             val reason = "#1 in the local queue, taken when it ends (it gives way only to a priority above its 5); cloud: pressure 0.6"
-            assertContains(client.get("/") { header(HttpHeaders.Accept, "text/html") }.bodyAsText(), reason)
-            assertContains(client.get("/jobs/$second") { header(HttpHeaders.Accept, "text/html") }.bodyAsText(), reason)
+            // The pages leave the reason to `lab placement`: a queued job shows only its place in the queue.
+            assertFalse(reason in client.get("/") { header(HttpHeaders.Accept, "text/html") }.bodyAsText())
+            assertFalse(reason in client.get("/jobs/$second") { header(HttpHeaders.Accept, "text/html") }.bodyAsText())
         }
     }
 

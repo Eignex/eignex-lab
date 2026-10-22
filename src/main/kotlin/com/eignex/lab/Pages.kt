@@ -87,7 +87,6 @@ internal fun jobPage(
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
-    waiting?.let { append("<dt>waiting</dt><dd>${esc(it)}</dd>") }
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
     append("<dt>created</dt><dd>${ago(job.createdAt)}</dd>")
@@ -1635,7 +1634,7 @@ private fun jobTable(
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id], waiting[job.id])}</td>")
+        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id])}</td>")
         append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
@@ -1732,9 +1731,9 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
         (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">${esc(it)}</small>" } ?: "")
 }
 
-/** A job's status with its notes: cancelling, paused, its place in the queue, its priority, its error, and why a queued
- *  one waits ([waiting], [Waiting.waiting]); the paused and cancelling ones' badges say that already. */
-private fun statusCell(job: Job, position: Int?, waiting: String? = null): String {
+/** A job's status with its notes: cancelling, paused, its place in the queue, its priority and its error. Why a queued
+ *  one waits is left to `lab placement`. */
+private fun statusCell(job: Job, position: Int?): String {
     val partial = job.status == Status.DONE && job.failed > 0
     val label = if (partial) {
         "DONE · <a href=\"/jobs/${job.id}?failed\">${job.failed} failed</a>"
@@ -1747,7 +1746,6 @@ private fun statusCell(job: Job, position: Int?, waiting: String? = null): Strin
         "#$position in the queue".takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
         job.error?.let { "<span title=\"${esc(it)}\">${esc(shortError(it))}</span>" },
-        waiting?.takeIf { !job.paused && !job.cancelRequested }?.let { "<span class=\"muted waiting\">${esc(it)}</span>" },
     )
     val cls = if (partial) "PARTIAL" else job.status.name
     return "<span class=\"$cls\">$label</span>" + notes.joinToString("") { "<br><small>$it</small>" }
