@@ -105,13 +105,16 @@ class SmtChecker(
         val response = File(work, "response.rsmt2").apply { writeText("sat\n${case.witness}\n") }
         val args = listOf("--check-model=true", "--strict=false", "--time=30s", "--size=4G", "--report-style=minimal", "--warn=-all")
         val run = CorpusFiles.withPlainFile(case.sources.model) { source ->
-            ToolProcess.run(listOf(binary.path) + args + source.path, work, timeoutMs, stdin = response)
+            ToolProcess.run(listOf(binary.path) + args + source.path, work, timeoutMs, stdin = response,
+                limits = ToolLimits(30, timeoutMs), inputFiles = listOf(source))
         }
         val diagnostic = "command: ${binary.path} ${args.joinToString(" ")} <plain copy of ${case.sources.model.path}> " +
             "< response.rsmt2 (`sat`, then the model)\nexit ${run.exit ?: "none (killed)"} after ${run.elapsedMs} ms; output: ${run.tail()}"
-        fun verdict(state: String, reason: String) = Verdict(state, reason, Dolmen.VERSION, sha, diagnostic = diagnostic)
+        fun verdict(state: String, reason: String) = Verdict(state, reason, Dolmen.VERSION, sha,
+            diagnostic = diagnostic, resourceReceipts = listOfNotNull(run.resources))
         return when {
             run.timedOut -> verdict(LabCheck.NOT_RUN, "Dolmen did not finish within ${timeoutMs / 1000} s")
+            run.resources?.qualified() != true -> verdict(LabCheck.NOT_RUN, "Dolmen's resource envelope was incomplete or exceeded")
             run.exit == 0 && run.stdout.isBlank() && run.stderr.isBlank() -> verdict(LabCheck.VALID, "Dolmen accepted the model")
             run.exit == 6 && run.stderr.trim() == "E:bad-model" -> verdict(LabCheck.INVALID, "Dolmen rejected the model (E:bad-model)")
             else -> verdict(LabCheck.UNKNOWN, "Dolmen could not decide (exit ${run.exit}): ${run.tail()}")

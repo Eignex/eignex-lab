@@ -58,8 +58,10 @@ class Z3AlgebraicCheck(private val install: () -> Z3Tool, private val timeoutMs:
     fun check(case: CheckCase, work: File, dolmen: Verdict): Verdict {
         val tool = install()
         val policy = policy(tool.version)
+        var receipts = dolmen.resourceReceipts
         fun verdict(state: String, reason: String, diagnostic: String) =
-            Verdict(state, reason, tool.version, tool.sha256, policy, CHECKER, "dolmen: ${dolmen.state}: ${dolmen.reason}\n$diagnostic")
+            Verdict(state, reason, tool.version, tool.sha256, policy, CHECKER,
+                "dolmen: ${dolmen.state}: ${dolmen.reason}\n$diagnostic", receipts)
         val pinned = try {
             when (val got = pin(CorpusFiles.readText(case.sources.model), case.witness)) {
                 is Pinned.Refused -> return verdict(got.state, got.reason, "no Z3 run")
@@ -71,7 +73,9 @@ class Z3AlgebraicCheck(private val install: () -> Z3Tool, private val timeoutMs:
         val input = File(work, "pinned.smt2").apply { writeText(pinned.text) }
         val seconds = ((timeoutMs - GRACE_MS) / 1000).coerceAtLeast(1)
         val command = listOf(tool.executable.path, "-T:$seconds", "-memory:${tool.memoryMb}", "-smt2", input.name)
-        val run = ToolProcess.run(command, work, timeoutMs)
+        val run = ToolProcess.run(command, work, timeoutMs,
+            limits = ToolLimits(((timeoutMs - GRACE_MS) / 1000).coerceAtLeast(1), timeoutMs), inputFiles = listOf(input))
+        receipts = receipts + listOfNotNull(run.resources)
         val lines = run.stdout.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
         val error = lines.firstOrNull { it.startsWith("(error") }
         val answer = lines.lastOrNull { it in ANSWERS }
@@ -81,7 +85,9 @@ class Z3AlgebraicCheck(private val install: () -> Z3Tool, private val timeoutMs:
             "exit ${run.exit ?: "none (killed)"} after ${run.elapsedMs} ms; output: ${run.tail(DIAGNOSTIC_LINES)}"
         return when {
             run.timedOut -> verdict(LabCheck.UNKNOWN, "Z3 did not finish within ${timeoutMs / 1000} s", diagnostic)
+            run.resources?.qualified() != true -> verdict(LabCheck.UNKNOWN, "Z3's resource envelope was incomplete or exceeded", diagnostic)
             error != null -> verdict(LabCheck.UNKNOWN, "Z3 could not read the pinned source: $error", diagnostic)
+            run.exit != 0 || run.stderr.isNotBlank() -> verdict(LabCheck.UNKNOWN, "Z3 did not exit cleanly: ${run.tail()}", diagnostic)
             answer == "sat" -> verdict(LabCheck.VALID, "Z3 found the source satisfied with every constant pinned to the model", diagnostic)
             answer == "unsat" -> verdict(LabCheck.INVALID, "Z3 found the source unsatisfiable with every constant pinned to the model", diagnostic)
             answer != null -> verdict(LabCheck.UNKNOWN, "Z3 could not decide the pinned source ($answer)", diagnostic)
@@ -105,7 +111,7 @@ class Z3AlgebraicCheck(private val install: () -> Z3Tool, private val timeoutMs:
         private val ANSWERS = setOf("sat", "unsat", "unknown", "timeout")
 
         /** The policy for verdicts from Z3 [version]: a new Z3 is a new policy. */
-        fun policy(version: String) = "lab-smtlib-z3-algebraic-$version-v1"
+        fun policy(version: String) = "lab-smtlib-z3-algebraic-$version-v2"
 
         /** Whether a model has an algebraic number, Z3's `root-obj`, which Dolmen cannot read. */
         fun algebraic(witness: String): Boolean = ROOT_OBJ.containsMatchIn(witness)

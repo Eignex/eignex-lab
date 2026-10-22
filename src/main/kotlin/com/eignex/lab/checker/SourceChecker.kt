@@ -30,6 +30,7 @@ data class Verdict(
     val policy: String? = null,
     val checker: String? = null,
     val diagnostic: String? = null,
+    val resourceReceipts: List<ToolResourceReceipt> = emptyList(),
 )
 
 /** One external checker for one source format ([format], as `klause-bench select` names it). */
@@ -81,6 +82,7 @@ class SourceChecker(
             checker = verdict.checker ?: adapter.checker, checkerVersion = verdict.version, checkerSha256 = verdict.sha256,
             witnessSha256 = witness?.let { sha256(it.toByteArray()) }, sourceSha256 = hashes, checkedAt = started,
             elapsedMs = clock() - started, diagnostic = verdict.diagnostic?.take(DIAGNOSTIC_CAP),
+            resourceReceipts = verdict.resourceReceipts,
         )
         return try {
             run(adapter, problem, record, witness, hashes, revision)
