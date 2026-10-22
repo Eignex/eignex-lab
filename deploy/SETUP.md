@@ -459,6 +459,9 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
   earn a validated verdict. Each `labCheck.resourceReceipts` entry keeps the actual wrapper and tool commands,
   limits, exit, deadline outcome, memory evidence, input-file and stdin hashes, and bounded output sizes and hashes.
   An algebraic fallback retains both invocations in order and requires a clean Z3 exit and stderr.
+  Its `labCheck.inputs` also retains the complete generated `pinned.smt2` text, its canonical path and plain-byte
+  SHA-256, matching the Z3 receipt's input-file entry. These bytes survive scratch cleanup and diagnostic truncation,
+  so an audit can compare the original source prefix and every model pin with the input actually checked.
   Older records without receipts retain their recorded policy and carry no resource-envelope qualification.
 
   **Algebraic models.** For nonlinear real problems Klause writes an irrational value as Z3 does, `(root-obj p i)`:

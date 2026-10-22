@@ -3,6 +3,10 @@ package com.eignex.lab.checker
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+/** A complete derived input submitted to a checker, bound to its process receipt by canonical [path] and [sha256]. */
+@Serializable
+data class CheckedInput(val path: String, val sha256: String, val text: String)
+
 /**
  * The lab's own verdict on one Klause case's solution claim: an established external checker run over the original
  * source and the final witness the case's record kept. It is stored beside the case (the `lab_check` column), never in
@@ -33,6 +37,8 @@ data class LabCheck(
     val diagnostic: String? = null,
     /** Bounded SMT child executions, in invocation order; absent on historical records. */
     val resourceReceipts: List<ToolResourceReceipt> = emptyList(),
+    /** Complete derived checker inputs retained after scratch cleanup; historical checks keep none. */
+    val inputs: List<CheckedInput> = emptyList(),
 ) {
     fun json(): String = JSON.encodeToString(serializer(), this)
 
