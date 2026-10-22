@@ -165,13 +165,17 @@ internal fun jobPage(
     } else if (job.failed > 0) {
         append(" <small><a href=\"/jobs/${job.id}?failed\">show the ${job.failed} failed</a></small>")
     }
-    append("</h2><div class=\"scroll\"><table><tr><th>#</th><th>command</th><th>status</th><th>started</th>")
+    append("</h2><div class=\"scroll\"><table><tr><th>#</th><th>command</th><th>status</th><th>host</th><th>started</th>")
     append("<th>elapsed</th><th>output</th></tr>")
+    val legacyHost = if (job.experiment?.host == Experiments.AWS_HOST) ExecutionHost.CLOUD else ExecutionHost.LOCAL
     for (command in commands) {
         val exit = command.exitCode?.takeIf { it != 0 }?.let { "<br><small>exit $it</small>" } ?: ""
         append("<tr><td>${command.index}</td><td><code>${esc(command.cmd)}</code></td>")
         val phase = command.phase?.let { "<br><small>${esc(phaseText(it, now()))}</small>" } ?: ""
         append("<td class=\"${command.status}\">${command.status}$exit$phase${terminations(dir, command.index)}</td>")
+        // Where it ran; a case started before the lab recorded that ran on its job's host.
+        val host = command.host ?: legacyHost.takeIf { command.status != Status.QUEUED && command.status != Status.CANCELLED }
+        append("<td>${host?.let { "<code>${esc(it)}</code>" }.orEmpty()}</td>")
         append("<td>${ago(command.startedAt)}</td><td>${duration(command.startedAt, command.finishedAt)}</td><td>")
         if (command.status != Status.QUEUED) {
             append(output(job.id, dir, "${command.index}.out", command.status == Status.RUNNING))

@@ -189,27 +189,44 @@ class AwsTest {
     }
 
     @Test
-    fun `a host taking over a planned job writes its queued commands for itself and reruns a half-done iteration`() {
+    fun `a host taking over a planned job reruns a half-done iteration`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val id = abJob(store, problems = 2)
-        val spec = store.job(id)!!.experiment!!
         // What a node finished before it gave the job back: problem 0 whole, and one arm of problem 1.
         for (index in listOf(0, 1, 2)) {
-            store.commandStarted(id, index)
+            store.commandStarted(id, index, "i-1")
             store.commandFinished(id, index, 0)
         }
-        val mac = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue()) {
-            override val corpus = "/mac/corpus"
-            override fun worktree(sha: String) = "/mac/work/$sha"
+
+        Runner(config, store).adopt(store.job(id)!!)
+
+        assertEquals(listOf(Status.DONE, Status.DONE, Status.QUEUED, Status.QUEUED), store.job(id)!!.commands.map { it.status })
+    }
+
+    @Test
+    fun `each host renders a planned case's command for its own worktrees and corpus, and the case keeps what ran where`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val id = abJob(store, problems = 1, parallel = 1)
+        fun host(name: String, ran: java.util.Queue<Int>) = object : ExecutionHost by FakeHost(ran) {
+            override val id = name
+            override val corpus = "/$name/corpus"
+            override fun worktree(sha: String) = "/$name/work/$sha"
         }
+        val runner = Runner(config, store)
+        val job = store.job(id)!!
+        val mac = host("local", java.util.concurrent.ConcurrentLinkedQueue())
+        val node = host("i-1", java.util.concurrent.ConcurrentLinkedQueue())
 
-        Runner(config, store).adopt(store.job(id)!!, spec, mac)
+        val rendered = listOf(mac, node).map { h -> runner.render(job, h)(job.commands.first()).cmd }
+        runner.dispatch(job, config.jobDir(id), node, render = runner.render(job, node))
 
+        assertTrue(rendered.all { "solve-one" in it && "out=\"\$JOB_DIR/cases/0\"" in it }, rendered.toString())
+        assertEquals(listOf(true, true), rendered.zip(listOf("local", "i-1")).map { (cmd, h) -> "cd '/$h/work/sha/klause-bench'" in cmd && "/$h/corpus" in cmd })
         val commands = store.job(id)!!.commands
-        assertEquals(listOf(Status.DONE, Status.DONE, Status.QUEUED, Status.QUEUED), commands.map { it.status })
-        assertEquals(listOf(false, false, true, true), commands.map { "cd '/mac/work/sha/klause-bench'" in it.cmd && "/mac/corpus" in it.cmd })
-        assertTrue(commands.drop(2).all { "out=\"\$JOB_DIR/cases/${it.index}\"" in it.cmd })
+        assertTrue(commands.all { it.host == "i-1" && "cd '/i-1/work/sha/klause-bench'" in it.cmd }, commands.toString())
+        assertEquals(listOf("i-1", "i-1"), store.cases(id).map { it.host })
     }
 
     @Test

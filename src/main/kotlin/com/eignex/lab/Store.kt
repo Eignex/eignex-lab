@@ -33,6 +33,9 @@ data class Command(
     /** Why the lab, or something else, ended its processes ([Termination]), each line with when; read from the job's
      *  directory for a single job's JSON, empty elsewhere. */
     val terminations: List<String> = emptyList(),
+    /** The machine that holds or ran it: [ExecutionHost.LOCAL] for the local machine, a cloud node's instance id;
+     *  null while no host has taken it, and for a case run before the lab recorded where ([CaseResult.host]). */
+    val host: String? = null,
 )
 
 /**
@@ -129,6 +132,13 @@ data class CaseResult(
     val repeat: Int = 0,
     /** Whether its job was instrumented ([ExperimentSpec.instrumented]): its times are no runtime measurement. */
     val instrumented: Boolean = false,
+    /**
+     * The machine it ran on, or runs on: [ExecutionHost.LOCAL] for the local machine, a cloud node's instance id. One
+     * job's iterations may run on different machines, every arm of one iteration on the same one. A case run before
+     * the lab recorded it reads as its job's host, [ExecutionHost.LOCAL] or [ExecutionHost.CLOUD] for an unknown node;
+     * null while it waits.
+     */
+    val host: String? = null,
 )
 
 /**
@@ -242,6 +252,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("phase" !in commandColumns) it.execute("ALTER TABLE commands ADD COLUMN phase TEXT")
+            // The machine that holds or ran each case ([Command.host]).
+            if ("host" !in commandColumns) it.execute("ALTER TABLE commands ADD COLUMN host TEXT")
             // The lab's own verdict on a case's solution claim ([com.eignex.lab.checker.LabCheck]), beside its record.
             val caseColumns = it.executeQuery("PRAGMA table_info(cases)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("lab_check" !in caseColumns) it.execute("ALTER TABLE cases ADD COLUMN lab_check TEXT")
@@ -619,24 +631,9 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         synchronized(scoring) { scoring.remove(jobId) }
     }
 
-    /** [cases] without their records: what rewriting a job's commands for another host reads. */
+    /** [cases] without their records: what rendering a case's command for the host that runs it reads ([CasePlan]). */
     @Synchronized
     fun casePlan(jobId: Long): List<CaseResult> = casesWith("NULL", jobId)
-
-    /** Replace the command lines of [jobId]'s queued commands, by index: a planned job taken by another host. */
-    @Synchronized
-    fun rewriteCommands(jobId: Long, commands: Map<Int, String>) = transaction {
-        connection.prepareStatement("UPDATE commands SET cmd = ? WHERE job_id = ? AND idx = ? AND status = ?").use { statement ->
-            for ((index, cmd) in commands) {
-                statement.setString(1, cmd)
-                statement.setLong(2, jobId)
-                statement.setInt(3, index)
-                statement.setString(4, Status.QUEUED.name)
-                statement.addBatch()
-            }
-            statement.executeBatch()
-        }
-    }
 
     /**
      * Queue again the finished cases of every iteration of [jobId] that is only part done: an iteration is the arms of
@@ -710,7 +707,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
     @Synchronized
     private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check FROM cases c
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -728,7 +725,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                     rows.getString(4), rows.longOrNull("seed"),
                     withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
                         rows.getString(9)),
-                    rows.getInt(7), rows.getInt(8) != 0,
+                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10),
                 )
             }.toList()
         }
@@ -985,10 +982,13 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             Status.QUEUED.name, jobId, index, Status.RUNNING.name)
     }
 
+    /** Command [index] of [jobId] starts on [host] ([ExecutionHost.id]) as [cmd], the command line that host rendered
+     *  for it ([CasePlan]), which replaces the one written when the job was planned. */
     @Synchronized
-    fun commandStarted(jobId: Long, index: Int) = update(
-        "UPDATE commands SET status = ?, started_at = ?, exit_code = NULL, phase = NULL WHERE job_id = ? AND idx = ?",
-        Status.RUNNING.name, now(), jobId, index,
+    fun commandStarted(jobId: Long, index: Int, host: String? = null, cmd: String? = null) = update(
+        "UPDATE commands SET status = ?, started_at = ?, exit_code = NULL, phase = NULL, host = COALESCE(?, host), " +
+            "cmd = COALESCE(?, cmd) WHERE job_id = ? AND idx = ?",
+        Status.RUNNING.name, now(), host, cmd, jobId, index,
     )
 
     @Synchronized
@@ -1548,7 +1548,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /**
      * Place a queued experiment again on [host] whether or not it was planned: the host that takes a planned one next
-     * rewrites its queued commands for itself ([Runner.adopt]). What [Placement.release] does with a job a node planned
+     * renders each case's command for itself ([Runner.render]). What [Placement.release] does with a job a node planned
      * and gave back. False when there is no such queued experiment.
      */
     @Synchronized
@@ -1616,6 +1616,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                         // A phase is the running command's only: one a requeue or a cancel left behind is stale.
                         rows.getString("phase")?.takeIf { rows.getString("status") == Status.RUNNING.name }
                             ?.let { runCatching { Json.decodeFromString<CasePhase>(it) }.getOrNull() },
+                        host = rows.getString("host"),
                     )
                 }
             }.toList()
@@ -1683,6 +1684,13 @@ private const val SERIES_ORDER = "(SELECT MAX(r.finished_at) FROM jobs r WHERE r
  *  show ([Store.queue]) alike: by priority, series and age, whatever each job's placement. */
 private const val QUEUE_ORDER = "ORDER BY priority DESC, $SERIES_ORDER"
 
+
+/**
+ * Where case `m` ran, as [CaseResult.host] reads it: its recorded host, else, for a case that started before the lab
+ * recorded one, its job's host: the local machine, or a cloud node it no longer knows ([ExecutionHost.CLOUD]).
+ */
+private const val CASE_HOST = "COALESCE(m.host, CASE WHEN m.status IN ('RUNNING', 'DONE', 'FAILED') THEN " +
+    "CASE COALESCE(json_extract(j.experiment, '\$.host'), 'lab') WHEN 'aws' THEN 'cloud' WHEN 'auto' THEN NULL ELSE 'local' END END) AS host"
 
 /** Whether job `j` is instrumented ([ExperimentSpec.instrumented]), as 1 or 0. */
 private const val INSTRUMENTED = "(json_extract(j.experiment, '\$.profileCompilation') IS NOT NULL) AS instrumented"
