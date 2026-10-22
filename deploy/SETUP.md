@@ -375,13 +375,20 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 
 | Format | Checker (licence) | Policy | Unchecked, and why |
 | --- | --- | --- | --- |
-| XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
+| XCSP3 | the official XCSP3 solution checker (MIT), built from pinned upstream sources, `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5.1+ca58fc79a42374d080aac4d1410874e748cf0a05-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
 | MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin), built with the lab's input-limit patch as `1.0.4+klause-lab-longnum-1` | `lab-mps-solchecker-1.0.4-longnum-v1` | a value with no exact decimal of at most 4095 characters (solchecker reads only decimals, so a fraction such as `1/3` is not rounded for it, nor a longer decimal cut); a SOL line over 8190 characters; an MPS file solchecker cannot read, in its words |
 | MiniZinc (integer) | MiniZinc with Gecode (`minizinc --solver gecode`; MiniZinc MPL-2.0, Gecode MIT) | `lab-minizinc-gecode-v1` | floats: no external exact checker for floats (a witness with `% klause-exact:`, `% klause-coordinate:` or `% klause-float-` lines, a float approximation, or a model with `var float` variables); a witness naming FlatZinc-introduced variables (`X_INTRODUCED_*`), which only Klause's own compilation maps back to the model; a witness MiniZinc cannot read as data for the model (integers for an enum-typed array), in its words |
 | SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary; for a model with algebraic numbers (`root-obj`) Dolmen cannot read, Z3 (MIT) | `lab-smtlib-dolmen-0.10-v2`; `lab-smtlib-z3-algebraic-<z3 version>-v2` for Z3's verdicts | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts; an incremental source or one with uninterpreted functions, for the Z3 path |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
 
 - **XCSP3.** The witness is the record's `finalWitness` with its leading `v ` removed: the final `<instantiation>`.
+  The lab build resolves the upstream source archive at commit `ca58fc79a42374d080aac4d1410874e748cf0a05`
+  and verifies SHA-256 `541624efb4ac227d0c99c7058e2e07041ff4f119070b0c996cde539fe71cc296` before compiling its
+  unmodified Java sources in the `xcsp3-tools` Gradle module. The revision contains the n-ary equality implication
+  canonicalization fix. The resulting jar, its upstream MIT licence and JSON dependency ship in the lab distribution;
+  no Maven installation or runtime source download is needed. Its manifest records the source revision and archive
+  checksum. Verdicts read the version from that manifest and retain the executed jar's SHA-256. Changing the pin in
+  `xcsp3-tools/build.gradle.kts` requires updating the checksum and checking the checker regressions in CI.
   For an optimisation claim its `cost` is set to the claimed objective (`exactObjective`), which the checker compares
   with the objective it computes from the instantiation. The checker runs in a child JVM from the lab's own classpath
   with `-Xmx2g` and a 60 s limit, so a hang or an out-of-memory costs that check alone. Its verdict is taken as it is:
@@ -585,7 +592,7 @@ cell reads:
   kept). This is read when a page is drawn, so existing records, such as the 13 MPS cases of jobs 7068 and 7075, read
   this way without any rewrite.
 Checkers on each host: the lab checks every case on the local machine, so only it needs them. xcsp3-tools comes with
-the lab itself (a Maven dependency); solchecker is built and Dolmen downloaded on first use into
+the lab itself (built from pinned upstream sources); solchecker is built and Dolmen downloaded on first use into
 `$LAB_DATA/checkers/`, which then holds only the two binaries (about 15 MB on the Mac); MiniZinc with Gecode is the MiniZincIDE
 bundle already installed. Cloud nodes need none of them (their `/opt/minizinc` bundle, which has Gecode, serves the
 bench). A tool that cannot be had makes its checks `not-run`, saying why, never a failed job.

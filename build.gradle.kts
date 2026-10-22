@@ -23,7 +23,7 @@ dependencies {
     implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
     // The official XCSP3 solution checker (MIT), which the lab runs over Klause's XCSP3 witnesses ([com.eignex.lab.checker]).
-    implementation("org.xcsp:xcsp3-tools:2.5")
+    implementation(project(":xcsp3-tools"))
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:$ktor")

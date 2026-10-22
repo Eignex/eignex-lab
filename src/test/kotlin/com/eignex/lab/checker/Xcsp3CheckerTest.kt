@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.xcsp.parser.callbacks.SolutionChecker
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -14,7 +15,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** The official XCSP3 checker (xcsp3-tools 2.5, on the test classpath as on the lab's) over real instances. */
+/** The official XCSP3 checker, built from the same upstream sources as the lab's, over real instances. */
 class Xcsp3CheckerTest {
     private val circuit = """
         <instance format="XCSP3" type="COP">
@@ -76,11 +77,32 @@ class Xcsp3CheckerTest {
 
         assertEquals(LabCheck.VALID, check.state, check.reason)
         assertEquals(Policies.XCSP3, check.policy)
-        assertEquals("2.5", check.checkerVersion)
+        assertEquals("2.5.1+ca58fc79a42374d080aac4d1410874e748cf0a05", check.checkerVersion)
         assertEquals(64, check.checkerSha256?.length)
         assertEquals(sha256((record["finalWitness"] as JsonPrimitive).content.toByteArray()), check.witnessSha256)
         assertEquals(mapOf("model" to sha256(model)), check.sourceSha256)
         assertTrue(work.listFiles().orEmpty().isEmpty(), "scratch inputs are deleted")
+    }
+
+    @Test
+    fun `n-ary equality implications preserve the source truth values`() {
+        val model = source("Equality-implication", """
+            <instance format="XCSP3" type="CSP">
+              <variables><array id="x" size="[4]">0..3</array></variables>
+              <constraints><group>
+                <intension>imp(eq(%0,%1,%2),ne(%0,%3))</intension>
+                <args>x[0..3]</args><args>x[3] x[0..2]</args>
+              </group></constraints>
+            </instance>
+        """.trimIndent())
+        for ((values, expected) in listOf("0 1 1 0" to true, "0 3 3 0" to true,
+            "1 1 1 0" to true, "0 0 0 0" to false, "3 3 3 3" to false)) {
+            val witness = "<instantiation><list>x[]</list><values>$values</values></instantiation>"
+
+            val checked = witness.byteInputStream().use { SolutionChecker(model.absolutePath, it, null, null, false) }
+
+            assertEquals(expected, checked.violatedCtrs.isEmpty(), values)
+        }
     }
 
     @Test
