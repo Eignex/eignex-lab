@@ -922,6 +922,7 @@ class Runner(
         val javaOptions = "$runtimeOptions $options".trim()
         builder.environment().apply {
             put("JOB_DIR", dir.toString())
+            put("KLAUSE_DEBUG", "true")
             // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
             // solve does not size its pools to the whole machine.
             put("KLAUSE_CLI_OPTS", javaOptions)
