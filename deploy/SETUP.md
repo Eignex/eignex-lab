@@ -788,7 +788,8 @@ nothing. A check asks origin for a branch or tag's commit with `git ls-remote`, 
 it moved, so a short interval such as 120 is cheap; the minimum is 60. `lab check <id>` makes a schedule due at once,
 and the runner checks it within 10 s, which is also what a push hook would call. `lab launch <id>`, or the schedule's
 "launch now" button, queues a run at the ref's commit within 10 s even when that commit already ran, to repeat one; a
-run still queued or going is not doubled, the launch waiting for it. `lab schedules` lists them with the
+run still queued or going is not doubled, the launch waiting for it. A launch leaves the schedule's regular check times
+alone, so schedules staggered apart stay apart. `lab schedules` lists them with the
 last commit and job; `lab unschedule <id>` removes one. `lab reschedule <id> <experiment.json|-> [interval-sec|-]
 [next-in-hours]` changes a schedule in place; `-` keeps a field. A new experiment forgets the last commit, so the
 schedule queues it at the ref's commit on its next check, once a run still going has ended; `lab check` makes that

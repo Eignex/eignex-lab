@@ -26,10 +26,16 @@ class RunnerTest {
         Runner(config, store).enqueueScheduled()
 
         val schedule = store.schedules().single()
-        // No second run while the first is queued, but the launch is still asked for and the schedule is still due.
+        // No second run while the first is queued; the launch is still asked for, and the regular check that ran
+        // stamped its time as usual.
         assertEquals(last, schedule.lastJob)
         assertTrue(schedule.launchRequested)
-        assertEquals(null, schedule.checkedAt)
+        val checked = checkNotNull(schedule.checkedAt)
+
+        // Another poll while it waits leaves the regular check's time alone: a launch never moves a schedule's phase.
+        Runner(config, store).enqueueScheduled()
+        assertEquals(checked, store.schedules().single().checkedAt)
+        assertTrue(store.schedules().single().launchRequested)
     }
 
     @Test

@@ -1403,9 +1403,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun checkNow(id: Long): Boolean = update("UPDATE schedules SET checked_at = NULL WHERE id = ?", id) == 1
 
-    /** Ask schedule [id] for a run now, at its ref's commit whether or not that commit ran; false when there is none. */
+    /**
+     * Ask schedule [id] for a run now, at its ref's commit whether or not that commit ran; false when there is none.
+     * Its regular checks keep their times, so schedules staggered apart stay apart after a manual launch.
+     */
     @Synchronized
-    fun launchNow(id: Long): Boolean = update("UPDATE schedules SET launch = 1, checked_at = NULL WHERE id = ?", id) == 1
+    fun launchNow(id: Long): Boolean = update("UPDATE schedules SET launch = 1 WHERE id = ?", id) == 1
 
     @Synchronized
     fun scheduleChecked(id: Long, at: Long) = update("UPDATE schedules SET checked_at = ? WHERE id = ?", at, id)
