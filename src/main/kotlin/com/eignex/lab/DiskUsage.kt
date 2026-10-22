@@ -27,6 +27,10 @@ data class DiskReport(
     val holds: List<Hold> = emptyList(),
     /** The database as SQLite counts it and its compaction ([DbCompaction]), read when the report is asked for. */
     val database: DatabaseReport? = null,
+    /** Each volume the lab writes to and the lab's directories on it ([Volumes.report]), read when the report is served. */
+    val volumes: List<VolumeReport> = emptyList(),
+    /** Why the runner holds its queue ([Volumes.hold]), read when the report is served; null when it does not. */
+    val held: String? = null,
 )
 
 /**
@@ -44,10 +48,12 @@ class DiskUsage(private val config: Config) {
     /** The places measured, each with a label; ones that do not exist are left out. */
     internal fun places(): List<Pair<String, Path>> {
         val data = config.dataDir
-        val known = listOf("jobs", "work", "shared", "releases", "repo.git", "logs", "lab.db", "lab.db-wal")
+        // A `jobs` directory left in the data directory once LAB_JOBS points elsewhere is shown on its own.
+        val known = listOfNotNull("jobs".takeIf { config.jobsDir == data.resolve("jobs") }, "work", "shared", "releases", "repo.git", "logs",
+            "lab.db", "lab.db-wal")
         val rest = data.toFile().listFiles().orEmpty().map { it.name }.filter { it !in known && it != "lab.db-shm" }.sorted()
         return listOf(
-            "job files" to data.resolve("jobs"),
+            "job files" to config.jobsDir,
             "job worktrees" to data.resolve("work"),
             "shared worktree directories" to data.resolve("shared"),
             "releases" to data.resolve("releases"),
@@ -95,7 +101,7 @@ class DiskUsage(private val config: Config) {
 
     /** Each job directory's size in one `du` over them all, the [TOP_JOBS] largest. */
     private fun largestJobs(): List<Pair<Long, Long>> = runCatching {
-        val jobs = config.dataDir.resolve("jobs").toFile()
+        val jobs = config.jobsDir.toFile()
         val dirs = jobs.listFiles { f -> f.isDirectory && f.name.toLongOrNull() != null }.orEmpty().map { it.path }
         if (dirs.isEmpty()) return@runCatching emptyList()
         val process = ProcessBuilder(Background.prefix + listOf("du", "-sk") + dirs).redirectError(ProcessBuilder.Redirect.DISCARD).start()

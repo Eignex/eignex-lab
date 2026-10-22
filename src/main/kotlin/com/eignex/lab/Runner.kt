@@ -90,7 +90,8 @@ class Runner(
     fun loop() {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
-        val disk = DiskGuard(config.minFreeBytes) { freeBytes(config.dataDir) }
+        // Each volume the lab writes to, and an external one's being mounted, checked now and before each job ([Volumes]).
+        val disk = DiskGuard { Volumes.hold(config) }.also { it.allowsWork() }
         // A job requeued with its cancel requested, before a requeue ended such a job, would wait for a host forever.
         runCatching { store.queuedCancels().forEach(::cancel) }.onFailure { println("cancelling requeued jobs failed: ${it.message}") }
         // Shared jobs left running lost their hosts with the restart: they go back to the queue, before any host takes work.
@@ -110,12 +111,13 @@ class Runner(
                 .onSuccess { if (it > 0) println("bound $it reference rows to their runs' source files") }
                 .onFailure { println("binding reference rows failed: ${it.message}") }
         }
-        // Ended jobs' bulk goes after a week, or sooner when the disk runs low, past its grace and never while a download
-        // holds the job ([JobTrim]).
+        // Ended jobs' bulk goes after LAB_TRIM_AGE_DAYS, or sooner when the job files' volume runs low, past its grace
+        // and never while a download holds the job ([JobTrim]).
         JobTrim(
-            config.dataDir.resolve("jobs"), store::ended, { freeBytes(config.dataDir) }, ::log,
+            config.jobsDir, store::ended, { freeBytes(config.jobsDir) }, ::log,
             held = { store.holds().mapTo(HashSet()) { it.job } },
             graceMs = config.trimGraceMs, criticalFreeBytes = config.trimCriticalFreeBytes,
+            targetFreeBytes = config.jobsTargetFreeBytes, maxAgeMs = config.trimAgeMs,
         ).start()
         // The case records stored before each build provenance was kept once are compacted, a batch at a time, and
         // the database vacuumed once no job runs ([DbCompaction]).
@@ -222,7 +224,7 @@ class Runner(
     }
 
     private fun executeWork(claimed: Job): Dispatched {
-        val dir = config.jobDir(claimed.id).createDirectories()
+        val dir = config.createJobDir(claimed.id)
         val job = prepare(claimed, dir)
         val host = LocalHost(job, job.sha.orEmpty(), dir.resolve("setup.log").toFile())
         return dispatch(job, dir, host, render = render(job, host))
@@ -277,7 +279,7 @@ class Runner(
         var outcome: Dispatched? = null
         var dispatching = false
         try {
-            val dir = config.jobDir(job.id).createDirectories()
+            val dir = config.createJobDir(job.id)
             val ready = prepare(job, dir)
             val host = LocalHost(ready, ready.sha.orEmpty(), dir.resolve("setup.log").toFile())
             dispatching = true
@@ -949,7 +951,7 @@ class Runner(
      */
     internal fun analyze(job: Job) {
         val spec = checkNotNull(job.experiment?.analyze)
-        val dir = config.jobDir(job.id).createDirectories()
+        val dir = config.createJobDir(job.id)
         if (spec.kind == AnalyzeSpec.CHECK) return recheck(job, checkNotNull(spec.job), dir)
         if (spec.archive != null) return analyzeArchive(job, spec, dir)
         val analysed = checkNotNull(spec.job)
@@ -1445,7 +1447,7 @@ class Runner(
     internal fun log(jobId: Long, message: String) {
         ProfileRunDeadline.checkActive()
         println("[job $jobId] $message")
-        runCatching { config.jobDir(jobId).createDirectories().resolve("job.log").toFile().appendText("${now()} $message\n") }
+        runCatching { config.createJobDir(jobId).resolve("job.log").toFile().appendText("${now()} $message\n") }
     }
 
     private companion object {

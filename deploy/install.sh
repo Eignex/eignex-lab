@@ -19,6 +19,26 @@ LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
 [[ -n "$dry" ]] || mkdir -p "$LAB_DATA/logs"
 os="$(uname -s)"
 
+# LAB_JOBS or LAB_CORPUS on an external drive needs it mounted, at boot too, since the services start without a login.
+# The lab holds its queue while it is not and never creates the path, so this only warns.
+external=""
+for var in LAB_JOBS LAB_CORPUS; do
+  dir="${!var:-}"
+  [[ "$dir" == /Volumes/?* ]] || continue
+  external=1
+  volume="/Volumes/$(cut -d/ -f3 <<< "$dir")"
+  if ! mount | grep -qF " on $volume ("; then
+    echo "warning: $var=$dir is on $volume, which is not mounted; the lab holds its queue until it is" >&2
+  elif [[ ! -d "$dir" ]]; then
+    echo "note: $var=$dir does not exist yet; the lab creates it on $volume"
+  fi
+done
+if [[ -n "$external" && "$os" == Darwin ]] &&
+  [[ "$(defaults read /Library/Preferences/SystemConfiguration/autodiskmount AutomountDisksWithoutUserLogin 2>/dev/null)" != 1 ]]; then
+  echo "warning: external drives mount only at login; for the services to find it after a reboot run" >&2
+  echo "  sudo defaults write /Library/Preferences/SystemConfiguration/autodiskmount AutomountDisksWithoutUserLogin -bool true" >&2
+fi
+
 # Toolchains are always provisioned, never taken from the host: a package-manager JDK can carry a trust store
 # that lacks roots the corpus hosts use (Homebrew's openjdk refuses miplib.zib.de).
 props="$HOME/.gradle/gradle.properties"

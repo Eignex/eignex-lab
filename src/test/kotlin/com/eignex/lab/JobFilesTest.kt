@@ -127,6 +127,43 @@ class JobFilesTest {
     }
 
     @Test
+    fun `a job's files are served from LAB_JOBS when it is set`() {
+        val jobs = Files.createTempDirectory("jobs")
+        val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = jobs, passwordHash = null)
+        val store = Store(config.database)
+        val id = store.create("job", "main", emptyList())
+        jobs.resolve("$id").createDirectories().resolve("job.log").writeText("from the jobs volume\n")
+        testApplication {
+            application { api(config, store, host) }
+
+            assertEquals("from the jobs volume\n", client.get("/jobs/$id/files/job.log").bodyAsText())
+            assertTrue("job.log" in client.get("/jobs/$id/files").bodyAsText())
+        }
+        assertFalse(Files.exists(config.dataDir.resolve("jobs")))
+    }
+
+    @Test
+    fun `while the job files' volume is not mounted, a job's files are unavailable and say why`() {
+        val root = Files.createTempDirectory("volumes")
+        val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = root.resolve("Ros/jobs"), passwordHash = null, volumesRoot = root)
+        val store = Store(config.database)
+        val id = store.create("job", "main", emptyList())
+        testApplication {
+            application { api(config, store, host) }
+
+            for (path in listOf("/jobs/$id/files", "/jobs/$id/files/job.log", "/jobs/$id/files/job.log?tail=10")) {
+                val response = client.get(path)
+                assertEquals(HttpStatusCode.ServiceUnavailable, response.status, path)
+                assertTrue("job files volume ${root.resolve("Ros")} is not mounted" in response.bodyAsText())
+            }
+            assertEquals(HttpStatusCode.NotFound, client.get("/jobs/999/files").status)
+            val health = client.get("/health").bodyAsText()
+            assertTrue("\"held\":\"job files volume ${root.resolve("Ros")} is not mounted\"" in health, health)
+        }
+        assertFalse(Files.exists(root.resolve("Ros")))
+    }
+
+    @Test
     fun `jobFile refuses bad segments and links that leave the root`() {
         val lab = Lab()
 

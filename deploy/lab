@@ -16,7 +16,7 @@
 #   lab analyze <id>                                        queue an analysis job: the lab's compilation analyser rerun over the
 #                                                            retained captures of ended profileCli job <id>, writing each case's
 #                                                            compilation-report.json afresh; no build, no solver, no klause code.
-#                                                            Refused once the job was trimmed (a week after it ended)
+#                                                            Refused once the job was trimmed (LAB_TRIM_AGE_DAYS after it ended)
 #   lab analyze --archive <name> --sha256 <hex> [--manifest <name>] [--manifest-sha256 <hex>]
 #                                                            the same over a pinned saved-capture archive (a campaign-evidence
 #                                                            .tar.gz, a path under $LAB_DATA/archives on the lab; never a URL)
@@ -77,11 +77,14 @@
 #                                                            however it ends (a killed fetch's hold lapses after 2 h). A
 #                                                            listed file it cannot download fails it: it fetches the rest,
 #                                                            writes lab-fetch-missing.json naming each one, and exits 1
-#   lab corpus                                               rsync the local bench corpus to the server
+#   lab corpus                                               rsync the local bench corpus to the server's LAB_REMOTE_CORPUS
+#                                                            (default .cache/klause-bench/corpus; set it to the server's
+#                                                            LAB_CORPUS when that is elsewhere, an external drive say)
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
 #   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
 #                                                            running cloud job (an AWS instance), through the server with the
-#                                                            lab's own key and host keys
+#                                                            lab's own key and host keys; LAB_REMOTE_JOBS is the server's
+#                                                            LAB_JOBS when not $LAB_REMOTE_DATA/jobs
 set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"
@@ -98,6 +101,9 @@ curl() {
   return "$status"
 }
 data="${LAB_REMOTE_DATA:-klause-lab-data}"
+# The server's LAB_JOBS and LAB_CORPUS, relative to its home unless absolute, for lab ssh and lab corpus.
+remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
+remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
@@ -197,6 +203,7 @@ placement)
     if (( json )); then jq . <<< "$report"
     else jq -r "$defs"'
       "cloud: \(.cloud // "no cloud settings")",
+      (if .held then "local queue held: \(.held)" else empty end),
       (if .local == null then "local: free"
        else "local: job \(.local.id) \(.local.name): \(.local.doing)"
          + (if .local.stepSince then " (for \((.at - .local.stepSince) / 60000 | floor) min)" else "" end) end),
@@ -301,11 +308,11 @@ fetch)
     exit 1
   fi
   rm -f "$receipt" ;;
-corpus) rsync -az --info=progress2 "$corpus/" "$host:.cache/klause-bench/corpus/" ;;
+corpus) rsync -az --info=progress2 "$corpus/" "$host:$remote_corpus/" ;;
 ssh) job="$1"; n="${2:-0}"; shift; shift || true
   # Instances are reached only from the server, which holds the key; their host keys are remembered by instance id,
   # since AWS hands a terminated instance's address to the next one.
-  remote="cd $data/aws && id=\$(sed -n '$((n + 1))p' ../jobs/$job/aws-instances | cut -d' ' -f1) && [ -n \"\$id\" ] || { echo 'no such running instance' >&2; exit 1; }
+  remote="id=\$(sed -n '$((n + 1))p' $remote_jobs/$job/aws-instances | cut -d' ' -f1) && [ -n \"\$id\" ] && cd $data/aws || { echo 'no such running instance' >&2; exit 1; }
     region=\$(sed -n 's/^region=//p' aws.properties); profile=\$(sed -n 's/^profile=//p' aws.properties)
     ip=\$(PATH=/opt/homebrew/bin:\$PATH aws --profile \$profile --region \$region ec2 describe-instances --instance-ids \$id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
     exec ssh -i klause-lab.pem -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=accept-new -o CheckHostIP=no \

@@ -12,9 +12,10 @@ import kotlin.io.path.name
  * its commands' exits and termination reasons ([Termination]), its selections and each case's record (a `.json` file in
  * `cases/<i>`) stay, as do profiled cases' compilation reports and measurement manifests, and everything else goes, raw
  * solver output, case stdout and stderr, profiles' raw captures and `$OUT` among it. The results stay readable either way, since
- * every case's record is in the database too. A job is trimmed [MAX_AGE_MS] after it ended, and sooner, largest
- * first, whenever the disk has less than [TARGET_FREE_BYTES] free. A trimmed job gets a `trimmed` file saying when and
- * how much, and is never trimmed again; its log says so too. Queued and running jobs are never touched.
+ * every case's record is in the database too. A job is trimmed [maxAgeMs] after it ended, and sooner, largest first,
+ * whenever the volume [jobsDir] is on has less than [targetFreeBytes] free ([freeBytes] reads that volume, not the data
+ * directory's). A trimmed job gets a `trimmed` file saying when and how much, and is never trimmed again; its log says so
+ * too. Queued and running jobs are never touched, and while [jobsDir] is missing, its volume not mounted, nothing is.
  *
  * A low disk leaves a job alone for [graceMs] after it ended, so a download soon after the end finds every file, unless
  * the disk has less than [criticalFreeBytes] free. A job a download holds ([Hold], [held]) is never trimmed, neither by
@@ -33,25 +34,30 @@ class JobTrim(
     private val held: () -> Set<Long> = { emptySet() },
     private val graceMs: Long = DEFAULT_GRACE_MS,
     private val criticalFreeBytes: Long = DEFAULT_CRITICAL_FREE_BYTES,
+    /** Below this much free, ended jobs past their grace are trimmed early, largest first: `LAB_JOBS_TARGET_FREE_GB`. */
+    private val targetFreeBytes: Long = TARGET_FREE_BYTES,
+    /** How long after its end a job is trimmed whatever the free space: `LAB_TRIM_AGE_DAYS`. */
+    private val maxAgeMs: Long = MAX_AGE_MS,
     /** The trim's own log: the runner's output. */
     private val report: (String) -> Unit = ::println,
 ) {
     /** Trim what is due now; returns the bytes freed. */
     fun run(): Long {
+        if (!Files.isDirectory(jobsDir)) return 0
         val now = clock()
         val skipped = sortedSetOf<Long>()
         val candidates = ended().filter { (id, _) -> jobDir(id).let { Files.isDirectory(it) && !Files.exists(it.resolve(MARKER)) } }
-        var freed = candidates.filter { (_, at) -> now - at >= MAX_AGE_MS }
-            .sumOf { (id, _) -> if (id in held()) 0L.also { skipped += id } else trim(id, "it ended over a week ago") }
-        if (freeBytes() < TARGET_FREE_BYTES) {
+        var freed = candidates.filter { (_, at) -> now - at >= maxAgeMs }
+            .sumOf { (id, _) -> if (id in held()) 0L.also { skipped += id } else trim(id, "it ended over ${maxAgeMs / MS_PER_DAY} days ago") }
+        if (freeBytes() < targetFreeBytes) {
             val (past, recent) = candidates.filter { (id, _) -> !Files.exists(jobDir(id).resolve(MARKER)) }
                 .map { (id, at) -> Triple(id, at, removable(jobDir(id)).sumOf { size(it) }) }
                 .filter { it.third > 0 }
                 .sortedByDescending { it.third }
                 .partition { (_, at, _) -> now - at >= graceMs }
             for ((id, _, _) in past) {
-                if (freeBytes() >= TARGET_FREE_BYTES) break
-                if (id in held()) skipped += id else freed += trim(id, "the disk had under ${TARGET_FREE_BYTES / BYTES_PER_GB} GB free")
+                if (freeBytes() >= targetFreeBytes) break
+                if (id in held()) skipped += id else freed += trim(id, "the disk had under ${targetFreeBytes / BYTES_PER_GB} GB free")
             }
             // Jobs that ended within the grace go only when the disk is critically low, and then only until it is not.
             for ((id, _, _) in recent) {
@@ -97,7 +103,10 @@ class JobTrim(
 
     internal companion object {
         const val MARKER = "trimmed"
-        const val MAX_AGE_MS = 7 * 24 * 3_600_000L
+        const val MS_PER_DAY = 24 * 3_600_000L
+        /** `LAB_TRIM_AGE_DAYS`'s default. */
+        const val MAX_AGE_MS = 7 * MS_PER_DAY
+        /** `LAB_JOBS_TARGET_FREE_GB`'s default, and the free space below which a Docker cleanup comes sooner. */
         const val TARGET_FREE_BYTES = 25 * BYTES_PER_GB
         const val INTERVAL_MIN = 30L
         /** `LAB_TRIM_GRACE_HOURS`'s default. */
