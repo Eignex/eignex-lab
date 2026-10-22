@@ -191,7 +191,7 @@ data class Comparison(val arms: List<ArmSummary>, val disagreements: List<Disagr
 
 object Compare {
     /**
-     * Points [a] earns against [b] on one problem, by the MiniZinc Challenge rule `output/compare.sh` uses: the
+     * Points [a] earns against [b] on one problem, by the MiniZinc Challenge rule: the
      * better outcome takes 1, where better is solved over unsolved, then proven over unproven, then the better
      * objective; equal outcomes split the point by time, the faster taking the larger share; two unsolved score 0.
      * Times closer than [TIE_MS] or [TIE_SHARE] of the slower are a tie at half each: a run to run difference that

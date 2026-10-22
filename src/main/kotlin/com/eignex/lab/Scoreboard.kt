@@ -243,8 +243,8 @@ object Scoreboard {
     }
 
     /**
-     * Points [a] earns against [b] by the MiniZinc Challenge rule of [scoring], as klause-bench's `compare_records.py`
-     * scores it: solved (a solution or an infeasibility) over unsolved; under [Scoring.COMPLETE] a proof (an optimum,
+     * Points [a] earns against [b] by the MiniZinc Challenge rule of [scoring], which ranks the two results in
+     * order: solved (a solution or an infeasibility) over unsolved; under [Scoring.COMPLETE] a proof (an optimum,
      * an infeasibility, a solved satisfaction problem) over none; then the better objective, within [References.same]
      * since a reference prints its objective with noise. An equal result splits by time when the two were [timed] alike
      * under [Scoring.COMPLETE], evenly otherwise; two unsolved score nothing.

@@ -887,9 +887,8 @@ class Runner(
             .getOrElse { error("unknown ref: $ref (not on origin; is it pushed?)") }
 
     /**
-     * Point each of [Config.sharedPaths] in the worktree at one directory every job uses. The bench result cache is
-     * the reason: reference results are keyed by instance, solver and budget alone, so a later job replays them
-     * instead of rerunning the reference, and klause results also key on the CLI binary each job builds afresh.
+     * Point each of [Config.sharedPaths] in the worktree at one directory every job uses, so what a job writes there
+     * outlives its worktree.
      */
     private fun linkShared(worktree: Path) {
         for (relative in config.sharedPaths) {

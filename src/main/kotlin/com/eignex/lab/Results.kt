@@ -36,9 +36,8 @@ object Results {
     }
 
     /**
-     * One arm's results as the bench writes `output/<config>.csv`, so `bench credit` and the analysis scripts read
-     * them: keyed by (collection, problem), one row per problem, from the cases of [seed] (null: the cases run
-     * without one). Feature columns stay blank, as the bench leaves them for a problem without a reference row.
+     * One arm's results as a plain CSV, for analysis outside the lab: keyed by (collection, problem), one row per
+     * problem, from the cases of [seed] (null: the cases run without one). The problem feature columns stay blank.
      */
     fun benchCsv(cases: List<CaseResult>, arm: String, seed: Long?): String = buildString {
         appendLine("suite,problem,maximize,objective,feasible,proven,elapsedMs,budgetMs,format,structure,numGlobal,numLinear,boolHeavy,logic")

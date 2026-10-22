@@ -77,8 +77,8 @@ data class Config(
         env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
         env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
     ),
-    /** Worktree-relative directories every job shares, separated by `:`. */
-    val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "klause-bench/build/bench-cache")
+    /** Worktree-relative directories every job shares, separated by `:`; none by default. */
+    val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "")
         .split(':').map { it.trim() }.filter { it.isNotEmpty() },
     /** The largest saved-capture archive an analysis job reads ([CaptureArchives]). */
     val archiveMaxBytes: Long = env("LAB_ARCHIVE_MAX_MB", "2048").toLong() * BYTES_PER_MB,

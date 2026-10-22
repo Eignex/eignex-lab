@@ -182,7 +182,7 @@ class RunnerTest {
         val shared = root.resolve("shared").createDirectories()
         shared.resolve("result.json").writeText("{}")
         val worktree = root.resolve("work").resolve("build").createDirectories().parent
-        Files.createSymbolicLink(worktree.resolve("build").resolve("bench-cache"), shared)
+        Files.createSymbolicLink(worktree.resolve("build").resolve("shared"), shared)
 
         deleteTree(worktree)
 

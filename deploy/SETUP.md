@@ -310,8 +310,8 @@ worktree. It then runs `klause-bench select` at the first arm's commit, which al
 command per case: a `klause-bench solve-one` of one problem in one arm's worktree, or for a reference arm the lab's own
 `klause-lab reference` on the problem's files (see Reference results). Every arm of a problem runs back to
 back, in an order rotated per problem, so drift and pauses spread evenly over the arms; with seeds or repeats the arms
-alternate, every arm running once per seed and repeat before the next (A, B, A, B, not A, A, B, B). A case always solves (the
-bench result cache is off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
+alternate, every arm running once per seed and repeat before the next (A, B, A, B, not A, A, B, B). A case always solves (an older
+bench's result cache is turned off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
 /experiments/<id>/cases`.
 
 After building each commit, setup captures the installed CLI and Java runtime hashes in a provenance
@@ -333,7 +333,7 @@ An experiment's page (its job id) compares the arms:
   with its interval and a Wilcoxon signed-rank p, and the problems it scored better and worse on, with a sign-test p;
 - noisy problems: an arm's runs of one problem (seeds, repeats) that disagree on the verdict, or whose time to best
   spreads over 25% of its mean;
-- a pairwise score by the MiniZinc Challenge rule `output/compare.sh` uses: per problem and seed, solved beats
+- a pairwise score by the MiniZinc Challenge rule: per problem and seed, solved beats
   unsolved, proven beats unproven, then the better objective, and equal outcomes split the point by time;
 - how each arm did against the first, problem by problem;
 - disagreements first: one arm proving infeasibility where another solves, different proven optima, or a solution
@@ -569,8 +569,8 @@ does not change what becomes a reference.
 `lab compare <id> <id>...` gives the address of the same view over several experiments, each arm named by its job,
 problems paired by suite and name. A scheduled run's page links to the comparison with the run before it.
 
-`lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as the bench writes
-`output/<config>.csv`, for `bench credit` and the `output/` scripts.
+`lab csv <id>` prints every case as CSV; `lab csv <id> <arm> [seed]` prints one arm's results as a plain CSV export,
+one row per problem with its verdict, objective and times, for analysis outside the lab.
 
 ## Saved-capture archives
 
@@ -1180,8 +1180,10 @@ the machine's memory. `deploy/lab parallel <id> <n>` changes an experiment's lim
 more cases at once, lowering it starts no more until fewer than `n` run, and never stops a running one. Setup always
 runs alone.
 
-`LAB_SHARED_PATHS` names worktree directories every job shares, by default `klause-bench/build/bench-cache`. Cases
-run with the bench result cache off, so it serves only the bench's own tooling.
+`LAB_SHARED_PATHS` names worktree directories, separated by `:`, that every job shares: each is linked to one
+directory under `$LAB_DATA/shared`, so what a job writes there outlives its worktree. None by default. Cases pass
+`-Dklause.bench.cache=false`, so an older klause commit whose bench still keeps a result cache solves every case afresh
+and needs no shared cache.
 
 ## Docker
 
@@ -1394,7 +1396,7 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 | `GET` | `/experiments/{id}/cases.csv` | the same as CSV |
 | `GET` | `/experiments/{id}/cases.jsonl` | every case whole as JSON Lines (`application/x-ndjson`), one per line, its record's `finalWitness`, `buildProvenance` and `labCheck` included and its producer record cut to `timeToBestMs`; streamed a page of cases at a time |
 | `GET` | `/experiments/{id}/stats` | the intervals, paired tests and noisy problems as JSON |
-| `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results in the bench's result-table format |
+| `GET` | `/experiments/{id}/bench.csv?arm=<label>[&seed=<n>]` | one arm's results as a plain CSV, one row per problem |
 | `GET` | `/compare?jobs=<id>,<id>…` | the comparison page over several experiments |
 | `POST` | `/schedules` | `{"name", "ref", "intervalSec", "experiment": <spec>}` → `{"id"}` |
 | `GET` | `/schedules`; `POST` `/schedules/{id}/delete` | list or remove schedules |
