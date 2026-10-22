@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.util.concurrent.TimeUnit
@@ -449,6 +450,8 @@ class CliMeasurementsTest {
                 Regex("(?m)^State:\\s+Z").containsMatchIn(Files.readString(status))
             } catch (_: NoSuchFileException) {
                 true
+            } catch (_: IOException) {
+                false
             }
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(250)
             while (!childStopped() && System.nanoTime() < deadline) Thread.sleep(5)
