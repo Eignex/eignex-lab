@@ -14,6 +14,9 @@ data class ToolRun(val exit: Int?, val stdout: String, val stderr: String, val t
 
 internal const val REASON_CAP = 500
 
+/** The most of a [LabCheck.diagnostic] kept. */
+internal const val DIAGNOSTIC_CAP = 2_000
+
 /** Runs one external checker: in [dir], with [stdin] as input when given, killed with its children after [timeoutMs]. */
 object ToolProcess {
     const val OUTPUT_CAP = 1 shl 20

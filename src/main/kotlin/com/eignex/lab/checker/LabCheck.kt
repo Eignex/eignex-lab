@@ -28,6 +28,9 @@ data class LabCheck(
     /** When the check began, in epoch ms, and how long it took. */
     val checkedAt: Long = 0,
     val elapsedMs: Long = 0,
+    /** What the checker was asked and said: its command, how its input was made, and its output's last lines, cut to
+     *  2,000 characters. Null for a checker that keeps none. */
+    val diagnostic: String? = null,
 ) {
     fun json(): String = JSON.encodeToString(serializer(), this)
 

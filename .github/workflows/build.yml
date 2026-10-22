@@ -30,6 +30,12 @@ jobs:
           curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/2.9.7/MiniZincIDE-2.9.7-bundle-linux-x86_64.tgz |
             sudo tar -xz -C /opt/minizinc --strip-components=1
           echo /opt/minizinc/bin >> "$GITHUB_PATH"
+      # Z3, the checker for algebraic SMT-LIB models Dolmen cannot read: the release build, checked against its SHA-256.
+      - run: |
+          curl -fsSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
+          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  /tmp/z3.zip" | sha256sum -c -
+          sudo unzip -q /tmp/z3.zip -d /opt
+          echo /opt/z3-4.16.0-x64-glibc-2.39/bin >> "$GITHUB_PATH"
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"

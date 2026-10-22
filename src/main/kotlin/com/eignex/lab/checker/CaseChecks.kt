@@ -24,8 +24,10 @@ object Checkers {
         val solchecker = Solchecker(dir(config))
         val minizinc = MiniZincInstall()
         val dolmen = Dolmen(dir(config))
+        val z3 = Z3Install()
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(minizinc::tool), SmtChecker(dolmen::binary)),
+        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(minizinc::tool),
+            SmtChecker(dolmen::binary, algebraic = Z3AlgebraicCheck(z3::tool))),
         locator = SourceLocator(config.corpusDir.toFile()),
         workRoot = dir(config).resolve("tmp"),
     )

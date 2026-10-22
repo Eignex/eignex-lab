@@ -364,7 +364,7 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 | XCSP3 | the official XCSP3 solution checker, `org.xcsp:xcsp3-tools:2.5` (MIT), `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
 | MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin), built with the lab's input-limit patch as `1.0.4+klause-lab-longnum-1` | `lab-mps-solchecker-1.0.4-longnum-v1` | a value with no exact decimal of at most 4095 characters (solchecker reads only decimals, so a fraction such as `1/3` is not rounded for it, nor a longer decimal cut); a SOL line over 8190 characters; an MPS file solchecker cannot read, in its words |
 | MiniZinc (integer) | MiniZinc with Gecode (`minizinc --solver gecode`; MiniZinc MPL-2.0, Gecode MIT) | `lab-minizinc-gecode-v1` | floats: no external exact checker for floats (a witness with `% klause-exact:`, `% klause-coordinate:` or `% klause-float-` lines, a float approximation, or a model with `var float` variables); a witness naming FlatZinc-introduced variables (`X_INTRODUCED_*`), which only Klause's own compilation maps back to the model; a witness MiniZinc cannot read as data for the model (integers for an enum-typed array), in its words |
-| SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary | `lab-smtlib-dolmen-0.10-v1` | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts |
+| SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary; for a model with algebraic numbers (`root-obj`) Dolmen cannot read, Z3 (MIT) | `lab-smtlib-dolmen-0.10-v1`; `lab-smtlib-z3-algebraic-<z3 version>-v1` (such as `lab-smtlib-z3-algebraic-4.16.0-v1`) for Z3's verdicts | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts; an incremental source or one with uninterpreted functions, for the Z3 path |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
 
 - **XCSP3.** The witness is the record's `finalWitness` with its leading `v ` removed: the final `<instantiation>`.
@@ -431,11 +431,39 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 - **SMT-LIB.** The witness is the record's last `( … )` model block. Dolmen runs with `--check-model=true
   --strict=false --time=30s --size=4G --report-style=minimal --warn=-all` on the original problem, the response
   `sat` and the model on standard input: exit 0 with no output is `valid`, exit 6 with `E:bad-model` `invalid`, a run
-  past 35 s `not-run`, anything else `unknown` (such as `E:unbound-id` for a model with `root-obj` algebraic numbers).
+  past 35 s `not-run`, anything else `unknown` (such as `E:unbound-id` for a model with `root-obj` algebraic numbers, which Z3 then decides: below).
   The lab downloads the pinned release binary once into `$LAB_DATA/checkers/dolmen-0.10/dolmen`, checked against its
   SHA-256: `dolmen-linux-amd64` (`bab3e9a1…b675`) on Linux, `dolmen-macos-amd64` (`2141ed2e…47a1`, an arm64 Mach-O
   despite its name) on the Mac. Over jobs 7140 and later's SMT-LIB witnesses in the lab's corpus, Dolmen accepts 76
   and cannot decide 18; none is rejected.
+
+  **Algebraic models.** For nonlinear real problems Klause writes an irrational value as Z3 does, `(root-obj p i)`:
+  the `i`-th real root, counted from the smallest, of the univariate polynomial `p` in `x`, such as `(root-obj (+ (- 1)
+  (* 2 (^ x 2))) 2)` for 1/√2. Dolmen cannot read it (`E:unbound-id`). Only when Dolmen leaves a model undecided and
+  the model has a `root-obj`, Z3 decides it in Dolmen's place (`Z3AlgebraicCheck`); every other model is Dolmen's
+  alone. Z3 reads `root-obj` in its own input, so the values go to it exactly as the model wrote them. The one input
+  transformation: the original source's text up to its single `(check-sat)`, then `(assert (= name value))` for each
+  constant the source declares, then `(check-sat)`; nothing of the source is rewritten or evaluated by the lab. Z3
+  runs as `z3 -T:30 -memory:<LAB_Z3_MEMORY_MB> -smt2 pinned.smt2` with a 35 s limit, and its decision procedure for
+  nonlinear real arithmetic (nlsat) gives the verdict: `sat` is `valid`, `unsat` `invalid` (the pinned values violate
+  an assertion), and `unknown`, `timeout`, a run past 35 s or any `(error …)` (such as a `root-obj` Z3 refuses, which
+  it reports and then skips) `unknown`. A model leaving a declared constant undefined is `unknown`, since Z3 would solve
+  for it rather than check it; a source with more than one `(check-sat)`, `push` or `pop`, or uninterpreted functions
+  is `unsupported`. Z3 is the one the reference runs use (`LAB_Z3`, else `PATH`; Homebrew's on the Mac); its version
+  goes into the policy and `checkerVersion`, its binary's SHA-256 into `checkerSha256`, and a Z3 that cannot be found
+  keeps Dolmen's `unknown`, saying so. CI installs the Z3 4.16.0 release build so the tests run against it.
+
+  Z3 alone decides, with no cvc5 cross-check: cvc5 1.4 does not read `root-obj` (`Symbol 'root-obj' not declared`)
+  and writes its own algebraic numbers with an isolating interval. Feeding it a value would take that interval, which
+  the lab would have to compute itself (root isolation, an in-house evaluator) or take from Z3, which adds no
+  independence. Z3 is independent of Klause, and a Z3 that cannot decide never moves a claim. Jobs 7303 and 7337's
+  nine algebraic models each (cases 6, 8 and 10, `kissing_2_1`; 13, 15 and 17, `kissing_4_1`; 25, 27 and 29,
+  `exp-problem-10-3-weak-chunk-0142`) all check `valid` under Z3 4.16.0, in about 50 ms each.
+
+  **Diagnostics.** Each SMT-LIB verdict keeps a `diagnostic` of at most 2,000 characters: the exact command, how its
+  input was made, its exit and the last lines of its output. Z3's also says what Dolmen said first and lists the
+  pinning assertions (the first 1,000 characters of them). It is in `lab cases <id> --json` as
+  `record.labCheck.diagnostic`, for example `lab cases 7303 --json | jq -c 'select(.index == 25) | .record.labCheck'`.
 
 The source is found in the lab's corpus (`LAB_CORPUS`), for a case run on a cloud node as for a local one: the files
 a plan resolved, if it did (a reference arm's), moved from a node's corpus root to the lab's, else a file of the
@@ -466,8 +494,8 @@ this for every reader, and confirmations read a withdrawn claim's exact objectiv
 
 **Where verdicts are.** In the `lab_check` column of the case's row in `lab.db`, as JSON: `policy`, `state`
 (`valid`, `invalid`, `unknown`, `not-run` or `unsupported`), `reason`, `checker`, `checkerVersion`, `checkerSha256`
-(the jar or binary that ran), `witnessSha256`, `sourceSha256` (as checked, keyed like `sourceHashes`), `checkedAt` and
-`elapsedMs`. Every reader sees it as the record's `labCheck` (`/experiments/<id>/cases` included), with the record's
+(the jar or binary that ran), `witnessSha256`, `sourceSha256` (as checked, keyed like `sourceHashes`), `checkedAt`,
+`elapsedMs` and `diagnostic` (the checker's command and output, for SMT-LIB; null elsewhere). Every reader sees it as the record's `labCheck` (`/experiments/<id>/cases` included), with the record's
 `validationPolicy` read as the verdict's policy and the bench's kept as `benchValidationPolicy`. A new record for the
 case (a rerun) drops it. `not-run` replaces the reason-matching of the bench's checker faults for new records: a
 missing tool or source, a download that failed, a checker that crashed or ran out of time.
@@ -634,7 +662,7 @@ The lab runs reference solvers itself (`klause-lab reference`, from the current 
 default `$LAB_DATA/releases/current/bin/klause-lab`), so a reference case runs no klause code. The bench is built only
 to select the problems and resolve their files (`select files=true`), and a job whose arms are all reference arms skips
 the klause CLI build. z3, cvc5, kissat, HiGHS and `minizinc` come from `PATH`; `LAB_Z3`, `LAB_CVC5`, `LAB_KISSAT` and
-`LAB_HIGHS` name another binary, and `LAB_Z3_MEMORY_MB` (default 2048) caps z3's memory.
+`LAB_HIGHS` name another binary, and `LAB_Z3_MEMORY_MB` (default 2048) caps z3's memory; the algebraic SMT-LIB checker uses the same z3.
 
 `deploy/specs/reference-qfnra.json` runs all frozen `qfnra-core-v1` and
 `qfnra-holdout-v1` polynomial-real inputs with Z3 at ten seconds/P1 and three
@@ -1290,8 +1318,8 @@ deploy/lab cancel 7
 `lab cases <id> --json` exports every case for auditing as JSON Lines (`GET /experiments/<id>/cases.jsonl`), one
 case per line in index order, not a JSON array: `index`, `status`, `problem`, `arm`, `seed`, `repeat`, `instrumented`
 and the full `record`, its `finalWitness` included and the lab's verdict as `record.labCheck` (`policy`, `state`,
-`reason`, `checker`, `checkerVersion`, `checkerSha256`, `sourceSha256`, `witnessSha256`, `checkedAt`, `elapsedMs`;
-absent for a case the lab has not checked). The server streams it a page of cases at a time, so a job of thousands
+`reason`, `checker`, `checkerVersion`, `checkerSha256`, `sourceSha256`, `witnessSha256`, `checkedAt`, `elapsedMs`,
+`diagnostic`; absent for a case the lab has not checked). The server streams it a page of cases at a time, so a job of thousands
 of cases with large witnesses needs no more memory than a few of them; read it with `jq -c 'select(...)'` or
 `jq -s` to make one array. `lab fetch <id>` writes the same export as `lab-cases.jsonl` in the fetched directory,
 fetched afresh each time since a recheck replaces the verdicts, so a fetched job carries its lab checks with it; the
