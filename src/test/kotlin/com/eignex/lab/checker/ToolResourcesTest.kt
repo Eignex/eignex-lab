@@ -10,6 +10,16 @@ import kotlin.test.assertTrue
 
 class ToolResourcesTest {
     @Test
+    fun `a day long reference budget should retain its requested OS limits`() {
+        val limits = ToolLimits(86_400, 86_405_000)
+
+        val command = BoundedToolProcess.command(listOf("tool"), limits, "Linux", File("/unused"))
+
+        assertTrue("86405.000s" in command)
+        assertTrue("--cpu=86400" in command)
+    }
+
+    @Test
     fun `platform commands should preserve literal tool arguments and install their limits`() {
         val arguments = listOf("/tool with spaces", "a ' literal", "\$(a command)")
         val limits = ToolLimits(3, 1001)

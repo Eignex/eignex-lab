@@ -8,7 +8,7 @@ import kotlinx.serialization.Serializable
 /** OS limits for one native SMT tool invocation. */
 data class ToolLimits(val cpuSeconds: Long, val timeoutMs: Long, val memoryBytes: Long = ToolMemoryReceipt.LIMIT) {
     init {
-        require(cpuSeconds in 1..86_400 && timeoutMs in 1..86_400_000)
+        require(cpuSeconds > 0 && timeoutMs > 0)
         require(memoryBytes in 1..ToolMemoryReceipt.LIMIT)
     }
 }
@@ -40,7 +40,7 @@ data class ToolResourceReceipt(
 ) {
     /** Complete limits and output, with no timeout, memory excess or unreaped child. */
     fun qualified(): Boolean = schemaVersion == 1 && policy == "smt-tool-envelope-v1" &&
-        command.isNotEmpty() && toolCommand.isNotEmpty() && cpuSeconds in 1..86_400 && timeoutMs in 1..86_400_000 &&
+        command.isNotEmpty() && toolCommand.isNotEmpty() && cpuSeconds > 0 && timeoutMs > 0 &&
         fileLimitBytes == (if (memory.policy == ToolMemoryReceipt.DARWIN) ToolProcess.OUTPUT_CAP / 2L else ToolProcess.OUTPUT_CAP.toLong()) &&
         exit != null && !timedOut && cleanupComplete &&
         elapsedMs in 0..timeoutMs && memory.qualified() && utf8Valid &&
