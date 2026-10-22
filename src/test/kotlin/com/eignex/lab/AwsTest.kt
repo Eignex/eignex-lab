@@ -16,6 +16,34 @@ import kotlin.test.assertTrue
 
 class AwsTest {
     @Test
+    fun `claiming a fresh node job creates its assignment directory`() {
+        val data = Files.createTempDirectory("lab")
+        val config = Config(dataDir = data, jobsDir = data.resolve("jobs"))
+        val store = Store(config.database)
+        val spec = ExperimentSpec("node", listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST)
+        val id = store.create("node", "main", emptyList(), experiment = spec)
+
+        val claimed = claimNodeJob(config, store, id)
+
+        assertEquals(id, claimed?.id)
+        assertTrue(Files.isDirectory(config.jobDir(id)))
+    }
+
+    @Test
+    fun `an unavailable node job directory leaves the job queued`() {
+        val data = Files.createTempDirectory("lab")
+        val jobs = Files.createFile(data.resolve("jobs"))
+        val config = Config(dataDir = data, jobsDir = jobs)
+        val store = Store(config.database)
+        val spec = ExperimentSpec("node", listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST)
+        val id = store.create("node", "main", emptyList(), experiment = spec)
+
+        assertFailsWith<IllegalStateException> { claimNodeJob(config, store, id) }
+
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
+    }
+
+    @Test
     fun `terminal output transfer receipts record incomplete custody without changing command exit`() {
         val dir = Files.createTempDirectory("aws-transfer")
         val case = dir.resolve("cases/0")

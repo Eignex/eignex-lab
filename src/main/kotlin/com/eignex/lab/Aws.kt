@@ -580,6 +580,12 @@ class AwsHost(
     }
 }
 
+internal fun claimNodeJob(config: Config, store: Store, jobId: Long): Job? {
+    // Assignment metadata is published before AwsJob opens setup.log.
+    config.createJobDir(jobId)
+    return store.claimForNode(jobId)
+}
+
 /**
  * Runs AWS work on a pool of nodes: EC2 instances the lab launches when the queue's pressure calls for one
  * ([NodePool], [LaunchGate]), so none runs while nothing waits for AWS. A node, once booted, takes work until there is
@@ -867,7 +873,7 @@ class AwsWorker(
         val work = NodePool.pick(node.shape, running, if (claims) queued else emptyList()) ?: return null
         val job = when (work) {
             is NodeWork.Help -> store.job(work.jobId)?.takeIf { it.status == Status.RUNNING } ?: return null
-            is NodeWork.Claim -> store.claimForNode(work.jobId) ?: return null
+            is NodeWork.Claim -> claimNodeJob(config, store, work.jobId) ?: return null
         }
         runner.crews.join(job.id, node.instance)
         node.job = job.id

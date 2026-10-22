@@ -313,8 +313,10 @@ branch at once, so a refused one never queues. The check fails closed: a branch 
 GitHub not answering through the retries, fails the job. GitHub allows 60 unauthenticated calls an hour; a token in
 `$LAB_DATA/github-token` (read-only, public repository access) lifts that, read on each use.
 
-The runner sets an experiment up when it first takes it. It builds every commit the arms name once, each in its own
-worktree. It then runs `klause-bench select` at the first arm's commit, which also fetches the corpus, and writes one
+Before a cloud node claims a queued job, the lab creates its output directory for assignment metadata. If that
+directory cannot be created, the job stays queued. The runner sets an experiment up when it first takes it. It builds
+every commit the arms name once, each in its own worktree. It then runs `klause-bench select` at the first arm's commit,
+which also fetches the corpus, and writes one
 command per case: a `klause-bench solve-one` of one problem in one arm's worktree, or for a reference arm the lab's own
 `klause-lab reference` on the problem's files (see Reference results). Every arm of a problem runs back to
 back, in an order rotated per problem, so drift and pauses spread evenly over the arms; with seeds or repeats the arms
