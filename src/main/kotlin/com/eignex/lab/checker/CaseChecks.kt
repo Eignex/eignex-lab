@@ -1,6 +1,7 @@
 package com.eignex.lab.checker
 
 import com.eignex.lab.ACTIVE
+import com.eignex.lab.AwsHost
 import com.eignex.lab.Config
 import com.eignex.lab.Job
 import com.eignex.lab.Problem
@@ -28,14 +29,28 @@ object Checkers {
         return SourceChecker(
         adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(minizinc::tool),
             SmtChecker(dolmen::binary, algebraic = Z3AlgebraicCheck(z3::tool))),
-        locator = SourceLocator(config.corpusDir.toFile()),
+        locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config)),
         workRoot = dir(config).resolve("tmp"),
     )
     }
 
+    /** Repository files read at a case's commit: from its job's worktree of that commit, else from the lab's mirror.
+     *  A planned path under the lab's or a cloud node's worktrees is a repository path. */
+    fun fixtures(config: Config): RepositoryFixtures = RepositoryFixtures(
+        mirror = config.mirror.toFile(),
+        worktrees = { (job, sha) ->
+            val own = config.worktree(job).toFile()
+            listOf(own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
+        },
+        worktreeRoots = listOf(config.worktree(0).parent.toString(), "${AwsHost.HOME}/work"),
+    )
+
     /** Where the lab keeps its checker binaries (`$LAB_DATA/checkers`), and only those: scratch inputs go under `tmp`
      *  and are deleted after each check. */
     fun dir(config: Config): File = config.dataDir.resolve("checkers").toFile()
+
+    /** How much of a commit names a job's worktree of it beside its own (`<job>@<sha>`), as the runner builds it. */
+    private const val SHA_DIR = 12
 }
 
 /** What a recheck job ([CaseChecks.recheck]) did, written as `recheck.json` in its directory. */
@@ -88,7 +103,8 @@ class CaseChecks(
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
         val text = store.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
-        val check = checker.check(problem, record) ?: return null
+        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it) }
+        val check = checker.check(problem, record, revision) ?: return null
         store.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check
