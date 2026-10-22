@@ -54,10 +54,24 @@ class NodesTest {
     }
 
     @Test
-    fun `pressure leaves out work below the minimum priority`() {
-        val demands = listOf(Demand(1, 2.0, 1, priority = 0), Demand(2, 3.0, 1, priority = -1), Demand(3, 0.5, 1, priority = 4))
+    fun `pressure leaves out work below the priority floor`() {
+        val demands = listOf(Demand(1, 2.0, 1, priority = 0), Demand(2, 3.0, 1, priority = -1, belowFloor = true), Demand(3, 0.5, 1, priority = 4))
 
-        assertEquals(listOf(5.5, 2.5, 0.5), listOf(-1, 0, 1).map { NodePool.pressure(demands, it) })
+        assertEquals(2.5, NodePool.pressure(demands))
+    }
+
+    @Test
+    fun `a node already up takes work below the priority floor only when nothing at or above it waits`() {
+        val node = NodeShape(cores = 4, onDemand = false)
+        val below = listOf(Demand(7245, 1.0, 1, priority = -4, belowFloor = true), Demand(7242, 1.0, 1, priority = -4, belowFloor = true))
+        val running = Demand(9, 1.0, 1, priority = -4, belowFloor = true)
+
+        assertEquals(NodeWork.Claim(7245), NodePool.pick(node, emptyList(), below))
+        // The job the local machine takes next is left to it.
+        assertEquals(NodeWork.Claim(7242), NodePool.pick(node, emptyList(), below, excluded = 7245))
+        assertEquals(NodeWork.Help(9), NodePool.pick(node, listOf(running), below))
+        assertEquals(NodeWork.Claim(1), NodePool.pick(node, listOf(running), below + Demand(1, 1.0, 1, priority = 0)))
+        assertEquals(null, NodePool.pick(node, emptyList(), below.map { it.copy(cores = 8) }))
     }
 
     @Test

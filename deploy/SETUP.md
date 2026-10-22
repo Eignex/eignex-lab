@@ -892,9 +892,8 @@ cloud spot node, then an on-demand node, with fixed exceptions:
   their schedule's current spec when the runner next starts, both ways. Where a run goes is not what it measures, so
   the schedule's trend and its confirmations carry on across the change; but a trend whose runs ran on different
   machines mixes their speeds: outcomes (solved, proven, objective) stay comparable, while timing comparisons across
-  runs get noisier. Each run records where it ran (its `host`, `lab` or `aws`, with `auto` marking that it could have
-  gone elsewhere), shown on its job page. An opted-in run still goes to a node only at priority `nodeMinPriority` or
-  above (below).
+  runs get noisier. Each case records where it ran (`local`, or the node's instance id), shown on its job page. An
+  opted-in run launches a node only at priority `nodeMinPriority` or above (below).
 - Every job fits the local machine: a `processors` over the local machine's cores (`LAB_CORES`), in `base`, a config or the grid, and a
   `parallel` over its limit (`LAB_MAX_PARALLEL`) are cut down to them at submit. The response's `notes`, the job log
   and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. So no
@@ -916,29 +915,52 @@ the order stays priority, series and age, as holding the `auto` jobs back would 
 either way, and the tie-break only picks which job starts next: it never preempts. The queue page reads whether a node
 is up from the worker's `aws/nodes.json` (when fresh), so its `#n in the queue` follows the same rule, best effort. So an a/b at priority 0 goes ahead of a status
 sweep (-2) or a reference run (-3, -4) even when the pressure is too low to launch a node, and the run it interrupted
-resumes later with its finished cases kept. An `auto` job is taken by whichever comes first, the free local machine or a free
-node (a node leaves to the local machine the job it takes next, when it is free or about to give way to that job); once taken
-its `host` is where it went, since a planned job's commands name paths on the host that planned it.
+resumes later with its finished cases kept.
+
+An `auto` job is shared: the local machine and any cloud nodes run it together. Its unit of work is an iteration,
+every arm of one problem, seed and repeat, and one host always runs a whole iteration, so each a/b comparison is made
+on one machine. The job is planned once, by the first host to take it (the free local machine, or a node; a node
+leaves to the local machine the job it takes next, when it is free or about to give way to that job). After that every
+host on it pulls iterations one at a time from the store (`commands.host` holds the claim), as many cases at once as
+the job's `parallel`, which counts per host, and renders each case's command for itself (see Experiments). Each host
+builds the job's commits itself first: the local machine in its own worktrees, a node on the node. So:
+
+- The local machine takes jobs by priority as above. It joins a shared job running on nodes, not only a queued one,
+  once that job is its next by priority and has an iteration no host has claimed; while it runs a shared job, nodes may
+  join it when the pressure (below) calls for them.
+- When the local machine yields to a higher priority, or a job is paused, each host lets the iterations it started
+  finish and gives back the ones it claimed and did not start, untouched; the nodes on the job carry on after the local
+  machine leaves.
+- A job ends when every case has run, whoever ran it: the last host to leave it ends it (done, failed, or cancelled),
+  or, with iterations left and no host on it (paused, yielded, nodes retired or lost), queues it again. A cancel
+  stops every host at once; a pause stops them all after their started iterations.
+- A lost node gives back every iteration it held whole: its running cases and the finished arms of an iteration it
+  did not finish run again, wherever they go next.
+- One job's iterations may run on different machines. A comparison within an iteration is fair, both arms on one
+  machine; timing across iterations (an arm's total time, a trend point) mixes the machines' speeds. Each case's
+  `host` says where it ran (job page, `lab cases`, the case CSV).
+- When the lab restarts, a shared job left running goes back to the queue, every case its hosts held queued again and
+  each iteration left part done queued whole; an `auto` job a single host took before jobs were shared (stored as `lab`
+  or `aws` with `auto` set) becomes shared again, its finished cases keeping the host that ran them.
+
 When the runner starts, it places every queued job that has not been planned again by these rules, cut down to fit
 the local machine first, so a job queued under the old model with an explicit `aws` or `lab`, or with more `processors` than the
 local machine has, becomes `auto` unless an exception applies; a planned job placed on `aws` is released as below, and other
 planned ones keep their host.
 
-A planned job a node gives back goes local first like any other: when its nodes retire or are taken back with cases
-left, when it is paused, or when the lab restarts while it runs on a cloud node, it is queued again and placed by these rules,
-normally `auto`. The free local machine then takes it over before a node does, and a node may still take it when the pressure
-calls for one. The host that takes a planned job over writes its queued commands again for its own worktrees and
-corpus, since the plan named the paths of the host that made it; finished cases and their results stay, except the
-finished arms of an iteration left part done, which run again with the rest of it (below). A retried job is placed
-the same way. A job whose cancel was requested is never queued again: whatever would requeue it (a pause, a lost or
+A planned job queued again (its hosts retired or lost with iterations left, paused, or a restart) is placed by these
+rules, normally `auto`, and taken up by priority like any other; finished cases and their results stay. A retried
+job is placed the same way. A job whose cancel was requested is never queued again: whatever would requeue it (a pause, a lost or
 retired node, a restart) ends it cancelled instead, its unfinished cases with it, and the runner ends any queued job
 left with a cancel requested when it starts. `lab host <id> local|cloud|auto` (`POST /jobs/{id}/host`, `lab` and `aws` still accepted) remains as an operator override for a queued,
 unplanned job; agents never need it. `lab machines` and `POST /jobs/{id}/machines` are retired and ignored.
 
 Cloud work runs on a pool of nodes. The cloud provider is AWS: a node is an EC2 instance that, once booted, takes work until there is none for it:
-first it joins a job already running on cloud nodes that still has problems no node has taken (building that job's commits
-first), otherwise it claims the next queued job it may run (not local-only, its cases fit the node's cores, a profile job
-only on an on-demand node, priority order). A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
+first it joins a shared job already running, on the local machine or on nodes, that still has iterations no host has
+claimed (building that job's commits first), otherwise it claims the next queued job it may run (not local-only, its
+cases fit the node's cores, a profile job only on an on-demand node, priority order). Work at or above `nodeMinPriority`
+comes first; a node already up with none of that takes work below the floor too, in the same order, so it never idles
+while such jobs wait behind the local machine's queue. A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
 and at once when a lab update waits. It stops taking problems an hour before its `maxHours` power-off. A job's
 instances are the nodes working on it right now; its page lists them with their sizes and markets, and the queue
 page's work summary shows the whole pool (below).
@@ -947,8 +969,8 @@ Nodes launch on pressure, with damping:
 
 - Pressure is the estimated core-hours of the work waiting for the cloud: queued `auto` jobs at priority `nodeMinPriority`
   (0) or above and every queued `aws` job (only an operator's override places one there), less the job the local machine takes
-  next when it is free or about to give way to it, plus the unclaimed problems
-  of jobs running on cloud nodes. A job's core-hours are its cases left times the wall time a case is taken to need times its
+  next when it is free or about to give way to it, plus the unclaimed iterations of the shared jobs running at that
+  priority, wherever they run: a large job the local machine runs counts, so nodes launch to help it. A job's core-hours are its cases left times the wall time a case is taken to need times its
   arms' `processors`. A planned job counts its queued cases; an unplanned one takes the case count of the last done run
   of the same experiment (same fingerprint, the ref, name, description and placement left out; a run of the same
   schedule first), else is guessed from its selections (`max`, else `per-family` times 10 families, else 20 problems
@@ -956,8 +978,8 @@ Nodes launch on pressure, with damping:
   case is the job's own mean once 10 of its cases finished, else that earlier run's mean case time (its cases' recorded
   times, or its running time over its cases at the concurrency it ran at), else each arm's whole `timeout` (a profile's
   allowance), the upper bound. The earlier runs are the newest 300 done experiments, reread at most once a minute.
-  Work below `nodeMinPriority` that the local machine can run waits for the local machine: no node launches for it or takes it. Local-only
-  work never counts.
+  Work below `nodeMinPriority` that the local machine can run never counts: no node launches for it, but a node already
+  up with nothing else to do takes it. Local-only work never counts.
 - The launch threshold is set by the local machine: the work that would keep it busy for `nodeLaunchLocalHours`
   (1.0; `nodeLaunchMacHours`, its older name, is still read) hours, that is the local machine's cores times that in
   core-hours (10 core-hours on a 10-core machine). The first node launches once pressure
@@ -1004,7 +1026,7 @@ queued cases), with the local machine's wall time for work it may run ("~40 min 
 local machine's wall time is the cases left times the time a case over the cases the job runs at once: its `parallel`, within
 `LAB_MAX_PARALLEL`, and no more than its largest arm's `processors` fit in `LAB_CORES` (a `parallel` of 4 with
 4-core cases on 8 cores runs 2 at once). The work summary totals the core-hours, split into local only, local or cloud at
-`nodeMinPriority` or above (which counts toward a node), local or cloud below it (the local machine's in practice)
+`nodeMinPriority` or above (which counts toward a node), local or cloud below it (which launches no node, but an idle one takes it)
 and cloud, with the time the local machine alone would take to drain all but the cloud work: the sum of those jobs' wall times, as the local machine runs one
 job at a time. Paused and cancelling jobs are left out. With cloud settings, the Cloud gauge is a bar of the worker's pressure against the
 threshold for the next node ("0.8 of 10 core-h for the first node", "26 of 40 core-h for node 3"), how long the
@@ -1080,8 +1102,8 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
   update waits, no node launches or claims a new job, nodes only join jobs already running, and an idle node retires
   at once, so the pool drains and the update lands; queued jobs start after the restart.
 - Spot nodes are the same hardware at a fraction of the on-demand price, and AWS can take one back at two minutes'
-  notice. When it does, the lab finds the node gone at its next dropped connection and puts the cases it was running,
-  and the problems it had taken, back in the job's queue; the job's other nodes take them, or a free node joins. A job
+  notice. When it does, the lab finds the node gone at its next dropped connection and puts the iterations it held
+  back in the job's queue whole; the job's other hosts take them, or a free host joins. A job
   left with work and no node is queued again rather than failed, and the next free node takes it up. Cases that
   finished keep their records, so a reclaim costs only the cases in flight. The account's spot quota is a quota of its
   own, apart from `vcpuQuota`, and spot launches need the service-linked role `aws-setup.sh` creates. Spot timing is
@@ -1396,7 +1418,7 @@ the local machine's queue, its estimate, and why it waits, for example
 
 ```text
 7347  QUEUED  local or cloud  p0   local #2  ≈4.2 core-h, 40 cases, ~1.1 h locally (from run 7200)  local machine busy with job 7246 (setting up: selecting problems for selection 0); #2 in the local queue; cloud: pressure 0.6 of 8.0 core-h for the first node, below the launch threshold
-7245  QUEUED  local or cloud  p-4  local #1  ≈2 core-h, 20 cases, ~0.5 h locally (guessed, upper bound)  local machine busy with job 7246 (running cases: 93 of 1015 done, 4 running); #1 in the local queue, taken when it ends (it gives way only to a priority above its -4); below the cloud priority floor (priority -4 < 0): local only in practice
+7245  QUEUED  local or cloud  p-4  local #1  ≈2 core-h, 20 cases, ~0.5 h locally (guessed, upper bound)  local machine busy with job 7246 (running cases: 93 of 1015 done, 4 running); #1 in the local queue, taken when it ends (it gives way only to a priority above its -4); below the cloud priority floor (priority -4 < 0): no node launches for it, but an idle node takes it
 ```
 
 Other reasons: "next for the local machine, which is free", "next for the local machine: job 12 (priority 0, …) gives

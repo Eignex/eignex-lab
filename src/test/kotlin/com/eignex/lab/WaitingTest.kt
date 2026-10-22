@@ -83,11 +83,11 @@ class WaitingTest {
     }
 
     @Test
-    fun `work below the priority floor is local only in practice`() {
+    fun `work below the priority floor launches no node, but an idle node takes it`() {
         val floor = aws.copy(nodeMinPriority = 0)
         assertEquals(
             "local machine busy with job 7246 (setting up: selecting problems for selection 0); #2 in the local queue; " +
-                "below the cloud priority floor (priority -3 < 0): local only in practice",
+                "below the cloud priority floor (priority -3 < 0): no node launches for it, but an idle node takes it",
             Waiting.waiting(job(2, priority = -3), view(aws = floor)),
         )
         // A job only a node runs has no floor.

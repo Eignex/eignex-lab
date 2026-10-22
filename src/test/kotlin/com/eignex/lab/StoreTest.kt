@@ -455,13 +455,13 @@ class StoreTest {
             experiment = ExperimentSpec(name, listOf(mapOf("suite" to "s")), host = host))
 
     @Test
-    fun `a free lab machine takes an auto job at once and keeps it`() {
+    fun `a free lab machine takes an auto job at once, which stays shared`() {
         val store = store()
         val id = autoJob(store, "a")
 
         val taken = store.next()!!
         assertEquals(id, taken.id)
-        assertEquals(listOf(Experiments.LAB_HOST, "true"), listOf(taken.experiment!!.host, taken.experiment.auto.toString()))
+        assertEquals(listOf(Experiments.AUTO_HOST, "false", "true"), listOf(taken.experiment!!.host, taken.experiment.auto.toString(), taken.local.toString()))
         assertEquals(null, store.claimForNode(id))
     }
 
@@ -503,7 +503,7 @@ class StoreTest {
         val claimed = autoJob(store, "claimed", priority = 3)
         store.claimForNode(claimed)
 
-        assertEquals(listOf(true, Experiments.AWS_HOST), listOf(store.job(cancelled)!!.cancelRequested, store.job(claimed)!!.experiment!!.host))
+        assertEquals(listOf(true, Status.RUNNING), listOf(store.job(cancelled)!!.cancelRequested, store.job(claimed)!!.status))
         assertEquals(false, store.shouldYield(reference))
     }
 
@@ -519,14 +519,14 @@ class StoreTest {
         store.requeue(reference)
 
         assertEquals(high, store.next()?.id)
-        assertEquals(Experiments.LAB_HOST, store.job(high)!!.experiment!!.host)
+        assertEquals(Experiments.AUTO_HOST, store.job(high)!!.experiment!!.host)
         store.finish(high, Status.DONE)
         assertEquals(reference, store.next()?.id)
         assertEquals(listOf(Status.DONE, Status.QUEUED), store.job(reference)!!.commands.map { it.status })
     }
 
     @Test
-    fun `a node claims an auto or aws job at once, with no wait for the local machine, and the local machine then cannot`() {
+    fun `a node claims an auto or aws job at once, with no wait for the local machine, which cannot join it before it is planned`() {
         val store = store()
         val auto = autoJob(store, "a")
         val aws = autoJob(store, "b", host = Experiments.AWS_HOST)
@@ -534,7 +534,7 @@ class StoreTest {
         val taken = store.claimForNode(auto)!!
         val other = store.claimForNode(aws)!!
 
-        assertEquals(listOf(Experiments.AWS_HOST, true, Status.RUNNING), listOf(taken.experiment!!.host, taken.experiment.auto, taken.status))
+        assertEquals(listOf(Experiments.AUTO_HOST, false, Status.RUNNING), listOf(taken.experiment!!.host, taken.experiment.auto, taken.status))
         assertEquals(listOf(Experiments.AWS_HOST, false), listOf(other.experiment!!.host, other.experiment.auto))
         assertEquals(null, store.next())
         assertEquals(null, store.claimForNode(auto))

@@ -69,52 +69,53 @@ class AwsTest {
     }
 
     @Test
-    fun `a job's problems are taken whole, in plan order, skipping cases already run`() {
-        val cases = (0 until 6).map { i -> CaseResult(i, if (i == 2) Status.DONE else Status.QUEUED, Problem("s", "p${i / 2}"), "a") }
-        val problems = ProblemQueue(cases)
+    fun `a job's iterations are claimed whole, in plan order, each by one host, skipping what is done or held`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = abJob(store, problems = 3)
+        store.commandStarted(id, 2, "i-1")
+        store.commandFinished(id, 2, 0)
+        store.commandStarted(id, 3, "i-1")
 
-        assertEquals(listOf(listOf(0, 1), listOf(3), listOf(4, 5), null), List(4) { problems.take() })
+        assertEquals(listOf(listOf(0, 1), listOf(4, 5), null), listOf("local", "i-2", "local").map { store.claimIteration(id, it) })
+        assertEquals(listOf("local", "local", "i-1", "i-1", "i-2", "i-2"), store.job(id)!!.commands.map { it.host })
+        assertEquals(0, store.unclaimed(id))
     }
 
     @Test
-    fun `hosts sharing a job's problems run each case once, a problem's cases all on one host`() {
+    fun `hosts sharing a job run each case once, each its own iterations`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val id = store.create("e", "main", List(12) { "true" to 1_000L }, parallel = 2)
-        val cases = (0 until 12).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 3}"), "a") }
-        val problems = ProblemQueue(cases)
         val runner = Runner(config, store)
         val ran = List(2) { java.util.concurrent.ConcurrentLinkedQueue<Int>() }
-        val hosts = ran.map { log -> FakeHost(log) }
+        val hosts = ran.mapIndexed { i, log -> FakeHost(log, "h$i") }
 
-        val threads = hosts.map { host -> thread { runner.dispatch(store.job(id)!!, config.jobDir(id), host, problems::take) } }
+        val threads = hosts.map { host -> thread { runner.dispatch(store.job(id)!!, config.jobDir(id), host, { store.claimIteration(id, host.id) }) } }
         threads.forEach { it.join() }
 
-        val byHost = ran.map { log -> log.map { it / 3 }.toSet() }
         assertEquals((0 until 12).toList(), ran.flatten().sorted())
-        assertTrue(byHost[0].intersect(byHost[1]).isEmpty())
+        assertTrue(ran[0].toSet().intersect(ran[1].toSet()).isEmpty())
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.DONE })
     }
 
     @Test
     fun `a host AWS takes back hands its cases back to the queue instead of failing the job`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
-        val id = store.create("e", "main", List(4) { "true" to 1_000L }, parallel = 2)
-        val problems = ProblemQueue((0 until 4).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 2}"), "a") })
+        val id = abJob(store, problems = 2)
         val handedBack = mutableListOf<Int>()
-        val lost = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue()) {
+        val lost = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue(), "i-1") {
             override fun run(command: Command, dir: Path): Int = throw HostLost("i-1 is gone (terminated, Server.SpotInstanceTermination)")
         }
 
-        val outcome = Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id), lost, problems::take) { held ->
+        val outcome = Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id), lost, { store.claimIteration(id, "i-1") }) { held ->
             handedBack += held
-            problems.giveBack(held)
         }
 
         assertEquals(Dispatched.LOST, outcome)
         assertEquals(listOf(0, 1), handedBack.sorted())
-        assertEquals(listOf(0, 1), problems.take())
-        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED && it.host == null })
+        assertEquals(listOf(0, 1), store.claimIteration(id, "local"))
     }
 
     /** A job of [problems] problems × two arms × [seeds], planned with a command per case that does nothing. */
@@ -132,11 +133,11 @@ class AwsTest {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val id = abJob(store, problems = 4, seeds = listOf(1, 2))
-        val problems = ProblemQueue(store.cases(id))
         val runner = Runner(config, store)
         val ran = List(2) { java.util.concurrent.ConcurrentLinkedQueue<Int>() }
 
-        ran.map { log -> thread { runner.dispatch(store.job(id)!!, config.jobDir(id), FakeHost(log), problems::take) } }.forEach { it.join() }
+        ran.mapIndexed { i, log -> thread { runner.dispatch(store.job(id)!!, config.jobDir(id), FakeHost(log, "h$i"), { store.claimIteration(id, "h$i") }) } }
+            .forEach { it.join() }
 
         val hostOf = ran.withIndex().flatMap { (host, log) -> log.map { it to host } }.toMap()
         val iterations = store.cases(id).groupBy { Triple(it.problem.problem, it.seed, it.repeat) }.values
@@ -149,9 +150,8 @@ class AwsTest {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val id = abJob(store, problems = 1, parallel = 1)
-        val problems = ProblemQueue(store.cases(id))
         val handedBack = mutableListOf<Int>()
-        val lost = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue()) {
+        val lost = object : ExecutionHost by FakeHost(java.util.concurrent.ConcurrentLinkedQueue(), "i-1") {
             override fun run(command: Command, dir: Path): Int {
                 if (command.index == 1) throw HostLost("i-1 is gone (terminated, Server.SpotInstanceTermination)")
                 dir.resolve("cases/0").toFile().mkdirs()
@@ -160,14 +160,13 @@ class AwsTest {
             }
         }
 
-        val outcome = Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id), lost, problems::take) { held ->
+        val outcome = Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id), lost, { store.claimIteration(id, "i-1") }) { held ->
             handedBack += held
-            problems.giveBack(held)
         }
 
         assertEquals(Dispatched.LOST, outcome)
         assertEquals(listOf(0, 1), handedBack.sorted())
-        assertEquals(listOf(0, 1), problems.take())
+        assertEquals(listOf(0, 1), store.claimIteration(id, "local"))
         assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED && it.exitCode == null })
         assertTrue(store.cases(id).all { it.record == null })
     }
@@ -247,7 +246,8 @@ class AwsTest {
         assertEquals(true, Placement.release(store, config, given))
         assertEquals(Experiments.AUTO_HOST, store.job(given)!!.experiment!!.host)
         assertEquals(given, store.next()?.id)
-        assertEquals(Experiments.LAB_HOST, store.job(given)!!.experiment!!.host)
+        // Taken, it stays shared: the local machine works on it, and nodes may join it.
+        assertEquals(listOf<Any>(Experiments.AUTO_HOST, true), store.job(given)!!.let { listOf(it.experiment!!.host, it.local) })
     }
 
     @Test
@@ -295,7 +295,7 @@ class AwsTest {
         assertEquals(listOf(4, 4, 2, 8), listOf(unset.parallel(1), unset.parallel(6), explicit.parallel(2), explicit.parallel(20)))
     }
 
-    private class FakeHost(private val log: java.util.Queue<Int>) : ExecutionHost {
+    private class FakeHost(private val log: java.util.Queue<Int>, override val id: String = ExecutionHost.LOCAL) : ExecutionHost {
         override val cores = 4
         override val maxParallel = 4
         override val corpus = ""
@@ -360,17 +360,6 @@ class AwsTest {
 
         assertEquals(listOf(CliMeasurements.install("/w"), Experiments.captureProvenance("/w")), profiled)
         assertEquals(listOf(Experiments.captureProvenance("/w")), plain)
-    }
-
-    @Test
-    fun `a job's problem queue counts the cases left and empties when the job fails`() {
-        val problems = ProblemQueue((0 until 5).map { i -> CaseResult(i, Status.QUEUED, Problem("s", "p${i / 2}"), "a") })
-
-        assertEquals(listOf(3, 5), listOf(problems.size, problems.cases))
-        problems.take()
-        assertEquals(3, problems.cases)
-        problems.clear()
-        assertEquals(listOf(true, null), listOf(problems.isEmpty(), problems.take()))
     }
 
     @Test
