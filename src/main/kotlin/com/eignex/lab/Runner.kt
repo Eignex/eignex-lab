@@ -223,8 +223,15 @@ class Runner(
         }
         store.requeueInterrupted(claimed.id)
         var job = checkNotNull(store.job(claimed.id))
+        // What the job's setup is doing, for the placement report ([SetupStep]): each retried step names itself.
+        SetupStep.clear(dir)
         if (!job.setupDone || !config.worktree(job.id).exists()) {
-            val sha = setupExperiment(job, dir)
+            val sha = try {
+                SetupStep.write(dir, SetupStep.STARTING)
+                setupExperiment(job, dir)
+            } finally {
+                SetupStep.clear(dir)
+            }
             ProfileRunDeadline.checkActive()
             store.setup(job.id, sha)
             job = checkNotNull(store.job(job.id))
@@ -1098,10 +1105,16 @@ class Runner(
             // What a cancel of the step then says it stopped ([sh]).
             val outer = currentStep.get()
             currentStep.set(what)
+            // And what the placement report says the local machine's setup of the job is doing ([SetupStep]), until
+            // the step ends; a cloud node's steps, which have no setup marker to replace, are left out.
+            val dir = jobId?.let(config::jobDir)?.takeIf { SetupStep.raw(it) != null }
+            val before = dir?.let(SetupStep::raw)
+            dir?.let { SetupStep.write(it, what) }
             try {
                 step().also { ProfileRunDeadline.checkActive() }
             } finally {
                 currentStep.set(outer)
+                dir?.let { SetupStep.restore(it, before) }
             }
         },
     )
