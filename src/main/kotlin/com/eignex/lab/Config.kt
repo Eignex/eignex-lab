@@ -1,12 +1,15 @@
 package com.eignex.lab
 
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.Path
 
 /** Server settings, all from the environment so that launchd plists carry them. */
 data class Config(
-    /** Queue database, per-job outputs and worktrees live here. */
+    /** Queue database, worktrees and Gradle live here, and per-job outputs unless [jobsDir] puts them elsewhere. */
     val dataDir: Path = Path(env("LAB_DATA", "${System.getProperty("user.home")}/klause-lab-data")),
+    /** Each job's files, one directory per job: on a volume of its own, such as an external drive, when set. */
+    val jobsDir: Path = Path(env("LAB_JOBS", "$dataDir/jobs")),
     /** The klause repository to fetch refs from. */
     val repoUrl: String = env("LAB_REPO", "https://github.com/Eignex/klause.git"),
     /**
@@ -42,7 +45,7 @@ data class Config(
     val sourceDir: Path? = System.getenv("LAB_SOURCE")?.takeIf { it.isNotBlank() }?.let { Path(it) },
     /** Seconds between update checks; `0` turns self-update off. */
     val updateCheckSec: Long = env("LAB_UPDATE_CHECK_SEC", "300").toLong(),
-    /** Free space the data directory's disk must have before the runner starts a job. */
+    /** Free space every volume the lab writes to ([Volumes]) must have before the runner starts a job. */
     val minFreeBytes: Long = env("LAB_MIN_FREE_GB", "10").toLong() * BYTES_PER_GB,
     /** How long after a job ended a low disk leaves its files alone ([JobTrim]), so a download soon after it ends,
      *  held or not, finds them all. */
@@ -50,6 +53,10 @@ data class Config(
     /** Below this much free, a low disk trims jobs still in their grace too, though never a held one: the queue's floor
      *  ([minFreeBytes]) unless set, so a queue held for space is never kept waiting on a grace. */
     val trimCriticalFreeBytes: Long = env("LAB_TRIM_CRITICAL_FREE_GB", (minFreeBytes / BYTES_PER_GB).toString()).toLong() * BYTES_PER_GB,
+    /** Below this much free on the job files' volume, [JobTrim] trims ended jobs early, largest first. */
+    val jobsTargetFreeBytes: Long = env("LAB_JOBS_TARGET_FREE_GB", (JobTrim.TARGET_FREE_BYTES / BYTES_PER_GB).toString()).toLong() * BYTES_PER_GB,
+    /** How long after a job ended [JobTrim] trims it whatever the free space: longer on a roomy volume of its own. */
+    val trimAgeMs: Long = env("LAB_TRIM_AGE_DAYS", (JobTrim.MAX_AGE_MS / MS_PER_DAY).toString()).toLong() * MS_PER_DAY,
     /** The longest an experiment may take, every case using its whole budget, before it needs `"confirm": true`. */
     val maxExperimentHours: Long = env("LAB_MAX_EXPERIMENT_HOURS", "24").toLong(),
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
@@ -84,6 +91,8 @@ data class Config(
     val archiveMaxBytes: Long = env("LAB_ARCHIVE_MAX_MB", "2048").toLong() * BYTES_PER_MB,
     /** The most an archive may unpack to, by its manifest, which also bounds what an analysis job extracts of it. */
     val archiveMaxUnpackedBytes: Long = env("LAB_ARCHIVE_MAX_UNPACKED_MB", "16384").toLong() * BYTES_PER_MB,
+    /** Where external volumes mount, as macOS mounts them: a directory under it needs its volume mounted ([Volumes]). */
+    val volumesRoot: Path = Path("/Volumes"),
 ) {
     init {
         require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
@@ -115,12 +124,19 @@ data class Config(
     val colimaDisks: Path get() = Path(System.getProperty("user.home"), ".colima", "_lima")
     /** The AWS settings, when `$LAB_DATA/aws/aws.properties` exists: experiments with `"host": "aws"` need them. */
     val aws: AwsConfig? by lazy { AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) }
-    fun jobDir(id: Long): Path = dataDir.resolve("jobs").resolve(id.toString())
+    fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
+
+    /** Job [id]'s directory, made when missing; fails, making nothing, while the job files' volume is missing ([Volumes]). */
+    fun createJobDir(id: Long): Path {
+        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot)
+        return Files.createDirectories(jobDir(id))
+    }
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
 }
 
 private const val MS_PER_SEC = 1000L
 private const val MS_PER_HOUR = 3_600_000L
+private const val MS_PER_DAY = 24 * MS_PER_HOUR
 private const val BYTES_PER_MB = 1024L * 1024
 
 private fun env(name: String, default: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default

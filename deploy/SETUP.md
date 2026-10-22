@@ -172,7 +172,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   is built and no solver or klause code runs, so it suits a report the analyser has since learned to improve, and a
   plain `profileCli` job too, whose report then says its threshold kept only the slow compilations. It is refused,
   saying why, when the job has not ended, ran without `profileCli`, or has no captures left. That includes a job
-  trimmed a week after it ended (see Disk), whose raw captures are gone while its reports and manifests stay.
+  trimmed `LAB_TRIM_AGE_DAYS` after it ended (see Disk), whose raw captures are gone while its reports and manifests stay.
 - `{"analyze": {"kind": "compilation", "archive": "<name>", "sha256": "<hex>"}}` (`lab analyze --archive <name>
   --sha256 <hex>`) analyses the captures in a saved-capture archive instead, once their job is cleaned up: a
   `campaign-evidence` archive (see Saved-capture archives) that whoever runs the lab put under `$LAB_DATA/archives`.
@@ -609,7 +609,7 @@ one row per problem with its verdict, objective and times, for analysis outside 
 
 ## Saved-capture archives
 
-A profiled job's raw captures are trimmed a week after it ends (see Disk). To keep a campaign's evidence for later
+A profiled job's raw captures are trimmed `LAB_TRIM_AGE_DAYS` (a week by default) after it ends (see Disk). To keep a campaign's evidence for later
 review or analysis, pack it into a content-addressed archive with the lab's `campaign-evidence` command
 (`CampaignEvidence.kt`), and keep the archive and its manifest outside both repositories. No raw or generated
 campaign data belongs in either repository. An archive placed under `$LAB_DATA/archives` on the lab can be analysed
@@ -1192,10 +1192,14 @@ fetches the dependencies into the new home once.
 
 ## Disk
 
-- Below `LAB_MIN_FREE_GB` (10) free on the data directory's disk, the local machine's queue is held until there is room again;
-  cloud jobs go on. `/disk` shows what takes the disk, measured every 30 minutes, with the largest job directories.
+- The lab writes to up to three volumes: the data directory's (`LAB_DATA`), the job files' (`LAB_JOBS`) and the
+  corpus's (`LAB_CORPUS`); see External drive. Below `LAB_MIN_FREE_GB` (10) free on any of them, the local machine's
+  queue is held until there is room again, and the hold names the volume; cloud jobs go on. `/disk` shows each volume
+  (mount point, free and total, the lab's directories on it), then what takes the disk, measured every 30 minutes,
+  with the largest job directories.
 - From a cloud node, at most 1 GiB of a profile job's `$OUT` comes back (see Profile jobs).
-- An ended job is trimmed a week after it ended, and sooner, largest first, while the disk has under 25 GB free: its
+- An ended job is trimmed `LAB_TRIM_AGE_DAYS` (7) after it ended, and sooner, largest first, while the job files'
+  volume has under `LAB_JOBS_TARGET_FREE_GB` (25) free: its
   `job.log`, `setup.log`, `sha`, commands' `.exit` and `.termination` files, `selection-*.jsonl` and each case's record (the `.json` in
   `cases/<i>`) stay, as do profiled cases' `compilation-report.json`, `compilation-tasks.jsonl.gz` and
   `measurement.json`, an analysis job's `analysis.json`, and an archive analysis's `archive.manifest.json` and the
@@ -1204,7 +1208,8 @@ fetches the dependencies into the new home once.
   trimmed job is refused; one of a pinned archive of its captures (`analyze.archive`) still runs. Every
   case's record is in the database as well, so its results, comparisons and trend are unaffected. A trimmed job has a
   `trimmed` file (when, bytes freed) and a line in its log, and is not trimmed again; queued and running jobs are
-  never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within a week.
+  never touched. `lab rm` still deletes a job outright. Fetch what you need from a job (`lab fetch`) within
+  `LAB_TRIM_AGE_DAYS`. The free-space rules here (the target, the grace's critical floor) read the job files' volume.
 - A low disk leaves a job alone for `LAB_TRIM_GRACE_HOURS` (6) after it ended, so a download soon after the end finds
   every file, held or not. Only below `LAB_TRIM_CRITICAL_FREE_GB` free does it trim jobs still in their grace, largest
   first, until the disk is above that again. That floor defaults to `LAB_MIN_FREE_GB`, the queue's: whenever the queue
@@ -1229,6 +1234,45 @@ fetches the dependencies into the new home once.
   temporary copy and, in WAL mode, the whole result through the write-ahead log); otherwise it logs why and looks
   again every 15 minutes. While it runs, writes from the API wait for it rather than fail, and reads go on. `/disk`
   shows the database's size and free pages, and the compaction's progress and last vacuum.
+
+## External drive
+
+The bulky data can live on an external drive: the job files (`LAB_JOBS`, default `$LAB_DATA/jobs`) and the corpus
+cache (`LAB_CORPUS`, default `~/.cache/klause-bench/corpus`). The database, the worktrees, the repository mirror and
+the lab's Gradle home stay in `LAB_DATA` on the internal SSD: builds and the database do many small random writes,
+which a USB hard disk serves at a fraction of the speed, while job files and the corpus are written and read in bulk.
+
+```
+LAB_JOBS=/Volumes/Ros/klause-lab/jobs
+LAB_CORPUS=/Volumes/Ros/klause-bench/corpus
+LAB_TRIM_AGE_DAYS=90
+```
+
+A path under `/Volumes/<name>` needs that volume mounted. While it is not, the lab creates nothing there, since
+`/Volumes/<name>` would otherwise become a plain folder on the internal disk: the runner holds its queue (checked at
+start and before each job; cloud nodes take no new jobs either) with the reason "job files volume /Volumes/Ros is not
+mounted", which the queue page, `/disk`, `lab placement` and `lab health` show, and a job's files are answered `503`
+with the same reason. A volume counts as mounted when `/Volumes/<name>` is a directory on another device than
+`/Volumes`, so a folder left at the mount point does not pass. Once it mounts, the queue resumes by itself. With
+the job files on their own roomy volume, a long `LAB_TRIM_AGE_DAYS` keeps them for months; `LAB_JOBS_TARGET_FREE_GB`
+(25) is the free space below which the trim takes ended jobs early.
+
+The services are LaunchDaemons, which start at boot without a login, so the drive must mount without one too:
+
+```bash
+sudo defaults write /Library/Preferences/SystemConfiguration/autodiskmount AutomountDisksWithoutUserLogin -bool true
+```
+
+`install.sh` warns when a configured path under `/Volumes` is not mounted. To move an existing lab:
+
+1. Copy while the lab runs: `rsync -a ~/klause-lab-data/jobs/ /Volumes/Ros/klause-lab/jobs/` and
+   `rsync -a ~/.cache/klause-bench/corpus/ /Volumes/Ros/klause-bench/corpus/`.
+2. Stop the services: `sudo launchctl bootout system/com.eignex.klause-lab.runner` and
+   `sudo launchctl bootout system/com.eignex.klause-lab.api`.
+3. Run the same rsyncs again, with `--delete`, for what changed meanwhile.
+4. Set `LAB_JOBS`, `LAB_CORPUS` and `LAB_TRIM_AGE_DAYS` in `~/.config/klause-lab/lab.env`.
+5. Rerun `deploy/install.sh`, which writes the settings into both services and starts them (it asks for sudo).
+6. Check `lab health` and `/disk`, then move the old copies aside and delete them once all is well.
 
 ## What a case runs in
 

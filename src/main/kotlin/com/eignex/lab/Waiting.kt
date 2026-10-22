@@ -96,7 +96,7 @@ data class JobPlacement(
  * The lab's placement diagnostics, `GET /placement`: the cloud worker's last [pool] report as it wrote it, the
  * [cloud] launch gate in a line, whether a node is up or launching ([nodesUp], which orders the local machine's queue),
  * the job the [local] machine runs, and every active job ([jobs]): the running ones, then the queued ones in queue
- * order, then the paused and cancelling ones.
+ * order, then the paused and cancelling ones; and why the local machine holds its queue ([held], [Volumes.hold]), if it does.
  */
 @Serializable
 data class PlacementReport(
@@ -106,6 +106,7 @@ data class PlacementReport(
     val pool: NodePoolReport? = null,
     val local: LocalWork? = null,
     val jobs: List<JobPlacement>,
+    val held: String? = null,
 )
 
 /**
@@ -113,7 +114,7 @@ data class PlacementReport(
  * ([localQueue], [Store.queueOrder]) and the job it takes next ([localNext], [Store.localNext]), told whether a node is
  * up or launching as the runner is; the job it runs ([local]); the cloud worker's [pool] report and the [aws]
  * settings; the local machine's [cores]; the [schedules], which say whether a scheduled run may go to the cloud; why
- * the local machine holds its queue ([diskHeld], a low disk), if it does; and the time [now].
+ * the local machine holds its queue ([diskHeld], a low disk or a missing volume), if it does; and the time [now].
  */
 data class QueueView(
     val localQueue: List<Long>,
@@ -178,7 +179,7 @@ object Waiting {
         return parts.joinToString("; ")
     }
 
-    /** What holds [job] on the local machine's side: a low disk, the job it runs, or the jobs ahead in its queue. */
+    /** What holds [job] on the local machine's side: a hold ([Volumes.hold]), the job it runs, or the jobs ahead in its queue. */
     private fun local(job: Job, view: QueueView): String {
         val position = view.localQueue.indexOf(job.id) + 1
         val place = if (position > 0) "#$position in the local queue" else "not in the local queue"
@@ -278,7 +279,7 @@ object Waiting {
         val progress = store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id })
         val jobs = ordered.map { placement(config, it, view, positions[it.id], history, progress[it.id].orEmpty()) }
         val cloud = config.aws?.let { cloudSummary(view.pool, it, config.cores, at) }
-        return PlacementReport(at, config.aws != null && nodesUp(view.pool, at), cloud, view.pool, view.local, jobs)
+        return PlacementReport(at, config.aws != null && nodesUp(view.pool, at), cloud, view.pool, view.local, jobs, view.diskHeld)
     }
 
     /** What the placement rules read ([QueueView]), from [store] and the lab's files at [at]. */
@@ -286,8 +287,7 @@ object Waiting {
         val pool = readPoolReport(config)
         val up = config.aws != null && nodesUp(pool, at)
         val running = store.active(withCommands = false).firstOrNull { it.status == Status.RUNNING && it.local }
-        val free = runCatching { freeBytes(config.dataDir) }.getOrNull()
-        val diskHeld = free?.takeIf { it < config.minFreeBytes }?.let { "${size(it)} free, under the ${size(config.minFreeBytes)} it keeps" }
+        val diskHeld = runCatching { Volumes.hold(config) }.getOrNull()
         return QueueView(store.queueOrder(up), store.localNext(up), running?.let { localWork(it, config.jobDir(it.id)) }, pool, config.aws,
             config.cores, store.schedules(), diskHeld, at)
     }

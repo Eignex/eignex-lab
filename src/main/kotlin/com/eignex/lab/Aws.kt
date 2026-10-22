@@ -858,11 +858,13 @@ class AwsWorker(
     }
 
     /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While an update
-     *  waits, a node only joins jobs already running, so they drain. Under the crews' lock ([Crews]), which the local
-     *  machine takes and joins jobs under too, so no job ends while a node joins it. */
+     *  waits, a node only joins jobs already running, so they drain; so it does while the job files' or the corpus's
+     *  volume is missing ([Volumes]). Under the crews' lock ([Crews]), which the local machine takes and joins jobs
+     *  under too, so no job ends while a node joins it. */
     private fun take(node: Node): AwsJob? = synchronized(runner.crews.lock) {
         val (queued, running) = demands()
-        val work = NodePool.pick(node.shape, running, if (runner.updateWaiting()) emptyList() else queued) ?: return null
+        val claims = !runner.updateWaiting() && Volumes.missing(config) == null
+        val work = NodePool.pick(node.shape, running, if (claims) queued else emptyList()) ?: return null
         val job = when (work) {
             is NodeWork.Help -> store.job(work.jobId)?.takeIf { it.status == Status.RUNNING } ?: return null
             is NodeWork.Claim -> store.claimForNode(work.jobId) ?: return null
@@ -997,7 +999,7 @@ class AwsWorker(
 
     /** A job a node works on: where its files are, here and on the node. */
     private inner class AwsJob(val id: Long, val spec: ExperimentSpec) {
-        val dir: Path = config.jobDir(id).createDirectories()
+        val dir: Path = config.createJobDir(id)
         val log: File = dir.resolve("setup.log").toFile().apply { appendText("") }
         val remoteDir = "${AwsHost.HOME}/jobs/$id"
     }

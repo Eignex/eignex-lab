@@ -140,6 +140,47 @@ class JobTrimTest {
     }
 
     @Test
+    fun `LAB_TRIM_AGE_DAYS and LAB_JOBS_TARGET_FREE_GB set when a job is old and when the job files' volume is short`() {
+        val jobs = Files.createTempDirectory("jobs")
+        val month = job(jobs, 1, 1000)
+        val now = 100 * day
+        val ended = { listOf(1L to now - 30 * day) }
+        val reasons = mutableListOf<String>()
+
+        // A 90-day age keeps a month-old job on a volume with room; the short one below the target trims it.
+        JobTrim(jobs, ended, { 200 * BYTES_PER_GB }, { _, why -> reasons += why }, { now },
+            targetFreeBytes = 100 * BYTES_PER_GB, maxAgeMs = 90 * day).run()
+        assertFalse(Files.exists(month.resolve(JobTrim.MARKER)))
+        JobTrim(jobs, ended, { 99 * BYTES_PER_GB }, { _, why -> reasons += why }, { now },
+            targetFreeBytes = 100 * BYTES_PER_GB, maxAgeMs = 90 * day).run()
+        assertTrue(Files.exists(month.resolve(JobTrim.MARKER)))
+        assertTrue("under 100 GB free" in reasons.single(), reasons.single())
+
+        val old = job(jobs, 2, 1000)
+        JobTrim(jobs, { listOf(2L to now - 91 * day) }, { Long.MAX_VALUE }, { _, why -> reasons += why }, { now }, maxAgeMs = 90 * day).run()
+        assertTrue(Files.exists(old.resolve(JobTrim.MARKER)))
+        assertTrue("over 90 days ago" in reasons.last(), reasons.last())
+    }
+
+    @Test
+    fun `the trim's settings come from the environment's defaults, the job files from LAB_JOBS`() {
+        val data = Files.createTempDirectory("lab")
+        val config = Config(dataDir = data, passwordHash = null)
+
+        assertEquals(JobTrim.MAX_AGE_MS, config.trimAgeMs)
+        assertEquals(25 * BYTES_PER_GB, config.jobsTargetFreeBytes)
+        assertEquals(data.resolve("jobs"), config.jobsDir)
+    }
+
+    @Test
+    fun `a jobs directory that is not there is left alone, not made`() {
+        val jobs = Files.createTempDirectory("lab").resolve("gone/jobs")
+
+        assertEquals(0L, JobTrim(jobs, { listOf(1L to 0L) }, { 0L }, { _, _ -> }, { 100 * day }).run())
+        assertFalse(Files.exists(jobs.parent))
+    }
+
+    @Test
     fun `the critical floor defaults to the queue's, so a held queue never waits on a grace`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, minFreeBytes = 12 * BYTES_PER_GB)
         assertEquals(config.minFreeBytes, config.trimCriticalFreeBytes)

@@ -183,7 +183,8 @@ class WaitingTest {
             application { api(config, store, host) }
 
             val report = Json.parseToJsonElement(client.get("/placement").bodyAsText()).jsonObject
-            assertEquals(setOf("at", "nodesUp", "cloud", "pool", "local", "jobs"), report.keys)
+            assertEquals(setOf("at", "nodesUp", "cloud", "pool", "local", "jobs", "held"), report.keys)
+            assertEquals(JsonNull, report.getValue("held"))
             assertEquals(false, report.getValue("nodesUp").jsonPrimitive.content.toBoolean())
             assertEquals("pressure 0.6 of 8.0 core-h for the first node, below the launch threshold · no nodes up",
                 report.getValue("cloud").jsonPrimitive.content)

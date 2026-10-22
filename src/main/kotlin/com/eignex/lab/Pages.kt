@@ -1305,9 +1305,18 @@ private fun select(name: String, any: String, options: List<Pair<String, String>
 }
 
 /** What takes the lab machine's disk, largest first, as [DiskUsage] last measured it, and the [database] as it is now. */
-internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList(), database: DatabaseReport? = null): String = buildString {
+internal fun diskPage(
+    report: DiskReport?,
+    holds: List<Hold> = emptyList(),
+    database: DatabaseReport? = null,
+    volumes: List<VolumeReport> = emptyList(),
+    /** Why the runner holds its queue ([Volumes.hold]); null when it does not. */
+    held: String? = null,
+): String = buildString {
     append(head("disk · klause lab", live = false))
     append("<header><h1>Disk</h1></header>")
+    if (held != null) append("<p class=\"FAILED\">The queue is held: ${esc(held)}</p>")
+    if (volumes.isNotEmpty()) append(volumesSection(volumes))
     if (database != null) append(databaseSection(database))
     if (holds.isNotEmpty()) {
         append("<h2>Held for download</h2><p class=\"muted\">The trim leaves these jobs' files alone until each hold is ")
@@ -1323,7 +1332,8 @@ internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList(), data
         append("<p class=\"muted\">Not measured yet: the first measurement runs at startup and takes a few minutes.</p></body></html>")
         return@buildString
     }
-    append("<p class=\"muted\">${size(report.freeBytes)} free · measured ${ago(report.at)}, every 30 minutes</p>")
+    append("<h2>What uses it</h2><p class=\"muted\">${size(report.freeBytes)} free on the data directory's volume")
+    append(" · measured ${ago(report.at)}, every 30 minutes</p>")
     append("<div class=\"scroll\"><table><tr><th>what</th><th>path</th><th class=\"num\">size</th></tr>")
     for (place in report.places) {
         append("<tr><td>${esc(place.label)}</td><td><code>${esc(place.path)}</code></td>")
@@ -1339,6 +1349,21 @@ internal fun diskPage(report: DiskReport?, holds: List<Hold> = emptyList(), data
     }
     append(dockerSection(report))
     append("</body></html>")
+}
+
+/** The disk page's volumes: each file system the lab writes to, its free and total space, and the lab's directories on it. */
+private fun volumesSection(volumes: List<VolumeReport>): String = buildString {
+    append("<h2>Volumes</h2><div class=\"scroll\"><table><tr><th>volume</th><th class=\"num\">free</th><th class=\"num\">total</th>")
+    append("<th>lab directories</th></tr>")
+    for (volume in volumes) {
+        append("<tr><td><code>${esc(volume.mount)}</code>")
+        volume.problem?.let { append(" <span class=\"FAILED\">${esc(it)}</span>") }
+        append("</td><td class=\"num\">${volume.freeBytes?.let(::size) ?: "?"}</td>")
+        append("<td class=\"num\">${volume.totalBytes?.let(::size) ?: "?"}</td><td>")
+        append(volume.paths.joinToString("<br>") { "${esc(it.label)} (${it.name}) <code>${esc(it.path)}</code>" })
+        append("</td></tr>")
+    }
+    append("</table></div>")
 }
 
 /** The disk page's database part: the file's size and free pages, its kept provenances and the [DbCompaction]'s progress. */
@@ -1421,9 +1446,11 @@ internal fun shortError(error: String): String =
 private fun summary(config: Config, host: HostReport, active: List<Job>): String {
     val running = active.count { it.status == Status.RUNNING }
     val queued = active.count { it.status == Status.QUEUED }
-    val free = freeBytes(config.dataDir)
-    val disk = (if (free < config.minFreeBytes) "<span class=\"FAILED\">${size(free)} free: queue held</span>" else "${size(free)} free") +
-        " (<a href=\"/disk\">what uses it</a>)"
+    val free = runCatching { freeBytes(config.dataDir) }.getOrNull()
+    // A low disk on any volume the lab writes to, or a missing one, holds the queue ([Volumes.hold]).
+    val held = runCatching { Volumes.hold(config) }.getOrNull()
+    val disk = (free?.let { "${size(it)} free" } ?: "free space unknown") +
+        (held?.let { " · <span class=\"FAILED\">queue held: ${esc(it)}</span>" } ?: "") + " (<a href=\"/disk\">what uses it</a>)"
     val accel = listOfNotNull(host.vendor, "simd".takeIf { host.simd }).joinToString(", ")
     return "$running running · $queued queued · $disk · ${esc(host.host)}, ${host.cores} cores" +
         (if (accel.isEmpty()) "" else ", ${esc(accel)}")

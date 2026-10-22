@@ -80,7 +80,17 @@ data class ReferenceHit(val collection: String, val problem: String, val referen
 data class FileEntry(val path: String, val bytes: Long)
 
 @Serializable
-data class Health(val ok: Boolean, val queued: Int, val running: Int, val freeBytes: Long, val host: HostReport)
+data class Health(
+    val ok: Boolean,
+    val queued: Int,
+    val running: Int,
+    /** Free on the data directory's volume; [volumes] has every volume the lab writes to. */
+    val freeBytes: Long,
+    val host: HostReport,
+    /** Why the runner holds its queue ([Volumes.hold]), a low disk or a missing volume; null when it does not. */
+    val held: String? = null,
+    val volumes: List<VolumeReport> = emptyList(),
+)
 
 fun serveApi(config: Config, store: Store, host: HostReport) {
     embeddedServer(Netty, port = config.port) { api(config, store, host) }.start(wait = true)
@@ -141,17 +151,21 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/disk") {
             val holds = store.holds()
             val database = withContext(Dispatchers.IO) { runCatching { store.database() }.getOrNull() }
+            val volumes = withContext(Dispatchers.IO) { Volumes.report(config) }
+            val held = withContext(Dispatchers.IO) { runCatching { Volumes.hold(config) }.getOrNull() }
             if (call.wantsHtml()) {
-                call.respondText(diskPage(disk.latest, holds, database), ContentType.Text.Html)
+                call.respondText(diskPage(disk.latest, holds, database, volumes, held), ContentType.Text.Html)
             } else {
-                call.respond((disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList())).copy(holds = holds, database = database))
+                call.respond((disk.latest ?: DiskReport(0, freeBytes(config.dataDir), emptyList()))
+                    .copy(holds = holds, database = database, volumes = volumes, held = held))
             }
         }
         get("/health") {
             val jobs = store.active(withCommands = false)
             val queued = jobs.count { it.status == Status.QUEUED }
             val running = jobs.count { it.status == Status.RUNNING }
-            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host))
+            val (held, volumes) = withContext(Dispatchers.IO) { runCatching { Volumes.hold(config) }.getOrNull() to Volumes.report(config) }
+            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host, held, volumes))
         }
         get("/jobs") {
             // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds. ?active=true lists
@@ -527,13 +541,17 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val released = store.releaseHold(id, call.parameters["lease"]!!)
             call.respond(if (released) HttpStatusCode.OK else HttpStatusCode.NotFound, if (released) "released" else "no such hold")
         }
+        // A job's files live on the job files' volume ([Config.jobsDir]): while it is not mounted they are unavailable,
+        // which is said as such rather than as missing files.
         get("/jobs/{id}/files") {
             val id = call.jobId(store) ?: return@get
+            if (call.jobFilesMissing(config)) return@get
             val files = jobFiles(config.jobDir(id))
             if (call.wantsHtml()) call.respondText(filesPage(id, files), ContentType.Text.Html) else call.respond(files)
         }
         get("/jobs/{id}/files/{path...}") {
             val id = call.jobId(store) ?: return@get
+            if (call.jobFilesMissing(config)) return@get
             val tail = call.parameters["tail"]?.let {
                 requireNotNull(it.toLongOrNull()?.takeIf { bytes -> bytes in 0..MAX_TAIL_BYTES }) { "tail must be 0 to $MAX_TAIL_BYTES bytes" }
             }
@@ -717,6 +735,13 @@ private suspend fun ApplicationCall.jobId(store: Store): Long? {
         else -> return id
     }
     return null
+}
+
+/** Whether the job files' volume is missing ([Volumes.problem]); then the call is answered 503 with why. */
+private suspend fun ApplicationCall.jobFilesMissing(config: Config): Boolean {
+    val problem = Volumes.problem(Volumes.JOB_FILES, config.jobsDir, config.volumesRoot) ?: return false
+    respondText("job files unavailable: $problem", status = HttpStatusCode.ServiceUnavailable)
+    return true
 }
 
 /**
