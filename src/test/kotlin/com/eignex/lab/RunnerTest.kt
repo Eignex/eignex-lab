@@ -247,6 +247,17 @@ class RunnerTest {
     }
 
     @Test
+    fun `an ordinary case enables lightweight CLI instrumentation without a recording`() {
+        val lab = Dispatchable("printf '%s\\n' \"\$KLAUSE_DEBUG\" \"\$KLAUSE_CLI_OPTS\"" to 60L)
+
+        assertEquals(Dispatched.FINISHED, lab.dispatch())
+
+        val output = lab.dir.resolve("0.out").toFile().readText().lines()
+        assertEquals("true", output.first())
+        assertFalse("FlightRecording" in output[1] || "LogCompilation" in output[1], output[1])
+    }
+
+    @Test
     fun `a timeout kill says so, a SIGKILL the lab did not send is external, and an ordinary failure says nothing`() {
         val lab = Dispatchable("sleep 30" to 1L, "kill -9 \$\$" to 60L, "exit 3" to 60L)
 

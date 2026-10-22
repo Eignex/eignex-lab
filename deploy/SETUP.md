@@ -1158,8 +1158,17 @@ environment:
 | variable | value |
 | --- | --- |
 | `KLAUSE_CLI_OPTS` | `LAB_SOLVE_JAVA_OPTS` (default `-Xmx3g -XX:+UseSerialGC`) plus `-XX:ActiveProcessorCount=<the case's cores>` |
+| `KLAUSE_DEBUG` | `true`, enabling lightweight runtime statistics on CLI revisions that support it |
 | `JOB_DIR` | the job's output directory; the case writes its record under `cases/<n>/` |
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
+
+On both local and cloud cases, supported Klause CLIs include `runtimeDebug`,
+`jvmCompilationSupported`, `jvmCompilationStartupMs` and `jvmCompilationMs` in the
+solve record's statistics. The numeric fields require JVM compilation-time
+monitoring: they separate the accumulated compiler-thread elapsed time before
+input loading from the increase through loading and solving. Older revisions
+ignore `KLAUSE_DEBUG`. This setting does not enable JFR, compilation logs or heap
+sampling; recordings require explicit profiling options.
 
 Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output and the record go to
 `JOB_DIR/cases/<n>/`. On a cloud node the record comes back with every case, and stdout and stderr only for a case that
