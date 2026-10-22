@@ -8,6 +8,8 @@ import com.eignex.lab.checker.SmtChecker
 import com.eignex.lab.checker.SourceChecker
 import com.eignex.lab.checker.SourceLocator
 import com.eignex.lab.checker.Verdict
+import com.eignex.lab.checker.Z3AlgebraicCheck
+import com.eignex.lab.checker.Z3Tool
 import com.eignex.lab.checker.sha256
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -309,6 +311,36 @@ class CheckerInvariantTest {
         val outcome = Outcome.of(store.cases(id).single().record)!!
         assertEquals(Reported(true, false, null, TIME_TO_BEST, 2), outcome.reported())
         assertEquals(WitnessCheck.UNCHECKED, outcome.witness)
+    }
+
+    @Test
+    fun `an algebraic model Z3 cannot decide keeps the claim, marked indeterminate, and only Z3's unsat withdraws it`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val text = """{"problem":"p","solver":"klause","kind":"satisfy","maximize":false,"feasible":true,"objective":null,
+            "proven":false,"timeToBestMs":$TIME_TO_BEST,"budgetMs":10000,"command":"klause-cli","validationPolicy":"reported-result-v1",
+            "finalWitness":"(\n(define-fun x () Real (root-obj (+ (- 50) (* 2 (^ x 2))) 2))\n)","sourceHashes":{"model":"${sha256(source)}"},"stats":{}}"""
+        fun script(body: String) = Files.createTempFile("tool", "").toFile().apply { writeText("#!/bin/sh\n$body\n"); setExecutable(true) }
+        val dolmen = script("cat > /dev/null; echo E:unbound-id >&2; exit 4")
+        fun checked(z3: String, timeoutMs: Long = Z3AlgebraicCheck.TIMEOUT_MS): Pair<LabCheck, Outcome> {
+            val id = job(store, text)
+            val algebraic = Z3AlgebraicCheck({ Z3Tool(script(z3), "4.16.0", "fake", 2048) }, timeoutMs)
+            val checks = CaseChecks(store, { dispatcher(SmtChecker({ dolmen }, algebraic = algebraic)) }) { _, _ -> }
+            checks.afterCase(id, 0)
+            checks.await(id)
+            assertEquals(text, store.caseRecordText(id, 0))
+            return labCheck(store, id)!! to Outcome.of(store.cases(id).single().record)!!
+        }
+        for ((z3, timeoutMs) in listOf("echo unknown" to Z3AlgebraicCheck.TIMEOUT_MS, "echo timeout" to Z3AlgebraicCheck.TIMEOUT_MS,
+            "exec sleep 60" to 300L)) {
+            val (check, outcome) = checked(z3, timeoutMs)
+            assertEquals(LabCheck.UNKNOWN, check.state, z3)
+            assertEquals(Z3AlgebraicCheck.policy("4.16.0"), check.policy)
+            assertEquals(Reported(true, false, null, TIME_TO_BEST, 2), outcome.reported(), z3)
+            assertEquals(WitnessCheck.INDETERMINATE, outcome.witness, z3)
+        }
+        val (rejected, outcome) = checked("echo unsat")
+        assertEquals(LabCheck.INVALID, rejected.state)
+        assertEquals(withdrawnClaim, outcome.reported())
     }
 
     private companion object {

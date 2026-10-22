@@ -17,8 +17,20 @@ data class CheckCase(val record: JsonObject, val sources: SourceFiles, val witne
         ?: field("objective")?.toBigDecimalOrNull()?.takeIf { it.stripTrailingZeros().scale() <= 0 }?.toBigInteger()?.toString()
 }
 
-/** An adapter's verdict, with the checker version and binary it ran. */
-data class Verdict(val state: String, val reason: String, val version: String? = null, val sha256: String? = null)
+/**
+ * An adapter's verdict, with the checker version and binary it ran. A verdict another checker reached in the adapter's
+ * place, as Z3 does for an SMT-LIB model Dolmen cannot read, names that checker's [policy] and [checker]. [diagnostic]
+ * is what the checker was asked and said, kept short.
+ */
+data class Verdict(
+    val state: String,
+    val reason: String,
+    val version: String? = null,
+    val sha256: String? = null,
+    val policy: String? = null,
+    val checker: String? = null,
+    val diagnostic: String? = null,
+)
 
 /** One external checker for one source format ([format], as `klause-bench select` names it). */
 interface FormatChecker {
@@ -65,9 +77,10 @@ class SourceChecker(
         val hashes = (record["sourceHashes"] as? JsonObject)?.mapValues { (_, v) -> (v as? JsonPrimitive)?.content.orEmpty() }
             ?.filterValues { it.isNotEmpty() }.orEmpty()
         fun done(verdict: Verdict) = LabCheck(
-            policy = adapter.policy, state = verdict.state, reason = verdict.reason.take(REASON_CAP), checker = adapter.checker,
-            checkerVersion = verdict.version, checkerSha256 = verdict.sha256, witnessSha256 = witness?.let { sha256(it.toByteArray()) },
-            sourceSha256 = hashes, checkedAt = started, elapsedMs = clock() - started,
+            policy = verdict.policy ?: adapter.policy, state = verdict.state, reason = verdict.reason.take(REASON_CAP),
+            checker = verdict.checker ?: adapter.checker, checkerVersion = verdict.version, checkerSha256 = verdict.sha256,
+            witnessSha256 = witness?.let { sha256(it.toByteArray()) }, sourceSha256 = hashes, checkedAt = started,
+            elapsedMs = clock() - started, diagnostic = verdict.diagnostic?.take(DIAGNOSTIC_CAP),
         )
         return try {
             run(adapter, problem, record, witness, hashes)
