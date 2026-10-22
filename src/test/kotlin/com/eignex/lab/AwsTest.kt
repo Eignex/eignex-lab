@@ -8,6 +8,7 @@ import kotlin.concurrent.thread
 import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -395,6 +396,33 @@ class AwsTest {
             assertTrue(Files.exists(profile.resolve(name)), name)
         }
         assertTrue("\"instrumented\":true" in profile.resolve("measurement.json").readText())
+        dir.toFile().deleteRecursively()
+    }
+
+    @Test
+    fun `a node resource measurement retains process resources without requesting a JVM recording`() {
+        val dir = Files.createTempDirectory("aws")
+        dir.resolve("aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val scripts = ArrayList<String>()
+        val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
+            override fun start(script: String, mergeErrors: Boolean): Process {
+                scripts += script
+                val reply = if (scripts.size == 1) "exit=0\n----klause-lab-record----\n{\"elapsedMs\":5}" else "captured"
+                return ProcessBuilder("printf", "%s\n", reply).start()
+            }
+        }
+        val host = AwsHost("i-1", ssh, 4, "-Xmx1g", measureCliResources = true) { false }
+
+        assertEquals(0, host.run(Command(7, "solve", 10, Status.RUNNING), dir))
+
+        assertTrue("KLAUSE_CLI_OPTS='-Xmx1g -XX:ActiveProcessorCount=1'" in scripts.first(), scripts.first())
+        assertFalse(scripts.any { "FlightRecording" in it || "cli.jfr" in it || "LogCompilation" in it })
+        val profile = Files.list(dir.resolve("cases/7")).use { it.toList() }.single { it.fileName.toString().startsWith("profile-") }
+        assertTrue(Files.exists(profile.resolve("resources.txt")))
+        assertFalse(Files.exists(profile.resolve("cli.jfr")))
+        val manifest = profile.resolve("measurement.json").readText()
+        assertTrue("\"instrumentation\":\"external-time\"" in manifest && "\"allocation\":\"not collected\"" in manifest, manifest)
+        assertTrue(Files.exists(profile.resolve("solve-record.json")))
         dir.toFile().deleteRecursively()
     }
 

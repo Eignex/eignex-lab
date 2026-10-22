@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.util.concurrent.TimeUnit
@@ -143,6 +144,23 @@ class CliMeasurementsTest {
         assertTrue("\"instrumentation\":\"jfr-profile+compilation+hotspot-log\"" in manifest && "hotspot-compilation.log" in manifest, manifest)
         CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", null, macOs = false)
         assertTrue("\"instrumented\":false" in Files.readString(dir.resolve("measurement.json")))
+    }
+
+    @Test
+    fun `a resource measurement manifest binds its record without claiming a recording or allocation samples`() {
+        val dir = Files.createTempDirectory("measurement")
+
+        CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", "{}", macOs = false, profileCli = false)
+
+        val manifest = Files.readString(dir.resolve("measurement.json"))
+        assertTrue("\"instrumentation\":\"external-time\"" in manifest, manifest)
+        assertTrue("\"allocation\":\"not collected\"" in manifest, manifest)
+        assertTrue("\"instrumented\":false" in manifest, manifest)
+        assertEquals(listOf("resources.txt"), CliMeasurements.artifacts(null, profileCli = false))
+        assertTrue("\"artifacts\":[\"resources.txt\",\"solve-record.json\"]" in manifest, manifest)
+        assertEquals("{}", Files.readString(dir.resolve("solve-record.json")))
+        assertFalse("cli.jfr" in manifest || "hotspot-compilation" in manifest, manifest)
+        dir.toFile().deleteRecursively()
     }
 
     @Test
@@ -432,6 +450,8 @@ class CliMeasurementsTest {
                 Regex("(?m)^State:\\s+Z").containsMatchIn(Files.readString(status))
             } catch (_: NoSuchFileException) {
                 true
+            } catch (_: IOException) {
+                false
             }
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(250)
             while (!childStopped() && System.nanoTime() < deadline) Thread.sleep(5)

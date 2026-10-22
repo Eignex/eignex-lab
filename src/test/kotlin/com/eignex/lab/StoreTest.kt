@@ -153,6 +153,17 @@ class StoreTest {
     }
 
     @Test
+    fun `a resource measured job retains serial execution when its parallel limit is edited`() {
+        val store = store()
+        val experiment = ExperimentSpec("resources", listOf(mapOf("suite" to "s")), parallel = 1, measureCliResources = true)
+        val id = store.create("resources", "main", listOf("true" to 10L), parallel = 1, experiment = experiment)
+
+        assertFailsWith<IllegalArgumentException> { store.setParallel(id, 6) }
+
+        assertEquals(1, store.parallel(id))
+    }
+
+    @Test
     fun `a queued profiling job may move to the local machine like any other`() {
         val store = store()
         val experiment = ExperimentSpec("profile", listOf(mapOf("suite" to "miplib2017")),

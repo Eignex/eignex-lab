@@ -44,7 +44,7 @@ internal object AwsBuildCache {
         )
     }
 
-    /** What a node's set of built commits holds for [sha] built with or without a profiling launcher. */
+    /** What a node's set of built commits holds for [sha] with or without the CLI measurement launcher. */
     fun builtKey(sha: String, profileCli: Boolean): String = "$sha:$profileCli"
 
     /** Whether a node that built what [built] holds has [sha] ready for a job with [profileCli]. */

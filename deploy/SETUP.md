@@ -64,6 +64,13 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `host` and `machines` are no longer followed: the lab places every job itself (see Running on cloud nodes). They are still
   accepted, so older specs and clients work, and the reply's `placement` says where the job went and that they were
   ignored.
+- `measureCliResources: true` (with explicit `parallel: 1`) measures physical peak RSS, user/system CPU and wall time
+  for ordinary Klause CLI cases through GNU/BSD time. It keeps the ordinary CLI JVM options and records no JFR,
+  compilation log or allocation samples. Each invocation retains `resources.txt`, `measurement.json` and a bound
+  `solve-record.json` under `cases/<index>/profile-<uuid>/`; the manifest identifies `external-time` instrumentation
+  and allocation as `not collected`. Placement follows the lab's ordinary automatic policy. This option is for native
+  CLI arms, so reference-backend arms are rejected. Confirmations preserve it. Resource measurements are observations,
+  not enforced process memory/CPU limits or source proof certificates.
 - `profileCli: true` (with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings and
   measures its physical peak RSS and user/system CPU. It is placed like any other job, local first, then a node. On a
   node (Linux) GNU time measures the CLI; on the local machine (macOS here), which has no GNU time, BSD `time -l` does, its report
@@ -75,6 +82,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
   command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
   A profiling job runs with a parallel limit of one, however it is edited through the client or API.
+  It already includes resource measurement; omit `measureCliResources` when profiling.
   These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
   at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
   RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted

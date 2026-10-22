@@ -78,6 +78,29 @@ class RunnerTest {
         assertEquals(Status.DONE, store.job(id)!!.commands.single().status)
     }
 
+    @Test
+    fun `a resource measured local case keeps ordinary CLI options and binds its solve record`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measureCliResources = true)
+        val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
+            "echo \"\$KLAUSE_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
+            "echo \"\$KLAUSE_CLI_PREFLIGHT_OPTS\" > \"\$JOB_DIR/preflight\""
+        val id = store.create("cli", "main", listOf(case to 60L), experiment = spec)
+        config.worktree(id).createDirectories()
+        val dir = config.jobDir(id).createDirectories()
+
+        assertEquals(Dispatched.FINISHED, Runner(config, store).dispatch(store.job(id)!!, dir))
+
+        val profile = Path.of(dir.resolve("dir").toFile().readText().trim())
+        assertTrue(profile.startsWith(dir.resolve("cases/0")))
+        assertEquals(dir.resolve("preflight").toFile().readText(), dir.resolve("opts").toFile().readText())
+        val manifest = profile.resolve("measurement.json").toFile().readText()
+        assertTrue("\"instrumentation\":\"external-time\"" in manifest, manifest)
+        assertFalse("cli.jfr" in manifest || "FlightRecording" in manifest, manifest)
+        assertEquals("{\"ok\":true}", profile.resolve("solve-record.json").toFile().readText().trim())
+    }
+
     private val sampleLog: String = checkNotNull(javaClass.getResource("/compilation/hotspot-compilation.log")).readText()
 
     /** A finished profileCompilation job whose case 0 left [log] as its HotSpot log; returns its id. */

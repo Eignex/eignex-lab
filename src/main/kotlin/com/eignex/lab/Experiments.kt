@@ -57,6 +57,8 @@ data class ExperimentSpec(
     /** Whole-CLI JFR and physical resource measurements, on the local machine or a node, returned with each case's
      *  files. */
     val profileCli: Boolean = false,
+    /** Physical CLI process resources from GNU/BSD time, without enabling JFR. */
+    val measureCliResources: Boolean = false,
     /**
      * With [profileCli], also record every JIT compilation of the CLI JVM ([CliMeasurements.options]): `jfr` records
      * `jdk.Compilation` with no threshold, and `jfr+log` adds HotSpot's compilation log, with its inlining decisions.
@@ -123,6 +125,9 @@ data class AnalyzeSpec(
 
 /** Whether [this] is an analysis job, which runs the lab's analyser over another job's captures. */
 val ExperimentSpec.isAnalysis: Boolean get() = analyze != null
+
+/** Whether each CLI process runs under the lab's physical resource measurement wrapper. */
+val ExperimentSpec.measuresCli: Boolean get() = profileCli || measureCliResources
 
 /** Whether [this] job's cases are instrumented: their CLI recorded every compilation, so their times are no runtime measurement. */
 val ExperimentSpec.instrumented: Boolean get() = profileCompilation != null
@@ -260,6 +265,7 @@ object Experiments {
         spec.seeds.sorted(),
         spec.repeats,
         spec.profileCli,
+        spec.measureCliResources,
         spec.profileCompilation.orEmpty(),
     )
 
@@ -344,7 +350,7 @@ object Experiments {
             require(
                 spec.profile == null && spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.base.isEmpty() &&
                     spec.configs == listOf(emptyMap<String, String>()) && spec.grid.isEmpty() && spec.seeds.isEmpty() &&
-                    spec.repeats == 1 && !spec.profileCli && spec.profileCompilation == null,
+                    spec.repeats == 1 && !spec.measuresCli && spec.profileCompilation == null,
             ) { "an analyze job reruns the lab's analyser over another job's captures: no problems, configs, profile or profiling of its own" }
             return
         }
@@ -369,10 +375,16 @@ object Experiments {
                 "a profile job runs its main once: no configs, grid, seeds or repeats"
             }
             require(!spec.profileCli) { "profileCli is for experiments; a profile job records JFR already" }
+            require(!spec.measureCliResources) { "measureCliResources measures an experiment's CLI, not a profile main" }
             arms(spec).single().let { require(it.cores <= cores) { "the profile asks for ${it.cores} processors; the lab has $cores cores" } }
             return
         }
         require(!spec.profileCli || spec.parallel == 1) { "profileCli requires parallel=1" }
+        require(!spec.measureCliResources || spec.parallel == 1) { "measureCliResources requires parallel=1" }
+        require(!spec.measureCliResources || !spec.profileCli) { "profileCli already includes physical resource measurements" }
+        require(!spec.measureCliResources || arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
+            "measureCliResources measures the Klause CLI, not reference-backend arms"
+        }
         require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
         arms(spec).firstOrNull { it.cores > cores }?.let { require(false) { "arm '${it.label}' asks for ${it.cores} processors; the lab has $cores cores" } }
         require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }
