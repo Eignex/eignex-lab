@@ -19,9 +19,37 @@ object Placement {
      * ([Placement.cloudSchedule]): such a run may go to either unless another of these reasons holds, and its
      * confirmations still stay.
      */
-    fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean =
-        ('@' in name && !cloudSchedule) || Confirm.SUFFIX in name || spec.problemList.isNotEmpty() || spec.profile?.runTimeoutSec != null ||
-            spec.isAnalysis || runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND }
+    fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean = localOnlyReason(spec, name, cloudSchedule) != null
+
+    /** Which of [localOnly]'s reasons keeps [spec] named [name] on the local machine, in a few plain words; null when
+     *  none does. */
+    fun localOnlyReason(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): String? = when {
+        Confirm.SUFFIX in name -> "a confirmation"
+        '@' in name && !cloudSchedule -> "a scheduled run whose schedule stays local"
+        spec.problemList.isNotEmpty() -> "an exact problem list"
+        spec.profile?.runTimeoutSec != null -> "a profile with a whole-run deadline"
+        spec.isAnalysis -> "an analysis of captures kept on the local machine"
+        runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND } ->
+            "a reference run, which needs the local machine's reference solvers"
+        else -> null
+    }
+
+    /** Where a job placed on [host] may run, in the words the pages and the client use: [LOCAL_ONLY] (`lab`),
+     *  [LOCAL_OR_CLOUD] (`auto`) or [CLOUD] (`aws`). */
+    fun where(host: String?): String = when (host) {
+        Experiments.AUTO_HOST -> LOCAL_OR_CLOUD
+        Experiments.AWS_HOST -> CLOUD
+        else -> LOCAL_ONLY
+    }
+
+    /** Whether a queued job on [host] at [priority] is below the cloud's priority floor [minPriority]
+     *  ([AwsConfig.nodeMinPriority]): work the local machine could run, for which no node launches and which no node
+     *  takes. A job only a node runs never is. */
+    fun belowFloor(host: String?, priority: Int, minPriority: Int): Boolean = host != Experiments.AWS_HOST && priority < minPriority
+
+    const val LOCAL_ONLY = "local only"
+    const val LOCAL_OR_CLOUD = "local or cloud"
+    const val CLOUD = "cloud"
 
     /**
      * Whether a schedule's saved [spec] opts its runs in to the cloud: its host is `auto`, or `cloud` (`aws`), which

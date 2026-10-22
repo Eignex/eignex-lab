@@ -43,8 +43,16 @@
 #   lab schedules | lab unschedule <id>
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
-#   lab ls | lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
-#                                                            cancel a wrong job, not a long one: the lab bounds runtime itself
+#   lab ls [n]                                              every queued and running job, however old, then the newest n (30)
+#   lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
+#                                                            show adds a queued job's placement and why it waits; cancel a
+#                                                            wrong job, not a long one: the lab bounds runtime itself
+#   lab placement [id] [--json]                              why queued jobs wait and where each will run, read-only: the cloud
+#                                                            pool's pressure against the next threshold, sustain wait, cooldown
+#                                                            and launch blocker; the local machine's job and its phase (its
+#                                                            setup step, or its cases); each active job's placement, priority,
+#                                                            place in the local queue, estimate and reason. With an id, that
+#                                                            job's alone; --json prints the lab's JSON (GET /placement)
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
 #   lab host <id> local|cloud|auto                          operators only: override where a queued, unplanned job may run
@@ -148,10 +156,48 @@ references)
     --data-urlencode "verdict=${3:-}" -H 'Accept: application/json' | jq -r '.[] |
     [.collection, .problem, .reference.solver, (.reference.feasible|tostring), (.reference.objective|tostring),
      (.reference.proven|tostring), "\(.reference.elapsedMs)ms/\(.reference.budgetMs)ms"] | @tsv' ;;
-ls) curl -fsS "$url/jobs?limit=${1:-30}" | jq -r '.[] | [.id, .status,
+ls)
+  # Every active job first, newest first however old, then the newest n jobs that are not among them.
+  { curl -fsS "$url/jobs?active=true"; curl -fsS "$url/jobs?limit=${1:-30}"; } | jq -s -r '
+    (.[0] | sort_by(-.id)) as $active | ($active | map(.id)) as $ids
+    | ($active + (.[1] | map(select(.id | IN($ids[]) | not))))[] | [.id, .status,
       "\(.counts.done)/\(.counts.total)", "\(.counts.failed) failed", "x\(.parallel // 1)",
       "p\(.priority // 0)\(if .paused then " paused" else "" end)", .ref, .name] | @tsv' ;;
-show) curl -fsS "$url/jobs/$1" | jq . ;;
+show)
+  # A queued job comes with where it may run and why it waits (GET /placement/<id>).
+  job=$(curl -fsS "$url/jobs/$1")
+  if [[ "$(jq -r .status <<< "$job")" == QUEUED ]]; then
+    placement=$(curl -fsS "$url/placement/$1") || placement=null
+    jq --argjson p "$placement" '. + {placement: $p.placement, waiting: $p.waiting}' <<< "$job"
+  else jq . <<< "$job"; fi ;;
+placement)
+  json=0 id=""
+  for arg in "$@"; do case "$arg" in --json) json=1 ;; *) id="$arg" ;; esac; done
+  [[ -z "$id" || "$id" =~ ^[1-9][0-9]*$ ]] || { echo "usage: lab placement [id] [--json]" >&2; exit 2; }
+  # One decimal for core-hours and hours, as the queue page shows them.
+  defs='def r1: (. * 10 | round) / 10;
+    def est: if .estimate == null then "-" else "≈\(.estimate.coreHours | r1) core-h, \(.estimate.cases) cases, ~\(.estimate.localHours | r1) h locally (\(.estimate.note))" end;'
+  if [[ -n "$id" ]]; then
+    placement=$(curl -fsS "$url/placement/$id")
+    if (( json )); then jq . <<< "$placement"
+    else jq -r "$defs"'
+      "\(.id) \(.name): \(.status), \(.placement), priority \(.priority)"
+        + (if .queuePosition then ", #\(.queuePosition) in the queue" else "" end)
+        + (if .localPosition then ", #\(.localPosition) in the local queue" else "" end),
+      (if .estimate then "estimate: \(est)" else empty end),
+      (if .waiting then "waiting: \(.waiting)" else empty end),
+      (if .doing then "doing: \(.doing)" else empty end)' <<< "$placement"; fi
+  else
+    report=$(curl -fsS "$url/placement")
+    if (( json )); then jq . <<< "$report"
+    else jq -r "$defs"'
+      "cloud: \(.cloud // "no cloud settings")",
+      (if .local == null then "local: free"
+       else "local: job \(.local.id) \(.local.name): \(.local.doing)"
+         + (if .local.stepSince then " (for \((.at - .local.stepSince) / 60000 | floor) min)" else "" end) end),
+      (.jobs[] | [.id, .status, .placement, "p\(.priority)", (if .localPosition then "local #\(.localPosition)" else "-" end),
+        est, (.waiting // .doing // "")] | @tsv)' <<< "$report"; fi
+  fi ;;
 cancel) curl -sS -X POST "$url/jobs/$1/cancel"; echo ;;
 parallel) jq -n --argjson parallel "$2" '{parallel: $parallel}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/parallel"; echo ;;

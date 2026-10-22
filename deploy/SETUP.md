@@ -957,7 +957,8 @@ pressure has stood over it against `nodeSustainMin` ("over for 4 of 10 min"), th
 node back ("no node: below threshold", "waiting 6 min more", "cooldown 3 min", "at maxInstances", "vCPU quota full",
 "lab update waiting") and the nodes up with their size, market and what each is doing. The worker writes these to
 `$LAB_DATA/aws/nodes.json` on every poll; the page's totals include the job the free local machine takes next, which the
-pressure leaves out.
+pressure leaves out. Each queued row says why it waits, as `lab placement` does (see Client). The runner keeps the
+setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reasons can name it.
 
 `aws.properties` keys for the pool, all optional and reread on every poll: `maxInstances`, `vcpuQuota`, `onDemand`,
 `spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchLocalHours`, `nodeSustainMin`, `nodeCooldownMin`,
@@ -1296,7 +1297,9 @@ background to be told when a job is done.
 
 ```sh
 deploy/lab run restarts-ab.json
-deploy/lab ls
+deploy/lab ls                 # every queued and running job however old, then the newest 30; `lab ls 200` for more
+deploy/lab placement          # why queued jobs wait: the cloud launch gate, the local machine's job, each job's reason
+deploy/lab placement 7        # job 7 alone; --json for the lab's JSON
 deploy/lab cases 7            # each case: status, arm, problem, result
 deploy/lab cases 7 --json     # each case whole as JSON Lines, final witness and lab check included
 deploy/lab tail 7             # the last 8 kB of the job's log: planning, commands, exits
@@ -1314,6 +1317,33 @@ deploy/lab node start c7i.4xlarge   # start a cloud node now, past the pressure 
 deploy/lab ssh 7 0 uptime     # a command on node 0 of those on a running cloud job; no command opens a shell
 deploy/lab cancel 7
 ```
+
+`lab placement` says why queued jobs wait, read-only and by the same rules the runner and the cloud worker follow (see
+Running on cloud nodes): it never starts a node or moves a job. Its first line is the cloud launch gate, the pressure
+against the threshold for the next node and what holds it back ("pressure 0.6 of 8.0 core-h for the first node, below
+the launch threshold", "over the threshold: a node launches once it holds 6 min more", "the cooldown after the last
+launch holds the next for 3 min", "the 32-vCPU quota is full", "a lab update waits"), with the nodes up and what each
+is doing. The second is the local machine's job and its phase: its setup step as its log names it ("setting up:
+selecting problems for selection 0", for how long) or its cases ("running cases: 93 of 1015 done, 4 running"). Then a
+line per active job: id, status, where it may run (`local only`, `local or cloud`, `cloud`), priority, its place in
+the local machine's queue, its estimate, and why it waits, for example
+
+```text
+7347  QUEUED  local or cloud  p0   local #2  ≈4.2 core-h, 40 cases, ~1.1 h locally (from run 7200)  local machine busy with job 7246 (setting up: selecting problems for selection 0); #2 in the local queue; cloud: pressure 0.6 of 8.0 core-h for the first node, below the launch threshold
+7245  QUEUED  local or cloud  p-4  local #1  ≈2 core-h, 20 cases, ~0.5 h locally (guessed, upper bound)  local machine busy with job 7246 (running cases: 93 of 1015 done, 4 running); #1 in the local queue, taken when it ends (it gives way only to a priority above its -4); below the cloud priority floor (priority -4 < 0): local only in practice
+```
+
+Other reasons: "next for the local machine, which is free", "next for the local machine: job 12 (priority 0, …) gives
+way to it before its next case", "the local machine holds its queue: 9 GB free, …" (a low disk), "local only: a
+reference run, which needs the local machine's reference solvers" (or a confirmation, a scheduled run, an exact problem
+list, a profile with a whole-run deadline, an analysis), "cloud: a free node takes it at its next poll", "cloud: no
+size within the 32-vCPU quota holds its 64-core cases", "paused: no host takes it until it is resumed" and "cancel
+requested". `lab placement <id>` prints one job's placement, estimate and reason, or what a running one is doing;
+`--json` prints `GET /placement` (or `/placement/<id>`) as it is. `lab show <id>` adds a queued job's `placement` and
+`waiting` to its JSON, and the queue page and a queued job's page show the same reason.
+
+`lab ls` lists every queued and running job first, newest first however old (a reference run queued days ago
+included), then the newest 30 others (`lab ls <n>` for n).
 
 `lab cases <id> --json` exports every case for auditing as JSON Lines (`GET /experiments/<id>/cases.jsonl`), one
 case per line in index order, not a JSON array: `index`, `status`, `problem`, `arm`, `seed`, `repeat`, `instrumented`
@@ -1347,7 +1377,9 @@ saw some fail reads `DONE · N failed`, which links to just the failed cases. Th
 
 | method | path | |
 | --- | --- | --- |
-| `GET` | `/jobs`, `/jobs/{id}` | job and case-command states; `/jobs` lists 50 by default, each with its command `counts` instead of its commands (`?commands=true` for them), and takes `?limit`, `?before=<id>` and `?name` |
+| `GET` | `/jobs`, `/jobs/{id}` | job and case-command states; `/jobs` lists 50 by default, each with its command `counts` instead of its commands (`?commands=true` for them), and takes `?limit`, `?before=<id>` and `?name`; `?active=true` lists every queued and running job instead, oldest first, however old |
+| `GET` | `/placement` | read-only placement diagnostics (see Client): `at`; `nodesUp`, whether a node is up or launching, which orders the local machine's queue; `cloud`, the launch gate in a line; `pool`, the cloud worker's `aws/nodes.json` as it wrote it (`pressure`, `threshold`, `nextThreshold`, `overSince`, `lastLaunch`, `sustainMs`, `cooldownMs`, `blocker`, `nodes`, `launching`, `updateWaiting`, `busyVcpus`, `manualSize`); `local`, the job the local machine runs (`id`, `name`, `priority`, `phase` `setup` or `cases`, `step` and `stepSince` while a setup step runs, `done`, `total`, `running`, `doing`), null when it is free; and `jobs`, every active job, running ones first, then queued in queue order: `id`, `name`, `status`, `placement` (`local only`, `local or cloud`, `cloud`), `host`, `priority`, `paused`, `cancelRequested`, `queuePosition`, `localPosition`, `estimate` (`cases`, `coreHours`, `localHours`, `note`), `waiting` (a queued job's reason) and `doing` (a running one's) |
+| `GET` | `/placement/{id}` | one job's entry of `/placement`; an ended job's says `"doing": "ended DONE"`; 404 when there is no such job |
 | `POST` | `/jobs/{id}/cancel` | a queued job is dropped; a running one has its cases' process trees killed |
 | `POST` | `/jobs/{id}/retry` | a failed or cancelled job is queued again; its finished cases are kept |
 | `GET` | `/jobs/{id}/files` | the files in the job directory |

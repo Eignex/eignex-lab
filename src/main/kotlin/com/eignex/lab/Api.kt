@@ -131,8 +131,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val before = call.parameters["before"]?.toLong()
             val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
-            val page = indexPage(config, host, store.active(withCommands = false), store.schedules(), history, PAGE_SIZE, before, name,
-                store.queue(nodesUp = config.aws != null && nodesUp(readPoolReport(config), now())), estimates::lookup)
+            val active = store.active(withCommands = false)
+            // Why each queued job waits, by the rules `GET /placement` reports with ([Waiting]); only the front page has them.
+            val view = if (before == null && name == null) Waiting.view(config, store) else null
+            val waiting = view?.let { v -> active.filter { it.status == Status.QUEUED }.associate { it.id to Waiting.waiting(it, v) } }.orEmpty()
+            val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
+                store.queue(nodesUp = config.aws != null && nodesUp(view?.pool ?: readPoolReport(config), now())), estimates::lookup, waiting)
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
@@ -151,9 +155,25 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(Health(true, queued, running, freeBytes(config.dataDir), host))
         }
         get("/jobs") {
-            // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds.
+            // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds. ?active=true lists
+            // every queued and running job, oldest first, however old, instead of the newest.
+            val commands = call.parameters["commands"] == "true"
+            if (call.parameters["active"] == "true") return@get call.respond(store.active(withCommands = commands))
             call.respond(store.jobs(call.parameters["limit"]?.toInt() ?: PAGE_SIZE, call.parameters["before"]?.toLong(), call.parameters["name"],
-                withCommands = call.parameters["commands"] == "true"))
+                withCommands = commands))
+        }
+        // Where each active job may run and why a queued one waits ([Waiting]), by the rules the runner and the cloud
+        // worker follow; read-only.
+        get("/placement") {
+            call.respond(withContext(Dispatchers.IO) { Waiting.report(config, store, estimates::lookup) })
+        }
+        get("/placement/{id}") {
+            val id = call.parameters["id"]!!.toLong()
+            val placement = withContext(Dispatchers.IO) {
+                Waiting.report(config, store, estimates::lookup).jobs.firstOrNull { it.id == id }
+                    ?: store.jobsByIds(listOf(id)).firstOrNull()?.let { Waiting.placement(config, it, Waiting.view(config, store), null, estimates::lookup) }
+            }
+            if (placement == null) call.respond(HttpStatusCode.NotFound, "no such job") else call.respond(placement)
         }
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
@@ -319,6 +339,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
+                        waiting = if (job.status == Status.QUEUED) Waiting.waiting(job, Waiting.view(config, store)) else null,
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }

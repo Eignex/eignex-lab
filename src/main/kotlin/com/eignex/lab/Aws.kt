@@ -666,7 +666,7 @@ class AwsWorker(
             val spec = job.experiment ?: return@mapNotNull null
             if (job.id == localNext) return@mapNotNull null
             val awsOnly = spec.host == Experiments.AWS_HOST
-            if (!awsOnly && job.priority < aws.nodeMinPriority) return@mapNotNull null
+            if (Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority)) return@mapNotNull null
             val cores = Experiments.arms(spec).maxOf { it.cores }
             if (aws.sizeFor(cores) == null) {
                 if (awsOnly) store.claimForNode(job.id)?.let {

@@ -23,6 +23,8 @@ internal fun indexPage(
     queueOrder: List<Long> = emptyList(),
     /** The earlier run a job's estimate learns from ([EstimateHistory.lookup]). */
     caseHistory: (Job) -> CaseHistory? = { null },
+    /** Why each queued job waits ([Waiting.waiting]), by job. */
+    waiting: Map<Long, String> = emptyMap(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("klause lab", live = before == null))
@@ -34,7 +36,7 @@ internal fun indexPage(
             Estimates.estimate(job, caseHistory, config.cores, config.maxParallel)?.let { job.id to it }
         }.toMap()
         append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(config, active, estimates)}</div>")
-        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates)}</div></section>")
+        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates, waiting)}</div></section>")
         if (schedules.isNotEmpty()) {
             append("<section><h2>Schedules</h2><div id=\"schedules\" data-live>${schedulesTable(schedules)}</div></section>")
         }
@@ -69,6 +71,8 @@ internal fun jobPage(
     references: Map<Pair<String, String>, Reference> = emptyMap(),
     /** The downloads' holds on this job that have not lapsed ([Hold]). */
     holds: List<Hold> = emptyList(),
+    /** Why the job waits, while it is queued ([Waiting.waiting]). */
+    waiting: String? = null,
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
@@ -79,6 +83,7 @@ internal fun jobPage(
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
+    waiting?.let { append("<dt>waiting</dt><dd>${esc(it)}</dd>") }
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
     append("<dt>created</dt><dd>${ago(job.createdAt)}</dd>")
@@ -1379,9 +1384,10 @@ private enum class WorkKind(val label: String) {
     CLOUD("cloud"),
 }
 
-private fun workKind(config: Config, job: Job): WorkKind = when (job.experiment?.host) {
-    Experiments.AUTO_HOST -> if (job.priority < (config.aws?.nodeMinPriority ?: 0)) WorkKind.BELOW_FLOOR else WorkKind.TOWARD_CLOUD
-    Experiments.AWS_HOST -> WorkKind.CLOUD
+private fun workKind(config: Config, job: Job): WorkKind = when (Placement.where(job.experiment?.host)) {
+    Placement.LOCAL_OR_CLOUD ->
+        if (Placement.belowFloor(job.experiment?.host, job.priority, config.aws?.nodeMinPriority ?: 0)) WorkKind.BELOW_FLOOR else WorkKind.TOWARD_CLOUD
+    Placement.CLOUD -> WorkKind.CLOUD
     else -> WorkKind.LOCAL
 }
 
@@ -1505,13 +1511,13 @@ internal fun nodesUp(report: NodePoolReport?, now: Long): Boolean =
 
 private const val MS_PER_MIN = 60_000L
 /** A pool report older than this says how old it is: the worker rewrites it on every poll. */
-private const val STALE_REPORT_MS = 2 * 60_000L
+internal const val STALE_REPORT_MS = 2 * 60_000L
 
 /** Core-hours, one decimal under ten and whole above. */
-private fun coreHoursText(hours: Double): String = if (hours < 10) "%.1f".format(Locale.ROOT, hours) else "%.0f".format(Locale.ROOT, hours)
+internal fun coreHoursText(hours: Double): String = if (hours < 10) "%.1f".format(Locale.ROOT, hours) else "%.0f".format(Locale.ROOT, hours)
 
 /** A wall time of [hours], rounded up to the minute: `14 min`, `3 h 20 min`, `2 d 5 h`. */
-private fun wallText(hours: Double): String {
+internal fun wallText(hours: Double): String {
     val minutes = kotlin.math.ceil(hours * 60).toLong()
     return when {
         minutes < 60 -> "$minutes min"
@@ -1536,17 +1542,20 @@ private fun estimateText(config: Config, job: Job, estimate: WorkEstimate?): Str
         "<span class=\"muted\">(${esc(estimate.note)})</span></div>"
 }
 
-private fun activeTable(config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>): String {
+private fun activeTable(
+    config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>, waiting: Map<Long, String>,
+): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
     // One queue by priority, whatever runs each job: the local machine and the cloud nodes take from it in this order
     // as the lab places jobs, each passing over those it may not run.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
-    return jobTable(config, ordered, positions, filterable = false, estimates = estimates)
+    return jobTable(config, ordered, positions, filterable = false, estimates = estimates, waiting = waiting)
 }
 
 private fun jobTable(
     config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
+    waiting: Map<Long, String> = emptyMap(),
 ): String = buildString {
     if (jobs.isEmpty()) return "<p class=\"muted\">No jobs.</p>"
     append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>")
@@ -1571,7 +1580,7 @@ private fun jobTable(
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${hostCell(config, job)}</td><td>${statusCell(job, positions[job.id])}</td>")
+        append("<td>${refText(config, job)}</td><td>${hostCell(config, job)}</td><td>${statusCell(job, positions[job.id], waiting[job.id])}</td>")
         append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
@@ -1662,7 +1671,9 @@ private fun hostCell(config: Config, job: Job): String {
         (detail?.let { "<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">${esc(it)}</small>" } ?: "")
 }
 
-private fun statusCell(job: Job, position: Int?): String {
+/** A job's status with its notes: cancelling, paused, its place in the queue, its priority, its error, and why a queued
+ *  one waits ([waiting], [Waiting.waiting]); the paused and cancelling ones' badges say that already. */
+private fun statusCell(job: Job, position: Int?, waiting: String? = null): String {
     val partial = job.status == Status.DONE && job.failed > 0
     val label = if (partial) {
         "DONE · <a href=\"/jobs/${job.id}?failed\">${job.failed} failed</a>"
@@ -1675,6 +1686,7 @@ private fun statusCell(job: Job, position: Int?): String {
         "#$position in the queue".takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
         job.error?.let { "<span title=\"${esc(it)}\">${esc(shortError(it))}</span>" },
+        waiting?.takeIf { !job.paused && !job.cancelRequested }?.let { "<span class=\"muted waiting\">${esc(it)}</span>" },
     )
     val cls = if (partial) "PARTIAL" else job.status.name
     return "<span class=\"$cls\">$label</span>" + notes.joinToString("") { "<br><small>$it</small>" }
@@ -1767,7 +1779,7 @@ private fun duration(from: Long?, to: Long?): String {
     return clock(((to ?: now()) - from) / 1000)
 }
 
-private fun size(bytes: Long): String = when {
+internal fun size(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
     bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024)
