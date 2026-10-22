@@ -252,6 +252,50 @@ class ExperimentsTest {
     }
 
     @Test
+    fun `a Klause case passes only solve-one's own keys to the bench`() {
+        val arm = Arm("k", mapOf("ref" to "main", "backend" to "klause", "solver" to "z3", "fixed" to "true",
+            "timeout" to "3000", "engine" to "cp", "processors" to "2", "lp" to "on", "presolve" to "off", "exact" to "true",
+            "param.restarts" to "luby"))
+
+        val command = Experiments.command("/w/7", Problem("xcsp3-cop", "Rack-1"), arm, 5, 12, "/corpus")
+
+        for (key in listOf("backend=", "solver=", "fixed=", "ref=", "label=")) assertFalse("'$key" in command, key)
+        assertContains(
+            command,
+            "solve-one 'suite=xcsp3-cop' 'problem=Rack-1' 'engine=cp' 'exact=true' 'lp=on' 'param=restarts=luby' " +
+                "'presolve=off' 'processors=2' 'timeout=3000' 'solver-seed=5' out=\"\$JOB_DIR/cases/12\"",
+        )
+    }
+
+    @Test
+    fun `backend is klause by default or reference, and solver and fixed need a reference arm`() {
+        for (base in listOf(emptyMap(), mapOf("backend" to "klause"), mapOf("backend" to "reference", "solver" to "chuffed", "fixed" to "true"))) {
+            Experiments.validate(spec(base = base), maxParallel = 4)
+        }
+        val refused = listOf(
+            mapOf("backend" to "minizinc") to "backend must be klause",
+            mapOf("solver" to "z3") to "'solver' is for reference arms",
+            mapOf("backend" to "klause", "fixed" to "true") to "'fixed' is for reference arms",
+            mapOf("backend" to "reference", "fixed" to "yes") to "fixed must be true or false",
+        )
+        for ((base, message) in refused) {
+            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec(base = base), maxParallel = 4) }
+            assertContains(error.message.orEmpty(), message)
+        }
+    }
+
+    @Test
+    fun `a reference arm keeps routing to the lab's reference command with its solver and search`() {
+        val arm = Arm("ref", mapOf("backend" to "reference", "solver" to "chuffed", "fixed" to "true"))
+        val problem = Problem("hakank", "golf", format = "MINIZINC", model = "/c/golf.mzn")
+
+        val command = Experiments.referenceCommand("/lab/bin/klause-lab", problem, arm, null, 0)
+
+        assertContains(command, "'solver=chuffed' 'fixed=true'")
+        assertFalse("backend=" in command)
+    }
+
+    @Test
     fun `an invalid exact policy is refused`() {
         assertFailsWith<IllegalArgumentException> {
             Experiments.validate(spec(base = mapOf("exact" to "yes")), maxParallel = 4)
