@@ -430,15 +430,15 @@ class Runner(
      * moved, or for a ref origin does not advertise, such as a commit.
      */
     internal fun enqueueScheduled() {
-        val due = store.schedules().filter { s -> s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true }
-        for (schedule in due) {
-            store.scheduleChecked(schedule.id, now())
-            // A launch asked for while the last run is still going waits for it rather than queueing a second, and
-            // stays due, so it queues on the first poll after that run ends instead of a whole interval later.
-            if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) {
-                if (schedule.launchRequested) store.checkNow(schedule.id)
-                continue
-            }
+        fun regular(s: Schedule) = s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true
+        // A requested launch is looked at on every poll until it queues, without moving the schedule's regular checks:
+        // only a regular check stamps the time, so schedules staggered apart stay apart after a manual launch.
+        for (schedule in store.schedules().filter { it.launchRequested || regular(it) }) {
+            val checking = regular(schedule)
+            if (checking) store.scheduleChecked(schedule.id, now())
+            // A launch asked for while the last run is still going waits for it rather than queueing a second; it stays
+            // requested, so it queues on the first poll after that run ends.
+            if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
             val advertised = advertised(schedule.ref)
             if (!schedule.launchRequested && advertised != null && advertised == schedule.lastSha) continue
             val fetched = runCatching {
@@ -454,7 +454,7 @@ class Runner(
             if (fetched.isFailure) {
                 // Left due rather than checked, so the next poll tries again instead of a whole interval later.
                 println("schedule ${schedule.name}: fetch failed, retrying on the next poll: ${fetched.exceptionOrNull()?.message}")
-                store.checkNow(schedule.id)
+                if (checking) store.checkNow(schedule.id)
                 continue
             }
             // A ref origin no longer has is not retried: it waits for the next interval like an unmoved one.
