@@ -891,7 +891,7 @@ class Runner(
     /** The command line of one case of [spec] on [host], in [worktree]: a profile's main, or a solve of [problem]. */
     private fun caseCommand(spec: ExperimentSpec, arm: Arm, problem: Problem, seed: Long?, index: Int, worktree: String, host: ExecutionHost): String {
         val profile = spec.profile
-        return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus)
+        return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus, arm.debug)
         else if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, seed, index)
         else Experiments.command(worktree, problem, arm, seed, index, host.corpus)
     }

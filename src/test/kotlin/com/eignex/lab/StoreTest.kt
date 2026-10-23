@@ -36,6 +36,19 @@ class StoreTest {
     }
 
     @Test
+    fun `each case records whether the lab ran its CLI with debug on`() {
+        val store = store()
+        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), grid = mapOf("debug" to listOf("true", "false")))
+        val id = store.create("e", "main", emptyList(), experiment = spec)
+        val arms = Experiments.arms(spec) + Arm("default", emptyMap())
+        store.plan(id, arms.map { PlannedArm(it, "sha") }, listOf(Problem("s", "p")), Experiments.cases(1, 3, emptyList()),
+            List(3) { "true" to 1L })
+
+        assertEquals(mapOf("debug=true" to true, "debug=false" to false, "default" to true), store.cases(id).associate { it.arm to it.labDebug })
+        assertTrue("\"labDebug\":false" in io.ktor.serialization.kotlinx.json.DefaultJson.encodeToString(CaseResult.serializer(), store.cases(id).single { it.arm == "debug=false" }))
+    }
+
+    @Test
     fun `reclaiming a bounded profile retains its interrupted running allowance`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)

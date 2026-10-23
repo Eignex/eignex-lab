@@ -19,7 +19,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
  * problems are pooled, each selection capped on its own. Each entry of [configs] is merged over
  * [base], and each result is crossed with every combination of [grid]'s values, so an A/B is a grid of one axis
  * with two values. A configuration's keys are bench solve arguments plus `ref` (the commit to build, default
- * `main`) and `label` (its name in results); `param.<name>` becomes `param=<name>=<value>`.
+ * `main`), `label` (its name in results) and `debug` (the CLI's `KLAUSE_DEBUG`, default `true`, [Arm.debug]);
+ * `param.<name>` becomes `param=<name>=<value>`.
  */
 @Serializable
 data class ExperimentSpec(
@@ -146,6 +147,12 @@ data class Arm(val label: String, val values: Map<String, String>) {
 
     /** Cores each of the arm's solves keeps busy: its portfolio's `processors`, one without. */
     val cores: Int get() = values["processors"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+
+    /**
+     * Whether the arm's CLI runs with `KLAUSE_DEBUG=true`, its lightweight runtime statistics on: the arm's `debug`,
+     * true unless it says `false`. Whole-CLI profiling ([ExperimentSpec.profileCli]) does not depend on it.
+     */
+    val debug: Boolean get() = values[Experiments.DEBUG_KEY]?.toBooleanStrictOrNull() ?: true
 }
 
 /** One problem as `klause-bench select` names it, with the [model] and [data] files and MiniZinc [includeDirs] that
@@ -196,14 +203,17 @@ object Experiments {
      * shares one fingerprint and an edited one starts another. Where it runs ([ExperimentSpec.host] and
      * [ExperimentSpec.auto]) is left out too: a schedule moved between the local machine and the cloud, or a run taken
      * by either, still measures the same thing, and a stored spec that names any host matches one that names another.
+     * An arm's `debug` is measured: `debug=false` turns the CLI's runtime statistics off, which changes what a solve
+     * runs and records, so it starts another fingerprint. `debug=true` is the default, so saying it changes nothing.
      */
     fun fingerprint(spec: ExperimentSpec): String {
+        fun measured(values: Map<String, String>) = (if (values[DEBUG_KEY] == "true") values - DEBUG_KEY else values).toSortedMap()
         val measured = spec.copy(
             name = "",
             description = "",
             problems = spec.problems.map { it.toSortedMap() },
-            base = (spec.base - "ref").toSortedMap(),
-            configs = spec.configs.map { it.toSortedMap() },
+            base = measured(spec.base - "ref"),
+            configs = spec.configs.map(::measured),
             grid = spec.grid.toSortedMap(),
             parallel = null,
             machines = null,
@@ -365,6 +375,7 @@ object Experiments {
             }
             require(MAIN.matches(profile.main)) { "profile.main must be a class in com.eignex.klause.bench.profile, not '${profile.main}'" }
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
+            arms(spec).single().values[DEBUG_KEY]?.let { require(it.toBooleanStrictOrNull() != null) { "debug must be true or false" } }
             val asked = arms(spec).singleOrNull()?.values?.get("timeout")
             require(asked == null || asked.toLongOrNull()?.let { it > 0 } == true) {
                 "timeout must be a positive number of ms: a profile job's time limit, ${duration(PROFILE_TIMEOUT_MS)} " +
@@ -424,6 +435,7 @@ object Experiments {
                 require(key !in arm.values || backend == REFERENCE_BACKEND) { "'$key' is for reference arms; it needs backend=$REFERENCE_BACKEND" }
             }
             require(arm.values["fixed"]?.toBooleanStrictOrNull() != null || "fixed" !in arm.values) { "fixed must be true or false" }
+            require(arm.values[DEBUG_KEY]?.toBooleanStrictOrNull() != null || DEBUG_KEY !in arm.values) { "debug must be true or false" }
         }
         require(arms(spec).map { it.label }.distinct().size == arms(spec).size) { "config labels must be unique" }
     }
@@ -473,8 +485,9 @@ object Experiments {
 
     /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
      *  `$JOB_DIR/cases/<index>`. Only Klause's own options ([BENCH_KEYS] and `param.*`) go to the bench: the solver
-     *  choice (`backend`, `solver`, `fixed`) and `ref` are the lab's, and the source-validation request stays with the
-     *  lab, which checks the case itself ([SourceValidation.forBench]). */
+     *  choice (`backend`, `solver`, `fixed`), `ref` and `debug` are the lab's, and the source-validation request stays
+     *  with the lab, which checks the case itself ([SourceValidation.forBench]). An arm with `debug=false` runs with
+     *  `KLAUSE_DEBUG=false` ([debugEnv]), over the `true` every host sets for a case. */
     fun command(worktree: String, problem: Problem, arm: Arm, seed: Long?, index: Int, corpus: String): String {
         val args = buildList {
             add("suite=${problem.suite}")
@@ -494,8 +507,12 @@ object Experiments {
         return "cd ${quote("$worktree/klause-bench")} && " +
             "if [ -f build/provenance.json ]; then export KLAUSE_BENCH_PROVENANCE=\"\$PWD/build/provenance.json\"; " +
             "else unset KLAUSE_BENCH_PROVENANCE; fi && JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
-            "exec ./build/install/klause-bench/bin/klause-bench solve-one $args out=\"\$JOB_DIR/cases/$index\""
+            debugEnv(arm) + "exec ./build/install/klause-bench/bin/klause-bench solve-one $args out=\"\$JOB_DIR/cases/$index\""
     }
+
+    /** The environment assignment a case of [arm] adds to its command: `KLAUSE_DEBUG=false` when the arm turned the
+     *  CLI's debug statistics off, nothing otherwise, leaving the host's `KLAUSE_DEBUG=true`. */
+    private fun debugEnv(arm: Arm): String = if (arm.debug) "" else "KLAUSE_DEBUG=false "
 
     /** The arm values a reference case takes: the solver, its budget, workers and whether it keeps to the model's
      *  search. Klause's own options mean nothing to a reference solver. */
@@ -585,7 +602,7 @@ object Experiments {
      * arguments quoted one by one, recording JFR to `$OUT/profile.jfr`. `$OUT` (whose files come back with the job's),
      * `$KLAUSE_CORPUS`, `$KLAUSE_CLI` and `$KLAUSE_BENCH` are set for it to read.
      */
-    fun profileCommand(worktree: String, profile: ProfileMain, index: Int, corpus: String): String {
+    fun profileCommand(worktree: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean = true): String {
         val lib = "$worktree/klause-bench/build/install/klause-bench/lib"
         val jvm = listOf(
             "--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector",
@@ -593,7 +610,8 @@ object Experiments {
         )
         return "cd ${quote(worktree)} && export OUT=\"\$JOB_DIR/cases/$index/out\" KLAUSE_CORPUS=${quote(corpus)} " +
             "KLAUSE_CLI=${quote("$worktree/klause-cli/build/install/klause-cli-jvm/bin/klause-cli")} " +
-            "KLAUSE_BENCH=${quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")} && " +
+            "KLAUSE_BENCH=${quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")} " +
+            (if (debug) "" else "KLAUSE_DEBUG=false ") + "&& " +
             "mkdir -p \"\$OUT\" && exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
             "\"-XX:StartFlightRecording=filename=\$OUT/profile.jfr,settings=profile,dumponexit=true\" " +
             (jvm + profile.main + profile.args).joinToString(" ") { quote(it) }
@@ -620,7 +638,9 @@ object Experiments {
     private const val REFERENCE_KEY = "reference"
     private const val UNCAPPED = 1_000_000
     private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
-    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact")
+    /** The arm key that turns the CLI's `KLAUSE_DEBUG` off ([Arm.debug]); the lab's, never the bench's. */
+    const val DEBUG_KEY = "debug"
+    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact", DEBUG_KEY)
     /** The arm keys `klause-bench solve-one` takes, besides `param.*`. */
     private val BENCH_KEYS = setOf("timeout", "engine", "processors", "lp", "presolve", "exact")
     /** The arm keys only a reference arm (`backend=reference`) takes: its solver and whether it keeps to the model's search. */
