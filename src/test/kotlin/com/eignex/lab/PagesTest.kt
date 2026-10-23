@@ -309,17 +309,46 @@ class PagesTest {
     }
 
     @Test
-    fun `a trend still computing its points says so and reloads itself as they arrive`() {
+    fun `a trend's progress call counts the runs it shows and those still computing`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val store = Store(config.database)
+        val problems = listOf(Problem("a", "p0"))
+        val id = store.create("sweep@aaa", "sha", emptyList(), experiment = ExperimentSpec("sweep", listOf(mapOf("suite" to "a"))))
+        store.next()
+        store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+        store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"timeToBestMs":5,"budgetMs":1000}""")
+        store.finish(id, Status.DONE)
+        testApplication {
+            application { api(config, store, host) }
+
+            var progress = ""
+            val deadline = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < deadline) {
+                progress = client.get("/trend/progress?name=sweep&all=1").bodyAsText()
+                if ("\"computing\":0" in progress) break
+                Thread.sleep(20)
+            }
+
+            assertEquals(mapOf("runs" to "1", "computing" to "0"),
+                Json.parseToJsonElement(progress).jsonObject.mapValues { it.value.jsonPrimitive.content })
+        }
+    }
+
+    @Test
+    fun `a trend still computing its points says so and polls its progress until they arrive`() {
         val computing = trendPage("sweep", emptyList(), "https://example.com/repo", earlier = 0, all = true, computing = 4)
         assertContains(computing, "Computing its runs; they appear here as they are ready.")
-        assertContains(computing, "<body data-refresh")
-        assertContains(computing, "location.reload()")
+        assertContains(computing, "fetch('/trend/progress' + location.search")
+        assertContains(computing, "progress.runs !== 0) location.reload()")
+        assertContains(computing, "progress.computing === 0) clearInterval(poll)")
+        assertFalse("<body data-refresh" in computing)
         assertFalse("current experiment" in computing)
 
         assertContains(trendPage("sweep", emptyList(), "https://example.com/repo", all = true), "No run of this schedule has results yet.")
         val current = trendPage("sweep", emptyList(), "https://example.com/repo", earlier = 3)
         assertContains(current, "No run of this schedule's current experiment has results yet.")
         assertFalse("<body data-refresh" in current)
+        assertFalse("/trend/progress" in current)
     }
 
     @Test

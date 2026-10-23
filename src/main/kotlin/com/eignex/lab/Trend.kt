@@ -73,8 +73,10 @@ object Trend {
     /**
      * Every run a schedule named [name] queued, oldest first; an experiment of several arms is read by its first. A
      * finished run's point comes from [cache] when it has one: its cases never change, only the reference rows its
-     * disagreement and shortfall counts read, so a cached point is recomputed once those rows changed and it is older
-     * than [TrendCache.maxReferenceLagMs]. A confirmation's counts are read afresh, since it can end after its run.
+     * disagreement and shortfall counts read, so a cached point is recomputed once the rows of one of its problems
+     * changed and it is older than [TrendCache.maxReferenceLagMs]. A finished run with no point, one whose setup failed
+     * before any case ran, is remembered as such until the job changes. A confirmation's counts are read afresh, since
+     * it can end after its run.
      */
     fun runs(
         store: Store,
@@ -89,6 +91,8 @@ object Trend {
          * uncached. Null computes every run.
          */
         missing: MutableList<Long>? = null,
+        /** Collects the finished runs known to have no point, which are neither shown nor being computed. */
+        pointless: MutableList<Long>? = null,
     ): List<TrendRun> {
         // Filtered by experiment before any case is read: a run's experiment is its spec's alone.
         val jobs = scheduled(store, name)
@@ -96,7 +100,7 @@ object Trend {
         val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX, withCommands = false)
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
             .associateBy { it.name }
-        val stamp = cache?.let { store.referencesStamp() }
+        val stamp = cache?.sync(store)
         // The previous finished run of each spec: its first arm's cases, loaded only when a run after it is computed.
         var previous: Pair<String, Long>? = null
         val ownCases = HashMap<Long, List<CaseResult>>()
@@ -110,8 +114,14 @@ object Trend {
             // A stale point is still served, and refreshed off the request (see [TrendCache]); a refresh recomputes it.
             // A running one's point too, for [TrendCache.LIVE_MS]: its cases finish one by one, and a page load that
             // finds it older is served it while it is recomputed.
-            val cached = cache?.let { if (finished) it.lookup(job.id, stamp) else it.lookupLive(job.id) }?.takeIf { it.fresh || !refreshing }
+            val version = TrendCache.version(job)
+            val cached = cache?.let { if (finished) it.lookup(job.id, version, stamp) else it.lookupLive(job.id) }?.takeIf { it.fresh || !refreshing }
             if (cached?.fresh == false) stale = true
+            // Known to have no point: neither shown nor counted as being computed.
+            if (cached != null && cached.run == null) {
+                pointless?.add(job.id)
+                return@mapNotNull null
+            }
             if (cached == null && finished && missing != null && cache != null) {
                 missing += job.id
                 stale = true
@@ -123,13 +133,17 @@ object Trend {
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
                 val keys = cases.map { it.problem.collection to it.problem.problem }
                 val trend = run(job, arms, cases, store.references(keys, sources = References.sources(cases)), store.features(keys.distinct()))
-                    ?: return@mapNotNull null
+                if (trend == null) {
+                    if (finished) cache?.put(job.id, version, stamp, null, emptySet())
+                    pointless?.add(job.id)
+                    return@mapNotNull null
+                }
                 val flips = previous?.takeIf { it.first == trend.spec && job.status == Status.DONE }
                     ?.let { Confirm.flips(own(it.second), own(job.id)) }
                 trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
                     proofLost = flips?.proofLost?.size, proofGained = flips?.proofGained?.size,
                     objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size)
-                    .also { if (finished) cache?.put(job.id, stamp, it) else cache?.putLive(job.id, it) }
+                    .also { if (finished) cache?.put(job.id, version, stamp, it, keys.toSet()) else cache?.putLive(job.id, it) }
             }
             if (job.status == Status.DONE) previous = base.spec to job.id
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
@@ -150,6 +164,20 @@ object Trend {
             cache.refreshLater("$name/${experiment.orEmpty()}") { runs(store, name, cache, refreshing = true, experiment = experiment) }
         }
         return runs
+    }
+
+    /**
+     * Every schedule's runs computed into [cache] before anyone asks, so the first trend load after a restart is quick:
+     * first each schedule's current experiment, the page's default, then every run of it, which "show them" reads. The
+     * background thread takes them in that order, so the older runs wait behind every current view.
+     */
+    fun warm(store: Store, cache: TrendCache) {
+        val schedules = store.schedules()
+        for (schedule in schedules) {
+            val experiment = Experiments.trendFingerprint(schedule.experiment)
+            cache.refreshLater("${schedule.name}/$experiment") { runs(store, schedule.name, cache, experiment = experiment) }
+        }
+        for (schedule in schedules) cache.refreshLater("${schedule.name}/") { runs(store, schedule.name, cache) }
     }
 
     /** Every run a schedule named [name] queued and did not cancel, oldest first, none of them read. */
@@ -212,16 +240,17 @@ object Trend {
 }
 
 /**
- * Finished runs' trend points, kept between requests: a schedule's trend reads every run it has, and recomputing a
- * hundred finished runs on a page load took seconds. A point whose reference rows changed since it was computed, and
- * which is older than [maxReferenceLagMs], is stale: still served, and recomputed off the request on one background
- * thread, so no page load waits on a recompute and a schedule is refreshed once however many loads find it stale.
+ * Finished runs' trend points, kept between requests and only in memory: a schedule's trend reads every run it has, and
+ * recomputing a hundred finished runs on a page load took seconds. A point whose problems' reference rows changed since
+ * it was computed, and which is older than [maxReferenceLagMs], is stale: still served, and recomputed off the request on
+ * one background thread, so no page load waits on a recompute and a schedule is refreshed once however many loads find it
+ * stale. A change to one problem's rows leaves every point that did not run it fresh.
  */
 class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private val clock: () -> Long = System::currentTimeMillis) {
-    /** A cached point and whether it is fresh. */
-    class Cached(val run: TrendRun, val fresh: Boolean)
+    /** A cached point, null for a run known to have none, and whether it is fresh. */
+    class Cached(val run: TrendRun?, val fresh: Boolean)
 
-    private class Entry(val stamp: Long?, val at: Long, val run: TrendRun)
+    private class Entry(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<Pair<String, String>>)
 
     private val entries = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
     private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -229,14 +258,43 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         Thread(task, "trend-refresh").apply { isDaemon = true }
     }
 
-    /** [job]'s point, fresh unless the reference rows changed since ([stamp]) and it is older than [maxReferenceLagMs]. */
-    fun lookup(job: Long, stamp: Long?): Cached? {
-        val entry = entries[job] ?: return null
-        return Cached(entry.run, entry.stamp == stamp || clock() - entry.at <= maxReferenceLagMs)
+    /** The reference stamp last synced, and when each problem's rows last changed since the first sync. */
+    private var synced = false
+    private var lastStamp: Long? = null
+    private val changed = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Long>()
+
+    /**
+     * Takes in the reference stamp [stamp] ([Store.referencesStamp]): when it moved since the last sync, the problems
+     * whose rows changed since then ([changedSince]) are noted, which tells [lookup] which points they made stale.
+     * Returns [stamp], the one to [put] a point computed now with.
+     */
+    @Synchronized
+    fun sync(stamp: Long?, changedSince: (Long) -> Map<Pair<String, String>, Long>): Long? {
+        if (synced && stamp != null && stamp != lastStamp) {
+            for ((problem, at) in changedSince(lastStamp ?: Long.MIN_VALUE)) changed.merge(problem, at, ::maxOf)
+        }
+        synced = true
+        lastStamp = stamp
+        return stamp
     }
 
-    fun put(job: Long, stamp: Long?, run: TrendRun) {
-        entries[job] = Entry(stamp, clock(), run)
+    fun sync(store: Store): Long? = sync(store.referencesStamp(), store::referencesChangedSince)
+
+    /**
+     * [job]'s point as cached for this [version] of the job ([TrendCache.version]), none for another: fresh unless the
+     * rows of one of its problems changed after it was computed ([stamp]) and it is older than [maxReferenceLagMs].
+     */
+    fun lookup(job: Long, version: String, stamp: Long?): Cached? {
+        val entry = entries[job]?.takeIf { it.version == version } ?: return null
+        val moved = entry.stamp != stamp && entry.problems.any { problem ->
+            changed[problem]?.let { at -> entry.stamp == null || at > entry.stamp } == true
+        }
+        return Cached(entry.run, !moved || clock() - entry.at <= maxReferenceLagMs)
+    }
+
+    /** Caches [job]'s point, or null for a run with none, computed against reference [stamp] from [problems]' rows. */
+    fun put(job: Long, version: String, stamp: Long?, run: TrendRun?, problems: Set<Pair<String, String>>) {
+        entries[job] = Entry(version, stamp, clock(), run, problems)
     }
 
     private val live = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
@@ -245,7 +303,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     fun lookupLive(job: Long): Cached? = live[job]?.let { Cached(it.run, clock() - it.at <= LIVE_MS) }
 
     fun putLive(job: Long, run: TrendRun) {
-        live[job] = Entry(null, clock(), run)
+        live[job] = Entry("", null, clock(), run, emptySet())
     }
 
     private val confirmations = java.util.concurrent.ConcurrentHashMap<Long, Flips>()
@@ -268,6 +326,9 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     }
 
     companion object {
+        /** What a finished job's cached point is valid for: a retry changes its status or when it finished. */
+        fun version(job: Job): String = "${job.status}/${job.finishedAt}"
+
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L
         /** How long a running job's point is served before it is recomputed. */
         const val LIVE_MS = 20_000L
