@@ -95,14 +95,32 @@ class NodesTest {
     }
 
     @Test
-    fun `a free node helps a running job before it claims a queued one`() {
+    fun `priority decides first, running or queued alike`() {
         val node = NodeShape(cores = 4, onDemand = false)
-        val running = listOf(Demand(1, 1.0, 1, priority = 0), Demand(2, 1.0, 1, priority = 3))
-        val queued = listOf(Demand(3, 9.0, 1, priority = 9))
+        val running = listOf(Demand(1, 1.0, 1, priority = 0, hosts = 1), Demand(2, 1.0, 1, priority = 3, hosts = 2))
 
-        assertEquals(NodeWork.Help(2), NodePool.pick(node, running, queued))
-        assertEquals(NodeWork.Claim(3), NodePool.pick(node, emptyList(), queued))
+        assertEquals(NodeWork.Help(2), NodePool.pick(node, running, listOf(Demand(3, 9.0, 1, priority = 2), Demand(4, 9.0, 1, priority = 1))))
+        assertEquals(NodeWork.Claim(3), NodePool.pick(node, running, listOf(Demand(3, 9.0, 1, priority = 9))))
+        assertEquals(NodeWork.Claim(3), NodePool.pick(node, emptyList(), listOf(Demand(3, 9.0, 1, priority = 9))))
         assertEquals(null, NodePool.pick(node, emptyList(), emptyList()))
+    }
+
+    @Test
+    fun `among equal priorities a node spreads to the job with the fewest hosts`() {
+        val node = NodeShape(cores = 4, onDemand = false)
+        val crowded = Demand(7590, 1.0, 1, priority = 0, hosts = 2)
+        val joined = Demand(7591, 1.0, 1, priority = 0, hosts = 1)
+
+        // A queued job has no hosts: it goes before becoming the third host on a running one.
+        assertEquals(NodeWork.Claim(7600), NodePool.pick(node, listOf(crowded), listOf(Demand(7600, 1.0, 1, priority = 0))))
+        assertEquals(NodeWork.Help(7591), NodePool.pick(node, listOf(crowded, joined), emptyList()))
+        // Ties keep the queue order, a running job before a queued one.
+        assertEquals(NodeWork.Help(7590), NodePool.pick(node, listOf(crowded, crowded.copy(jobId = 7592)), emptyList()))
+        assertEquals(NodeWork.Help(7593), NodePool.pick(node, listOf(Demand(7593, 1.0, 1)), listOf(Demand(7600, 1.0, 1))))
+        // The local machine's next job is left to it, and work below the floor still waits behind the rest.
+        assertEquals(NodeWork.Help(7590), NodePool.pick(node, listOf(crowded), listOf(Demand(7600, 1.0, 1)), excluded = 7600))
+        assertEquals(NodeWork.Help(7590), NodePool.pick(node, listOf(crowded), listOf(Demand(7600, 1.0, 1, priority = -4, belowFloor = true))))
+        assertEquals(NodeWork.Claim(7600), NodePool.pick(node, listOf(crowded.copy(cores = 8)), listOf(Demand(7600, 1.0, 1, priority = -4, belowFloor = true))))
     }
 
     @Test

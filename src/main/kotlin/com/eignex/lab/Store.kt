@@ -1575,12 +1575,13 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     /**
      * The local machine's queue in the order [next] takes it ([LOCAL_QUEUE]): the queued, unpaused jobs placed on the
      * local machine alone or shared, and the shared jobs nodes run that have an iteration no host has claimed, as one
-     * queue by priority, then series, then age.
+     * queue by priority, then the fewest hosts on it ([HOSTS_ON]: a queued job has none, so it goes before joining a
+     * running one of equal priority), then series, then age.
      * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities ([LOCAL_FIRST_ORDER]).
      */
     @Synchronized
     fun queueOrder(nodesUp: Boolean = false): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE $LOCAL_QUEUE " + if (nodesUp) LOCAL_FIRST_ORDER else QUEUE_ORDER,
+        "SELECT id FROM jobs WHERE $LOCAL_QUEUE " + if (nodesUp) LOCAL_FIRST_ORDER else LOCAL_ORDER,
     ).use {
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
     }
@@ -1835,10 +1836,19 @@ private const val UNCLAIMED = "(SELECT 1 FROM commands m WHERE m.job_id = jobs.i
 private const val LOCAL_QUEUE = "cancel_requested = 0 AND paused = 0 AND local = 0 AND " +
     "(status = 'QUEUED' AND $HOST IN ('lab', 'auto') OR status = 'RUNNING' AND $HOST = 'auto' AND $NOT_PROFILE AND EXISTS $UNCLAIMED)"
 
+/** How many hosts work on job `jobs` now: the hosts holding its claimed, unfinished cases. None for a queued job. */
+private const val HOSTS_ON = "(SELECT COUNT(DISTINCT m.host) FROM commands m WHERE m.job_id = jobs.id " +
+    "AND m.status IN ('QUEUED', 'RUNNING') AND m.host IS NOT NULL)"
+
+/** The local machine's order ([Store.queueOrder]): by priority, then the fewest hosts on a job ([HOSTS_ON]), so it
+ *  starts a queued job of equal priority rather than join one others already run, then series and age. */
+private const val LOCAL_ORDER = "ORDER BY priority DESC, $HOSTS_ON, $SERIES_ORDER"
+
 /** The local machine's order while a cloud node is up or launching: by priority, then the jobs placed on the local
- *  machine alone before those a node may take, then series and age. A node can take the `auto` jobs, so local-only
- *  work need not wait behind them; with no node coming, the tie-break would only hold the `auto` jobs back. */
-private const val LOCAL_FIRST_ORDER = "ORDER BY priority DESC, CASE WHEN $HOST = 'lab' THEN 0 ELSE 1 END, $SERIES_ORDER"
+ *  machine alone before those a node may take, then the fewest hosts ([HOSTS_ON]), series and age. A node can take
+ *  the `auto` jobs, so local-only work need not wait behind them; with no node coming, the tie-break would only hold
+ *  the `auto` jobs back. */
+private const val LOCAL_FIRST_ORDER = "ORDER BY priority DESC, CASE WHEN $HOST = 'lab' THEN 0 ELSE 1 END, $HOSTS_ON, $SERIES_ORDER"
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()

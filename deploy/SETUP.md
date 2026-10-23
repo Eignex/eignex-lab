@@ -971,9 +971,12 @@ left with a cancel requested when it starts. `lab host <id> local|cloud|auto` (`
 unplanned job; agents never need it. `lab machines` and `POST /jobs/{id}/machines` are retired and ignored.
 
 Cloud work runs on a pool of nodes. The cloud provider is AWS: a node is an EC2 instance that, once booted, takes work until there is none for it:
-first it joins a shared job already running, on the local machine or on nodes, that still has iterations no host has
-claimed (building that job's commits first), otherwise it claims the next queued job it may run (not local-only, its
-cases fit the node's cores, a profile job only on an on-demand node, priority order). Work at or above `nodeMinPriority`
+it joins a shared job already running, on the local machine or on nodes, that still has iterations no host has
+claimed (building that job's commits first), or claims a queued job it may run (not local-only, its
+cases fit the node's cores, a profile job only on an on-demand node, priority order). Priority decides first, running
+or queued alike; among jobs of equal priority a free node, and the local machine too, takes the one with the fewest
+hosts on it, so it starts a queued job (no hosts) rather than become the third host on a running one, with ties in
+queue order. Work at or above `nodeMinPriority`
 comes first; a node already up with none of that takes work below the floor too, in the same order, so it never idles
 while such jobs wait behind the local machine's queue. A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
 and at once when a lab update waits. It stops taking problems an hour before its `maxHours` power-off. A job's
