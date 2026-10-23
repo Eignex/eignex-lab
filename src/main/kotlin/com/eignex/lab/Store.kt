@@ -151,6 +151,9 @@ data class CaseResult(
      * null while it waits.
      */
     val host: String? = null,
+    /** The `KLAUSE_DEBUG` the lab set for its CLI ([Arm.debug]): true unless its arm said `debug=false`. Every case
+     *  run before the setting existed ran with it on. */
+    val labDebug: Boolean = true,
 )
 
 /**
@@ -850,7 +853,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
     @Synchronized
     private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST FROM cases c
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST, $LAB_DEBUG FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -868,7 +871,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                     rows.getString(4), rows.longOrNull("seed"),
                     withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
                         rows.getString(9)),
-                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10),
+                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10), rows.getInt(11) != 0,
                 )
             }.toList()
         }
@@ -1815,6 +1818,9 @@ private const val QUEUE_ORDER = "ORDER BY priority DESC, $SERIES_ORDER"
  */
 private const val CASE_HOST = "COALESCE(m.host, CASE WHEN m.status IN ('RUNNING', 'DONE', 'FAILED') THEN " +
     "CASE COALESCE(json_extract(j.experiment, '\$.host'), 'lab') WHEN 'aws' THEN 'cloud' WHEN 'auto' THEN NULL ELSE 'local' END END) AS host"
+
+/** Whether arm `a` ran its CLI with `KLAUSE_DEBUG=true` ([Arm.debug]), as 1 or 0. */
+private const val LAB_DEBUG = "(COALESCE(json_extract(a.arm, '\$.values.${Experiments.DEBUG_KEY}'), 'true') != 'false') AS lab_debug"
 
 /** Whether job `j` is instrumented ([ExperimentSpec.instrumented]), as 1 or 0. */
 private const val INSTRUMENTED = "(json_extract(j.experiment, '\$.profileCompilation') IS NOT NULL) AS instrumented"

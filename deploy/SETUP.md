@@ -51,8 +51,10 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   to `any`. Planning logs how many problems the filter left out.
 - Each entry of `configs` (default: one empty config) is merged over `base`, then crossed with every combination of
   `grid`. A configuration takes `ref` (default `main`), `label`, `timeout` (ms, default 60000), `backend`, `engine`,
-  `processors`, `lp`, `presolve`, `fixed`, `exact`, and `param.<name>` for `--param <name>=<value>`. `exact=true` forwards
-  klause-cli's `--exact` flag; omit it or use `false` for the default policy. An arm without a `label` is
+  `processors`, `lp`, `presolve`, `fixed`, `exact`, `debug`, and `param.<name>` for `--param <name>=<value>`. `exact=true` forwards
+  klause-cli's `--exact` flag; omit it or use `false` for the default policy. `debug` (`true` or `false`, default
+  `true`) is the CLI's `KLAUSE_DEBUG` for the arm's cases (see [What a case runs in](#what-a-case-runs-in)): `false`
+  leaves its debug statistics off. It is the lab's setting and never reaches `solve-one`. An arm without a `label` is
   named by the values that set it apart. `param.source-validation=true` asks for independent source-witness
   validation, which the lab performs with external checkers (see [Source-witness validation](#source-witness-validation)).
 - `seeds` sets the solver seed; each listed seed is its own case. Without it each case runs once on the bench's seed.
@@ -1335,7 +1337,7 @@ environment:
 | variable | value |
 | --- | --- |
 | `KLAUSE_CLI_OPTS` | `LAB_SOLVE_JAVA_OPTS` (default `-Xmx3g -XX:+UseSerialGC`) plus `-XX:ActiveProcessorCount=<the case's cores>` |
-| `KLAUSE_DEBUG` | `true`, enabling lightweight runtime statistics on CLI revisions that support it |
+| `KLAUSE_DEBUG` | `true`, enabling lightweight runtime statistics on CLI revisions that support it; `false` for an arm with `debug=false` |
 | `JOB_DIR` | the job's output directory; the case writes its record under `cases/<n>/` |
 | `OPENBLAS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `MKL_NUM_THREADS`, `OMP_NUM_THREADS` | `1` |
 
@@ -1346,6 +1348,15 @@ monitoring: they separate the accumulated compiler-thread elapsed time before
 input loading from the increase through loading and solving. Older revisions
 ignore `KLAUSE_DEBUG`. This setting does not enable JFR, compilation logs or heap
 sampling; recordings require explicit profiling options.
+
+An arm's `debug=false` turns it off: its case command sets `KLAUSE_DEBUG=false` in front of the bench, over the `true`
+the host sets, on the local machine and on a node alike. The CLI reads anything but `true` as off, and so leaves its
+ordinary debug collectors disabled; the record's `runtimeDebug` and the build provenance's `KLAUSE_DEBUG` say so.
+`profileCli`, `measureCliResources` and `profileCompilation` work the same either way, as they go through
+`KLAUSE_CLI_OPTS` and the lab's own wrapper. Each case's JSON (`lab cases <id> --json`, `/experiments/{id}/cases`)
+carries `labDebug`, the setting the lab ran it with: `true` for every case before the setting existed. The setting is
+part of the spec's fingerprint, since it changes what the CLI runs and records, so runs with debug off start their own
+trend; `debug=true` is the default and leaves the fingerprint as it was without it.
 
 Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output and the record go to
 `JOB_DIR/cases/<n>/`. On a cloud node the record comes back with every case, and stdout and stderr only for a case that

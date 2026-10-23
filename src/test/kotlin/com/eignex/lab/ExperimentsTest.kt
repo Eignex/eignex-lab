@@ -395,6 +395,67 @@ class ExperimentsTest {
     }
 
     @Test
+    fun `an arm's debug defaults to on, is never passed to the bench, and false turns KLAUSE_DEBUG off`() {
+        val on = Arm("on", mapOf("timeout" to "3000"))
+        val explicit = Arm("explicit", mapOf("timeout" to "3000", "debug" to "true"))
+        val off = Arm("off", mapOf("timeout" to "3000", "debug" to "false"))
+
+        assertTrue(on.debug && explicit.debug)
+        assertFalse(off.debug)
+        for (arm in listOf(on, explicit, off)) {
+            val command = Experiments.command("/w/7", Problem("s", "p"), arm, null, 0, "/corpus")
+            assertFalse("debug=" in command.substringAfter("solve-one"), command)
+            assertEquals(!arm.debug, "KLAUSE_DEBUG=false" in command, command)
+        }
+        assertContains(Experiments.profileCommand("/w", ProfileMain("com.eignex.klause.bench.profile.Tool"), 0, "/c", debug = false),
+            "KLAUSE_DEBUG=false")
+        assertFalse("KLAUSE_DEBUG" in Experiments.profileCommand("/w", ProfileMain("com.eignex.klause.bench.profile.Tool"), 0, "/c"))
+    }
+
+    @Test
+    fun `a case with debug off runs its CLI with KLAUSE_DEBUG=false over the host's true, keeping its profiling options`() {
+        val root = Files.createTempDirectory("debug case").toFile()
+        try {
+            val bin = root.resolve("w/klause-bench/build/install/klause-bench/bin").apply { mkdirs() }
+            bin.resolve("klause-bench").apply {
+                writeText("#!/usr/bin/env bash\nprintf '%s\\n' \"\$KLAUSE_DEBUG\" \"\$KLAUSE_CLI_OPTS\"\n")
+                setExecutable(true)
+            }
+            fun run(arm: Arm): List<String> {
+                val command = Experiments.command(root.resolve("w").path, Problem("s", "p"), arm, null, 0, "/corpus")
+                val builder = ProcessBuilder("bash", "-c", command).redirectErrorStream(true)
+                // What every host sets for a case, profiling options included.
+                builder.environment()["KLAUSE_DEBUG"] = "true"
+                builder.environment()["KLAUSE_CLI_OPTS"] = "-XX:StartFlightRecording=filename=cli.jfr"
+                builder.environment()["JOB_DIR"] = root.path
+                val process = builder.start()
+                return process.inputStream.bufferedReader().readText().lines().also { assertEquals(0, process.waitFor()) }
+            }
+
+            assertEquals(listOf("false", "-XX:StartFlightRecording=filename=cli.jfr"), run(Arm("off", mapOf("debug" to "false"))).take(2))
+            assertEquals(listOf("true", "-XX:StartFlightRecording=filename=cli.jfr"), run(Arm("on", emptyMap())).take(2))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `debug must be true or false, with profiling too, and only false changes the fingerprint`() {
+        Experiments.validate(spec(base = mapOf("debug" to "false")), maxParallel = 4)
+        Experiments.validate(spec(grid = mapOf("debug" to listOf("true", "false"))), maxParallel = 4)
+        Experiments.validate(spec(base = mapOf("debug" to "false")).copy(parallel = 1, profileCli = true, profileCompilation = "jfr"), maxParallel = 4)
+        for (value in listOf("yes", "TRUE", "0")) {
+            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec(base = mapOf("debug" to value)), maxParallel = 4) }
+            assertContains(error.message.orEmpty(), "debug must be true or false")
+        }
+
+        val plain = spec(base = mapOf("timeout" to "10000"))
+        assertEquals(Experiments.fingerprint(plain), Experiments.fingerprint(spec(base = mapOf("timeout" to "10000", "debug" to "true"))))
+        assertEquals(Experiments.fingerprint(plain), Experiments.fingerprint(plain.copy(configs = listOf(mapOf("debug" to "true")))))
+        assertNotEquals(Experiments.fingerprint(plain), Experiments.fingerprint(spec(base = mapOf("timeout" to "10000", "debug" to "false"))))
+    }
+
+    @Test
     fun `problems read as one selection or a list of them`() {
         val one = """{"name":"e","problems":{"suite":"a"}}"""
         val two = """{"name":"e","problems":[{"suite":"a"},{"suite":"b","max":"5"}]}"""
