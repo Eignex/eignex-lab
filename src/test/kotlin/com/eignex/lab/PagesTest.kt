@@ -572,9 +572,9 @@ class PagesTest {
     }
 
     @Test
-    fun `a launch held back by the quota or a lab update says so`() {
+    fun `a launch held back by the quota or maxInstances says so`() {
         val config = lab(cores = 10)
-        for (blocker in listOf(LaunchGate.QUOTA_FULL, LaunchGate.UPDATE_WAITING, LaunchGate.AT_MAX)) {
+        for (blocker in listOf(LaunchGate.QUOTA_FULL, LaunchGate.AT_MAX)) {
             writeReport(config, NodePoolReport(now(), 15.0, 0, emptyList(), threshold = 10.0, nextThreshold = 10.0,
                 overSince = now() - 20 * 60_000, sustainMs = 600_000, cooldownMs = 300_000, blocker = blocker))
 

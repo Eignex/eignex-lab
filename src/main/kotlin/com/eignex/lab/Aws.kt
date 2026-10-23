@@ -72,6 +72,10 @@ data class AwsConfig(
     /** The largest node the pool launches, by hand or not, in vCPUs. Every job is capped to the local machine's cores,
      *  so no case needs more than a node of this size holds; more load is met by more nodes, not larger ones. */
     val nodeMaxVcpus: Int = 16,
+    /** A node powers itself off, and so terminates, once the lab has not touched its heartbeat for this long
+     *  ([AwsWorker.heartbeat]): the lab down or unreachable leaves no node billing until its [maxHours]. Set at
+     *  launch; 0 turns the watchdog off for nodes launched after. */
+    val nodeWatchdogMin: Long = 30,
 ) {
     /** The sizes a node can be, smallest first: [instanceType] and the larger sizes of its family up to
      *  [nodeMaxVcpus], within the quota. */
@@ -121,6 +125,7 @@ data class AwsConfig(
                 nodeSustainMin = get("nodeSustainMin", "10")!!.toLong(),
                 nodeCooldownMin = get("nodeCooldownMin", "5")!!.toLong(),
                 nodeMaxVcpus = get("nodeMaxVcpus", "16")!!.toInt(),
+                nodeWatchdogMin = get("nodeWatchdogMin", "30")!!.toLong(),
             )
         }
     }
@@ -131,9 +136,10 @@ data class InstanceSize(val type: String, val vcpus: Int) {
     val cores: Int get() = vcpus / 2
 }
 
-/** The AWS CLI, as the lab's IAM user, in the background so it stays off the solves' cores. */
-class AwsCli(private val aws: AwsConfig) {
-    fun call(vararg args: String): String {
+/** The AWS CLI, as the lab's IAM user, in the background so it stays off the solves' cores. Open for tests, which
+ *  answer [call] themselves. */
+open class AwsCli(private val aws: AwsConfig) {
+    open fun call(vararg args: String): String {
         val cmd = Background.prefix + listOf("aws", "--region", aws.region, "--profile", aws.profile, "--output", "text") + args
         val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
         val out = process.inputStream.bufferedReader().readText().trim()
@@ -165,7 +171,7 @@ class AwsCli(private val aws: AwsConfig) {
     )
 
     /** Admit SSH from the lab machine's current public address, which a home connection can change. */
-    fun admitThisMachine() {
+    open fun admitThisMachine() {
         val ip = ProcessBuilder("curl", "-fsS", "https://checkip.amazonaws.com").start().let { p ->
             p.inputStream.bufferedReader().readText().trim().also { p.waitFor() }
         }
@@ -238,19 +244,18 @@ open class Ssh(
         .apply { if (mergeErrors) redirectErrorStream(true) else redirectError(ProcessBuilder.Redirect.DISCARD) }
         .start()
 
-    /** Run [script] to its end, at most [timeoutSec]; its exit (255 when SSH itself failed) and its output. */
     /**
      * Run [script] to its end, at most [timeoutSec]; its exit (255 when SSH itself failed) and its output. A connection
-     * the lab machine's own network dropped is tried again, backing off to about a quarter of an hour in all: the
-     * scripts it runs (a build, a select, a sync) pick up where a cut-off run left them. A refused connection, as from an
-     * instance still booting, is returned at once for its caller to wait out.
+     * the lab machine's own network dropped is tried again, backing off to about a quarter of an hour in all, unless
+     * [retries] is off: the scripts it runs (a build, a select, a sync) pick up where a cut-off run left them. A refused
+     * connection, as from an instance still booting, is returned at once for its caller to wait out.
      */
-    fun exec(script: String, timeoutSec: Long, cancellable: Boolean = true): Pair<Int, String> {
+    fun exec(script: String, timeoutSec: Long, cancellable: Boolean = true, retries: Boolean = true): Pair<Int, String> {
         val cancelled = if (cancellable) cancelled else { { false } }
         var attempt = 1
         while (true) {
             val (exit, out) = execOnce(script, timeoutSec, cancelled)
-            if (exit != SSH_FAILED || !NETWORK.containsMatchIn(out) || attempt >= NETWORK_RETRY.attempts || cancelled()) return exit to out
+            if (exit != SSH_FAILED || !NETWORK.containsMatchIn(out) || !retries || attempt >= NETWORK_RETRY.attempts || cancelled()) return exit to out
             val until = System.currentTimeMillis() + NETWORK_RETRY.delayAfter(attempt)
             while (System.currentTimeMillis() < until && !cancelled()) Thread.sleep(POLL_MS)
             attempt++
@@ -595,20 +600,36 @@ internal fun claimNodeJob(config: Config, store: Store, jobId: Long): Job? {
  * iteration on the host that claimed it, so each comparison is made on one machine; the hosts on a job are its crew
  * ([Crews]), and the last to leave ends it ([Runner.leave]).
  * Records come back as cases end, so the job's page, comparisons and CSVs read as a local job's. A node with nothing
- * to take for [AwsConfig.nodeIdleMin] minutes is terminated; one the lab lost track of powers itself off after
- * [AwsConfig.maxHours], and the worker terminates any lab instance that is not one of its nodes.
+ * to take for [AwsConfig.nodeIdleMin] minutes is terminated.
+ *
+ * The pool outlives the lab's restarts, a lab update's included: each node is kept in `aws/pool.json` ([PoolState]),
+ * and a restarted worker adopts the ones still running there ([recover]) instead of terminating them. Nothing lets an
+ * instance outlive the lab's control: every one powers itself off, and so terminates, after [AwsConfig.maxHours] from
+ * its launch, which adoption keeps, and after [AwsConfig.nodeWatchdogMin] without the lab's [heartbeat]; adoption fails
+ * closed, terminating an instance it has any doubt about; and the sweep terminates, every few minutes, any lab
+ * instance that is not one of the worker's nodes.
  */
 class AwsWorker(
     private val runner: Runner,
     private val store: Store,
     private val config: Config,
     initial: AwsConfig,
+    /** The AWS CLI for the settings at hand; a test answers it itself. */
+    private val cliFor: (AwsConfig) -> AwsCli = ::AwsCli,
+    /** SSH to an instance (its id, address, the settings, the known hosts and what cancels a step); a test fakes it. */
+    private val sshFor: (String, String, AwsConfig, Path, () -> Boolean) -> Ssh = ::Ssh,
+    /** How often the worker polls, sweeps orphans and touches its nodes' heartbeats; shorter only in tests. */
+    private val pollMs: Long = POLL_MS,
+    private val sweepMs: Long = SWEEP_MS,
+    private val heartbeatMs: Long = HEARTBEAT_MS,
+    /** How often an idle node looks for work; shorter only in tests. */
+    private val nodePollMs: Long = NODE_POLL_MS,
 ) {
     /** The settings, read again from `aws.properties` on every poll: a raised quota or a new threshold applies to the
      *  next decision without restarting the lab. */
     @Volatile
     private var aws: AwsConfig = initial
-    private val cli: AwsCli get() = AwsCli(aws)
+    private val cli: AwsCli get() = cliFor(aws)
     private val settings = config.dataDir.resolve("aws").resolve("aws.properties")
     /** vCPUs the nodes up and launching hold of the quota. */
     private val busy = AtomicInteger()
@@ -635,28 +656,62 @@ class AwsWorker(
     private var queueSize: InstanceSize? = null
     private val manualFile = ManualLaunch.file(config)
 
-    /** Whether any node is up or launching: the runner holds off updating itself until none is, since a restart would
-     *  end the threads that drive them. */
+    /** Whether any node is up or launching: the local-only jobs then go first among equal priorities ([Store.next]).
+     *  A lab update no longer waits for it: the pool is adopted again after the restart ([recover]). */
     val active: Boolean get() = busy.get() > 0 || launching.get() > 0
     private val knownHosts = config.dataDir.resolve("aws").resolve("known_hosts")
     private val nodesFile = config.dataDir.resolve("aws").resolve(NODES_FILE)
+    private val poolFile = config.dataDir.resolve("aws").resolve(POOL_FILE)
+    /** Whether the startup's adoption ([recover]) has run: until it has, no node launches and the pool's state file is
+     *  not rewritten, so a failed start loses none of the nodes in it. */
+    @Volatile
+    internal var poolRecovered = false
+        private set
 
     fun loop() {
         knownHosts.parent.createDirectories()
-        runCatching { recover() }.onFailure { println("aws: recovery failed: ${it.message}") }
         var swept = System.currentTimeMillis()
+        var beat = 0L
         while (true) {
             runCatching { AwsConfig.load(settings)?.let { aws = it } }.onFailure { println("aws: settings not reread: ${it.message}") }
+            if (!poolRecovered) {
+                // Tried again at every poll while the CLI fails, as with the lab machine's network down at start.
+                runCatching { recover() }.onFailure { println("aws: recovery failed, trying again: ${it.message}") }
+                if (!poolRecovered) {
+                    Thread.sleep(pollMs)
+                    continue
+                }
+                swept = System.currentTimeMillis()
+            }
+            if (System.currentTimeMillis() - beat >= heartbeatMs) {
+                beat = System.currentTimeMillis()
+                heartbeat()
+            }
             runCatching { scale() }.onFailure { println("aws: ${it.message}") }
             runCatching { manual() }.onFailure { println("aws: manual launch failed: ${it.message}") }
             runCatching { report() }
-            if (System.currentTimeMillis() - swept > SWEEP_MS) {
+            if (System.currentTimeMillis() - swept > sweepMs) {
                 swept = System.currentTimeMillis()
                 runCatching { sweep() }.onFailure { println("aws: sweep failed: ${it.message}") }
             }
-            Thread.sleep(POLL_MS)
+            Thread.sleep(pollMs)
         }
     }
+
+    /**
+     * Touch each node's heartbeat file, whose age its watchdog checks ([bootstrap]): a node the lab has not touched for
+     * [AwsConfig.nodeWatchdogMin] powers itself off. Each node on a thread of its own, so one that does not answer
+     * holds up neither the others nor the poll.
+     */
+    private fun heartbeat() {
+        for (node in nodes.values.filter { it.ip.isNotEmpty() }) {
+            thread(isDaemon = true, name = "aws-heartbeat-${node.instance}") {
+                runCatching { ssh(node).exec(TOUCH_HEARTBEAT, SSH_STEP_SEC, cancellable = false, retries = false) }
+            }
+        }
+    }
+
+    private fun ssh(node: Node, cancelled: () -> Boolean = { false }) = sshFor(node.instance, node.ip, aws, knownHosts, cancelled)
 
     /**
      * The work waiting for a node, as [Demand]s: the queued jobs a node may take, in queue order, and the iterations no
@@ -705,7 +760,6 @@ class AwsWorker(
         val (queued, running) = demands().let { (q, r) -> q.filter { !it.belowFloor } to r.filter { !it.belowFloor } }
         val all = queued + running
         pressure = NodePool.pressure(all)
-        // A waiting update needs every node gone; launching another would hold it back indefinitely.
         val count = nodes.size + launching.get()
         val size = all.maxOfOrNull { it.cores }?.let { cores ->
             NodePool.size(aws.sizes, cores, pressure, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
@@ -713,7 +767,6 @@ class AwsWorker(
         queueSize = size ?: NodePool.size(aws.sizes, 1, 0.0, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus).takeIf { all.isEmpty() }
         val noRoom = when {
             count >= aws.maxInstances -> LaunchGate.AT_MAX
-            runner.updateWaiting() -> LaunchGate.UPDATE_WAITING
             !runner.recovered || Volumes.jobFiles(config) != null -> LaunchGate.NO_JOB_FILES
             size == null && all.isNotEmpty() -> LaunchGate.QUOTA_FULL
             else -> null
@@ -732,14 +785,13 @@ class AwsWorker(
 
     /**
      * Start the node a manual launch asked for ([ManualLaunch]), when its request waits: past the pressure threshold
-     * and the sustain wait, but within `maxInstances`, the quota and a waiting update, checked again here against the
-     * pool as it now stands. It counts as the gate's last launch, for the cooldown.
+     * and the sustain wait, but within `maxInstances` and the quota, checked again here against the pool as it now
+     * stands. It counts as the gate's last launch, for the cooldown.
      */
     private fun manual() {
         val request = ManualLaunch.take(manualFile) ?: return
         val now = System.currentTimeMillis()
-        val plan = ManualLaunch.decide(request, now, aws, queueSize, nodes.size + launching.get(), aws.vcpuQuota - busy.get(),
-            runner.updateWaiting()).getOrElse {
+        val plan = ManualLaunch.decide(request, now, aws, queueSize, nodes.size + launching.get(), aws.vcpuQuota - busy.get()).getOrElse {
             println("aws: manual launch refused: ${it.message}")
             return
         }
@@ -754,7 +806,7 @@ class AwsWorker(
         busy.addAndGet(size.vcpus)
         launching.incrementAndGet()
         if (onDemand) launchingOnDemand.incrementAndGet()
-        thread(name = "aws-node-${launched.get() + 1}") {
+        thread(isDaemon = true, name = "aws-node-${launched.get() + 1}") {
             val node = try {
                 buy(size, onDemand, manual)
             } catch (e: Exception) {
@@ -779,6 +831,7 @@ class AwsWorker(
             val (id, market) = if (onDemand) cli.launch(name, userData, size.type) to ON_DEMAND else spotFirst(name, userData, size.type, manual)
             return Node(id, size, market, System.currentTimeMillis(), manual).also { nodes[id] = it }
                 .also { println("aws: launched ${size.type} $market ${if (manual) "manual " else ""}node $id") }
+                .also { savePool() }
         } finally {
             userData.delete()
         }
@@ -809,9 +862,12 @@ class AwsWorker(
         }
     }
 
-    /** An instance of the pool: its size, how it was bought, whether it was started by hand, and what it is doing, for
-     *  the pages. */
-    private inner class Node(val instance: String, val size: InstanceSize, val market: String, val launchedAt: Long, val manual: Boolean = false) {
+    /** An instance of the pool: its size, how it was bought, whether it was started by hand or adopted after a restart
+     *  ([recover]), and what it is doing, for the pages. */
+    private inner class Node(
+        val instance: String, val size: InstanceSize, val market: String, val launchedAt: Long, val manual: Boolean = false,
+        val adopted: Boolean = false,
+    ) {
         val onDemand: Boolean get() = market == ON_DEMAND
         val shape: NodeShape get() = NodeShape(size.cores, onDemand)
         @Volatile
@@ -825,33 +881,38 @@ class AwsWorker(
         val built: MutableSet<String> = Collections.synchronizedSet(HashSet())
     }
 
-    /** A node's life: boot, then take work until [NodePool.retire] says it is done, then terminate it. */
-    private fun run(node: Node) {
+    /** A node's life: boot, unless [booted] already, then take work until [NodePool.retire] says it is done, then
+     *  terminate it. An adopted node's age counts from its first launch, and its idle time from its adoption. */
+    private fun run(node: Node, booted: Boolean = false) {
+        var why = "stopped"
         try {
-            boot(node)
+            if (!booted) boot(node)
             var idleSince: Long? = System.currentTimeMillis()
             while (true) {
-                val why = NodePool.retire(System.currentTimeMillis(), node.launchedAt, idleSince, aws.nodeIdleMin * MS_PER_MIN,
-                    NodePool.maxAgeMs(aws.maxHours), runner.updateWaiting())
-                if (why != null) {
-                    println("aws: node ${node.instance} $why")
+                val retire = NodePool.retire(System.currentTimeMillis(), node.launchedAt, idleSince, aws.nodeIdleMin * MS_PER_MIN,
+                    NodePool.maxAgeMs(aws.maxHours))
+                if (retire != null) {
+                    why = retire
                     break
                 }
                 val job = take(node)
                 if (job == null) {
                     node.doing = "idle"
-                    Thread.sleep(NODE_POLL_MS)
+                    Thread.sleep(nodePollMs)
                     continue
                 }
                 // A node whose work failed may be the reason; it retires rather than take the next job down with it.
-                if (!work(node, job)) break
+                if (!work(node, job)) {
+                    why = "retired after its work failed"
+                    break
+                }
                 idleSince = System.currentTimeMillis()
                 node.doing = "idle"
             }
         } catch (e: Exception) {
-            println("aws: node ${node.instance} failed: ${e.message}")
+            why = "failed: ${e.message}"
         } finally {
-            retire(node)
+            retire(node, why)
         }
     }
 
@@ -860,21 +921,22 @@ class AwsWorker(
         node.ip = runner.withRetry(null, "reading ${node.instance}'s address") {
             cli.publicIp(node.instance).also { check(it != "None") { "no public address yet" } }
         }
-        val ssh = Ssh(node.instance, node.ip, aws, knownHosts)
-        runner.withRetry(null, "waiting for ${node.instance} to boot", BOOT_WAIT) { ssh.run("test -f /var/lib/klause-ready", SSH_STEP_SEC) }
+        savePool()
+        val ssh = ssh(node)
+        runner.withRetry(null, "waiting for ${node.instance} to boot", BOOT_WAIT) { ssh.run("test -f $READY", SSH_STEP_SEC) }
         node.doing = "idle"
         report()
     }
 
-    /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While an update
-     *  waits, a node only joins jobs already running, so they drain; so it does while the corpus's volume is missing
-     *  ([Volumes]). It takes nothing before the runner's startup recovery ([Runner.recover]) or while the job files
-     *  cannot be used, as a job's files are written there: the node stays up, idle, until they can. It picks ([pick])
-     *  under the crews' lock ([Crews]), which the local machine takes and joins jobs under too, so no job ends while a
-     *  node joins it. */
+    /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While the corpus's
+     *  volume is missing ([Volumes]), a node only joins jobs already running. A waiting lab update changes nothing: the
+     *  node is adopted again after the restart ([recover]). It takes nothing before the runner's startup recovery
+     *  ([Runner.recover]) or while the job files cannot be used, as a job's files are written there: the node stays up,
+     *  idle, until they can. It picks ([pick]) under the crews' lock ([Crews]), which the local machine takes and joins
+     *  jobs under too, so no job ends while a node joins it. */
     private fun take(node: Node): AwsJob? {
         if (!runner.recovered || Volumes.jobFiles(config) != null) return null
-        val claims = !runner.updateWaiting() && Volumes.missing(config) == null
+        val claims = Volumes.missing(config) == null
         return synchronized(runner.crews.lock) { pick(node, claims) }
     }
 
@@ -997,12 +1059,13 @@ class AwsWorker(
         if (missing.isEmpty()) return
         setup(job, host, missing)
         missing.forEach { AwsBuildCache.rebuilt(node.built, it, measuresCli) }
+        savePool()
     }
 
     /** [node] as a host for [job]'s cases: its files in their own directory, one case per two cores unless the job
      *  says how many. */
     private fun host(node: Node, job: AwsJob) = AwsHost(
-        node.instance, Ssh(node.instance, node.ip, aws, knownHosts) { store.cancelRequested(job.id) }, node.size.cores,
+        node.instance, ssh(node) { store.cancelRequested(job.id) }, node.size.cores,
         config.solveJavaOpts, job.spec.profileCli, job.spec.isProfile,
         gone = { cli.state(node.instance).takeIf { (state, _) -> state in GONE }?.let { (state, reason) -> "$state, $reason".trimEnd(',', ' ') } },
         onPhase = { index, phase -> store.commandPhase(job.id, index, phase) },
@@ -1021,31 +1084,104 @@ class AwsWorker(
         val remoteDir = "${AwsHost.HOME}/jobs/$id"
     }
 
-    /** Terminate [node] and hand its vCPUs back. */
-    private fun retire(node: Node) {
+    /** Terminate [node], saying [why], and hand its vCPUs back. It leaves the pool's state file first: should the
+     *  terminate fail, or the lab stop before it, the sweep or the next start terminates it as an orphan. */
+    private fun retire(node: Node, why: String) {
         nodes.remove(node.instance)
+        runCatching { savePool() }
         runCatching { retrying(config.retry) { cli.terminate(listOf(node.instance)) } }
-            .onSuccess { println("aws: terminated node ${node.instance}") }
-            .onFailure { println("aws: could not terminate node ${node.instance}, the next sweep will: ${it.message}") }
+            .onSuccess { println("aws: terminated node ${node.instance}: $why") }
+            .onFailure { println("aws: could not terminate node ${node.instance} ($why), the next sweep will: ${it.message}") }
         busy.addAndGet(-node.size.vcpus)
         runCatching { report() }
     }
 
-    /** After a restart every lab instance, no node now, goes; the jobs they ran go back to the queue in the runner's
-     *  recovery ([Runner.recover]), before any node takes work. */
-    private fun recover() {
+    /**
+     * The startup's recovery, before any launch or sweep: adopt each node of the pool's state file ([PoolState]) that
+     * still runs as a lab instance, and terminate every other lab instance. Adoption fails closed: an instance not
+     * running, that SSH does not reach within its timeout, or whose stale processes and job files cannot be cleared is
+     * terminated, with the reason logged. A missing or unreadable state file adopts nothing, so every lab instance goes.
+     * An instance of the file no longer tagged as the lab's is left alone: the lab terminates only its own. The jobs
+     * the nodes ran go back to the queue in the runner's recovery ([Runner.recover]), each iteration whole, before any
+     * node takes work; an adopted node then takes work as a launched one does.
+     */
+    internal fun recover() {
+        val saved = readPool()
+        val up = cli.running().toSet()
+        if (saved == null) println("aws: no readable ${POOL_FILE}: no node is adopted, every lab instance is terminated")
+        saved?.let { state -> launched.updateAndGet { maxOf(it, state.launched) } }
+        val failed = LinkedHashMap<String, String>()
+        for (node in saved?.nodes.orEmpty()) {
+            if (nodes.containsKey(node.instance)) continue
+            if (node.instance !in up) {
+                println("aws: node ${node.instance} from before the restart is no longer a running lab instance")
+                continue
+            }
+            runCatching { adopt(node) }.onFailure { failed[node.instance] = it.message ?: it::class.simpleName.orEmpty() }
+        }
+        poolRecovered = true
+        savePool()
+        for ((instance, why) in failed) {
+            runCatching { retrying(config.retry) { cli.terminate(listOf(instance)) } }
+                .onSuccess { println("aws: terminated node $instance, not adopted: $why") }
+                .onFailure { println("aws: could not terminate node $instance (not adopted: $why), the next sweep will: ${it.message}") }
+        }
         sweep()
     }
 
+    /**
+     * Take [saved], an instance of the pool before the restart, back as a node: it must run, answer SSH within
+     * [SSH_STEP_SEC] without the long retries of a step, and have every process the previous runner left on it killed
+     * and its job files removed ([ADOPT_SCRIPT]); it then takes work as any node. Its age keeps counting from its first
+     * launch, so its `maxHours` stands, and so does its own power-off, set at its boot. Fails, for its caller to
+     * terminate it, on any doubt.
+     */
+    private fun adopt(saved: SavedNode) {
+        val (state, _) = cli.state(saved.instance)
+        check(state == "running") { "it is $state" }
+        val ip = runCatching { cli.publicIp(saved.instance) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() && it != "None" } ?: saved.ip
+        check(ip.isNotEmpty()) { "it has no public address" }
+        val node = Node(saved.instance, InstanceSize(saved.type, saved.vcpus), saved.market, saved.launchedAt, saved.manual, adopted = true)
+        node.ip = ip
+        val (exit, out) = ssh(node).exec(ADOPT_SCRIPT, SSH_STEP_SEC, cancellable = false, retries = false)
+        check(exit == 0) { "clearing it over SSH failed (exit $exit): ${out.trim().takeLast(ERROR_CHARS)}" }
+        val booted = out.lines().any { it.trim() == "ready" }
+        if (booted) node.built.addAll(saved.built)
+        node.doing = if (booted) "idle" else "booting"
+        nodes[node.instance] = node
+        busy.addAndGet(node.size.vcpus)
+        println("aws: adopted ${node.size.type} ${node.market} node ${node.instance}, launched ${(System.currentTimeMillis() - node.launchedAt) / MS_PER_MIN} min ago")
+        thread(isDaemon = true, name = "aws-${node.instance}") { run(node, booted = booted) }
+    }
+
     /** Terminate the lab's instances that are not nodes: ones a node could not terminate when it retired, as when the
-     *  lab machine's network was down then. They would hold the vCPU quota against every launch. */
+     *  lab machine's network was down then, and ones no node of the pool was adopted as after a restart ([recover]).
+     *  They would hold the vCPU quota against every launch, and bill. It runs every [sweepMs], and holds off while a
+     *  launch is in progress, whose instance is a node only once AWS has given its id. */
     private fun sweep() {
         if (launching.get() > 0) return
         val orphans = cli.running().filter { it !in nodes.keys }
         if (orphans.isNotEmpty()) {
-            println("aws: terminating instances that are not nodes: $orphans")
+            println("aws: terminating lab instances that are not nodes: $orphans")
             cli.terminate(orphans)
         }
+    }
+
+    /** The pool's state file as last written, or null when it is missing or cannot be read. */
+    private fun readPool(): PoolState? =
+        runCatching { POOL_JSON.decodeFromString(PoolState.serializer(), poolFile.toFile().readText()) }.getOrNull()
+
+    /** Write the pool to its state file, which a restarted worker adopts from ([recover]); not before the startup's
+     *  adoption has run, so a failed start keeps the nodes it lists. */
+    @Synchronized
+    private fun savePool() {
+        if (!poolRecovered) return
+        val state = PoolState(launched.get(), nodes.values.sortedBy { it.launchedAt }.map {
+            SavedNode(it.instance, it.size.type, it.size.vcpus, it.market, it.ip, it.manual, it.launchedAt,
+                synchronized(it.built) { it.built.toList() }.sorted())
+        })
+        poolFile.parent.createDirectories()
+        poolFile.writeAtomically(POOL_JSON.encodeToString(PoolState.serializer(), state))
     }
 
     /** Each instance has the corpora its cases read before they start, so cases that share a collection never fetch
@@ -1067,7 +1203,7 @@ class AwsWorker(
     @Synchronized
     private fun report() {
         val report = poolReport(System.currentTimeMillis(), pressure, launching.get(),
-            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job, it.manual) },
+            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job, it.manual, it.launchedAt, it.adopted) },
             threshold, gate, aws, blocker, runner.updateWaiting(), busy.get(), queueSize?.type)
         nodesFile.parent.createDirectories()
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
@@ -1114,12 +1250,19 @@ class AwsWorker(
         runner.log(job.id, "${host.instance}: built")
     }
 
-    /** What a fresh instance runs at first boot: its power-off deadline, then a JDK, MiniZinc and the tools a build and
-     *  the bench need, then the mark [boot] waits for. */
-    private fun bootstrap(): String = """
+    private fun bootstrap(): String = bootstrap(aws)
+
+    companion object {
+        /**
+         * What a fresh instance runs at first boot: its power-off deadline, its watchdog ([watchdog]), then a JDK,
+         * MiniZinc and the tools a build and the bench need, then the mark [boot] waits for. A power-off terminates the
+         * instance (`--instance-initiated-shutdown-behavior terminate`).
+         */
+        internal fun bootstrap(aws: AwsConfig): String = """
         #!/bin/bash
         set -euxo pipefail
         shutdown -h +${aws.maxHours * MINUTES_PER_HOUR}
+""".trimIndent() + "\n" + watchdog(aws.nodeWatchdogMin) + """
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -q
         apt-get install -yq git zstd unzip curl xz-utils time jq build-essential libgmp-dev zlib1g-dev
@@ -1132,7 +1275,61 @@ class AwsWorker(
         touch /var/lib/klause-ready
     """.trimIndent() + "\n"
 
-    companion object {
+        /**
+         * The node's watchdog, a systemd timer that powers it off once the heartbeat file the lab touches ([HEARTBEAT],
+         * [heartbeat]) is older than [minutes]: a lab down, or cut off, leaves no node billing until its `maxHours`.
+         * None when [minutes] is 0.
+         */
+        internal fun watchdog(minutes: Long): String = if (minutes <= 0) "" else """
+        touch $HEARTBEAT && chown ubuntu:ubuntu $HEARTBEAT
+        cat > /usr/local/sbin/klause-lab-watchdog <<'EOF'
+        #!/bin/bash
+        age=${'$'}(( ${'$'}(date +%s) - ${'$'}(stat -c %Y $HEARTBEAT) ))
+        if [ "${'$'}age" -gt ${minutes * 60} ]; then
+          logger "klause-lab: no heartbeat from the lab for ${'$'}age s, powering off"
+          shutdown -h now
+        fi
+        EOF
+        chmod +x /usr/local/sbin/klause-lab-watchdog
+        printf '[Service]\nType=oneshot\nExecStart=/usr/local/sbin/klause-lab-watchdog\n' > /etc/systemd/system/klause-lab-watchdog.service
+        printf '[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1min\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/klause-lab-watchdog.timer
+        systemctl daemon-reload
+        systemctl enable --now klause-lab-watchdog.timer
+""".trimIndent() + "\n"
+
+        /** The file a node's watchdog checks the age of ([watchdog]), which the lab touches. */
+        const val HEARTBEAT = "/var/lib/klause-lab-heartbeat"
+        /** Touch the heartbeat; a node launched before the watchdog has no file, and that is no failure. */
+        internal const val TOUCH_HEARTBEAT = "touch $HEARTBEAT 2>/dev/null || true"
+        private const val READY = "/var/lib/klause-ready"
+
+        /**
+         * What a restarted worker runs on a node it adopts ([adopt]): kill every process the previous runner left there,
+         * the SSH sessions it started (those whose session leader sshd started, or whose leader is gone), then remove
+         * the job files and check that none survived; exit non-zero when any did. It prints `ready` once the node's
+         * bootstrap has finished, else `booting`.
+         */
+        internal val ADOPT_SCRIPT = """
+            u=$(id -un); me=$(ps -o sid= -p $$ | tr -d ' ')
+            [ -n "${'$'}me" ] || { echo 'no session'; exit 3; }
+            stale() {
+              ps -u "${'$'}u" -o pid=,sid=,stat=,comm= | while read -r pid sid stat comm; do
+                [ "${'$'}sid" = "${'$'}me" ] && continue
+                case "${'$'}stat ${'$'}comm" in Z*|*sshd*) continue;; esac
+                pp=$(ps -o ppid= -p "${'$'}sid" 2>/dev/null | tr -d ' ')
+                if [ -n "${'$'}pp" ]; then case "$(ps -o comm= -p "${'$'}pp" 2>/dev/null)" in sshd*) ;; *) continue;; esac; fi
+                echo "${'$'}pid"
+              done
+            }
+            stale | xargs -r kill -KILL 2>/dev/null
+            sleep 1
+            left=$(stale | tr '\n' ' ')
+            [ -z "${'$'}left" ] || { echo "stale processes survived: ${'$'}left"; exit 4; }
+            rm -rf ~/jobs /tmp/klause-lab-step-* || { echo 'job files not removed'; exit 5; }
+            $TOUCH_HEARTBEAT
+            if test -f $READY; then echo ready; else echo booting; fi
+        """.trimIndent()
+
         /**
          * The steps after a commit's build is in place in [worktree]: a measurement launcher, then the provenance
          * manifest, which must describe the files the cases will run, launcher included. Both come after the build cache
@@ -1160,6 +1357,11 @@ class AwsWorker(
         const val INSTANCES_FILE = "aws-instances"
         /** The pool's state under `$LAB_DATA/aws`, for the pages ([NodePoolReport]). */
         const val NODES_FILE = "nodes.json"
+        /** The pool's nodes as a restarted worker adopts them ([PoolState]), under `$LAB_DATA/aws`. */
+        const val POOL_FILE = "pool.json"
+        private val POOL_JSON = Json { ignoreUnknownKeys = true }
+        private const val HEARTBEAT_MS = 5 * 60_000L
+        private const val ERROR_CHARS = 500
         const val SPOT = "spot"
         const val ON_DEMAND = "on-demand"
 

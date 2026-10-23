@@ -979,7 +979,7 @@ hosts on it, so it starts a queued job (no hosts) rather than become the third h
 queue order. Work at or above `nodeMinPriority`
 comes first; a node already up with none of that takes work below the floor too, in the same order, so it never idles
 while such jobs wait behind the local machine's queue. A node with nothing to take for `nodeIdleMin` minutes (5) is terminated,
-and at once when a lab update waits. It stops taking problems an hour before its `maxHours` power-off. A job's
+whether it was launched or adopted after a restart. It stops taking problems an hour before its `maxHours` power-off. A job's
 instances are the nodes working on it right now; its page lists them with their sizes and markets, and the queue
 page's work summary shows the whole pool (below).
 
@@ -1003,7 +1003,7 @@ Nodes launch on pressure, with damping:
   core-hours (10 core-hours on a 10-core machine). The first node launches once pressure
   has stayed at or above it for `nodeSustainMin` minutes (10). Another launches only while pressure is at least twice
   the threshold per node already up or launching, again for `nodeSustainMin`, and `nodeCooldownMin` minutes (5) after
-  the last launch; at most `maxInstances` nodes, within the `vcpuQuota`. While a lab update waits, no node launches.
+  the last launch; at most `maxInstances` nodes, within the `vcpuQuota`. A waiting lab update holds no launch back.
   A small queue never starts a node: a job alone launches one only when its own estimate is over the threshold.
 - Each launch asks for spot and asks again every 30 s while AWS has no spot capacity or quota; after `spotWaitMin`
   minutes (15) it buys on demand, or at once if the account cannot launch spot at all, but only with `onDemand=true`.
@@ -1024,7 +1024,7 @@ Nodes launch on pressure, with damping:
 
 A node can also be started by hand: the Cloud gauge's **Start a node** button, `lab node start [size] [spot|on-demand]`
 or `POST /cloud/nodes` (`{"size"?, "market"?}`). It skips the pressure threshold and the sustain wait, but not
-`maxInstances`, the `vcpuQuota` or a waiting lab update; the lab refuses it (409) saying which, and also when a manual
+`maxInstances` or the `vcpuQuota`; the lab refuses it (409) saying which, and also when a manual
 request already waits or the cloud worker has not reported for two minutes (the runner is down). Its size is the one
 the queue calls for, as above (at least the cores of the largest waiting case; the smallest when nothing waits),
 unless one of the family's sizes within the quota is named. Its market is spot first as for any launch (on demand
@@ -1050,7 +1050,7 @@ job at a time. Paused and cancelling jobs are left out. With cloud settings, the
 threshold for the next node ("0.8 of 10 core-h for the first node", "26 of 40 core-h for node 3"), how long the
 pressure has stood over it against `nodeSustainMin` ("over for 4 of 10 min"), the cooldown left, what holds the next
 node back ("no node: below threshold", "waiting 6 min more", "cooldown 3 min", "at maxInstances", "vCPU quota full",
-"lab update waiting") and the nodes up with their size, market and what each is doing. The worker writes these to
+"job files unavailable") and the nodes up with their size, market, age ("up 2 h 5 min"), whether each was adopted after a restart, and what each is doing. The worker writes these to
 `$LAB_DATA/aws/nodes.json` on every poll; the page's totals include the job the free local machine takes next, which the
 pressure leaves out. Each queued row says why it waits, as `lab placement` does (see Client). The runner keeps the
 setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reasons can name it.
@@ -1116,9 +1116,26 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
   problem's arms run on the same node, so a comparison never spans machines. `parallel=1` does not make an experiment
   more controlled; it only leaves half the node idle and takes twice as long. Set it lower only for an arm that needs
   more memory per case than half the node.
-- The lab does not update itself while any node is up: the restart would end the threads that drive them. While an
-  update waits, no node launches or claims a new job, nodes only join jobs already running, and an idle node retires
-  at once, so the pool drains and the update lands; queued jobs start after the restart.
+- The pool outlives the lab's restarts, lab updates included. The worker keeps each node (instance, size, market,
+  address, whether started by hand, first launch, commits built) in `$LAB_DATA/aws/pool.json`, rewritten on each
+  change. A restarted worker, before it launches or sweeps anything, adopts each node of that file that still runs as a
+  lab instance: it must be `running`, answer SSH within 60 s (no long retries), and have every process the previous
+  runner left on it killed (each SSH session the lab started) and its job files (`~/jobs`) removed, checked after the
+  kill; its builds and corpus stay. The adopted node then takes work as any node, its age still counted from its first
+  launch. Adoption fails closed: a node that does not pass is terminated with the reason logged, a lab instance not in
+  the file is terminated by the sweep, and a missing or unreadable file adopts nothing, so every lab instance goes. The
+  cases nodes ran when the runner stopped are lost: the runner's startup recovery gives every case they held back and
+  queues each iteration left part done again whole, as for any restart.
+- A waiting lab update does not drain the pool: nodes keep launching, claiming and running, and the update waits only
+  for the local machine's next point between cases.
+- No instance outlives the lab's control. Every node powers itself off, which terminates it, `maxHours` after its
+  launch; adoption keeps that deadline. An idle node, launched or adopted, retires after `nodeIdleMin`. The sweep
+  terminates, every 5 minutes, any lab-tagged instance that is not one of the worker's nodes (holding off while a launch
+  is in progress). And each node runs a watchdog, a systemd timer installed at boot, that powers it off once the lab
+  has not touched its heartbeat file (`/var/lib/klause-lab-heartbeat`, touched every 5 minutes and on adoption) for
+  `nodeWatchdogMin` minutes (30; 0 turns it off for nodes launched after), so a lab that stays down, or a Mac that is
+  off, leaves no node billing until `maxHours`. A lab update's restart takes far less. Nodes launched before the watchdog
+  existed have none and rely on `maxHours`. Every termination is logged with its reason.
 - Spot nodes are the same hardware at a fraction of the on-demand price, and AWS can take one back at two minutes'
   notice. When it does, the lab finds the node gone at its next dropped connection and puts the iterations it held
   back in the job's queue whole; the job's other hosts take them, or a free host joins. A job
@@ -1444,7 +1461,8 @@ loads classes from, which would break it until it restarts. The cases running wh
 The runner does this on its own, and never alongside a solve: at most every `LAB_UPDATE_CHECK_SEC` (default 300) it
 fetches the checkout `install.sh` ran from, and when its branch's upstream is ahead, the running job yields between
 its cases, as it does to a higher-priority job; `update.sh` then runs with nothing running and the job resumes on the
-new release. A build competing with the solves for the CPU pushes problems near their budget over it, which reads as
+new release. Cloud nodes do not hold an update back and are not drained for it: they keep working and the restarted
+runner adopts them (see Running on cloud nodes); the iterations they ran at the restart are queued again whole. A build competing with the solves for the CPU pushes problems near their budget over it, which reads as
 a regression. `lab update` asks for the check at once. Deploy by pushing and running `lab update` rather than running
 `update.sh` by hand, which builds (niced) and restarts while cases run. A failed build or host check leaves the
 running release in place, with the output in `$LAB_DATA/logs/update.log`, and is tried again at the next check.
@@ -1493,7 +1511,7 @@ deploy/lab cancel 7
 Running on cloud nodes): it never starts a node or moves a job. Its first line is the cloud launch gate, the pressure
 against the threshold for the next node and what holds it back ("pressure 0.6 of 8.0 core-h for the first node, below
 the launch threshold", "over the threshold: a node launches once it holds 6 min more", "the cooldown after the last
-launch holds the next for 3 min", "the 32-vCPU quota is full", "a lab update waits"), with the nodes up and what each
+launch holds the next for 3 min", "the 32-vCPU quota is full"), with the nodes up and what each
 is doing. The second is the local machine's job and its phase: its setup step as its log names it ("setting up:
 selecting problems for selection 0", for how long) or its cases ("running cases: 93 of 1015 done, 4 running"). Then a
 line per active job: id, status, where it may run (`local only`, `local or cloud`, `cloud`), priority, its place in

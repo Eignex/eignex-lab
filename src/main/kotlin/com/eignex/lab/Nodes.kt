@@ -123,11 +123,10 @@ object NodePool {
 
     /**
      * Why a node should retire now, or null to keep it: past [maxAgeMs] (its power-off at `maxHours`, less a margin),
-     * or idle for [idleMs], at once when an update waits for the pool to drain.
+     * or idle for [idleMs]. A waiting lab update retires no node: the restarted worker adopts the pool again.
      */
-    fun retire(now: Long, launchedAt: Long, idleSince: Long?, idleMs: Long, maxAgeMs: Long, updateWaiting: Boolean): String? = when {
+    fun retire(now: Long, launchedAt: Long, idleSince: Long?, idleMs: Long, maxAgeMs: Long): String? = when {
         now - launchedAt >= maxAgeMs -> "is near its maxHours"
-        idleSince != null && updateWaiting -> "is idle and a lab update waits"
         idleSince != null && now - idleSince >= idleMs -> "was idle for ${(now - idleSince) / MS_PER_SEC / SEC_PER_MIN} min"
         else -> null
     }
@@ -215,7 +214,6 @@ class LaunchGate {
         const val BELOW = "below threshold"
         const val AT_MAX = "at maxInstances"
         const val QUOTA_FULL = "vCPU quota full"
-        const val UPDATE_WAITING = "lab update waiting"
         /** The job files cannot be used ([Volumes.jobFiles]), or the runner's startup recovery has not run: a node
          *  could take no work. */
         const val NO_JOB_FILES = "job files unavailable"
@@ -252,8 +250,23 @@ data class NodePoolReport(
     val manualSize: String? = null,
 )
 
-/** A node as the pages show it; [manual] when it was started by hand ([ManualLaunch]). */
+/** A node as the pages show it; [manual] when it was started by hand ([ManualLaunch]), [adopted] when a restarted
+ *  worker took it back ([AwsWorker.recover]); [launchedAt], its first launch, gives its age (null from an older lab). */
 @Serializable
 data class NodeReport(
     val instance: String, val type: String, val market: String, val doing: String, val job: Long? = null, val manual: Boolean = false,
+    val launchedAt: Long? = null, val adopted: Boolean = false,
+)
+
+/** The pool as a restarted worker adopts it, in `aws/pool.json`, written on each change: how many nodes were
+ *  launched, for their names, and each node. */
+@Serializable
+data class PoolState(val launched: Int = 0, val nodes: List<SavedNode> = emptyList())
+
+/** A node of [PoolState]: what adopting it needs, its first launch included, so its age and `maxHours` stand, and the
+ *  commits built on it. */
+@Serializable
+data class SavedNode(
+    val instance: String, val type: String, val vcpus: Int, val market: String, val ip: String = "", val manual: Boolean = false,
+    val launchedAt: Long, val built: List<String> = emptyList(),
 )

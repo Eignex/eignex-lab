@@ -136,16 +136,16 @@ class NodesTest {
     }
 
     @Test
-    fun `a node retires when idle long enough, at once when an update waits, and near its maxHours`() {
+    fun `a node retires when idle long enough and near its maxHours, never for a waiting update`() {
         val idle = 5 * 60_000L
         val maxAge = NodePool.maxAgeMs(24)
 
         assertEquals(23 * 3_600_000L, maxAge)
-        assertEquals(null, NodePool.retire(1_000_000, 0, idleSince = null, idle, maxAge, updateWaiting = true))
-        assertEquals(null, NodePool.retire(1_000_000, 0, idleSince = 1_000_000 - idle + 1, idle, maxAge, updateWaiting = false))
-        assertEquals("was idle for 5 min", NodePool.retire(1_000_000, 0, idleSince = 1_000_000 - idle, idle, maxAge, updateWaiting = false))
-        assertEquals("is idle and a lab update waits", NodePool.retire(1_000_000, 0, idleSince = 999_000, idle, maxAge, updateWaiting = true))
-        assertEquals("is near its maxHours", NodePool.retire(maxAge, 0, idleSince = null, idle, maxAge, updateWaiting = false))
+        assertEquals(null, NodePool.retire(1_000_000, 0, idleSince = null, idle, maxAge))
+        assertEquals(null, NodePool.retire(1_000_000, 0, idleSince = 1_000_000 - idle + 1, idle, maxAge))
+        assertEquals(null, NodePool.retire(1_000_000, 0, idleSince = 999_000, idle, maxAge))
+        assertEquals("was idle for 5 min", NodePool.retire(1_000_000, 0, idleSince = 1_000_000 - idle, idle, maxAge))
+        assertEquals("is near its maxHours", NodePool.retire(maxAge, 0, idleSince = null, idle, maxAge))
     }
 
     @Test

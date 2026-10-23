@@ -55,6 +55,8 @@ class Runner(
             return@let { worker.active }
         }
     },
+    /** The self-updater; null builds the lab's own from the config. A test gives its own. */
+    private val selfUpdater: SelfUpdater? = null,
 ) {
     /** Checks each finished case's solution claim with the lab's own external checkers, off the dispatch thread. */
     internal val checks = CaseChecks(store, sourceChecker, ::log)
@@ -85,7 +87,7 @@ class Runner(
     )
 
     private val updater by lazy {
-        SelfUpdater(
+        selfUpdater ?: SelfUpdater(
             config.sourceDir.takeIf { config.updateCheckSec > 0 },
             config.updateCheckSec * 1000,
             config.dataDir.resolve("logs").resolve("update.log").toFile(),
@@ -148,8 +150,9 @@ class Runner(
         }
         while (true) {
             // Only between jobs: an update builds on this machine and restarts the runner, so a job yields to it
-            // between its cases (see dispatch) and the update runs here with nothing running.
-            if (!awsActive()) updater.maybeUpdate()
+            // between its cases (see dispatch) and the update runs here with nothing running locally. Cloud nodes keep
+            // working meanwhile and are adopted after the restart; the iterations they hold then go back whole.
+            updater.maybeUpdate()
             // Also only between jobs, so no case of the runner's starts a container while images go.
             runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
             val ready = recover()
@@ -618,14 +621,15 @@ class Runner(
     private fun yields(jobId: Long, host: ExecutionHost): Boolean =
         if (host.yieldsToPriority) store.shouldYield(jobId) else store.job(jobId)?.paused == true
 
-    /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. */
-    private fun updateDue(jobId: Long): Boolean = !awsActive() && updater.due().also { if (it) log(jobId, "yielding for a lab update") }
+    /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. Cloud nodes do not hold it back:
+     *  the restarted worker adopts them ([AwsWorker.recover]). */
+    private fun updateDue(jobId: Long): Boolean = updater.due().also { if (it) log(jobId, "yielding for a lab update") }
 
-    /** Whether a lab update waits: the AWS worker then starts no new job, so the running ones drain and it can land. */
+    /** Whether a lab update waits for the local machine's next point between cases, for the pages. */
     internal fun updateWaiting(): Boolean = updater.due()
 
-    /** Whether a cloud node is up or launching ([AwsWorker.active]), which holds a lab update back and puts the
-     *  local-only jobs first among equal priorities ([Store.next]); always false without AWS settings. */
+    /** Whether a cloud node is up or launching ([AwsWorker.active]), which puts the local-only jobs first among equal
+     *  priorities ([Store.next]); always false without AWS settings. */
     private var awsActive: () -> Boolean = { false }
 
     /** Cores the running cases at [indices] of [job] hold. */

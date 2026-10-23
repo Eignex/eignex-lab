@@ -105,7 +105,6 @@ class WaitingTest {
             cloud(pool(20.0, "cooldown 3 min", listOf(node))))
         assertEquals("cloud: 1 node up, none free; the 32-vCPU quota is full: no node launches", cloud(pool(20.0, LaunchGate.QUOTA_FULL, listOf(node))))
         assertEquals("cloud: 1 node up, none free; at maxInstances (4): no more nodes launch", cloud(pool(20.0, LaunchGate.AT_MAX, listOf(node))))
-        assertEquals("cloud: a lab update waits: no node launches until it is done", cloud(pool(20.0, LaunchGate.UPDATE_WAITING)))
         assertEquals("cloud: 1 launching; pressure 9.0 of 16 core-h for node 2, below the launch threshold", cloud(pool(9.0, launching = 1)))
         assertEquals("cloud: a free node takes it at its next poll", cloud(pool(nodes = listOf(node.copy(doing = "idle", job = null)))))
         assertEquals("cloud: no pool report yet", Waiting.waiting(job(5, Experiments.AWS_HOST), view(pool = null)))

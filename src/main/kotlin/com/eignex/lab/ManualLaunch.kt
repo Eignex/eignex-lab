@@ -23,8 +23,8 @@ data class ManualLaunchPlan(val size: InstanceSize, val onDemand: Boolean)
  * Starting a cloud node by hand. The API runs apart from the runner, whose cloud worker owns the pool, so the API
  * checks what it can from the worker's last pool report ([NodePoolReport]) and leaves a request file
  * ([ManualLaunchRequest]); the worker takes it on its next poll and checks again against the pool as it then stands
- * ([decide]). A manual launch skips the pressure threshold and the sustain wait, but not `maxInstances`, the vCPU quota
- * or a waiting lab update, and it counts as the gate's last launch, so the cooldown holds automatic launches after it
+ * ([decide]). A manual launch skips the pressure threshold and the sustain wait, but not `maxInstances` or the vCPU
+ * quota, and it counts as the gate's last launch, so the cooldown holds automatic launches after it
  * ([LaunchGate.manualLaunch]). The node then works and retires as any other.
  *
  * The market is spot first by default, as for an automatic launch: on demand only after `spotWaitMin` minutes without
@@ -44,11 +44,10 @@ object ManualLaunch {
 
     fun file(config: Config): Path = config.dataDir.resolve("aws").resolve(FILE)
 
-    /** Why the pool cannot take another node now, or null: [nodes] up or launching against `maxInstances`, a waiting
-     *  update, or [size] over the [freeVcpus] left of the quota (null [size]: none fits). */
-    fun refusal(aws: AwsConfig, nodes: Int, updateWaiting: Boolean, size: InstanceSize?, freeVcpus: Int): String? = when {
+    /** Why the pool cannot take another node now, or null: [nodes] up or launching against `maxInstances`,
+     *  or [size] over the [freeVcpus] left of the quota (null [size]: none fits). */
+    fun refusal(aws: AwsConfig, nodes: Int, size: InstanceSize?, freeVcpus: Int): String? = when {
         nodes >= aws.maxInstances -> "${LaunchGate.AT_MAX} (${aws.maxInstances} nodes up or launching)"
-        updateWaiting -> "${LaunchGate.UPDATE_WAITING}: the pool drains for it, so no node starts"
         size == null -> "${LaunchGate.QUOTA_FULL}: no size fits the $freeVcpus vCPUs left of ${aws.vcpuQuota}"
         size.vcpus > freeVcpus -> "${LaunchGate.QUOTA_FULL}: a ${size.type} needs ${size.vcpus} vCPUs, $freeVcpus of ${aws.vcpuQuota} are left"
         else -> null
@@ -103,7 +102,7 @@ object ManualLaunch {
         val queueSize = if (report.busyVcpus == null) aws.sizes.firstOrNull()
         else report.manualSize?.let { type -> aws.sizes.firstOrNull { it.type == type } }
         val chosen = asked ?: queueSize
-        refusal(aws, report.nodes.size + report.launching, report.updateWaiting == true, chosen, aws.vcpuQuota - busy)?.let {
+        refusal(aws, report.nodes.size + report.launching, chosen, aws.vcpuQuota - busy)?.let {
             return 409 to "no node started: $it"
         }
         val size = checkNotNull(chosen)
@@ -123,11 +122,11 @@ object ManualLaunch {
 
     /**
      * The worker's side: what to launch for [request] at [now], or why not, against the pool as it stands: [nodes] up
-     * or launching, the [freeVcpus] left of the quota, whether an update is waiting, and [queueSize], the size the
+     * or launching, the [freeVcpus] left of the quota, and [queueSize], the size the
      * queue calls for ([NodePool.size]), used when the request names none.
      */
     fun decide(
-        request: ManualLaunchRequest, now: Long, aws: AwsConfig, queueSize: InstanceSize?, nodes: Int, freeVcpus: Int, updateWaiting: Boolean,
+        request: ManualLaunchRequest, now: Long, aws: AwsConfig, queueSize: InstanceSize?, nodes: Int, freeVcpus: Int,
     ): Result<ManualLaunchPlan> {
         if (now - request.at > EXPIRY_MS) return Result.failure(IllegalStateException("its request from ${(now - request.at) / MS_PER_MIN} min ago has expired"))
         val size = try {
@@ -135,7 +134,7 @@ object ManualLaunch {
         } catch (e: IllegalArgumentException) {
             return Result.failure(e)
         }
-        refusal(aws, nodes, updateWaiting, size, freeVcpus)?.let { return Result.failure(IllegalStateException(it)) }
+        refusal(aws, nodes, size, freeVcpus)?.let { return Result.failure(IllegalStateException(it)) }
         return Result.success(ManualLaunchPlan(checkNotNull(size), request.onDemand))
     }
 
