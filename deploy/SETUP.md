@@ -506,7 +506,12 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 The source is found in the lab's corpus (`LAB_CORPUS`), for a case run on a cloud node as for a local one: the files
 a plan resolved, if it did (a reference arm's), moved from a node's corpus root to the lab's, else a file of the
 problem's name in its collection. A file counts only when its plain bytes hash to the record's `sourceHashes`, so an edited or renamed corpus
-file is never checked against in the source's place. The check runs on the lab, not on the node, so a node needs no
+file is never checked against in the source's place. A MiniZinc model with data is found as one pair: a data file of
+the problem's name hashing to the record's `data`, and a model hashing to its `model` in that file's directory or one
+above it. Every data file with the solved bytes is tried, so the same data under an earlier year or family whose model
+is another no longer hides the right pair (sweep 7671's `2013/ghoulomb/3-9-16` and `2020/p1f-pjs/10`, whose data also
+sits in `2010/ghoulomb` and `2009/p1f`). A record that names only one of the two hashes, or a pair of which only one
+file matches, leaves the case `not-run` with the reason; neither file is ever taken without the other. The check runs on the lab, not on the node, so a node needs no
 checker and the verdict comes from one place; it needs the collection in the lab's corpus, which holds every
 collection the lab runs.
 
@@ -515,7 +520,9 @@ A problem the klause repository carries itself, such as the bench's `klause-benc
 `/home/ubuntu/work/<sha>`, whose prefix is cut to leave the repository path), is never looked for in the corpus. It
 is read at the commit the case's arm was pinned to (`arms.sha`), not at `main`: from the job's worktree of that commit
 while it is still there, else from the lab's mirror (`$LAB_DATA/repo.git`, `git cat-file blob <sha>:<path>`) into the
-check's scratch directory, deleted with it. The same hash rule holds: a file whose bytes do not hash to the record's
+check's scratch directory, deleted with it. A MiniZinc model with data is read the same way as a verified pair: the
+planned files, else the files of the problem's name, else, for a vendored suite that names a problem after neither
+file (`exact-globals`' `bin-packing-0-0`), the collection's models and data files tried by their hashes. The same hash rule holds: a file whose bytes do not hash to the record's
 `sourceHashes`, a record without one, or a path the commit lacks leaves the case `not-run`, saying so, and the file as
 it is on any other commit never stands in. A case run on a cloud node is checked the same way on the lab once its
 record is back. Job 7407's 24 `degeneracy/degree-drop` records, `not-run` before this, all check `valid` under Dolmen
