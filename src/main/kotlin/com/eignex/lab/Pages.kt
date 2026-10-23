@@ -1538,7 +1538,7 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
     if (cooldownLeft != null && report.blocker?.startsWith("cooldown") != true) notes += "cooldown ${LaunchGate.minutes(cooldownLeft)} min left"
     if (report.launching > 0) notes += "${report.launching} launching"
     report.blocker?.let { blocker ->
-        val hard = blocker in setOf(LaunchGate.AT_MAX, LaunchGate.QUOTA_FULL, LaunchGate.UPDATE_WAITING)
+        val hard = blocker in setOf(LaunchGate.AT_MAX, LaunchGate.QUOTA_FULL, LaunchGate.UPDATE_WAITING, LaunchGate.NO_JOB_FILES)
         notes += "<span class=\"${if (hard) "warn" else "muted"}\">no node: ${esc(blocker)}</span>"
     }
     if (now() - at > STALE_REPORT_MS) notes += "report ${ago(at)}"

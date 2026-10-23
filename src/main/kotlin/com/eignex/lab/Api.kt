@@ -541,8 +541,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val released = store.releaseHold(id, call.parameters["lease"]!!)
             call.respond(if (released) HttpStatusCode.OK else HttpStatusCode.NotFound, if (released) "released" else "no such hold")
         }
-        // A job's files live on the job files' volume ([Config.jobsDir]): while it is not mounted they are unavailable,
-        // which is said as such rather than as missing files.
+        // A job's files live on the job files' volume ([Config.jobsDir]): while it is not mounted, or does not answer, they
+        // are unavailable, which is said as such rather than as missing files.
         get("/jobs/{id}/files") {
             val id = call.jobId(store) ?: return@get
             if (call.jobFilesMissing(config)) return@get
@@ -737,9 +737,13 @@ private suspend fun ApplicationCall.jobId(store: Store): Long? {
     return null
 }
 
-/** Whether the job files' volume is missing ([Volumes.problem]); then the call is answered 503 with why. */
+/**
+ * Whether the job files cannot be used ([Volumes.jobFiles]): their volume is missing, or does not answer within the
+ * probe's timeout ([VolumeAccess]). Then the call is answered 503 with why, at once while a probe is known to be stuck,
+ * rather than leave a request thread blocked on the volume.
+ */
 private suspend fun ApplicationCall.jobFilesMissing(config: Config): Boolean {
-    val problem = Volumes.problem(Volumes.JOB_FILES, config.jobsDir, config.volumesRoot) ?: return false
+    val problem = withContext(Dispatchers.IO) { Volumes.jobFiles(config) } ?: return false
     respondText("job files unavailable: $problem", status = HttpStatusCode.ServiceUnavailable)
     return true
 }

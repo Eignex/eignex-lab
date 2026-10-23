@@ -712,6 +712,7 @@ class AwsWorker(
         val noRoom = when {
             count >= aws.maxInstances -> LaunchGate.AT_MAX
             runner.updateWaiting() -> LaunchGate.UPDATE_WAITING
+            !runner.recovered || Volumes.jobFiles(config) != null -> LaunchGate.NO_JOB_FILES
             size == null && all.isNotEmpty() -> LaunchGate.QUOTA_FULL
             else -> null
         }
@@ -864,12 +865,20 @@ class AwsWorker(
     }
 
     /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While an update
-     *  waits, a node only joins jobs already running, so they drain; so it does while the job files' or the corpus's
-     *  volume is missing ([Volumes]). Under the crews' lock ([Crews]), which the local machine takes and joins jobs
-     *  under too, so no job ends while a node joins it. */
-    private fun take(node: Node): AwsJob? = synchronized(runner.crews.lock) {
-        val (queued, running) = demands()
+     *  waits, a node only joins jobs already running, so they drain; so it does while the corpus's volume is missing
+     *  ([Volumes]). It takes nothing before the runner's startup recovery ([Runner.recover]) or while the job files
+     *  cannot be used, as a job's files are written there: the node stays up, idle, until they can. It picks ([pick])
+     *  under the crews' lock ([Crews]), which the local machine takes and joins jobs under too, so no job ends while a
+     *  node joins it. */
+    private fun take(node: Node): AwsJob? {
+        if (!runner.recovered || Volumes.jobFiles(config) != null) return null
         val claims = !runner.updateWaiting() && Volumes.missing(config) == null
+        return synchronized(runner.crews.lock) { pick(node, claims) }
+    }
+
+    /** The job [node] joins or claims, a queued one only when [claims]; null when none is for it. */
+    private fun pick(node: Node, claims: Boolean): AwsJob? {
+        val (queued, running) = demands()
         val work = NodePool.pick(node.shape, running, if (claims) queued else emptyList()) ?: return null
         val job = when (work) {
             is NodeWork.Help -> store.job(work.jobId)?.takeIf { it.status == Status.RUNNING } ?: return null
@@ -878,7 +887,7 @@ class AwsWorker(
         runner.crews.join(job.id, node.instance)
         node.job = job.id
         writeInstances(job.id)
-        AwsJob(job.id, checkNotNull(job.experiment))
+        return AwsJob(job.id, checkNotNull(job.experiment))
     }
 
     /**
@@ -1020,8 +1029,8 @@ class AwsWorker(
         runCatching { report() }
     }
 
-    /** After a restart every lab instance, no node now, goes; the jobs they ran went back to the queue before the
-     *  worker started ([Runner.recoverShared]). */
+    /** After a restart every lab instance, no node now, goes; the jobs they ran go back to the queue in the runner's
+     *  recovery ([Runner.recover]), before any node takes work. */
     private fun recover() {
         sweep()
     }

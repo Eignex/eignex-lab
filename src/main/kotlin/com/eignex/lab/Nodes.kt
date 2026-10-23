@@ -208,6 +208,9 @@ class LaunchGate {
         const val AT_MAX = "at maxInstances"
         const val QUOTA_FULL = "vCPU quota full"
         const val UPDATE_WAITING = "lab update waiting"
+        /** The job files cannot be used ([Volumes.jobFiles]), or the runner's startup recovery has not run: a node
+         *  could take no work. */
+        const val NO_JOB_FILES = "job files unavailable"
         private const val MS_PER_MIN = 60_000L
 
         /** [ms] in whole minutes, rounded up, so a wait under a minute reads as one. */
