@@ -196,7 +196,8 @@ class VolumesTest {
                 "volumes; grant Full Disk Access to $JAVA in System Settings → Privacy & Security → Full Disk Access",
             problem,
         )
-        assertTrue(tookMs in TIMEOUT_MS..5_000, "$tookMs ms")
+        // The probe's deadline counts whole milliseconds, so the wait can end up to a few of them short of the timeout.
+        assertTrue(tookMs in TIMEOUT_MS - 5..5_000, "$tookMs ms")
         assertEquals(problem, Volumes.hold(lab.config))
         val volume = Volumes.report(lab.config).single { volume -> volume.paths.any { it.name == "LAB_JOBS" } }
         assertEquals(problem, volume.problem)
