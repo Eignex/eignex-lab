@@ -107,6 +107,25 @@ class RunnerTest {
         assertEquals("{\"ok\":true}", profile.resolve("solve-record.json").toFile().readText().trim())
     }
 
+    @Test
+    fun `a local case keeps its native stdout's hash beside its record`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"))
+        val store = Store(config.dataDir.resolve("lab.db"))
+        val spec = ExperimentSpec("plain", listOf(mapOf("suite" to "s")))
+        val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/p_1.json\" && " +
+            "printf 'sat\\n' > \"\$JOB_DIR/cases/0/p_1.out\""
+        val id = store.create("plain", "main", emptyList(), experiment = spec)
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "abc123") }, listOf(Problem("s", "p")), Experiments.cases(1, 1, emptyList()),
+            listOf(case to 60L))
+        config.worktree(id).createDirectories()
+        store.next()
+
+        assertEquals(Dispatched.FINISHED, Runner(config, store).dispatch(store.job(id)!!, config.jobDir(id).createDirectories()))
+
+        assertEquals(listOf(CaseFile("cases/0/p_1.out", 4, "d9dbf94b05b8314af9ca7f2034e92685c33447917605a7243b1099c693a12e5e")),
+            store.cases(id).single().stdout)
+    }
+
     private val sampleLog: String = checkNotNull(javaClass.getResource("/compilation/hotspot-compilation.log")).readText()
 
     /** A finished profileCompilation job whose case 0 left [log] as its HotSpot log; returns its id. */

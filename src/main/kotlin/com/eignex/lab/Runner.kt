@@ -957,8 +957,14 @@ class Runner(
     private fun experimentWorktree(jobId: Long, sha: String, primary: String): Path =
         if (sha == primary) config.worktree(jobId) else config.worktree(jobId).resolveSibling("$jobId@${sha.take(SHA_DIR_LENGTH)}")
 
-    /** Keep the record a finished case wrote; a case that wrote none (it could not run) keeps none. */
+    /**
+     * Keep the record a finished case wrote; a case that wrote none (it could not run) keeps none. Its native solver
+     * stdout files ([CaseFile.stdout]) are hashed and kept beside it, record or not: on the local machine as the solve
+     * wrote them, and for a cloud node's case as they came back whole ([AwsHost]).
+     */
     internal fun keepRecord(jobId: Long, index: Int, dir: Path) {
+        runCatching { store.caseStdout(jobId, index, CaseFile.stdout(dir, index)) }
+            .onFailure { log(jobId, "case $index: stdout hashes not kept: ${it.message}") }
         val record = dir.resolve(CASES).resolve(index.toString()).toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()
         runCatching {
             val text = record?.readText() ?: return@runCatching

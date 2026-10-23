@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -8,7 +9,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.ResultSet
@@ -154,7 +157,47 @@ data class CaseResult(
     /** The `KLAUSE_DEBUG` the lab set for its CLI ([Arm.debug]): true unless its arm said `debug=false`. Every case
      *  run before the setting existed ran with it on. */
     val labDebug: Boolean = true,
+    /**
+     * The native solver stdout its solve left beside its record (`cases/<index>/<name>.out`), each with its size and
+     * SHA-256 as the lab holds it, from the local machine or brought back whole from a cloud node ([CaseFile.of]).
+     * Empty for a case that left none, and for one finished before the lab recorded them.
+     */
+    val stdout: List<CaseFile> = emptyList(),
 )
+
+/** A file of a case under its job's directory: its [path] there, as `lab files` lists it, its size and its SHA-256. */
+@Serializable
+data class CaseFile(val path: String, val bytes: Long, val sha256: String) {
+    companion object {
+        /**
+         * The native solver stdout files of case [index] under job directory [dir]: the regular `.out` files directly
+         * in `cases/<index>/`, the bench's and a reference solve's raw output, each hashed as it is on disk.
+         */
+        fun stdout(dir: Path, index: Int): List<CaseFile> {
+            val case = dir.resolve("cases").resolve(index.toString())
+            if (!Files.isDirectory(case, LinkOption.NOFOLLOW_LINKS)) return emptyList()
+            return Files.list(case).use { files ->
+                files.filter { it.fileName.toString().endsWith(".out") && Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.toList()
+            }.sortedBy { it.fileName.toString() }.map { CaseFile(dir.relativize(it).joinToString("/"), Files.size(it), sha256(it)) }
+        }
+
+        /** The SHA-256 of [file], as lowercase hex, read in a stream. */
+        fun sha256(file: Path): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            Files.newInputStream(file).use { input ->
+                val buffer = ByteArray(BUFFER_BYTES)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
+
+        private const val BUFFER_BYTES = 1 shl 16
+    }
+}
 
 /**
  * An experiment queued again whenever [ref] moves: the runner checks it at most every [intervalSec], and queues a run
@@ -278,6 +321,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             // The lab's own verdict on a case's solution claim ([com.eignex.lab.checker.LabCheck]), beside its record.
             val caseColumns = it.executeQuery("PRAGMA table_info(cases)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("lab_check" !in caseColumns) it.execute("ALTER TABLE cases ADD COLUMN lab_check TEXT")
+            // The native solver stdout each case left, with its hashes ([CaseResult.stdout]), as JSON.
+            if ("stdout" !in caseColumns) it.execute("ALTER TABLE cases ADD COLUMN stdout TEXT")
             val columns = it.executeQuery("PRAGMA table_info(reference_rows)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("version" !in columns) {
                 it.execute("ALTER TABLE reference_rows ADD COLUMN version TEXT NOT NULL DEFAULT ''")
@@ -514,6 +559,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
     }
 
+    /** Keep the native solver stdout files case [index] of [jobId] left ([CaseResult.stdout]), replacing any earlier ones. */
+    @Synchronized
+    fun caseStdout(jobId: Long, index: Int, files: List<CaseFile>): Int =
+        update("UPDATE cases SET stdout = ? WHERE job_id = ? AND idx = ?",
+            if (files.isEmpty()) null else Json.encodeToString(ListSerializer(CaseFile.serializer()), files), jobId, index)
+
     /** Keep the record a case wrote, compacted ([StoredRecords]); a lab check of the record it replaces goes with it. */
     @Synchronized
     fun caseRecord(jobId: Long, index: Int, record: String): Int = transaction {
@@ -685,7 +736,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         for (index in again) {
             update("UPDATE commands SET status = ?, exit_code = NULL, started_at = NULL, finished_at = NULL, phase = NULL, host = NULL " +
                 "WHERE job_id = ? AND idx = ?", Status.QUEUED.name, jobId, index)
-            update("UPDATE cases SET record = NULL, lab_check = NULL WHERE job_id = ? AND idx = ?", jobId, index)
+            update("UPDATE cases SET record = NULL, lab_check = NULL, stdout = NULL WHERE job_id = ? AND idx = ?", jobId, index)
         }
         return again
     }
@@ -853,7 +904,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
     @Synchronized
     private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = connection.prepareStatement(
-        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST, $LAB_DEBUG FROM cases c
+        """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST, $LAB_DEBUG, c.stdout FROM cases c
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -872,6 +923,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                     withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
                         rows.getString(9)),
                     rows.getInt(7), rows.getInt(8) != 0, rows.getString(10), rows.getInt(11) != 0,
+                    rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
                 )
             }.toList()
         }
