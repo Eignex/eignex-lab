@@ -6,7 +6,8 @@ import kotlinx.serialization.Serializable
  * What one job asks of the cloud node pool: its estimated core-hours of work no node or the local machine has started,
  * the cores its largest case holds, and whether it is a profile job, which only an on-demand node may run. A
  * [belowFloor] job, work the local machine could run below [AwsConfig.nodeMinPriority], launches no node: it is not
- * pressure, but a node already up with nothing else to do takes it.
+ * pressure, but a node already up with nothing else to do takes it. [hosts] is how many hosts work on it now: none for
+ * a queued job.
  */
 data class Demand(
     val jobId: Long,
@@ -15,6 +16,7 @@ data class Demand(
     val profile: Boolean = false,
     val priority: Int = 0,
     val belowFloor: Boolean = false,
+    val hosts: Int = 0,
 )
 
 /** A node as the work selection sees it: the cores its cases may hold, and whether it was bought on demand. */
@@ -97,18 +99,24 @@ object NodePool {
     }
 
     /**
-     * What a free node of [node]'s shape takes next. First a shared job running that still has unclaimed iterations
-     * ([helpable], highest priority first), joining it; else the first of [queued] (in queue order) it may claim. Work
-     * at or above the priority floor goes first; only when there is none does the node take [Demand.belowFloor] work,
-     * by the same rules, so a node already up never idles while such work waits behind the local machine's queue. A job
-     * fits when its largest case's cores fit the node, and a profile job only an on-demand node runs. [excluded] is the
-     * job the local machine takes next when it is free, which a node leaves to it.
+     * What a free node of [node]'s shape takes next: a shared job running that still has unclaimed iterations
+     * ([helpable]), joining it, or one of [queued] (in queue order) it may claim. Priority decides first, running or
+     * queued alike; among equal priorities the job with the fewest [Demand.hosts] on it, so nodes spread over the jobs
+     * rather than pile onto one (a queued job has none, so it goes before joining a running one); then a running job
+     * before a queued one, each in queue order. Work at or above the priority floor goes first; only when there is none
+     * does the node take [Demand.belowFloor] work, by the same rules, so a node already up never idles while such work
+     * waits behind the local machine's queue. A job fits when its largest case's cores fit the node, and a profile job
+     * only an on-demand node runs. [excluded] is the job the local machine takes next when it is free, which a node
+     * leaves to it.
      */
     fun pick(node: NodeShape, helpable: List<Demand>, queued: List<Demand>, excluded: Long? = null): NodeWork? {
         fun fits(d: Demand) = d.cores <= node.cores && (!d.profile || node.onDemand)
+        val order = compareByDescending<Pair<Demand, NodeWork>> { it.first.priority }.thenBy { it.first.hosts }
         for (below in listOf(false, true)) {
-            helpable.filter { it.belowFloor == below && fits(it) }.maxByOrNull { it.priority }?.let { return NodeWork.Help(it.jobId) }
-            queued.firstOrNull { it.belowFloor == below && it.jobId != excluded && fits(it) }?.let { return NodeWork.Claim(it.jobId) }
+            val help = helpable.filter { it.belowFloor == below && fits(it) }.map { it to NodeWork.Help(it.jobId) }
+            val claim = queued.filter { it.belowFloor == below && it.jobId != excluded && fits(it) }.map { it.copy(hosts = 0) to NodeWork.Claim(it.jobId) }
+            // sortedWith is stable: equal priority and hosts keep running jobs first, each list in its queue order.
+            (help + claim).sortedWith(order).firstOrNull()?.let { return it.second }
         }
         return null
     }

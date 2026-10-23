@@ -115,6 +115,26 @@ class SharedJobsTest {
     }
 
     @Test
+    fun `among equal priorities the local machine starts a queued job before joining one nodes run`() {
+        val crowded = sharedJob(problems = 3)
+        store.claimForNode(crowded)!!
+        store.claimIteration(crowded, "i-1")
+        store.claimIteration(crowded, "i-2")
+        val single = sharedJob(problems = 2)
+        store.claimForNode(single)!!
+        store.claimIteration(single, "i-3")
+        val queued = sharedJob(problems = 1)
+        val higher = sharedJob(problems = 2, priority = 1)
+        store.claimForNode(higher)!!
+        store.claimIteration(higher, "i-4")
+        store.claimIteration(higher, "i-5")
+
+        // Priority first, then the fewest hosts (a queued job has none), then age.
+        assertEquals(listOf(higher, queued, single, crowded), store.queueOrder())
+        assertEquals(listOf(higher, queued, single, crowded), store.queueOrder(nodesUp = true))
+    }
+
+    @Test
     fun `the local machine yields mid-job, its unstarted iterations go back whole, and the node finishes the job`() {
         val id = sharedJob(problems = 6, parallel = 1)
         assertEquals(id, store.next()?.id)

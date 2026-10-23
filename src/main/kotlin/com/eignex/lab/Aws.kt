@@ -661,6 +661,7 @@ class AwsWorker(
     /**
      * The work waiting for a node, as [Demand]s: the queued jobs a node may take, in queue order, and the iterations no
      * host has claimed of the shared jobs running, wherever they run, the local machine included ([Store.helpable]). The
+     * hosts on each running one come from the crews ([Crews]), so a node spreads over jobs of equal priority. The
      * one the local machine takes next, being free or about to give way to it ([Store.localNext], told whether a node
      * is up or launching as the runner's [Store.next] is), is left to it. Work the local machine could run below
      * [AwsConfig.nodeMinPriority] is marked [Demand.belowFloor]: it launches no node, but a node already up with nothing
@@ -688,7 +689,8 @@ class AwsWorker(
             val spec = job.experiment ?: return@mapNotNull null
             if (job.id in failing) return@mapNotNull null
             Demand(job.id, unclaimed * Estimates.caseCoreHours(job, history::lookup), Experiments.arms(spec).maxOf { it.cores },
-                priority = job.priority, belowFloor = Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority))
+                priority = job.priority, belowFloor = Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority),
+                hosts = runner.crews.hosts(job.id).size)
         }
         return queued to running
     }
