@@ -13,7 +13,8 @@ data class SourceFiles(val model: File, val data: File? = null, val includeDirs:
  * plan resolved (`select files=true`), moved from another host's corpus root ([foreignRoots]) to this one, else a
  * search of the problem's collection by file name. A file counts only when its plain bytes hash to what the case's
  * record says it solved (`sourceHashes`), so a renamed, edited or recompressed corpus can never be checked against
- * in its place. Nothing here downloads: a collection the lab's corpus lacks leaves the case unchecked. A problem the
+ * in its place. A MiniZinc model with data is found only as a pair whose model and data both hash to the record's
+ * `model` and `data`, never one without the other. Nothing here downloads: a collection the lab's corpus lacks leaves the case unchecked. A problem the
  * klause repository itself carries, such as the bench's smoke corpus, is read at the case's pinned commit by
  * [fixtures] instead, never from the corpus.
  */
@@ -28,19 +29,28 @@ class SourceLocator(
 
     /**
      * [problem]'s files with the plain-byte digests [hashes] (`model`, and `data` for MiniZinc); a failure says why.
-     * A repository file is read at [revision], into [scratch] when no worktree of that commit holds it.
+     * A model with a data file is found as a pair: both files must hash to what the record says, and neither is ever
+     * taken without the other. A repository file is read at [revision], into [scratch] when no worktree of that commit
+     * holds it.
      */
     fun locate(problem: Problem, hashes: Map<String, String>, revision: Revision? = null, scratch: File? = null): Result<SourceFiles> = runCatching {
         val modelHash = hashes["model"]
         val dataHash = hashes["data"]
+        val paired = dataHash != null || problem.data != null
+        if (paired) {
+            checkNotNull(modelHash) { "the record names no model hash to verify ${problem.problem}'s model with" }
+            checkNotNull(dataHash) { "the record names no data hash to verify ${problem.problem}'s data file with" }
+        }
         if (fixtures != null && fixtures.owns(problem)) {
-            return@runCatching fixtures.locate(problem, modelHash, revision, checkNotNull(scratch) { "no scratch directory to read a repository file into" })
+            return@runCatching fixtures.locate(problem, modelHash, dataHash, revision,
+                checkNotNull(scratch) { "no scratch directory to read a repository file into" })
         }
         val planned = problem.model?.let { model ->
-            val m = moved(model).firstOrNull { matches(it, modelHash) }
-            val d = problem.data?.let { data -> moved(data).firstOrNull { matches(it, dataHash) } }
-            if (m != null && (problem.data == null) == (d == null)) SourceFiles(m, d, problem.includeDirs.flatMap(::moved).filter { it.isDirectory }.distinct())
-            else null
+            val m = moved(model).firstOrNull { matches(it, modelHash) } ?: return@let null
+            val includes = problem.includeDirs.flatMap(::moved).filter { it.isDirectory }.distinct()
+            if (!paired) return@let SourceFiles(m, includeDirs = includes)
+            val d = problem.data?.let { data -> moved(data).firstOrNull { matches(it, dataHash) } } ?: return@let null
+            SourceFiles(m, d, includes)
         }
         planned ?: search(problem, modelHash, dataHash)
     }
@@ -57,12 +67,33 @@ class SourceLocator(
             val model = pick(named, modelHash, "model of ${problem.problem}", root)
             return SourceFiles(model, includeDirs = includes)
         }
-        val data = pick(named, dataHash, "data of ${problem.problem}", root)
-        val models = generateSequence(data.parentFile) { dir -> dir.parentFile?.takeIf { dir != root } }
-            .flatMap { dir -> dir.listFiles { f -> f.isFile && stem(f.name) != f.name && f.name.removeSuffix(".zst").endsWith(".mzn") }.orEmpty().sorted() }
-            .toList()
-        val model = pick(models, modelHash, "model of ${problem.problem}", root)
-        return SourceFiles(model, data, includes)
+        return pair(problem, named, checkNotNull(modelHash), dataHash, root, includes)
+    }
+
+    /**
+     * The model and data of [problem] as one pair: a data file of its name hashing to [dataHash], and a model hashing
+     * to [modelHash] in that file's directory or one above it, up to [root]. Every data file with the solved bytes is
+     * tried, whatever its path's order, since the same data can sit under an earlier family or year whose model is
+     * another (sweep 7671's `2013/ghoulomb/3-9-16` beside `2010/ghoulomb/3-9-16.dzn`).
+     */
+    private fun pair(problem: Problem, named: List<File>, modelHash: String, dataHash: String, root: File, includes: List<File>): SourceFiles {
+        check(named.isNotEmpty()) { "no file for the data of ${problem.problem} in $root" }
+        val digests = HashMap<File, String>()
+        fun digest(file: File) = digests.getOrPut(file) { hash(file) }
+        val data = named.filter { digest(it) == dataHash }
+        check(data.isNotEmpty()) { "no file in $root has the solved data of ${problem.problem}'s SHA-256 $dataHash" }
+        val searched = HashSet<File>()
+        for (d in data) {
+            val dirs = generateSequence(d.parentFile) { dir -> dir.parentFile?.takeIf { dir != root } }
+            for (dir in dirs) {
+                if (!searched.add(dir)) continue
+                val model = dir.listFiles { f -> f.isFile && stem(f.name) != f.name && f.name.removeSuffix(".zst").endsWith(".mzn") }
+                    .orEmpty().sorted().firstOrNull { digest(it) == modelHash }
+                if (model != null) return SourceFiles(model, d, includes)
+            }
+        }
+        error("no model with the solved model of ${problem.problem}'s SHA-256 $modelHash is beside or above any of the " +
+            "${data.size} data file(s) in $root with the solved data's SHA-256 $dataHash (${data.joinToString { it.relativeTo(root).path }})")
     }
 
     private fun pick(files: List<File>, expected: String?, what: String, root: File): File {
