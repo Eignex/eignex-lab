@@ -1538,7 +1538,7 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
     if (cooldownLeft != null && report.blocker?.startsWith("cooldown") != true) notes += "cooldown ${LaunchGate.minutes(cooldownLeft)} min left"
     if (report.launching > 0) notes += "${report.launching} launching"
     report.blocker?.let { blocker ->
-        val hard = blocker in setOf(LaunchGate.AT_MAX, LaunchGate.QUOTA_FULL, LaunchGate.UPDATE_WAITING, LaunchGate.NO_JOB_FILES)
+        val hard = blocker in setOf(LaunchGate.AT_MAX, LaunchGate.QUOTA_FULL, LaunchGate.NO_JOB_FILES)
         notes += "<span class=\"${if (hard) "warn" else "muted"}\">no node: ${esc(blocker)}</span>"
     }
     if (now() - at > STALE_REPORT_MS) notes += "report ${ago(at)}"
@@ -1551,7 +1551,9 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
         append(report.nodes.joinToString(", ") { node ->
             val doing = node.job?.let { job -> esc(node.doing).replace("job $job", "<a href=\"/jobs/$job\">job $job</a>") } ?: esc(node.doing)
             val manual = if (node.manual) " <span title=\"started by hand\">manual</span>" else ""
-            "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span>$manual $doing"
+            val adopted = if (node.adopted) " <span title=\"taken back after a lab restart\">adopted</span>" else ""
+            val age = node.launchedAt?.let { " up ${wallText((at - it).coerceAtLeast(0) / 3_600_000.0)}" }.orEmpty()
+            "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span>$manual$adopted$age $doing"
         })
         append(")")
     }
@@ -1561,7 +1563,7 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
 /**
  * The control that starts a cloud node by hand (`POST /cloud/nodes`, [ManualLaunch]): a size, the one the queue calls
  * for first ([NodePoolReport.manualSize]), a market, spot first by default, and the button. The lab refuses it, saying
- * why, at `maxInstances`, with the quota full or while an update waits.
+ * why, at `maxInstances` or with the quota full.
  */
 private fun startNode(aws: AwsConfig, report: NodePoolReport?): String = buildString {
     val chosen = report?.manualSize

@@ -250,7 +250,6 @@ object Waiting {
             blocker == LaunchGate.BELOW -> "$pressure, below the launch threshold"
             blocker == LaunchGate.AT_MAX -> "at maxInstances (${aws.maxInstances}): no more nodes launch"
             blocker == LaunchGate.QUOTA_FULL -> "the ${aws.vcpuQuota}-vCPU quota is full: no node launches"
-            blocker == LaunchGate.UPDATE_WAITING -> "a lab update waits: no node launches until it is done"
             blocker == LaunchGate.NO_JOB_FILES -> "the job files cannot be used: no node launches until they can"
             blocker.startsWith("waiting ") -> "$pressure, over the threshold: a node launches once it holds ${blocker.removePrefix("waiting ")}"
             blocker.startsWith("cooldown ") -> "$pressure: the cooldown after the last launch holds the next for ${blocker.removePrefix("cooldown ")}"

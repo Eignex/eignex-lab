@@ -59,7 +59,7 @@ class ManualLaunchTest {
     }
 
     @Test
-    fun `a manual start is refused at maxInstances, with the quota full, while an update waits or one is already asked`() {
+    fun `a manual start is refused at maxInstances, with the quota full, or one is already asked, but not for a waiting update`() {
         val config = lab("maxInstances=2\n")
         val aws = config.aws!!
         fun ask(report: NodePoolReport?, start: NodeStart = NodeStart()) = ManualLaunch.request(config, aws, report, start, now)
@@ -67,7 +67,6 @@ class ManualLaunchTest {
         val atMax = ask(report(nodes = 2, busy = 16))
         val quota = ask(report(nodes = 1, busy = 24), NodeStart("c7i.4xlarge"))
         val none = ask(report(nodes = 1, busy = 30, size = null))
-        val update = ask(report(update = true))
         val stale = ask(report(at = now - 5 * 60_000))
         val missing = ask(null)
         val unknown = ask(report(), NodeStart("m7i.large"))
@@ -79,8 +78,9 @@ class ManualLaunchTest {
         assertContains(atMax.second, "at maxInstances (2 nodes up or launching)")
         assertContains(quota.second, "vCPU quota full: a c7i.4xlarge needs 16 vCPUs, 8 of 32 are left")
         assertContains(none.second, "vCPU quota full: no size fits the 2 vCPUs left of 32")
-        assertContains(update.second, "lab update waiting")
-        assertEquals(listOf(409, 409, 409), listOf(update.first, stale.first, missing.first))
+        assertEquals(listOf(409, 409), listOf(stale.first, missing.first))
+        // A waiting lab update refuses no node: the pool is adopted again after the restart.
+        assertEquals(202, ManualLaunch.request(lab("maxInstances=2\n"), aws, report(update = true), NodeStart(), now).first)
         assertContains(stale.second, "is the runner up?")
         assertEquals(listOf(400, 400), listOf(unknown.first, market.first))
         assertContains(unknown.second, "size must be one of c7i.2xlarge, c7i.4xlarge,")
@@ -99,13 +99,12 @@ class ManualLaunchTest {
         val small = aws.sizes.first()
         val request = ManualLaunchRequest(null, false, now)
 
-        assertEquals(ManualLaunchPlan(small, false), ManualLaunch.decide(request, now, aws, small, 0, 32, false).getOrNull())
+        assertEquals(ManualLaunchPlan(small, false), ManualLaunch.decide(request, now, aws, small, 0, 32).getOrNull())
         assertEquals(ManualLaunchPlan(aws.sizes[1], true),
-            ManualLaunch.decide(ManualLaunchRequest("c7i.4xlarge", true, now), now, aws, small, 1, 24, false).getOrNull())
-        assertContains(ManualLaunch.decide(request, now, aws, small, 2, 32, false).exceptionOrNull()!!.message!!, LaunchGate.AT_MAX)
-        assertContains(ManualLaunch.decide(request, now, aws, small, 0, 32, true).exceptionOrNull()!!.message!!, LaunchGate.UPDATE_WAITING)
-        assertContains(ManualLaunch.decide(request, now, aws, null, 1, 4, false).exceptionOrNull()!!.message!!, LaunchGate.QUOTA_FULL)
-        assertContains(ManualLaunch.decide(request, now + ManualLaunch.EXPIRY_MS + 1, aws, small, 0, 32, false).exceptionOrNull()!!.message!!,
+            ManualLaunch.decide(ManualLaunchRequest("c7i.4xlarge", true, now), now, aws, small, 1, 24).getOrNull())
+        assertContains(ManualLaunch.decide(request, now, aws, small, 2, 32).exceptionOrNull()!!.message!!, LaunchGate.AT_MAX)
+        assertContains(ManualLaunch.decide(request, now, aws, null, 1, 4).exceptionOrNull()!!.message!!, LaunchGate.QUOTA_FULL)
+        assertContains(ManualLaunch.decide(request, now + ManualLaunch.EXPIRY_MS + 1, aws, small, 0, 32).exceptionOrNull()!!.message!!,
             "expired")
     }
 
