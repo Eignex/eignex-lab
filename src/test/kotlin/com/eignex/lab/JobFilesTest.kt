@@ -8,6 +8,7 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
 import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -161,6 +162,45 @@ class JobFilesTest {
             assertTrue("\"held\":\"job files volume ${root.resolve("Ros")} is not mounted\"" in health, health)
         }
         assertFalse(Files.exists(root.resolve("Ros")))
+    }
+
+    @Test
+    fun `while the job files do not answer, a job's files are refused at once and say why`() {
+        val gate = CountDownLatch(1)
+        val data = Files.createTempDirectory("lab")
+        val jobs = data.resolve("jobs")
+        val java = "/Library/Java/JavaVirtualMachines/test.jdk/Contents/Home/bin/java"
+        // A probe of the job files blocks, as a call on a volume macOS keeps the lab from does; kept for no time at all,
+        // so every request asks again and finds the stuck probe still in flight.
+        val access = VolumeAccess(timeoutMs = 300, freshMs = 0, java = java) { label, dir ->
+            if (dir == jobs) gate.await()
+            Volumes.probe(label, dir)
+        }
+        val config = Config(dataDir = data, corpusDir = data.resolve("corpus"), passwordHash = null, volumeAccess = access)
+        val store = Store(config.database)
+        val id = store.create("job", "main", emptyList())
+        try {
+            testApplication {
+                application { api(config, store, host) }
+
+                assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/jobs/$id/files").status)
+                for (path in listOf("/jobs/$id/files", "/jobs/$id/files/job.log", "/jobs/$id/files/job.log?tail=10")) {
+                    val started = System.nanoTime()
+                    val response = client.get(path)
+                    val tookMs = (System.nanoTime() - started) / 1_000_000
+                    assertEquals(HttpStatusCode.ServiceUnavailable, response.status, path)
+                    val body = response.bodyAsText()
+                    assertTrue(body.startsWith("job files unavailable: cannot access job files directory $jobs within 300 ms"), body)
+                    assertTrue("grant Full Disk Access to $java" in body, body)
+                    assertTrue(tookMs < 300, "$path took $tookMs ms")
+                }
+                val health = client.get("/health").bodyAsText()
+                assertTrue("\"held\":\"cannot access job files directory $jobs" in health, health)
+                assertTrue("\"problem\":\"cannot access job files directory $jobs" in health, health)
+            }
+        } finally {
+            gate.countDown()
+        }
     }
 
     @Test

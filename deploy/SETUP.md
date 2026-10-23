@@ -1269,22 +1269,43 @@ with the same reason. A volume counts as mounted when `/Volumes/<name>` is a dir
 the job files on their own roomy volume, a long `LAB_TRIM_AGE_DAYS` keeps them for months; `LAB_JOBS_TARGET_FREE_GB`
 (25) is the free space below which the trim takes ended jobs early.
 
+A mounted volume must also let the lab in. macOS's privacy protection keeps a daemon off removable volumes until the
+binary it runs has Full Disk Access, and it does not fail the calls meanwhile, it leaves them blocked: without access a
+`mkdir` on the drive never returns. So each of `LAB_DATA`, `LAB_JOBS` and `LAB_CORPUS` is probed, on a thread of its
+own, by listing it and making and removing a small file there, and given up on after 10 s. The outcome is kept for
+15 s, and while a probe is stuck no second one of the same directory starts. A directory that does not answer, or
+refuses, holds the queue with a reason that names the fix, such as "cannot access job files directory
+/Volumes/Ros/klause-lab/jobs within 10 s: macOS may be blocking the lab's java from removable volumes; grant Full Disk
+Access to /Library/Java/…/bin/java in System Settings → Privacy & Security → Full Disk Access". The queue page, `/disk`
+(`volumes[].problem`), `lab placement` and `lab health` (`held`) show it, and a job's files are answered `503` with it
+at once. The runner checks the volumes before anything else at start, then starts the cloud worker, which keeps
+reporting the pool and keeps its nodes, though they take no work while the job files cannot be used; the startup
+recovery that touches job files (cancelling requeued cancels, requeueing shared jobs left running) waits until they
+answer, and then runs by itself. Once access is granted, the stuck calls return and the lab resumes without a restart.
+
 The services are LaunchDaemons, which start at boot without a login, so the drive must mount without one too:
 
 ```bash
 sudo defaults write /Library/Preferences/SystemConfiguration/autodiskmount AutomountDisksWithoutUserLogin -bool true
 ```
 
-`install.sh` warns when a configured path under `/Volumes` is not mounted. To move an existing lab:
+`install.sh` warns when a configured path under `/Volumes` is not mounted, and prints the java binary that needs Full
+Disk Access. To move an existing lab:
 
-1. Copy while the lab runs: `rsync -a ~/klause-lab-data/jobs/ /Volumes/Ros/klause-lab/jobs/` and
+1. Before switching, grant the services' java Full Disk Access; the lab holds its queue on the drive until it has
+   it. The binary is `$JAVA_HOME/bin/java` of the JDK the services run on (`install.sh` prints it, links resolved, as
+   "services run on …" and in its warning; on a running lab the hold's reason names it). In System Settings →
+   Privacy & Security → Full Disk Access, click +, press Cmd-Shift-G, paste the path, click Open and switch it on.
+   Grant it again whenever the services move to another JDK.
+2. Copy while the lab runs: `rsync -a ~/klause-lab-data/jobs/ /Volumes/Ros/klause-lab/jobs/` and
    `rsync -a ~/.cache/klause-bench/corpus/ /Volumes/Ros/klause-bench/corpus/`.
-2. Stop the services: `sudo launchctl bootout system/com.eignex.klause-lab.runner` and
+3. Stop the services: `sudo launchctl bootout system/com.eignex.klause-lab.runner` and
    `sudo launchctl bootout system/com.eignex.klause-lab.api`.
-3. Run the same rsyncs again, with `--delete`, for what changed meanwhile.
-4. Set `LAB_JOBS`, `LAB_CORPUS` and `LAB_TRIM_AGE_DAYS` in `~/.config/klause-lab/lab.env`.
-5. Rerun `deploy/install.sh`, which writes the settings into both services and starts them (it asks for sudo).
-6. Check `lab health` and `/disk`, then move the old copies aside and delete them once all is well.
+4. Run the same rsyncs again, with `--delete`, for what changed meanwhile.
+5. Set `LAB_JOBS`, `LAB_CORPUS` and `LAB_TRIM_AGE_DAYS` in `~/.config/klause-lab/lab.env`.
+6. Rerun `deploy/install.sh`, which writes the settings into both services and starts them (it asks for sudo).
+7. Check `lab health` and `/disk`: no `held` and no volume `problem`. Then move the old copies aside and delete them
+   once all is well.
 
 ## What a case runs in
 

@@ -93,6 +93,8 @@ data class Config(
     val archiveMaxUnpackedBytes: Long = env("LAB_ARCHIVE_MAX_UNPACKED_MB", "16384").toLong() * BYTES_PER_MB,
     /** Where external volumes mount, as macOS mounts them: a directory under it needs its volume mounted ([Volumes]). */
     val volumesRoot: Path = Path("/Volumes"),
+    /** Whether the lab's directories answer within a timeout ([VolumeAccess]): this process's own, unless a test gives one. */
+    val volumeAccess: VolumeAccess = VolumeAccess.shared,
 ) {
     init {
         require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
@@ -126,9 +128,10 @@ data class Config(
     val aws: AwsConfig? by lazy { AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) }
     fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
 
-    /** Job [id]'s directory, made when missing; fails, making nothing, while the job files' volume is missing ([Volumes]). */
+    /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
+     *  does not answer ([Volumes]). */
     fun createJobDir(id: Long): Path {
-        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot)
+        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
         return Files.createDirectories(jobDir(id))
     }
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())

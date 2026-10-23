@@ -1,17 +1,26 @@
 package com.eignex.lab
 
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
+import kotlin.io.path.createDirectories
 import kotlin.io.path.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class VolumesTest {
     private val gb = BYTES_PER_GB
+
+    /** Access that finds every directory answers, for the configurations whose paths are made up. */
+    private val answers = VolumeAccess(java = JAVA) { _, _ -> null }
 
     /** A lab with its data on the internal disk and its job files and corpus on the external volume `Ros`. */
     private fun external(root: Path = Path("/Volumes")) = Config(
@@ -20,6 +29,7 @@ class VolumesTest {
         corpusDir = root.resolve("Ros/klause-bench/corpus"),
         passwordHash = null,
         volumesRoot = root,
+        volumeAccess = answers,
     )
 
     /** The internal disk with [internal] free and `/Volumes/Ros` with [ros] free, by path. */
@@ -70,7 +80,7 @@ class VolumesTest {
 
     @Test
     fun `everything on one disk is one volume, held by its free space alone`() {
-        val config = Config(dataDir = Path("/Users/lab/data"), corpusDir = Path("/Users/lab/corpus"), passwordHash = null)
+        val config = Config(dataDir = Path("/Users/lab/data"), corpusDir = Path("/Users/lab/corpus"), passwordHash = null, volumeAccess = answers)
         val volumes = Volumes.report(config, space(100 * gb, 0)) { true }
 
         assertEquals(1, volumes.size)
@@ -143,5 +153,121 @@ class VolumesTest {
 
         assertTrue(space.totalBytes > 0 && space.freeBytes in 0..space.totalBytes, "$space")
         assertTrue(space.mount.startsWith("/"), space.mount)
+    }
+
+    /**
+     * A lab on temporary directories whose job files' probe blocks until [gate] opens, as a call on a volume macOS keeps
+     * the lab from does, and whose corpus refuses access when [corpusRefused].
+     */
+    private class Blocked(freshMs: Long = VolumeAccess.FRESH_MS, corpusRefused: Boolean = false) {
+        val gate = CountDownLatch(1)
+        val base: Path = Files.createTempDirectory("lab")
+        val jobs: Path = base.resolve("drive/jobs")
+        val corpus: Path = base.resolve("corpus")
+        val access = VolumeAccess(TIMEOUT_MS, freshMs, JAVA) { label, dir ->
+            if (dir == jobs) gate.await()
+            if (dir == corpus && corpusRefused) throw AccessDeniedException(dir.toString(), null, "Operation not permitted")
+            Volumes.probe(label, dir)
+        }
+        val config = Config(dataDir = base.resolve("data"), jobsDir = jobs, corpusDir = corpus, passwordHash = null, minFreeBytes = 0,
+            dockerCleanupDays = 0, volumeAccess = access)
+    }
+
+    /** Wait up to [ms] for [condition]. */
+    private fun eventually(ms: Long = 10_000, condition: () -> Boolean): Boolean {
+        val end = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < end) {
+            if (condition()) return true
+            Thread.sleep(20)
+        }
+        return condition()
+    }
+
+    @Test
+    fun `a probe that hangs times out and the directory cannot be used, naming the java to grant Full Disk Access`() {
+        val lab = Blocked()
+        val started = System.nanoTime()
+
+        val problem = Volumes.jobFiles(lab.config)
+
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        assertEquals(
+            "cannot access job files directory ${lab.jobs} within $TIMEOUT_MS ms: macOS may be blocking the lab's java from removable " +
+                "volumes; grant Full Disk Access to $JAVA in System Settings → Privacy & Security → Full Disk Access",
+            problem,
+        )
+        assertTrue(tookMs in TIMEOUT_MS..5_000, "$tookMs ms")
+        assertEquals(problem, Volumes.hold(lab.config))
+        val volume = Volumes.report(lab.config).single { volume -> volume.paths.any { it.name == "LAB_JOBS" } }
+        assertEquals(problem, volume.problem)
+        assertNull(volume.freeBytes)
+        // A job's directory, and so a job's log line, fails at once rather than block its thread.
+        assertFailsWith<IllegalStateException> { lab.config.createJobDir(1) }
+        lab.gate.countDown()
+    }
+
+    @Test
+    fun `a refused probe says so with the same fix, and the java named by default is the one running`() {
+        val lab = Blocked(corpusRefused = true)
+        lab.gate.countDown()
+
+        val problem = Volumes.hold(lab.config)!!
+
+        assertTrue(problem.startsWith("cannot access corpus directory ${lab.corpus} ("), problem)
+        assertTrue(problem.endsWith("grant Full Disk Access to $JAVA in System Settings → Privacy & Security → Full Disk Access"), problem)
+        assertTrue(VolumeAccess.javaBinary().endsWith("/java"), VolumeAccess.javaBinary())
+    }
+
+    @Test
+    fun `one probe of a directory is in flight at a time, and a stuck one answers at once until its call returns`() {
+        val lab = Blocked(freshMs = 0)
+
+        assertNotNull(lab.access.check(Volumes.JOB_FILES, lab.jobs))
+        val started = System.nanoTime()
+        (1..8).map { thread { repeat(5) { assertNotNull(lab.access.check(Volumes.JOB_FILES, lab.jobs)) } } }.forEach { it.join() }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+
+        assertEquals(1, lab.access.probes)
+        assertTrue(tookMs < TIMEOUT_MS, "$tookMs ms")
+        lab.gate.countDown()
+        // The stuck probe records what it found once its call returns: access was granted.
+        assertTrue(eventually { lab.access.check(Volumes.JOB_FILES, lab.jobs) == null })
+        assertNull(Volumes.hold(lab.config))
+    }
+
+    @Test
+    fun `a runner whose job files do not answer starts the cloud worker, holds its queue and recovers once they do`() {
+        // The corpus refusing access keeps the queue held after the recovery, so the runner takes no job here.
+        val lab = Blocked(freshMs = 0, corpusRefused = true)
+        val store = Store(lab.base.resolve("lab.db").also { it.parent.createDirectories() })
+        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), seeds = listOf(1), host = Experiments.AUTO_HOST)
+        val id = store.create("ab", "main", emptyList(), experiment = spec)
+        val cases = Experiments.cases(1, 1, spec.seeds)
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Problem("s", "p")), cases, cases.map { "true" to 1_000L })
+        assertEquals(id, store.next()?.id)
+        val cloud = CountDownLatch(1)
+        val runner = Runner(lab.config, store, startCloud = { cloud.countDown(); { false } })
+
+        thread(isDaemon = true, name = "test-runner") { runner.loop() }
+
+        assertTrue(cloud.await(5, TimeUnit.SECONDS), "the cloud worker did not start")
+        assertTrue(runner.disk.held.orEmpty().startsWith("cannot access job files directory ${lab.jobs}"), runner.disk.held)
+        assertTrue(JAVA in runner.disk.held.orEmpty(), runner.disk.held)
+        // The recovery tried, found the job files blocked, and left the job as it was.
+        assertTrue(eventually { runner.recoveryWaits != null })
+        assertTrue(runner.recoveryWaits.orEmpty().startsWith("cannot access job files directory"), runner.recoveryWaits)
+        assertFalse(runner.recovered)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+
+        lab.gate.countDown()
+
+        assertTrue(eventually { runner.recovered }, "the runner did not recover")
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
+        assertTrue(eventually { runner.disk.held.orEmpty().startsWith("cannot access corpus directory") }, runner.disk.held)
+    }
+
+    private companion object {
+        const val JAVA = "/Library/Java/JavaVirtualMachines/test.jdk/Contents/Home/bin/java"
+        const val TIMEOUT_MS = 300L
     }
 }

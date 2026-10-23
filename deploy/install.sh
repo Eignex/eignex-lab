@@ -79,6 +79,15 @@ command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any J
 JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 echo "services run on $JAVA_HOME"
+# macOS keeps a daemon off a removable volume until the binary it runs has Full Disk Access, and leaves its calls there
+# blocked rather than failed; the lab then holds its queue with that reason until access is granted.
+if [[ -n "$external" && "$os" == Darwin ]]; then
+  java_bin="$(cd "$JAVA_HOME/bin" && pwd -P)/java"
+  echo "warning: LAB_JOBS or LAB_CORPUS is on an external drive: grant Full Disk Access to the services' java," >&2
+  echo "  $java_bin" >&2
+  echo "  in System Settings → Privacy & Security → Full Disk Access: click +, press Cmd-Shift-G, paste the path above," >&2
+  echo "  click Open and switch it on. Do it again whenever the JDK above changes." >&2
+fi
 if [[ -n "$dry" ]]; then bin="$here/build/install/klause-lab/bin/klause-lab"; else bin="$(release "$here" "$LAB_DATA")"; fi
 "$bin" check   # fails here, before anything is registered, on a host without SIMD
 

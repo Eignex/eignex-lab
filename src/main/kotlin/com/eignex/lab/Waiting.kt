@@ -139,9 +139,10 @@ object Waiting {
     const val SETUP = "setup"
     const val CASES = "cases"
 
-    /** What job [job], RUNNING on the local machine, is doing, its setup step read from its directory [dir]. */
-    fun localWork(job: Job, dir: Path): LocalWork {
-        val step = SetupStep.read(dir)
+    /** What job [job], RUNNING on the local machine, is doing, its setup step read from its directory [dir]; with no
+     *  [dir], while the job files cannot be read, the step goes unnamed. */
+    fun localWork(job: Job, dir: Path?): LocalWork {
+        val step = dir?.let(SetupStep::read)
         val setup = step != null || !job.setupDone && job.experiment != null && job.experiment.isAnalysis.not()
         val named = step?.first?.takeIf { it != SetupStep.STARTING }
         val doing = if (setup) "setting up" + (named?.let { ": $it" } ?: "")
@@ -250,6 +251,7 @@ object Waiting {
             blocker == LaunchGate.AT_MAX -> "at maxInstances (${aws.maxInstances}): no more nodes launch"
             blocker == LaunchGate.QUOTA_FULL -> "the ${aws.vcpuQuota}-vCPU quota is full: no node launches"
             blocker == LaunchGate.UPDATE_WAITING -> "a lab update waits: no node launches until it is done"
+            blocker == LaunchGate.NO_JOB_FILES -> "the job files cannot be used: no node launches until they can"
             blocker.startsWith("waiting ") -> "$pressure, over the threshold: a node launches once it holds ${blocker.removePrefix("waiting ")}"
             blocker.startsWith("cooldown ") -> "$pressure: the cooldown after the last launch holds the next for ${blocker.removePrefix("cooldown ")}"
             else -> "$pressure: $blocker"
@@ -288,7 +290,9 @@ object Waiting {
         val up = config.aws != null && nodesUp(pool, at)
         val running = store.active(withCommands = false).firstOrNull { it.status == Status.RUNNING && it.local }
         val diskHeld = runCatching { Volumes.hold(config) }.getOrNull()
-        return QueueView(store.queueOrder(up), store.localNext(up), running?.let { localWork(it, config.jobDir(it.id)) }, pool, config.aws,
+        // The setup step is read from the job's files, which a volume that does not answer would leave the request waiting on.
+        val work = running?.let { localWork(it, config.jobDir(it.id).takeIf { Volumes.jobFiles(config) == null }) }
+        return QueueView(store.queueOrder(up), store.localNext(up), work, pool, config.aws,
             config.cores, store.schedules(), diskHeld, at)
     }
 

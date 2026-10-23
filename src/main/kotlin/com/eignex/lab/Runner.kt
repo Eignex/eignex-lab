@@ -44,6 +44,17 @@ class Runner(
     private val stopGraceMs: Long = Experiments.STOP_GRACE_SEC * 1000,
     /** The lab's source checkers ([com.eignex.lab.checker]); a test gives its own. */
     sourceChecker: () -> SourceChecker = { Checkers.of(config) },
+    /**
+     * Starts the cloud worker when the lab has AWS settings ([AwsWorker]), and gives what tells whether it has a node up
+     * or launching; null without the settings. A test gives its own.
+     */
+    private val startCloud: (Runner) -> (() -> Boolean)? = { runner ->
+        config.aws?.let { aws ->
+            val worker = AwsWorker(runner, store, config, aws)
+            thread(isDaemon = true, name = "aws") { worker.loop() }
+            return@let { worker.active }
+        }
+    },
 ) {
     /** Checks each finished case's solution claim with the lab's own external checkers, off the dispatch thread. */
     internal val checks = CaseChecks(store, sourceChecker, ::log)
@@ -87,24 +98,28 @@ class Runner(
         dockerCleanup(config, store) { pattern, revision -> synchronized(mirrorLock) { mirrorGrep(config.mirror.toFile())(pattern, revision) } }
     }
 
+    /**
+     * Why the runner holds its queue, as last checked ([Volumes.hold]): a low disk, or a volume that is missing or does
+     * not answer. Checked first at start, within the probes' timeouts, and before each job.
+     */
+    internal val disk = DiskGuard { Volumes.hold(config) }
+
+    /** Whether the startup's recovery ([recover]) has run: until it has, neither the local machine nor a node takes work. */
+    @Volatile
+    internal var recovered = false
+        private set
+
+    /**
+     * Work the queue. The volumes are checked first, each within a timeout ([VolumeAccess]), and the cloud worker and
+     * the other background threads start whatever that finds: a drive macOS keeps the lab from then holds the queue
+     * with the reason, while the pool is still reported and its nodes kept. The recovery that touches job files
+     * ([recover]) waits for their volume to answer, and runs on the first pass after it does.
+     */
     fun loop() {
         config.dataDir.createDirectories()
         if (config.requireDocker) awaitDocker()
-        // Each volume the lab writes to, and an external one's being mounted, checked now and before each job ([Volumes]).
-        val disk = DiskGuard { Volumes.hold(config) }.also { it.allowsWork() }
-        // A job requeued with its cancel requested, before a requeue ended such a job, would wait for a host forever.
-        runCatching { store.queuedCancels().forEach(::cancel) }.onFailure { println("cancelling requeued jobs failed: ${it.message}") }
-        // Shared jobs left running lost their hosts with the restart: they go back to the queue, before any host takes work.
-        runCatching { recoverShared() }.onFailure { println("recovering shared jobs failed: ${it.message}") }
-        // Jobs queued before the lab placed them itself may name a host their submitter chose: placed again by the rules.
-        runCatching { Placement.replaceQueued(store, config) }
-            .onSuccess { if (it.isNotEmpty()) println("placed queued jobs again by the lab's rules: $it") }
-            .onFailure { println("placing queued jobs failed: ${it.message}") }
-        config.aws?.let { aws ->
-            val worker = AwsWorker(this, store, config, aws)
-            awsActive = { worker.active }
-            thread(isDaemon = true, name = "aws") { worker.loop() }
-        }
+        disk.allowsWork()
+        startCloud(this)?.let { awsActive = it }
         // Reference rows lab runs made before sources were kept learn them from those runs' records, off the loop.
         thread(isDaemon = true, name = "bind-references") {
             runCatching { store.bindLabReferenceSources() }
@@ -137,7 +152,8 @@ class Runner(
             if (!awsActive()) updater.maybeUpdate()
             // Also only between jobs, so no case of the runner's starts a container while images go.
             runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
-            if (!disk.allowsWork()) {
+            val ready = recover()
+            if (!disk.allowsWork() || !ready) {
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
@@ -344,8 +360,39 @@ class Runner(
     }
 
     /**
-     * At start, before any host takes work: a job taken whole by one host before jobs were shared (an `auto` job the
-     * local machine or a node took) is shared again where the rules still allow it ([Store.share]); and each shared
+     * The startup's recovery, once the job files' volume answers ([Volumes.jobFiles]), before any host takes work: jobs
+     * requeued with their cancel requested are cancelled, shared jobs left running go back to the queue
+     * ([recoverShared]), and queued jobs are placed again by the lab's rules. Whether it has run; false while the job
+     * files cannot be used, as everything here logs to them.
+     */
+    internal fun recover(): Boolean {
+        if (recovered) return true
+        Volumes.jobFiles(config)?.let { problem ->
+            if (recoveryWaits != problem) println("recovery waits for the job files: $problem")
+            recoveryWaits = problem
+            return false
+        }
+        // A job requeued with its cancel requested, before a requeue ended such a job, would wait for a host forever.
+        runCatching { store.queuedCancels().forEach(::cancel) }.onFailure { println("cancelling requeued jobs failed: ${it.message}") }
+        // Shared jobs left running lost their hosts with the restart: they go back to the queue, before any host takes work.
+        runCatching { recoverShared() }.onFailure { println("recovering shared jobs failed: ${it.message}") }
+        // Jobs queued before the lab placed them itself may name a host their submitter chose: placed again by the rules.
+        runCatching { Placement.replaceQueued(store, config) }
+            .onSuccess { if (it.isNotEmpty()) println("placed queued jobs again by the lab's rules: $it") }
+            .onFailure { println("placing queued jobs failed: ${it.message}") }
+        recovered = true
+        return true
+    }
+
+    /** Why recovery waited at its last try, so each new reason is logged once; null until it has waited. */
+    @Volatile
+    internal var recoveryWaits: String? = null
+        private set
+
+    /**
+     * Part of the startup's recovery ([recover]), before any host takes work: a job taken whole by one host before jobs
+     * were shared (an `auto` job the local machine or a node took) is shared again where the rules still allow it
+     * ([Store.share]); and each shared
      * job left running, whose hosts went with the restart, has what the local machine ran of it killed, every case its
      * hosts held given back, each iteration left part done queued again whole, and goes back to the queue
      * ([Store.recoverShared]). The local machine and the nodes then take it up again by priority.
