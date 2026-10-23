@@ -74,6 +74,44 @@ data class ScheduleSpec(
 @Serializable
 data class ScheduleUpdate(val experiment: ExperimentSpec? = null, val intervalSec: Long? = null, val nextCheckInSec: Long? = null)
 
+/** How far a trend view got: the runs it shows, and the finished runs whose points are still being computed. */
+@Serializable
+data class TrendProgress(val runs: Int, val computing: Int)
+
+/** What the trend page of schedule [name] shows, its points as far as [cache] has them ([Trend.runs]). */
+internal class TrendView(
+    val name: String?,
+    val schedules: List<String>,
+    val shown: List<TrendRun>,
+    /** Runs left out because they ran an earlier experiment than the schedule's current one. */
+    val earlier: Int,
+    val all: Boolean,
+    /** Finished runs whose points are still being computed in the background. */
+    val computing: Int,
+)
+
+internal fun trendView(store: Store, cache: TrendCache, requested: String?, allRequested: Boolean): TrendView {
+    // A schedule of reference runs regenerates the reference; its trend says nothing about klause.
+    val schedules = store.schedules()
+        .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
+    val name = requested?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
+    // By default only the runs of the schedule's current experiment, and only those are read: a run of an
+    // earlier one measured something else, and plotted alongside reads as a regression.
+    // One line whether or not a run was source-checked ([Experiments.trendFingerprint]); each run says which.
+    val current = schedules.firstOrNull { it.name == name }?.let { Experiments.trendFingerprint(it.experiment) }
+    val all = allRequested || current == null
+    val computing = ArrayList<Long>()
+    val pointless = ArrayList<Long>()
+    val runs = name?.let { Trend.runs(store, it, cache, experiment = current.takeUnless { all }, missing = computing, pointless = pointless) }
+        .orEmpty()
+    // The problems the latest run of that spec planned: a set redrawn since is another line, as an edit is.
+    val latest = runs.lastOrNull { it.experiment == current }?.spec
+    val shown = if (all) runs else runs.filter { it.spec == latest }
+    val total = if (all) runs.size else name?.let { Trend.scheduled(store, it).size } ?: 0
+    return TrendView(name, schedules.map { it.name }, shown, maxOf(0, total - shown.size - computing.size - pointless.size), all,
+        computing.size)
+}
+
 /** A queued job's [id], with [notes] on what the lab made of its spec, such as a profile's time limit (none for most),
  *  [placement], where the lab placed it, in words, and [host], the same as `local`, `cloud` or `auto`
  *  ([Experiments.hostWord]). The job's own `experiment.host` keeps the stored `lab`, `aws` or `auto`. */
@@ -139,10 +177,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
     referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
-    for (schedule in store.schedules()) {
-        val experiment = Experiments.trendFingerprint(schedule.experiment)
-        trendCache.refreshLater("${schedule.name}/$experiment") { Trend.runs(store, schedule.name, trendCache, experiment = experiment) }
-    }
+    Trend.warm(store, trendCache)
     routing {
         get("/") {
             val before = call.parameters["before"]?.toLong()
@@ -249,28 +284,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
-            // A schedule of reference runs regenerates the reference; its trend says nothing about klause.
-            val schedules = store.schedules()
-                .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
-            val name = call.parameters["name"]?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
-            // By default only the runs of the schedule's current experiment, and only those are read: a run of an
-            // earlier one measured something else, and plotted alongside reads as a regression.
-            // One line whether or not a run was source-checked ([Experiments.trendFingerprint]); each run says which.
-            val current = schedules.firstOrNull { it.name == name }?.let { Experiments.trendFingerprint(it.experiment) }
-            val all = call.parameters["all"] != null || current == null
-            val computing = ArrayList<Long>()
-            val runs = name?.let { Trend.runs(store, it, trendCache, experiment = current.takeUnless { all }, missing = computing) }.orEmpty()
-            // The problems the latest run of that spec planned: a set redrawn since is another line, as an edit is.
-            val latest = runs.lastOrNull { it.experiment == current }?.spec
-            val shown = if (all) runs else runs.filter { it.spec == latest }
-            val total = if (all) runs.size else name?.let { Trend.scheduled(store, it).size } ?: 0
+            val view = trendView(store, trendCache, call.parameters["name"], call.parameters["all"] != null)
             if (call.wantsHtml()) {
-                call.respondText(trendPage(name, shown, config.repoUrl, schedules.map { it.name }, maxOf(0, total - shown.size - computing.size), all,
-                    computing.size),
+                call.respondText(trendPage(view.name, view.shown, config.repoUrl, view.schedules, view.earlier, view.all, view.computing),
                     ContentType.Text.Html)
             } else {
-                call.respond(shown)
+                call.respond(view.shown)
             }
+        }
+        get("/trend/progress") {
+            // What the trend page polls while points are computing, instead of reloading itself whole.
+            val view = trendView(store, trendCache, call.parameters["name"], call.parameters["all"] != null)
+            call.respond(TrendProgress(view.shown.size, view.computing))
         }
         get("/references") {
             fun param(name: String) = call.parameters[name]?.takeIf { it.isNotBlank() }

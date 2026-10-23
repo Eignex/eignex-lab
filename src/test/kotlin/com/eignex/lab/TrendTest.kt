@@ -3,10 +3,11 @@ package com.eignex.lab
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class TrendTest {
-    private fun run(store: Store, name: String, solvedOf: List<Boolean>, finish: Boolean = true): Long {
-        val problems = solvedOf.indices.map { Problem(if (it % 2 == 0) "a" else "b", "p$it") }
+    private fun run(store: Store, name: String, solvedOf: List<Boolean>, finish: Boolean = true, first: Int = 0): Long {
+        val problems = solvedOf.indices.map { Problem(if (it % 2 == 0) "a" else "b", "p${first + it}") }
         val id = store.create(name, "sha", emptyList(), experiment = ExperimentSpec(name, listOf(mapOf("suite" to "a"))))
         store.next()
         store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(problems.size, 1, emptyList()), problems.map { "true" to 1L })
@@ -93,16 +94,80 @@ class TrendTest {
         val run = TrendRun(job = 1, sha = "a", spec = "s", at = 0, finished = true, cases = 1, problems = 1,
             solved = Estimate(1.0, 1.0, 1.0), proven = 0.0, unsupported = 0, errors = 0,
             par2 = Estimate(1.0, 1.0, 1.0), suites = emptyMap())
-        cache.put(1, stamp = 5, run)
+        cache.sync(5) { emptyMap() }
+        cache.put(1, "v", stamp = 5, run, setOf("" to "p0"))
+        cache.sync(6) { mapOf(("" to "p0") to 6L) }
 
         now = 500
-        val young = listOf(cache.lookup(1, stamp = 5), cache.lookup(1, stamp = 6)).map { it?.fresh }
+        val young = listOf(cache.lookup(1, "v", stamp = 5), cache.lookup(1, "v", stamp = 6)).map { it?.fresh }
         now = 2000
-        val aged = listOf(cache.lookup(1, stamp = 5), cache.lookup(1, stamp = 6)).map { it?.fresh }
+        val aged = listOf(cache.lookup(1, "v", stamp = 5), cache.lookup(1, "v", stamp = 6)).map { it?.fresh }
 
         assertEquals(listOf(true, true), young)
         assertEquals(listOf(true, false), aged)
-        assertEquals(run, cache.lookup(1, stamp = 6)?.run)
+        assertEquals(run, cache.lookup(1, "v", stamp = 6)?.run)
+        assertEquals(null, cache.lookup(1, "retried", stamp = 6))
+    }
+
+    @Test
+    fun `a reference change on one problem marks stale only the points that ran it`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        store.putReferences(listOf(("" to "p9") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        val ranA = run(store, "sweep@aaa", listOf(true, false))
+        val other = run(store, "sweep@bbb", listOf(true, false), first = 5)
+        var now = 0L
+        val cache = TrendCache(maxReferenceLagMs = 1000) { now }
+        Trend.runs(store, "sweep", cache)
+
+        Thread.sleep(5)
+        store.putReferences(listOf(("" to "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        now = 2000
+        val stamp = cache.sync(store)
+        val fresh = Trend.scheduled(store, "sweep").associate { it.id to cache.lookup(it.id, TrendCache.version(it), stamp)?.fresh }
+
+        assertEquals(mapOf(ranA to false, other to true), fresh)
+        // A recompute takes the changed row in: the run now disagrees with it.
+        assertEquals(1, Trend.runs(store, "sweep", cache, refreshing = true).first { it.job == ranA }.disagreements)
+        assertEquals(true, cache.lookup(ranA, TrendCache.version(store.job(ranA)!!), cache.sync(store))?.fresh)
+    }
+
+    @Test
+    fun `a finished run with no cases is remembered as having no point, not as being computed`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val failed = store.create("sweep@aaa", "sha", emptyList(), experiment = ExperimentSpec("sweep", listOf(mapOf("suite" to "a"))))
+        store.next()
+        store.finish(failed, Status.FAILED)
+        val done = run(store, "sweep@bbb", listOf(true))
+        val cache = TrendCache()
+        Trend.runs(store, "sweep", cache)
+
+        val missing = ArrayList<Long>()
+        val pointless = ArrayList<Long>()
+        val runs = Trend.runs(store, "sweep", cache, missing = missing, pointless = pointless)
+
+        assertEquals(listOf(done), runs.map { it.job })
+        assertEquals(emptyList(), missing)
+        assertEquals(listOf(failed), pointless)
+        val page = trendPage("sweep", runs, "https://example.com/repo", computing = missing.size)
+        assertFalse("<body data-refresh" in page)
+        assertFalse("/trend/progress" in page)
+    }
+
+    @Test
+    fun `the warm-up computes a schedule's older runs as well as its current ones`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val older = run(store, "sweep@aaa", listOf(true))
+        store.createSchedule("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "b"))), 3600)
+        val cache = TrendCache()
+
+        Trend.warm(store, cache)
+
+        val job = store.job(older)!!
+        val deadline = System.currentTimeMillis() + 10_000
+        while (cache.lookup(older, TrendCache.version(job), store.referencesStamp()) == null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+        }
+        assertEquals(older, cache.lookup(older, TrendCache.version(job), store.referencesStamp())?.run?.job)
     }
 
     @Test
@@ -132,7 +197,7 @@ class TrendTest {
         assertEquals(listOf(going), first.map { it.job })
         assertEquals(listOf(done), missing)
         val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(done, store.referencesStamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        while (cache.lookup(done, TrendCache.version(store.job(done)!!), store.referencesStamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
         val later = ArrayList<Long>()
         assertEquals(listOf(done, going), Trend.runs(store, "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)

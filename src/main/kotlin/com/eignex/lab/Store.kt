@@ -1529,6 +1529,20 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
     }
 
+    /**
+     * The problems whose reference rows changed after [stamp] ([referencesStamp]), each with when it last changed: what
+     * tells a cached point which of its problems' comparisons moved. Read by the `updated_at` index.
+     */
+    @Synchronized
+    fun referencesChangedSince(stamp: Long): Map<Pair<String, String>, Long> = connection.prepareStatement(
+        "SELECT collection, problem, MAX(updated_at) FROM reference_rows WHERE updated_at > ? GROUP BY collection, problem",
+    ).use { statement ->
+        statement.setLong(1, stamp)
+        statement.executeQuery().use { r ->
+            generateSequence { if (r.next()) (r.getString(1) to r.getString(2)) to r.getLong(3) else null }.toMap()
+        }
+    }
+
     /** When a job last finished: what tells a cached view of finished runs that a newer one may belong in it. */
     @Synchronized
     fun lastFinished(): Long? = connection.prepareStatement("SELECT MAX(finished_at) FROM jobs").use { statement ->

@@ -551,7 +551,9 @@ internal fun trendPage(
     /** Finished runs whose points are still being computed in the background, left out until they are. */
     computing: Int = 0,
 ): String = buildString {
-    append(head("${name ?: "regression"} · klause lab", live = computing > 0 || runs.any { !it.finished }, tab = Tab.REGRESSION))
+    // Not live for the page-wide refresh, which refetches the whole page: the charts have no live parts, and a page whose
+    // points are computing polls a small progress call instead ([trendPoll]).
+    append(head("${name ?: "regression"} · klause lab", live = false, tab = Tab.REGRESSION))
     if (name == null) {
         append("<header><h1>Regression</h1></header><p class=\"muted\">No schedule yet: <code>lab schedule</code> sets one up, ")
         append("and its runs chart here, one point per commit.</p></body></html>")
@@ -586,7 +588,7 @@ internal fun trendPage(
             all -> "No run of this schedule has results yet."
             else -> "No run of this schedule's current experiment has results yet."
         })
-        append("</p>$TREND_RELOAD</body></html>")
+        append("</p>${trendPoll(runs.size, computing)}</body></html>")
         return@buildString
     }
     append("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">x-axis</span>")
@@ -626,7 +628,7 @@ internal fun trendPage(
     // Every field, defaults included: the script reads each run's fields without guarding for absent ones.
     append(trendJson.encodeToString(runs).replace("</", "<\\/"))
     append("</script>")
-    append(TREND_RELOAD)
+    append(trendPoll(runs.size, computing))
     append(SCRIPT)
     append(TREND_SCRIPT)
     append("</body></html>")
@@ -1892,27 +1894,23 @@ internal enum class Tab(val label: String, val href: String) {
 }
 
 /**
- * The trend page has no live parts for [refresh] to swap: its charts are drawn once from its data. While points are
- * still being computed ([trendPage]'s `computing`, which marks the page live), it reloads whole once the page the
- * server would serve now has more runs, so the points appear without the reader asking again.
+ * While a trend page's points are still being computed ([trendPage]'s `computing`), it polls `/trend/progress` with its
+ * own query and reloads once the server would show other than its [runs], so the points appear without the reader asking
+ * again; it stops once nothing is computing. A page with nothing computing gets no script.
  */
-private const val TREND_RELOAD = """<script>
-if (document.body.hasAttribute('data-refresh')) {
-  const shown = document.getElementById('trend-data');
-  const count = shown ? JSON.parse(shown.textContent).length : 0;
+private fun trendPoll(runs: Int, computing: Int): String = if (computing == 0) "" else """<script>
+(function () {
   const poll = setInterval(async function () {
     if (document.hidden) return;
     try {
-      const response = await fetch(location.href, {headers: {Accept: 'text/html'}});
+      const response = await fetch('/trend/progress' + location.search, {headers: {Accept: 'application/json'}});
       if (!response.ok) return;
-      const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
-      const data = fresh.getElementById('trend-data');
-      const now = data ? JSON.parse(data.textContent).length : 0;
-      if (now !== count) location.reload();
-      else if (!fresh.body.hasAttribute('data-refresh')) clearInterval(poll);
+      const progress = await response.json();
+      if (progress.runs !== $runs) location.reload();
+      else if (progress.computing === 0) clearInterval(poll);
     } catch (e) {}
   }, 5000);
-}
+})();
 </script>"""
 
 private fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE) = """<!doctype html><html><head><meta charset="utf-8">
