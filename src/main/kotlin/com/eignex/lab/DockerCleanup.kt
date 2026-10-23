@@ -65,6 +65,8 @@ class DockerCleanup(
     private val log: (String) -> Unit = ::println,
     private val clock: () -> Long = System::currentTimeMillis,
     private val exec: (List<String>) -> Pair<Int, String> = ::execute,
+    /** `du -sk`'s lines for a path, null when it timed out or failed; by default run with [exec]. */
+    private val du: ((Path) -> List<String>?)? = null,
 ) {
     private var lastAttempt: Long? = null
 
@@ -161,8 +163,9 @@ class DockerCleanup(
 
     private fun allocated(path: Path): Long? {
         if (!Files.exists(path)) return null
-        val (exit, out) = exec(Background.prefix + listOf("du", "-sk", path.toString()))
-        return if (exit == 0) out.trim().substringBefore('\t').trim().toLongOrNull()?.let { it * KIB } else null
+        val out = if (du != null) du(path)?.joinToString("\n") else exec(Background.prefix + listOf("du", "-sk", path.toString()))
+            .let { (exit, out) -> out.takeIf { exit == 0 } }
+        return out?.trim()?.substringBefore('\t')?.trim()?.toLongOrNull()?.let { it * KIB }
     }
 
     private fun firstLine(text: String) = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
@@ -304,6 +307,7 @@ internal fun dockerCleanup(
     },
     freeBytes = { freeBytes(config.dataDir) },
     colimaDisks = config.colimaDisks.takeIf { config.colima },
+    du = DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)).let { runner -> { path -> runner.run(listOf(path.toString())) } },
 )
 
 /** The `git grep` [referencedImages] runs in [mirror]. */

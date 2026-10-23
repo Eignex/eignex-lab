@@ -35,7 +35,7 @@ class DiskGuardTest {
         data.resolve("work").toFile().mkdirs()
         data.resolve("work/small").toFile().writeBytes(ByteArray(10_000))
         data.resolve("stray").toFile().writeBytes(ByteArray(50_000))
-        val report = DiskUsage(Config(dataDir = data, corpusDir = data.resolve("corpus"), passwordHash = null)).measure()
+        val report = DiskUsage(Config(dataDir = data, corpusDir = data.resolve("corpus"), passwordHash = null)).measure()!!
         val ours = report.places.filter { it.path.startsWith(data.toString()) }
 
         assertEquals(listOf("job files", "data: stray", "job worktrees"), ours.map { it.label })
@@ -71,7 +71,7 @@ class DiskGuardTest {
         data.resolve("jobs/1").toFile().mkdirs()
         val config = Config(dataDir = data, jobsDir = jobs, corpusDir = data.resolve("corpus"), passwordHash = null)
 
-        val report = DiskUsage(config).measure()
+        val report = DiskUsage(config).measure()!!
 
         assertEquals(jobs.toString(), report.places.single { it.label == "job files" }.path)
         assertTrue(report.places.any { it.label == "data: jobs" })

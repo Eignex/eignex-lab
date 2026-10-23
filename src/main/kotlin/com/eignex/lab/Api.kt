@@ -171,7 +171,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     val referenceCache = ReferenceCache(store)
     // The finished runs the queue page's estimates learn from, reread at most once a minute.
     val estimates = EstimateHistory(store, config.cores)
-    val disk = DiskUsage(config).also { it.start() }
+    val disk = DiskUsage(config) { store.active(withCommands = false).map { it.id }.toSet() }.also { it.start() }
     // Only branches are asked about here, from GitHub; the runner checks each commit on its mirror when it plans.
     val trust = Trust(config.trustedUsers, config.repoUrl, git = { 1 to "" },
         github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
