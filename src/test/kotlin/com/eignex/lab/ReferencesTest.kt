@@ -1,7 +1,17 @@
 package com.eignex.lab
 
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
+import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -416,5 +426,98 @@ class ReferencesTest {
         assertEquals(identity, store.currentReferenceRows(listOf("c" to "p")).getValue("c" to "p").single().sourceIdentity)
         assertEquals(null, store.currentReferenceRows(listOf("c" to "q")).getValue("c" to "q").single().sourceIdentity)
         assertEquals(0, store.bindLabReferenceSources())
+    }
+
+    private fun kissat(feasible: Boolean?, budgetMs: Long, proven: Boolean = feasible != null) =
+        Reference("kissat", maximize = false, objective = null, feasible = feasible, proven = proven, elapsedMs = 100, budgetMs = budgetMs)
+
+    @Test
+    fun `retiring a solver's rows of one budget marks only those stale and keeps them as history`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val long = "satcomp" to "a"
+        val short = "satcomp" to "b"
+        val other = "satlib" to "a"
+        store.putReferences(listOf(long to kissat(true, 300_000), short to kissat(false, 60_000), other to kissat(true, 300_000)), "lab:1")
+        store.putReferences(listOf(long to Reference("clasp", false, null, true, true, 10, 300_000)), "lab:2")
+
+        val retired = store.retireReferenceRows("satcomp", "kissat", 300_000)
+
+        assertEquals(1, retired)
+        assertEquals(0, store.retireReferenceRows("satcomp", "kissat", 300_000))
+        assertEquals(listOf("clasp" to false, "kissat" to true), store.referenceRows(long.first, long.second).map { it.solver to it.stale }.sortedBy { it.first })
+        assertEquals(false, store.referenceRows(short.first, short.second).single().stale)
+        assertEquals(false, store.referenceRows(other.first, other.second).single().stale)
+        assertEquals(null, store.references(listOf(long), "kissat")[long])
+        assertEquals(2, store.retireReferenceRows("satcomp", "kissat") + store.retireReferenceRows("satlib", "kissat"))
+    }
+
+    @Test
+    fun `the scoreboard, coverage and comparisons leave retired rows out`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "satcomp" to "a"
+        store.putReferences(listOf(key to kissat(true, 300_000), ("satcomp" to "b") to kissat(true, 60_000)), "lab:1")
+
+        store.retireReferenceRows("satcomp", "kissat", 300_000)
+
+        assertEquals(emptyMap(), store.currentReferenceRows(listOf(key)))
+        assertEquals(emptyMap(), store.references(listOf(key)))
+        assertEquals(listOf(1), store.referenceCoverage().filter { it.collection == "satcomp" && it.solver == "kissat" }.map { it.rows })
+        assertEquals(true, ReferenceFilterMode.MISSING.keeps(store.references(listOf(key), "kissat")[key], 60_000))
+    }
+
+    @Test
+    fun `a later row of any budget or strength takes the place of a retired one`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val key = "satcomp" to "a"
+        val proof = kissat(true, 300_000)
+        store.putReferences(listOf(key to proof), "lab:1")
+        // Before it is retired, a 60 s rerun with the same verdict never displaces the 300 s row.
+        assertEquals(0, store.putReferences(listOf(key to kissat(true, 60_000)), "lab:2"))
+
+        store.retireReferenceRows("satcomp", "kissat", 300_000)
+        val unknown = kissat(null, 60_000)
+
+        assertEquals(true, References.replaces(unknown, proof.copy(stale = true)))
+        assertEquals(false, References.replaces(proof.copy(stale = true), unknown))
+        assertEquals(1, store.putReferences(listOf(key to unknown), "lab:3"))
+        assertEquals(unknown, store.references(listOf(key), "kissat")[key])
+        assertEquals(1, store.putReferences(listOf(key to kissat(true, 60_000)), "lab:4"))
+        assertEquals(60_000L, store.currentReferenceRows(listOf(key)).getValue(key).single().budgetMs)
+    }
+
+    @Test
+    fun `retiring over HTTP needs the password and a same-site request, and says how many rows it marked`() {
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = Password.hash("secret"))
+        val store = Store(config.database)
+        store.putReferences(listOf(("satcomp" to "a") to kissat(true, 300_000), ("satcomp" to "b") to kissat(true, 60_000)), "lab:1")
+        val auth = "Basic " + Base64.getEncoder().encodeToString(":secret".toByteArray())
+        val body = """{"collection":"satcomp","solver":"kissat","budgetMs":300000}"""
+        testApplication {
+            application { api(config, store, HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")) }
+
+            assertEquals(HttpStatusCode.Unauthorized, client.post("/references/retire") {
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }.status)
+            assertEquals(HttpStatusCode.Forbidden, client.post("/references/retire") {
+                header(HttpHeaders.Authorization, auth)
+                header(HttpHeaders.Origin, "https://evil.example")
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }.status)
+            val retired = client.post("/references/retire") {
+                header(HttpHeaders.Authorization, auth)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            assertEquals(HttpStatusCode.OK, retired.status)
+            assertEquals(1, Json.decodeFromString(RetireResult.serializer(), retired.bodyAsText()).retired)
+            assertEquals(HttpStatusCode.BadRequest, client.post("/references/retire") {
+                header(HttpHeaders.Authorization, auth)
+                contentType(ContentType.Application.Json)
+                setBody("""{"collection":"","solver":"kissat"}""")
+            }.status)
+        }
+        assertEquals(listOf(true, false), listOf("a", "b").map { store.referenceRows("satcomp", it).single().stale })
     }
 }

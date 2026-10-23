@@ -47,6 +47,13 @@ data class PrioritySpec(val priority: Int)
 @Serializable
 data class DescriptionSpec(val description: String)
 
+/** Which reference rows `POST /references/retire` marks stale: [solver]'s on [collection], of [budgetMs] when given. */
+@Serializable
+data class RetireSpec(val collection: String, val solver: String, val budgetMs: Long? = null)
+
+@Serializable
+data class RetireResult(val retired: Int)
+
 @Serializable
 data class HostSpec(val host: String, val machines: Int? = null)
 
@@ -281,6 +288,16 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             } else {
                 call.respond(found.map { (key, r) -> ReferenceHit(key.first, key.second, r) })
             }
+        }
+        // Retire a solver's rows on a collection, of one budget if given ([Store.retireReferenceRows]): kept as history,
+        // left out of every comparison, and replaced by the solver's next row on each problem.
+        post("/references/retire") {
+            val spec = call.receive<RetireSpec>()
+            require(spec.collection.isNotBlank() && spec.solver.isNotBlank()) { "collection and solver are required" }
+            require(spec.budgetMs == null || spec.budgetMs > 0) { "budgetMs must be positive" }
+            val retired = store.retireReferenceRows(spec.collection, spec.solver, spec.budgetMs)
+            println("api: retired $retired reference rows of ${spec.solver} on ${spec.collection}" + (spec.budgetMs?.let { " at $it ms" } ?: ""))
+            call.respond(RetireResult(retired))
         }
         get("/problem") {
             val collection = requireNotNull(call.parameters["collection"]) { "collection is required" }
