@@ -1057,7 +1057,7 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
 
 `aws.properties` keys for the pool, all optional and reread on every poll: `maxInstances`, `vcpuQuota`, `onDemand`,
 `spotWaitMin`, `nodeIdleMin`, `nodeMinPriority`, `nodeLaunchLocalHours`, `nodeSustainMin`, `nodeCooldownMin`,
-`nodeMaxVcpus`. `market`, `spotFallback` and `nodeLaunchCoreHours` are no longer read.
+`nodeMaxVcpus`, `nodeWatchdogMin`. `market`, `spotFallback` and `nodeLaunchCoreHours` are no longer read.
 
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
   creates an SSH key pair, a security group admitting SSH from the local machine only, and an IAM user `klause-lab` that may only
@@ -1119,7 +1119,7 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
 - The pool outlives the lab's restarts, lab updates included. The worker keeps each node (instance, size, market,
   address, whether started by hand, first launch, commits built) in `$LAB_DATA/aws/pool.json`, rewritten on each
   change. A restarted worker, before it launches or sweeps anything, adopts each node of that file that still runs as a
-  lab instance: it must be `running`, answer SSH within 60 s (no long retries), and have every process the previous
+  lab instance (still tagged `klause-lab`): it must be `running`, have a public address, answer SSH within 60 s (no long retries), and have every process the previous
   runner left on it killed (each SSH session the lab started) and its job files (`~/jobs`) removed, checked after the
   kill; its builds and corpus stay. The adopted node then takes work as any node, its age still counted from its first
   launch. Adoption fails closed: a node that does not pass is terminated with the reason logged, a lab instance not in
