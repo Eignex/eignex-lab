@@ -1331,15 +1331,16 @@ internal fun diskPage(
         append("</table></div>")
     }
     if (report == null) {
-        append("<p class=\"muted\">Not measured yet: the first measurement runs at startup and takes a few minutes.</p></body></html>")
+        append("<p class=\"muted\">Not measured yet: the first measurement runs 10 minutes after the API starts and can take a while.</p></body></html>")
         return@buildString
     }
     append("<h2>What uses it</h2><p class=\"muted\">${size(report.freeBytes)} free on the data directory's volume")
-    append(" · measured ${ago(report.at)}, every 30 minutes</p>")
-    append("<div class=\"scroll\"><table><tr><th>what</th><th>path</th><th class=\"num\">size</th></tr>")
+    append(" · measured ${ago(report.at)}, every 30 minutes; the corpus and what is on another volume (the external drive) ")
+    append("every 6 hours, finished jobs once</p>")
+    append("<div class=\"scroll\"><table><tr><th>what</th><th>path</th><th class=\"num\">size</th><th>as of</th></tr>")
     for (place in report.places) {
         append("<tr><td>${esc(place.label)}</td><td><code>${esc(place.path)}</code></td>")
-        append("<td class=\"num\">${place.bytes?.let(::size) ?: "?"}</td></tr>")
+        append("<td class=\"num\">${place.bytes?.let(::size) ?: "?"}</td><td>${ago(place.at ?: report.at)}</td></tr>")
     }
     append("</table></div>")
     if (report.largestJobs.isNotEmpty()) {
