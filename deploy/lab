@@ -34,6 +34,12 @@
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's results as CSV
 #   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
 #                                                            satisfied infeasible unknown
+#   lab references retire <collection> <solver> [budget-sec]
+#                                                            retire a solver's reference rows on a collection, only those
+#                                                            of that budget when given: kept as history, left out of
+#                                                            comparisons and coverage, missing to "reference": "missing"
+#                                                            selections, and replaced by the solver's next row on each
+#                                                            problem whatever its budget. Prints how many rows it retired
 #   lab compare <id> <id>...                                the address of a page comparing experiments side by side
 #   lab parallel <id> <n>                                    let a job run n commands at once, also while it runs
 #   lab priority <id> <n>                                    reorder a queued job; a running one yields to a higher one
@@ -166,6 +172,13 @@ csv)
   if [[ -z "${2:-}" ]]; then curl -fsS "$url/experiments/$1/cases.csv"
   else curl -fsS -G "$url/experiments/$1/bench.csv" --data-urlencode "arm=$2" ${3:+--data-urlencode "seed=$3"}; fi ;;
 references)
+  if [[ "${1:-}" == retire ]]; then
+    [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "usage: lab references retire <collection> <solver> [budget-sec]" >&2; exit 2; }
+    jq -n --arg collection "$2" --arg solver "$3" --arg budget "${4:-}" \
+      '{collection: $collection, solver: $solver} + (if $budget == "" then {} else {budgetMs: (($budget | tonumber) * 1000)} end)' |
+      curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/references/retire" | jq -r '"retired \(.retired) rows"'
+    exit
+  fi
   curl -fsS -G "$url/references" --data-urlencode "q=$1" --data-urlencode "solver=${2:-}" \
     --data-urlencode "verdict=${3:-}" -H 'Accept: application/json' | jq -r '.[] |
     [.collection, .problem, .reference.solver, (.reference.feasible|tostring), (.reference.objective|tostring),

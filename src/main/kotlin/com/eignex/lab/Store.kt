@@ -1334,6 +1334,18 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         changed
     }
 
+    /**
+     * Mark [solver]'s current rows on [collection] stale, only those of budget [budgetMs] when given: an operator's
+     * retirement, as [retireReferences] does on a policy change. The rows stay as history, the lab's comparisons and
+     * coverage leave them out, a `missing` selection counts their problems as missing, and the solver's next row on
+     * the problem replaces them whatever its budget ([References.replaces]). Returns how many rows it marked.
+     */
+    @Synchronized
+    fun retireReferenceRows(collection: String, solver: String, budgetMs: Long? = null): Int = update(
+        "UPDATE reference_rows SET stale = 1, updated_at = ? WHERE collection = ? AND solver = ? AND stale = 0 AND (? IS NULL OR budget_ms = ?)",
+        now(), collection, solver, budgetMs, budgetMs,
+    )
+
     /** Every reference solver's row on one problem, strongest first. */
     @Synchronized
     fun referenceRows(collection: String, problem: String): List<Reference> =
@@ -1523,11 +1535,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
     }
 
-    /** Per collection and solver: rows, decided, proven, infeasible, and when last updated. */
+    /** Per collection and solver, current rows only: rows, decided, proven, infeasible, and when last updated. */
     @Synchronized
     fun referenceCoverage(): List<ReferenceCoverage> = connection.prepareStatement(
         "SELECT collection, solver, COUNT(*), SUM(feasible IS NOT NULL), SUM(proven), SUM(feasible = 0), MAX(updated_at) " +
-            "FROM reference_rows GROUP BY collection, solver ORDER BY collection, solver",
+            "FROM reference_rows WHERE stale = 0 GROUP BY collection, solver ORDER BY collection, solver",
     ).use { statement ->
         statement.executeQuery().use { r ->
             generateSequence {

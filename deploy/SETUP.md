@@ -778,7 +778,16 @@ klause-bench's README) replaces the stored one whatever its strength, so a proof
 correction. SCIP and HiGHS rows from before their solutions were checked are stale: kept on the problem pages as
 evidence, never used by comparisons or filters, and replaced by the next checked run of each solver, which a
 `"reference": "missing"` run of that solver backfills. A bench too old to check sends rows that arrive stale and
-never replace a checked one. `lab references <text> [solver] [verdict]` searches them. The Reference tab shows what they cover, filters them, and links each problem to a page
+never replace a checked one. `lab references <text> [solver] [verdict]` searches them.
+
+An operator can retire rows the same way: `lab references retire <collection> <solver> [budget-sec]` (`POST
+/references/retire` with `{"collection", "solver", "budgetMs"?}`) marks that solver's current rows on the collection
+stale, only those of that budget when one is given, and prints how many it marked. They stay on the problem pages as
+history, but the scoreboard, comparisons, coverage and conflicts leave them out, a `"reference": "missing"` selection
+counts their problems as missing, and the solver's next row on each problem replaces them whatever its budget or
+strength. This is how a collection's references move to another budget: since an equally strong verdict keeps the
+bigger budget, a 60 s rerun alone never replaces a 300 s row. Retire the 300 s rows
+(`lab references retire satcomp-compact-v1 kissat 300`), then run the solver at 60 s with `"reference": "missing"`. The Reference tab shows what they cover, filters them, and links each problem to a page
 with every solver's verdict and every lab run of it.
 
 A problem's name can come to mean other source files (MiniZinc Challenge `2011/bacp` was once `bacp-9.mzn`, later
@@ -887,7 +896,9 @@ one the reference took over 5 s on, which is nearly all of them. Local search ca
 its run leaves the suite out. `reference.json` is the one-off reference run, and `reference-<solver>.json` the one-off runs of the second reference
 solvers (HiGHS, kissat, Chuffed, cvc5) over the problems each has no verdict on, and `reference-scip.json` SCIP's
 over the MPS problems it has no current verdict on (its stale rows count as none). `reference-kissat-satcomp.json` is
-kissat's run over `satcomp-compact-v1` at 300 s, the budget those instances need. Change
+kissat's run over `satcomp-compact-v1` at 60 s, the budget klause runs them at, so the scoreboard compares like with
+like; a few instances took Kissat over 60 s at the competition and stay unknown at it. Its earlier 300 s rows were
+retired first (`lab references retire satcomp-compact-v1 kissat 300`), which makes their problems missing to it. Change
 a schedule by editing its file and running `lab reschedule`. A schedule's phase is its last check: the runner checks
 it again one interval later, so staggered schedules stay a day apart; `lab reschedule <id> - - <hours>` moves one.
 
