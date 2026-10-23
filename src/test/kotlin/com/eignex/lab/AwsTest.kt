@@ -7,6 +7,7 @@ import java.nio.file.Path
 import kotlin.concurrent.thread
 import kotlin.io.path.readText
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
@@ -369,16 +370,73 @@ class AwsTest {
         assertEquals(listOf(1, 2, 4), sizes.map { AwsWorker.defaultParallel(it) })
     }
 
-    @Test
-    fun `an AWS case's output comes back only when its record cannot explain it`() {
-        val kept = listOf(
-            AwsHost.keepsOutput(0, recorded = true, profileCli = false),
-            AwsHost.keepsOutput(1, recorded = true, profileCli = false),
-            AwsHost.keepsOutput(0, recorded = false, profileCli = false),
-            AwsHost.keepsOutput(0, recorded = true, profileCli = true),
-        )
+    /** A node whose scripts run here, in [remote] as its job directory: what a case leaves there comes back as it would. */
+    private fun localNode(dir: Path, remote: Path, onScript: (String) -> Unit = {}): AwsHost {
+        dir.resolve("aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
+            override fun start(script: String, mergeErrors: Boolean): Process {
+                onScript(script)
+                return ProcessBuilder("bash", "-c", script).redirectErrorStream(mergeErrors).start()
+            }
+        }
+        return AwsHost("i-1", ssh, 4, "", jobDir = remote.toString()) { false }
+    }
 
-        assertEquals(listOf(false, true, true, true), kept)
+    /** A solve that writes its record and its native stdout, [stdout], under its case as the bench does. */
+    private fun solve(index: Int, stdout: String) =
+        "mkdir -p \"\$JOB_DIR/cases/$index\" && printf '%s' ${quote(stdout)} > \"\$JOB_DIR/cases/$index/p_1.out\" && " +
+            "echo '{\"elapsedMs\":5}' > \"\$JOB_DIR/cases/$index/p_1.json\" && echo bench-out && echo bench-err >&2"
+
+    @Test
+    fun `a cloud case that ran cleanly brings back its whole native stdout under its own name, hashed`() {
+        val dir = Files.createTempDirectory("lab job")
+        val remote = Files.createTempDirectory("node-job")
+        val stdout = "sat\n(model\n  (define-fun x () Int 3)\n)\n" + "line with spaces and 'quotes'\n".repeat(1000)
+        try {
+            val exit = localNode(dir, remote).run(Command(7, solve(7, stdout), 60, Status.RUNNING), dir)
+
+            assertEquals(0, exit)
+            assertEquals(stdout, dir.resolve("cases/7/p_1.out").readText())
+            assertEquals("{\"elapsedMs\":5}", dir.resolve("cases/7/record.json").readText().trim())
+            assertEquals("bench-out\n", dir.resolve("7.out").readText())
+            assertEquals("bench-err\n", dir.resolve("7.err").readText())
+            assertFalse(Files.exists(dir.resolve("7.output.transfer-error")))
+            assertFalse(Files.exists(dir.resolve("7.output.tar")))
+            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(stdout.toByteArray()).joinToString("") { "%02x".format(it) }
+            assertEquals(listOf(CaseFile("cases/7/p_1.out", stdout.toByteArray().size.toLong(), sha)), CaseFile.stdout(dir, 7))
+            assertEquals(CaseFile.sha256(remote.resolve("cases/7/p_1.out")), sha)
+            assertTrue(jobFiles(dir).any { it.path == "cases/7/p_1.out" && it.bytes == stdout.toByteArray().size.toLong() })
+        } finally {
+            dir.toFile().deleteRecursively()
+            remote.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a cloud case's stdout changed on the way back is reported, not kept as if whole`() {
+        val dir = Files.createTempDirectory("lab job")
+        val remote = Files.createTempDirectory("node-job")
+        try {
+            // The file changes on the node after it was hashed, as a transfer that corrupted it would look.
+            val host = localNode(dir, remote) { script ->
+                if ("tar -c" in script) remote.resolve("cases/3/p_1.out").toFile().appendText("tampered")
+            }
+
+            assertEquals(0, host.run(Command(3, solve(3, "unsat\n"), 60, Status.RUNNING), dir))
+
+            assertContains(dir.resolve("3.output.transfer-error").readText(), "cases/3/p_1.out")
+        } finally {
+            dir.toFile().deleteRecursively()
+            remote.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `output hashes are read from the instance's lines, and an escaped name is left out`() {
+        val sha = "a".repeat(64)
+        val text = "exit=0\noutput-sha256: $sha  cases/1/p q.out\noutput-sha256: \\$sha  cases/1/x\\ny.out\nother"
+
+        assertEquals(mapOf("cases/1/p q.out" to sha), AwsHost.outputHashes(text))
     }
 
     @Test

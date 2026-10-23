@@ -36,6 +36,28 @@ class StoreTest {
     }
 
     @Test
+    fun `each case carries its native stdout files with their hashes, read from the job directory`() {
+        val store = store()
+        val dir = Files.createTempDirectory("job")
+        val id = store.create("e", "main", emptyList(), experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s"))))
+        store.plan(id, listOf(PlannedArm(Arm("a", emptyMap()), "sha")), listOf(Problem("s", "p")), Experiments.cases(1, 1, listOf(1, 2)),
+            List(2) { "true" to 1L })
+        dir.resolve("cases/0/profile-x").toFile().mkdirs()
+        dir.resolve("cases/0/p_1.out").toFile().writeText("sat\n")
+        dir.resolve("cases/0/p_1.json").toFile().writeText("{}")
+        dir.resolve("cases/0/profile-x/cli.out").toFile().writeText("not the solver's")
+
+        store.caseStdout(id, 0, CaseFile.stdout(dir, 0))
+        store.caseStdout(id, 1, CaseFile.stdout(dir, 1))
+
+        val expected = CaseFile("cases/0/p_1.out", 4, "d9dbf94b05b8314af9ca7f2034e92685c33447917605a7243b1099c693a12e5e")
+        assertEquals(listOf(listOf(expected), emptyList()), store.cases(id).map { it.stdout })
+        assertTrue("\"sha256\":\"${expected.sha256}\"" in
+            io.ktor.serialization.kotlinx.json.DefaultJson.encodeToString(CaseResult.serializer(), store.cases(id)[0]))
+        dir.toFile().deleteRecursively()
+    }
+
+    @Test
     fun `each case records whether the lab ran its CLI with debug on`() {
         val store = store()
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), grid = mapOf("debug" to listOf("true", "false")))

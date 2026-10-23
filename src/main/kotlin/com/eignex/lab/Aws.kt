@@ -448,6 +448,7 @@ class AwsHost(
             if [ ${'$'}e -eq 137 ] || [ ${'$'}e -eq 143 ]; then
               sudo -n dmesg -T 2>/dev/null | grep -iE 'killed process|out of memory' | tail -n 3 | sed 's/^/$KERNEL/'
             fi
+            (cd ${'$'}JOB_DIR && ${outputFiles(i)} | xargs -0 -r sha256sum --) 2>/dev/null | sed 's/^/$OUTPUT_SHA/'
             echo "$RECORD"
             cat ${'$'}JOB_DIR/cases/$i/*.json 2>/dev/null || true
         """.trimIndent()
@@ -484,21 +485,10 @@ class AwsHost(
         val kernel = text.substringBefore("$RECORD\n").lines().filter { it.startsWith(KERNEL) }.map { it.removePrefix(KERNEL) }
         Termination.remote(exit, System.currentTimeMillis() - started, command.timeoutSec, kernel)
             ?.let { Termination.record(Termination.file(dir, i), it) }
-        val keepsOutput = keepsOutput(result, record.isNotEmpty(), profileCli || measureCliResources || profileJob)
-        if (profileJob || keepsOutput || profile != null) {
-            val elapsedMs = runCatching { Json.parseToJsonElement(record).jsonObject["elapsedMs"]?.jsonPrimitive?.longOrNull }.getOrNull()
-            report(command, CasePhase.Phase.TRANSFERRING_OUTPUT, attempt, elapsedMs = elapsedMs)
-        }
-        // Its output, for a case whose record cannot explain what happened: two more SSH round trips each, a cost every
-        // case of a job would pay for nothing when it ran cleanly.
+        val elapsedMs = runCatching { Json.parseToJsonElement(record).jsonObject["elapsedMs"]?.jsonPrimitive?.longOrNull }.getOrNull()
+        report(command, CasePhase.Phase.TRANSFERRING_OUTPUT, attempt, elapsedMs = elapsedMs)
         if (profileJob) fetchOutDir(i, dir)
-        if (keepsOutput) for (suffix in listOf("out", "err")) {
-            runCatching { ssh.download("$jobDir/$i.$suffix", dir.resolve("$i.$suffix"), ARTIFACT_TRANSFER_SEC) }
-                .onFailure { error ->
-                    dir.resolve("$i.$suffix.transfer-error").toFile()
-                        .writeText("${error.message ?: error::class.simpleName}\n")
-                }
-        }
+        fetchOutput(i, dir, outputHashes(text.substringBefore("$RECORD\n")))
         if (profile != null) {
             val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
             CliMeasurements.writeManifest(files, i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions,
@@ -513,6 +503,32 @@ class AwsHost(
             }
         }
         return result
+    }
+
+    /**
+     * Every case's output, whatever its exit and whether its record explains it, as a local case keeps it: `<i>.out` and
+     * `<i>.err`, and the native solver stdout beside its record (`cases/<i>/<name>.out`) under its own name, complete.
+     * They come back in one tar, each checked against the SHA-256 the instance took of it ([hashes]); a file missing or
+     * changed on the way, or a transfer that fails, is written to `<i>.output.transfer-error`, and what did arrive stays.
+     */
+    private fun fetchOutput(i: Int, dir: Path, hashes: Map<String, String>) {
+        val archive = dir.resolve("$i.output.tar")
+        val failure = dir.resolve("$i.output.transfer-error")
+        runCatching {
+            Files.deleteIfExists(failure)
+            // A run of the case before this one may have left output this run did not write.
+            CaseFile.stdout(dir, i).forEach { Files.deleteIfExists(dir.resolve(it.path)) }
+            ssh.downloadStream("cd ${quote(jobDir)} && ${outputFiles(i)} | tar -c --null -T -", archive, ARTIFACT_TRANSFER_SEC)
+            val unpack = ProcessBuilder("tar", "-x", "-f", archive.toString(), "-C", dir.toString()).redirectErrorStream(true).start()
+            val log = unpack.inputStream.bufferedReader().readText()
+            check(unpack.waitFor() == 0) { "unpacking the case's output failed: ${log.take(ERROR_CHARS)}" }
+            val wrong = hashes.filter { (path, sha) ->
+                val file = dir.resolve(path)
+                !Files.isRegularFile(file) || CaseFile.sha256(file) != sha
+            }.keys
+            check(wrong.isEmpty()) { "missing or changed on the way: ${wrong.sorted().joinToString()}" }
+        }.onFailure { error -> runCatching { failure.toFile().writeText("${error.message ?: error::class.simpleName}\n") } }
+        Files.deleteIfExists(archive)
     }
 
     /**
@@ -556,10 +572,20 @@ class AwsHost(
                 "awk -F'\\t' -v cap=$cap '{ t += \$1; if (t <= cap) print \$2 > \".out-keep\"; else print > \"out/omitted.tsv\" }' && " +
                 "{ test -f out/omitted.tsv && echo out/omitted.tsv >> .out-keep; true; } && tar -c -T .out-keep"
 
-        /** Whether a case's stdout and stderr come back from its instance: when it failed, timed out or left no
-         *  record, and for every case of a profiling job. */
-        internal fun keepsOutput(result: Int, recorded: Boolean, profileCli: Boolean): Boolean =
-            profileCli || result != 0 || !recorded
+        /**
+         * The shell step, run in the job's directory on the instance, that lists case [i]'s output NUL-separated: its
+         * `<i>.out` and `<i>.err`, and the regular files directly in `cases/<i>/` other than its record, which is its
+         * native solver stdout. Its captures and a profile's `out/`, in directories, come back on their own.
+         */
+        internal fun outputFiles(i: Int): String =
+            "find $i.out $i.err cases/$i -maxdepth 1 -type f ! -name '*.json' -print0 2>/dev/null"
+
+        /** The SHA-256 the instance took of each output file ([OUTPUT_SHA] lines of [text]), by its path in the job's
+         *  directory. A name `sha256sum` had to escape is left out, unchecked. */
+        internal fun outputHashes(text: String): Map<String, String> =
+            text.lines().filter { it.startsWith(OUTPUT_SHA) }.mapNotNull { line ->
+                Regex("""([0-9a-f]{64}) [ *](.+)""").matchEntire(line.removePrefix(OUTPUT_SHA))?.destructured?.let { (sha, path) -> path to sha }
+            }.toMap()
 
         const val HOME = "/home/ubuntu"
         const val ENV = "export JAVA_HOME=/opt/jdk PATH=/opt/jdk/bin:/usr/local/bin:${'$'}PATH"
@@ -567,6 +593,8 @@ class AwsHost(
         private const val RECORD = "----klause-lab-record----"
         /** Marks the instance's kernel log lines about killed processes, sent back for a case that ended by signal. */
         private const val KERNEL = "kernel-log: "
+        /** Marks the instance's SHA-256 of each output file of a case, sent back before its record ([outputHashes]). */
+        private const val OUTPUT_SHA = "output-sha256: "
         private const val SELECT_TIMEOUT_SEC = 3600L
         private const val SSH_GRACE_SEC = 120L
         private const val KILL_TIMEOUT_SEC = 30L

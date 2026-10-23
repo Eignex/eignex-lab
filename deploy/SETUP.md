@@ -1358,9 +1358,16 @@ carries `labDebug`, the setting the lab ran it with: `true` for every case befor
 part of the spec's fingerprint, since it changes what the CLI runs and records, so runs with debug off start their own
 trend; `debug=true` is the default and leaves the fingerprint as it was without it.
 
-Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`; the raw solver output and the record go to
-`JOB_DIR/cases/<n>/`. On a cloud node the record comes back with every case, and stdout and stderr only for a case that
-failed, timed out or left no record, or for a profiling job: the rest would cost two SSH round trips a case. The worktrees are deleted when the job ends. A failing case does not stop the experiment: the
+Stdout and stderr go to `JOB_DIR/<n>.out` and `<n>.err`. The record and the native solver stdout go to
+`JOB_DIR/cases/<n>/`, as `<name>.json` and `<name>.out`. A cloud node's case brings all of it back, whatever its exit:
+the record, `<n>.out`, `<n>.err`, and the native stdout whole, under the same name and in the same place as a local
+case's. The record keeps its old name, `record.json`. The node hashes each file (SHA-256) before it is sent. The lab
+checks each hash once the file arrives, and writes `<n>.output.transfer-error` if a file is missing, changed or failed
+to transfer. The case still counts. This costs one more SSH round trip per case. The native stdout has no size cap.
+The 1 GiB cap applies only to a profile job's `$OUT`. Each case's native stdout files appear in `lab files`, `lab cat`
+and `lab fetch`. `lab stdout <id> <n>` prints them. Each case's JSON carries their size and hash as `stdout` (see
+Results). Cloud cases that ran before this change have no native stdout: only their record came back, and the node
+that ran them deleted the rest. The worktrees are deleted when the job ends. A failing case does not stop the experiment: the
 rest still run, the job ends DONE, and the failures are counted on it. FAILED means the experiment itself could not
 run, such as a failed checkout, build or selection, or a plan over the size limit.
 
@@ -1508,6 +1515,7 @@ deploy/lab csv 7 > 7.csv
 deploy/lab files 7            # every file of job 7: job.log, setup.log, cases/<n>/record.json, case output
 deploy/lab profile com.eignex.klause.bench.profile.Timing main "time X on the captured inputs"   # a profile job, local first; not for gates
 deploy/lab cat 7 setup.log    # one of them; a third argument prints only its last bytes
+deploy/lab stdout 7 0         # case 0's native solver stdout, whole (its sha256 is the case's stdout in lab cases --json)
 deploy/lab analyze 7          # rerun the lab's compilation analyser over job 7's retained captures; no solver runs
 deploy/lab recheck 7151       # check job 7151's solution claims again with the lab's source checkers; no solver runs
 deploy/lab analyze --archive <campaign>-<sha>.tar.gz --sha256 <sha>
@@ -1548,7 +1556,10 @@ included), then the newest 30 others (`lab ls <n>` for n).
 `lab cases <id> --json` exports every case for auditing as JSON Lines (`GET /experiments/<id>/cases.jsonl`), one
 case per line in index order, not a JSON array: `index`, `status`, `problem`, `arm`, `seed`, `repeat`, `instrumented`,
 `host` (where the case ran: `local`, or the cloud node's instance id; `cloud` for a node case that ran before the lab
-recorded which node) and the full `record`, its `finalWitness` included and the lab's verdict as `record.labCheck` (`policy`, `state`,
+recorded which node), `stdout` (the case's native solver stdout files, each `{path, bytes, sha256}` with its path in
+the job directory as `lab files` lists it. The lab hashes them as it holds them once the case ends, on the local
+machine or from a cloud node. The list is empty for a case that left none and for one that ended before the lab
+recorded them. The hash stays after the disk trim deletes the file) and the full `record`, its `finalWitness` included and the lab's verdict as `record.labCheck` (`policy`, `state`,
 `reason`, `checker`, `checkerVersion`, `checkerSha256`, `sourceSha256`, `witnessSha256`, `checkedAt`, `elapsedMs`,
 `diagnostic`; absent for a case the lab has not checked). The server streams it a page of cases at a time, so a job of thousands
 of cases with large witnesses needs no more memory than a few of them; read it with `jq -c 'select(...)'` or
