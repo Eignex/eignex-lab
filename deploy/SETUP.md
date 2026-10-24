@@ -1251,12 +1251,12 @@ fetches the dependencies into the new home once.
   directories.
 - Volumes' free and total space come from statfs and are read when `/disk` is asked for. What takes the disk is
   measured with `du` by the API, first 10 minutes after it starts (so restarts on updates do not each start a walk),
-  then every 30 minutes, at most one measurement at a time; each place on `/disk` says when it was measured:
+  then every 6 hours, at most one measurement at a time; each place on `/disk` says when it was measured:
   - job directories are measured one by one and each size kept: a directory is walked again only when it is new, its
     job is (or was, when last measured) queued or running, or its mtime changed (a trim writes its `trimmed` file
     there) or had changed within the hour before it was measured. The job files' total is the sum;
   - the corpus and every place on another volume than the home directory (the external drive) are walked at most
-    every 6 hours, since a walk over millions of files on the HDD takes long and competes with the lab's own I/O;
+    once a day, since a walk over millions of files on the HDD takes long and competes with the lab's own I/O;
   - every `du` runs in its own process group and is killed, group and all, after 10 minutes (the last number is
     kept), and on the JVM's exit. Each running `du` is recorded in `$LAB_DATA/du-pids/` with the lab process that
     started it; at startup the API kills the ones whose lab process is gone, and only those (matched by pid and start

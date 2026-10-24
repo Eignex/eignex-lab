@@ -1335,8 +1335,8 @@ internal fun diskPage(
         return@buildString
     }
     append("<h2>What uses it</h2><p class=\"muted\">${size(report.freeBytes)} free on the data directory's volume")
-    append(" · measured ${ago(report.at)}, every 30 minutes; the corpus and what is on another volume (the external drive) ")
-    append("every 6 hours, finished jobs once</p>")
+    append(" · measured ${ago(report.at)}, every 6 hours; the corpus and what is on another volume (the external drive) ")
+    append("once a day, finished jobs once</p>")
     append("<div class=\"scroll\"><table><tr><th>what</th><th>path</th><th class=\"num\">size</th><th>as of</th></tr>")
     for (place in report.places) {
         append("<tr><td>${esc(place.label)}</td><td><code>${esc(place.path)}</code></td>")

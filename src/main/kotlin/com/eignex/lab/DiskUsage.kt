@@ -231,8 +231,8 @@ class DiskUsage internal constructor(
 
     internal companion object {
         const val START_DELAY_MIN = 10L
-        const val INTERVAL_MIN = 30L
-        const val SLOW_INTERVAL_H = 6L
+        const val INTERVAL_MIN = 360L
+        const val SLOW_INTERVAL_H = 24L
         const val SETTLE_MS = 3_600_000L
         const val STATE_FILE = "disk-usage.json"
         private const val HOUR_MS = 3_600_000L
