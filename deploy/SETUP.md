@@ -1251,7 +1251,9 @@ fetches the dependencies into the new home once.
   directories.
 - Volumes' free and total space come from statfs and are read when `/disk` is asked for. What takes the disk is
   measured with `du` by the API, first 10 minutes after it starts (so restarts on updates do not each start a walk),
-  then every 6 hours, at most one measurement at a time; each place on `/disk` says when it was measured:
+  then every 6 hours, at most one measurement at a time. Its walks run one after another, 20 seconds apart, so the
+  disk load is spread out instead of a burst that could skew cases running then; each place on `/disk` says when it
+  was measured:
   - job directories are measured one by one and each size kept: a directory is walked again only when it is new, its
     job is (or was, when last measured) queued or running, or its mtime changed (a trim writes its `trimmed` file
     there) or had changed within the hour before it was measured. The job files' total is the sum;
