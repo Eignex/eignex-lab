@@ -53,7 +53,8 @@ internal data class DiskUsageState(val report: DiskReport? = null, val jobs: Map
  * the lab runs (the corpus, Gradle, the reference solvers' Docker VM and what Docker holds in it, other checkouts).
  * Measured with `du` ([DuRunner]: each walk under a timeout, never outliving the lab) on a background thread, first
  * [START_DELAY_MIN] minutes after startup, so restarts on updates do not each start a walk, then every [INTERVAL_MIN]
- * minutes. At most one measurement runs at a time.
+ * minutes. At most one measurement runs at a time, and its walks run one after another with [PAUSE_MS] between them,
+ * so the disk load is spread out rather than a burst that could skew the timings of cases running then.
  *
  * A walk is cheap only where few files are, so most is not walked every time:
  * - Job directories are measured one by one and each size kept; a directory is measured again only when it is new,
@@ -71,9 +72,12 @@ class DiskUsage internal constructor(
     private val du: DuRunner,
     private val settleMs: Long,
     private val clock: () -> Long,
+    /** Waits between two walks. */
+    private val pause: () -> Unit = {},
 ) {
-    constructor(config: Config, active: () -> Set<Long> = { emptySet() }) :
-        this(config, active, DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)), SETTLE_MS, System::currentTimeMillis)
+    constructor(config: Config, active: () -> Set<Long> = { emptySet() }, pauseMs: Long = PAUSE_MS) :
+        this(config, active, DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)), SETTLE_MS, System::currentTimeMillis,
+            { if (pauseMs > 0) Thread.sleep(pauseMs) })
 
     @Volatile var latest: DiskReport? = null
         private set
@@ -181,6 +185,7 @@ class DiskUsage internal constructor(
         for (chunk in due.entries.sortedBy { it.key }.chunked(JOB_CHUNK)) {
             // The mtime before the walk: a change during it is seen as one next time.
             val mtimes = chunk.associate { (id, dir) -> id to dir.lastModified() }
+            pause()
             val sizes = parse(du.run(chunk.map { it.value.path }) ?: continue)
             for ((id, dir) in chunk) {
                 val bytes = sizes[dir.path] ?: continue
@@ -201,6 +206,7 @@ class DiskUsage internal constructor(
         val last = placesAt[label]?.takeIf { it.path == path.toString() && it.bytes != null }
         val slow = path.startsWith(config.corpusDir) || config.corpusDir.startsWith(path) || store(path) != homeStore
         if (last != null && slow && now - (last.at ?: 0) < SLOW_INTERVAL_H * HOUR_MS) return last
+        pause()
         val bytes = du.run(listOf(path.toString()))?.let { parse(it).values.firstOrNull() }
         // A walk that timed out or failed keeps the last number, with its time.
         return (if (bytes == null && last != null) last else DiskPlace(label, path.toString(), bytes, now)).also { placesAt[label] = it }
@@ -234,10 +240,11 @@ class DiskUsage internal constructor(
         const val INTERVAL_MIN = 360L
         const val SLOW_INTERVAL_H = 24L
         const val SETTLE_MS = 3_600_000L
+        const val PAUSE_MS = 20_000L
         const val STATE_FILE = "disk-usage.json"
         private const val HOUR_MS = 3_600_000L
         private const val TOP_JOBS = 30
-        private const val JOB_CHUNK = 200
+        private const val JOB_CHUNK = 50
         private const val KIB = 1024L
         private val JSON = Json { ignoreUnknownKeys = true }
 
