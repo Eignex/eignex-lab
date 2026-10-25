@@ -16,6 +16,7 @@ fi
 unset JAVA_HOME LAB_DOCKER LAB_PATH
 set -a; . "$envfile"; set +a
 LAB_DATA="${LAB_DATA:-$HOME/eignex-lab-data}"
+export LAB_DATA
 [[ -n "$dry" ]] || mkdir -p "$LAB_DATA/logs"
 os="$(uname -s)"
 
@@ -64,7 +65,7 @@ if [[ -z "$docker_mode" ]]; then
   fi
 fi
 # The runner updates itself from this checkout between jobs (LAB_UPDATE_CHECK_SEC=0 turns that off).
-service_env=("LAB_SOURCE=$here")
+service_env=("LAB_SOURCE=$here" "LAB_DATA=$LAB_DATA")
 case "$docker_mode" in
 colima) service_env+=("DOCKER_HOST=unix://$HOME/.colima/default/docker.sock" "LAB_REQUIRE_DOCKER=true") ;;
 system) service_env+=("LAB_REQUIRE_DOCKER=true") ;;
@@ -93,7 +94,7 @@ if [[ -n "$dry" ]]; then bin="$here/build/install/eignex-lab/bin/eignex-lab"; el
 
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an
 # empty array is unbound under `set -u`, hence the guarded expansion.
-owned='JAVA_HOME|PATH|LAB_DOCKER|LAB_PATH|LAB_SOURCE'
+owned='JAVA_HOME|PATH|LAB_DOCKER|LAB_PATH|LAB_SOURCE|LAB_DATA'
 [[ "$docker_mode" == colima ]] && owned="$owned|DOCKER_HOST|LAB_REQUIRE_DOCKER"
 [[ "$docker_mode" == system ]] && owned="$owned|LAB_REQUIRE_DOCKER"
 settings() {
