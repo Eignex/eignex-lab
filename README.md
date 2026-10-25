@@ -10,13 +10,19 @@
 
 # Eignex Lab
 
-An experiment server for Eignex repositories. It runs [Klause](https://github.com/Eignex/klause) solver experiments,
-[Koblas](https://github.com/Eignex/koblas) benchmark captures, and committed profile entry points from any Eignex
-repository, with the queue, live output and results served over HTTP. Source repositories are restricted to the
-Eignex GitHub organization. Optional required/excluded node tags target CPU architecture, SIMD features, market
-type or custom labels; ordinary jobs need no selector. The client uses `--tags` for selection and
-`--measurement` for resource, JFR or compilation recording of experiment CLI runs.
+Run [Klause](https://github.com/Eignex/klause) solver experiments, [Koblas](https://github.com/Eignex/koblas) benchmark
+captures, and committed profile entry points from Eignex repositories.
+The lab builds trusted commits, queues local or cloud work, and serves live results and retained artifacts over HTTP.
+Source execution is restricted to the Eignex GitHub organization.
 
-Setup and usage: [deploy/SETUP.md](deploy/SETUP.md).
+Start with [installation](deploy/SETUP.md) or [submitting a run](docs/runs.md). Most jobs need no hardware selector
+or recording option.
 
-Existing installations: [upgrade from Klause Lab](deploy/SETUP.md#upgrading-from-klause-lab) before updating.
+| Guide | Contents |
+| --- | --- |
+| [Runs](docs/runs.md) | Experiments, profiles, Koblas, node selectors, and daily commands |
+| [Measurements](docs/measurements.md) | Resource/JFR modes, compilation reports, and retained evidence |
+| [Validation](docs/validation.md) | Witness checkers, reference solvers, and result interpretation |
+| [Cloud nodes](docs/cloud.md) | AWS setup, labels, architectures, and capacity |
+| [Operations](docs/operations.md) | Access, storage, Docker, and recovery |
+| [HTTP API](docs/api.md) | Integration endpoints |
