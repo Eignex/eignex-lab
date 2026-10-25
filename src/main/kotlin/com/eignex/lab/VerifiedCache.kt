@@ -18,7 +18,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             require(file.bytes <= maxBytes - total) { "expanded archive exceeds cache limit" }
             total + file.bytes
         }
-        require(declaredBytes > 0)
+        require(declaredBytes <= maxBytes)
         Files.createDirectories(root)
         val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
         val destination = root.resolve(key)

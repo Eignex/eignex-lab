@@ -315,3 +315,42 @@ Preparation acceptance is durable before planning. Lost allocations replace the 
 accepted preparation survives coordinator restarts without completing an experiment or running preparation twice.
 A source/build error remains a permanent failure, and cancellation fences preparation uploads and acceptance.
 Capacity collection accounts for queued preparation as build demand under the same provider-neutral vCPU limit.
+
+### Automatic preparation and admission
+
+Set `LAB_NOMAD_QUEUE_SETTINGS` to an absolute JSON settings file based on [queue.example.json](queue.example.json)
+in the API, runner and coordinator environments. Start the coordinator before setting `LAB_EXECUTION_BACKEND=nomad`
+in the API/runner environment. The default remains `legacy` until this explicit cutover. Analysis/recheck jobs still
+run through the local coordinator; ordinary submissions, scheduled experiments and confirmations use the selected backend.
+
+Replace the example's release, immutable launcher/image, node classes, datacenter, private API address and fingerprinted
+`cpu.usablecompute`/logical CPU values. Declare the native target's usable CPU/memory ceiling and cloud targets within
+the configured capacity pool's reserves. Each target's tags must describe its actual hardware. Worker images for the
+same OS/architecture must use the same digest so prepared binaries can be shared across providers. Raw HTTP requires
+an authenticated private network and `LAB_WORKER_PRIVATE_TRANSPORT=true`; the public operator listener is never a
+worker endpoint.
+
+The coordinator verifies repository ownership and trusted commit ancestry before exporting local Git bundles. Builds,
+selection, corpus retrieval and archives run in budgeted preparation allocations. Accepted preparation publishes arms,
+problems, cases, commands and its setup marker in one SQLite transaction. Reference filters and per-selection refill/caps are approved durably before the worker resolves files or packages
+its corpus. Identical selection retries keep that approval even if reference rows change, and attempts cannot change
+the approved problem identities. Interleaving, duration confirmation and source checking retain their domain behavior. Reference rows and scheduled
+confirmation effects are reconciled after accepted results, with a durable completion marker.
+
+Admission fills native capacity first and spills compatible work into provider-neutral Spot pools. On-demand requires
+an explicit node selector; profiles do not imply it. Nomad also permits exact problem inputs and whole-run profile
+limits on cloud workers. Reference solvers and schedules that remain local still respect those placement rules.
+`caseMemoryMiB` includes each solve's heap/native allowance and `sessionMemoryMiB` covers worker/helpers. An explicit
+solve heap must fit rather than being silently changed. Reservations are bounded by the cases a paired iteration can
+actually run, the job's per-host parallel cap, and each target's CPU/memory ceiling. A template `parallel` of one gives
+small reservations that pack between experiments; larger values let one paired iteration run its arms concurrently.
+The existing global provider vCPU limit bounds capacity growth, independent of provider and Spot pool count.
+
+Queue settings are snapshotted per admitted experiment, and source SHAs, inputs, release and templates remain pinned
+across coordinator restarts and configuration changes. Lost workers are replenished while others run, within the
+infrastructure retry limit. Pending solve sessions do not request capacity once all work is claimed. Source checks run
+on a bounded background queue so slow checker installation/execution does not stall capacity health or reconciliation.
+
+Keep the legacy executor and provider infrastructure until native and Spot production canaries, interruption recovery,
+source checks, schedule/confirmation behavior and a stable rollout have passed. Switching the default is not proof that
+old allocations have stopped; use the durable stop/reconciliation gates before deleting their setup.

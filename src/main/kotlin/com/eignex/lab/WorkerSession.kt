@@ -90,7 +90,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     val preparation = PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                         WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(supervisorSocket)), ::download,
                         if (CliMeasurements.localMacOs) "mac" else "linux", workerArch())
-                        .run(manifest, directory, ::runRemainingMs, ::remaining) { file -> upload(file, claim.owner) }
+                        .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
+                            retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
+                        }) { file -> upload(file, claim.owner) }
                     IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
                 } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing") }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
                 phase("uploading")

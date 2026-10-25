@@ -21,8 +21,8 @@ data class AttemptOwner(val session: String, val allocation: String, val iterati
 data class IterationClaim(val owner: AttemptOwner, val indices: List<Int>, val leaseUntil: Long, val parallel: Int = 1)
 
 @Serializable
-data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt: Long, val finishedAt: Long, val record: String? = null) {
-    init { require(index >= 0 && finishedAt >= startedAt) }
+data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt: Long, val finishedAt: Long, val record: String? = null, val command: String? = null) {
+    init { require(index >= 0 && finishedAt >= startedAt); require(command == null || command.length <= 65536 && '\u0000' !in command) }
 }
 
 @Serializable
@@ -241,8 +241,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         val node = db.session(owner.session)!!.node!!
         for (case in result.cases) {
             case.record?.let { Json.parseToJsonElement(it) }
-            db.sqlUpdate("UPDATE commands SET status = ?, exit_code = ?, started_at = ?, finished_at = ?, phase = NULL, host = ? WHERE job_id = ? AND idx = ?",
-                if (case.exitCode == 0) "DONE" else "FAILED", case.exitCode, case.startedAt, case.finishedAt, node, a.jobId, case.index)
+            db.sqlUpdate("UPDATE commands SET status = ?, exit_code = ?, started_at = ?, finished_at = ?, phase = NULL, host = ?, cmd = COALESCE(?, cmd) WHERE job_id = ? AND idx = ?",
+                if (case.exitCode == 0) "DONE" else "FAILED", case.exitCode, case.startedAt, case.finishedAt, node, case.command, a.jobId, case.index)
             db.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", case.record?.let(store::storedRecord), a.jobId, case.index)
         }
         db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
@@ -316,11 +316,67 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("UPDATE jobs SET run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status = 'RUNNING' AND NOT EXISTS (SELECT 1 FROM execution_sessions WHERE job_id = ? AND desired != 'stop')", now(), job, job)
     }
     fun failIfActive(job: Long, error: String) = store.executionTransaction { db ->
-        db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, now(), job)
+        val at = now()
+        val changed = db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, at, at, job)
+        if (changed == 0) return@executionTransaction
+        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
+            .forEach { db.invalidate(it, "failed", at) }
+        db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? AND desired != 'stop'", job, map = ::sessionRow).forEach { session ->
+            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id)
+            db.stopIntent(session)
+        }
+        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
+        db.event(job, null, "failed:${error.take(1024)}", at)
     }
     fun finishIfComplete(job: Long): Boolean = store.executionTransaction { db ->
         db.sqlUpdate("UPDATE jobs SET status = 'DONE', finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0 AND EXISTS (SELECT 1 FROM commands WHERE job_id = ?) AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.job_id = ? AND (c.status NOT IN ('DONE', 'FAILED') OR NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx)))", now(), now(), job, job, job) == 1
     }
+    fun preparationSelection(owner: AttemptOwner, requestHash: String? = null): List<List<Problem>>? = store.executionTransaction { db ->
+        val attempt = db.attempt(owner, now())
+        require(attempt.iteration == "preparation" && attempt.state == "preparing")
+        db.sqlRows("SELECT request_hash, selected FROM execution_selections WHERE job_id = ? AND generation = ?", attempt.jobId, owner.generation) {
+            if (requestHash != null && it.getString(1) != requestHash) throw ExecutionFenced("selection request changed")
+            Json.decodeFromString<List<List<Problem>>>(it.getString(2))
+        }.singleOrNull()
+    }
+    fun approvePreparationSelection(owner: AttemptOwner, requestHash: String, selected: List<List<Problem>>): List<List<Problem>> = store.executionTransaction { db ->
+        val attempt = db.attempt(owner, now())
+        require(attempt.iteration == "preparation" && attempt.state == "preparing")
+        val prior = db.sqlRows("SELECT request_hash, selected FROM execution_selections WHERE job_id = ? AND generation = ?", attempt.jobId, owner.generation) {
+            if (it.getString(1) != requestHash) throw ExecutionFenced("selection request changed")
+            Json.decodeFromString<List<List<Problem>>>(it.getString(2))
+        }.singleOrNull()
+        if (prior != null) return@executionTransaction prior
+        db.sqlUpdate("INSERT INTO execution_selections (job_id, generation, request_hash, selected) VALUES (?, ?, ?, ?)", attempt.jobId, owner.generation, requestHash, Json.encodeToString(selected))
+        db.event(attempt.jobId, owner.session, "selection-approved:${selected.sumOf { it.size }}", now())
+        selected
+    }
+    fun acceptedPreparationSelection(owner: AttemptOwner): List<List<Problem>> = store.executionTransaction { db ->
+        val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown preparation attempt")
+        db.sqlRows("SELECT selected FROM execution_selections WHERE job_id = ? AND generation = ?", attempt.jobId, owner.generation) {
+            Json.decodeFromString<List<List<Problem>>>(it.getString(1))
+        }.singleOrNull() ?: throw ExecutionFenced("preparation selection was not approved")
+    }
+
+    fun nativeReservation(): Pair<Long, Long> = store.executionTransaction { db ->
+        db.sqlRows("""SELECT COALESCE(SUM(json_extract(s.budget, '$.cpuMillis')),0), COALESCE(SUM(json_extract(s.budget, '$.memoryMiB')),0)
+            FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
+            WHERE s.desired != 'stop' AND json_extract(o.payload, '$.Meta.lab_cpu_enforcement') = 'advisory-native'""".trimIndent()) { it.getLong(1) to it.getLong(2) }.single()
+    }
+
+    fun queueRecipe(job: Long, proposed: NomadQueueSettings): NomadQueueSettings = store.executionTransaction { db ->
+        val prior = db.sqlRows("SELECT settings FROM execution_queue_recipes WHERE job_id = ?", job) { it.getString(1) }.singleOrNull()
+        if (prior != null) return@executionTransaction Json.decodeFromString(prior)
+        require(store.job(job)?.backend == ExecutionBackendKind.NOMAD)
+        db.sqlUpdate("INSERT INTO execution_queue_recipes (job_id, settings) VALUES (?, ?)", job, Json.encodeToString(proposed))
+        proposed
+    }
+
+    fun pendingDomainCompletion(): List<Long> = store.executionTransaction { db ->
+        db.sqlRows("SELECT j.id FROM jobs j WHERE j.backend = 'nomad' AND j.status = 'DONE' AND NOT EXISTS (SELECT 1 FROM execution_events e WHERE e.job_id = j.id AND e.detail = 'domain-completed') ORDER BY j.id LIMIT 100") { it.getLong(1) }
+    }
+    fun domainCompleted(job: Long) = store.executionTransaction { db -> db.event(job, null, "domain-completed", now()) }
+
     fun checksComplete(job: Long): Set<Int> = store.executionTransaction { db -> db.sqlRows("SELECT idx FROM execution_checks WHERE job_id = ?", job) { it.getInt(1) }.toSet() }
 
     /** Rollback needs an external proof of stopped allocations; never expose as a backend toggle. */
@@ -421,6 +477,8 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_session_iteration ON iteration_attempts (session_id) WHERE state IN $ACTIVE_ATTEMPTS")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_outbox (id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, session_id TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0)")
+                s.execute("CREATE TABLE IF NOT EXISTS execution_selections (job_id INTEGER NOT NULL, generation INTEGER NOT NULL, request_hash TEXT NOT NULL, selected TEXT NOT NULL, PRIMARY KEY (job_id, generation))")
+                s.execute("CREATE TABLE IF NOT EXISTS execution_queue_recipes (job_id INTEGER PRIMARY KEY, settings TEXT NOT NULL)")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, session_id TEXT, detail TEXT NOT NULL, at INTEGER NOT NULL)")
                 val columns = s.executeQuery("PRAGMA table_info(execution_sessions)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 if ("manifest" !in columns) s.execute("ALTER TABLE execution_sessions ADD COLUMN manifest TEXT")

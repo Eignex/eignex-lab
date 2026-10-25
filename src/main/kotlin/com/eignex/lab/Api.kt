@@ -278,7 +278,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             }
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, Repositories.source(config, spec.repository), trust(spec.repository))
-            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
+            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec, backend = config.executionBackend)
             val notes = (if (spec.isProfile) {
                 listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
                     Experiments.profileCaps(spec).map { "capped: $it" }
@@ -650,6 +650,10 @@ private fun worktrees(config: Config, id: Long): List<File> =
 private fun requireHost(spec: ExperimentSpec, config: Config) {
     require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be local, cloud or auto (or lab or aws, their older names)" }
     if (spec.host == Experiments.LAB_HOST) return
+    if (config.executionBackend == ExecutionBackendKind.NOMAD) {
+        require(Placement.cloudCoreLimit(spec, config) >= Experiments.arms(spec).maxOf { it.cores }) { "no configured Nomad cloud worker fits its cases" }
+        return
+    }
     val aws = requireNotNull(config.aws) {
         "the lab has no cloud settings: run deploy/aws-setup.sh"
     }
@@ -712,7 +716,7 @@ private fun requireDescription(spec: ExperimentSpec) = require(spec.description.
 
 private fun nodeCoreLimit(spec: ExperimentSpec, config: Config): Int =
     if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) config.cores
-    else Placement.cloudSizes(spec, config).maxOfOrNull { it.cores } ?: 0
+    else Placement.cloudCoreLimit(spec, config)
 
 private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     requireDescription(experiment)
@@ -720,7 +724,7 @@ private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     require(Experiments.storedHost(experiment.host) in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
         "host must be local, cloud or auto (or lab or aws, their older names)"
     }
-    require(NodeTags.matches(experiment.nodeTags, config.localNodeTags) || Placement.cloudOptIn(experiment) && Placement.cloudSizes(experiment, config).any { it.cores >= Experiments.arms(experiment).maxOf { arm -> arm.cores } }) {
+    require(NodeTags.matches(experiment.nodeTags, config.localNodeTags) || Placement.cloudOptIn(experiment) && Placement.cloudCoreLimit(experiment, config) >= Experiments.arms(experiment).maxOf { arm -> arm.cores }) {
         "the schedule's node tags match no allowed host; opt in to cloud execution if a matching cloud type is configured"
     }
     val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
