@@ -50,6 +50,22 @@ class CapacityCollectorTest {
         assertFailsWith<IllegalStateException> { c.snapshot() }
         assertFailsWith<IllegalStateException> { c.collect() }
     }
+    @Test fun `cloud grants sign the exact portable payload and cannot outlive a fresh sample`() {
+        sample(); val c = collector(); c.collect()
+        val grant = c.grant(pool.id)
+        val raw = java.util.Base64.getUrlDecoder().decode(grant.payload)
+        val payload = Json.parseToJsonElement(raw.toString(Charsets.UTF_8)).jsonObject
+        assertEquals(at, payload.getValue("issuedAt").jsonPrimitive.long)
+        assertEquals(pool.maxNodes, payload.getValue("maxNodes").jsonPrimitive.int)
+        assertEquals(0, payload.getValue("desired").jsonPrimitive.int)
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(token.toByteArray(), "HmacSHA256"))
+        mac.update("eignex-capacity-v1\n".toByteArray())
+        assertEquals(mac.doFinal(raw).joinToString("") { "%02x".format(it.toInt() and 255) }, grant.signature)
+        assertFailsWith<IllegalArgumentException> { c.grant("unknown") }
+        nanos += 31_000_000_000
+        assertFailsWith<IllegalStateException> { c.grant(pool.id) }
+    }
     @Test fun `booting capacity is preserved and unknown allocations consume a conservative node budget`() {
         sample(listOf(CapacityInstance("vm", pool.id)))
         val c = collector(); c.collect()
@@ -80,7 +96,10 @@ class CapacityCollectorTest {
         assertEquals(HttpStatusCode.OK, client.get("/capacity/api/v1/query") { bearerAuth(token); parameter("query", "lab_capacity_desired_nodes{pool=\"general\"}") }.status)
         assertEquals(HttpStatusCode.BadRequest, client.get("/capacity/api/v1/query") { bearerAuth(token); parameter("query", "arbitrary_promql") }.status)
         assertEquals(HttpStatusCode.NotFound, client.post("/capacity/leases") { bearerAuth(token) }.status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/capacity/grant/general").status)
+        assertEquals(HttpStatusCode.OK, client.get("/capacity/grant/general") { bearerAuth(token) }.status)
         nanos += 31_000_000_000
+        assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/capacity/grant/general") { bearerAuth(token) }.status)
         assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/capacity/metrics") { bearerAuth(token) }.status)
     }
 }

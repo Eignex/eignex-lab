@@ -15,7 +15,7 @@ signed allocation identities, resumable/checksummed HTTP artifacts and durable r
 Linux integration test exercises coordinator restart and allocation loss. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
 an independent same-user process service and a provider-neutral OCI worker build. A provider-neutral capacity collector and shared CPU/memory packing policy now expose fresh demand, booting-worker
 accounting, finite vCPU limits, purchasing restrictions, expiring manual requests and allocation reports. Provider-side
-Spot infrastructure and live cloud acceptance follow in the stack. Native service rendering/install,
+Spot infrastructure, signed fresh capacity grants, pinned Autoscaler policy rendering, Linux bootstrap/interruption handling and independent AWS expiry are implemented in [the opt-in infrastructure modules](infra/README.md). Live cloud acceptance remains required. Native service rendering/install,
 shared legacy/Nomad ownership, priority/update draining and release retention are implemented behind explicit configuration. Native fixture execution and
 cleanup are exercised on macOS CI; real Mac solver/JFR canaries and cloud gates remain required. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
 replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.
