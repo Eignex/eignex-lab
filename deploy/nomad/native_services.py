@@ -46,6 +46,8 @@ def render(settings):
     client_path = absolute(settings["clientConfig"])
     server = json.loads(server_path.read_text()); client = json.loads(client_path.read_text())
     for value in (server, client):
+        if value.get("bind_addr") in ("127.0.0.1", "::1") and not value.get("advertise", {}).get("http"):
+            raise ValueError("a loopback agent requires an explicit HTTP advertise address")
         if value.get("dev_mode") or not value.get("acl", {}).get("enabled"):
             raise ValueError("Nomad must use persistent non-dev state and ACLs")
         tls = value.get("tls", {})

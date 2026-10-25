@@ -58,6 +58,18 @@ class NativeServicesTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render(settings)
 
+    def test_loopback_agent_requires_explicit_http_advertise(self):
+        with tempfile.TemporaryDirectory() as path:
+            settings = self.settings(Path(path))
+            client = Path(settings["clientConfig"])
+            value = json.loads(client.read_text()); value["bind_addr"] = "127.0.0.1"
+            client.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "advertise"):
+                render(settings)
+            value["advertise"] = {"http": "127.0.0.1:4649"}
+            client.write_text(json.dumps(value))
+            render(settings)
+
 
 if __name__ == "__main__":
     unittest.main()

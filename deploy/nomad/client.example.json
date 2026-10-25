@@ -4,6 +4,7 @@
   "datacenter": "lab",
   "bind_addr": "127.0.0.1",
   "ports": {"http": 4649, "rpc": 4650, "serf": 4651},
+  "advertise": {"http": "127.0.0.1:4649", "rpc": "127.0.0.1:4650", "serf": "127.0.0.1:4651"},
   "server": {"enabled": false},
   "client": {
     "enabled": true, "servers": ["100.64.0.10:4647"], "node_class": "lab-mac",
