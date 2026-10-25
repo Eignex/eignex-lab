@@ -137,6 +137,68 @@ class PortableWorkerTest {
         assertFailsWith<IllegalArgumentException> { executor.run(manifest, listOf(0), root.resolve("partial"), "node", 1) { 10000 } }
     }
 
+    @Test fun `native profile deadline bounds preparation and the committed profile process`(): Unit = service { socket ->
+        val started = root.resolve("profile-started")
+        val script = "#!/usr/bin/env python3\nfrom pathlib import Path\nimport time\nPath('$started').write_text('started')\ntime.sleep(30)\n"
+        val build = """#!/usr/bin/env bash
+            set -eu
+            git init -q
+            git config user.email fixture@example.com
+            git config user.name fixture
+            git add profile.sh
+            git commit -qm fixture
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("profile.sh" to script, "gradlew" to build))
+        val source = input.copy(files = input.files.map { it.copy(executable = it.path == "profile.sh") }, build = WorkerBuild(listOf("fixture")))
+        val spec = ExperimentSpec("deadline", profile = ProfileMain(script = "profile.sh", runTimeoutSec = 3))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
+        val manifest = WorkManifest("session", "fixture", spec, arms, listOf(WorkCase(0, 0, Experiments.profileProblem(spec), null, 0, 720)), listOf(source), ResourceBudget(1000, 512))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused",
+            source.os, source.arch, WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
+        val before = System.nanoTime()
+        val result = executor.run(manifest, listOf(0), root.resolve("profile-attempt"), "node", 1) { 80000 }
+        assertTrue(Files.exists(started), "committed profile was launched")
+        assertTrue(result.runTimedOut)
+        assertEquals(124, result.cases.single().exitCode)
+        assertTrue(Files.readString(root.resolve("profile-attempt/0.termination")).contains("whole-run"))
+        assertTrue(System.nanoTime() - before < 6_000_000_000, "profile exceeded its whole-run budget")
+    }
+
+    @Test fun `profile preparation consumes the same deadline and cannot continue into execution`(): Unit = service { socket ->
+        val (input, bytes) = bundle(mapOf("gradlew" to "#!/usr/bin/env bash\nexec sleep 30\n"))
+        val source = VerifiedCache(root.resolve("source")).stage(input) { ByteArrayInputStream(bytes) }
+        val deadline = System.nanoTime() + 500_000_000
+        assertFailsWith<ProfileRunTimeout> {
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(input.copy(build = WorkerBuild(listOf("fixture"))),
+                source, ResourceBudget(1000, 512), System.getenv(), remainingRunMs = { (deadline - System.nanoTime()) / 1_000_000 }) { 80000 }
+        }
+        assertTrue(System.nanoTime() < deadline + 2_000_000_000)
+    }
+
+    @Test fun `solver timeout retains the existing thirty second capture flush allowance`(): Unit = service { socket ->
+        val flushed = root.resolve("capture-flushed")
+        val script = """
+            #!/usr/bin/env python3
+            import signal, time
+            from pathlib import Path
+            def flush(_signal, _frame):
+                time.sleep(12)
+                Path('$flushed').write_text('complete')
+                raise SystemExit(0)
+            signal.signal(signal.SIGTERM, flush)
+            time.sleep(60)
+        """.trimIndent()
+        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
+        val spec = ExperimentSpec("flush")
+        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
+        val manifest = WorkManifest("session", "fixture", spec, arms, listOf(WorkCase(0, 0, Problem("s", "p"), null, 0, 1)), listOf(bundle), ResourceBudget(1000, 512))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused", bundle.os, bundle.arch)
+        val result = executor.run(manifest, listOf(0), root.resolve("flush-attempt"), "node", 1) { 80000 }
+        assertEquals(124, result.cases.single().exitCode)
+        assertFalse(result.runTimedOut)
+        assertEquals("complete", Files.readString(flushed))
+    }
+
     @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { socket ->
         val pid = root.resolve("escaped.pid")
         val code = "import subprocess,time; p=subprocess.Popen(['sleep','60'],start_new_session=True); open('${pid}','w').write(str(p.pid)); time.sleep(60)"

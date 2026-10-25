@@ -17,7 +17,7 @@ class NomadBackend(
 ) : ExecutionBackend {
     override val kind = ExecutionBackendKind.NOMAD
     val logs = WorkerLogs(store, jobDirectory)
-    private val identities = NomadIdentity(nomad::jwks)
+    private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
 
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
     fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
@@ -27,6 +27,10 @@ class NomadBackend(
         if (template.platform == NomadPlatform.MAC) require(Path.of(template.command.first()).isAbsolute && "current" !in Path.of(template.command.first()).map { it.toString() }) { "native workers require a pinned release launcher" }
         val job = store.job(jobId) ?: error("missing experiment")
         require(job.backend == ExecutionBackendKind.NOMAD && job.experiment == manifest.experiment)
+        if (template.platform == NomadPlatform.LINUX) {
+            val reason = Placement.localOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
+            require(reason == null && Experiments.storedHost(manifest.experiment.host) != Experiments.LAB_HOST) { reason ?: "experiment is placed on the local host" }
+        } else require(Experiments.storedHost(manifest.experiment.host) != Experiments.AWS_HOST) { "experiment is cloud-only" }
         require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
         require(template.budget == manifest.budget)
         val planned = store.casePlan(jobId).associateBy { it.index }
@@ -46,7 +50,7 @@ class NomadBackend(
             "LAB_WORKER_EXPERIMENT" to jobId.toString(), "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token, "LAB_WORKER_API" to api,
             "LAB_WORKER_RELEASE" to manifest.release, "LAB_WORKER_IDENTITY_FILE" to "${'$'}{NOMAD_TASK_DIR}/lab-worker.jwt",
         )).render()
-        val payload = authenticatedJob(original, id, manifest.release)
+        val payload = authenticatedJob(JsonObject(original + ("Namespace" to JsonPrimitive(nomad.namespace))), id, manifest.release)
         return store.execution.createSession(id, jobId, "solve", manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest))
     }
 
@@ -95,6 +99,7 @@ class NomadBackend(
     override fun reconcile() {
         // Stops remain deliverable during holds; growth and acceptance do not.
         val logJobs = store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.NOMAD }.map { it.id }.toMutableSet()
+        store.execution.expireRunDeadlines()
         store.execution.expire()
         for (intent in store.execution.intents()) {
             val session = store.execution.session(intent.session) ?: continue

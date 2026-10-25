@@ -7,6 +7,7 @@ locals {
   trust_control = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { AWS = var.control_principal_arn }, Action = "sts:AssumeRole" }] })
   trust_lambda  = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }] })
   node_config = {
+    provider     = "aws"
     pool         = var.pool_id, nodeClass = var.node_class, datacenter = var.datacenter, servers = var.nomad_servers,
     workerImage  = var.worker_image, vcpus = var.vcpus, memoryMiB = var.memory_mib,
     architecture = var.architecture, minimumFeatures = var.minimum_features, lifetimeSeconds = 21600

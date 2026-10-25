@@ -493,7 +493,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/jobs/{id}/delete") {
             val id = call.parameters["id"]!!.toLong()
             if (!store.deleteJob(id)) {
-                call.respond(HttpStatusCode.Conflict, "no such job, or it has not ended")
+                call.respond(HttpStatusCode.Conflict, "no such job, it has not ended, or its Nomad stop is pending")
             } else {
                 (worktrees(config, id) + config.jobDir(id).toFile()).forEach { deleteTree(it.toPath()) }
                 call.respond(HttpStatusCode.OK, "deleted")
