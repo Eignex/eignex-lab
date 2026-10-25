@@ -60,10 +60,10 @@ class RepositoryRunsTest {
                     Json.parseToJsonElement(output).jsonObject
                 }
 
-            val capture = payload("koblas", "--require-tag", "arch:arm64", "--exclude-tag", "spot", "main", "capture dot", "--smoke", "--operation", "dot")
+            val capture = payload("koblas", "--tags", "arch:arm64,!spot", "main", "capture dot", "--smoke", "--operation", "dot")
             val ordinary = payload("koblas", "main", "capture dot", "--smoke")
             val generic = payload("profile", "--repo", "Eignex/skema", "--build", ":tools:installDist", "--classpath",
-                "tools/build/install/tools/lib/*", "com.eignex.skema.profile.MainKt", "main", "profile tool", "local", "600", "--mode=small")
+                "tools/build/install/tools/lib/*", "--timeout", "600", "com.eignex.skema.profile.MainKt", "main", "profile tool", "--", "--mode=small")
 
             assertEquals("Eignex/koblas", capture["repository"]?.jsonPrimitive?.content)
             assertEquals("arch:arm64", capture["nodeTags"]?.jsonObject?.get("require")?.jsonArray?.single()?.jsonPrimitive?.content)

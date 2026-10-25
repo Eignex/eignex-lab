@@ -392,7 +392,7 @@ class AwsHost(
     val ssh: Ssh,
     override val cores: Int,
     private val solveJavaOpts: String,
-    private val profileCli: Boolean = false,
+    private val measurement: Measurement = Measurement.NONE,
     /** A profile job: its output and its `$OUT` directory come back whatever its exit. */
     private val profileJob: Boolean = false,
     /** Why the instance is gone, when AWS reports it shut down or terminated; null while it runs. */
@@ -405,15 +405,13 @@ class AwsHost(
     private val jobDir: String = "$HOME/job",
     /** The cases at once here, whatever the job's `parallel` says; null follows the job's, up to the cores. */
     private val parallel: Int? = null,
-    /** The job's [ExperimentSpec.profileCompilation]: what its profiled CLI records of compilation, and brings back. */
-    private val compilation: String? = null,
-    /** Collect process resources without requesting a JVM recording. */
-    private val measureCliResources: Boolean = false,
     private val repository: String = Repositories.DEFAULT,
     override val nodeTags: Set<String> = emptySet(),
     override val cpu: CpuCapabilities? = null,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
+    private val recordsJfr get() = measurement.recordsJfr
+    private val compilation get() = measurement.compilationRecording
     override val id get() = instance
     override val corpus = "$HOME/corpus"
     override val yieldsToUpdates = false
@@ -472,9 +470,9 @@ class AwsHost(
 
     private fun runOnce(command: Command, dir: Path, attempt: Int): Int {
         val i = command.index
-        val measurementId = if (profileCli || measureCliResources) UUID.randomUUID().toString() else null
+        val measurementId = if (measurement != Measurement.NONE) UUID.randomUUID().toString() else null
         val profile = measurementId?.let { "$jobDir/cases/$i/profile-$it" }
-        val options = profile?.takeIf { profileCli }?.let { CliMeasurements.options(it, compilation) }.orEmpty()
+        val options = profile?.takeIf { recordsJfr }?.let { CliMeasurements.options(it, compilation) }.orEmpty()
         val runtimeOptions = "$solveJavaOpts -XX:ActiveProcessorCount=${command.cores}".trim()
         val javaOptions = "$runtimeOptions $options".trim()
         val script = """
@@ -533,8 +531,8 @@ class AwsHost(
         if (profile != null) {
             val files = dir.resolve("cases/$i/profile-$measurementId").createDirectories()
             CliMeasurements.writeManifest(files, i, attempt, requireNotNull(measurementId), instance, command.cmd, exit, javaOptions,
-                record, macOs = false, compilation = compilation, profileCli = profileCli)
-            for (name in CliMeasurements.artifacts(compilation, profileCli)) {
+                record, macOs = false, compilation = compilation, recordsJfr = recordsJfr)
+            for (name in CliMeasurements.artifacts(compilation, recordsJfr)) {
                 // HotSpot's compilation log runs to hundreds of MB, and compresses tenfold: it comes back gzipped.
                 if (name == CliMeasurements.COMPILATION_LOG) {
                     ssh.downloadStream("gzip -1 -c -- ${quote("$profile/$name")}", files.resolve(CliMeasurements.COMPILATION_LOG_GZ), LOG_TRANSFER_SEC)
@@ -1161,13 +1159,11 @@ class AwsWorker(
      *  says how many. */
     private fun host(node: Node, job: AwsJob) = AwsHost(
         node.instance, ssh(node) { store.cancelRequested(job.id) }, node.size.cores,
-        config.solveJavaOpts, job.spec.profileCli, job.spec.isProfile,
+        config.solveJavaOpts, job.spec.measurement, job.spec.isProfile,
         gone = { cli.state(node.instance).takeIf { (state, _) -> state in GONE }?.let { (state, reason) -> "$state, $reason".trimEnd(',', ' ') } },
         onPhase = { index, phase -> store.commandPhase(job.id, index, phase) },
         jobDir = job.remoteDir,
         parallel = if (job.spec.parallel == null) defaultParallel(node.size) else null,
-        compilation = job.spec.profileCompilation,
-        measureCliResources = job.spec.measureCliResources,
         repository = job.spec.repository,
         nodeTags = node.tags,
         cpu = node.cpu,
@@ -1478,8 +1474,8 @@ class AwsWorker(
             }
         }
 
-        internal fun finishWorktree(worktree: String, profileCli: Boolean): List<String> =
-            listOfNotNull(CliMeasurements.install(worktree).takeIf { profileCli }, Experiments.captureProvenance(worktree))
+        internal fun finishWorktree(worktree: String, measuresCli: Boolean): List<String> =
+            listOfNotNull(CliMeasurements.install(worktree).takeIf { measuresCli }, Experiments.captureProvenance(worktree))
 
         /** The pool's report for the pages: its [nodes] and [launching] count, the [pressure] against the [threshold]
          *  for the next node, the [gate]'s state with the settings it runs on and what holds a launch back, and what a

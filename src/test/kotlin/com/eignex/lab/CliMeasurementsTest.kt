@@ -150,13 +150,13 @@ class CliMeasurementsTest {
     fun `a resource measurement manifest binds its record without claiming a recording or allocation samples`() {
         val dir = Files.createTempDirectory("measurement")
 
-        CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", "{}", macOs = false, profileCli = false)
+        CliMeasurements.writeManifest(dir, 2, 1, "m", "lab", "cmd", 0, "-Xmx1g", "{}", macOs = false, recordsJfr = false)
 
         val manifest = Files.readString(dir.resolve("measurement.json"))
         assertTrue("\"instrumentation\":\"external-time\"" in manifest, manifest)
         assertTrue("\"allocation\":\"not collected\"" in manifest, manifest)
         assertTrue("\"instrumented\":false" in manifest, manifest)
-        assertEquals(listOf("resources.txt"), CliMeasurements.artifacts(null, profileCli = false))
+        assertEquals(listOf("resources.txt"), CliMeasurements.artifacts(null, recordsJfr = false))
         assertTrue("\"artifacts\":[\"resources.txt\",\"solve-record.json\"]" in manifest, manifest)
         assertEquals("{}", Files.readString(dir.resolve("solve-record.json")))
         assertFalse("cli.jfr" in manifest || "hotspot-compilation" in manifest, manifest)

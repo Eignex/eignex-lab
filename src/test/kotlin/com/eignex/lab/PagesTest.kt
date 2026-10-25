@@ -175,9 +175,9 @@ class PagesTest {
         }
     }
 
-    /** A finished profileCompilation A/B whose two cases have compilation reports from the committed HotSpot log sample. */
+    /** A finished compilation measurement A/B whose two cases have compilation reports from the committed HotSpot log sample. */
     private fun instrumentedJob(config: Config, store: Store): Long {
-        val spec = ExperimentSpec("compile-ab", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true, profileCompilation = "jfr+log")
+        val spec = ExperimentSpec("compile-ab", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.COMPILATION_LOG)
         val id = store.create("compile-ab", "main", emptyList(), experiment = spec)
         val arms = listOf(PlannedArm(Arm("baseline", emptyMap()), "abc"), PlannedArm(Arm("candidate", emptyMap()), "def"))
         store.plan(id, arms, listOf(Problem("s", "p")), Experiments.cases(1, 2, emptyList()), listOf("true" to 1L, "true" to 1L))
@@ -205,8 +205,8 @@ class PagesTest {
             val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
 
             assertContains(page, "<dt>instrumented</dt>")
-            assertContains(page, "profileCompilation jfr+log")
-            assertContains(page, "title=\"profileCompilation: times are no runtime measurement\">instrumented</span>")
+            assertContains(page, "compilation and HotSpot log")
+            assertContains(page, "title=\"compilation measurement: times are no runtime measurement\">instrumented</span>")
             assertContains(client.get("/jobs/$id/files").bodyAsText(), "cases/1/profile-1/${CompilationReports.REPORT}")
         }
     }

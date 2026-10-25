@@ -116,8 +116,9 @@ internal fun jobPage(
     job.experiment?.capped?.takeIf { it.isNotEmpty() }?.let { caps ->
         append("<dt>capped</dt><dd>${caps.joinToString("<br>") { esc(it) }}</dd>")
     }
-    job.experiment?.profileCompilation?.let { mode ->
-        append("<dt>instrumented</dt><dd><span class=\"PARTIAL\">profileCompilation ${esc(mode)}</span>: every compilation of each ")
+    job.experiment?.compilationRecording?.let { mode ->
+        val recording = if (mode == Experiments.COMPILATION_JFR_LOG) "compilation and HotSpot log" else "compilation recording"
+        append("<dt>instrumented</dt><dd><span class=\"PARTIAL\">$recording</span>: every compilation of each ")
         append("case's CLI is recorded, so its times are no runtime measurement</dd>")
     }
     append("<dt>parallel</dt><dd>${job.parallel}</dd><dt>priority</dt><dd>${job.priority}</dd>")
@@ -230,11 +231,11 @@ private fun experimentSection(
         append("to the <a href=\"/references\">reference results</a> as it lands, where a stronger one already there stays.</p>")
     }
     if (mixesInstrumented(comparison.arms)) {
-        append("<p class=\"error\">This mixes instrumented runs (profileCompilation, marked below) with uninstrumented ones: their ")
+        append("<p class=\"error\">This mixes instrumented runs (compilation measurement, marked below) with uninstrumented ones: their ")
         append("times, PAR-2, time ratios and time-split scores measure the instrumentation, not the solver. Compare runtime ")
         append("between uninstrumented runs only.</p>")
     } else if (comparison.arms.any { it.instrumented > 0 }) {
-        append("<p class=\"note\">Instrumented runs (profileCompilation): every compilation was recorded, so times here include ")
+        append("<p class=\"note\">Instrumented runs (compilation measurement): every compilation was recorded, so times here include ")
         append("that overhead and are no runtime measurement. Each case's compilation report is among its files.</p>")
     }
     if (mixesValidation(comparison.arms)) {
@@ -258,7 +259,7 @@ private fun experimentSection(
         val armStats = stats.arms[index]
         val commit = commitUrl(config.repoUrl, planned.sha)?.let { "<a href=\"$it\">${planned.sha.take(9)}</a>" } ?: planned.sha.take(9)
         val versus = paired[summary.label]?.let(::versus) ?: "<span class=\"muted\">baseline</span>"
-        val instrumented = if (summary.instrumented > 0) " <span class=\"PARTIAL\" title=\"profileCompilation: times are no runtime measurement\">instrumented</span>" else ""
+        val instrumented = if (summary.instrumented > 0) " <span class=\"PARTIAL\" title=\"compilation measurement: times are no runtime measurement\">instrumented</span>" else ""
         append("<tr><td><b>${esc(summary.label)}</b>$instrumented${witnessLabel(summary)}<br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
         append("<td><code>$commit</code></td><td>${provenance(summary)}</td>")
         append("<td class=\"num\">${summary.cases}/${total[summary.label]?.size ?: 0}</td>")

@@ -24,43 +24,50 @@ class SubmissionOptionsTest {
     private fun spec(text: String) = Json.decodeFromJsonElement(ExperimentSpec.serializer(), input(text))
 
     @Test
-    fun `measurement modes retain the corresponding legacy execution and identity`() {
+    fun `measurement modes are canonical stored settings with the requested recording behavior`() {
         val modes = mapOf(
-            "none" to "",
-            "resources" to "\"measureCliResources\":true,\"parallel\":1,",
-            "jfr" to "\"profileCli\":true,\"parallel\":1,",
-            "compilation" to "\"profileCli\":true,\"profileCompilation\":\"jfr\",\"parallel\":1,",
-            "compilation+log" to "\"profileCli\":true,\"profileCompilation\":\"jfr+log\",\"parallel\":1,",
+            "none" to Measurement.NONE,
+            "resources" to Measurement.RESOURCES,
+            "jfr" to Measurement.JFR,
+            "compilation" to Measurement.COMPILATION,
+            "compilation+log" to Measurement.COMPILATION_LOG,
         )
-        for ((mode, legacyFields) in modes) {
-            val modern = spec("""{"measurement":"$mode","name":"e","problems":{"suite":"s"}}""")
-            val legacy = Json.decodeFromString<ExperimentSpec>("""{$legacyFields"name":"e","problems":{"suite":"s"}}""")
-            assertEquals(legacy, modern, mode)
-            assertEquals(Experiments.fingerprint(legacy), Experiments.fingerprint(modern), mode)
-            assertFalse("measurement" in Json.encodeToString(ExperimentSpec.serializer(), modern))
-            Experiments.validate(modern, 4)
+        val fingerprints = mutableSetOf<String>()
+        for ((name, mode) in modes) {
+            val experiment = spec("""{"measurement":"$name","name":"e","problems":{"suite":"s"}}""")
+            assertEquals(mode, experiment.measurement)
+            assertEquals(mode != Measurement.NONE, experiment.measuresCli)
+            assertEquals(name in setOf("jfr", "compilation", "compilation+log"), experiment.recordsCliJfr)
+            assertEquals(when (name) { "compilation" -> "jfr"; "compilation+log" -> "jfr+log"; else -> null }, experiment.compilationRecording)
+            val stored = Json.encodeToString(ExperimentSpec.serializer(), experiment)
+            assertEquals(experiment, Json.decodeFromString<ExperimentSpec>(stored))
+            assertEquals(name != "none", "measurement" in Json.parseToJsonElement(stored).jsonObject)
+            assertTrue(fingerprints.add(Experiments.fingerprint(experiment)))
+            Experiments.validate(experiment, 4)
         }
         assertEquals(Json.parseToJsonElement("""{"name":"ordinary"}"""), input("""{"name":"ordinary"}"""))
     }
 
     @Test
-    fun `measurement rejects ambiguous flags while preserving explicit parallel validation`() {
-        for (body in listOf(
-            """{"measurement":"jfr","profileCli":false}""",
-            """{"measurement":"resources","profileCompilation":"jfr"}""",
-            """{"measurement":"none","measureCliResources":true}""",
-            """{"measurement":"unknown"}""",
-            """{"measurement":true}""",
-            """{"measurement":"jfr","profile":{"main":"com.eignex.Main"}}""",
-        )) assertFailsWith<IllegalArgumentException>(body) { input(body) }
-        val redundant = spec("""{"name":"e","problems":{"suite":"s"},"measurement":"jfr","profileCli":true}""")
-        assertTrue(redundant.profileCli)
+    fun `removed recording keys and unknown modes are rejected instead of interpreted as aliases`() {
+        for (fields in listOf(
+            "\"profileCli\":true",
+            "\"profileCli\":false,\"measurement\":\"jfr\"",
+            "\"measureCliResources\":true",
+            "\"profileCompilation\":\"jfr\"",
+            "\"measurement\":\"unknown\"",
+            "\"measurement\":true",
+        )) assertFailsWith<IllegalArgumentException>(fields) {
+            spec("""{"name":"e","problems":{"suite":"s"},$fields}""")
+        }
+        val profile = spec("""{"name":"e","measurement":"jfr","profile":{"main":"com.eignex.Main"}}""")
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile, 4) }
         val parallel = spec("""{"name":"e","problems":{"suite":"s"},"measurement":"resources","parallel":2}""")
         assertFailsWith<IllegalArgumentException> { Experiments.validate(parallel, 4) }
     }
 
     @Test
-    fun `measurement is normalized for immediate submissions and schedule edits`() = testApplication {
+    fun `measurement is stored directly for immediate submissions and schedule edits`() = testApplication {
         val config = Config(dataDir = Files.createTempDirectory("measurement api"), passwordHash = null)
         val store = Store(config.database)
         val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", problems = listOf(mapOf("suite" to "s"))), 3600)
@@ -70,14 +77,14 @@ class SubmissionOptionsTest {
             setBody("""{"name":"e","description":"record resources","problems":{"suite":"s"},"base":{"ref":"0123456789abcdef"},"measurement":"resources"}""")
         }
         assertEquals(HttpStatusCode.Created, created.status)
-        assertTrue(store.active().single().experiment!!.measureCliResources)
+        assertEquals(Measurement.RESOURCES, store.active().single().experiment!!.measurement)
         assertEquals(1, store.active().single().parallel)
         val updated = client.post("/schedules/$schedule") {
             contentType(ContentType.Application.Json)
             setBody("""{"experiment":{"name":"e","description":"record compilations","problems":{"suite":"s"},"measurement":"compilation+log"}}""")
         }
         assertEquals(HttpStatusCode.OK, updated.status)
-        assertEquals("jfr+log", store.schedules().single().experiment.profileCompilation)
+        assertEquals("jfr+log", store.schedules().single().experiment.compilationRecording)
         assertEquals(1, store.schedules().single().experiment.parallel)
         val rejected = client.post("/experiments") {
             contentType(ContentType.Application.Json)
@@ -88,7 +95,7 @@ class SubmissionOptionsTest {
     }
 
     @Test
-    fun `condensed client selectors and timeout preserve harness and main arguments and legacy commands`() {
+    fun `client accepts only consolidated options and passes harness and main arguments literally`() {
         val root = Files.createTempDirectory("submission client")
         try {
             root.resolve("curl").apply { writeText("#!/bin/sh\ncat\n"); toFile().setExecutable(true) }
@@ -114,8 +121,13 @@ class SubmissionOptionsTest {
             assertEquals(listOf("--smoke", "--operation", "dot"), capture["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
 
             val modern = payload("profile", "--timeout", "600", "com.eignex.Main", "main", "JFR run", "--", "--mode=small", "literal value")
-            val legacy = payload("profile", "com.eignex.Main", "main", "JFR run", "local", "600", "--mode=small", "literal value")
-            assertEquals(legacy, modern)
+            assertEquals("600000", modern["base"]!!.jsonObject["timeout"]!!.jsonPrimitive.content)
+            assertEquals(listOf("--mode=small", "literal value"), modern["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(2, command("profile", "com.eignex.Main", "main", "JFR run", "local", "600", "--mode=small").first)
+            for (flag in listOf("--require-tag", "--exclude-tag")) {
+                assertEquals(2, command("koblas", flag, "spot", "main", "bad").first)
+                assertEquals(2, command("profile", flag, "spot", "com.eignex.Main", "main", "bad").first)
+            }
             val defaults = payload("profile", "com.eignex.Main", "main", "JFR run", "--", "--mode=small")
             assertFalse("timeout" in defaults["base"]!!.jsonObject)
             assertEquals("--mode=small", defaults["profile"]!!.jsonObject["args"]!!.jsonArray.single().jsonPrimitive.content)
