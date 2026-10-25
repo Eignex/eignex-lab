@@ -21,7 +21,7 @@ import java.nio.file.Files
 @Serializable data class WorkerPhase(val owner: AttemptOwner, val phase: String)
 @Serializable data class WorkerBuildError(val owner: AttemptOwner, val detail: String)
 @Serializable data class WorkerProgress(val owner: AttemptOwner, val index: Int)
-@Serializable data class LeaseReply(val leaseMs: Long)
+@Serializable data class LeaseReply(val leaseMs: Long, val runRemainingMs: Long? = null)
 @Serializable data class UploadReply(val offset: Long)
 
 /** Separate listener from the password-authenticated operator API. No operator routes or provider control methods. */
@@ -54,7 +54,7 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
             }
             post("/renew") {
                 require(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.bodyText()); require(owner.session == s.id && owner.allocation == s.allocation)
-                store.execution.renew(owner); call.respond(LeaseReply(ExecutionStore.LEASE_MS))
+                store.execution.renew(owner); call.respond(LeaseReply(ExecutionStore.LEASE_MS, store.execution.remainingRunMs(s.id)))
             }
             post("/phase") {
                 require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerPhase>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
@@ -79,6 +79,11 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerBuildError>(call.bodyText())
                 require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.rejectBuild(body.owner, body.detail); call.respond(HttpStatusCode.NoContent)
+            }
+            post("/run-timeout") {
+                require(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.bodyText())
+                require(owner.session == s.id && owner.allocation == s.allocation)
+                store.execution.runTimedOut(owner); call.respond(HttpStatusCode.NoContent)
             }
             post("/commit") {
                 val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)

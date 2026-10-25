@@ -17,7 +17,8 @@ import java.util.concurrent.CancellationException
 class ProcessSupervisor(private val socket: Path) {
     @Serializable
     private data class Request(val argv: List<String>, val directory: String, val environment: Map<String, String>,
-                               val stdout: String, val stderr: String, val timeoutSec: Long, val graceMs: Long, val leaseMs: Long, val experiment: String?)
+                               val stdout: String, val stderr: String, val timeoutSec: Long, val graceMs: Long, val leaseMs: Long, val experiment: String?,
+                               val runRemainingMs: Long? = null)
 
 
     /** Kept for the whole native session, including artifact transfer and iteration boundaries. */
@@ -44,7 +45,8 @@ class ProcessSupervisor(private val socket: Path) {
     }
 
     fun run(argv: List<String>, directory: Path, environment: Map<String, String>, stdout: Path, stderr: Path,
-            timeoutSec: Long, graceMs: Long = 10_000, remainingLeaseMs: () -> Long): Int {
+            timeoutSec: Long, graceMs: Long = 10_000, runRemainingMs: Long? = null, remainingLeaseMs: () -> Long): Int {
+        if (runRemainingMs != null && runRemainingMs <= 0) throw ProfileRunTimeout()
         fun remaining() = remainingLeaseMs().coerceAtMost(80_000).also { if (it <= 0 || Thread.currentThread().isInterrupted) throw CancellationException("execution lease ended") }
         SocketChannel.open(StandardProtocolFamily.UNIX).use { channel ->
             channel.connect(UnixDomainSocketAddress.of(socket))
@@ -58,7 +60,7 @@ class ProcessSupervisor(private val socket: Path) {
                     if (channel.write(buffer) == 0) Thread.sleep(10)
                 }
             }
-            write(Json.encodeToString(Request(argv, directory.toString(), environment, stdout.toString(), stderr.toString(), timeoutSec, graceMs, remaining(), System.getenv("LAB_WORKER_EXPERIMENT"))) + "\n")
+            write(Json.encodeToString(Request(argv, directory.toString(), environment, stdout.toString(), stderr.toString(), timeoutSec, graceMs, remaining(), System.getenv("LAB_WORKER_EXPERIMENT"), runRemainingMs)) + "\n")
             var heartbeat = System.nanoTime()
             val response = StringBuilder(); val buffer = ByteBuffer.allocate(4096)
             while (true) {
@@ -71,6 +73,7 @@ class ProcessSupervisor(private val socket: Path) {
                     response.append(String(buffer.array(), 0, n)); require(response.length <= 4096)
                     if ('\n' in response) {
                         val json = Json.parseToJsonElement(response.toString().substringBefore('\n')).jsonObject
+                        if (json["runTimedOut"]?.jsonPrimitive?.content == "true") throw ProfileRunTimeout()
                         return json["exitCode"]?.jsonPrimitive?.int ?: error("process supervision failed")
                     }
                 }

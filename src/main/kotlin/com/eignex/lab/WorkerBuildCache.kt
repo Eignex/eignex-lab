@@ -18,7 +18,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     @Serializable private data class Entry(val identity: String, val files: List<InputFile>)
 
     fun prepare(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
-                remainingLeaseMs: () -> Long): Path {
+                remainingRunMs: () -> Long? = { null }, remainingLeaseMs: () -> Long): Path {
+        fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
+        checkRun()
         val build = requireNotNull(bundle.build)
         val identity = ExecutionStore.digest(listOf("build-cache-v1", Json.encodeToString(bundle), Json.encodeToString(budget),
             System.getProperty("java.vendor"), System.getProperty("java.version"), System.getProperty("os.name"), System.getProperty("os.arch")).joinToString("\n"))
@@ -27,6 +29,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         synchronized(fileLockFor(root.resolve("$identity.lock"))) {
         FileChannel.open(root.resolve("$identity.lock"), CREATE, WRITE).use { lock -> lock.lock().use {
             require(remainingLeaseMs() > 0) { "build lease expired" }
+            checkRun()
             if (valid(destination, identity)) return destination.resolve("tree")
             if (Files.exists(destination, NOFOLLOW_LINKS)) delete(destination)
             val staging = Files.createTempDirectory(root, ".build-")
@@ -51,7 +54,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     "LAB_SOURCE_COMMIT" to bundle.commit)
                 fun run(argv: List<String>, directory: Path) {
                     val exit = supervisor.run(argv, directory, env, log, errors, build.timeoutSec,
-                        graceMs = Experiments.STOP_GRACE_SEC * 1000, remainingLeaseMs = ::remaining)
+                        graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining)
                     if (exit != 0) {
                         fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
                             input.seek((input.length() - 8192).coerceAtLeast(0)); String(ByteArray((input.length() - input.filePointer).toInt()).also { input.readFully(it) })
@@ -70,7 +73,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         val target = tree.resolve(safeRelative(file.path)); Files.createDirectories(target.parent)
                         Files.copy(source.resolve(file.path), target, COPY_ATTRIBUTES, REPLACE_EXISTING)
                     }
-                } else copy(source, tree)
+                } else copy(source, tree, ::checkRun)
                 if (build.tasks.isNotEmpty()) {
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
@@ -80,6 +83,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
                 staging.resolve("gradle-home").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
                 val files = inventory(tree)
+                checkRun()
                 Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files)))
                 Files.move(staging, destination, ATOMIC_MOVE)
                 return destination.resolve("tree")
@@ -99,8 +103,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         val entry = Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json")))
         entry.identity == identity && inventory(path.resolve("tree")) == entry.files
     }.getOrDefault(false)
-    private fun copy(source: Path, destination: Path) {
+    private fun copy(source: Path, destination: Path, checkActive: () -> Unit) {
         Files.walk(source).use { paths -> paths.forEach { path ->
+            checkActive()
             val target = destination.resolve(source.relativize(path))
             if (Files.isDirectory(path, NOFOLLOW_LINKS)) Files.createDirectories(target) else {
                 require(Files.isRegularFile(path, NOFOLLOW_LINKS)); Files.copy(path, target, COPY_ATTRIBUTES)

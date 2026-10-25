@@ -22,6 +22,7 @@ class NomadBackendTest {
     private val pair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
     private fun b64(bytes: ByteArray) = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     private val control = object : NomadControl {
+        override var namespace = "default"
         val jobs = mutableMapOf<String, JsonObject>(); val allocations = mutableMapOf<String, NomadAllocation>()
         var submissions = 0; var failAfterSubmit = false
         override fun job(id: String) = jobs[id]
@@ -38,28 +39,92 @@ class NomadBackendTest {
     private lateinit var session: ExecutionSession
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
-    private fun setup(problems: Int = 2): Long {
-        val spec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1))
+    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX): Long {
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
         val plannedProblems = List(problems) { Problem("s", "p$it") }
-        val id = store.create("test", "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val id = store.create(name, "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
         store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("bin/bench", "c".repeat(64), 5)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "test")
         manifest = WorkManifest("session", "release", spec, arms, cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2))
-        session = backend().enqueue(id, manifest, NomadBatchJob("placeholder", NomadPlatform.LINUX, "linux", NomadCpuCapacity(4000, 4), manifest.budget, listOf("worker"), "registry/worker@sha256:" + "d".repeat(64)), "http://127.0.0.1:8091")
+        val command = if (platform == NomadPlatform.LINUX) listOf("worker") else listOf("/releases/fixture/bin/eignex-lab", "worker")
+        val image = if (platform == NomadPlatform.LINUX) "registry/worker@sha256:" + "d".repeat(64) else null
+        session = backend().enqueue(id, manifest, NomadBatchJob("placeholder", platform, "fixture", NomadCpuCapacity(4000, 4), manifest.budget, command, image), "http://127.0.0.1:8091")
         token = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
         control.allocations["allocation"] = NomadAllocation("allocation", session.nomadJobId, "node", "running", "run")
         return id
     }
-    private fun jwt(allocation: String = "allocation", expires: Long = now()/1000 + 60, singleAudience: Boolean = false): String {
+    private fun jwt(allocation: String = "allocation", expires: Long = now()/1000 + 60, singleAudience: Boolean = false, namespace: String = control.namespace): String {
         val header = b64("""{"alg":"RS256","kid":"test"}""".toByteArray())
-        val claims = buildJsonObject { put("exp", expires); if (singleAudience) put("aud", "eignex-lab-worker") else putJsonArray("aud") { add("eignex-lab-worker") }; put("nomad_namespace", "default"); put("nomad_job_id", session.nomadJobId); put("nomad_task", "worker"); put("nomad_allocation_id", allocation) }
+        val claims = buildJsonObject { put("exp", expires); if (singleAudience) put("aud", "eignex-lab-worker") else putJsonArray("aud") { add("eignex-lab-worker") }; put("nomad_namespace", namespace); put("nomad_job_id", session.nomadJobId); put("nomad_task", "worker"); put("nomad_allocation_id", allocation) }
         val payload = "$header.${b64(claims.toString().toByteArray())}"
         val signature = Signature.getInstance("SHA256withRSA").apply { initSign(pair.private); update(payload.toByteArray()) }.sign()
         return "$payload.${b64(signature)}"
     }
     private fun register() = backend().register(session.id, token, "allocation", jwt(), "release")
+
+    @Test fun `nondefault namespace scopes both submitted jobs and signed worker registration`() {
+        control.namespace = "benchmarks"; setup(); backend().reconcile()
+        assertEquals("benchmarks", control.jobs.getValue(session.nomadJobId).getValue("Namespace").jsonPrimitive.content)
+        assertFailsWith<IllegalArgumentException> { backend().register(session.id, token, "allocation", jwt(namespace = "default"), "release") }
+        assertEquals(manifest, register())
+    }
+
+    @Test fun `cancelled jobs retain stop intents until a restarted coordinator delivers them`() {
+        val id = setup(); backend().reconcile(); register()
+        store.requestCancel(id)
+        assertFalse(store.deleteJob(id))
+        assertTrue(control.jobs.containsKey(session.nomadJobId))
+        backend(Store(file)).reconcile()
+        assertFalse(control.jobs.containsKey(session.nomadJobId))
+        assertTrue(store.deleteJob(id))
+        assertTrue(store.execution.intents().isEmpty())
+    }
+
+    @Test fun `profile timeout fails permanently and projects accepted capture output after restart`() {
+        val id = setup(1, ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 30)), platform = NomadPlatform.MAC)
+        register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val bytes = "capture flushed during grace".toByteArray(); val hash = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, hash, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 124, now()-1, now()) }, mapOf("cases/0/profile.jfr" to hash), runTimedOut = true))
+        backend(Store(file)).reconcile()
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertEquals(String(bytes), Files.readString(root.resolve("jobs/$id/cases/0/profile.jfr")))
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
+    @Test fun `explicit retry renews the infrastructure allowance without deleting loss history`() {
+        val id = setup()
+        repeat(4) { index ->
+            val active = store.execution.sessions(id).single { it.desired == "run" }
+            control.allocations.clear()
+            control.allocations["failed-$index"] = NomadAllocation("failed-$index", active.nomadJobId, "node", "failed", "run")
+            backend().reconcile()
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertEquals(4, store.execution.failureCount(id))
+        assertTrue(store.retry(id))
+        assertEquals(0, Store(file).execution.failureCount(id))
+        backend(Store(file)).reconcile()
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
+        assertEquals(1, store.execution.sessions(id).count { it.desired == "run" })
+        assertEquals(4, store.execution.events(id).count { it.detail.startsWith("lost:infrastructure:") })
+    }
+
+    @Test fun `cloud admission refuses local placement exceptions and respects schedule cloud opt in`() {
+        val spec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), host = "auto")
+        for ((candidate, name) in listOf(spec.copy(host = "lab") to "test", spec to "test${Confirm.SUFFIX}", spec to "schedule@sha",
+            spec.copy(problemList = listOf(Problem("s", "p0"))) to "test",
+            spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "scip")) to "test",
+            spec.copy(profile = ProfileMain(main = "Main", runTimeoutSec = 1)) to "test")) {
+            assertFailsWith<IllegalArgumentException>(name) { setup(1, candidate, name) }
+        }
+        store.createSchedule("schedule", "main", spec, 3600)
+        setup(1, spec, "schedule@sha")
+    }
 
     @Test fun `ambiguous registration retries persisted identity and coordinator restart retains claims`() {
         val id = setup(); control.failAfterSubmit = true
