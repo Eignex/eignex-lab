@@ -238,7 +238,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
             // The lab places every job itself ([Placement]): a submitted host or machine count is read but not followed.
-            val body = analysisDefaults(call.receive<JsonObject>())
+            val body = analysisDefaults(experimentInput(call.receive<JsonObject>()))
             // Jobs eligible for the local machine are capped to it; cloud-only tag requests use compatible cloud capacity.
             val submitted = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList())
             val given = if (NodeTags.matches(submitted.nodeTags, config.localNodeTags))
@@ -544,7 +544,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respond(if (resumed) HttpStatusCode.OK else HttpStatusCode.Conflict, if (resumed) "resumed" else "no unfinished job")
         }
         post("/schedules") {
-            val spec = call.receive<ScheduleSpec>()
+            val spec = DefaultJson.decodeFromJsonElement(ScheduleSpec.serializer(), scheduleInput(call.receive<JsonObject>()))
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             validateScheduled(spec.experiment, config)
@@ -554,7 +554,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/schedules") { call.respond(store.schedules()) }
         post("/schedules/{id}") {
-            val spec = call.receive<ScheduleUpdate>()
+            val spec = DefaultJson.decodeFromJsonElement(ScheduleUpdate.serializer(), scheduleInput(call.receive<JsonObject>()))
             require(spec.intervalSec == null || spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             require(spec.nextCheckInSec == null || spec.nextCheckInSec >= 0) { "nextCheckInSec must not be negative" }
             spec.experiment?.let { validateScheduled(it, config) }
