@@ -42,3 +42,7 @@ Restart the runner, then adjust pool limits and `tags.<family/type/instance>` la
 `$LAB_DATA/aws/aws.properties`; changes are reread automatically. Local labels use `LAB_NODE_TAGS` in `lab.env`.
 Architecture/SIMD facts are probed, not overridden by labels. See [AwsConfig](../src/main/kotlin/com/eignex/lab/Aws.kt)
 for settings and defaults.
+
+A node runs several jobs at once, one case per two physical cores across all of them; each job stays within its own
+`parallel`. Profile and measurement jobs get a node to themselves. An on-demand node runs queued profiles first and,
+unless `onDemand=true` or started by hand, nothing else, retiring once idle.

@@ -24,6 +24,13 @@ interface ExecutionHost {
     /** The cases it runs at once for a job that asks for [requested]: that many, within [maxParallel]. */
     fun parallel(requested: Int): Int = requested.coerceIn(1, maxParallel)
 
+    /** Take room for a case of [cores] cores beside what other jobs run on this machine, or false when there is none
+     *  now; [release] gives it back when the case ends. Only a cloud node, which runs several jobs at once, has a limit
+     *  past the job's own ([NodeSlots]). */
+    fun acquire(cores: Int): Boolean = true
+
+    fun release(cores: Int) {}
+
     /** The corpus cache as the cases see it. */
     val corpus: String
 

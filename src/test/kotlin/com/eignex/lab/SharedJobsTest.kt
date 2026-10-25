@@ -287,4 +287,43 @@ class SharedJobsTest {
         assertTrue(doing.startsWith("on local + 2 nodes: the local machine: "), doing)
         assertTrue(doing.endsWith("; 2 cloud nodes: c7i.2xlarge spot running job $id, c7i.2xlarge spot joining job $id"), doing)
     }
+
+    /** One node's part of a job, sharing the node's [slots] with its other jobs, as [AwsHost] does; it records how many
+     *  cases run at once on the node and of each job. */
+    private class SlotHost(id: String, val jobId: Long, val slots: NodeSlots, val node: java.util.concurrent.atomic.AtomicInteger,
+                           val peak: java.util.concurrent.atomic.AtomicInteger, caseMs: Long) : FakeHost(id, caseMs) {
+        val mine = java.util.concurrent.atomic.AtomicInteger()
+        val myPeak = java.util.concurrent.atomic.AtomicInteger()
+        override fun acquire(cores: Int) = slots.acquire(jobId, NodePool.caseSlots(cores, slots.capacity))
+        override fun release(cores: Int) = slots.release(NodePool.caseSlots(cores, slots.capacity))
+        override fun run(command: Command, dir: Path): Int {
+            peak.accumulateAndGet(node.incrementAndGet(), ::maxOf)
+            myPeak.accumulateAndGet(mine.incrementAndGet(), ::maxOf)
+            try {
+                return super.run(command, dir)
+            } finally {
+                mine.decrementAndGet()
+                node.decrementAndGet()
+            }
+        }
+    }
+
+    @Test
+    fun `a node runs several jobs at once within its slots, each within its own parallel`() {
+        val slots = NodeSlots(3)
+        val running = java.util.concurrent.atomic.AtomicInteger()
+        val peak = java.util.concurrent.atomic.AtomicInteger()
+        val narrow = sharedJob(problems = 1, parallel = 1)
+        val wide = sharedJob(problems = 3, parallel = 4)
+        listOf(narrow, wide).forEach { store.claimForNode(it)!! }
+        val hosts = listOf(narrow, wide).map { SlotHost("i-1", it, slots, running, peak, caseMs = 250) }
+
+        hosts.map { part(it.jobId, it) }.forEach { it.join() }
+
+        assertEquals(listOf(Status.DONE, Status.DONE), listOf(narrow, wide).map { store.job(it)!!.status })
+        assertEquals(3, peak.get(), "the node's three slots were all used, and never more")
+        assertEquals(listOf(1, 3), hosts.map { it.myPeak.get() })
+        assertEquals(0, slots.busy)
+        assertTrue(unsplit(narrow) && unsplit(wide))
+    }
 }

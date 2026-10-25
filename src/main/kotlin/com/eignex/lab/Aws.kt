@@ -13,6 +13,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -401,10 +402,15 @@ class AwsHost(
     private val onPhase: (Int, CasePhase) -> Unit = { _, _ -> },
     /** How often and how long a case whose SSH connection dropped is run again. */
     private val retry: Backoff = SSH_RETRY,
-    /** Where the job's case files live on the instance: a node runs one job after another, each in its own. */
+    /** Where the job's case files live on the instance: a node runs several jobs at once, each in its own. */
     private val jobDir: String = "$HOME/job",
     /** The cases at once here, whatever the job's `parallel` says; null follows the job's, up to the cores. */
     private val parallel: Int? = null,
+    /** The node's case slots, which this job's cases share with every other job on the node; null: no limit past
+     *  the job's own. */
+    private val slots: NodeSlots? = null,
+    /** The job these cases are of, as it waits for [slots]. */
+    private val jobId: Long = 0,
     private val repository: String = Repositories.DEFAULT,
     override val nodeTags: Set<String> = emptySet(),
     override val cpu: CpuCapabilities? = null,
@@ -419,6 +425,12 @@ class AwsHost(
     override val maxParallel get() = cores
 
     override fun parallel(requested: Int): Int = parallel ?: super.parallel(requested)
+
+    override fun acquire(cores: Int): Boolean = slots?.let { it.acquire(jobId, NodePool.caseSlots(cores, it.capacity)) } ?: true
+
+    override fun release(cores: Int) {
+        slots?.let { it.release(NodePool.caseSlots(cores, it.capacity)) }
+    }
 
     override fun worktree(sha: String): String {
         Repositories.requireAllowed(repository)
@@ -663,6 +675,9 @@ internal fun claimNodeJob(config: Config, store: Store, jobId: Long): Job? {
  * ([NodePool], [LaunchGate]), so none runs while nothing waits for AWS. A node, once booted, takes work until there is
  * none for it: it first joins a shared job already running that still has iterations no host has claimed, wherever it
  * runs, the local machine included, building that job's commits, and otherwise claims the next queued job it may run.
+ * It runs several jobs at once, their cases sharing its slots, one case per two physical cores ([NodeSlots]), each job
+ * within its own `parallel`; a profile or measuring job keeps it to itself.
+
  * Every host on a job pulls its iterations from the store one at a time ([Store.claimIteration]), every arm of an
  * iteration on the host that claimed it, so each comparison is made on one machine; the hosts on a job are its crew
  * ([Crews]), and the last to leave ends it ([Runner.leave]).
@@ -689,7 +704,7 @@ class AwsWorker(
     private val pollMs: Long = POLL_MS,
     private val sweepMs: Long = SWEEP_MS,
     private val heartbeatMs: Long = HEARTBEAT_MS,
-    /** How often an idle node looks for work; shorter only in tests. */
+    /** How often a node looks for work while it has room; shorter only in tests. */
     private val nodePollMs: Long = NODE_POLL_MS,
 ) {
     /** The settings, read again from `aws.properties` on every poll: a raised quota or a new threshold applies to the
@@ -806,7 +821,7 @@ class AwsWorker(
                 return@mapNotNull null
             }
             Demand(job.id, Estimates.pressureCoreHours(job, history::lookup, config.cores), cores, spec.isProfile, job.priority,
-                Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority), nodeTags = spec.nodeTags)
+                Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority), nodeTags = spec.nodeTags, measures = spec.measuresCli)
         }
         val failing = runner.crews.failing()
         val running = store.helpable().mapNotNull { (job, unclaimed) ->
@@ -814,7 +829,7 @@ class AwsWorker(
             if (job.id in failing) return@mapNotNull null
             Demand(job.id, unclaimed * Estimates.caseCoreHours(job, history::lookup), Experiments.arms(spec).maxOf { it.cores },
                 priority = job.priority, belowFloor = Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority),
-                hosts = runner.crews.hosts(job.id).size, nodeTags = spec.nodeTags)
+                hosts = runner.crews.hosts(job.id).size, nodeTags = spec.nodeTags, measures = spec.measuresCli)
         }
         return queued to running
     }
@@ -827,16 +842,27 @@ class AwsWorker(
     /** Launch a node when the pressure calls for one ([LaunchGate]), sized to what waits ([NodePool.size]). */
     private val launchingShapes = ConcurrentHashMap<String, NodeShape>()
 
+    /** The nodes up or launching that take ordinary work, at the last poll: the count the next node's threshold
+     *  follows ([NodePool.nextThreshold]). */
+    @Volatile
+    private var working = 0
+
     private fun scale() {
         val (queued, running) = demands().let { (q, r) -> q.filter { !it.belowFloor } to r.filter { !it.belowFloor } }
         val all = queued + running
         pressure = NodePool.pressure(all)
         val count = nodes.size + launching.get()
+        // The nodes that take ordinary work, up or launching: an on-demand node kept for profile jobs neither covers
+        // the pressure nor counts toward the next node's threshold.
+        val ordinary = nodes.values.map { it.shape }.filter { it.ordinary } + launchingShapes.values.filter { it.ordinary }
+        val covered = ordinary.sumOf { it.cores }
+        val counted = ordinary.size
+        working = counted
         val provisioned = nodes.values.flatMap { listOf(it.shape, NodeShape(it.size.cores, it.onDemand, it.size.tags(it.onDemand))) } + launchingShapes.values
         val dedicated = NodePool.dedicated(all, config.localNodeTags, provisioned)
-        val plan = NodePool.launchPlan(aws.sizes, dedicated?.let(::listOf) ?: all, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
+        val plan = NodePool.launchPlan(aws.sizes, dedicated?.let(::listOf) ?: all, covered, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
         val size = plan?.size
-        queueSize = size ?: NodePool.size(aws.sizes, 1, 0.0, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus).takeIf { all.isEmpty() }
+        queueSize = size ?: NodePool.size(aws.sizes, 1, 0.0, covered, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus).takeIf { all.isEmpty() }
         val noRoom = when {
             count >= aws.maxInstances -> LaunchGate.AT_MAX
             !runner.recovered || Volumes.jobFiles(config) != null -> LaunchGate.NO_JOB_FILES
@@ -847,14 +873,20 @@ class AwsWorker(
         val sustainMs = if (dedicated == null) aws.nodeSustainMin * MS_PER_MIN else 0L
         val launchThreshold = if (dedicated == null) threshold else 0.0
         val cooldownMs = aws.nodeCooldownMin * MS_PER_MIN
-        val launch = gate.shouldLaunch(now, pressure, count, launchThreshold, size != null && noRoom == null, sustainMs, cooldownMs)
-        blocker = if (launch) null else gate.blocker(now, pressure, count, launchThreshold, noRoom, sustainMs, cooldownMs)
+        val launch = gate.shouldLaunch(now, pressure, counted, launchThreshold, size != null && noRoom == null, sustainMs, cooldownMs)
+        blocker = if (launch) null else gate.blocker(now, pressure, counted, launchThreshold, noRoom, sustainMs, cooldownMs)
         if (!launch || size == null) return
         // Keep the ordinary profile market policy; explicit tag selectors may instead require spot.
-        val onDemand = if (all.all { it.nodeTags == null }) queued.any { it.profile } && nodes.values.none { it.onDemand } && launchingOnDemand.get() == 0
+        val untagged = all.all { it.nodeTags == null }
+        val onDemand = if (untagged) queued.any { it.profile } && nodes.values.none { it.onDemand } && launchingOnDemand.get() == 0
             else checkNotNull(plan).onDemand
-        println("aws: pressure %.1f core-hours on $count nodes: launching a %s %s node".format(pressure, size.type, if (onDemand) "on-demand" else "spot-first"))
-        launch(size, onDemand, spotOnly = checkNotNull(plan).spotOnly)
+        // A node bought on demand for the profile jobs is sized for them alone: the rest of the pressure goes to spot
+        // nodes, launched as it calls for them.
+        val chosen = if (untagged && onDemand) {
+            NodePool.launchPlan(aws.sizes, queued.filter { it.profile }, 0, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)?.size ?: size
+        } else size
+        println("aws: pressure %.1f core-hours on $count nodes: launching a %s %s node".format(pressure, chosen.type, if (onDemand) "on-demand" else "spot-first"))
+        launch(chosen, onDemand, spotOnly = checkNotNull(plan).spotOnly)
     }
 
     /**
@@ -878,7 +910,7 @@ class AwsWorker(
     /** Reserve [size]'s vCPUs and launch a node on its own thread, which then runs it until it retires. */
     private fun launch(size: InstanceSize, onDemand: Boolean, manual: Boolean = false, spotOnly: Boolean = false) {
         val pending = UUID.randomUUID().toString()
-        launchingShapes[pending] = NodeShape(size.cores, onDemand, size.tags(onDemand))
+        launchingShapes[pending] = NodeShape(size.cores, onDemand, size.tags(onDemand), ordinary = !onDemand || aws.onDemand || manual)
         busy.addAndGet(size.vcpus)
         launching.incrementAndGet()
         if (onDemand) launchingOnDemand.incrementAndGet()
@@ -946,15 +978,37 @@ class AwsWorker(
         val adopted: Boolean = false,
     ) {
         val onDemand: Boolean get() = market == ON_DEMAND
+        /** Whether it takes work that does not need an on-demand node: a spot node does; an on-demand one only with
+         *  `onDemand=true`, or when started by hand. Otherwise it runs the profile jobs it was bought for and retires once
+         *  none is left. */
+        val ordinary: Boolean get() = !onDemand || aws.onDemand || manual
         val tags: Set<String> get() = NodeTags.observed(cpu,
             aws.nodeTags + aws.instanceTags[size.type.substringBefore('.')].orEmpty() + aws.instanceTags[size.type].orEmpty() + aws.instanceTags[instance].orEmpty(),
             cloud = true, spot = !onDemand, type = size.type)
-        val shape: NodeShape get() = NodeShape(size.cores, onDemand, tags)
+        val shape: NodeShape get() = NodeShape(size.cores, onDemand, tags, ordinary)
         @Volatile var cpu: CpuCapabilities = CpuCapabilities()
+        /** What it does while it has no job: booting, then idle. */
         @Volatile
-        var doing = "booting"
+        var state = "booting"
+        /** The jobs it works on now, each with what it does for it. */
+        val jobs = ConcurrentHashMap<Long, String>()
+        /** Its case slots, which its jobs' cases share ([NodeSlots]). */
+        val slots = NodeSlots(NodePool.slots(size.cores))
+        /** The [Demand.exclusive] job it runs, beside which it takes nothing. */
         @Volatile
-        var job: Long? = null
+        var exclusive: Long? = null
+        /** The exclusive job it empties for ([NodeWork.Wait]): it takes nothing more, and its jobs claim no more
+         *  iterations, until that job is taken. */
+        @Volatile
+        var waitFor: Long? = null
+        /** Why it retires once its jobs have ended: one failed on it, or its own loop did. It takes nothing more. */
+        @Volatile
+        var failure: String? = null
+        /** Held while it sets a job up: its jobs share one clone, one Gradle cache and one corpus cache. */
+        val setupLock = ReentrantLock()
+        /** What it does, for the pages: each job's part, or its [state] with none. */
+        val doing: String get() = jobs.entries.sortedBy { it.key }.joinToString("; ") { it.value }.ifEmpty { state } +
+            (waitFor?.let { "; making room for job $it" } ?: "")
         @Volatile
         var ip = ""
         /** The commits built on it, each keyed with whether a profiling launcher was installed for it
@@ -962,33 +1016,48 @@ class AwsWorker(
         val built: MutableSet<String> = Collections.synchronizedSet(HashSet())
     }
 
-    /** A node's life: boot, unless [booted] already, then take work until [NodePool.retire] says it is done, then
-     *  terminate it. An adopted node's age counts from its first launch, and its idle time from its adoption. */
+    /**
+     * A node's life: boot, unless [booted] already, then take work while it has room ([take]), each job on a thread of
+     * its own ([work]) beside the others, until [NodePool.retire] says it is done, then terminate it. It is idle only
+     * with no job at all. An adopted node's age counts from its first launch, and its idle time from its adoption. A
+     * node whose work failed may be the reason: it takes nothing more, and retires once its other jobs have ended
+     * rather than take the next job down with it.
+     */
     private fun run(node: Node, booted: Boolean = false) {
         var why = "stopped"
         try {
             if (!booted) boot(node)
             var idleSince: Long? = System.currentTimeMillis()
             while (true) {
-                val retire = NodePool.retire(System.currentTimeMillis(), node.launchedAt, idleSince, aws.nodeIdleMin * MS_PER_MIN,
-                    NodePool.maxAgeMs(aws.maxHours))
-                if (retire != null) {
-                    why = retire
-                    break
+                val now = System.currentTimeMillis()
+                if (node.jobs.isEmpty()) {
+                    val since = idleSince ?: now.also { idleSince = it }
+                    val failed = node.failure
+                    if (failed != null) {
+                        why = failed
+                        break
+                    }
+                    val retire = NodePool.retire(now, node.launchedAt, since, aws.nodeIdleMin * MS_PER_MIN, NodePool.maxAgeMs(aws.maxHours))
+                    if (retire != null) {
+                        why = retire
+                        break
+                    }
+                } else {
+                    idleSince = null
                 }
-                val job = take(node)
-                if (job == null) {
-                    node.doing = "idle"
-                    Thread.sleep(nodePollMs)
+                val job = if (node.failure != null) null else runCatching { take(node) }.getOrElse {
+                    node.failure = "failed: ${it.message}"
+                    null
+                }
+                if (job != null) {
+                    thread(isDaemon = true, name = "aws-${node.instance}-job-${job.id}") {
+                        val healthy = runCatching { work(node, job) }.getOrDefault(false)
+                        if (!healthy && node.failure == null) node.failure = "retired after its work failed"
+                    }
+                    // Room may be left for another job at once.
                     continue
                 }
-                // A node whose work failed may be the reason; it retires rather than take the next job down with it.
-                if (!work(node, job)) {
-                    why = "retired after its work failed"
-                    break
-                }
-                idleSince = System.currentTimeMillis()
-                node.doing = "idle"
+                Thread.sleep(nodePollMs)
             }
         } catch (e: Exception) {
             why = "failed: ${e.message}"
@@ -1006,7 +1075,7 @@ class AwsWorker(
         val ssh = ssh(node)
         runner.withRetry(null, "waiting for ${node.instance} to boot", BOOT_WAIT) { ssh.run("test -f $READY", SSH_STEP_SEC) }
         node.cpu = probe(node)
-        node.doing = "idle"
+        node.state = "idle"
         report()
     }
 
@@ -1016,49 +1085,75 @@ class AwsWorker(
         return NodeTags.parse(output)
     }
 
-    /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While the corpus's
-     *  volume is missing ([Volumes]), a node only joins jobs already running. A waiting lab update changes nothing: the
-     *  node is adopted again after the restart ([recover]). It takes nothing before the runner's startup recovery
-     *  ([Runner.recover]) or while the job files cannot be used, as a job's files are written there: the node stays up,
-     *  idle, until they can. It picks ([pick]) under the crews' lock ([Crews]), which the local machine takes and joins
-     *  jobs under too, so no job ends while a node joins it. */
+    /** The job [node] works on next beside the ones it runs, joined or claimed ([NodePool.pick]); null when none is
+     *  for it or it has no room. While the corpus's volume is missing ([Volumes]), a node only joins jobs already
+     *  running. A waiting lab update changes nothing: the node is adopted again after the restart ([recover]). It takes
+     *  nothing before the runner's startup recovery ([Runner.recover]) or while the job files cannot be used, as a job's
+     *  files are written there: the node stays up, idle, until they can. Nothing past its age, as it then retires once
+     *  its jobs end, and nothing beside an exclusive job. It picks ([pick]) under the crews' lock ([Crews]), which the
+     *  local machine takes and joins jobs under too, so no job ends while a node joins it. */
     private fun take(node: Node): AwsJob? {
         if (!runner.recovered || Volumes.jobFiles(config) != null) return null
+        if (System.currentTimeMillis() - node.launchedAt >= NodePool.maxAgeMs(aws.maxHours)) return null
+        if (node.exclusive != null) {
+            node.waitFor = null
+            return null
+        }
         val claims = Volumes.missing(config) == null
         return synchronized(runner.crews.lock) { pick(node, claims) }
     }
 
-    /** The job [node] joins or claims, a queued one only when [claims]; null when none is for it. */
+    /** The job [node] joins or claims, a queued one only when [claims]; null when none is for it, or when it should
+     *  empty for an exclusive job first ([NodeWork.Wait]). The job's slots are reserved on the node until its cases
+     *  start ([reservation]). */
     private fun pick(node: Node, claims: Boolean): AwsJob? {
         val (queued, running) = demands()
-        val work = NodePool.pick(node.shape, running, if (claims) queued else emptyList()) ?: return null
+        val work = NodePool.pick(node.shape, running, if (claims) queued else emptyList(), free = node.slots.free(), on = node.jobs.keys.toSet())
+        node.waitFor = (work as? NodeWork.Wait)?.jobId
         val job = when (work) {
+            null, is NodeWork.Wait -> return null
             is NodeWork.Help -> store.job(work.jobId)?.takeIf { it.status == Status.RUNNING } ?: return null
             is NodeWork.Claim -> claimNodeJob(config, store, work.jobId) ?: return null
         }
+        val spec = checkNotNull(job.experiment)
         runner.crews.join(job.id, node.instance)
-        node.job = job.id
+        node.jobs[job.id] = "taking job ${job.id}"
+        if (spec.isProfile || spec.measuresCli) node.exclusive = job.id
+        node.slots.reserve(job.id, reservation(node, job, spec))
         writeInstances(job.id)
-        return AwsJob(job.id, checkNotNull(job.experiment))
+        return AwsJob(job.id, spec)
+    }
+
+    /** The slots [job] holds on [node] until its cases start: as many cases at once as it runs here (its `parallel`,
+     *  or the node's default) of its largest case, within the node; the whole node for an exclusive job. */
+    private fun reservation(node: Node, job: Job, spec: ExperimentSpec): Int {
+        val capacity = node.slots.capacity
+        if (spec.isProfile || spec.measuresCli) return capacity
+        val cases = if (spec.parallel == null) capacity else job.parallel
+        return (cases * NodePool.caseSlots(Experiments.arms(spec).maxOf { it.cores }, capacity)).coerceIn(1, capacity)
     }
 
     /**
-     * Work on [job] on [node]: set it up (build its commits; plan it when no host has), then pull its iterations from
-     * the store ([Store.claimIteration]) beside the other hosts on it, the local machine included, until none is left
-     * for this node. False when the node should retire: its work failed, or AWS took it back.
+     * Work on [job] on [node], beside the other jobs it runs: set it up (build its commits; plan it when no host has),
+     * one job's setup at a time on the node, then pull its iterations from the store ([Store.claimIteration]) beside the
+     * other hosts on it, the local machine included, until none is left for this node, its cases sharing the node's
+     * slots with the other jobs' ([NodeSlots]). False when the node should retire: its work failed, or AWS took it back.
      */
     private fun work(node: Node, job: AwsJob): Boolean {
         val host = host(node, job)
         var healthy = false
         var outcome: Dispatched? = null
         try {
-            runner.onNode { setUp(node, host, job) }
-            node.doing = "running job ${job.id}"
+            runner.onNode { settingUp(node, job) { setUp(node, host, job) } }
+            node.jobs[job.id] = "running job ${job.id}"
             report()
-            // Past its age a node takes no more iterations, so it retires before it powers itself off mid-case.
+            // Past its age a node takes no more iterations, so it retires before it powers itself off mid-case. Nor
+            // while it empties for an exclusive job, or after another job failed on it.
             val maxAge = NodePool.maxAgeMs(aws.maxHours)
             val next = {
-                if (System.currentTimeMillis() - node.launchedAt >= maxAge || runner.crews.failed(job.id)) null
+                val waiting = node.waitFor
+                if (System.currentTimeMillis() - node.launchedAt >= maxAge || runner.crews.failed(job.id) ||
+                    node.failure != null || waiting != null && waiting != job.id) null
                 else store.claimIteration(job.id, node.instance)
             }
             val current = checkNotNull(store.job(job.id))
@@ -1066,12 +1161,12 @@ class AwsWorker(
             if (outcome == Dispatched.LOST) runner.log(job.id, "node ${node.instance} was taken back by the cloud provider")
             healthy = outcome != Dispatched.LOST
         } catch (e: NotJoined) {
-            // A cancel stopped the node's setup, on the node too ([Ssh]): it is fit to take the next job.
+            // A cancel stopped the node's setup, on the node too ([Ssh]): it is fit to take other work.
             healthy = store.cancelRequested(job.id)
             if (healthy) stopped(node, job) else runner.log(job.id, "node ${node.instance} did not join: ${e.message}")
         } catch (e: Exception) {
             // The job's own setup, or a case failing to run, fails the job; its other hosts take no more of it. A
-            // cancel stopped what ran on the node, which then takes the next job rather than retire.
+            // cancel stopped what ran on the node for the job, which then takes other work rather than retire.
             if (store.cancelRequested(job.id)) {
                 healthy = true
                 outcome = Dispatched.CANCELLED
@@ -1080,18 +1175,35 @@ class AwsWorker(
                 runner.crews.fail(job.id, e)
             }
         } finally {
-            node.job = null
+            // Before it leaves the node: the node then takes nothing in its place.
+            if (!healthy && node.failure == null) node.failure = "retired after its work failed"
+            node.jobs.remove(job.id)
+            node.slots.leave(job.id)
+            if (node.exclusive == job.id) node.exclusive = null
             runner.leave(job.id, node.instance, outcome)
             writeInstances(job.id)
         }
-        // Its case files came back as each case ended; the next job on this node starts from an empty directory.
+        // Its case files came back as each case ended; each job on the node has a directory of its own, gone once it leaves.
         if (healthy) runCatching { host.ssh.exec("rm -rf ${quote(job.remoteDir)}", SSH_STEP_SEC, cancellable = false) }
         return healthy
     }
 
+    /** Run [block], [job]'s setup on [node], once no other job sets up there: its jobs share one clone, one Gradle
+     *  cache and one corpus cache. A cancel ends the wait. */
+    private fun <T> settingUp(node: Node, job: AwsJob, block: () -> T): T {
+        while (!node.setupLock.tryLock(1, TimeUnit.SECONDS)) {
+            if (store.cancelRequested(job.id)) throw JobCancelled("cancelled while waiting for another job's setup on ${node.instance}")
+        }
+        try {
+            return block()
+        } finally {
+            node.setupLock.unlock()
+        }
+    }
+
     /** Say that a cancel stopped what [node] did for [job]. */
     private fun stopped(node: Node, job: AwsJob) {
-        runner.log(job.id, "cancel requested — stopped ${node.instance} (${node.doing}); it takes the next job")
+        runner.log(job.id, "cancel requested — stopped job ${job.id} on ${node.instance}; it takes other work")
     }
 
     /** A helper's setup failing: the job goes on without it. */
@@ -1108,7 +1220,7 @@ class AwsWorker(
         val spec = job.spec
         require(NodeTags.matches(spec.nodeTags, node.tags)) { "node ${node.instance} does not match the job's tags" }
         val planned = current.commands.isNotEmpty()
-        node.doing = if (planned) "joining job ${job.id}" else "setting up job ${job.id}"
+        node.jobs[job.id] = if (planned) "joining job ${job.id}" else "setting up job ${job.id}"
         runner.log(job.id, "${if (planned) "joined" else "taken"} by node ${node.instance} (${node.size.type}, ${node.market})")
         try {
             val (arms, shas) = runner.resolveArms(current, spec, job.log)
@@ -1150,13 +1262,13 @@ class AwsWorker(
         val measuresCli = job.spec.measuresCli
         val missing = shas.filter { !AwsBuildCache.hasBuilt(node.built, it, measuresCli) }
         if (missing.isEmpty()) return
-        setup(job, host, missing)
+        setup(job, host, missing, node.size.cores - 2 * node.slots.busy)
         missing.forEach { AwsBuildCache.rebuilt(node.built, it, measuresCli) }
         savePool()
     }
 
     /** [node] as a host for [job]'s cases: its files in their own directory, one case per two cores unless the job
-     *  says how many. */
+     *  says how many, within the node's slots, which every job on it shares. */
     private fun host(node: Node, job: AwsJob) = AwsHost(
         node.instance, ssh(node) { store.cancelRequested(job.id) }, node.size.cores,
         config.solveJavaOpts, job.spec.measurement, job.spec.isProfile,
@@ -1164,6 +1276,8 @@ class AwsWorker(
         onPhase = { index, phase -> store.commandPhase(job.id, index, phase) },
         jobDir = job.remoteDir,
         parallel = if (job.spec.parallel == null) defaultParallel(node.size) else null,
+        slots = node.slots,
+        jobId = job.id,
         repository = job.spec.repository,
         nodeTags = node.tags,
         cpu = node.cpu,
@@ -1244,7 +1358,7 @@ class AwsWorker(
             node.cpu = probe(node)
             node.built.addAll(saved.built)
         }
-        node.doing = if (booted) "idle" else "booting"
+        node.state = if (booted) "idle" else "booting"
         nodes[node.instance] = node
         busy.addAndGet(node.size.vcpus)
         println("aws: adopted ${node.size.type} ${node.market} node ${node.instance}, launched ${(System.currentTimeMillis() - node.launchedAt) / MS_PER_MIN} min ago")
@@ -1292,7 +1406,7 @@ class AwsWorker(
      *  read. */
     private fun writeInstances(jobId: Long) {
         val file = config.jobDir(jobId).resolve(INSTANCES_FILE)
-        val lines = nodes.values.filter { it.job == jobId }.sortedBy { it.launchedAt }.map { "${it.instance} ${it.size.type} ${it.market}" }
+        val lines = nodes.values.filter { it.jobs.containsKey(jobId) }.sortedBy { it.launchedAt }.map { "${it.instance} ${it.size.type} ${it.market}" }
         if (lines.isEmpty()) Files.deleteIfExists(file) else file.toFile().writeText(lines.joinToString("\n", postfix = "\n"))
     }
 
@@ -1300,8 +1414,13 @@ class AwsWorker(
     @Synchronized
     private fun report() {
         val report = poolReport(System.currentTimeMillis(), pressure, launching.get(),
-            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job, it.manual, it.launchedAt, it.adopted, it.tags, it.cpu) },
-            threshold, gate, aws, blocker, runner.updateWaiting(), busy.get(), queueSize?.type)
+            nodes.values.sortedBy { it.launchedAt }.map {
+                val jobs = it.jobs.keys.sorted()
+                NodeReport(it.instance, it.size.type, it.market, it.doing, jobs.firstOrNull(), it.manual, it.launchedAt, it.adopted, it.tags, it.cpu,
+                    jobs = jobs, slots = it.slots.capacity, busySlots = it.slots.busy,
+                    free = it.exclusive == null && it.failure == null && it.slots.free() > 0, ordinary = it.ordinary)
+            },
+            threshold, gate, aws, blocker, runner.updateWaiting(), busy.get(), queueSize?.type, working)
         nodesFile.parent.createDirectories()
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
     }
@@ -1318,11 +1437,17 @@ class AwsWorker(
 
     private fun nodeArch(tags: Set<String>): String = tags.firstOrNull { it.startsWith("arch:") }?.substringAfter(':') ?: "unknown"
 
-    /** Clone the repository and build each of [shas] on [host]. */
-    private fun setup(job: AwsJob, host: AwsHost, shas: List<String>) {
+    /**
+     * Clone the repository and build each of [shas] on [host], with Gradle on the [cores] the other jobs' running cases
+     * leave (one per core, at least one) and at the lowest CPU priority while any run, so a build beside them takes
+     * what they leave rather than slow their timed cases.
+     */
+    private fun setup(job: AwsJob, host: AwsHost, shas: List<String>, cores: Int = host.cores) {
         runner.log(job.id, "${host.instance}: building ${shas.joinToString { it.take(SHA_LOG) }}")
+        val workers = cores.coerceIn(1, host.cores)
         val script = buildString {
             appendLine("set -euo pipefail; ${AwsHost.ENV}")
+            if (workers < host.cores) appendLine("renice -n 19 -p $$ >/dev/null 2>&1 || true")
             appendLine(AwsBuildCache.functions)
             appendLine("mkdir -p ~/work ~/corpus")
             // The corpus comes down from the bucket while the build runs; a failed sync only means fetching upstream.
@@ -1342,7 +1467,7 @@ class AwsWorker(
                 val worktree = host.worktree(sha)
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
                 val archives = bucket?.let { AwsBuildCache.archives(it, sha, nodeArch(host.nodeTags)) }.orEmpty()
-                AwsBuildCache.worktree(worktree, host.cores, archives, aws.region).forEach(::appendLine)
+                AwsBuildCache.worktree(worktree, workers, archives, aws.region).forEach(::appendLine)
                 finishWorktree(worktree, job.spec.measuresCli).forEach(::appendLine)
                 appendLine("validate_lab_provenance ${quote(worktree)}")
             }
@@ -1483,14 +1608,16 @@ class AwsWorker(
         internal fun poolReport(
             now: Long, pressure: Double, launching: Int, nodes: List<NodeReport>, threshold: Double, gate: LaunchGate,
             aws: AwsConfig, blocker: String?, updateWaiting: Boolean = false, busyVcpus: Int = 0, manualSize: String? = null,
+            working: Int = nodes.size + launching,
         ) = NodePoolReport(now, pressure, launching, nodes,
-            threshold = threshold, nextThreshold = NodePool.nextThreshold(threshold, nodes.size + launching),
+            threshold = threshold, nextThreshold = NodePool.nextThreshold(threshold, working),
             overSince = gate.since, lastLaunch = gate.lastLaunch, sustainMs = aws.nodeSustainMin * MS_PER_MIN,
             cooldownMs = aws.nodeCooldownMin * MS_PER_MIN, blocker = blocker, updateWaiting = updateWaiting,
             busyVcpus = busyVcpus, manualSize = manualSize)
 
-        /** Cases a node of [size] runs at once when a job sets no `parallel`: one per two physical cores. */
-        internal fun defaultParallel(size: InstanceSize): Int = (size.cores / 2).coerceAtLeast(1)
+        /** Cases a node of [size] runs at once, from every job on it together, and of a job that sets no `parallel`
+         *  alone: one per two physical cores ([NodePool.slots]). */
+        internal fun defaultParallel(size: InstanceSize): Int = NodePool.slots(size.cores)
 
         /** The nodes working on a job, one a line, while it has any: what the pages and `lab ssh` show. */
         const val INSTANCES_FILE = "aws-instances"
@@ -1505,7 +1632,7 @@ class AwsWorker(
         const val ON_DEMAND = "on-demand"
 
         private const val POLL_MS = 10_000L
-        /** How often an idle node looks for work. */
+        /** How often a node looks for work while it has room. */
         private const val NODE_POLL_MS = 10_000L
         /** The states of an instance that will not run a case again. */
         private val GONE = setOf("shutting-down", "terminated", "stopping", "stopped")

@@ -7,7 +7,8 @@ import kotlinx.serialization.Serializable
  * the cores its largest case holds, and whether it is a profile job, which prefers on-demand unless its selector explicitly asks for spot. A
  * [belowFloor] job, work the local machine could run below [AwsConfig.nodeMinPriority], launches no node: it is not
  * pressure, but a node already up with nothing else to do takes it. [hosts] is how many hosts work on it now: none for
- * a queued job.
+ * a queued job. [measures] is a job that records CLI measurements; it and a profile job are [exclusive]: they measure
+ * resources, so nothing runs beside them on a node.
  */
 data class Demand(
     val jobId: Long,
@@ -18,20 +19,28 @@ data class Demand(
     val belowFloor: Boolean = false,
     val hosts: Int = 0,
     val nodeTags: NodeSelector? = null,
-)
+    val measures: Boolean = false,
+) {
+    /** Whether the job keeps a node to itself: a profile, or a job that records measurements. */
+    val exclusive: Boolean get() = profile || measures
+}
 
-/** A node as the work selection sees it: the cores its cases may hold, and whether it was bought on demand. */
-data class NodeShape(val cores: Int, val onDemand: Boolean, val tags: Set<String> = emptySet())
+/** A node as the work selection sees it: the cores its cases may hold, whether it was bought on demand, and, for an
+ *  on-demand node, whether it takes [ordinary] work, work that does not need an on-demand node ([NodePool.pick]). */
+data class NodeShape(val cores: Int, val onDemand: Boolean, val tags: Set<String> = emptySet(), val ordinary: Boolean = true)
 
 data class NodeLaunchPlan(val size: InstanceSize, val onDemand: Boolean, val spotOnly: Boolean)
 
-/** What a free node does next: help a shared job already running, wherever, with its unclaimed iterations, or claim a
- *  queued one. */
+/** What a node with room does next: help a shared job already running, wherever, with its unclaimed iterations, or claim
+ *  a queued one; or [Wait] for its jobs to end, as the job it should take next keeps a node to itself. */
 sealed interface NodeWork {
     val jobId: Long
 
     data class Help(override val jobId: Long) : NodeWork
     data class Claim(override val jobId: Long) : NodeWork
+    /** [jobId] is [Demand.exclusive] and comes next, but the node runs other jobs: it takes nothing more, and the jobs
+     *  on it claim no more iterations, so it empties for that job. */
+    data class Wait(override val jobId: Long) : NodeWork
 }
 
 /**
@@ -45,11 +54,12 @@ object NodePool {
         demands.firstOrNull { d -> d.nodeTags != null && !d.belowFloor && !NodeTags.matches(d.nodeTags, localTags) &&
             provisioned.none { node -> node.cores >= d.cores && (!NodeTags.onDemand(d.profile, d.nodeTags) || node.onDemand) && NodeTags.matches(d.nodeTags, node.tags) } }
 
-    /** Choose a shape for a compatible group of waiting work instead of combining incompatible architectures. */
-    fun launchPlan(sizes: List<InstanceSize>, demands: List<Demand>, nodes: Int, freeVcpus: Int, maxVcpus: Int): NodeLaunchPlan? {
+    /** Choose a shape for a compatible group of waiting work instead of combining incompatible architectures.
+     *  [coveredCores] are the cores of the nodes up or launching that take this work ([size]). */
+    fun launchPlan(sizes: List<InstanceSize>, demands: List<Demand>, coveredCores: Int, freeVcpus: Int, maxVcpus: Int): NodeLaunchPlan? {
         if (demands.isEmpty()) return null
         if (demands.all { it.nodeTags == null }) {
-            val chosen = size(sizes, demands.maxOf { it.cores }, pressure(demands), nodes, freeVcpus, maxVcpus) ?: return null
+            val chosen = size(sizes, demands.maxOf { it.cores }, pressure(demands), coveredCores, freeVcpus, maxVcpus) ?: return null
             return NodeLaunchPlan(chosen, demands.any { it.profile }, false)
         }
         for (demand in demands.sortedWith(compareByDescending<Demand> { it.priority }.thenByDescending { it.cores })) {
@@ -59,7 +69,7 @@ object NodePool {
             val family = eligible.first().type.substringBefore('.')
             val familySizes = eligible.filter { it.type.substringBefore('.') == family }
             val group = demands.filter { d -> (!NodeTags.onDemand(d.profile, d.nodeTags) || onDemand) && familySizes.any { it.cores >= d.cores && NodeTags.matches(d.nodeTags, it.tags(onDemand)) } }
-            val chosen = size(familySizes, group.maxOf { it.cores }, pressure(group), nodes, freeVcpus, maxVcpus) ?: continue
+            val chosen = size(familySizes, group.maxOf { it.cores }, pressure(group), coveredCores, freeVcpus, maxVcpus) ?: continue
             return NodeLaunchPlan(chosen, onDemand, NodeTags.spotOnly(demand.nodeTags))
         }
         return null
@@ -112,41 +122,62 @@ object NodePool {
 
     /**
      * The size of a new node, or null when none fits the vCPUs left of the quota: the smallest size that has the
-     * cores the largest waiting case needs and covers this node's share of the pressure (split over the [nodes]
-     * running and this one) within [COVER_HOURS], and no larger than [maxVcpus] unless a case itself needs more.
-     * Nodes stay small: more pressure is met by launching another node later, which the damping allows, rather than
-     * one large node up front that idles once its burst is gone.
+     * cores the largest waiting case needs and covers, within [COVER_HOURS], the pressure the nodes already up or
+     * launching do not ([coveredCores], their cores, each covering [COVER_HOURS] of it), and no larger than [maxVcpus]
+     * unless a case itself needs more. Nodes stay small: more pressure is met by launching another node later, which
+     * the damping allows, rather than one large node up front that idles once its burst is gone.
      */
-    fun size(sizes: List<InstanceSize>, caseCores: Int, pressure: Double, nodes: Int, freeVcpus: Int, maxVcpus: Int): InstanceSize? {
+    fun size(sizes: List<InstanceSize>, caseCores: Int, pressure: Double, coveredCores: Int, freeVcpus: Int, maxVcpus: Int): InstanceSize? {
         val fitting = sizes.filter { it.cores >= caseCores && it.vcpus <= freeVcpus }
         if (fitting.isEmpty()) return null
-        val share = pressure / (nodes + 1)
+        val share = (pressure - coveredCores * COVER_HOURS).coerceAtLeast(0.0)
         val capped = fitting.filter { it.vcpus <= maxVcpus }.ifEmpty { listOf(fitting.first()) }
         return capped.firstOrNull { it.cores * COVER_HOURS >= share } ?: capped.last()
     }
 
     /**
-     * What a free node of [node]'s shape takes next: a shared job running that still has unclaimed iterations
-     * ([helpable]), joining it, or one of [queued] (in queue order) it may claim. Priority decides first, running or
-     * queued alike; among equal priorities the job with the fewest [Demand.hosts] on it, so nodes spread over the jobs
-     * rather than pile onto one (a queued job has none, so it goes before joining a running one); then a running job
-     * before a queued one, each in queue order. Work at or above the priority floor goes first; only when there is none
-     * does the node take [Demand.belowFloor] work, by the same rules, so a node already up never idles while such work
-     * waits behind the local machine's queue. A job fits when its largest case's cores fit the node, and a profile job
-     * prefers an on-demand node unless its selector explicitly requests spot. [excluded] is the job the local machine takes next when it is free, which a node
-     * leaves to it.
+     * What a node of [node]'s shape takes next beside the jobs it runs ([on]), with [free] case slots of its capacity
+     * left ([slots]): a shared job running that still has unclaimed iterations ([helpable]), joining it, or one of
+     * [queued] (in queue order) it may claim. Priority decides first, running or queued alike; among equal priorities
+     * the job with the fewest [Demand.hosts] on it, so nodes spread over the jobs rather than pile onto one (a queued
+     * job has none, so it goes before joining a running one); then a running job before a queued one, each in queue
+     * order. Work at or above the priority floor goes first; only when there is none does the node take
+     * [Demand.belowFloor] work, by the same rules, so a node already up never idles while such work waits behind the
+     * local machine's queue. On an on-demand node the work that needs one (a profile job, or a selector asking for
+     * on demand) goes before everything else, as that is what it was bought for; an on-demand node that does not take
+     * [NodeShape.ordinary] work takes nothing else. A job fits when its largest case's cores fit the node, a profile job
+     * prefers an on-demand node unless its selector explicitly requests spot, and beside other jobs its largest case
+     * must fit the slots left ([caseSlots]). An [Demand.exclusive] job runs alone: one that comes next while the node
+     * runs other jobs makes it [NodeWork.Wait]. [excluded] is the job the local machine takes next when it is free,
+     * which a node leaves to it.
      */
-    fun pick(node: NodeShape, helpable: List<Demand>, queued: List<Demand>, excluded: Long? = null): NodeWork? {
-        fun fits(d: Demand) = d.cores <= node.cores && (!NodeTags.onDemand(d.profile, d.nodeTags) || node.onDemand) && NodeTags.matches(d.nodeTags, node.tags)
-        val order = compareByDescending<Pair<Demand, NodeWork>> { it.first.priority }.thenBy { it.first.hosts }
-        for (below in listOf(false, true)) {
-            val help = helpable.filter { it.belowFloor == below && fits(it) }.map { it to NodeWork.Help(it.jobId) }
-            val claim = queued.filter { it.belowFloor == below && it.jobId != excluded && fits(it) }.map { it.copy(hosts = 0) to NodeWork.Claim(it.jobId) }
-            // sortedWith is stable: equal priority and hosts keep running jobs first, each list in its queue order.
-            (help + claim).sortedWith(order).firstOrNull()?.let { return it.second }
+    fun pick(
+        node: NodeShape, helpable: List<Demand>, queued: List<Demand>, excluded: Long? = null,
+        free: Int = slots(node.cores), on: Set<Long> = emptySet(),
+    ): NodeWork? {
+        fun needsOnDemand(d: Demand) = NodeTags.onDemand(d.profile, d.nodeTags)
+        fun fits(d: Demand) = d.cores <= node.cores && (!needsOnDemand(d) || node.onDemand) && NodeTags.matches(d.nodeTags, node.tags) &&
+            (!node.onDemand || node.ordinary || needsOnDemand(d)) && d.jobId !in on
+        val help = helpable.filter(::fits).map { it to NodeWork.Help(it.jobId) }
+        val claim = queued.filter { it.jobId != excluded && fits(it) }.map { it.copy(hosts = 0) to NodeWork.Claim(it.jobId) }
+        // sortedWith is stable: equal priority and hosts keep running jobs first, each list in its queue order.
+        val order = compareByDescending<Pair<Demand, NodeWork>> { node.onDemand && needsOnDemand(it.first) }
+            .thenBy { it.first.belowFloor }.thenByDescending { it.first.priority }.thenBy { it.first.hosts }
+        for ((demand, work) in (help + claim).sortedWith(order)) {
+            if (on.isEmpty()) return work
+            if (demand.exclusive) return NodeWork.Wait(demand.jobId)
+            if (caseSlots(demand.cores, slots(node.cores)) <= free) return work
         }
         return null
     }
+
+    /** The cases a node of [cores] physical cores runs at once, from every job on it together: one per two cores, the
+     *  density a job that sets no `parallel` runs at, which leaves each case's JVMs a core for their JIT and GC. */
+    fun slots(cores: Int): Int = (cores / 2).coerceAtLeast(1)
+
+    /** The slots of a node's [capacity] a case of [caseCores] cores takes: one per two of its cores, rounded up, at
+     *  least one and at most the whole node, so a case that needs the whole node runs alone. */
+    fun caseSlots(caseCores: Int, capacity: Int): Int = ((caseCores + 1) / 2).coerceIn(1, capacity.coerceAtLeast(1))
 
     /**
      * Why a node should retire now, or null to keep it: past [maxAgeMs] (its power-off at `maxHours`, less a margin),
@@ -174,6 +205,72 @@ object NodePool {
     private const val MS_PER_HOUR = 3_600_000.0
     private const val MS_PER_SEC = 1000L
     private const val SEC_PER_MIN = 60L
+}
+
+/**
+ * A node's [capacity] in case slots ([NodePool.slots]), shared by the jobs it runs at once: each case holds
+ * [NodePool.caseSlots] of them while it runs. A job just taken holds a reservation until its cases start ([reserve]), so
+ * the node does not take more jobs than it has room for while they set up. Slots go out first come, first served: a job
+ * that found too few free waits at the head of the line, and no other job takes a slot before it, so a job of large
+ * cases is not starved by small ones, nor a job of low `parallel` by one of high. A job that stops asking leaves the
+ * line after [STALE_MS].
+ */
+class NodeSlots(val capacity: Int) {
+    private var used = 0
+    private val reserved = HashMap<Long, Int>()
+    /** The jobs waiting for slots, in the order they first asked: the slots each needs, and when it last asked. */
+    private val waiting = LinkedHashMap<Long, Pair<Int, Long>>()
+
+    /** Take [slots] for a case of [job], or false when there is no room for it now or another job waits first. */
+    @Synchronized
+    fun acquire(job: Long, slots: Int, now: Long = System.currentTimeMillis()): Boolean {
+        waiting.entries.removeIf { now - it.value.second > STALE_MS }
+        val first = waiting.keys.firstOrNull()
+        if (used + slots <= capacity && (first == null || first == job)) {
+            waiting.remove(job)
+            reserved.remove(job)
+            used += slots
+            return true
+        }
+        waiting[job] = slots to now
+        return false
+    }
+
+    /** Give back [slots] a case held. */
+    @Synchronized
+    fun release(slots: Int) {
+        used = (used - slots).coerceAtLeast(0)
+    }
+
+    /** Hold [slots] for [job], just taken, until its first case starts or it leaves. */
+    @Synchronized
+    fun reserve(job: Long, slots: Int) {
+        reserved[job] = slots
+    }
+
+    /** [job] left the node: it waits for nothing and holds no reservation. */
+    @Synchronized
+    fun leave(job: Long) {
+        reserved.remove(job)
+        waiting.remove(job)
+    }
+
+    /** The slots the running cases hold. */
+    @get:Synchronized
+    val busy: Int get() = used
+
+    /** The slots no case, reservation or waiting job claims, for another job to take. */
+    @Synchronized
+    fun free(now: Long = System.currentTimeMillis()): Int {
+        waiting.entries.removeIf { now - it.value.second > STALE_MS }
+        return (capacity - used - reserved.values.sum() - waiting.values.sumOf { it.first }).coerceAtLeast(0)
+    }
+
+    companion object {
+        /** How long a job that stopped asking for a slot keeps its place in the line: its dispatch asks every
+         *  [Runner.DISPATCH_POLL_MS] while it waits. */
+        const val STALE_MS = 5_000L
+    }
 }
 
 /**
@@ -278,13 +375,21 @@ data class NodePoolReport(
 )
 
 /** A node as the pages show it; [manual] when it was started by hand ([ManualLaunch]), [adopted] when a restarted
- *  worker took it back ([AwsWorker.recover]); [launchedAt], its first launch, gives its age (null from an older lab). */
+ *  worker took it back ([AwsWorker.recover]); [launchedAt], its first launch, gives its age (null from an older lab).
+ *  [jobs] are the jobs it works on now ([job], the first of them, for an older reader), [slots] its case slots and
+ *  [busySlots] those its cases hold ([NodeSlots]); [free] when it has room to take another job (null from an older lab:
+ *  only an idle node has); [ordinary] when it takes work that does not need an on-demand node. */
 @Serializable
 data class NodeReport(
     val instance: String, val type: String, val market: String, val doing: String, val job: Long? = null, val manual: Boolean = false,
     val launchedAt: Long? = null, val adopted: Boolean = false,
     val tags: Set<String> = emptySet(),
     val cpu: CpuCapabilities? = null,
+    val jobs: List<Long> = listOfNotNull(job),
+    val slots: Int? = null,
+    val busySlots: Int? = null,
+    val free: Boolean? = null,
+    val ordinary: Boolean = true,
 )
 
 /** The pool as a restarted worker adopts it, in `aws/pool.json`, written on each change: how many nodes were

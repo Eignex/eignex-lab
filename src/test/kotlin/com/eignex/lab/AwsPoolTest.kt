@@ -209,6 +209,40 @@ class AwsPoolTest {
     }
 
     @Test
+    fun `a node takes several jobs at once while they leave it room, and an on-demand one without onDemand only profiles`() {
+        val config = lab()
+        val store = Store(config.database)
+        // parallel=1 each: one slot of the c7i.2xlarge's two (4 physical cores, one case per two).
+        val spec = ExperimentSpec("aws", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST, parallel = 1)
+        val runner = Runner(config, store, startCloud = { null }).apply { recover() }
+        val ids = (1..3).map { store.create("aws$it", "main", emptyList(), parallel = 1, experiment = spec) }
+        val cloud = Cloud().apply { running += "i-known" }
+        savePool(config, saved("i-known"))
+
+        worker(config, cloud, runner).recover()
+
+        // Claimed for the node; their setups then run one at a time.
+        fun taken(id: Long) = store.job(id)!!.status != Status.QUEUED
+        until("the node to take two jobs") { taken(ids[0]) && taken(ids[1]) }
+        Thread.sleep(200)
+        assertFalse(taken(ids[2]), "a third job does not fit the node's two slots")
+
+        // On demand, bought for profiles: it takes none of the ordinary jobs.
+        val other = lab()
+        val otherStore = Store(other.database)
+        val otherRunner = Runner(other, otherStore, startCloud = { null }).apply { recover() }
+        val job = otherStore.create("aws", "main", emptyList(), parallel = 1, experiment = spec)
+        val onDemand = Cloud().apply { running += "i-od" }
+        savePool(other, saved("i-od").copy(market = AwsWorker.ON_DEMAND))
+        val odWorker = worker(other, onDemand, otherRunner)
+        thread(isDaemon = true) { odWorker.loop() }
+        until("the pool report") { readPoolReport(other)?.nodes?.isNotEmpty() == true || otherStore.job(job)?.status != Status.QUEUED }
+        Thread.sleep(300)
+        assertEquals(Status.QUEUED, otherStore.job(job)!!.status)
+        assertFalse(readPoolReport(other)!!.nodes.single().ordinary)
+    }
+
+    @Test
     fun `a waiting update neither retires idle nodes nor holds back a launch`() {
         val config = lab("nodeLaunchLocalHours=0\nnodeSustainMin=0\n")
         val store = Store(config.database)

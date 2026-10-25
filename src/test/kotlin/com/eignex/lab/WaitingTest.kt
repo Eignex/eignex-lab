@@ -101,12 +101,17 @@ class WaitingTest {
         assertEquals("cloud: pressure 12 of 8.0 core-h for the first node, over the threshold: a node launches once it holds 6 min more",
             cloud(pool(12.0, "waiting 6 min more")))
         val node = NodeReport("i-1", "c7i.2xlarge", "spot", "running job 9", 9)
-        assertEquals("cloud: 1 node up, none free; pressure 20 of 16 core-h for node 2: the cooldown after the last launch holds the next for 3 min",
+        assertEquals("cloud: 1 node up, none with room; pressure 20 of 16 core-h for node 2: the cooldown after the last launch holds the next for 3 min",
             cloud(pool(20.0, "cooldown 3 min", listOf(node))))
-        assertEquals("cloud: 1 node up, none free; the 32-vCPU quota is full: no node launches", cloud(pool(20.0, LaunchGate.QUOTA_FULL, listOf(node))))
-        assertEquals("cloud: 1 node up, none free; at maxInstances (4): no more nodes launch", cloud(pool(20.0, LaunchGate.AT_MAX, listOf(node))))
+        assertEquals("cloud: 1 node up, none with room; the 32-vCPU quota is full: no node launches", cloud(pool(20.0, LaunchGate.QUOTA_FULL, listOf(node))))
+        assertEquals("cloud: 1 node up, none with room; at maxInstances (4): no more nodes launch", cloud(pool(20.0, LaunchGate.AT_MAX, listOf(node))))
         assertEquals("cloud: 1 launching; pressure 9.0 of 16 core-h for node 2, below the launch threshold", cloud(pool(9.0, launching = 1)))
-        assertEquals("cloud: a free node takes it at its next poll", cloud(pool(nodes = listOf(node.copy(doing = "idle", job = null)))))
+        assertEquals("cloud: a node with room takes it at its next poll", cloud(pool(nodes = listOf(node.copy(doing = "idle", job = null)))))
+        // A node runs several jobs at once: one running a job with slots to spare takes it too, but not an on-demand
+        // node kept for profiles.
+        assertEquals("cloud: a node with room takes it at its next poll", cloud(pool(nodes = listOf(node.copy(slots = 4, busySlots = 1, free = true)))))
+        assertContains(cloud(pool(20.0, "cooldown 3 min", listOf(node.copy(doing = "idle", job = null, free = true, market = AwsWorker.ON_DEMAND, ordinary = false)))),
+            "none with room")
         assertEquals("cloud: no pool report yet", Waiting.waiting(job(5, Experiments.AWS_HOST), view(pool = null)))
         // The view keeps its own clock, so a slow run may round the age up a minute.
         assertContains(cloud(pool(at = now() - 10 * 60_000)), Regex("""\(pool report 1[01] min old\)"""))
