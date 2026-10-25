@@ -2,6 +2,8 @@ package com.eignex.lab
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.io.File
 import java.net.URLEncoder
 import java.time.Instant
@@ -1024,12 +1026,62 @@ private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): S
     if (limited) append(" · <b>stopped at its time limit</b>; what it wrote before then is kept")
     append(terminations(dir, 0))
     append(" · <a href=\"/jobs/${job.id}/files/0.out\">stdout</a> · <a href=\"/jobs/${job.id}/files/0.err\">stderr</a>")
+    if (BenchmarkCaptures.available(dir.toPath())) append(" · <a href=\"/jobs/${job.id}/capture\">benchmark capture</a>")
     val out = dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList()
     if (out.isNotEmpty()) {
         append(" · <b>${"$"}OUT</b>: ")
         append(out.joinToString(", ") { "<a href=\"/jobs/${job.id}/files/$it\"><code>${esc(it.removePrefix("cases/0/out/"))}</code></a>" })
     }
     append("</p>")
+}
+
+internal fun benchmarkCapturePage(
+    id: Long,
+    capture: BenchmarkCapture,
+    baselineId: Long?,
+    comparison: List<BenchmarkDelta>?,
+): String = buildString {
+    fun number(value: Double?) = value?.let { "%.6g".format(Locale.ROOT, it) } ?: "—"
+    fun cells(vararg values: String) = values.joinToString("") { "<td>${esc(it)}</td>" }
+    fun rawLink(raw: String?): String {
+        if (raw.isNullOrEmpty() || raw.split('/').any { it.isEmpty() || it == "." || it == ".." || '\\' in it || '\u0000' in it }) return ""
+        return "<a href=\"/jobs/$id/files/cases/0/out/report/${esc(pathUrl(raw))}\">raw</a>"
+    }
+    append(head("Benchmark capture $id", live = false))
+    append("<h1>Benchmark capture <a href=\"/jobs/$id\">$id</a></h1>")
+    append("<p>${esc(capture.repository)} · ${esc(capture.status)} · revision <code>${esc((capture.manifest["revision"] as? JsonPrimitive)?.contentOrNull ?: "unknown")}</code></p>")
+    append("<p><a href=\"/jobs/$id/files/cases/0/out/report/manifest.json\">Manifest</a> · ")
+    append("<a href=\"/jobs/$id/files/cases/0/out/report/results.json\">Results JSON</a></p>")
+    append("<form method=\"get\"><label>Baseline job <input type=\"number\" name=\"baseline\" min=\"1\" required value=\"${baselineId ?: ""}\"></label> <button>Compare</button></form>")
+    append("<p class=\"muted\">Ratios are candidate / baseline. Timing, allocation and quality metrics retain their units. ")
+    append("A measured difference alone does not establish a regression; inspect uncertainty and raw process samples. Smoke captures verify the harness.</p>")
+    if (comparison != null) {
+        append("<h2>Compared with <a href=\"/jobs/$baselineId/capture\">job $baselineId</a></h2><div class=\"scroll\"><table>")
+        append("<tr><th>Case / target</th><th>Metric</th><th>Unit</th><th>Baseline ± error</th><th>Candidate ± error</th><th>Difference</th><th>Ratio</th></tr>")
+        val reasons = mutableSetOf<Triple<String, String, String>>()
+        for (delta in comparison) {
+            append("<tr>")
+            fun estimate(value: Double?, error: Double?) = number(value) + (error?.let { " ± ${number(it)}" } ?: "")
+            append(cells("${delta.caseId} / ${delta.target}", delta.metric, delta.unit, estimate(delta.baseline, delta.baselineError),
+                estimate(delta.candidate, delta.candidateError), number(delta.difference), number(delta.ratio)))
+            append("</tr>")
+            delta.reason?.let { reason ->
+                if (reasons.add(Triple(delta.caseId, delta.target, reason))) append("<tr class=\"sub\"><td colspan=\"7\">${esc(reason)}</td></tr>")
+            }
+        }
+        append("</table></div>")
+    }
+    append("<h2>Captured cases</h2><div class=\"scroll\"><table><tr><th>Case / target</th><th>Status</th><th>Backend</th><th>Measurements</th><th>Quality</th><th>Evidence</th></tr>")
+    for (row in capture.rows) {
+        fun metrics(values: List<BenchmarkMetric>) = values.joinToString("; ") { metric ->
+            "${metric.name}: ${number(metric.value)} ${metric.unit}" + (metric.maximum?.let { " (max ${number(it)})" } ?: "")
+        }
+        append("<tr>")
+        append(cells("${row.id} / ${row.target}", row.status, row.validation?.backend ?: "—", metrics(row.metrics), metrics(row.validation?.metrics.orEmpty())))
+        append("<td>${rawLink(row.raw)} ${esc(row.reason.orEmpty())}</td></tr>")
+    }
+    append("</table></div><details><summary>Manifest and settings</summary><pre>${esc(capture.manifest.toString())}</pre></details>")
+    append("</body></html>")
 }
 
 /** An analysis job: the job whose captures it analysed, and the reports it wrote, once it has. */

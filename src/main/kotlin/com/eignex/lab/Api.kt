@@ -411,8 +411,33 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 }
             }
         }
-        // A long poll: the answer comes when the job ends, or after timeoutSec with the job as it stands, so a
-        // client learns of the end without polling over the network.
+        get("/jobs/{id}/capture") {
+            val id = call.jobId(store) ?: return@get
+            if (call.jobFilesMissing(config)) return@get
+            val job = requireNotNull(store.job(id))
+            val capture = withContext(Dispatchers.IO) {
+                BenchmarkCaptures.read(config.jobDir(id), job.experiment?.repository ?: Repositories.DEFAULT, job.experiment?.measurement ?: Measurement.NONE)
+            }
+            if (capture == null) {
+                call.respond(HttpStatusCode.NotFound, "no structured benchmark capture")
+                return@get
+            }
+            val baselineId = call.parameters["baseline"]?.let { value ->
+                requireNotNull(value.toLongOrNull()?.takeIf { it > 0 }) { "baseline must name a positive job id" }
+            }
+            val baseline = baselineId?.let { previous ->
+                val previousJob = requireNotNull(store.job(previous)) { "baseline job does not exist" }
+                withContext(Dispatchers.IO) {
+                    requireNotNull(BenchmarkCaptures.read(config.jobDir(previous), previousJob.experiment?.repository ?: Repositories.DEFAULT, previousJob.experiment?.measurement ?: Measurement.NONE)) {
+                        "baseline job has no structured benchmark capture"
+                    }
+                }
+            }
+            val comparison = baseline?.let { BenchmarkCaptures.compare(it, capture) }
+            if (call.wantsHtml()) call.respondText(benchmarkCapturePage(id, capture, baselineId, comparison), ContentType.Text.Html)
+            else if (comparison == null) call.respond(capture) else call.respond(comparison)
+        }
+        // A long poll returns when the job ends or its deadline arrives.
         get("/jobs/{id}/wait") {
             val id = call.parameters["id"]!!.toLong()
             val timeoutSec = (call.parameters["timeoutSec"]?.toLong() ?: DEFAULT_WAIT_SEC).coerceIn(1, MAX_WAIT_SEC)
