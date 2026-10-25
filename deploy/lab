@@ -55,6 +55,9 @@
 #   lab schedules | lab unschedule <id>
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
+#   lab execution <id>                                   Nomad session, allocation, generation and phase diagnostics
+#   lab capacity [show|leases|request <pool> <nodes> [ttl-sec]|release <lease>]
+#                                                        provider-neutral shared capacity; requests expire within one hour
 #   lab ls [n]                                              every queued and running job, however old, then the newest n (30)
 #   lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #                                                            show adds a queued job's placement and why it waits; cancel a
@@ -265,6 +268,19 @@ show)
     placement=$(curl -fsS "$url/placement/$1") || placement=null
     jq --argjson p "$placement" '. + {placement: $p.placement, waiting: $p.waiting}' <<< "$job"
   else jq . <<< "$job"; fi ;;
+execution) curl -fsS "$url/jobs/$1/execution" | jq . ;;
+capacity)
+  action="${1:-show}"; [[ $# -eq 0 ]] || shift
+  case "$action" in
+  show) curl -fsS "$url/capacity" | jq . ;;
+  leases) curl -fsS "$url/capacity/leases" | jq . ;;
+  request)
+    [[ "${2:-}" =~ ^[1-9][0-9]*$ && "${3:-900}" =~ ^[1-9][0-9]*$ ]] || { echo "usage: lab capacity request <pool> <nodes> [ttl-sec]" >&2; exit 2; }
+    jq -n --arg pool "$1" --argjson nodes "$2" --argjson ttl "${3:-900}" '{pool:$pool,nodes:$nodes,ttlSec:$ttl}' |
+      curl -fsS -H 'Content-Type: application/json' -X POST --data-binary @- "$url/capacity/leases" | jq . ;;
+  release) curl -fsS -X DELETE "$url/capacity/leases/$1" ;;
+  *) echo "usage: lab capacity [show|leases|request|release]" >&2; exit 2 ;;
+  esac ;;
 placement)
   json=0 id=""
   for arg in "$@"; do case "$arg" in --json) json=1 ;; *) id="$arg" ;; esac; done

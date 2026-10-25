@@ -10,7 +10,8 @@ import kotlin.system.exitProcess
  * manager restarts the runner, which resumes where the store says it was. `campaign-evidence` ([CampaignEvidence]) and
  * `make-sets` ([MakeSets]) are tools run by hand from a checkout, on any host, and `docker-cleanup` ([DockerCleanup])
  * prunes the lab machine's Docker now instead of at the runner's next cleanup. `reference` ([ReferenceCli]) runs one
- * reference-solver case, as a reference arm's case command calls it.
+ * reference-solver case, as a reference arm's case command calls it. `nomad-spec` renders an operator's experimental
+ * batch session without starting either service or opening the lab database.
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
@@ -19,6 +20,10 @@ fun main(args: Array<String>) {
         "make-sets" -> exitProcess(MakeSets.main(args.drop(1)))
         "docker-cleanup" -> exitProcess(dockerCleanupNow())
         "reference" -> exitProcess(ReferenceCli.main(args.drop(1)))
+        "nomad-coordinator" -> exitProcess(NomadCoordinatorCli.main(args.drop(1)))
+        "worker" -> exitProcess(WorkerSession.main(args.drop(1)))
+        "worker-local" -> exitProcess(WorkerCli.main(args.drop(1)))
+        "nomad-spec" -> exitProcess(NomadSpecCli.main(args.drop(1)))
     }
     if (mode == "password") {
         // A new password and the hash to commit as src/main/resources/lab-password; the password goes to the clients.
@@ -28,7 +33,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator")
         exitProcess(2)
     }
     val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->

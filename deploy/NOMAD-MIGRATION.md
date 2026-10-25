@@ -1,9 +1,24 @@
 # Nomad migration plan
 
-Proposed on 2026-10-25. This is an implementation plan; no runtime or infrastructure changes have been made.
+Proposed on 2026-10-25. Implementation is in progress; production execution has not been switched to Nomad.
 
 Revised after PR #127: maximize cloud utilization by sharing nodes across experiments, profiles, measurements, and
 builds within explicit CPU and memory budgets. Recording measurements does not automatically require a whole node.
+
+Implementation has started in [the isolated execution prototype](nomad/README.md): reusable resource budgets,
+Nomad batch-job rendering, and a TLS/ACL sandbox with real Linux sharing, hard-limit, OOM, and cancellation checks.
+Durable execution ownership now has additive session, attempt, event, and outbox tables, explicit backend selection,
+transactional leases/fencing, complete-iteration acceptance, and cancellation/rollback guards. Legacy queue and
+restart recovery exclude Nomad-owned experiments. The worker API and actual Nomad reconciler follow in the stack;
+there is no production selector yet. The connected stack now includes a separate worker listener, Nomad mTLS client,
+signed allocation identities, resumable/checksummed HTTP artifacts and durable reconciliation/completion. The real
+Linux integration test exercises coordinator restart and allocation loss. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
+an independent same-user process service and a provider-neutral OCI worker build. Approved Git export and checksum-verified worker build caching now run source builds inside the session budget, with permanent build-failure fencing; automatic queue preparation/admission remains outstanding. Durable event logs, bounded provisional case output and execution reporting preserve the existing tail/files paths for admitted sessions. A provider-neutral capacity collector and shared CPU/memory packing policy now expose fresh demand, booting-worker
+accounting, finite vCPU limits, purchasing restrictions, expiring manual requests and allocation reports. Provider-side
+Spot infrastructure, signed fresh capacity grants, pinned Autoscaler policy rendering, Linux bootstrap/interruption handling and independent AWS expiry are implemented in [the opt-in infrastructure modules](infra/README.md). A GCP Spot reference module adds expiring IAM resize permission and independent zero-target expiry with the same worker protocol. Live AWS/GCP cloud acceptance remains required. Native service rendering/install,
+shared legacy/Nomad ownership, priority/update draining and release retention are implemented behind explicit configuration. Native fixture execution and
+cleanup are exercised on macOS CI; real Mac solver/JFR canaries and cloud gates remain required. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
+replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.
 
 ## Outcome and decisions
 
@@ -352,8 +367,8 @@ run again after reconciliation. A Mac server outage prevents scheduling; provide
     contributes to new capacity demand. Per-experiment/per-host parallel caps still hold across sessions.
 
 Live Mac and cloud checks are explicit migration gates, not work claimed complete by writing this plan. Run targeted
-local tests for each implementation change and use GitHub CI for the full repository gate. This planning-only
-change requires no solver execution, infrastructure provisioning, or full Gradle check.
+local tests for each implementation change and use GitHub CI for the full repository gate. Planning-only edits
+require no solver execution or infrastructure provisioning; runtime changes must pass their listed acceptance gates.
 
 ## Documentation checked for this plan
 

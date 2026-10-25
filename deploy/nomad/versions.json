@@ -1,0 +1,22 @@
+{
+  "nomad": {
+    "version": "2.0.7",
+    "sha256": {
+      "darwin_amd64": "085a1c11cd2de2e5be490cbcc4213b1faaa0af45a4e121a55b2340dcef0d6286",
+      "darwin_arm64": "4ada34db43f8b75c80c4e09ce50f4753e661bcb4a3745f415dd4aa7d01483e58",
+      "linux_amd64": "4c9b8a0850d6fd9caadbbab09b3e6fdf8b77aa777729543c70c61b85acca68c1",
+      "linux_arm64": "19708097585efe0d60234f300b62892fa776ff93ca6ba5fb918360cbd118b71e"
+    }
+  },
+  "autoscaler": {
+    "version": "0.6.0",
+    "sha256": {
+      "darwin_amd64": "5b9ce8b64f54c8b7071e4f1e0ea3e204498171fc1222529bbcbc5d182d1ce070",
+      "darwin_arm64": "a3b777f7781a6779991f75cfb54a045f3302b17f4c436c99531da698384664e7",
+      "linux_amd64": "1d404b456a36a477a8c8cf26de2f79c1ad13510d0b241036f056e0675addeb15",
+      "linux_arm64": "7625e88717b6a4bc0ef3fbb6b77b33df562af3fefd7244e50c1064f295993821"
+    }
+  },
+  "linux_agent_image": "ubuntu@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+  "probe_image": "python@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962"
+}

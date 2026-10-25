@@ -1,0 +1,19 @@
+{
+  "name": "lab-server",
+  "data_dir": "/Users/lab/eignex-lab-data/nomad/server",
+  "datacenter": "lab",
+  "bind_addr": "100.64.0.10",
+  "addresses": {"http": "127.0.0.1", "rpc": "100.64.0.10", "serf": "100.64.0.10"},
+  "ports": {"http": 4646, "rpc": 4647, "serf": 4648},
+  "advertise": {"http": "127.0.0.1:4646", "rpc": "100.64.0.10:4647", "serf": "100.64.0.10:4648"},
+  "server": {"enabled": true, "bootstrap_expect": 1},
+  "client": {"enabled": false},
+  "acl": {"enabled": true},
+  "tls": {
+    "http": true, "rpc": true, "verify_server_hostname": true, "verify_https_client": true,
+    "ca_file": "/Users/lab/eignex-lab-data/nomad/nomad-agent-ca.pem",
+    "cert_file": "/Users/lab/eignex-lab-data/nomad/global-server-nomad.pem",
+    "key_file": "/Users/lab/eignex-lab-data/nomad/global-server-nomad-key.pem"
+  },
+  "consul": {"auto_advertise": false, "server_auto_join": false, "client_auto_join": false}
+}

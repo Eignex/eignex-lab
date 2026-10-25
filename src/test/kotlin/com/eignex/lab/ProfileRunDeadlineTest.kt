@@ -72,6 +72,23 @@ class ProfileRunDeadlineTest {
     }
 
     @Test
+    fun `a completed stage waits for its still running helper to stop`() {
+        var process: Process? = null
+        try {
+            ProfileRunDeadline(10_000).use { deadline ->
+                assertEquals("finished", deadline.work {
+                    process = ProfileRunDeadline.start(ProcessBuilder("sleep", "30"))
+                    "finished"
+                })
+                assertFalse(process!!.isAlive)
+                assertEquals("cleaned", deadline.cleanup { "cleaned" })
+            }
+        } finally {
+            process?.destroyForcibly()?.waitFor(5, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
     fun `a timed out setup kills its child process`() {
         val child = AtomicLong()
         var process: Process? = null

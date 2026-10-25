@@ -1,0 +1,17 @@
+name: nomad-infrastructure
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py'
+      - run: python3 -m unittest discover -s deploy/nomad -p 'test_*.py'
+      - run: python3 deploy/infra/validate.py

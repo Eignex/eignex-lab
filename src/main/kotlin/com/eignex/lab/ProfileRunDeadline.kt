@@ -127,6 +127,24 @@ internal class ProfileRunDeadline(
             for ((process) in owned.asReversed()) {
                 if (process.isAlive) process.destroyForcibly()
             }
+            // destroyForcibly only requests termination. Do not release a stage while its helper can still run.
+            val stoppedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            var interrupted = Thread.interrupted()
+            try {
+                for ((process) in owned.asReversed()) {
+                    while (process.isAlive) {
+                        val remaining = stoppedBy - System.nanoTime()
+                        check(remaining > 0) { "Profile stage process did not stop" }
+                        try {
+                            process.waitFor(remaining, TimeUnit.NANOSECONDS)
+                        } catch (_: InterruptedException) {
+                            interrupted = true
+                        }
+                    }
+                }
+            } finally {
+                if (interrupted) Thread.currentThread().interrupt()
+            }
         }
     }
 

@@ -115,7 +115,7 @@ object Placement {
      */
     fun replaceQueued(store: Store, config: Config): List<Long> {
         val schedules = store.schedules()
-        return store.active(withCommands = false).filter { it.status == Status.QUEUED }.mapNotNull { job ->
+        return store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.LEGACY && it.status == Status.QUEUED }.mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
             if (job.total > 0) return@mapNotNull job.id.takeIf { spec.host == Experiments.AWS_HOST && release(store, config, job.id) }
             val capped = if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) Experiments.capToLocal(spec, config.cores, config.maxParallel) else spec
@@ -135,7 +135,7 @@ object Placement {
      * still when pressure calls for one. False when it stays where it was.
      */
     fun release(store: Store, config: Config, jobId: Long): Boolean {
-        val job = store.job(jobId)?.takeIf { it.status == Status.QUEUED } ?: return false
+        val job = store.job(jobId)?.takeIf { it.backend == ExecutionBackendKind.LEGACY && it.status == Status.QUEUED } ?: return false
         val spec = job.experiment ?: return false
         val host = host(spec, job.name, config, store.schedules())
         return host != spec.host && store.release(jobId, host)

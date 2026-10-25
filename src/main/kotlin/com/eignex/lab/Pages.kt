@@ -87,6 +87,7 @@ internal fun jobPage(
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
+    if (job.backend == ExecutionBackendKind.NOMAD) append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/capacity/view\">capacity</a></dd>")
     append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
@@ -2042,3 +2043,44 @@ async function refresh() {
 }
 if (document.body.hasAttribute('data-refresh')) timer = setInterval(refresh, 10000);
 </script>"""
+
+/** Shared-node accounting for the Nomad backend, independent of provider naming. */
+internal fun capacityPage(snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>): String = buildString {
+    append(head("Nomad capacity · eignex lab", live = true))
+    append("<header><h1>Nomad capacity</h1></header><div id=\"capacity\" data-live>")
+    if (snapshot == null) { append("<p>Capacity has not reported.</p></div></body></html>"); return@buildString }
+    append("<p>Report age: ${snapshot.ageMs / 1000}s${if (snapshot.ageMs > CapacityCollector.FRESH_MS) " · stale; growth is held" else ""}</p>")
+    append("<table><thead><tr><th>Pool</th><th>Market</th><th>Desired / limit</th></tr></thead><tbody>")
+    for (pool in snapshot.pools) append("<tr><td>${esc(pool.id)}</td><td>${esc(pool.market.tag)}</td><td>${snapshot.decision.desired[pool.id] ?: 0} / ${pool.maxNodes}</td></tr>")
+    append("</tbody></table><h2>Nodes and allocations</h2><table><thead><tr><th>Node</th><th>State</th><th>Sessions / experiments</th><th>Unreserved CPU / memory</th></tr></thead><tbody>")
+    for (node in snapshot.nodes) {
+        val pool = snapshot.pools.singleOrNull { it.id == node.pool }
+        val cpu = node.reservations.sumOf { it.budget.cpuMillis.toLong() }
+        val memory = node.reservations.sumOf { it.budget.memoryMiB.toLong() }
+        append("<tr><td>${esc(node.id)}<br>${esc(node.pool)}</td><td>${node.state}</td><td>")
+        append(node.reservations.joinToString("<br>") { allocation ->
+            (if (allocation.job > 0) "<a href=\"/jobs/${allocation.job}\">${allocation.job}</a>" else "external work") +
+                " · ${esc(allocation.id)} · ${allocation.budget.cpuMillis / 1000.0} vCPU / ${allocation.budget.memoryMiB} MiB"
+        })
+        append("</td><td>${pool?.let { (it.cpuMillis - cpu).coerceAtLeast(0) / 1000.0 } ?: "?"} vCPU / ${pool?.let { (it.availableMemoryMiB - memory).coerceAtLeast(0) } ?: "?"} MiB</td></tr>")
+    }
+    append("</tbody></table>")
+    for (wait in snapshot.decision.waiting) append("<p>${esc(wait.request)}: ${esc(wait.reason)}</p>")
+    for ((pool, reason) in snapshot.failures) append("<p>${esc(pool)}: ${esc(reason)}</p>")
+    if (leases.isNotEmpty()) append("<h2>Operator capacity</h2>" + leases.joinToString("") { "<p>${esc(it.pool)}: ${it.nodes} nodes until ${it.expiresAt} · ${esc(it.id)}</p>" })
+    append("<p><a href=\"/\">Queue</a> · <a href=\"/capacity\">JSON</a></p></div></body></html>")
+}
+
+internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): String = buildString {
+    append(head("Execution · job $job", live = true))
+    append("<header><h1>Execution · job $job</h1></header><div id=\"execution\" data-live>")
+    append("<p><a href=\"/jobs/$job\">Experiment</a> · <a href=\"/jobs/$job/files/job.log\">Log</a> · <a href=\"/capacity/view\">Capacity</a></p>")
+    append("<table><thead><tr><th>Session / allocation</th><th>Node</th><th>Phase / generation</th><th>Budget</th><th>Accepted iterations</th></tr></thead><tbody>")
+    for (report in reports) {
+        val session = report.session
+        append("<tr><td>${esc(session.id)}<br>${esc(session.allocation ?: "pending")}</td><td>${esc(session.node ?: "pending")}</td>")
+        append("<td>${esc(report.phase ?: session.desired)} / ${report.generation ?: 0}</td><td>${session.budget.cpuMillis / 1000.0} vCPU / ${session.budget.memoryMiB} MiB</td><td>${report.committed}</td></tr>")
+        report.observation?.let { append("<tr><td colspan=\"5\">${esc(it)}</td></tr>") }
+    }
+    append("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>")
+}
