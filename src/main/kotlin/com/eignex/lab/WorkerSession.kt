@@ -94,6 +94,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 Files.writeString(resourceFile, Json.encodeToString(observation.copy(counters = ResourceObservation.counters())))
                 outputs["nomad/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}-resources.json"] = upload(resourceFile, claim.owner)
                 retry { json("commit", Json.encodeToString(WorkerCommit(claim.owner, result.copy(artifacts = outputs)))) }
+                // Only the durable acceptance acknowledgement permits removing the private worktree and captures.
+                logs.close()
+                deleteTree(directory)
             } catch (failure: WorkerBuildFailure) {
                 retry { json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return

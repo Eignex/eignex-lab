@@ -281,7 +281,9 @@ offsets and an 8 MiB ceiling per stream. Output belongs to a session/iteration/g
 the current signed allocation and attempt lease. `/jobs/ID/files/N.out` and `lab cat ID N.out` fall back to this
 active attempt only while no accepted file exists. Revocation removes that fallback immediately; a late write
 can reach only the old private attempt path. Accepted files and captures still come from checksum-verified whole
-iteration commit and are never overwritten by streaming output. Full output becomes available after acceptance;
+iteration commit and are never overwritten by streaming output. After the acceptance acknowledgement, the worker removes the private iteration worktree and captures so long
+sessions do not accumulate one source/build copy per iteration. Interrupted unacknowledged attempts retain their
+workspace until allocation GC; reusable verified caches remain. Full output becomes available after acceptance;
 the execution page explains the provisional limit. Transport retry and log streaming never hold up a solver or its
 lease heartbeat. Provisional logs remain visible in Files for diagnosis until normal job-file retention removes them.
 

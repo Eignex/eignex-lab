@@ -101,6 +101,12 @@ class ConnectedNomadTest {
             assertTrue(Files.readString(root.resolve("jobs/$job/0.out")).contains("portable-worker-output"))
             assertTrue(store.caseRecordText(job, 0)!!.contains("fixture"))
             assertTrue(Files.list(root.resolve("jobs/$job/nomad")).use { files -> files.anyMatch { it.fileName.toString().endsWith("-2-resources.json") } }, "replacement committed generation 2")
+            val acceptedAllocation = assertNotNull(store.execution.reports(job).single { it.committed > 0 }.session.allocation)
+            val exited = System.nanoTime() + 10_000_000_000
+            while (client.allocation(acceptedAllocation)?.client !in setOf("complete", "failed", "lost") && System.nanoTime() < exited) Thread.sleep(100)
+            assertTrue(client.allocation(acceptedAllocation)?.client in setOf("complete", "failed", "lost"), "accepted worker exited")
+            val attempts = state.resolve("data/alloc/$acceptedAllocation/worker/local/worker/attempts")
+            assertTrue(!Files.exists(attempts) || Files.list(attempts).use { !it.findAny().isPresent }, "accepted private workspaces are released")
             // A fresh coordinator replays no submission and preserves accepted work.
             NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") }).reconcile()
             assertEquals(Status.DONE, store.job(job)!!.status)
