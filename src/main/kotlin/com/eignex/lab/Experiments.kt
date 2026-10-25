@@ -73,7 +73,7 @@ data class ExperimentSpec(
      */
     val analyze: AnalyzeSpec? = null,
     /**
-     * A profile job: this `main` of klause's build at the base `ref`, run once under JFR instead of problems and arms.
+     * A profile job: a committed JVM main or executable at the base `ref`, instead of problems and arms.
      * For measurements the experiments cannot express; not for the build's tests or lint gates, which CI runs.
      */
     val profile: ProfileMain? = null,
@@ -84,21 +84,34 @@ data class ExperimentSpec(
     /** What the lab cut down to fit the local machine when it took the job ([Experiments.capToLocal]), each in words;
      *  set by the lab, not the submitter. */
     val capped: List<String> = emptyList(),
+    /** The GitHub repository to build. Only repositories owned by Eignex are accepted. */
+    val repository: String = Repositories.DEFAULT,
 )
 
 /**
- * A profile job's entry point: [main], a class of klause's build at the job's commit, and [args], handed to it as
- * they are, with no shell between. Only committed code runs, from a commit a trusted user pushed ([Trust]).
+ * A profile job's entry point: [main] on its build's classpath, or a committed [script], with [args] passed literally.
+ * Only repositories owned by Eignex run, from a commit that passes [Trust]. JVM mains record JFR; scripts own their
+ * runtimes and recordings and may publish a report through [outputArgument].
  */
 @Serializable
 data class ProfileMain(
-    val main: String,
+    val main: String = "",
     val args: List<String> = emptyList(),
     /**
      * Optional local active-time limit including build, retries and cleanup; queue time is excluded. It is capped as
      * the profile's own time limit is ([Experiments.profileRunTimeoutSec]).
      */
     val runTimeoutSec: Long? = null,
+    /** An executable committed in the selected repository, instead of a JVM main. */
+    val script: String? = null,
+    /** Gradle tasks that prepare this entry point; an empty list retains the legacy Klause build for a JVM main. */
+    val buildTasks: List<String> = emptyList(),
+    /** Repository-relative runtime entries, optionally naming a directory of jars. Required for JVM mains outside Klause. */
+    val classpath: List<String> = emptyList(),
+    /** JVM options for a main; a script controls its own runtimes and recordings. */
+    val jvmArgs: List<String> = emptyList(),
+    /** Pass this option followed by $OUT/report to a script that publishes a report directory, such as Koblas. */
+    val outputArgument: String? = null,
 )
 
 /**
@@ -338,6 +351,8 @@ object Experiments {
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
+        Repositories.requireAllowed(spec.repository)
+        require(spec.repository == Repositories.DEFAULT || spec.isProfile) { "other Eignex repositories require a profile entry point" }
         requireOptions(spec)
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
         spec.analyze?.let { analyze ->
@@ -373,7 +388,7 @@ object Experiments {
                 require(timeout in 1..(Long.MAX_VALUE / 1_000_000_000)) { "profile.runTimeoutSec must be positive and fit a monotonic deadline" }
                 require(storedHost(spec.host) == LAB_HOST && !spec.auto) { "profile.runTimeoutSec requires the local host (local, or lab)" }
             }
-            require(MAIN.matches(profile.main)) { "profile.main must be a class in com.eignex.klause.bench.profile, not '${profile.main}'" }
+            ProfileRuns.validate(spec.repository, profile)
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
             arms(spec).single().values[DEBUG_KEY]?.let { require(it.toBooleanStrictOrNull() != null) { "debug must be true or false" } }
             val asked = arms(spec).singleOrNull()?.values?.get("timeout")
@@ -602,20 +617,9 @@ object Experiments {
      * arguments quoted one by one, recording JFR to `$OUT/profile.jfr`. `$OUT` (whose files come back with the job's),
      * `$KLAUSE_CORPUS`, `$KLAUSE_CLI` and `$KLAUSE_BENCH` are set for it to read.
      */
-    fun profileCommand(worktree: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean = true): String {
-        val lib = "$worktree/klause-bench/build/install/klause-bench/lib"
-        val jvm = listOf(
-            "--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector",
-            "-Dklause.bench.corpusCache=$corpus", "-Dklause.workspace.root=$worktree", "-cp", "$lib/*",
-        )
-        return "cd ${quote(worktree)} && export OUT=\"\$JOB_DIR/cases/$index/out\" KLAUSE_CORPUS=${quote(corpus)} " +
-            "KLAUSE_CLI=${quote("$worktree/klause-cli/build/install/klause-cli-jvm/bin/klause-cli")} " +
-            "KLAUSE_BENCH=${quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")} " +
-            (if (debug) "" else "KLAUSE_DEBUG=false ") + "&& " +
-            "mkdir -p \"\$OUT\" && exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
-            "\"-XX:StartFlightRecording=filename=\$OUT/profile.jfr,settings=profile,dumponexit=true\" " +
-            (jvm + profile.main + profile.args).joinToString(" ") { quote(it) }
-    }
+    fun profileCommand(worktree: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean = true,
+        repository: String = Repositories.DEFAULT): String =
+        ProfileRuns.command(worktree, repository, profile, index, corpus, debug)
 
     /** Hours [cases] take, each using its full budget, run [parallel] at once within [cores]: the cost of a run where
      *  nothing solves early. The tighter of the two limits sets it. */
@@ -658,8 +662,6 @@ object Experiments {
      * on AWS, and time enough for a JVM's shutdown hooks, JFR's dump on exit among them.
      */
     const val STOP_GRACE_SEC = 30L
-    /** A class under klause's package: what a profile job may name as its main. */
-    private val MAIN = Regex("com\\.eignex\\.klause\\.bench\\.profile\\.[A-Za-z_][A-Za-z0-9_]*")
     private val SHA256 = Regex("[0-9a-f]{64}")
     /** An option's name as the bench reads it. */
     private val OPTION = Regex("[A-Za-z][A-Za-z0-9._-]*")

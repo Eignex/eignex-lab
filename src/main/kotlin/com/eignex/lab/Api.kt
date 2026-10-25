@@ -173,8 +173,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     val estimates = EstimateHistory(store, config.cores)
     val disk = DiskUsage(config, active = { store.active(withCommands = false).map { it.id }.toSet() }).also { it.start() }
     // Only branches are asked about here, from GitHub; the runner checks each commit on its mirror when it plans.
-    val trust = Trust(config.trustedUsers, config.repoUrl, git = { 1 to "" },
-        github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
+    val trusts = java.util.concurrent.ConcurrentHashMap<String, Trust>()
+    fun trust(repository: String) = trusts.computeIfAbsent(repository) {
+        Trust(config.trustedUsers, Repositories.source(config, repository), git = { 1 to "" },
+            github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
+    }
     referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
     Trend.warm(store, trendCache)
@@ -272,7 +275,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 return@post
             }
             val arms = Experiments.arms(spec)
-            for (ref in arms.map { it.ref }.distinct()) requireRef(ref, config, trust)
+            for (ref in arms.map { it.ref }.distinct()) requireRef(ref, Repositories.source(config, spec.repository), trust(spec.repository))
             val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             val notes = (if (spec.isProfile) {
                 listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
@@ -286,7 +289,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/trend") {
             val view = trendView(store, trendCache, call.parameters["name"], call.parameters["all"] != null)
             if (call.wantsHtml()) {
-                call.respondText(trendPage(view.name, view.shown, config.repoUrl, view.schedules, view.earlier, view.all, view.computing),
+                val repository = store.schedules().firstOrNull { it.name == view.name }?.experiment?.repository ?: Repositories.DEFAULT
+                call.respondText(trendPage(view.name, view.shown, Repositories.url(repository), view.schedules, view.earlier, view.all, view.computing),
                     ContentType.Text.Html)
             } else {
                 call.respond(view.shown)
@@ -539,7 +543,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             validateScheduled(spec.experiment, config)
-            requireRef(spec.ref, config, trust)
+            requireRef(spec.ref, Repositories.source(config, spec.experiment.repository), trust(spec.experiment.repository))
             val id = store.createSchedule(spec.name, spec.ref, spec.experiment, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
@@ -730,11 +734,11 @@ private fun ApplicationCall.wantsHtml() = "json" !in parameters && request.accep
  * ([Trust.requireBranch]): a refused branch is refused before it queues. A commit named by its sha is checked when
  * the job is planned, as every commit is, and so is a branch when GitHub cannot be asked now.
  */
-private suspend fun requireRef(ref: String, config: Config, trust: Trust) {
+private suspend fun requireRef(ref: String, repoUrl: String, trust: Trust) {
     if (!Regex("[A-Za-z0-9._/-]+").matches(ref) || Regex("[0-9a-f]{7,40}").matches(ref)) return
     var branch = false
     val known = withContext(Dispatchers.IO) {
-        val process = ProcessBuilder("git", "ls-remote", config.repoUrl, "refs/heads/$ref", "refs/tags/$ref")
+        val process = ProcessBuilder("git", "ls-remote", repoUrl, "refs/heads/$ref", "refs/tags/$ref")
             .redirectError(ProcessBuilder.Redirect.DISCARD)
             .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" }
             .start()

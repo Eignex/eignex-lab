@@ -375,6 +375,7 @@ class AwsHost(
     private val compilation: String? = null,
     /** Collect process resources without requesting a JVM recording. */
     private val measureCliResources: Boolean = false,
+    private val repository: String = Repositories.DEFAULT,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val id get() = instance
@@ -385,7 +386,11 @@ class AwsHost(
 
     override fun parallel(requested: Int): Int = parallel ?: super.parallel(requested)
 
-    override fun worktree(sha: String) = "$HOME/work/${sha.take(SHA_DIR)}"
+    override fun worktree(sha: String): String {
+        Repositories.requireAllowed(repository)
+        val namespace = if (repository == Repositories.DEFAULT) "" else repository.substringAfter('/').lowercase() + "/"
+        return "$HOME/work/$namespace${sha.take(SHA_DIR)}"
+    }
 
     override fun select(worktree: String, args: String): List<String> {
         val opts = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$worktree"
@@ -1060,7 +1065,7 @@ class AwsWorker(
             runner.log(job.id, "${node.instance}: planning, which fetches the corpora the selections read")
             runner.plan(current, spec, arms, shas, primary, job.dir, host)
             store.setup(job.id, primary)
-            aws.corpusBucket?.let { bucket ->
+            aws.corpusBucket?.takeUnless { spec.isProfile }?.let { bucket ->
                 // Right after planning, before other nodes fetch: they then pull what this one fetched from the bucket
                 // instead of each fetching it from its source, and no case is running to slow the upload.
                 runner.log(job.id, "${node.instance}: compressing and pushing newly fetched corpora to s3://$bucket")
@@ -1082,6 +1087,10 @@ class AwsWorker(
 
     /** Build each of [shas] the node has not built yet for a job like [job]. */
     private fun build(node: Node, host: AwsHost, job: AwsJob, shas: List<String>) {
+        if (job.spec.isProfile) {
+            setupProfile(job, host, shas)
+            return
+        }
         val measuresCli = job.spec.measuresCli
         val missing = shas.filter { !AwsBuildCache.hasBuilt(node.built, it, measuresCli) }
         if (missing.isEmpty()) return
@@ -1101,6 +1110,7 @@ class AwsWorker(
         parallel = if (job.spec.parallel == null) defaultParallel(node.size) else null,
         compilation = job.spec.profileCompilation,
         measureCliResources = job.spec.measureCliResources,
+        repository = job.spec.repository,
     ) {
         store.cancelRequested(job.id)
     }
@@ -1237,6 +1247,16 @@ class AwsWorker(
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
     }
 
+    /** Profile builds have their own repository and layout and never use Klause's distribution cache. */
+    private fun setupProfile(job: AwsJob, host: AwsHost, shas: List<String>) {
+        val script = profileSetup(job.spec, host, shas, config.gradleWorkers, Repositories.source(config, job.spec.repository))
+        runner.withRetry(job.id, "building profile on ${host.instance}", config.buildRetry) {
+            val (exit, output) = host.ssh.exec(script, BUILD_TIMEOUT_SEC)
+            job.log.appendText("[${host.instance}] $output\n")
+            check(exit == 0) { "profile build on ${host.instance} failed (exit $exit); see setup.log" }
+        }
+    }
+
     /** Clone the repository and build each of [shas] on [host]. */
     private fun setup(job: AwsJob, host: AwsHost, shas: List<String>) {
         runner.log(job.id, "${host.instance}: building ${shas.joinToString { it.take(SHA_LOG) }}")
@@ -1246,7 +1266,7 @@ class AwsWorker(
             appendLine("mkdir -p ~/work ~/corpus")
             // The corpus comes down from the bucket while the build runs; a failed sync only means fetching upstream.
             aws.corpusBucket?.let { appendLine("(pull_lab_corpus $it ${aws.region} ~/corpus || true) > ~/corpus-sync.log 2>&1 & sync=${'$'}!") }
-            appendLine("[ -d ~/repo/.git ] || git clone -q --filter=blob:none --no-checkout ${quote(config.repoUrl)} ~/repo")
+            appendLine("[ -d ~/repo/.git ] || git clone -q --filter=blob:none --no-checkout ${quote(Repositories.source(config, Repositories.DEFAULT))} ~/repo")
             appendLine("git -C ~/repo fetch -q origin ${shas.joinToString(" ")} || git -C ~/repo fetch -q origin")
             val bucket = aws.corpusBucket
             // Gradle's caches (dependencies, the wrapper's distribution) come from one archive in the bucket, so a
@@ -1363,6 +1383,27 @@ class AwsWorker(
          * manifest, which must describe the files the cases will run, launcher included. Both come after the build cache
          * upload, so the cached distributions stay the plain ones.
          */
+        internal fun profileSetup(spec: ExperimentSpec, host: AwsHost, shas: List<String>, workers: Int, source: String): String {
+            Repositories.requireAllowed(spec.repository)
+            val profile = checkNotNull(spec.profile)
+            ProfileRuns.validate(spec.repository, profile)
+            val repo = "${AwsHost.HOME}/repos/${spec.repository.substringAfter('/').lowercase()}"
+            val tasks = ProfileRuns.buildTasks(spec.repository, profile)
+            return buildString {
+                appendLine("set -euo pipefail; ${AwsHost.ENV}")
+                appendLine("mkdir -p ${AwsHost.HOME}/repos ${AwsHost.HOME}/work")
+                appendLine("[ -d ${quote("$repo/.git")} ] || git clone -q --filter=blob:none --no-checkout ${quote(source)} ${quote(repo)}")
+                appendLine("git -C ${quote(repo)} remote set-url origin ${quote(source)}")
+                appendLine("git -C ${quote(repo)} fetch -q origin ${shas.joinToString(" ", transform = ::quote)}")
+                for (sha in shas) {
+                    val worktree = host.worktree(sha)
+                    appendLine("mkdir -p ${quote(worktree.substringBeforeLast('/'))}")
+                    appendLine("[ -d ${quote(worktree)} ] || git -C ${quote(repo)} worktree add -q --detach ${quote(worktree)} ${quote(sha)}")
+                    if (tasks.isNotEmpty()) appendLine("(cd ${quote(worktree)} && ./gradlew ${tasks.joinToString(" ", transform = ::quote)} --max-workers=$workers -q)")
+                }
+            }
+        }
+
         internal fun finishWorktree(worktree: String, profileCli: Boolean): List<String> =
             listOfNotNull(CliMeasurements.install(worktree).takeIf { profileCli }, Experiments.captureProvenance(worktree))
 

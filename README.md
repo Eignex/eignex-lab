@@ -10,9 +10,10 @@
 
 # Eignex Lab
 
-An experiment server for [Klause](https://github.com/Eignex/klause). It runs experiments: a selection of benchmark
-problems solved under one or more configurations, one problem per case, with the queue, live output and a comparison
-of the results served over HTTP.
+An experiment server for Eignex repositories. It runs [Klause](https://github.com/Eignex/klause) solver experiments,
+[Koblas](https://github.com/Eignex/koblas) benchmark captures, and committed profile entry points from any Eignex
+repository, with the queue, live output and results served over HTTP. Source repositories are restricted to the
+Eignex GitHub organization.
 
 Setup and usage: [deploy/SETUP.md](deploy/SETUP.md).
 
