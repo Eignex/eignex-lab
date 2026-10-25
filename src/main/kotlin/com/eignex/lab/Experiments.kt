@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import java.security.MessageDigest
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -55,18 +56,8 @@ data class ExperimentSpec(
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
     val description: String = "",
-    /** Whole-CLI JFR and physical resource measurements, on the local machine or a node, returned with each case's
-     *  files. */
-    val profileCli: Boolean = false,
-    /** Physical CLI process resources from GNU/BSD time, without enabling JFR. */
-    val measureCliResources: Boolean = false,
-    /**
-     * With [profileCli], also record every JIT compilation of the CLI JVM ([CliMeasurements.options]): `jfr` records
-     * `jdk.Compilation` with no threshold, and `jfr+log` adds HotSpot's compilation log, with its inlining decisions.
-     * The lab writes a `compilation-report.json` beside each case's captures ([CompilationReports]). Its cases are
-     * instrumented ([instrumented]): comparisons flag them, as their times are no runtime measurement.
-     */
-    val profileCompilation: String? = null,
+    /** One recording mode for experiment CLI cases; omitted for ordinary runs. */
+    val measurement: Measurement = Measurement.NONE,
     /**
      * An analysis job: the lab's own analyser run again over an ended job's retained captures, writing fresh reports.
      * Nothing is built and no solver or klause code runs. Its spec names nothing else.
@@ -89,6 +80,22 @@ data class ExperimentSpec(
     /** Optional required and excluded node tags. Omitted on ordinary jobs. */
     val nodeTags: NodeSelector? = null,
 )
+
+@Serializable
+enum class Measurement {
+    @SerialName("none") NONE,
+    @SerialName("resources") RESOURCES,
+    @SerialName("jfr") JFR,
+    @SerialName("compilation") COMPILATION,
+    @SerialName("compilation+log") COMPILATION_LOG;
+
+    val recordsJfr: Boolean get() = this == JFR || this == COMPILATION || this == COMPILATION_LOG
+    val compilationRecording: String? get() = when (this) {
+        COMPILATION -> "jfr"
+        COMPILATION_LOG -> "jfr+log"
+        else -> null
+    }
+}
 
 /**
  * A profile job's entry point: [main] on its build's classpath, or a committed [script], with [args] passed literally.
@@ -143,10 +150,15 @@ data class AnalyzeSpec(
 val ExperimentSpec.isAnalysis: Boolean get() = analyze != null
 
 /** Whether each CLI process runs under the lab's physical resource measurement wrapper. */
-val ExperimentSpec.measuresCli: Boolean get() = profileCli || measureCliResources
+val ExperimentSpec.measuresCli: Boolean get() = measurement != Measurement.NONE
+
+val ExperimentSpec.recordsCliJfr: Boolean get() = measurement.recordsJfr
+
+/** The recording detail passed to the JFR and HotSpot launchers. */
+val ExperimentSpec.compilationRecording: String? get() = measurement.compilationRecording
 
 /** Whether [this] job's cases are instrumented: their CLI recorded every compilation, so their times are no runtime measurement. */
-val ExperimentSpec.instrumented: Boolean get() = profileCompilation != null
+val ExperimentSpec.instrumented: Boolean get() = compilationRecording != null
 
 /** Whether [this] is a profile job rather than an experiment over problems. */
 val ExperimentSpec.isProfile: Boolean get() = profile != null
@@ -165,7 +177,7 @@ data class Arm(val label: String, val values: Map<String, String>) {
 
     /**
      * Whether the arm's CLI runs with `KLAUSE_DEBUG=true`, its lightweight runtime statistics on: the arm's `debug`,
-     * true unless it says `false`. Whole-CLI profiling ([ExperimentSpec.profileCli]) does not depend on it.
+     * true unless it says `false`. Whole-CLI recording ([ExperimentSpec.measurement]) does not depend on it.
      */
     val debug: Boolean get() = values[Experiments.DEBUG_KEY]?.toBooleanStrictOrNull() ?: true
 }
@@ -292,9 +304,7 @@ object Experiments {
         arms(spec).map { arm -> (arm.values + ("ref" to arm.ref) + ("timeout" to arm.timeoutMs.toString())).toSortedMap().toString() }.sorted(),
         spec.seeds.sorted(),
         spec.repeats,
-        spec.profileCli,
-        spec.measureCliResources,
-        spec.profileCompilation.orEmpty(),
+        spec.measurement,
     )
 
     private fun hash(text: String): String =
@@ -381,13 +391,9 @@ object Experiments {
             require(
                 spec.profile == null && spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.base.isEmpty() &&
                     spec.configs == listOf(emptyMap<String, String>()) && spec.grid.isEmpty() && spec.seeds.isEmpty() &&
-                    spec.repeats == 1 && !spec.measuresCli && spec.profileCompilation == null,
+                    spec.repeats == 1 && !spec.measuresCli,
             ) { "an analyze job reruns the lab's analyser over another job's captures: no problems, configs, profile or profiling of its own" }
             return
-        }
-        spec.profileCompilation?.let { mode ->
-            require(mode in COMPILATION_MODES) { "profileCompilation must be one of $COMPILATION_MODES, not '$mode'" }
-            require(spec.profileCli) { "profileCompilation requires profileCli: true, whose CLI JVM it records" }
         }
         spec.profile?.let { profile ->
             profile.runTimeoutSec?.let { timeout ->
@@ -406,16 +412,13 @@ object Experiments {
             require(spec.configs.size == 1 && spec.grid.isEmpty() && spec.seeds.isEmpty() && spec.repeats == 1) {
                 "a profile job runs its main once: no configs, grid, seeds or repeats"
             }
-            require(!spec.profileCli) { "profileCli is for experiments; a profile job records JFR already" }
-            require(!spec.measureCliResources) { "measureCliResources measures an experiment's CLI, not a profile main" }
+            require(!spec.measuresCli) { "measurement selects experiment CLI recording; a profile entry point controls its own recordings" }
             arms(spec).single().let { require(it.cores <= cores) { "the profile asks for ${it.cores} processors; the lab has $cores cores" } }
             return
         }
-        require(!spec.profileCli || spec.parallel == 1) { "profileCli requires parallel=1" }
-        require(!spec.measureCliResources || spec.parallel == 1) { "measureCliResources requires parallel=1" }
-        require(!spec.measureCliResources || !spec.profileCli) { "profileCli already includes physical resource measurements" }
-        require(!spec.measureCliResources || arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
-            "measureCliResources measures the Klause CLI, not reference-backend arms"
+        require(!spec.measuresCli || spec.parallel == 1) { "measurement requires parallel=1" }
+        require(spec.measurement != Measurement.RESOURCES || arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
+            "measurement=resources measures the Klause CLI, not reference-backend arms"
         }
         require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
         arms(spec).firstOrNull { it.cores > cores }?.let { require(false) { "arm '${it.label}' asks for ${it.cores} processors; the lab has $cores cores" } }
@@ -638,10 +641,9 @@ object Experiments {
     private fun requireValue(key: String, value: String) =
         require(value.isNotBlank() && value.none { it.isWhitespace() || it.isISOControl() }) { "'$key' has an empty value or whitespace in it" }
 
-    /** What [ExperimentSpec.profileCompilation] may be: JFR alone, or JFR and HotSpot's compilation log. */
+    /** What [ExperimentSpec.compilationRecording] may be: JFR alone, or JFR and HotSpot's compilation log. */
     const val COMPILATION_JFR = "jfr"
     const val COMPILATION_JFR_LOG = "jfr+log"
-    val COMPILATION_MODES = listOf(COMPILATION_JFR, COMPILATION_JFR_LOG)
 
     private const val PARAM = "param."
     private val NAME = Regex("[A-Za-z0-9._-]+")

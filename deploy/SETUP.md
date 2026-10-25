@@ -69,18 +69,16 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `measurement` selects one recording mode for experiment CLI cases. Omit it for ordinary runs. The modes are
   `none`, `resources`, `jfr`, `compilation`, and `compilation+log`. Recording modes default to `parallel: 1`;
   explicitly requesting another parallel limit is refused. The same field works in scheduled experiments.
-  Existing specs using `measureCliResources`, `profileCli` and `profileCompilation` remain supported. When both
-  forms are supplied they must agree. The server expands modes into the existing stored fields, so equivalent
-  old and new specs keep the same experiment fingerprint. A committed `profile` entry point controls its own
-  recordings; `measurement` applies to solver experiments.
+  The mode is stored directly in each experiment. A committed `profile` entry point controls its own recordings;
+  `measurement` applies to solver experiments.
 
-  | Mode | Recording | Equivalent legacy settings |
-  | --- | --- | --- |
-  | `none` (default) | Ordinary run | All recording flags absent |
-  | `resources` | Physical process resources | `measureCliResources: true` |
-  | `jfr` | JFR plus process resources | `profileCli: true` |
-  | `compilation` | JFR including every compilation | `profileCli: true`, `profileCompilation: "jfr"` |
-  | `compilation+log` | Compilation recording plus HotSpot inlining log | `profileCli: true`, `profileCompilation: "jfr+log"` |
+  | Mode | Recording |
+  | --- | --- |
+  | `none` (default) | Ordinary run |
+  | `resources` | Physical process resources |
+  | `jfr` | JFR plus process resources |
+  | `compilation` | JFR including every compilation |
+  | `compilation+log` | Compilation recording plus HotSpot inlining log |
 
   The client can set the mode without editing a spec: `lab run --measurement compilation experiment.json`.
 - `measurement: "resources"` measures physical peak RSS, user/system CPU and wall time
@@ -185,12 +183,12 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   The raw captures stay with the case. The job's Files page lists them with the report and its task records, and
   `lab cat` or `lab fetch` gets them.
 - `{"analyze": {"job": <id>, "kind": "compilation"}}` posted to `/experiments` (`lab analyze <id>`) queues an
-  analysis job. It runs locally, where the captures are. It reruns the lab's analyser over an ended `profileCli`
+  analysis job. It runs locally, where the captures are. It reruns the lab's analyser over an ended JFR-recorded
   job's retained captures and writes each case's `compilation-report.json` afresh, with the analysis job in its
   provenance. It also writes an `analysis.json` summary into its own directory, and its page lists the reports. Nothing
   is built and no solver or klause code runs, so it suits a report the analyser has since learned to improve, and a
-  plain `profileCli` job too, whose report then says its threshold kept only the slow compilations. It is refused,
-  saying why, when the job has not ended, ran without `profileCli`, or has no captures left. That includes a job
+  plain `measurement: "jfr"` job too, whose report then says its threshold kept only the slow compilations. It is refused,
+  saying why, when the job has not ended, recorded no JFR, or has no captures left. That includes a job
   trimmed `LAB_TRIM_AGE_DAYS` after it ended (see Disk), whose raw captures are gone while its reports and manifests stay.
 - `{"analyze": {"kind": "compilation", "archive": "<name>", "sha256": "<hex>"}}` (`lab analyze --archive <name>
   --sha256 <hex>`) analyses the captures in a saved-capture archive instead, once their job is cleaned up: a
@@ -291,8 +289,8 @@ version is needed (`arm64Ami` overrides that architecture independently of `ami`
 per core. Compiled distribution caches are separated by CPU architecture.
 
 Submission commands accept `--tags` with comma-separated required tags and `!` before exclusions. Repeat the
-flag to add more tags. `lab run` merges them with any selectors already in its JSON file. The older
-`--require-tag` and `--exclude-tag` flags remain aliases. Profile and Koblas submissions also accept `--timeout`
+flag to add more tags. `lab run` merges them with any selectors already in its JSON file. Profile and Koblas
+submissions also accept `--timeout`
 in seconds (the server keeps its existing default and maximum). Most jobs need none of these options:
 
 ```bash
@@ -363,8 +361,6 @@ deploy/lab profile --repo Eignex/eignex-lab --build installDist \
   --classpath 'build/install/eignex-lab/lib/*' --timeout 600 \
   com.eignex.lab.MainKt main "Record startup host check" -- check
 ```
-
-The older positional `[host] [timeout-sec] [arg...]` form is still accepted without `--`; the host remains ignored.
 
 For a repository's own capture harness, use `profile.script` instead of `main`. It must name a tracked executable
 within the checkout; a symlink outside it is refused. `buildTasks` is optional for a script that builds its own
@@ -452,7 +448,7 @@ custody. The instance is retained through these attempts and is still terminated
 files not returned are unavailable, and the file API serves only files already retained on the lab machine.
 Local archive unpacking runs once, with the same 120-second timeout and cancellation handling, and retains
 `out.unpack.log` when successful. A terminal status identifies whether transfer or unpacking was incomplete.
-`lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]` queues one; `[host]` is ignored.
+`lab profile [--timeout seconds] <main> <ref> <description> -- [arg...]` queues one.
 On the cloud a profile job always runs on an on-demand node, never spot: AWS can take a spot instance back at two
 minutes' notice, and a profile cannot pick up where it stopped, so it would start over. Experiments and reference A/Bs
 resume after a reclaim and run on spot. The script jobs that came before (`script`, `scriptFile`) are retired: a spec
@@ -1098,12 +1094,13 @@ cloud spot node, then an on-demand node, with fixed exceptions:
   machines mixes their speeds: outcomes (solved, proven, objective) stay comparable, while timing comparisons across
   runs get noisier. Each case records where it ran (`local`, or the node's instance id), shown on its job page. An
   opted-in run launches a node only at priority `nodeMinPriority` or above (below).
-- Every job fits the local machine: a `processors` over the local machine's cores (`LAB_CORES`), in `base`, a config or the grid, and a
+- Jobs eligible for the local machine are capped to it: a `processors` over the local machine's cores (`LAB_CORES`), in `base`, a config or the grid, and a
   `parallel` over its limit (`LAB_MAX_PARALLEL`) are cut down to them at submit. The response's `notes`, the job log
-  and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. So no
-  job needs the cloud: nodes are overflow capacity for the local machine's queue, launched on pressure alone (below). `profileCli`
-  jobs too go local first: both hosts measure them (see the spec's keys above).
-- Profile jobs never run on spot: the local machine, then an on-demand node.
+  and the job page (`capped`) say what was cut; a grid axis whose values the cap makes equal keeps one of them. Ordinary
+  jobs need no cloud node: nodes provide overflow capacity for the local queue, launched on pressure alone
+  (below). Explicit node selectors can instead require cloud-only hardware. JFR-recorded experiments also go local
+  first when their tags permit it: both hosts measure them (see the spec's keys above).
+- Profile jobs use the local machine, then an on-demand node, unless their tags explicitly request spot.
 
 A job's `host` records the placement: `lab` (the local machine only), `aws` (a cloud node only) or `auto` (whichever
 is free first). The stored values keep these names, so older jobs and clients need nothing; wherever a host is
@@ -1558,7 +1555,7 @@ sampling; recordings require explicit profiling options.
 An arm's `debug=false` turns it off: its case command sets `KLAUSE_DEBUG=false` in front of the bench, over the `true`
 the host sets, on the local machine and on a node alike. The CLI reads anything but `true` as off, and so leaves its
 ordinary debug collectors disabled; the record's `runtimeDebug` and the build provenance's `KLAUSE_DEBUG` say so.
-`profileCli`, `measureCliResources` and `profileCompilation` work the same either way, as they go through
+The `measurement` modes work the same either way, as they go through
 `KLAUSE_CLI_OPTS` and the lab's own wrapper. Each case's JSON (`lab cases <id> --json`, `/experiments/{id}/cases`)
 carries `labDebug`, the setting the lab ran it with: `true` for every case before the setting existed. The setting is
 part of the spec's fingerprint, since it changes what the CLI runs and records, so runs with debug off start their own

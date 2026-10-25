@@ -37,8 +37,8 @@ class PlacementTest {
     @Test
     fun `every other job may go to either, unless only one of them can run it`() {
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "e", awsFits = true))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(profileCli = true), "e", awsFits = true))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec.copy(profileCli = true), "e", awsFits = false))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(measurement = Measurement.JFR), "e", awsFits = true))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec.copy(measurement = Measurement.JFR), "e", awsFits = false))
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, "e", awsFits = false))
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, "sweep@abc", awsFits = true))
     }

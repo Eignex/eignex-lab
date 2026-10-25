@@ -60,10 +60,10 @@ class RunnerTest {
     }
 
     @Test
-    fun `a profileCli case on the local machine gets its own profile directory and leaves its measurement manifest there`() {
+    fun `a JFR measurement case on the local machine gets its own profile directory and leaves its measurement manifest there`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
-        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true)
+        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.JFR)
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
             "echo \"\$EIGNEX_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
             "echo \"\$KLAUSE_CLI_PREFLIGHT_OPTS\" > \"\$JOB_DIR/preflight\""
@@ -88,7 +88,7 @@ class RunnerTest {
     fun `a resource measured local case keeps ordinary CLI options and binds its solve record`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
-        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measureCliResources = true)
+        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.RESOURCES)
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
             "echo \"\$EIGNEX_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
             "echo \"\$KLAUSE_CLI_PREFLIGHT_OPTS\" > \"\$JOB_DIR/preflight\""
@@ -128,9 +128,9 @@ class RunnerTest {
 
     private val sampleLog: String = checkNotNull(javaClass.getResource("/compilation/hotspot-compilation.log")).readText()
 
-    /** A finished profileCompilation job whose case 0 left [log] as its HotSpot log; returns its id. */
+    /** A finished compilation measurement job whose case 0 left [log] as its HotSpot log; returns its id. */
     private fun profiledJob(config: Config, store: Store, log: String = sampleLog): Long {
-        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true, profileCompilation = "jfr+log")
+        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.COMPILATION_LOG)
         val source = config.dataDir.resolve("sample.log").apply { writeText(log) }
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
             "cp ${quote(source.toString())} \"\$EIGNEX_LAB_PROFILE_DIR/hotspot-compilation.log\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\""
@@ -148,7 +148,7 @@ class RunnerTest {
         CompilationReports.profileDirs(config.jobDir(id), 0).single().resolve(CompilationReports.REPORT)
 
     @Test
-    fun `a profileCompilation case records every compilation and gets its compilation report as it ends`() {
+    fun `a compilation measurement case records every compilation and gets its compilation report as it ends`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
 

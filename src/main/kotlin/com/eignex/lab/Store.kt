@@ -1796,11 +1796,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun setParallel(jobId: Long, parallel: Int): Boolean {
         val spec = job(jobId)?.experiment
-        require(spec?.profileCli != true || parallel == 1) {
-            "profileCli requires parallel=1"
-        }
-        require(spec?.measureCliResources != true || parallel == 1) {
-            "measureCliResources requires parallel=1"
+        require(spec?.measuresCli != true || parallel == 1) {
+            "measurement requires parallel=1"
         }
         return update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
     }
@@ -1922,7 +1919,7 @@ private const val CASE_HOST = "COALESCE(m.host, CASE WHEN m.status IN ('RUNNING'
 private const val LAB_DEBUG = "(COALESCE(json_extract(a.arm, '\$.values.${Experiments.DEBUG_KEY}'), 'true') != 'false') AS lab_debug"
 
 /** Whether job `j` is instrumented ([ExperimentSpec.instrumented]), as 1 or 0. */
-private const val INSTRUMENTED = "(json_extract(j.experiment, '\$.profileCompilation') IS NOT NULL) AS instrumented"
+private const val INSTRUMENTED = "COALESCE(json_extract(j.experiment, '\$.measurement') IN ('compilation', 'compilation+log'), 0) AS instrumented"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"

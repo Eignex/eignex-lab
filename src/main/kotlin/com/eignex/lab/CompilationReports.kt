@@ -24,7 +24,7 @@ import kotlinx.serialization.json.Json
 
 /**
  * What a profiled case's CLI JVM spent on JIT compilation, as the lab worked it out from the case's retained captures
- * ([CompilationReports.analyze]): the JFR recording and, with `profileCompilation: "jfr+log"`, HotSpot's compilation
+ * ([CompilationReports.analyze]): the JFR recording and, with `measurement: "compilation+log"`, HotSpot's compilation
  * log. Every compilation is one compile id. [missing] names an observation the captures do not hold at all, and
  * [incomplete] one they hold only in part; the report is [complete] when both are empty. Durations are in ms.
  *
@@ -387,7 +387,7 @@ data class AnalysisEntry(
 /**
  * The lab's compilation analyser: it reads a profiled case's captures with the JDK's own JFR consumer and an XML
  * stream reader, runs no klause code, and writes [REPORT] and [TASKS] beside them. The runner runs it after each case
- * of a `profileCompilation` job, and an analysis job ([AnalyzeSpec]) reruns it over an ended job's retained captures,
+ * of a compilation-recorded job, and an analysis job ([AnalyzeSpec]) reruns it over an ended job's retained captures,
  * or over a pinned archive's ([CaptureArchives]).
  */
 object CompilationReports {
@@ -427,13 +427,13 @@ object CompilationReports {
 
     /**
      * Why an analysis of job [job], whose directory is [jobDir], cannot run, or null when it can: it must be an ended
-     * `profileCli` experiment whose captures are still there, neither trimmed ([JobTrim]) nor missing.
+     * JFR-recorded experiment whose captures are still there, neither trimmed ([JobTrim]) nor missing.
      */
     fun refusal(job: Job?, jobDir: Path): String? {
         if (job == null) return "no such job"
         val spec = job.experiment ?: return "job ${job.id} is not an experiment"
         if (spec.isAnalysis) return "job ${job.id} is an analysis job itself; name the job it analysed (${spec.analyze?.job})"
-        if (!spec.profileCli) return "job ${job.id} ran without profileCli: it recorded no captures to analyse"
+        if (!spec.recordsCliJfr) return "job ${job.id} ran without JFR measurement: it recorded no captures to analyse"
         if (job.status in ACTIVE) return "job ${job.id} is ${job.status.name.lowercase()}: analyse it once it has ended"
         val trimmed = jobDir.resolve(JobTrim.MARKER)
         if (Files.exists(trimmed)) {
@@ -555,7 +555,7 @@ object CompilationReports {
                 jfr.compilationEnabled == false -> missing += Marker("jfr-compilation", "jdk.Compilation was disabled in the recording")
                 jfr.threshold == null -> incomplete += Marker("jfr-threshold", "the recording does not say jdk.Compilation's threshold: short compilations may be missing")
                 !zeroDuration(jfr.threshold) -> incomplete += Marker("jfr-threshold", "jdk.Compilation was recorded with a threshold of " +
-                    "${jfr.threshold}: shorter compilations are missing (the job ran without profileCompilation)")
+                    "${jfr.threshold}: shorter compilations are missing (the job ran without compilation measurement)")
             }
             if (jfr.dataLossBytes > 0) incomplete += Marker("jfr-data-loss", "JFR lost ${jfr.dataLossBytes} bytes of events (jdk.DataLoss)")
             if (jfr.jvm == null) missing += Marker("jvm", "the recording has no jdk.JVMInformation event: the JVM's version and flags are unknown")
@@ -593,7 +593,7 @@ object CompilationReports {
         val last = ids.maxOrNull()
         if (first != null && first > 1) {
             incomplete += Marker("before-recording", "compile ids 1 to ${first - 1} are in no capture: the JVM compiled them at startup, " +
-                "before the recording began" + if (log == null) "; profileCompilation \"jfr+log\" covers them" else "")
+                "before the recording began" + if (log == null) "; measurement \"compilation+log\" covers them" else "")
         }
         val jfrIds = jfr?.compilations?.mapTo(HashSet()) { it.id }.orEmpty()
         val logIds = log?.tasks?.keys.orEmpty()

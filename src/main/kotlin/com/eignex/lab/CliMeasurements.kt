@@ -15,15 +15,15 @@ internal object CliMeasurements {
     const val JFR = "cli.jfr"
     const val RESOURCES = "resources.txt"
     const val MANIFEST = "measurement.json"
-    /** HotSpot's compilation log, written with `profileCompilation: "jfr+log"`. */
+    /** HotSpot's compilation log, written with `measurement: "compilation+log"`. */
     const val COMPILATION_LOG = "hotspot-compilation.log"
     /** The compilation log as it comes back from a node, gzipped. */
     const val COMPILATION_LOG_GZ = "$COMPILATION_LOG.gz"
     val artifacts = listOf(JFR, RESOURCES)
 
     /** The measured CLI's artifacts, with a recording and compilation log only when requested. */
-    fun artifacts(compilation: String?, profileCli: Boolean = true): List<String> =
-        (if (profileCli) artifacts else listOf(RESOURCES)) +
+    fun artifacts(compilation: String?, recordsJfr: Boolean = true): List<String> =
+        (if (recordsJfr) artifacts else listOf(RESOURCES)) +
             if (compilation == Experiments.COMPILATION_JFR_LOG) listOf(COMPILATION_LOG) else emptyList()
 
     /** Whether the lab itself runs on macOS, as the lab Mac does: its own profiling launcher is then the macOS one. */
@@ -31,7 +31,7 @@ internal object CliMeasurements {
 
     /**
      * The CLI JVM's options for a profiled case writing into [directory]: JFR under its `profile` settings, dumped on
-     * exit. With [compilation] (an [ExperimentSpec.profileCompilation]) `jdk.Compilation` is recorded with no threshold,
+     * exit. With [compilation] (an [ExperimentSpec.compilationRecording]) `jdk.Compilation` is recorded with no threshold,
      * so every compilation from the recording's start through the solve to shutdown is in it, and with `jfr+log`
      * HotSpot also writes its compilation log, inlining decisions included, which it completes when the JVM exits.
      */
@@ -98,9 +98,9 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
     fun writeManifest(
         files: Path, index: Int, attempt: Int, measurementId: String, instance: String, command: String, exit: Int,
         javaOptions: String, record: String?, macOs: Boolean, compilation: String? = null,
-        profileCli: Boolean = true,
+        recordsJfr: Boolean = true,
     ) {
-        require(profileCli || compilation == null) { "compilation recording requires CLI profiling" }
+        require(recordsJfr || compilation == null) { "compilation recording requires CLI profiling" }
         val recordHash = record?.takeIf { it.isNotEmpty() }?.let { snapshot ->
             files.resolve("solve-record.json").toFile().writeText(snapshot)
             MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -110,10 +110,10 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
             CliMeasurementManifest(
                 index, attempt, measurementId, instance, command, exit, javaOptions, recordHash, memory = memory(macOs),
                 instrumented = compilation != null,
-                instrumentation = if (profileCli) instrumentation(compilation) else "external-time",
+                instrumentation = if (recordsJfr) instrumentation(compilation) else "external-time",
                 compilation = compilation,
-                allocation = if (profileCli) "JFR weighted allocation samples; statistical estimate" else "not collected",
-                artifacts = artifacts(compilation, profileCli) + if (recordHash == null) emptyList() else listOf("solve-record.json"),
+                allocation = if (recordsJfr) "JFR weighted allocation samples; statistical estimate" else "not collected",
+                artifacts = artifacts(compilation, recordsJfr) + if (recordHash == null) emptyList() else listOf("solve-record.json"),
             ),
         ))
     }
@@ -178,7 +178,7 @@ internal data class CliMeasurementManifest(
     /** Whether the case recorded every compilation ([ExperimentSpec.instrumented]): its times are no runtime measurement. */
     val instrumented: Boolean = false,
     val instrumentation: String = "jfr-profile",
-    /** The job's [ExperimentSpec.profileCompilation], null without one. */
+    /** The job's [ExperimentSpec.compilationRecording], null without one. */
     val compilation: String? = null,
 )
 

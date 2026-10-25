@@ -46,15 +46,15 @@ internal object AwsBuildCache {
     }
 
     /** What a node's set of built commits holds for [sha] with or without the CLI measurement launcher. */
-    fun builtKey(sha: String, profileCli: Boolean): String = "$sha:$profileCli"
+    fun builtKey(sha: String, measuresCli: Boolean): String = "$sha:$measuresCli"
 
-    /** Whether a node that built what [built] holds has [sha] ready for a job with [profileCli]. */
-    fun hasBuilt(built: Set<String>, sha: String, profileCli: Boolean): Boolean = builtKey(sha, profileCli) in built
+    /** Whether a node that built what [built] holds has [sha] ready for a job with [measuresCli]. */
+    fun hasBuilt(built: Set<String>, sha: String, measuresCli: Boolean): Boolean = builtKey(sha, measuresCli) in built
 
-    /** [built] after [sha] was built again for [profileCli]: a rebuild replaces whatever the worktree held before, so
+    /** [built] after [sha] was built again for [measuresCli]: a rebuild replaces whatever the worktree held before, so
      *  its other entries go. */
-    fun rebuilt(built: MutableSet<String>, sha: String, profileCli: Boolean) = synchronized(built) {
+    fun rebuilt(built: MutableSet<String>, sha: String, measuresCli: Boolean) = synchronized(built) {
         built.removeAll { it.substringBefore(':') == sha }
-        built += builtKey(sha, profileCli)
+        built += builtKey(sha, measuresCli)
     }
 }

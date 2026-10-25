@@ -176,7 +176,7 @@ class ExperimentsTest {
 
     @Test
     fun `CLI profiling requires an explicit serial experiment, wherever it runs`() {
-        val experiment = spec().copy(profileCli = true)
+        val experiment = spec().copy(measurement = Measurement.JFR)
 
         assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, maxParallel = 4) }
         for (host in listOf("lab", "auto", "aws")) Experiments.validate(experiment.copy(host = host, parallel = 1), maxParallel = 4)
@@ -185,34 +185,29 @@ class ExperimentsTest {
 
     @Test
     fun `CLI resource measurement requires serial native cases and keeps recording disabled`() {
-        val measured = spec().copy(measureCliResources = true, parallel = 1)
+        val measured = spec().copy(measurement = Measurement.RESOURCES, parallel = 1)
 
         for (host in listOf("lab", "auto", "aws")) Experiments.validate(measured.copy(host = host), maxParallel = 4)
         assertTrue(measured.measuresCli)
-        assertFalse(measured.profileCli || measured.instrumented)
+        assertFalse(measured.recordsCliJfr || measured.instrumented)
         assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(measured))
         assertFailsWith<IllegalArgumentException> { Experiments.validate(measured.copy(parallel = 2), maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(measured.copy(profileCli = true), maxParallel = 4) }
         assertFailsWith<IllegalArgumentException> {
             Experiments.validate(measured.copy(configs = listOf(mapOf("backend" to "reference"))), maxParallel = 4)
         }
     }
 
     @Test
-    fun `compilation profiling needs CLI profiling, names a known mode, and marks the experiment instrumented`() {
-        val profiled = spec().copy(profileCli = true, parallel = 1)
-
-        for (mode in listOf("jfr", "jfr+log")) {
-            val instrumented = profiled.copy(profileCompilation = mode)
+    fun `compilation measurement enables JFR and marks the experiment instrumented`() {
+        val profiled = spec().copy(measurement = Measurement.JFR, parallel = 1)
+        for (mode in listOf(Measurement.COMPILATION, Measurement.COMPILATION_LOG)) {
+            val instrumented = profiled.copy(measurement = mode)
             Experiments.validate(instrumented, maxParallel = 4)
-            assertTrue(instrumented.instrumented)
+            assertTrue(instrumented.recordsCliJfr && instrumented.instrumented)
             assertNotEquals(Experiments.fingerprint(profiled), Experiments.fingerprint(instrumented))
         }
         assertFalse(profiled.instrumented)
-        assertEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(spec().copy(profileCompilation = null)))
-        val unprofiled = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec().copy(profileCompilation = "jfr"), maxParallel = 4) }
-        assertTrue("requires profileCli" in unprofiled.message.orEmpty())
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(profiled.copy(profileCompilation = "log"), maxParallel = 4) }
+        assertEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(spec().copy(measurement = Measurement.NONE)))
     }
 
     @Test
@@ -227,8 +222,8 @@ class ExperimentsTest {
             analysis.copy(analyze = AnalyzeSpec(0)),
             analysis.copy(problems = listOf(mapOf("suite" to "s"))),
             analysis.copy(base = mapOf("ref" to "main")),
-            analysis.copy(profileCli = true),
-            analysis.copy(measureCliResources = true),
+            analysis.copy(measurement = Measurement.JFR),
+            analysis.copy(measurement = Measurement.RESOURCES),
             analysis.copy(profile = ProfileMain("com.eignex.klause.bench.profile.Tool")),
         )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxParallel = 4) }
         val defaulted = Json.decodeFromJsonElement(ExperimentSpec.serializer(),
@@ -443,7 +438,7 @@ class ExperimentsTest {
     fun `debug must be true or false, with profiling too, and only false changes the fingerprint`() {
         Experiments.validate(spec(base = mapOf("debug" to "false")), maxParallel = 4)
         Experiments.validate(spec(grid = mapOf("debug" to listOf("true", "false"))), maxParallel = 4)
-        Experiments.validate(spec(base = mapOf("debug" to "false")).copy(parallel = 1, profileCli = true, profileCompilation = "jfr"), maxParallel = 4)
+        Experiments.validate(spec(base = mapOf("debug" to "false")).copy(parallel = 1, measurement = Measurement.COMPILATION), maxParallel = 4)
         for (value in listOf("yes", "TRUE", "0")) {
             val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec(base = mapOf("debug" to value)), maxParallel = 4) }
             assertContains(error.message.orEmpty(), "debug must be true or false")
@@ -595,7 +590,7 @@ class ExperimentsTest {
             Experiments.validate(profile.copy(problems = listOf(mapOf("suite" to "s"))), maxParallel = 4)
         }
         assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(repeats = 2), maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(profileCli = true), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(measurement = Measurement.JFR), maxParallel = 4) }
     }
 
     @Test
@@ -725,8 +720,8 @@ class ExperimentsTest {
             batched.copy(repeats = 5),
             batched.copy(base = mapOf("timeout" to "20000")),
             batched.copy(base = emptyMap()),
-            batched.copy(profileCli = true, parallel = 1),
-            batched.copy(measureCliResources = true, parallel = 1),
+            batched.copy(measurement = Measurement.JFR, parallel = 1),
+            batched.copy(measurement = Measurement.RESOURCES, parallel = 1),
         )) assertNull(Experiments.splitOf(spec, active), spec.toString())
     }
 

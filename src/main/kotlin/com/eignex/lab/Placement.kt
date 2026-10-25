@@ -65,7 +65,7 @@ object Placement {
             schedules.any { it.name == name.substringBefore('@') && cloudOptIn(it.experiment) }
 
     /** The host [spec] named [name] is placed on: `lab` when only the local machine may or can run it, `auto`
-     *  otherwise, a `profileCli` job included, which both measure alike ([CliMeasurements]). */
+     *  otherwise, a `JFR measurement` job included, which both measure alike ([CliMeasurements]). */
     fun host(spec: ExperimentSpec, name: String, awsFits: Boolean, cloudSchedule: Boolean = false): String =
         if (localOnly(spec, name, cloudSchedule) || !awsFits) Experiments.LAB_HOST else Experiments.AUTO_HOST
 

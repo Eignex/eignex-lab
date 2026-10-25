@@ -118,7 +118,7 @@ class CompilationReportsTest {
         val report = CompilationReports.analyze(dir, null, worker)
 
         val threshold = report.incomplete.single { it.what == "jfr-threshold" }
-        assertTrue("profileCompilation" in threshold.why, threshold.why)
+        assertTrue("compilation measurement" in threshold.why, threshold.why)
         assertFalse(CompilationReports.zeroDuration(checkNotNull(report.coverage.compilationThreshold)))
         assertTrue(report.missing.any { it.what == "measurement" } && report.missing.any { it.what == "source" })
     }
@@ -216,7 +216,7 @@ class CompilationReportsTest {
     @Test
     fun `an analysis is refused for a trimmed, missing, running or unprofiled job`() {
         val jobDir = Files.createTempDirectory("job")
-        val spec = ExperimentSpec("x", profileCli = true, profileCompilation = "jfr")
+        val spec = ExperimentSpec("x", measurement = Measurement.COMPILATION)
         fun job(status: Status, experiment: ExperimentSpec? = spec) = Job(5, "x", "main", status = status, cancelRequested = false,
             setupDone = true, createdAt = 0, experiment = experiment)
 
@@ -225,7 +225,7 @@ class CompilationReportsTest {
         profile.resolve(CliMeasurements.JFR).writeText("")
         assertNull(CompilationReports.refusal(job(Status.DONE), jobDir))
         assertTrue("running" in CompilationReports.refusal(job(Status.RUNNING), jobDir)!!)
-        assertTrue("without profileCli" in CompilationReports.refusal(job(Status.DONE, ExperimentSpec("y")), jobDir)!!)
+        assertTrue("without JFR measurement" in CompilationReports.refusal(job(Status.DONE, ExperimentSpec("y")), jobDir)!!)
         assertEquals("no such job", CompilationReports.refusal(null, jobDir))
         jobDir.resolve(JobTrim.MARKER).writeText("1 2\n")
         assertTrue("trimmed" in CompilationReports.refusal(job(Status.DONE), jobDir)!!)

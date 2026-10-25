@@ -285,12 +285,12 @@ class ValidationTest {
         assertContains(steps, "publish_lab_cache 's3://b/builds/verified-v2-plain/abc.tar.zst'")
 
         val built = HashSet<String>()
-        AwsBuildCache.rebuilt(built, "abc", profileCli = false)
-        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = false))
-        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = true))
-        AwsBuildCache.rebuilt(built, "abc", profileCli = true)
-        assertFalse(AwsBuildCache.hasBuilt(built, "abc", profileCli = false))
-        assertTrue(AwsBuildCache.hasBuilt(built, "abc", profileCli = true))
+        AwsBuildCache.rebuilt(built, "abc", measuresCli = false)
+        assertTrue(AwsBuildCache.hasBuilt(built, "abc", measuresCli = false))
+        assertFalse(AwsBuildCache.hasBuilt(built, "abc", measuresCli = true))
+        AwsBuildCache.rebuilt(built, "abc", measuresCli = true)
+        assertFalse(AwsBuildCache.hasBuilt(built, "abc", measuresCli = false))
+        assertTrue(AwsBuildCache.hasBuilt(built, "abc", measuresCli = true))
         // Old records whose bench lacked the checker still read unchecked.
         assertTrue(SourceValidation.checkerFault("MPS source checking failed: missing packaged MIPLIB solchecker"))
     }

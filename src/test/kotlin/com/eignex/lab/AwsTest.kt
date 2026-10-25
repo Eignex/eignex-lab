@@ -441,8 +441,8 @@ class AwsTest {
 
     @Test
     fun `a profiling job's launcher is installed before the provenance manifest describes the build`() {
-        val profiled = AwsWorker.finishWorktree("/w", profileCli = true)
-        val plain = AwsWorker.finishWorktree("/w", profileCli = false)
+        val profiled = AwsWorker.finishWorktree("/w", measuresCli = true)
+        val plain = AwsWorker.finishWorktree("/w", measuresCli = false)
 
         assertEquals(listOf(CliMeasurements.install("/w"), Experiments.captureProvenance("/w")), profiled)
         assertEquals(listOf(Experiments.captureProvenance("/w")), plain)
@@ -477,7 +477,7 @@ class AwsTest {
                 return ProcessBuilder("printf", "%s\n", reply).start()
             }
         }
-        val host = AwsHost("i-1", ssh, 4, "", profileCli = true, compilation = "jfr+log") { false }
+        val host = AwsHost("i-1", ssh, 4, "", measurement = Measurement.COMPILATION_LOG) { false }
 
         assertEquals(0, host.run(Command(7, "solve", 10, Status.RUNNING), dir))
 
@@ -503,7 +503,7 @@ class AwsTest {
                 return ProcessBuilder("printf", "%s\n", reply).start()
             }
         }
-        val host = AwsHost("i-1", ssh, 4, "-Xmx1g", measureCliResources = true) { false }
+        val host = AwsHost("i-1", ssh, 4, "-Xmx1g", measurement = Measurement.RESOURCES) { false }
 
         assertEquals(0, host.run(Command(7, "solve", 10, Status.RUNNING), dir))
 
