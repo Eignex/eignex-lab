@@ -5,3 +5,5 @@ build/
 lab-data/
 
 __pycache__/
+
+.kotlin/

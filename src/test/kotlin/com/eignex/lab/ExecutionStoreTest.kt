@@ -111,6 +111,20 @@ class ExecutionStoreTest {
         assertEquals(id, store.next()?.id)
     }
 
+    @Test fun `several sessions preserve the per experiment per node case cap`() {
+        val sharedId = job();
+        for (name in listOf("same-a", "same-b")) {
+            store.execution.createSession(name, sharedId, "solve", "release-1", budget, token, "{}", 1000)
+            store.execution.bind(name, token, "alloc-$name", "shared-node", "release-1", 1000)
+        }
+        val first = store.execution.claim("same-a", token, "alloc-same-a", 1001)!!
+        assertEquals(2, first.parallel)
+        assertNull(store.execution.claim("same-b", token, "alloc-same-b", 1002))
+        store.execution.phase(first.owner, "uploading", 1003)
+        store.execution.commit(first.owner, result(first), 1004)
+        assertEquals(2, store.execution.claim("same-b", token, "alloc-same-b", 1005)!!.parallel)
+    }
+
     @Test fun `old jobs migrate to legacy and survive additional state migration`() {
         val id = store.create("old", "main", listOf("true" to 1L))
         assertEquals(ExecutionBackendKind.LEGACY, Store(file).job(id)!!.backend)

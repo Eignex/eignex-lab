@@ -10,7 +10,9 @@ Nomad batch-job rendering, and a TLS/ACL sandbox with real Linux sharing, hard-l
 Durable execution ownership now has additive session, attempt, event, and outbox tables, explicit backend selection,
 transactional leases/fencing, complete-iteration acceptance, and cancellation/rollback guards. Legacy queue and
 restart recovery exclude Nomad-owned experiments. The worker API and actual Nomad reconciler follow in the stack;
-there is no production selector yet. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
+there is no production selector yet. The connected stack now includes a separate worker listener, Nomad mTLS client,
+signed allocation identities, resumable/checksummed HTTP artifacts and durable reconciliation/completion. The real
+Linux integration test exercises coordinator restart and allocation loss. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
 an independent same-user process service and a provider-neutral OCI worker build. Native fixture execution and
 cleanup are exercised on macOS CI; real Mac solver/JFR canaries and cloud gates remain required. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
 replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.

@@ -164,7 +164,17 @@ def serve_request(connection):
             cleanup(marker)
             process.wait(timeout=10)
             connection.sendall((json.dumps({"exitCode": code if code >= 0 else 128-code}) + "\n").encode())
-    except (Exception,):
+            # Keep the read side open until the worker consumes the result. Closing with an unread
+            # heartbeat can reset a Unix socket and hide an otherwise completed process's exit.
+            connection.shutdown(socket.SHUT_WR)
+            connection.settimeout(5)
+            try:
+                while connection.recv(64):
+                    pass
+            except (OSError,):
+                pass
+    except Exception as error:
+        print(f"supervisor request ended: {type(error).__name__}", file=sys.stderr, flush=True)
         # Do not log requests: they can contain paths and runtime credentials.
         cleanup(marker)
         if process is not None:

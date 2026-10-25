@@ -86,6 +86,12 @@ class PortableWorkerTest {
         } finally { future.cancel(true); executor.shutdownNow() }
     }
 
+    @Test fun `a completion concurrent with heartbeat preserves its process exit`(): Unit = service { socket ->
+        repeat(3) { index ->
+            assertEquals(0, ProcessSupervisor(socket).run(listOf("sleep", "1"), root, System.getenv(), root.resolve("out-$index"), root.resolve("err-$index"), 5) { 10000 })
+        }
+    }
+
     @Test fun `supervisor reports bounded timeout and worker refuses an expired lease`(): Unit = service { socket ->
         val supervisor = ProcessSupervisor(socket)
         assertEquals(124, supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out"), root.resolve("err"), 1, 10) { 10000 })

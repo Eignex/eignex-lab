@@ -114,3 +114,48 @@ Build a portable worker image with `./gradlew installDist` and
 Record the resulting registry digest in pool configuration. The pinned multi-architecture JDK base is shared across
 providers; no cloud CLI, provider credential or database is included. The image entrypoint starts its allocation's
 supervisor before invoking the requested worker command.
+
+## Connected coordinator and worker protocol
+
+Run `eignex-lab nomad-coordinator /private/path/coordinator.json` with the ordinary `LAB_DATA`, `LAB_JOBS` and
+`LAB_CORPUS` configuration. Copy `coordinator.example.json` and replace its paths. Nomad control uses a narrowly
+scoped ACL token and mTLS with PKCS12 client/trust stores; password and key files must be private. Apply
+`coordinator-policy.hcl` in the matching namespace. Workers receive neither these files nor database access.
+The worker listener defaults to loopback, separately from the operator API. A non-loopback listener requires
+`privateNetwork=true` and an authenticated encrypted private route, or an HTTPS proxy terminating on loopback.
+HTTP workers outside loopback must explicitly set `LAB_WORKER_PRIVATE_TRANSPORT=true` for that private route.
+
+Session admission is currently an internal/operator operation, not a normal experiment submission selector.
+`NomadBackend.enqueue` validates the manifest against the stored experiment, arm commits and case plan, then
+persists the session, credential hash, manifest and Nomad submission intent together. Native/cloud preparation,
+normal queue admission and the canary operator workflow follow in the stack. Do not manually edit a running job's
+backend column. Existing production submissions still select legacy execution.
+
+Every `/worker/v1/sessions/<id>/` request carries its scoped session token, allocation ID and a signed Nomad workload
+identity. Named identities have audience `eignex-lab-worker` and a ten-minute lifetime. Their renewable file lives at
+`local/lab-worker.jwt` in the private allocation; restrict Nomad filesystem/job read permissions as credential access.
+The worker reloads it on every request. Only the configured Nomad cluster supplies verification keys. The server
+checks signature, expiry, audience, namespace, job, task and allocation, then checks durable generation/lease ownership.
+A copied old allocation token cannot authenticate as its replacement.
+
+The protocol registers a release, claims complete iterations, renews leases, publishes preparation/execution/upload
+phases and case starts, uploads checksum-addressed outputs, and commits the full iteration manifest. CPU permits
+bound aggregate case threads; durable claim grants preserve the experiment's per-node parallel cap across sessions.
+Workers renew every ten seconds and stop owned processes ten seconds before their last confirmed lease would expire,
+using monotonic local time. A volume hold blocks registration, new claims, renewals and acceptance; stop intents remain
+available. Pause drains at the iteration boundary. Cancellation fences ownership before stop delivery.
+
+Uploads resume from the confirmed byte offset and publish only after size/checksum verification and filesystem sync.
+Input downloads use bounded ranges and resume without rerunning captured cases. Accepted artifacts are projected into
+existing job paths before completion and source checks are recorded durably. A coordinator restart replays ingestion
+and pending checks rather than resetting claims. Worker or allocation loss reruns only unfinished iterations, with a
+finite infrastructure retry budget. Nomad task restarts remain disabled and its reschedule/disconnect policy is explicit.
+Ordinary solver exits/timeouts remain case outcomes. Linux workers refuse missing or mismatched runtime hard limits;
+native workers report advisory enforcement. Resource counters are retained under each job's `nomad/` files.
+
+`python3 deploy/nomad/connected_probe.py` builds the worker, uses a temporary loopback OCI registry to obtain a real
+image digest, and runs the end-to-end acceptance test against a separate TLS/ACL Nomad sandbox. It exercises a paired
+iteration, an API/coordinator restart, forced allocation loss, generation replacement, checksum ingestion and completion.
+It stops its own agent and registry and retains private diagnostic state under `build/nomad-connected`. Never upload
+that directory: it contains the sandbox CA, client keys, ACL token, allocation identities and session credentials.
+Only test reports and non-secret verification summaries are CI artifacts.

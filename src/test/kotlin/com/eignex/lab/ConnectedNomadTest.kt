@@ -1,0 +1,94 @@
+package com.eignex.lab
+
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
+import kotlinx.serialization.json.*
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.net.URI
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
+import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import kotlin.test.*
+
+/** Enabled only by connected_probe.py against its isolated TLS/ACL sandbox and local pinned registry. */
+class ConnectedNomadTest {
+    @Test fun `real Nomad allocation authenticates runs a paired iteration and commits through HTTP`() {
+        assumeTrue(System.getenv("LAB_NOMAD_INTEGRATION") == "1")
+        val state = Path.of(System.getenv("LAB_NOMAD_TEST_STATE"))
+        val root = Files.createTempDirectory(state, "lab-")
+        val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
+        val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
+        val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")))
+        val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
+        val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
+        val job = store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        store.plan(job, arms, problems, cases, cases.map { "fixture" to 5L })
+        val script = """#!/usr/bin/env bash
+            set -eu
+            for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
+            sleep 2
+            mkdir -p "${'$'}out"
+            echo '{"stats":{"fixture":true}}' > "${'$'}out/record.json"
+            echo portable-worker-output
+        """.trimIndent()
+        val path = "klause-bench/build/install/klause-bench/bin/klause-bench"
+        val zip = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { it.putNextEntry(ZipEntry(path)); it.write(script.toByteArray()); it.closeEntry() } }.toByteArray()
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(zip).hex()
+        val bundle = WorkerBundle(hash, listOf(InputFile(path, ExecutionStore.digest(script), script.toByteArray().size.toLong(), true)), Repositories.DEFAULT, sha, "linux", workerArch(), "fixture")
+        artifacts.put(job, hash, zip.size.toLong(), 0, ByteArrayInputStream(zip))
+        val sessionId = UUID.randomUUID().toString()
+        val budget = ResourceBudget(1000, 1024, 1)
+        val manifest = WorkManifest(sessionId, "connected-probe", spec, arms, cases.mapIndexed { i, c -> WorkCase(i, c.arm, problems[c.problem], c.seed, c.repeat, 5) }, listOf(bundle), budget)
+        val template = NomadBatchJob("placeholder", NomadPlatform.LINUX, "lab-prototype-linux",
+            NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,
+            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), datacenter = "lab-prototype", networkMode = "host")
+        var backend = NomadBackend(store, client, artifacts, { root.resolve("jobs/$it") })
+        val port = System.getenv("LAB_NOMAD_TEST_API_PORT").toInt()
+        var server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(store, backend, artifacts) { true } }.start()
+        val session = backend.enqueue(job, manifest, template, "http://127.0.0.1:$port")
+        try {
+            var restarted = false; var lost = false
+            val deadline = System.nanoTime() + 120_000_000_000
+            while (System.nanoTime() < deadline) {
+                backend.reconcile()
+                val current = store.job(job)!!
+                if (!restarted && current.commands.first().status == Status.RUNNING) {
+                    server.stop(0, 1000)
+                    backend = NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") })
+                    server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(Store(root.resolve("lab.db")), backend, artifacts) { true } }.start()
+                    restarted = true
+                }
+                if (!lost && current.commands[1].status == Status.RUNNING) {
+                    val allocation = store.execution.session(session.id)!!.allocation!!
+                    val docker = ProcessBuilder("docker", "ps", "-q", "--filter", "label=com.hashicorp.nomad.alloc_id=$allocation").start()
+                    val container = docker.inputStream.bufferedReader().readText().trim(); check(docker.waitFor() == 0 && container.isNotEmpty())
+                    check(ProcessBuilder("docker", "kill", "--signal=KILL", container).start().waitFor() == 0)
+                    lost = true
+                }
+                if (store.job(job)!!.status in setOf(Status.DONE, Status.FAILED)) break
+                Thread.sleep(250)
+            }
+            assertEquals(Status.DONE, store.job(job)!!.status, "allocations: ${client.allocations(session.nomadJobId)}")
+            assertTrue(restarted && lost, "both coordinator restart and forced allocation loss ran")
+            assertTrue(store.execution.sessions(job).size >= 2)
+            assertEquals(2, store.job(job)!!.done)
+            assertEquals(1, store.execution.accepted(job).size)
+            assertEquals(1, store.cases(job).map { it.host }.distinct().size)
+            assertTrue(Files.readString(root.resolve("jobs/$job/0.out")).contains("portable-worker-output"))
+            assertTrue(store.caseRecordText(job, 0)!!.contains("fixture"))
+            assertTrue(Files.list(root.resolve("jobs/$job/nomad")).use { files -> files.anyMatch { it.fileName.toString().endsWith("-2-resources.json") } }, "replacement committed generation 2")
+            // A fresh coordinator replays no submission and preserves accepted work.
+            NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") }).reconcile()
+            assertEquals(Status.DONE, store.job(job)!!.status)
+        } finally {
+            store.requestCancel(job)
+            for (s in store.execution.sessions(job)) client.stop(s.nomadJobId)
+            server.stop(1000, 3000)
+        }
+    }
+}

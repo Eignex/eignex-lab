@@ -15,7 +15,7 @@ class IterationExecutor(
     private val launcher: String, private val os: String, private val arch: String,
 ) {
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
-            remainingLeaseMs: () -> Long): IterationResult {
+            prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingLeaseMs: () -> Long): IterationResult {
         require(indices.isNotEmpty() && indices.distinct().size == indices.size)
         val selected = indices.map { index -> manifest.cases.single { it.index == index } }
         require(selected.map { Triple(it.problem, it.seed, it.repeat) }.distinct().size == 1) { "one whole paired iteration per execution" }
@@ -37,6 +37,7 @@ class IterationExecutor(
                 remainingLeaseMs = remainingLeaseMs)
             require(exit == 0) { "measurement launcher setup failed" }
         }
+        prepared()
         val cpu = Semaphore(manifest.budget.cpuMillis)
         val threads = Executors.newFixedThreadPool(minOf(manifest.budget.parallel, selected.size))
         try {
@@ -46,6 +47,7 @@ class IterationExecutor(
                 cpu.acquire(permits)
                 try {
                     check(remainingLeaseMs() > 0) { "lease expired before starting case" }
+                    starting(case)
                     val worktree = worktrees.getValue(manifest.arms[case.arm].sha)
                     val problem = case.problem.copy(model = case.problem.model?.let { worktree.resolve(safeRelative(it)).toString() },
                         data = case.problem.data?.let { worktree.resolve(safeRelative(it)).toString() },

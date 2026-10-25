@@ -1,0 +1,181 @@
+package com.eignex.lab
+
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.*
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption.*
+import java.util.UUID
+
+/** Durable outbox delivery and observation. Nomad success alone never completes an experiment. */
+class NomadBackend(
+    private val store: Store, private val nomad: NomadControl, private val artifacts: ArtifactStore,
+    private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
+    private val checkCase: (Long, Int) -> String = { _, _ -> "not-required" },
+) : ExecutionBackend {
+    override val kind = ExecutionBackendKind.NOMAD
+    private val identities = NomadIdentity(nomad::jwks)
+
+    /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
+    fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
+        require(workAllowed())
+        val job = store.job(jobId) ?: error("missing experiment")
+        require(job.backend == ExecutionBackendKind.NOMAD && job.experiment == manifest.experiment)
+        require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
+        require(template.budget == manifest.budget)
+        val planned = store.casePlan(jobId).associateBy { it.index }
+        for (case in manifest.cases) {
+            val old = planned.getValue(case.index)
+            require(old.problem == case.problem && old.seed == case.seed && old.repeat == case.repeat && old.arm == manifest.arms[case.arm].arm.label)
+            require(job.commands.single { it.index == case.index }.timeoutSec == case.timeoutSec)
+        }
+        store.execution.session(manifest.session)?.let { existing ->
+            require(existing.jobId == jobId && store.execution.manifest(existing.id) == manifest)
+            return existing
+        }
+        val token = ExecutionStore.token()
+        val id = manifest.session
+        val nomadId = "lab-$jobId-solve-$id-1"
+        val original = template.copy(id = nomadId, environment = template.environment + mapOf(
+            "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token, "LAB_WORKER_API" to api,
+            "LAB_WORKER_RELEASE" to manifest.release, "LAB_WORKER_IDENTITY_FILE" to "${'$'}{NOMAD_TASK_DIR}/lab-worker.jwt",
+        )).render()
+        val payload = authenticatedJob(original, id, manifest.release)
+        return store.execution.createSession(id, jobId, "solve", manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest))
+    }
+
+    fun register(id: String, token: String, allocation: String, jwt: String, release: String): WorkManifest {
+        require(workAllowed()) { "coordinator volumes unavailable" }
+        val session = store.execution.credential(id, token)
+        identities.verify(jwt, session, allocation)
+        val observed = nomad.allocation(allocation) ?: throw ExecutionFenced("allocation not found")
+        if (observed.job != session.nomadJobId || !observed.active) throw ExecutionFenced("allocation inactive")
+        store.execution.bind(id, token, allocation, observed.node, release)
+        return store.execution.manifest(id)
+    }
+
+    fun authenticate(id: String, token: String, allocation: String, jwt: String): ExecutionSession {
+        val session = store.execution.credential(id, token, allocation)
+        identities.verify(jwt, session, allocation)
+        if (session.allocation != allocation) throw ExecutionFenced("allocation is not bound")
+        return session
+    }
+
+    fun commit(owner: AttemptOwner, result: IterationResult): Boolean {
+        require(workAllowed()) { "coordinator volumes unavailable" }
+        val session = store.execution.session(owner.session) ?: throw ExecutionFenced("unknown session")
+        for ((name, sha) in result.artifacts) {
+            safeRelative(name)
+            val indices = result.cases.map { it.index }
+            val allowed = indices.any { index -> name in listOf("$index.out", "$index.err", "$index.exit", "$index.termination") || name.startsWith("cases/$index/") } ||
+                name == "nomad/${owner.iteration.replace(':', '-')}-${owner.generation}-resources.json"
+            require(allowed) { "artifact does not belong to this iteration" }
+            artifacts.file(session.jobId, sha)
+        }
+        return store.execution.commit(owner, result)
+    }
+
+    override fun reconcile() {
+        // Stops remain deliverable during holds; growth and acceptance do not.
+        store.execution.expire()
+        for (intent in store.execution.intents()) {
+            val session = store.execution.session(intent.session) ?: continue
+            when (intent.operation) {
+                "submit" -> {
+                    if (session.desired == "stop") { store.execution.acknowledge(intent.id); continue }
+                    if (!workAllowed()) continue
+                    val planned = Json.parseToJsonElement(intent.payload).jsonObject
+                    val existing = nomad.job(session.nomadJobId)
+                    if (existing == null) nomad.submit(planned)
+                    else require(existing["Meta"]?.jsonObject?.get("lab_spec_hash") == planned["Meta"]?.jsonObject?.get("lab_spec_hash")) { "Nomad job identity collision" }
+                }
+                "stop" -> nomad.stop(intent.payload)
+                else -> error("unknown execution intent")
+            }
+            store.execution.acknowledge(intent.id)
+        }
+        if (!workAllowed()) return
+        for (job in store.active().filter { it.backend == ExecutionBackendKind.NOMAD }) {
+            val accepted = store.execution.accepted(job.id)
+            val checked = store.execution.checksComplete(job.id)
+            val ingested = store.execution.ingested(job.id)
+            for ((iteration, result) in accepted) {
+                if (iteration !in ingested) { project(job.id, result); store.execution.markIngested(job.id, iteration) }
+                for (case in result.cases) if (case.index !in checked) {
+                    val detail = checkCase(job.id, case.index)
+                    store.execution.checkComplete(job.id, case.index, detail)
+                }
+            }
+            val current = store.job(job.id)!!
+            if (current.commands.isNotEmpty() && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
+                current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
+                // finishIfComplete rechecks cancellation and projections under the store's write lock.
+                store.execution.finishIfComplete(job.id)
+                for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) store.execution.loseSession(s.id, "completed")
+                continue
+            }
+            for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) {
+                if (current.paused) store.execution.drain(s.id)
+                val allocations = nomad.allocations(s.nomadJobId)
+                store.execution.observed(s.id, allocations.joinToString { "${it.id}:${it.client}:${it.node}" })
+                val bound = allocations.firstOrNull { it.id == s.allocation }
+                if ((s.allocation != null && (bound == null || !bound.active)) ||
+                    (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
+                    store.execution.loseSession(s.id, when {
+                        current.paused || s.desired == "drain" -> "drained"
+                        bound?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
+                        else -> "infrastructure:${bound?.client ?: "failed"}"
+                    })
+                }
+            }
+            val sessions = store.execution.sessions(job.id)
+            if (!current.paused && store.unclaimed(job.id) > 0 && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
+                if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
+                else replace(sessions.last())
+            }
+        }
+    }
+
+    private fun replace(previous: ExecutionSession) {
+        val id = UUID.randomUUID().toString(); val token = ExecutionStore.token()
+        val manifest = store.execution.manifest(previous.id).copy(session = id)
+        val original = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject
+        val groups = original.getValue("TaskGroups").jsonArray.map { group -> JsonObject(group.jsonObject + ("Tasks" to JsonArray(group.jsonObject.getValue("Tasks").jsonArray.map { task ->
+            val t = task.jsonObject
+            JsonObject(t + ("Env" to JsonObject(t.getValue("Env").jsonObject + mapOf("LAB_WORKER_SESSION" to JsonPrimitive(id), "LAB_WORKER_TOKEN" to JsonPrimitive(token)))))
+        }))) }
+        val originalMeta = original.getValue("Meta").jsonObject - "lab_spec_hash"
+        val jobId = "lab-${previous.jobId}-${previous.executionClass}-$id-1"
+        val job = authenticatedJob(JsonObject(original + mapOf("ID" to JsonPrimitive(jobId), "Name" to JsonPrimitive(jobId), "TaskGroups" to JsonArray(groups), "Meta" to JsonObject(originalMeta))), id, previous.release)
+        store.execution.createSession(id, previous.jobId, previous.executionClass, previous.release, previous.budget, token, job.toString(), manifest = Json.encodeToString(manifest))
+    }
+
+    private fun project(job: Long, result: IterationResult) {
+        val directory = jobDirectory(job).toAbsolutePath().normalize(); Files.createDirectories(directory)
+        for ((name, sha) in result.artifacts) {
+            val target = directory.resolve(safeRelative(name)); Files.createDirectories(target.parent)
+            // Directory symlinks are never supplied by workers and cannot redirect ingestion.
+            var parent = target.parent
+            while (parent != directory) { require(!Files.isSymbolicLink(parent)); parent = parent.parent }
+            if (Files.isRegularFile(target) && !Files.isSymbolicLink(target) && hashFile(target) == sha) continue
+            val staging = Files.createTempFile(target.parent, ".ingest-", ".tmp")
+            try { Files.copy(artifacts.file(job, sha), staging, REPLACE_EXISTING); Files.move(staging, target, ATOMIC_MOVE, REPLACE_EXISTING) }
+            finally { Files.deleteIfExists(staging) }
+        }
+    }
+
+    companion object {
+        internal fun authenticatedJob(original: JsonObject, session: String, release: String): JsonObject {
+            val groups = original.getValue("TaskGroups").jsonArray.map { group ->
+                val g = group.jsonObject
+                JsonObject(g + ("Disconnect" to buildJsonObject { put("LostAfter", 0); put("Replace", true); put("Reconcile", "keep_replacement") }) +
+                    ("Tasks" to JsonArray(g.getValue("Tasks").jsonArray.map { task -> JsonObject(task.jsonObject + ("Identities" to buildJsonArray {
+                        add(buildJsonObject { put("Name", "lab-worker"); putJsonArray("Audience") { add("eignex-lab-worker") }; put("File", true); put("Filepath", "local/lab-worker.jwt"); put("TTL", 600_000_000_000L); put("ChangeMode", "noop") })
+                    })) })))
+            }
+            val meta = original.getValue("Meta").jsonObject + mapOf("lab_execution_session" to JsonPrimitive(session), "lab_worker_release" to JsonPrimitive(release))
+            val job = JsonObject(original + ("TaskGroups" to JsonArray(groups)) + ("Meta" to JsonObject(meta)))
+            return JsonObject(job + ("Meta" to JsonObject(meta + ("lab_spec_hash" to JsonPrimitive(ExecutionStore.digest(job.toString()))))))
+        }
+    }
+}

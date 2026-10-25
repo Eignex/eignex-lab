@@ -50,6 +50,8 @@ jobs:
       - name: Stop Nomad prototype
         if: always()
         run: python3 deploy/nomad/sandbox.py stop
+      - name: Verify connected worker, coordinator restart and allocation loss
+        run: python3 deploy/nomad/connected_probe.py
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -80,7 +82,7 @@ jobs:
           java-version: 25
       - uses: gradle/actions/setup-gradle@v6
       - name: Verify native worker, detached process cleanup and durable ownership
-        run: ./gradlew test --tests com.eignex.lab.PortableWorkerTest --tests com.eignex.lab.ExecutionStoreTest --tests com.eignex.lab.NomadBatchJobTest
+        run: ./gradlew test --tests com.eignex.lab.PortableWorkerTest --tests com.eignex.lab.ExecutionStoreTest --tests com.eignex.lab.NomadBatchJobTest --tests com.eignex.lab.NomadBackendTest
       - uses: actions/upload-artifact@v7
         if: always()
         with:

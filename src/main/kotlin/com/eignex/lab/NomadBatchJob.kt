@@ -33,6 +33,7 @@ data class NomadBatchJob(
     val environment: Map<String, String> = emptyMap(),
     val datacenter: String = "lab-prototype",
     val schemaVersion: Int = 1,
+    val networkMode: String? = null,
 ) {
     init {
         require(schemaVersion == 1) { "unsupported Nomad session schema: $schemaVersion" }
@@ -47,6 +48,7 @@ data class NomadBatchJob(
             NomadPlatform.LINUX -> require(image != null && IMAGE.matches(image)) { "Linux image must be pinned with @sha256:<digest>" }
             NomadPlatform.MAC -> require(image == null) { "native Mac sessions do not use a container image" }
         }
+        require(networkMode == null || (platform == NomadPlatform.LINUX && networkMode == "host"))
         budget.nomadCpuMHz(cpuCapacity)
     }
 
@@ -101,6 +103,7 @@ data class NomadBatchJob(
             putJsonArray("args") { command.drop(1).forEach { add(JsonPrimitive(it)) } }
             if (platform == NomadPlatform.LINUX) {
                 put("image", image)
+                networkMode?.let { put("network_mode", it) }
                 put("cpu_hard_limit", true)
                 put("cpu_cfs_period", 100_000)
                 put("cgroupns", "private")

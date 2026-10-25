@@ -17,6 +17,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
         Files.createDirectories(root)
         val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
         val destination = root.resolve(key)
+        synchronized(fileLockFor(root.resolve("$key.lock"))) {
         FileChannel.open(root.resolve("$key.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
             if (valid(destination, bundle)) return destination
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
@@ -59,6 +60,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 return destination
             } finally { remove(staging) }
         } }
+        }
     }
     private fun valid(directory: Path, bundle: WorkerBundle): Boolean = runCatching {
         require(Files.isDirectory(directory, NOFOLLOW_LINKS))
@@ -77,3 +79,6 @@ internal fun hashFile(path: Path): String = Files.newInputStream(path).use { inp
     val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024)
     while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }; digest.digest().hex()
 }
+
+private val localFileLocks = Array(256) { Any() }
+internal fun fileLockFor(path: Path): Any = localFileLocks[Math.floorMod(path.toAbsolutePath().normalize().toString().hashCode(), localFileLocks.size)]

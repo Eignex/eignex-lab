@@ -1,0 +1,11 @@
+{
+  "address": "https://nomad.internal:4646",
+  "tokenFile": "/private/lab/nomad/coordinator.token",
+  "keyStore": "/private/lab/nomad/client.p12",
+  "trustStore": "/private/lab/nomad/trust.p12",
+  "passwordFile": "/private/lab/nomad/store-password",
+  "workerPort": 8091,
+  "bindAddress": "127.0.0.1",
+  "namespace": "default",
+  "privateNetwork": false
+}

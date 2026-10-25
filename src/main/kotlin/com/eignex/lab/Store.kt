@@ -1294,7 +1294,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun deleteJob(id: Long): Boolean = transaction {
         val deleted = update("DELETE FROM jobs WHERE id = ? AND status NOT IN (?, ?)", id, Status.QUEUED.name, Status.RUNNING.name) == 1
-        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
+        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
         deleted
     }
 
