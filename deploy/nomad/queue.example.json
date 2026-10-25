@@ -1,0 +1,45 @@
+{
+  "release": "RELEASE",
+  "workerApi": "http://lab.private:8091",
+  "preparationBudget": {"cpuMillis": 2000, "memoryMiB": 4096, "parallel": 1},
+  "preparationTimeoutSec": 3600,
+  "caseMemoryMiB": 4096,
+  "sessionMemoryMiB": 512,
+  "maxSessionsPerJob": 64,
+  "targets": [
+    {
+      "tags": ["arch:arm64", "simd:neon"],
+      "template": {
+        "id": "native-template",
+        "platform": "mac",
+        "nodeClass": "lab-native",
+        "cpuCapacity": {"usableMHz": 32000, "logicalCpus": 10},
+        "budget": {"cpuMillis": 8000, "memoryMiB": 24576, "parallel": 1},
+        "command": ["/Users/lab/eignex-lab-data/releases/RELEASE/bin/eignex-lab", "worker"],
+        "datacenter": "lab",
+        "environment": {
+          "JAVA_HOME": "/Users/lab/.gradle/jdks/JDK25",
+          "LAB_SUPERVISOR_SOCKET": "/Users/lab/eignex-lab-data/nomad/process.sock",
+          "LAB_WORKER_LAUNCHER": "/Users/lab/eignex-lab-data/releases/RELEASE/bin/eignex-lab",
+          "LAB_WORKER_PRIVATE_TRANSPORT": "true"
+        }
+      }
+    },
+    {
+      "tags": ["arch:x86_64", "simd:avx2"],
+      "market": "spot",
+      "template": {
+        "id": "cloud-template",
+        "platform": "linux",
+        "nodeClass": "linux-amd64-spot",
+        "cpuCapacity": {"usableMHz": 24000, "logicalCpus": 8},
+        "budget": {"cpuMillis": 6000, "memoryMiB": 28672, "parallel": 1},
+        "command": ["worker"],
+        "image": "ghcr.io/eignex/eignex-lab-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "datacenter": "lab",
+        "statusHostVolume": "lab-status",
+        "environment": {"LAB_WORKER_PRIVATE_TRANSPORT": "true"}
+      }
+    }
+  ]
+}

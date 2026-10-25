@@ -24,6 +24,7 @@ class SourceLocator(
     private val hash: (File) -> String = CorpusFiles::sha256,
     private val clock: () -> Long = System::currentTimeMillis,
     private val fixtures: RepositoryFixtures? = null,
+    private val problemPaths: (Problem, Revision?) -> Problem = { problem, _ -> problem },
 ) {
     private val indexes = ConcurrentHashMap<String, Pair<Long, Map<String, List<File>>>>()
 
@@ -33,7 +34,8 @@ class SourceLocator(
      * taken without the other. A repository file is read at [revision], into [scratch] when no worktree of that commit
      * holds it.
      */
-    fun locate(problem: Problem, hashes: Map<String, String>, revision: Revision? = null, scratch: File? = null): Result<SourceFiles> = runCatching {
+    fun locate(requested: Problem, hashes: Map<String, String>, revision: Revision? = null, scratch: File? = null): Result<SourceFiles> = runCatching {
+        val problem = problemPaths(requested, revision)
         val modelHash = hashes["model"]
         val dataHash = hashes["data"]
         val paired = dataHash != null || problem.data != null

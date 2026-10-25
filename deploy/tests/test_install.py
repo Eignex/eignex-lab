@@ -66,5 +66,31 @@ class InstallTest(unittest.TestCase):
         self.install(configured_data=True)
 
 
+class ReleaseTest(unittest.TestCase):
+    def test_queue_settings_retain_immutable_releases_even_without_native_service_files(self):
+        with tempfile.TemporaryDirectory(prefix="lab-release-") as temporary:
+            root = Path(temporary)
+            project = root / "checkout"
+            project.mkdir()
+            subprocess.run(["git", "init", "-q", str(project)], check=True)
+            subprocess.run(["git", "-C", str(project), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com",
+                            "commit", "--allow-empty", "-qm", "test: fixture"], check=True)
+            launcher = project / "build/install/eignex-lab/bin/eignex-lab"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("fixture")
+            data = root / "data"
+            for index in range(4):
+                previous = data / "releases" / f"previous-{index}"
+                previous.mkdir(parents=True)
+                os.utime(previous, (index + 1, index + 1))
+            environment = {k: v for k, v in os.environ.items() if not k.startswith("LAB_")}
+            environment["LAB_NOMAD_QUEUE_SETTINGS"] = str(root / "queue.json")
+            result = subprocess.run(["bash", "-c", '. "$1"; release "$2" "$3"', "fixture",
+                                     str(ROOT / "deploy/release.sh"), str(project), str(data)], env=environment,
+                                    text=True, capture_output=True, check=True)
+            self.assertTrue(Path(result.stdout.strip()).is_file())
+            self.assertTrue(all((data / "releases" / f"previous-{index}").is_dir() for index in range(4)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,7 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
                           private val os: String, private val arch: String) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
-            upload: (Path) -> String): PreparationResult {
+            selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
         val timeout = requireNotNull(manifest.preparationTimeoutSec)
         val expires = System.nanoTime() + timeout * 1_000_000_000
@@ -68,26 +68,48 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
         }
         val primary = prepared.getValue(manifest.arms.first().sha)
         val json = Json { ignoreUnknownKeys = true }
-        fun select(selection: Map<String, String>, name: String): List<Problem> {
+        fun select(selection: Map<String, String>, name: String): List<String> {
             val output = directory.resolve("$name.jsonl")
             val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary"
             run(primary, "cd ${quote("$primary/klause-bench")} && JAVA_OPTS=${quote(options)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
                 "./build/install/klause-bench/bin/klause-bench select ${Experiments.selectArgs(selection)}", output)
-            return Files.readAllLines(output).filter { it.startsWith("{") }.map { json.decodeFromString<Problem>(it) }
+            return Files.readAllLines(output).filter { it.startsWith("{") }
         }
         val spec = manifest.experiment
-        val selections = when {
+        fun problems(selection: Map<String, String>, name: String): List<Problem> = try {
+            select(selection, name).map { json.decodeFromString<Problem>(it) }
+        } catch (failure: IllegalArgumentException) { throw WorkerBuildFailure("invalid bench selection: ${failure.javaClass.simpleName}") }
+        val raw = when {
             spec.isProfile -> listOf(listOf(Experiments.profileProblem(spec)))
-            spec.problemList.isNotEmpty() -> listOf(spec.problemList.map { problem ->
-                val resolved = select(mapOf("suite" to problem.suite, "name" to problem.problem, "per-family" to "1000000", "files" to "true"), "exact-${spec.problemList.indexOf(problem)}")
-                    .single { it.suite == problem.suite && it.problem == problem.problem }
-                portableProblem(resolved, primary, corpus)
-            })
+            spec.problemList.isNotEmpty() -> listOf(spec.problemList)
             else -> spec.problems.mapIndexed { index, selection ->
                 val mode = Experiments.referenceFilter(spec, selection)
                 val asked = if (Experiments.refills(mode, selection)) Experiments.uncapped(selection) else selection
-                select(asked + ("files" to "true"), "selection-$index").map { portableProblem(it, primary, corpus) }
+                problems(asked - "files", "selection-$index")
             }
+        }.map { group -> group.map { it.copy(model = null, data = null, includeDirs = emptyList()) } }
+        val selected = selectProblems(raw)
+        require(selected.size == raw.size)
+        val selections = if (spec.isProfile) selected else {
+            val resolved = selected.flatten().distinctBy { it.suite to it.problem }.groupBy { it.suite }.flatMap { (suite, group) ->
+                require(group.all { it.problem.none { char -> char in "*?[]{}" } }) { "preparation needs exact problem names" }
+                val asked = mapOf("suite" to suite, "name" to group.joinToString(",") { it.problem }, "per-family" to "1000000", "files" to "true")
+                problems(asked, "files-${group.first().suite.hashCode().toUInt()}").map { (it.suite to it.problem) to it }
+            }.toMap()
+            selected.map { group -> group.map { problem ->
+                val files = requireNotNull(resolved[problem.suite to problem.problem]) { "bench did not resolve selected problem files" }
+                portableProblem(problem.copy(format = problem.format.ifEmpty { files.format }, model = files.model, data = files.data, includeDirs = files.includeDirs), primary, corpus)
+            } }
+        }
+        val features = mutableListOf<ProblemFeatures>()
+        if (!spec.isProfile) for ((index, group) in selected.flatten().distinctBy { it.suite to it.problem }.groupBy { it.suite }.values.withIndex()) {
+            checkActive()
+            try {
+                val asked = mapOf("suite" to group.first().suite, "name" to group.joinToString(",") { it.problem }, "per-family" to "1000000", "features" to "true")
+                features += select(asked, "features-$index").map { json.decodeFromString<ProblemFeatures>(it) }.filter { it.themes.isNotEmpty() }
+            } catch (failure: IllegalArgumentException) { Files.writeString(log, "classification failed: ${failure.javaClass.simpleName}\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND) }
+              catch (failure: WorkerBuildFailure) { Files.writeString(log, "classification failed: ${failure.detail.take(1024)}\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND) }
+            checkActive()
         }
         val artifacts = mutableMapOf<String, String>()
         val bundles = prepared.map { (sha, tree) ->
@@ -98,12 +120,12 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), ::checkActive)
                 .also { artifacts["preparation/corpus.zip"] = upload(directory.resolve("corpus.zip")) }
         } else null
-        for (name in listOf("setup.log", "setup.err") + selections.indices.map { "selection-$it.jsonl" }) {
+        for (name in Files.list(directory).use { paths -> paths.map { it.fileName.toString() }.filter { it in setOf("setup.log", "setup.err") || it.endsWith(".jsonl") }.toList() }) {
             val path = directory.resolve(name)
             if (Files.isRegularFile(path)) artifacts["preparation/$name"] = upload(path)
         }
         require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
-        return PreparationResult(selections, bundles, corpusBundle, artifacts = artifacts)
+        return PreparationResult(selections, bundles, corpusBundle, features, artifacts)
     }
 }
 

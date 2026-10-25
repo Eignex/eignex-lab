@@ -68,7 +68,7 @@ class CapacityCollector(
             if (ready && reservations.isEmpty()) idle.putIfAbsent(id, at) else idle.remove(id)
             CapacityNode(id, pool.id, when { instance.draining -> CapacityNodeState.DRAINING; ready -> CapacityNodeState.READY; else -> CapacityNodeState.BOOTING }, reservations, idle[id], instance.countedInTarget)
         }
-        val pending = sessions.filter { s -> s.desired == "run" && store.job(s.jobId)?.let { it.status in setOf(Status.QUEUED, Status.RUNNING) && !it.paused && !it.cancelRequested } == true &&
+        val pending = sessions.filter { s -> s.desired == "run" && (s.executionClass != "solve" || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status in setOf(Status.QUEUED, Status.RUNNING) && !it.paused && !it.cancelRequested } == true &&
             nomad.allocations(s.nomadJobId).none { it.active } }
         val demands = pending.mapNotNull { s ->
             val manifest = store.execution.manifest(s.id)
@@ -76,7 +76,7 @@ class CapacityCollector(
             val nodeClass = spec.getValue("Constraints").jsonArray.map { it.jsonObject }.single { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.class}" }.getValue("RTarget").jsonPrimitive.content
             val pool = settings.pools.singleOrNull { it.nodeClass == nodeClass } ?: return@mapNotNull null
             val job = store.job(s.jobId)!!; val experiment = job.experiment!!
-            val onDemand = NodeTags.onDemand(experiment.isProfile, experiment.nodeTags)
+            val onDemand = NodeTags.onDemand(false, experiment.nodeTags)
             require(pool.market == if (onDemand) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT) { "session purchasing policy differs from pool" }
             val pressure = if (manifest.preparationTimeoutSec != null) manifest.budget.cpuMillis / 1000.0 * manifest.preparationTimeoutSec / 3600.0
                 else Estimates.pressureCoreHours(job, estimates::lookup, settings.localCores) / pending.count { it.jobId == job.id }.coerceAtLeast(1)

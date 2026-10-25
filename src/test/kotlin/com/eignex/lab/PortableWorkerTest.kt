@@ -63,8 +63,42 @@ class PortableWorkerTest {
         val source = VerifiedCache(root.resolve("verify")).stage(prepared) { Files.newInputStream(uploads.getValue(prepared.sha256)) }
         assertEquals(script, Files.readString(source.resolve(bundle.files.single().path)))
         assertEquals(contents.resolve("model.mps"), portablePath(result.selections.single().single().model!!, source, contents))
+        assertEquals(contents, portablePath("lab-corpus/", source, contents))
         assertFailsWith<IllegalStateException> { portableProblem(Problem("s", "p", model = "/outside/model"), source, contents) }
         assertFailsWith<IllegalArgumentException> { portablePath("lab-corpus/../escape", source, contents) }
+    }
+
+    @Test fun `preparation resolves files only after central filtering and keeps classifier output`(): Unit = service { socket ->
+        val marker = root.resolve("resolved-names")
+        val script = """#!/usr/bin/env bash
+            set -eu
+            corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"; corpus="${'$'}{corpus%% *}"
+            if [[ " ${'$'}* " == *' features=true '* ]]; then
+                echo '{"suite":"s","collection":"fixture","problem":"p1","themes":["mip"]}'
+            elif [[ " ${'$'}* " == *' files=true '* ]]; then
+                [[ " ${'$'}* " == *' name=p1 '* ]]
+                echo p1 > '$marker'
+                echo approved > "${'$'}corpus/p1.mps"
+                printf '{"suite":"s","collection":"fixture","problem":"p1","model":"%s/p1.mps","format":"mps"}\n' "${'$'}corpus"
+            else
+                echo '{"suite":"s","collection":"fixture","problem":"p0"}'
+                echo '{"suite":"s","collection":"fixture","problem":"p1"}'
+            fi
+        """.trimIndent()
+        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
+        val spec = ExperimentSpec("filtered", problems = listOf(mapOf("suite" to "s")), base = mapOf("backend" to "reference", "solver" to "highs"))
+        val manifest = WorkManifest("prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }, emptyList(),
+            listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
+        val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)),
+            { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch)
+        val result = executor.run(manifest, root.resolve("filtered"), { null }, { 80000 }, selectProblems = { raw ->
+            assertFalse(Files.exists(marker)); assertTrue(raw.flatten().all { it.model == null })
+            raw.map { group -> group.filter { it.problem == "p1" } }
+        }) { hashFile(it) }
+        assertEquals("p1", Files.readString(marker).trim())
+        assertEquals(listOf("p1"), result.selections.flatten().map { it.problem })
+        assertEquals(listOf("p1.mps"), result.corpus!!.files.map { it.path })
+        assertEquals(listOf("mip"), result.features.single().themes)
     }
 
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {
@@ -80,6 +114,13 @@ class PortableWorkerTest {
         assertFailsWith<IllegalArgumentException> { cache.stage(manifest.copy(files = listOf(InputFile("huge", "a".repeat(64), Long.MAX_VALUE)))) { error("oversized declaration must fail before download") } }
         val undeclared = manifest.copy(files = listOf(InputFile("other", ExecutionStore.digest("hello"), 5)))
         assertFailsWith<IllegalArgumentException> { cache.stage(undeclared) { ByteArrayInputStream(bytes) } }
+    }
+
+    @Test fun `verified corpus inputs may include an empty data or lock file`() {
+        val (manifest, bytes) = bundle(mapOf("empty.dzn" to ""))
+        val tree = VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { ByteArrayInputStream(bytes) }
+        assertEquals(0, Files.size(tree.resolve("empty.dzn")))
+        assertEquals(tree, VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { error("verified input reused") })
     }
 
     @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->

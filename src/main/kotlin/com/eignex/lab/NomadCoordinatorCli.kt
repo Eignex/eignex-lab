@@ -39,11 +39,34 @@ object NomadCoordinatorCli {
         val checks = com.eignex.lab.checker.CaseChecks(store, { com.eignex.lab.checker.Checkers.of(config) }) { job, line ->
             config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
         }
+        val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
+        val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
         val capacitySettings = settings.capacity?.let { Json.decodeFromString<CapacitySettings>(Files.readString(Path.of(it.settingsFile))) }
-        val backend = NomadBackend(store, client, artifacts, config::jobDir, disk::allowsWork, checkCase = { job, index ->
+        val backend = NomadBackend(store, client, artifacts, config::jobDir, disk::allowsWork, checkCase = check@{ job, index ->
             val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
-            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(arm.values)) "not-required"
-            else checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
+            if (arm.values["backend"] != REFERENCE_BACKEND && !SourceValidation.requested(arm.values)) return@check "not-required"
+            val key = job to index
+            if (pendingChecks.size >= 64 && !pendingChecks.containsKey(key)) return@check null
+            val future = pendingChecks.computeIfAbsent(key) {
+                checkPool.submit<String> {
+                    if (arm.values["backend"] == REFERENCE_BACKEND) {
+                        if (problem.collection.isNotEmpty()) store.caseRecordText(job, index)?.let { text ->
+                            References.of(Json.parseToJsonElement(text))?.let { reference ->
+                                store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$job")
+                            }
+                        }
+                        "not-required"
+                    } else checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
+                }
+            }
+            if (!future.isDone) null else {
+                try { future.get() }
+                catch (failure: java.util.concurrent.ExecutionException) {
+                    val detail = "unchecked: source checker failed (${failure.cause?.javaClass?.simpleName})"
+                    config.createJobDir(job).resolve("setup.log").toFile().appendText("case $index: $detail\n")
+                    detail
+                } finally { pendingChecks.remove(key, future) }
+            }
         }, nativeMayClaim = { job ->
             !Files.exists(config.nativeYield) && !store.shouldYield(job, config.localNodeTags) &&
                 store.active(withCommands = false).none { other -> other.id != job && other.status == Status.QUEUED && !other.paused && !other.cancelRequested &&
@@ -56,9 +79,17 @@ object NomadCoordinatorCli {
                 val pool = requireNotNull(capacitySettings?.pools?.singleOrNull { it.nodeClass == template.nodeClass }) { "cloud pool is not configured" }
                 require(manifest.budget.cpuMillis <= pool.cpuMillis && manifest.budget.memoryMiB <= pool.availableMemoryMiB && template.cpuCapacity.logicalCpus == pool.vcpus)
                 require(NodeTags.matches(manifest.experiment.nodeTags, pool.capabilities))
-                require(pool.market == if (NodeTags.onDemand(manifest.experiment.isProfile, manifest.experiment.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
+                require(pool.market == if (NodeTags.onDemand(false, manifest.experiment.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
             }
         })
+        val queue = config.nomadQueue?.let { queueSettings -> NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork) }
+        require(config.executionBackend != ExecutionBackendKind.NOMAD || queue != null) { "LAB_EXECUTION_BACKEND=nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
+        if (queue != null) thread(isDaemon = true, name = "nomad-admission") {
+            while (!Thread.currentThread().isInterrupted) {
+                runCatching { queue.reconcile() }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }
+                Thread.sleep(10_000)
+            }
+        }
         val capacity = settings.capacity?.let { integration ->
             CapacityCollector(checkNotNull(capacitySettings), integration.inventoryFiles.map(Path::of),
                 Path.of(integration.healthTokenFile), config.dataDir.resolve("nomad/capacity-state.json"), store, client, disk::allowsWork, config.localNodeTags)

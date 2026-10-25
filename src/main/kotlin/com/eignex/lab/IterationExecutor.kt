@@ -92,7 +92,7 @@ class IterationExecutor(
                     val record = directory.resolve("cases/${case.index}").toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     if (profile != null) CliMeasurements.writeManifest(profile, case.index, generation, id, host, command, exit,
                         javaOptions, record, os == "mac", manifest.experiment.compilationRecording, manifest.experiment.recordsCliJfr)
-                    ExecutionCaseResult(case.index, exit, start, finish, record)
+                    ExecutionCaseResult(case.index, exit, start, finish, record, command)
                 } finally { cpu.release(permits) }
             } }).map { future ->
                 try { future.get() } catch (error: java.util.concurrent.ExecutionException) {
@@ -120,8 +120,8 @@ class IterationExecutor(
 internal fun portablePath(value: String, source: Path, corpus: Path): Path {
     val relative = safeRelative(value)
     return when (relative.first().toString()) {
-        "lab-source" -> source.resolve(relative.subpath(1, relative.nameCount))
-        "lab-corpus" -> corpus.resolve(relative.subpath(1, relative.nameCount))
+        "lab-source" -> if (relative.nameCount == 1) source else source.resolve(relative.subpath(1, relative.nameCount))
+        "lab-corpus" -> if (relative.nameCount == 1) corpus else corpus.resolve(relative.subpath(1, relative.nameCount))
         else -> source.resolve(relative)
     }
 }

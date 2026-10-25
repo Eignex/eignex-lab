@@ -11,7 +11,7 @@ import java.util.UUID
 class NomadBackend(
     private val store: Store, private val nomad: NomadControl, private val artifacts: ArtifactStore,
     private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
-    private val checkCase: (Long, Int) -> String = { _, _ -> "not-required" },
+    private val checkCase: (Long, Int) -> String? = { _, _ -> "not-required" },
     private val nativeMayClaim: (Long) -> Boolean = { true },
     private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
 ) : ExecutionBackend {
@@ -28,7 +28,7 @@ class NomadBackend(
         val job = store.job(jobId) ?: error("missing experiment")
         require(job.backend == ExecutionBackendKind.NOMAD && job.experiment == manifest.experiment)
         if (template.platform == NomadPlatform.LINUX) {
-            val reason = Placement.localOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
+            val reason = Placement.nomadLocalOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
             require(reason == null && Experiments.storedHost(manifest.experiment.host) != Experiments.LAB_HOST) { reason ?: "experiment is placed on the local host" }
         } else require(Experiments.storedHost(manifest.experiment.host) != Experiments.AWS_HOST) { "experiment is cloud-only" }
         if (manifest.preparationTimeoutSec == null) require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
@@ -84,6 +84,23 @@ class NomadBackend(
         return store.execution.claim(id, token, allocation)
     }
 
+    fun selectPreparation(owner: AttemptOwner, requested: List<List<Problem>>): List<List<Problem>> {
+        require(workAllowed())
+        val hash = ExecutionStore.digest(Json.encodeToString(requested))
+        store.execution.preparationSelection(owner, hash)?.let { return it }
+        val spec = store.execution.manifest(owner.session).experiment
+        val selected = try {
+            preparationSelection(store, spec, requested) { store.execution.authorize(owner) }.also { groups ->
+                require(groups.any { it.isNotEmpty() }) { "the selection matched no problems the reference filter keeps" }
+            }
+        } catch (failure: IllegalArgumentException) {
+            store.execution.rejectBuild(owner, "problem selection: ${failure.message?.take(1024)}")
+            throw ExecutionFenced("problem selection refused")
+        }
+        require(workAllowed())
+        return store.execution.approvePreparationSelection(owner, hash, selected)
+    }
+
     fun commit(owner: AttemptOwner, result: IterationResult): Boolean {
         require(workAllowed()) { "coordinator volumes unavailable" }
         val session = store.execution.session(owner.session) ?: throw ExecutionFenced("unknown session")
@@ -99,6 +116,11 @@ class NomadBackend(
                 require(manifest.bundles.any { it.commit == bundle.commit && it.os == bundle.os && it.arch == bundle.arch })
                 require(bundle.sha256 in preparation.artifacts.values)
             }
+            val selected = store.execution.acceptedPreparationSelection(owner)
+            fun identities(groups: List<List<Problem>>) = groups.map { group -> group.map { Triple(it.suite, it.problem, it.collection) } }
+            require(identities(selected) == identities(preparation.selections)) { "prepared files differ from the approved selection" }
+            val approvedKeys = selected.flatten().map { it.collection to it.problem }.toSet()
+            require(preparation.features.all { (it.collection to it.problem) in approvedKeys }) { "features are outside the approved selection" }
             preparation.selections.flatten().forEach { p -> (listOfNotNull(p.model, p.data) + p.includeDirs).forEach(::safeRelative) }
         }
         for ((name, sha) in result.artifacts) {
@@ -143,7 +165,7 @@ class NomadBackend(
             for ((iteration, result) in accepted) {
                 if (iteration !in ingested) { project(job.id, result); store.execution.markIngested(job.id, iteration) }
                 for (case in result.cases) if (case.index !in checked) {
-                    val detail = checkCase(job.id, case.index)
+                    val detail = checkCase(job.id, case.index) ?: continue
                     store.execution.checkComplete(job.id, case.index, detail)
                 }
             }
@@ -159,6 +181,10 @@ class NomadBackend(
             for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) {
                 if (s.executionClass == "prepare" && accepted.any { it.second.preparation != null }) {
                     store.execution.loseSession(s.id, "prepared")
+                    continue
+                }
+                if (s.executionClass == "solve" && s.allocation == null && store.unclaimed(job.id) == 0) {
+                    store.execution.loseSession(s.id, "no-unclaimed-work")
                     continue
                 }
                 if (current.paused) store.execution.drain(s.id)
