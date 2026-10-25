@@ -35,10 +35,12 @@ data class NomadBatchJob(
     val schemaVersion: Int = 1,
     val networkMode: String? = null,
     val statusHostVolume: String? = null,
+    val excludedNodes: Set<String> = emptySet(),
 ) {
     init {
         require(schemaVersion == 1) { "unsupported Nomad session schema: $schemaVersion" }
         require(ID.matches(id)) { "invalid Nomad job ID" }
+        require(excludedNodes.size <= 1024 && excludedNodes.all { ID.matches(it) }) { "invalid excluded node IDs" }
         require(nodeClass.isNotBlank() && datacenter.isNotBlank()) { "nodeClass and datacenter are required" }
         require(command.isNotEmpty() && command.first().isNotBlank()) { "command must contain an executable" }
         require(command.none { '\u0000' in it }) { "command contains NUL" }
@@ -72,6 +74,7 @@ data class NomadBatchJob(
             // A job converted for one pool must not land on a node with a different quota denominator.
             add(constraint("${'$'}{attr.cpu.usablecompute}", cpuCapacity.usableMHz.toString()))
             add(constraint("${'$'}{attr.cpu.numcores}", cpuCapacity.logicalCpus.toString()))
+            excludedNodes.sorted().forEach { add(constraint("${'$'}{node.unique.id}", it, "!=")) }
         })
         putJsonArray("TaskGroups") {
             add(buildJsonObject {
@@ -137,9 +140,9 @@ data class NomadBatchJob(
         private val ID = Regex("[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}")
         private val IMAGE = Regex("[^\\s]+@sha256:[0-9a-f]{64}")
 
-        private fun constraint(target: String, value: String) = buildJsonObject {
+        private fun constraint(target: String, value: String, operand: String = "=") = buildJsonObject {
             put("LTarget", target)
-            put("Operand", "=")
+            put("Operand", operand)
             put("RTarget", value)
         }
     }

@@ -128,7 +128,7 @@ class NomadQueueTest {
             source = { _, _, _ -> error("source already pinned") }).reconcile()
         val solves = store.execution.sessions(id).filter { it.executionClass == "solve" }
         assertEquals(1, solves.count { store.execution.submission(it.id).contains("advisory-native") })
-        assertEquals(2, solves.count { store.execution.submission(it.id).contains("hard-quota") })
+        assertEquals(1, solves.count { store.execution.submission(it.id).contains("hard-quota") })
         assertTrue(solves.all { it.budget.parallel == 1 && it.budget.cpuMillis == 1000 })
     }
 
@@ -141,6 +141,35 @@ class NomadQueueTest {
         assertEquals(3, solves.size)
         assertTrue(solves.all { it.release == "release" && it.budget.memoryMiB == 768 })
         assertEquals(1, publications)
+    }
+
+    @Test fun `cloud admission waits for placement and excludes hosts at the experiment parallel cap`() {
+        val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        queue().reconcile(); prepare(id, 4); backend.reconcile(); queue().reconcile()
+        fun solves() = store.execution.sessions(id).filter { it.executionClass == "solve" }
+        fun bind(session: ExecutionSession, node: String) {
+            val spec = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+            val token = spec.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject
+                .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+            store.execution.bind(session.id, token, "allocation-${session.id}", node, "release")
+        }
+        assertEquals(1, solves().size)
+        queue().reconcile(); assertEquals(1, solves().size, "an unplaced session must not cause duplicate placements")
+        bind(solves().single { it.node == null }, "cloud-node-a")
+        queue().reconcile(); assertEquals(2, solves().size)
+        bind(solves().single { it.node == null }, "cloud-node-a")
+        queue().reconcile(); assertEquals(3, solves().size)
+        val thirdSession = solves().single { it.node == null }
+        val third = Json.parseToJsonElement(store.execution.submission(thirdSession.id)).jsonObject
+        val exclusion = third.getValue("Constraints").jsonArray.map { it.jsonObject }
+            .single { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.unique.id}" }
+        assertEquals("!=", exclusion.getValue("Operand").jsonPrimitive.content)
+        assertEquals("cloud-node-a", exclusion.getValue("RTarget").jsonPrimitive.content)
+        bind(thirdSession, "cloud-node-b")
+        queue().reconcile(); assertEquals(4, solves().size)
+        val fourth = store.execution.submission(solves().single { it.node == null }.id)
+        assertTrue(fourth.contains("cloud-node-a"))
+        assertFalse(fourth.contains("cloud-node-b"), "the other host still has an experiment parallel slot")
     }
 
     @Test fun `domain completion is acknowledged once across coordinator instances`() {

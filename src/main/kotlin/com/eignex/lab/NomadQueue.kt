@@ -125,9 +125,13 @@ class NomadQueue(
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
                 } ?: original }
                 val ordered = targets.sortedBy { if (it.os == "mac") 0 else 1 }
+                fun cloudSessions() = sessions.filter { session -> session.executionClass == "solve" && session.desired != "stop" &&
+                    Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
+                        ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "hard-quota" }
                 for (index in active.size until limit) {
                     val available = ordered.filter { target ->
-                        if (target.os != "mac") true else {
+                        // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
+                        if (target.os != "mac") cloudSessions().none { it.node == null } else {
                             val budget = checkNotNull(settings.solveBudget(target, current))
                             val nativeSessions = sessions.filter { session -> session.executionClass == "solve" && session.desired != "stop" &&
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
@@ -143,11 +147,15 @@ class NomadQueue(
                             reserved.first + budget.cpuMillis <= config.cores * 1000L &&
                                 reserved.second + budget.memoryMiB <= target.template.budget.memoryMiB
                         }
-                    } ?: available.firstOrNull { it.os == "mac" } ?: break
+                    } ?: break
                     val budget = checkNotNull(settings.solveBudget(target, current))
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, recipe.arms, cases, bundles, budget,
                         solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus)
-                    backend.enqueue(job.id, manifest, target.template.copy(budget = budget), settings.workerApi)
+                    val excluded = if (target.os == "mac") emptySet() else cloudSessions().filter { it.node != null }
+                        .groupBy { checkNotNull(it.node) }.filterValues { hosted ->
+                            hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > current.parallel
+                        }.keys
+                    backend.enqueue(job.id, manifest, target.template.copy(budget = budget, excludedNodes = target.template.excludedNodes + excluded), settings.workerApi)
                     sessions = store.execution.sessions(job.id)
                 }
             } catch (failure: IllegalArgumentException) {
