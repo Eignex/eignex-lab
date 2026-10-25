@@ -86,6 +86,8 @@ data class ExperimentSpec(
     val capped: List<String> = emptyList(),
     /** The GitHub repository to build. Only repositories owned by Eignex are accepted. */
     val repository: String = Repositories.DEFAULT,
+    /** Optional required and excluded node tags. Omitted on ordinary jobs. */
+    val nodeTags: NodeSelector? = null,
 )
 
 /**
@@ -236,6 +238,8 @@ object Experiments {
             auto = false,
             profile = spec.profile?.copy(runTimeoutSec = null),
             capped = emptyList(),
+            nodeTags = spec.nodeTags?.let { it.copy(require = it.require.toSortedSet(), exclude = it.exclude.toSortedSet()) }
+                ?.takeIf { it.require.isNotEmpty() || it.exclude.isNotEmpty() },
         )
         return hash(Json.encodeToString(ExperimentSpec.serializer(), measured))
     }
@@ -284,6 +288,7 @@ object Experiments {
 
     /** What [spec] runs apart from its problems: each arm's values with their defaults filled in, labels left out. */
     private fun splitKey(spec: ExperimentSpec): List<Any> = listOf(
+        spec.nodeTags ?: NodeSelector(),
         arms(spec).map { arm -> (arm.values + ("ref" to arm.ref) + ("timeout" to arm.timeoutMs.toString())).toSortedMap().toString() }.sorted(),
         spec.seeds.sorted(),
         spec.repeats,
@@ -351,6 +356,7 @@ object Experiments {
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
+        NodeTags.validate(spec.nodeTags)
         Repositories.requireAllowed(spec.repository)
         require(spec.repository == Repositories.DEFAULT || spec.isProfile) { "other Eignex repositories require a profile entry point" }
         requireOptions(spec)

@@ -210,7 +210,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val queued = jobs.count { it.status == Status.QUEUED }
             val running = jobs.count { it.status == Status.RUNNING }
             val (held, volumes) = withContext(Dispatchers.IO) { runCatching { Volumes.hold(config) }.getOrNull() to Volumes.report(config) }
-            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host, held, volumes))
+            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags), held, volumes))
         }
         get("/jobs") {
             // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds. ?active=true lists
@@ -239,14 +239,14 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/experiments") {
             // The lab places every job itself ([Placement]): a submitted host or machine count is read but not followed.
             val body = analysisDefaults(call.receive<JsonObject>())
-            // Every job fits the local machine: cores and parallel over its limits are cut down to them, and the notes
-            // say so.
-            val given = Experiments.capToLocal(DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList()),
-                config.cores, config.maxParallel)
+            // Jobs eligible for the local machine are capped to it; cloud-only tag requests use compatible cloud capacity.
+            val submitted = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList())
+            val given = if (NodeTags.matches(submitted.nodeTags, config.localNodeTags))
+                Experiments.capToLocal(submitted, config.cores, config.maxParallel) else submitted
             val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
             requireDescription(spec)
             requireHost(spec, config)
-            Experiments.validate(spec, config.maxParallel, config.cores)
+            Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config))
             // An analysis needs its job's captures: refused now, saying why, when they are gone or the job has not ended.
             spec.analyze?.let { analyze ->
                 val job = analyze.job
@@ -445,6 +445,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
         // The runner fetches within seconds and, when the lab's upstream moved, updates between the running job's cases.
         // Start a cloud node by hand ([ManualLaunch]): the runner's cloud worker launches it on its next poll.
+        get("/cloud/nodes") {
+            val report = readPoolReport(config)
+            if (report == null) call.respond(HttpStatusCode.NotFound, "the cloud worker has not reported yet")
+            else call.respond(report)
+        }
         post("/cloud/nodes") {
             val aws = AwsConfig.load(config.dataDir.resolve("aws").resolve("aws.properties"))
             if (aws == null) {
@@ -650,7 +655,7 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
     }
     require(spec.problemList.isEmpty()) { "a cloud experiment selects its problems" }
     val cores = Experiments.arms(spec).maxOf { it.cores }
-    requireNotNull(aws.sizeFor(cores)) {
+    require(Placement.cloudSizes(spec, config).any { it.cores >= cores }) {
         "its cases need $cores cores; the largest instance within the ${aws.vcpuQuota}-vCPU quota has ${aws.sizes.last().cores}"
     }
 }
@@ -702,13 +707,21 @@ private fun requireDescription(spec: ExperimentSpec) = require(spec.description.
         "continuation scheduler against main on the sweep set, to see whether it closes the uf250 gap\""
 }
 
+private fun nodeCoreLimit(spec: ExperimentSpec, config: Config): Int =
+    if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) config.cores
+    else Placement.cloudSizes(spec, config).maxOfOrNull { it.cores } ?: 0
+
 private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     requireDescription(experiment)
     // A schedule's host says only whether its runs may go to the cloud ([Placement.cloudOptIn]); the lab places them.
     require(Experiments.storedHost(experiment.host) in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
         "host must be local, cloud or auto (or lab or aws, their older names)"
     }
-    Experiments.validate(experiment, config.maxParallel, config.cores)
+    require(NodeTags.matches(experiment.nodeTags, config.localNodeTags) || Placement.cloudOptIn(experiment) && Placement.cloudSizes(experiment, config).any { it.cores >= Experiments.arms(experiment).maxOf { arm -> arm.cores } }) {
+        "the schedule's node tags match no allowed host; opt in to cloud execution if a matching cloud type is configured"
+    }
+    val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
+    Experiments.validate(experiment, if (local) config.maxParallel else nodeCoreLimit(experiment, config), nodeCoreLimit(experiment, config))
     require(Experiments.arms(experiment).none { "ref" in it.values }) {
         "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
     }

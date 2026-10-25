@@ -53,7 +53,7 @@ data class AwsConfig(
     /**
      * Whether the lab buys on-demand nodes for work other than profile jobs (`onDemand=true`). Off, every such node is
      * spot and a launch waits for spot capacity instead of buying on demand. A node launched for a profile job is on
-     * demand either way, since a profile is never run on spot.
+     * demand either way, since a profile stays off spot unless its selector explicitly requests it.
      */
     val onDemand: Boolean = false,
     /** How long a node with nothing to take stays up before the lab terminates it. */
@@ -69,31 +69,49 @@ data class AwsConfig(
     val nodeSustainMin: Long = 10,
     /** The least time between two launches. */
     val nodeCooldownMin: Long = 5,
-    /** The largest node the pool launches, by hand or not, in vCPUs. Every job is capped to the local machine's cores,
-     *  so no case needs more than a node of this size holds; more load is met by more nodes, not larger ones. */
+    /** The largest node the pool launches, by hand or not, in vCPUs. Jobs eligible for the local machine are capped
+     *  to its cores; cloud-only selectors are limited by compatible cloud sizes. */
     val nodeMaxVcpus: Int = 16,
     /** A node powers itself off, and so terminates, once the lab has not touched its heartbeat for this long
      *  ([AwsWorker.heartbeat]): the lab down or unreachable leaves no node billing until its [maxHours]. Set at
      *  launch; 0 turns the watchdog off for nodes launched after. */
     val nodeWatchdogMin: Long = 30,
+    val instanceTypes: List<String> = emptyList(),
+    val instanceTags: Map<String, Set<String>> = emptyMap(),
+    val threadsPerCore: Map<String, Int> = emptyMap(),
+    val nodeTags: Set<String> = emptySet(),
+    val arm64Ami: String? = null,
+    val architectures: Map<String, String> = emptyMap(),
 ) {
     /** The sizes a node can be, smallest first: [instanceType] and the larger sizes of its family up to
      *  [nodeMaxVcpus], within the quota. */
     val sizes: List<InstanceSize>
-        get() {
-            val family = instanceType.substringBefore('.')
-            val smallest = SIZE_VCPUS[instanceType.substringAfter('.')] ?: return listOf(InstanceSize(instanceType, DEFAULT_SIZE_VCPUS))
-            return SIZE_VCPUS.entries.filter { (_, vcpus) -> vcpus in smallest..minOf(vcpuQuota, maxOf(nodeMaxVcpus, smallest)) }
-                .map { (size, vcpus) -> InstanceSize("$family.$size", vcpus) }
-        }
+        get() = instanceTypes.ifEmpty { listOf(instanceType) }.flatMap { type ->
+            val family = type.substringBefore('.')
+            val familyTags = nodeTags + instanceTags[family].orEmpty()
+            val baseArch = architectures[type] ?: architectures[family] ?: (familyTags + instanceTags[type].orEmpty()).firstOrNull { it.startsWith("arch:") }?.substringAfter(':') ?: "x86_64"
+            val smallest = SIZE_VCPUS[type.substringAfter('.')]
+            val expanded = if (smallest == null) listOf(type to DEFAULT_SIZE_VCPUS) else
+                SIZE_VCPUS.entries.filter { (_, vcpus) -> vcpus in smallest..minOf(vcpuQuota, maxOf(nodeMaxVcpus, smallest)) }
+                    .map { (size, vcpus) -> "$family.$size" to vcpus }
+            expanded.map { (actual, vcpus) ->
+                val tags = familyTags + instanceTags[actual].orEmpty()
+                NodeTags.validate(NodeSelector(require = tags))
+                val arch = architectures[actual] ?: architectures[family] ?: tags.firstOrNull { it.startsWith("arch:") }?.substringAfter(':') ?: baseArch
+                require(arch in setOf("x86_64", "arm64")) { "cloud architecture must be x86_64 or arm64" }
+                val threads = threadsPerCore[actual] ?: threadsPerCore[family] ?: if (arch == "arm64") 1 else 2
+                require(threads in 1..2) { "threadsPerCore.$family must be 1 or 2" }
+                InstanceSize(actual, vcpus, arch, tags, threads)
+            }
+        }.distinctBy { it.type }.sortedBy { it.vcpus }
 
-    /** The smallest size with [cores] physical cores for one case, or null when none fits the quota. */
-    fun sizeFor(cores: Int): InstanceSize? = sizes.firstOrNull { it.cores >= cores }
+    fun sizeFor(cores: Int, selector: NodeSelector? = null, profile: Boolean = false): InstanceSize? =
+        sizes.firstOrNull { it.cores >= cores && NodeTags.matches(selector, it.tags(NodeTags.onDemand(profile, selector))) }
 
     companion object {
         private const val DEFAULT_VCPU_QUOTA = 32
         private const val DEFAULT_SIZE_VCPUS = 8
-        /** vCPUs of the compute families' sizes; a physical core is two of them. */
+        /** vCPUs of the compute families' sizes; [threadsPerCore] determines physical cores. */
         private val SIZE_VCPUS = linkedMapOf("xlarge" to 4, "2xlarge" to 8, "4xlarge" to 16, "8xlarge" to 32, "12xlarge" to 48, "16xlarge" to 64)
 
         fun load(file: Path): AwsConfig? {
@@ -126,14 +144,28 @@ data class AwsConfig(
                 nodeCooldownMin = get("nodeCooldownMin", "5")!!.toLong(),
                 nodeMaxVcpus = get("nodeMaxVcpus", "16")!!.toInt(),
                 nodeWatchdogMin = get("nodeWatchdogMin", "30")!!.toLong(),
+                instanceTypes = get("instanceTypes").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                instanceTags = p.stringPropertyNames().filter { it.startsWith("tags.") }.associate {
+                    it.removePrefix("tags.") to p.getProperty(it).split(',').map(String::trim).filter(String::isNotEmpty).toSet()
+                },
+                threadsPerCore = p.stringPropertyNames().filter { it.startsWith("threadsPerCore.") }.associate {
+                    it.removePrefix("threadsPerCore.") to p.getProperty(it).trim().toInt()
+                },
+                nodeTags = get("nodeTags").orEmpty().split(',').map(String::trim).filter(String::isNotEmpty).toSet(),
+                arm64Ami = get("arm64Ami"),
+                architectures = p.stringPropertyNames().filter { it.startsWith("architecture.") }.associate {
+                    it.removePrefix("architecture.") to p.getProperty(it).trim()
+                },
             )
         }
     }
 }
 
-/** An instance size: its type and vCPUs; its physical cores are half the vCPUs, each running two hardware threads. */
-data class InstanceSize(val type: String, val vcpus: Int) {
-    val cores: Int get() = vcpus / 2
+/** An instance size and topology: x86 defaults to two threads per core, ARM to one. */
+data class InstanceSize(val type: String, val vcpus: Int, val arch: String = "x86_64", val labels: Set<String> = emptySet(), val threads: Int = 2) {
+    val cores: Int get() = vcpus / threads
+    fun tags(onDemand: Boolean): Set<String> = labels.filterNot { it in setOf("local", "cloud", "spot", "on-demand") || it.startsWith("arch:") || it.startsWith("instance:") }.toSet() +
+        setOf("cloud", "arch:$arch", "instance:$type", if (onDemand) "on-demand" else "spot")
 }
 
 /** The AWS CLI, as the lab's IAM user, in the background so it stays off the solves' cores. Open for tests, which
@@ -147,14 +179,16 @@ open class AwsCli(private val aws: AwsConfig) {
         return out
     }
 
-    fun image(): String = aws.ami ?: call("ssm", "get-parameter", "--name", UBUNTU_IMAGE, "--query", "Parameter.Value")
+    fun image(arch: String = "x86_64"): String =
+        (if (arch == "arm64") aws.arm64Ami else aws.ami) ?: call("ssm", "get-parameter", "--name",
+            UBUNTU_IMAGE.replace("/amd64/", if (arch == "arm64") "/arm64/" else "/amd64/"), "--query", "Parameter.Value")
 
     /** Launch one node, tagged as the lab's, terminating itself when it powers off. */
     fun launch(name: String, userData: File, type: String, spot: Boolean = false): String = call(
         "ec2", "run-instances",
         // A one-time request that terminates when AWS reclaims the capacity, its price capped at on demand.
         *(if (spot) arrayOf("--instance-market-options", "MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}") else emptyArray()),
-        "--image-id", image(),
+        "--image-id", image(aws.sizes.firstOrNull { it.type == type }?.arch ?: "x86_64"),
         "--instance-type", type,
         "--key-name", aws.keyName,
         "--security-group-ids", aws.securityGroup,
@@ -376,6 +410,8 @@ class AwsHost(
     /** Collect process resources without requesting a JVM recording. */
     private val measureCliResources: Boolean = false,
     private val repository: String = Repositories.DEFAULT,
+    override val nodeTags: Set<String> = emptySet(),
+    override val cpu: CpuCapabilities? = null,
     private val cancelled: () -> Boolean,
 ) : ExecutionHost {
     override val id get() = instance
@@ -757,20 +793,22 @@ class AwsWorker(
      * could ever take it.
      */
     private fun demands(): Pair<List<Demand>, List<Demand>> {
-        val localNext = store.localNext(active)
+        val localNext = store.localNext(active, config.localNodeTags)
         val queued = store.nodeQueue().mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
             if (job.id == localNext) return@mapNotNull null
             val awsOnly = spec.host == Experiments.AWS_HOST
             val cores = Experiments.arms(spec).maxOf { it.cores }
-            if (aws.sizeFor(cores) == null) {
+            if (aws.sizeFor(cores, spec.nodeTags, spec.isProfile) == null && nodes.values.none {
+                    it.size.cores >= cores && NodeTags.matches(spec.nodeTags, it.tags) && (!NodeTags.onDemand(spec.isProfile, spec.nodeTags) || it.onDemand)
+                }) {
                 if (awsOnly) store.claimForNode(job.id)?.let {
                     store.finish(job.id, Status.FAILED, "its cases need $cores cores, more than an instance within the ${aws.vcpuQuota}-vCPU quota has")
                 }
                 return@mapNotNull null
             }
             Demand(job.id, Estimates.pressureCoreHours(job, history::lookup, config.cores), cores, spec.isProfile, job.priority,
-                Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority))
+                Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority), nodeTags = spec.nodeTags)
         }
         val failing = runner.crews.failing()
         val running = store.helpable().mapNotNull { (job, unclaimed) ->
@@ -778,7 +816,7 @@ class AwsWorker(
             if (job.id in failing) return@mapNotNull null
             Demand(job.id, unclaimed * Estimates.caseCoreHours(job, history::lookup), Experiments.arms(spec).maxOf { it.cores },
                 priority = job.priority, belowFloor = Placement.belowFloor(spec.host, job.priority, aws.nodeMinPriority),
-                hosts = runner.crews.hosts(job.id).size)
+                hosts = runner.crews.hosts(job.id).size, nodeTags = spec.nodeTags)
         }
         return queued to running
     }
@@ -789,14 +827,17 @@ class AwsWorker(
     private val threshold: Double get() = NodePool.threshold(config.cores, aws.nodeLaunchLocalHours)
 
     /** Launch a node when the pressure calls for one ([LaunchGate]), sized to what waits ([NodePool.size]). */
+    private val launchingShapes = ConcurrentHashMap<String, NodeShape>()
+
     private fun scale() {
         val (queued, running) = demands().let { (q, r) -> q.filter { !it.belowFloor } to r.filter { !it.belowFloor } }
         val all = queued + running
         pressure = NodePool.pressure(all)
         val count = nodes.size + launching.get()
-        val size = all.maxOfOrNull { it.cores }?.let { cores ->
-            NodePool.size(aws.sizes, cores, pressure, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
-        }
+        val provisioned = nodes.values.flatMap { listOf(it.shape, NodeShape(it.size.cores, it.onDemand, it.size.tags(it.onDemand))) } + launchingShapes.values
+        val dedicated = NodePool.dedicated(all, config.localNodeTags, provisioned)
+        val plan = NodePool.launchPlan(aws.sizes, dedicated?.let(::listOf) ?: all, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus)
+        val size = plan?.size
         queueSize = size ?: NodePool.size(aws.sizes, 1, 0.0, count, aws.vcpuQuota - busy.get(), aws.nodeMaxVcpus).takeIf { all.isEmpty() }
         val noRoom = when {
             count >= aws.maxInstances -> LaunchGate.AT_MAX
@@ -805,15 +846,17 @@ class AwsWorker(
             else -> null
         }
         val now = System.currentTimeMillis()
-        val sustainMs = aws.nodeSustainMin * MS_PER_MIN
+        val sustainMs = if (dedicated == null) aws.nodeSustainMin * MS_PER_MIN else 0L
+        val launchThreshold = if (dedicated == null) threshold else 0.0
         val cooldownMs = aws.nodeCooldownMin * MS_PER_MIN
-        val launch = gate.shouldLaunch(now, pressure, count, threshold, size != null && noRoom == null, sustainMs, cooldownMs)
-        blocker = if (launch) null else gate.blocker(now, pressure, count, threshold, noRoom, sustainMs, cooldownMs)
+        val launch = gate.shouldLaunch(now, pressure, count, launchThreshold, size != null && noRoom == null, sustainMs, cooldownMs)
+        blocker = if (launch) null else gate.blocker(now, pressure, count, launchThreshold, noRoom, sustainMs, cooldownMs)
         if (!launch || size == null) return
-        // A profile job runs only on an on-demand node: one is bought for it when none is up or on its way.
-        val onDemand = queued.any { it.profile } && nodes.values.none { it.onDemand } && launchingOnDemand.get() == 0
+        // Keep the ordinary profile market policy; explicit tag selectors may instead require spot.
+        val onDemand = if (all.all { it.nodeTags == null }) queued.any { it.profile } && nodes.values.none { it.onDemand } && launchingOnDemand.get() == 0
+            else checkNotNull(plan).onDemand
         println("aws: pressure %.1f core-hours on $count nodes: launching a %s %s node".format(pressure, size.type, if (onDemand) "on-demand" else "spot-first"))
-        launch(size, onDemand)
+        launch(size, onDemand, spotOnly = checkNotNull(plan).spotOnly)
     }
 
     /**
@@ -835,17 +878,20 @@ class AwsWorker(
     }
 
     /** Reserve [size]'s vCPUs and launch a node on its own thread, which then runs it until it retires. */
-    private fun launch(size: InstanceSize, onDemand: Boolean, manual: Boolean = false) {
+    private fun launch(size: InstanceSize, onDemand: Boolean, manual: Boolean = false, spotOnly: Boolean = false) {
+        val pending = UUID.randomUUID().toString()
+        launchingShapes[pending] = NodeShape(size.cores, onDemand, size.tags(onDemand))
         busy.addAndGet(size.vcpus)
         launching.incrementAndGet()
         if (onDemand) launchingOnDemand.incrementAndGet()
         thread(isDaemon = true, name = "aws-node-${launched.get() + 1}") {
             val node = try {
-                buy(size, onDemand, manual)
+                buy(size, onDemand, manual, spotOnly)
             } catch (e: Exception) {
                 println("aws: no ${size.type} node launched: ${e.message}")
                 null
             } finally {
+                launchingShapes.remove(pending)
                 launching.decrementAndGet()
                 if (onDemand) launchingOnDemand.decrementAndGet()
             }
@@ -855,13 +901,13 @@ class AwsWorker(
 
     /** One instance of [size], registered as a node at once so the sweep leaves it alone; [manual] when started by
      *  hand. */
-    private fun buy(size: InstanceSize, onDemand: Boolean, manual: Boolean): Node {
+    private fun buy(size: InstanceSize, onDemand: Boolean, manual: Boolean, spotOnly: Boolean): Node {
         runCatching { cli.admitThisMachine() }
         val userData = Files.createTempFile("eignex-lab-user-data", ".sh").toFile()
         try {
             userData.writeText(bootstrap())
             val name = "eignex-lab-node-${launched.incrementAndGet()}"
-            val (id, market) = if (onDemand) cli.launch(name, userData, size.type) to ON_DEMAND else spotFirst(name, userData, size.type, manual)
+            val (id, market) = if (onDemand) cli.launch(name, userData, size.type) to ON_DEMAND else spotFirst(name, userData, size.type, manual, spotOnly)
             return Node(id, size, market, System.currentTimeMillis(), manual).also { nodes[id] = it }
                 .also { println("aws: launched ${size.type} $market ${if (manual) "manual " else ""}node $id") }
                 .also { savePool() }
@@ -876,14 +922,14 @@ class AwsWorker(
      * if [AwsConfig.onDemand] allows. It gives up once the pressure it was launched for is gone, or, for a [manual]
      * launch, which no pressure called for, once `spotWaitMin` has passed without spot or on demand.
      */
-    private fun spotFirst(name: String, userData: File, type: String, manual: Boolean = false): Pair<String, String> {
+    private fun spotFirst(name: String, userData: File, type: String, manual: Boolean = false, spotOnly: Boolean = false): Pair<String, String> {
         val since = System.currentTimeMillis()
         while (true) {
             val e = runCatching { return cli.launch(name, userData, type, spot = true) to SPOT }.exceptionOrNull()!!
             val message = e.message.orEmpty()
             val capacity = CAPACITY.find(message)?.value
             val waited = System.currentTimeMillis() - since
-            if (aws.onDemand && (NO_SPOT.containsMatchIn(message) || capacity != null && waited >= aws.spotWaitMin * MS_PER_MIN)) {
+            if (!spotOnly && aws.onDemand && (NO_SPOT.containsMatchIn(message) || capacity != null && waited >= aws.spotWaitMin * MS_PER_MIN)) {
                 println("aws: no spot for $type (${capacity ?: "spot not set up"}) after ${waited / MS_PER_SEC} s: launching on demand")
                 return cli.launch(name, userData, type) to ON_DEMAND
             }
@@ -902,7 +948,11 @@ class AwsWorker(
         val adopted: Boolean = false,
     ) {
         val onDemand: Boolean get() = market == ON_DEMAND
-        val shape: NodeShape get() = NodeShape(size.cores, onDemand)
+        val tags: Set<String> get() = NodeTags.observed(cpu,
+            aws.nodeTags + aws.instanceTags[size.type.substringBefore('.')].orEmpty() + aws.instanceTags[size.type].orEmpty() + aws.instanceTags[instance].orEmpty(),
+            cloud = true, spot = !onDemand, type = size.type)
+        val shape: NodeShape get() = NodeShape(size.cores, onDemand, tags)
+        @Volatile var cpu: CpuCapabilities = CpuCapabilities()
         @Volatile
         var doing = "booting"
         @Volatile
@@ -957,8 +1007,15 @@ class AwsWorker(
         savePool()
         val ssh = ssh(node)
         runner.withRetry(null, "waiting for ${node.instance} to boot", BOOT_WAIT) { ssh.run("test -f $READY", SSH_STEP_SEC) }
+        node.cpu = probe(node)
         node.doing = "idle"
         report()
+    }
+
+    private fun probe(node: Node): CpuCapabilities {
+        val (exit, output) = ssh(node).exec(NodeTags.probeScript, SSH_STEP_SEC)
+        check(exit == 0) { "cannot read node capabilities" }
+        return NodeTags.parse(output)
     }
 
     /** The job [node] works on next, joined or claimed ([NodePool.pick]); null when none is for it. While the corpus's
@@ -1051,6 +1108,7 @@ class AwsWorker(
     private fun setUp(node: Node, host: AwsHost, job: AwsJob) {
         val current = checkNotNull(store.job(job.id))
         val spec = job.spec
+        require(NodeTags.matches(spec.nodeTags, node.tags)) { "node ${node.instance} does not match the job's tags" }
         val planned = current.commands.isNotEmpty()
         node.doing = if (planned) "joining job ${job.id}" else "setting up job ${job.id}"
         runner.log(job.id, "${if (planned) "joined" else "taken"} by node ${node.instance} (${node.size.type}, ${node.market})")
@@ -1111,6 +1169,8 @@ class AwsWorker(
         compilation = job.spec.profileCompilation,
         measureCliResources = job.spec.measureCliResources,
         repository = job.spec.repository,
+        nodeTags = node.tags,
+        cpu = node.cpu,
     ) {
         store.cancelRequested(job.id)
     }
@@ -1179,12 +1239,15 @@ class AwsWorker(
         check(state == "running") { "it is $state" }
         val ip = runCatching { cli.publicIp(saved.instance) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() && it != "None" } ?: saved.ip
         check(ip.isNotEmpty()) { "it has no public address" }
-        val node = Node(saved.instance, InstanceSize(saved.type, saved.vcpus), saved.market, saved.launchedAt, saved.manual, adopted = true)
+        val node = Node(saved.instance, aws.sizes.firstOrNull { it.type == saved.type } ?: InstanceSize(saved.type, saved.vcpus), saved.market, saved.launchedAt, saved.manual, adopted = true)
         node.ip = ip
         val (exit, out) = ssh(node).exec(ADOPT_SCRIPT, SSH_STEP_SEC, cancellable = false, retries = false)
         check(exit == 0) { "clearing it over SSH failed (exit $exit): ${out.trim().takeLast(ERROR_CHARS)}" }
         val booted = out.lines().any { it.trim() == "ready" }
-        if (booted) node.built.addAll(saved.built)
+        if (booted) {
+            node.cpu = probe(node)
+            node.built.addAll(saved.built)
+        }
         node.doing = if (booted) "idle" else "booting"
         nodes[node.instance] = node
         busy.addAndGet(node.size.vcpus)
@@ -1241,7 +1304,7 @@ class AwsWorker(
     @Synchronized
     private fun report() {
         val report = poolReport(System.currentTimeMillis(), pressure, launching.get(),
-            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job, it.manual, it.launchedAt, it.adopted) },
+            nodes.values.sortedBy { it.launchedAt }.map { NodeReport(it.instance, it.size.type, it.market, it.doing, it.job, it.manual, it.launchedAt, it.adopted, it.tags, it.cpu) },
             threshold, gate, aws, blocker, runner.updateWaiting(), busy.get(), queueSize?.type)
         nodesFile.parent.createDirectories()
         nodesFile.writeAtomically(Json.encodeToString(NodePoolReport.serializer(), report))
@@ -1256,6 +1319,8 @@ class AwsWorker(
             check(exit == 0) { "profile build on ${host.instance} failed (exit $exit); see setup.log" }
         }
     }
+
+    private fun nodeArch(tags: Set<String>): String = tags.firstOrNull { it.startsWith("arch:") }?.substringAfter(':') ?: "unknown"
 
     /** Clone the repository and build each of [shas] on [host]. */
     private fun setup(job: AwsJob, host: AwsHost, shas: List<String>) {
@@ -1280,7 +1345,7 @@ class AwsWorker(
             for (sha in shas) {
                 val worktree = host.worktree(sha)
                 appendLine("[ -d $worktree ] || git -C ~/repo worktree add -q --detach $worktree $sha")
-                val archives = bucket?.let { AwsBuildCache.archives(it, sha) }.orEmpty()
+                val archives = bucket?.let { AwsBuildCache.archives(it, sha, nodeArch(host.nodeTags)) }.orEmpty()
                 AwsBuildCache.worktree(worktree, host.cores, archives, aws.region).forEach(::appendLine)
                 finishWorktree(worktree, job.spec.measuresCli).forEach(::appendLine)
                 appendLine("validate_lab_provenance ${quote(worktree)}")
@@ -1315,10 +1380,19 @@ class AwsWorker(
         apt-get update -q
         apt-get install -yq git zstd unzip curl xz-utils time jq build-essential libgmp-dev zlib1g-dev
         mkdir -p /opt/jdk /opt/minizinc
-        curl -fsSL https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse | tar -xz -C /opt/jdk --strip-components=1
-        curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz | tar -xz -C /opt/minizinc --strip-components=1
-        ln -sf /opt/minizinc/bin/minizinc /usr/local/bin/minizinc
-        curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip
+        case "${'$'}(uname -m)" in
+          x86_64) jdk_arch=x64; minizinc_arch=x86_64; aws_arch=x86_64 ;;
+          aarch64|arm64) jdk_arch=aarch64; minizinc_arch=aarch64; aws_arch=aarch64 ;;
+          *) echo 'unsupported CPU architecture'; exit 2 ;;
+        esac
+        curl -fsSL https://api.adoptium.net/v3/binary/latest/25/ga/linux/${'$'}jdk_arch/jdk/hotspot/normal/eclipse | tar -xz -C /opt/jdk --strip-components=1
+        if [ "${'$'}minizinc_arch" = x86_64 ]; then
+          curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz | tar -xz -C /opt/minizinc --strip-components=1
+          ln -sf /opt/minizinc/bin/minizinc /usr/local/bin/minizinc
+        else
+          apt-get install -yq minizinc
+        fi
+        curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-${'$'}aws_arch.zip -o /tmp/awscli.zip
         unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
         touch /var/lib/eignex-lab-ready
     """.trimIndent() + "\n"

@@ -206,6 +206,83 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   in as `archive.manifest.json`.
 - `parallel` (cases at once; unset, the lab's `LAB_DEFAULT_PARALLEL`), `priority` and `confirm` as below.
 
+### Optional node tags
+
+Most jobs should omit `nodeTags`. They retain the current local/cloud placement, launch thresholds and profile
+market preference. For a measurement that needs particular hardware or another node property, require tags and/or
+exclude tags:
+
+```json
+"nodeTags": {
+  "require": ["arch:x86_64", "simd:avx2", "fast-ssd"],
+  "exclude": ["simd:avx512", "spot"]
+}
+```
+
+Every required tag must be present, and no excluded tag may be present. Tags are lowercase labels without spaces.
+They are flexible labels, so new properties do not require a new job schema. For example, `apple-m4`, `zen4`,
+`fast-ssd` and `dedicated-bench` can be operator labels. A request with no matching configured local or cloud node is
+refused before it queues. Local-only jobs, including profile jobs with a whole-run deadline and reference jobs,
+still need a matching local node. Schedules need their existing cloud opt-in to target cloud-only hardware.
+
+Built-in facts are `local` or `cloud`, `spot` or `on-demand` on cloud nodes, `arch:x86_64` or `arch:arm64`,
+`instance:<EC2-type>` on cloud nodes, and `simd:<feature>` tags read from the operating system. Common selectors are
+`simd:avx2`, `simd:avx512` (AVX-512 Foundation), `simd:avx512f`, `simd:neon`, `simd:sve`, `simd:sve2`, `simd:sme` and
+`simd:sme2`. Required AVX2 alone also permits an AVX-512 machine; exclude `simd:avx512` to select an AVX2 machine
+without it. SME does not imply ordinary SVE. Features that cannot be detected do not satisfy hardware selectors,
+including hardware exclusions. These facts select a capable machine; they do not force a JVM vector width or prove
+that a benchmark actually executed that instruction set. The benchmark's own route metadata still provides that
+attribution. See [Linux's SME interface](https://www.kernel.org/doc/html/latest/arch/arm64/sme.html) and
+[Arm's feature-detection guidance](https://learn.arm.com/insights/sme/) for the OS-visible checks.
+
+Set custom local labels with `LAB_NODE_TAGS=apple-m4,dedicated-bench` in `lab.env` and reinstall the services.
+Cloud labels live in `aws/aws.properties`, which the worker rereads:
+
+```properties
+instanceTypes=c7i.2xlarge,c6a.2xlarge,c7g.2xlarge
+nodeTags=dedicated-bench
+# Per-family provisioning hints; verify the features on the actual nodes.
+tags.c7i=arch:x86_64,simd:avx2,simd:avx512
+tags.c6a=arch:x86_64,simd:avx2
+tags.c7g=arch:arm64,simd:neon,simd:sve
+# Labels can also target an exact type or one already-running instance.
+tags.c7i.4xlarge=fast-ssd
+tags.i-0123456789abcdef0=experiment-reserved
+# Graviton defaults to one thread per core; x86 defaults to two. Override when needed.
+threadsPerCore.c7g=1
+```
+
+`instanceType` remains the default family when `instanceTypes` is omitted. Each listed baseline expands to the
+permitted larger sizes within the quota and node-size limit. Rerun `deploy/aws-setup.sh` with matching
+`INSTANCE_TYPES=c7i.2xlarge,c6a.2xlarge,c7g.2xlarge` to permit those families in IAM. Setup queries EC2 for `architecture.<family>` and thread counts and preserves
+existing operator labels; these architecture values also choose the matching AMI. Configured CPU tags are
+provisioning hints: after boot and adoption the worker probes the node, and only observed CPU facts can satisfy a
+job. Operator labels cannot fabricate CPU or market facts. A cloud node's current tags appear in `/cloud/nodes` and
+its tooltip; local tags and CPU details appear in `/health`. Each participating host also leaves
+`node-<host>.json` with its observed tags and CPU details in the job's files.
+
+Explicit requirements the local machine cannot satisfy request a compatible cloud shape without waiting for the
+local-overflow pressure threshold or sustain period. Existing and launching shapes count, so one request does not
+buy duplicate nodes. The pool's maximum, quota and cooldown still apply. Untagged jobs keep the existing launch
+gate. An `exclude: ["spot"]` selector permits the local machine or an on-demand node. `require: ["spot"]` explicitly
+allows even a profile job on spot and prevents on-demand fallback for the node bought for it. Without a selector,
+profiles retain their local/on-demand behavior.
+
+The bootstrap selects the matching ARM64 or x86 Ubuntu image, JDK and AWS CLI. ARM64 uses Ubuntu's MiniZinc
+package because the pinned upstream Linux bundle is x86-only; use an appropriate AMI if a specific ARM64 MiniZinc
+version is needed (`arm64Ami` overrides that architecture independently of `ami`). Graviton core counts use one vCPU
+per core. Compiled distribution caches are separated by CPU architecture.
+
+The profile and Koblas clients accept repeatable selectors before their positional arguments:
+
+```bash
+deploy/lab koblas --require-tag arch:x86_64 --require-tag simd:avx2 \
+  --exclude-tag simd:avx512 --exclude-tag spot main "AVX2 capture" --smoke --operation dot
+
+deploy/lab koblas --require-tag arch:arm64 --require-tag simd:sme \
+  main "SME-capable host capture" --smoke --operation dot
+```
+
 ### Profile jobs
 
 A profile job runs a committed JVM main or executable from an Eignex repository, once, at a commit. It is for

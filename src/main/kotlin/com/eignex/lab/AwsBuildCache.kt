@@ -16,8 +16,9 @@ internal object AwsBuildCache {
      * The archives in [bucket] a build of [sha] may be restored from, in the order they are tried; the build publishes
      * to the last, the plain one. An install from when builds packaged the MIPLIB solchecker serves as well.
      */
-    fun archives(bucket: String, sha: String): List<String> =
-        listOf("s3://$bucket/$BUILDS/$sha.tar.zst", "s3://$bucket/$PLAIN_BUILDS/$sha.tar.zst")
+    fun archives(bucket: String, sha: String, arch: String = "x86_64"): List<String> =
+        if (arch == "x86_64") listOf("s3://$bucket/$BUILDS/$sha.tar.zst", "s3://$bucket/$PLAIN_BUILDS/$sha.tar.zst")
+        else if (arch == "arm64") listOf("s3://$bucket/$PLAIN_BUILDS/$arch/$sha.tar.zst") else emptyList()
 
     /**
      * The steps that put [path]'s build in place: restored from the first of [archives] that validates, else built and

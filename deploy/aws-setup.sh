@@ -22,12 +22,16 @@ set -euo pipefail
 host="${1:-rasmusros@192.168.50.104}"
 region="${AWS_REGION:-eu-north-1}"
 type="${INSTANCE_TYPE:-c7i.2xlarge}"
+instance_types="${INSTANCE_TYPES:-$type}"
 max="${MAX_INSTANCES:-8}"
 quota="${VCPU_QUOTA:-128}"
 # The sizes of the family a job may get, by the cores its cases need, as far as the vCPU quota reaches.
-family="${type%%.*}"
-types="$(for size in 2xlarge:8 4xlarge:16 8xlarge:32 12xlarge:48 16xlarge:64; do
-  if [[ ${size#*:} -le $quota ]]; then printf '"%s.%s",' "$family" "${size%%:*}"; fi; done | sed 's/,$//')"
+types="$(for baseline in ${instance_types//,/ }; do
+  family="${baseline%%.*}"
+  for size in xlarge:4 2xlarge:8 4xlarge:16 8xlarge:32 12xlarge:48 16xlarge:64; do
+    if [[ ${size#*:} -le $quota ]]; then printf '"%s.%s",' "$family" "${size%%:*}"; fi
+  done
+done | sed 's/,$//')"
 name=eignex-lab
 admin=(aws --region "$region" --output text ${ADMIN_PROFILE:+--profile "$ADMIN_PROFILE"})
 work="$(mktemp -d)"
@@ -35,6 +39,15 @@ trap 'rm -rf "$work"' EXIT
 
 account="$("${admin[@]}" sts get-caller-identity --query Account)"
 echo "account $account, region $region, $type ×$max"
+# Ask EC2 for architecture/topology instead of guessing from family names. SIMD labels remain operator hints.
+: > "$work/architecture.properties"
+for baseline in ${instance_types//,/ }; do
+  read -r architecture threads < <("${admin[@]}" ec2 describe-instance-types --instance-types "$baseline" \
+    --query 'InstanceTypes[0].[ProcessorInfo.SupportedArchitectures[0],VCpuInfo.DefaultThreadsPerCore]')
+  [[ "$architecture" == arm64 || "$architecture" == x86_64 ]] || { echo "unsupported architecture for $baseline: $architecture" >&2; exit 1; }
+  printf 'architecture.%s=%s\nthreadsPerCore.%s=%s\n' "${baseline%%.*}" "$architecture" "${baseline%%.*}" "$threads" >> "$work/architecture.properties"
+done
+
 [[ "$("${admin[@]}" ec2 describe-instance-type-offerings --filters "Name=instance-type,Values=$type" \
   --query 'InstanceTypeOfferings[0].InstanceType')" == "$type" ]] || { echo "$type is not offered in $region"; exit 1; }
 
@@ -142,10 +155,16 @@ echo "IAM user $name: policy set, new access key $key"
 # The Mac's side: the profile the lab's AWS CLI uses, and the lab's settings.
 ssh "$host" "export PATH=/opt/homebrew/bin:\$PATH; aws configure set aws_access_key_id '$key' --profile $name && \
   aws configure set aws_secret_access_key '$secret' --profile $name && aws configure set region '$region' --profile $name"
+# Keep node labels and explicit topology overrides when rerunning setup to extend the IAM type allow-list.
+ssh "$host" 'grep -E "^(tags\.|threadsPerCore\.|nodeTags=)" ~/eignex-lab-data/aws/aws.properties 2>/dev/null || true' > "$work/operator-tags.properties"
 ssh "$host" "cat > ~/eignex-lab-data/aws/aws.properties" <<EOF
 region=$region
 profile=$name
 instanceType=$type
+instanceTypes=$instance_types
+# Add per-family labels before using tag selectors, for example:
+# tags.c7i=arch:x86_64,simd:avx2,simd:avx512
+# tags.c7g=arch:arm64,simd:neon,simd:sve
 maxInstances=$max
 vcpuQuota=$quota
 keyName=$name
@@ -154,4 +173,6 @@ securityGroup=$sg
 corpusBucket=$bucket
 instanceProfile=$role
 EOF
+ssh "$host" 'cat >> ~/eignex-lab-data/aws/aws.properties' < "$work/architecture.properties"
+ssh "$host" 'cat >> ~/eignex-lab-data/aws/aws.properties' < "$work/operator-tags.properties"
 echo "wrote ~/eignex-lab-data/aws/aws.properties on $host; restart the lab (lab update) to start the AWS worker"

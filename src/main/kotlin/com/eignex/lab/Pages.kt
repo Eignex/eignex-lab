@@ -102,6 +102,12 @@ internal fun jobPage(
         append("</dd>")
     }
     append("<dt>where</dt><dd>${hostCell(config, job, hosts)}</dd>")
+    job.experiment?.nodeTags?.let { selector ->
+        append("<dt>node tags</dt><dd>")
+        if (selector.require.isNotEmpty()) append("require ${esc(selector.require.sorted().joinToString())}")
+        if (selector.exclude.isNotEmpty()) append("; exclude ${esc(selector.exclude.sorted().joinToString())}")
+        append("</dd>")
+    }
     if (hosts.size > 1 || hosts.any { it.host != ExecutionHost.LOCAL }) {
         // One job's iterations may run on different machines, every arm of one iteration on the same one.
         append("<dt>hosts</dt><dd>${hosts.joinToString("<br>") { esc(it.text()) }}")
@@ -1560,7 +1566,7 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
             val manual = if (node.manual) " <span title=\"started by hand\">manual</span>" else ""
             val adopted = if (node.adopted) " <span title=\"taken back after a lab restart\">adopted</span>" else ""
             val age = node.launchedAt?.let { " up ${wallText((at - it).coerceAtLeast(0) / 3_600_000.0)}" }.orEmpty()
-            "<span title=\"${esc(node.instance)}\">${esc(node.type.substringAfter('.'))} ${esc(node.market)}</span>$manual$adopted$age $doing"
+            "<span title=\"${esc(node.instance + " · " + node.tags.sorted().joinToString())}\">${esc(node.type)} ${esc(node.market)}</span>$manual$adopted$age $doing"
         })
         append(")")
     }

@@ -1,12 +1,12 @@
 package com.eignex.lab
 
 /**
- * Where a job may run, decided by the lab rather than whoever submitted it: every job goes to the local machine first,
- * then a cloud node ([AwsWorker]). Every job fits the local machine, its cores and `parallel` capped to it at submit
- * ([Experiments.capToLocal]): the cloud is overflow for the local machine's queue, launched on pressure alone. Its
+ * Where a job may run, decided by the lab: ordinary jobs go to the local machine first, then a cloud node
+ * ([AwsWorker]). Jobs eligible for the local machine have cores and `parallel` capped to it at submit
+ * ([Experiments.capToLocal]); explicit node selectors can instead require a compatible cloud node. Its
  * [ExperimentSpec.host] records the decision for the queue: `lab` for a job only the local machine runs, `auto` for one
- * the local machine and cloud nodes share, each running whole iterations of it (`aws`, for one only nodes run, is left
- * to an operator's override). A planned job a node gives back is placed again ([release]), and whichever host takes
+ * the local machine and cloud nodes share, each running whole iterations of it, or `aws` for cloud-only work.
+ * A planned job a node gives back is placed again ([release]), and whichever host takes
  * it next renders each case's command for itself as it starts it ([Runner.render]).
  */
 object Placement {
@@ -72,15 +72,37 @@ object Placement {
     /** [host] with the lab's own limits: the cloud settings and the sizes within the quota. [schedules], the lab's
      *  schedules, say whether a scheduled run's schedule opts in to the cloud ([cloudSchedule]); a submitted job is
      *  placed without them, so its name alone never takes it off the local machine. */
-    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): String =
-        host(spec, name, awsFits(spec, config.aws), cloudSchedule(name, schedules))
+    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): String {
+        NodeTags.validate(spec.nodeTags)
+        val local = NodeTags.matches(spec.nodeTags, config.localNodeTags)
+        val cores = runCatching { Experiments.arms(spec).maxOf { it.cores } }.getOrDefault(Int.MAX_VALUE)
+        val cloud = cloudSizes(spec, config).any { it.cores >= cores }
+        if (localOnly(spec, name, cloudSchedule(name, schedules))) {
+            require(local) { "this job stays local, but its node tags do not match the local node" }
+            return Experiments.LAB_HOST
+        }
+        require(local || cloud) { "no configured node matches the required and excluded tags" }
+        return if (!local) Experiments.AWS_HOST else if (cloud) Experiments.AUTO_HOST else Experiments.LAB_HOST
+    }
 
     /** Whether a node can run [spec]: the lab has cloud settings, and some size within the quota holds its largest
      *  case. */
     fun awsFits(spec: ExperimentSpec, aws: AwsConfig?): Boolean {
         if (aws == null) return false
         val arms = runCatching { Experiments.arms(spec) }.getOrDefault(emptyList())
-        return arms.isNotEmpty() && aws.sizeFor(arms.maxOf { it.cores }) != null
+        return arms.isNotEmpty() && aws.sizeFor(arms.maxOf { it.cores }, spec.nodeTags, spec.isProfile) != null
+    }
+
+    /** Declared launch shapes, or an already-running node carrying a node-specific operator label. */
+    fun cloudSizes(spec: ExperimentSpec, config: Config): List<InstanceSize> {
+        val aws = config.aws ?: return emptyList()
+        val onDemand = NodeTags.onDemand(spec.isProfile, spec.nodeTags)
+        val declared = aws.sizes.filter { NodeTags.matches(spec.nodeTags, it.tags(onDemand)) }
+        if (declared.isNotEmpty() || spec.nodeTags == null) return declared
+        val report = readPoolReport(config)?.takeIf { now() - it.updatedAt <= ManualLaunch.STALE_REPORT_MS } ?: return emptyList()
+        return report.nodes.filter { node ->
+            (!onDemand || node.market == AwsWorker.ON_DEMAND) && NodeTags.matches(spec.nodeTags, node.tags)
+        }.mapNotNull { node -> aws.sizes.firstOrNull { it.type == node.type }?.copy(labels = node.tags) }
     }
 
     /**
@@ -96,8 +118,11 @@ object Placement {
         return store.active(withCommands = false).filter { it.status == Status.QUEUED }.mapNotNull { job ->
             val spec = job.experiment ?: return@mapNotNull null
             if (job.total > 0) return@mapNotNull job.id.takeIf { spec.host == Experiments.AWS_HOST && release(store, config, job.id) }
-            val capped = Experiments.capToLocal(spec, config.cores, config.maxParallel)
-            val host = host(capped, job.name, config, schedules)
+            val capped = if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) Experiments.capToLocal(spec, config.cores, config.maxParallel) else spec
+            val host = runCatching { host(capped, job.name, config, schedules) }.getOrElse {
+                // A node-specific label may only become available after the cloud pool is adopted.
+                return@mapNotNull null
+            }
             if (host == spec.host && capped == spec || !store.place(job.id, host, capped)) return@mapNotNull null
             if (capped.parallel != spec.parallel) capped.parallel?.let { store.setParallel(job.id, it) }
             job.id
