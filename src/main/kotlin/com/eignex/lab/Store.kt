@@ -453,6 +453,18 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         transaction { planRows(jobId, arms, problems, cases, commands) }
     }
 
+    /** Publish a verified preparation as one plan, including its setup marker, under the cancellation lock. */
+    @Synchronized
+    fun prepareNomad(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>): Boolean = transaction {
+        val job = job(jobId) ?: error("missing experiment")
+        require(job.backend == ExecutionBackendKind.NOMAD && !job.cancelRequested && job.status in ACTIVE)
+        if (job.setupDone) return@transaction false
+        require(job.commands.isEmpty() && cases.isNotEmpty() && cases.size == commands.size)
+        planRows(jobId, arms, problems, cases, commands)
+        update("UPDATE jobs SET sha = ?, setup_done = 1 WHERE id = ?", arms.first().sha, jobId)
+        true
+    }
+
     /**
      * Turn records an earlier job left into a finished experiment: a new job of [name] at [sha], whose cases are
      * [records], each already done with its record kept, so the experiment views compare them like any other.
@@ -1297,7 +1309,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             SELECT 1 FROM execution_sessions s WHERE s.job_id = jobs.id AND (s.desired != 'stop' OR NOT EXISTS (
                 SELECT 1 FROM execution_outbox o WHERE o.id = s.id || ':stop' AND o.acknowledged = 1)))""",
             id, Status.QUEUED.name, Status.RUNNING.name) == 1
-        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
+        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_queue_recipes", "execution_selections", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
         deleted
     }
 

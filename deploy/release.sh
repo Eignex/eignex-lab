@@ -13,7 +13,7 @@ release() {
   local old
   # A raw_exec worker loads jars lazily from its pinned release. Retain releases while Nomad is configured;
   # explicit GC must first reconcile allocations and prove that no worker still uses a release.
-  if [[ -n "${LAB_NOMAD_NATIVE_CONFIG:-}" || -d "$2/nomad/service-files" ]]; then
+  if [[ -n "${LAB_NOMAD_NATIVE_CONFIG:-}" || -n "${LAB_NOMAD_QUEUE_SETTINGS:-}" || -d "$2/nomad/service-files" ]]; then
     echo "$releases/current/bin/eignex-lab"
     return 0
   fi

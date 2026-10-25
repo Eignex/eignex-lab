@@ -44,12 +44,16 @@ data class WorkManifest(
     val session: String, val release: String, val experiment: ExperimentSpec, val arms: List<PlannedArm>,
     val cases: List<WorkCase>, val bundles: List<WorkerBundle>, val budget: ResourceBudget,
     val solveJavaOptions: String = "", val schemaVersion: Int = 1,
+    val preparationTimeoutSec: Long? = null, val inputCorpus: WorkerBundle? = null,
 ) {
     init {
         require(schemaVersion == 1 && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
-        require(arms.isNotEmpty() && cases.isNotEmpty() && cases.map { it.index }.distinct().size == cases.size)
-        require(arms.all { it.arm.cores * 1000L <= budget.cpuMillis && it.sha.matches(Regex("[a-f0-9]{40}")) })
+        require(preparationTimeoutSec == null || preparationTimeoutSec in 1..7200)
+        require(arms.isNotEmpty() && (cases.isNotEmpty() || preparationTimeoutSec != null) && cases.map { it.index }.distinct().size == cases.size)
+        require(arms.all { (preparationTimeoutSec != null || it.arm.cores * 1000L <= budget.cpuMillis) && it.sha.matches(Regex("[a-f0-9]{40}")) })
         require(cases.all { it.arm in arms.indices })
+        require(preparationTimeoutSec == null || cases.isEmpty())
+        require(inputCorpus == null || inputCorpus.repository == experiment.repository)
         cases.forEach { case -> (listOfNotNull(case.problem.model, case.problem.data) + case.problem.includeDirs).forEach(::safeRelative) }
         require(bundles.all { it.repository == experiment.repository })
         require(arms.all { arm -> bundles.any { it.commit == arm.sha } })

@@ -34,6 +34,10 @@ object Placement {
         else -> null
     }
 
+    /** Nomad workers enforce the whole-run deadline and stage exact problem files on every platform. */
+    fun nomadLocalOnlyReason(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): String? =
+        localOnlyReason(spec.copy(problemList = emptyList(), profile = spec.profile?.copy(runTimeoutSec = null)), name, cloudSchedule)
+
     /** Where a job placed on [host] may run, in the words the pages and the client use: [LOCAL_ONLY] (`lab`),
      *  [LOCAL_OR_CLOUD] (`auto`) or [CLOUD] (`aws`). */
     fun where(host: String?): String = when (host) {
@@ -76,8 +80,10 @@ object Placement {
         NodeTags.validate(spec.nodeTags)
         val local = NodeTags.matches(spec.nodeTags, config.localNodeTags)
         val cores = runCatching { Experiments.arms(spec).maxOf { it.cores } }.getOrDefault(Int.MAX_VALUE)
-        val cloud = cloudSizes(spec, config).any { it.cores >= cores }
-        if (localOnly(spec, name, cloudSchedule(name, schedules))) {
+        val cloud = cloudCoreLimit(spec, config, cloudSchedule(name, schedules)) >= cores
+        val staysLocal = if (config.executionBackend == ExecutionBackendKind.NOMAD)
+            nomadLocalOnlyReason(spec, name, cloudSchedule(name, schedules)) != null else localOnly(spec, name, cloudSchedule(name, schedules))
+        if (staysLocal) {
             require(local) { "this job stays local, but its node tags do not match the local node" }
             return Experiments.LAB_HOST
         }
@@ -92,6 +98,14 @@ object Placement {
         val arms = runCatching { Experiments.arms(spec) }.getOrDefault(emptyList())
         return arms.isNotEmpty() && aws.sizeFor(arms.maxOf { it.cores }, spec.nodeTags, spec.isProfile) != null
     }
+
+    /** Nomad admission uses provider-neutral pool templates; legacy launch shapes remain behind its backend. */
+    fun cloudCoreLimit(spec: ExperimentSpec, config: Config, cloudSchedule: Boolean = false): Int =
+        if (config.executionBackend == ExecutionBackendKind.NOMAD) {
+            requireNotNull(config.nomadQueue) { "Nomad execution requires LAB_NOMAD_QUEUE_SETTINGS" }
+                .matching(spec, spec.name, cloudSchedule).filter { it.os == "linux" }
+                .maxOfOrNull { it.template.budget.cpuMillis / 1000 } ?: 0
+        } else cloudSizes(spec, config).maxOfOrNull { it.cores } ?: 0
 
     /** Declared launch shapes, or an already-running node carrying a node-specific operator label. */
     fun cloudSizes(spec: ExperimentSpec, config: Config): List<InstanceSize> {

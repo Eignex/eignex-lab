@@ -5,20 +5,25 @@ Proposed on 2026-10-25. Implementation is in progress; production execution has 
 Revised after PR #127: maximize cloud utilization by sharing nodes across experiments, profiles, measurements, and
 builds within explicit CPU and memory budgets. Recording measurements does not automatically require a whole node.
 
-Implementation has started in [the isolated execution prototype](nomad/README.md): reusable resource budgets,
-Nomad batch-job rendering, and a TLS/ACL sandbox with real Linux sharing, hard-limit, OOM, and cancellation checks.
-Durable execution ownership now has additive session, attempt, event, and outbox tables, explicit backend selection,
-transactional leases/fencing, complete-iteration acceptance, and cancellation/rollback guards. Legacy queue and
-restart recovery exclude Nomad-owned experiments. The worker API and actual Nomad reconciler follow in the stack;
-there is no production selector yet. The connected stack now includes a separate worker listener, Nomad mTLS client,
-signed allocation identities, resumable/checksummed HTTP artifacts and durable reconciliation/completion. The real
-Linux integration test exercises coordinator restart and allocation loss. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
-an independent same-user process service and a provider-neutral OCI worker build. Approved Git export and checksum-verified worker build caching now run source builds inside the session budget, with permanent build-failure fencing; automatic queue preparation/admission remains outstanding. Durable event logs, bounded provisional case output and execution reporting preserve the existing tail/files paths for admitted sessions. A provider-neutral capacity collector and shared CPU/memory packing policy now expose fresh demand, booting-worker
-accounting, finite vCPU limits, purchasing restrictions, expiring manual requests and allocation reports. Provider-side
-Spot infrastructure, signed fresh capacity grants, pinned Autoscaler policy rendering, Linux bootstrap/interruption handling and independent AWS expiry are implemented in [the opt-in infrastructure modules](infra/README.md). A GCP Spot reference module adds expiring IAM resize permission and independent zero-target expiry with the same worker protocol. Live AWS/GCP cloud acceptance remains required. Native service rendering/install,
-shared legacy/Nomad ownership, priority/update draining and release retention are implemented behind explicit configuration. Native fixture execution and
-cleanup are exercised on macOS CI; real Mac solver/JFR canaries and cloud gates remain required. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
-replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.
+The opt-in implementation now includes Nomad batch jobs, reusable CPU/memory budgets, durable sessions and
+attempt leases, allocation identity checks, checksummed/resumable artifacts, portable workers, independent process
+supervision, and automatic queue preparation/admission. Approved Git inputs are built and selected in budgeted
+allocations. Reference filters and caps are approved durably before resolving files or packaging the corpus, then
+accepted preparation publishes its case plan atomically. API submissions, schedules and confirmations can select
+Nomad through `LAB_EXECUTION_BACKEND=nomad` and [queue settings](nomad/queue.example.json). Admission uses native
+capacity first, shares fitting reservations, and spills into provider-neutral Spot pools; on-demand requires an
+explicit selector. Releases, source inputs and admission templates remain pinned across restarts.
+
+The TLS/ACL integration tests exercise real Linux allocations, preparation, corpus staging, signed HTTP acceptance,
+coordinator restart and allocation loss. Native fixture execution and detached-process cleanup run on macOS CI.
+Capacity collection accounts for build/solve demand, booting workers, shared resource packing, finite global vCPU
+limits, fresh signed grants and independent expiry. AWS and GCP Spot modules use the same worker/capacity protocol;
+source checking runs independently of reconciliation so it cannot stall fresh capacity health.
+
+Production execution remains on the legacy backend until native solver/JFR and live Spot canaries, interruption
+recovery, source checks and a stable rollout pass. Those acceptance gates, followed by final default cutover and
+legacy execution/provider removal, remain outstanding. The opt-in setup is documented in the
+[Nomad runbook](nomad/README.md) and [provider modules](infra/README.md).
 
 ## Outcome and decisions
 

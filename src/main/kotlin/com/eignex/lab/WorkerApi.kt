@@ -17,6 +17,7 @@ import kotlinx.serialization.encodeToString
 import java.nio.file.Files
 
 @Serializable data class WorkerRegistration(val release: String)
+@Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
 @Serializable data class WorkerPhase(val owner: AttemptOwner, val phase: String)
 @Serializable data class WorkerBuildError(val owner: AttemptOwner, val detail: String)
@@ -34,9 +35,9 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
             call.respond(HttpStatusCode.BadRequest, "invalid worker request") }
         exception<IllegalStateException> { call, _ -> call.respond(HttpStatusCode.ServiceUnavailable, "worker service unavailable") }
     }
-    suspend fun ApplicationCall.bodyText(): String = receiveChannel().let { channel ->
-        val bytes = channel.readRemaining(4L * 1024 * 1024 + 1).readByteArray()
-        require(bytes.size <= 4 * 1024 * 1024); String(bytes)
+    suspend fun ApplicationCall.bodyText(limit: Int = 4 * 1024 * 1024): String = receiveChannel().let { channel ->
+        val bytes = channel.readRemaining(limit.toLong() + 1).readByteArray()
+        require(bytes.size <= limit); String(bytes)
     }
     fun ApplicationCall.credentials(): List<String> = listOf(parameters["id"]!!, request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ") ?: throw ExecutionFenced("credential required"),
         request.headers["X-Lab-Allocation"] ?: throw ExecutionFenced("allocation required"), request.headers["X-Lab-Identity"] ?: throw ExecutionFenced("workload identity required"))
@@ -85,13 +86,20 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 require(owner.session == s.id && owner.allocation == s.allocation)
                 store.execution.runTimedOut(owner); call.respond(HttpStatusCode.NoContent)
             }
+            post("/selection") {
+                require(workAllowed()); val session = call.auth()
+                val body = Json.decodeFromString<WorkerSelection>(call.bodyText(64 * 1024 * 1024))
+                require(body.owner.session == session.id && body.owner.allocation == session.allocation)
+                call.respond(backend.selectPreparation(body.owner, body.selections))
+            }
             post("/commit") {
-                val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
+                val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText(if (s.executionClass == "prepare") 64 * 1024 * 1024 else 4 * 1024 * 1024)); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
             }
             get("/inputs/{sha}") {
                 require(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
-                require(store.execution.manifest(s.id).bundles.any { it.sha256 == sha })
+                val manifest = store.execution.manifest(s.id)
+                require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
                 val file = artifacts.readFile(s.jobId, sha)
                 val range = call.request.headers[HttpHeaders.Range] ?: "bytes=0-"
                 val match = requireNotNull(Regex("bytes=([0-9]+)-([0-9]*)").matchEntire(range))
