@@ -291,7 +291,7 @@ object Waiting {
         val diskHeld = runCatching { Volumes.hold(config) }.getOrNull()
         // The setup step is read from the job's files, which a volume that does not answer would leave the request waiting on.
         val work = running?.let { localWork(it, config.jobDir(it.id).takeIf { Volumes.jobFiles(config) == null }) }
-        return QueueView(store.queueOrder(up), store.localNext(up), work, pool, config.aws,
+        return QueueView(store.queueOrder(up, config.localNodeTags), store.localNext(up, config.localNodeTags), work, pool, config.aws,
             config.cores, store.schedules(), diskHeld, at)
     }
 

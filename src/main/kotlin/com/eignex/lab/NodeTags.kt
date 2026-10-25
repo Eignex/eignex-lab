@@ -1,0 +1,70 @@
+package com.eignex.lab
+
+import kotlinx.serialization.Serializable
+import java.util.concurrent.TimeUnit
+
+/** Optional placement requirements. No selector means the existing placement policy applies. */
+@Serializable
+data class NodeSelector(val require: Set<String> = emptySet(), val exclude: Set<String> = emptySet())
+
+@Serializable
+data class NodeObservation(val host: String, val tags: Set<String>, val cpu: CpuCapabilities? = null)
+
+/** OS-visible CPU facts, kept separately from operator labels. */
+@Serializable
+data class CpuCapabilities(val arch: String = "unknown", val features: Set<String> = emptySet(), val model: String? = null, val detected: Boolean = false) {
+    val tags: Set<String> get() = buildSet {
+        add("arch:$arch")
+        features.forEach { add("simd:$it") }
+        if ("avx512f" in features) add("simd:avx512")
+        if ("asimd" in features) add("simd:neon")
+        if (!detected) add("hardware:unknown")
+    }
+}
+
+object NodeTags {
+    private val TAG = Regex("[a-z0-9][a-z0-9:._/-]*")
+    val probeScript: String = requireNotNull(NodeTags::class.java.getResource("/node-capabilities.sh")).readText()
+    val localCapabilities: CpuCapabilities by lazy {
+        runCatching {
+            val process = ProcessBuilder("bash", "-c", probeScript).redirectErrorStream(true).start()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                CpuCapabilities()
+            } else if (process.exitValue() == 0) parse(process.inputStream.bufferedReader().readText()) else CpuCapabilities()
+        }.getOrDefault(CpuCapabilities())
+    }
+
+    fun validate(selector: NodeSelector?) {
+        if (selector == null) return
+        require((selector.require + selector.exclude).all { TAG.matches(it) }) { "node tags must be lowercase labels without spaces" }
+        require(selector.require.intersect(selector.exclude).isEmpty()) { "a node tag cannot be both required and excluded" }
+        require(!("spot" in selector.require && "on-demand" in selector.require)) { "a node cannot be both spot and on-demand" }
+        require(selector.require.count { it.startsWith("arch:") } <= 1) { "a node can have only one architecture" }
+    }
+
+    fun matches(selector: NodeSelector?, tags: Set<String>): Boolean {
+        if (selector == null) return true
+        if ("hardware:unknown" in tags && (selector.require + selector.exclude).any { it.startsWith("arch:") || it.startsWith("simd:") }) return false
+        return tags.containsAll(selector.require) && selector.exclude.none { it in tags }
+    }
+
+    private fun reserved(tag: String) = tag in setOf("local", "cloud", "spot", "on-demand", "hardware:unknown") ||
+        tag.startsWith("arch:") || tag.startsWith("simd:") || tag.startsWith("instance:")
+
+    fun observed(capabilities: CpuCapabilities, labels: Set<String>, cloud: Boolean = false, spot: Boolean = false, type: String? = null): Set<String> =
+        labels.filterNot(::reserved).toSet() + capabilities.tags + if (cloud)
+            setOf("cloud", if (spot) "spot" else "on-demand") + listOfNotNull(type?.let { "instance:$it" })
+        else setOf("local")
+
+    fun spotOnly(selector: NodeSelector?): Boolean = selector != null && ("spot" in selector.require || "on-demand" in selector.exclude)
+    fun onDemand(profile: Boolean, selector: NodeSelector?): Boolean =
+        selector?.let { "on-demand" in it.require || "spot" in it.exclude } == true || profile && !spotOnly(selector)
+
+    fun parse(output: String): CpuCapabilities {
+        val values = output.lineSequence().filter { '=' in it }.associate { it.substringBefore('=') to it.substringAfter('=') }
+        val arch = when (values["arch"]?.lowercase()) { "x86_64", "amd64" -> "x86_64"; "aarch64", "arm64" -> "arm64"; else -> "unknown" }
+        val features = values["features"].orEmpty().lowercase().split(Regex("\\s+")).filter { TAG.matches(it) }.toSortedSet()
+        return CpuCapabilities(arch, features, values["model"]?.takeIf { it.isNotBlank() }, values["detected"] == "1" && arch != "unknown")
+    }
+}

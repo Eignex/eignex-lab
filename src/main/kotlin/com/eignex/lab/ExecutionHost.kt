@@ -14,6 +14,9 @@ interface ExecutionHost {
 
     /** Cores the running cases may hold together. */
     val cores: Int
+    /** Observed CPU capabilities and operator labels, used before a constrained job runs. */
+    val nodeTags: Set<String> get() = emptySet()
+    val cpu: CpuCapabilities? get() = null
 
     /** The most cases it runs at once, whatever a job asks for: memory bounds this on the lab machine, cores on AWS. */
     val maxParallel: Int

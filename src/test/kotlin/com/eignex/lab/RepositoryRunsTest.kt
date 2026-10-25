@@ -60,11 +60,15 @@ class RepositoryRunsTest {
                     Json.parseToJsonElement(output).jsonObject
                 }
 
-            val capture = payload("koblas", "main", "capture dot", "--smoke", "--operation", "dot")
+            val capture = payload("koblas", "--require-tag", "arch:arm64", "--exclude-tag", "spot", "main", "capture dot", "--smoke", "--operation", "dot")
+            val ordinary = payload("koblas", "main", "capture dot", "--smoke")
             val generic = payload("profile", "--repo", "Eignex/skema", "--build", ":tools:installDist", "--classpath",
                 "tools/build/install/tools/lib/*", "com.eignex.skema.profile.MainKt", "main", "profile tool", "local", "600", "--mode=small")
 
             assertEquals("Eignex/koblas", capture["repository"]?.jsonPrimitive?.content)
+            assertEquals("arch:arm64", capture["nodeTags"]?.jsonObject?.get("require")?.jsonArray?.single()?.jsonPrimitive?.content)
+            assertEquals("spot", capture["nodeTags"]?.jsonObject?.get("exclude")?.jsonArray?.single()?.jsonPrimitive?.content)
+            assertFalse("nodeTags" in ordinary)
             assertEquals(listOf("--smoke", "--operation", "dot"), capture["profile"]?.jsonObject?.get("args")?.jsonArray?.map { it.jsonPrimitive.content })
             assertEquals("Eignex/skema", generic["repository"]?.jsonPrimitive?.content)
             assertEquals(":tools:installDist", generic["profile"]?.jsonObject?.get("buildTasks")?.jsonArray?.single()?.jsonPrimitive?.content)

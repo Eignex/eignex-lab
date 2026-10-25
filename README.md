@@ -13,7 +13,8 @@
 An experiment server for Eignex repositories. It runs [Klause](https://github.com/Eignex/klause) solver experiments,
 [Koblas](https://github.com/Eignex/koblas) benchmark captures, and committed profile entry points from any Eignex
 repository, with the queue, live output and results served over HTTP. Source repositories are restricted to the
-Eignex GitHub organization.
+Eignex GitHub organization. Optional required/excluded node tags target CPU architecture, SIMD features, market
+type or custom labels; ordinary jobs need no selector.
 
 Setup and usage: [deploy/SETUP.md](deploy/SETUP.md).
 

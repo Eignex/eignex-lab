@@ -1059,14 +1059,16 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * first, before series and age decide.
      */
     @Synchronized
-    fun next(nodesUp: Boolean = false, exclude: Collection<Long> = emptyList()): Job? = transaction {
+    fun next(nodesUp: Boolean = false, exclude: Collection<Long> = emptyList(), nodeTags: Set<String>? = null): Job? = transaction {
         val running = connection.prepareStatement(
             "SELECT id FROM jobs WHERE status = ? AND local = 1 ORDER BY id LIMIT 1",
         ).use {
             it.setString(1, Status.RUNNING.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
         }
-        val id = running ?: queueOrder(nodesUp).firstOrNull { it !in exclude }
+        val resumable = running?.takeIf { nodeTags == null || NodeTags.matches(job(it)?.experiment?.nodeTags, nodeTags) }
+        if (running != null && resumable == null) update("UPDATE jobs SET status = ?, local = 0 WHERE id = ?", Status.QUEUED.name, running)
+        val id = resumable ?: queueOrder(nodesUp, nodeTags).firstOrNull { it !in exclude }
         id?.also { claimed ->
             val previous = job(claimed)
             val at = now()
@@ -1096,7 +1098,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /** The job [next] would take now, without taking it: the first of the local machine's queue ([queueOrder]). */
     @Synchronized
-    fun peek(nodesUp: Boolean = false): Long? = queueOrder(nodesUp).firstOrNull()
+    fun peek(nodesUp: Boolean = false, nodeTags: Set<String>? = null): Long? = queueOrder(nodesUp, nodeTags).firstOrNull()
 
     /**
      * The job the local machine is about to take, which a node must leave to it: the first of its queue when the local
@@ -1105,8 +1107,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * agree on the job.
      */
     @Synchronized
-    fun localNext(nodesUp: Boolean = false): Long? {
-        val first = peek(nodesUp) ?: return null
+    fun localNext(nodesUp: Boolean = false, nodeTags: Set<String>? = null): Long? {
+        val first = peek(nodesUp, nodeTags) ?: return null
         val running = connection.prepareStatement("SELECT priority FROM jobs WHERE status = ? AND local = 1 ORDER BY id LIMIT 1").use {
             it.setString(1, Status.RUNNING.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else null }
@@ -1643,14 +1645,31 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * by priority alone, and an equal priority never preempts. A paused or cancelled job does not count.
      */
     @Synchronized
-    fun shouldYield(jobId: Long): Boolean = connection.prepareStatement(
-        "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE $LOCAL_QUEUE " +
-            "AND id != ? AND priority > (SELECT priority FROM jobs WHERE id = ?))",
-    ).use {
-        it.setLong(1, jobId)
-        it.setLong(2, jobId)
-        it.setLong(3, jobId)
-        it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
+    fun shouldYield(jobId: Long, nodeTags: Set<String>? = null): Boolean {
+        if (nodeTags != null) return shouldYieldForTags(jobId, nodeTags)
+        return connection.prepareStatement(
+            "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE $LOCAL_QUEUE " +
+                "AND id != ? AND priority > (SELECT priority FROM jobs WHERE id = ?))",
+        ).use {
+            it.setLong(1, jobId)
+            it.setLong(2, jobId)
+            it.setLong(3, jobId)
+            it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
+        }
+    }
+
+    private fun shouldYieldForTags(jobId: Long, tags: Set<String>): Boolean {
+        if (connection.prepareStatement("SELECT paused FROM jobs WHERE id = ?").use { s ->
+            s.setLong(1, jobId); s.executeQuery().use { it.next() && it.getInt(1) != 0 }
+        }) return true
+        return connection.prepareStatement("SELECT json_extract(experiment, '$.nodeTags') FROM jobs WHERE $LOCAL_QUEUE AND id != ? AND priority > (SELECT priority FROM jobs WHERE id = ?)").use { s ->
+            s.setLong(1, jobId); s.setLong(2, jobId)
+            s.executeQuery().use { rows ->
+                var found = false
+                while (!found && rows.next()) found = NodeTags.matches(rows.getString(1)?.let { Json.decodeFromString<NodeSelector>(it) }, tags)
+                found
+            }
+        }
     }
 
     /**
@@ -1661,10 +1680,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities ([LOCAL_FIRST_ORDER]).
      */
     @Synchronized
-    fun queueOrder(nodesUp: Boolean = false): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE $LOCAL_QUEUE " + if (nodesUp) LOCAL_FIRST_ORDER else LOCAL_ORDER,
+    fun queueOrder(nodesUp: Boolean = false, nodeTags: Set<String>? = null): List<Long> = connection.prepareStatement(
+        "SELECT id, json_extract(experiment, '$.nodeTags') AS selector FROM jobs WHERE $LOCAL_QUEUE " + if (nodesUp) LOCAL_FIRST_ORDER else LOCAL_ORDER,
     ).use {
-        it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
+        it.executeQuery().use { rows -> generateSequence {
+            if (!rows.next()) null else rows.getLong(1) to rows.getString("selector")
+        }.filter { (_, selector) -> nodeTags == null || NodeTags.matches(selector?.let { Json.decodeFromString<NodeSelector>(it) }, nodeTags) }.map { it.first }.toList() }
     }
 
     /**

@@ -117,21 +117,32 @@ data="${LAB_REMOTE_DATA:-eignex-lab-data}"
 remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
 remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
+node_require='[]' node_exclude='[]'
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
 run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
 koblas)
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --require-tag) node_require="$(jq -c --arg tag "${2:?--require-tag needs a tag}" '. + [$tag]' <<< "$node_require")"; shift 2 ;;
+      --exclude-tag) node_exclude="$(jq -c --arg tag "${2:?--exclude-tag needs a tag}" '. + [$tag]' <<< "$node_exclude")"; shift 2 ;;
+      *) break ;;
+    esac
+  done
   [[ $# -ge 2 ]] || { echo "usage: lab koblas <ref> <description> [capture-report options...]" >&2; exit 2; }
   ref="$1" description="$2"; shift 2
-  jq -n --arg ref "$ref" --arg description "$description" --args \
+  jq -n --arg ref "$ref" --arg description "$description" --argjson required "$node_require" --argjson excluded "$node_exclude" --args \
     '{name: "koblas-bench", repository: "Eignex/koblas", description: $description, base: {ref: $ref},
-      profile: {script: "koblas-bench/capture-report.sh", outputArgument: "--output", args: $ARGS.positional}}' -- "$@" |
+      profile: {script: "koblas-bench/capture-report.sh", outputArgument: "--output", args: $ARGS.positional}} +
+      (if ($required + $excluded | length) == 0 then {} else {nodeTags: {require: $required, exclude: $excluded}} end)' -- "$@" |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 profile)
   repository=Eignex/klause
   build_tasks='[]' classpath='[]'
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --require-tag) node_require="$(jq -c --arg tag "${2:?--require-tag needs a tag}" '. + [$tag]' <<< "$node_require")"; shift 2 ;;
+      --exclude-tag) node_exclude="$(jq -c --arg tag "${2:?--exclude-tag needs a tag}" '. + [$tag]' <<< "$node_exclude")"; shift 2 ;;
       --repo) repository="${2:?--repo needs Eignex/name}"; shift 2 ;;
       --build) build_tasks="$(jq -c --arg value "${2:?--build needs a Gradle task}" '. + [$value]' <<< "$build_tasks")"; shift 2 ;;
       --classpath) classpath="$(jq -c --arg value "${2:?--classpath needs a relative path}" '. + [$value]' <<< "$classpath")"; shift 2 ;;
@@ -146,11 +157,12 @@ profile)
   # No timeout leaves the lab's default, 10 min; the lab caps any limit at 2 h. [host] is read for older callers and
   # not sent: the lab places every job itself.
   jq -n --arg name "$name" --arg main "$main" --arg ref "$ref" --arg description "$description" \
-    --arg repository "$repository" --argjson buildTasks "$build_tasks" --argjson classpath "$classpath" \
+    --argjson required "$node_require" --argjson excluded "$node_exclude" --arg repository "$repository" --argjson buildTasks "$build_tasks" --argjson classpath "$classpath" \
     --arg timeout "${timeout:+$(( timeout * 1000 ))}" --args \
     '{name: $name, repository: $repository, description: $description,
       profile: {main: $main, args: $ARGS.positional, buildTasks: $buildTasks, classpath: $classpath},
-      base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))}' -- "$@" |
+      base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))} +
+      (if ($required + $excluded | length) == 0 then {} else {nodeTags: {require: $required, exclude: $excluded}} end)' -- "$@" |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;
 analyze)

@@ -21,6 +21,8 @@ data class HostReport(
     val vendorLibrary: String? = null,
     val vendorVersion: String? = null,
     val vendorThreads: String? = null,
+    val cpu: CpuCapabilities = NodeTags.localCapabilities,
+    val nodeTags: Set<String> = emptySet(),
 )
 
 @OptIn(KoblasEngineApi::class)

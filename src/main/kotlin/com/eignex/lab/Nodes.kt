@@ -4,7 +4,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * What one job asks of the cloud node pool: its estimated core-hours of work no node or the local machine has started,
- * the cores its largest case holds, and whether it is a profile job, which only an on-demand node may run. A
+ * the cores its largest case holds, and whether it is a profile job, which prefers on-demand unless its selector explicitly asks for spot. A
  * [belowFloor] job, work the local machine could run below [AwsConfig.nodeMinPriority], launches no node: it is not
  * pressure, but a node already up with nothing else to do takes it. [hosts] is how many hosts work on it now: none for
  * a queued job.
@@ -17,10 +17,13 @@ data class Demand(
     val priority: Int = 0,
     val belowFloor: Boolean = false,
     val hosts: Int = 0,
+    val nodeTags: NodeSelector? = null,
 )
 
 /** A node as the work selection sees it: the cores its cases may hold, and whether it was bought on demand. */
-data class NodeShape(val cores: Int, val onDemand: Boolean)
+data class NodeShape(val cores: Int, val onDemand: Boolean, val tags: Set<String> = emptySet())
+
+data class NodeLaunchPlan(val size: InstanceSize, val onDemand: Boolean, val spotOnly: Boolean)
 
 /** What a free node does next: help a shared job already running, wherever, with its unclaimed iterations, or claim a
  *  queued one. */
@@ -37,6 +40,30 @@ sealed interface NodeWork {
  * when it retires.
  */
 object NodePool {
+    /** Explicit requirements the local machine cannot satisfy need a matching node even for a short job. */
+    fun dedicated(demands: List<Demand>, localTags: Set<String>, provisioned: List<NodeShape>): Demand? =
+        demands.firstOrNull { d -> d.nodeTags != null && !d.belowFloor && !NodeTags.matches(d.nodeTags, localTags) &&
+            provisioned.none { node -> node.cores >= d.cores && (!NodeTags.onDemand(d.profile, d.nodeTags) || node.onDemand) && NodeTags.matches(d.nodeTags, node.tags) } }
+
+    /** Choose a shape for a compatible group of waiting work instead of combining incompatible architectures. */
+    fun launchPlan(sizes: List<InstanceSize>, demands: List<Demand>, nodes: Int, freeVcpus: Int, maxVcpus: Int): NodeLaunchPlan? {
+        if (demands.isEmpty()) return null
+        if (demands.all { it.nodeTags == null }) {
+            val chosen = size(sizes, demands.maxOf { it.cores }, pressure(demands), nodes, freeVcpus, maxVcpus) ?: return null
+            return NodeLaunchPlan(chosen, demands.any { it.profile }, false)
+        }
+        for (demand in demands.sortedWith(compareByDescending<Demand> { it.priority }.thenByDescending { it.cores })) {
+            val onDemand = NodeTags.onDemand(demand.profile, demand.nodeTags)
+            val eligible = sizes.filter { NodeTags.matches(demand.nodeTags, it.tags(onDemand)) && it.cores >= demand.cores }
+            if (eligible.isEmpty()) continue
+            val family = eligible.first().type.substringBefore('.')
+            val familySizes = eligible.filter { it.type.substringBefore('.') == family }
+            val group = demands.filter { d -> (!NodeTags.onDemand(d.profile, d.nodeTags) || onDemand) && familySizes.any { it.cores >= d.cores && NodeTags.matches(d.nodeTags, it.tags(onDemand)) } }
+            val chosen = size(familySizes, group.maxOf { it.cores }, pressure(group), nodes, freeVcpus, maxVcpus) ?: continue
+            return NodeLaunchPlan(chosen, onDemand, NodeTags.spotOnly(demand.nodeTags))
+        }
+        return null
+    }
     /** Core-hours a case of [arm] may take: its whole budget on every core it holds, the cost of a case that never
      *  solves early. A profile job's one case gets its own allowance. */
     fun caseCoreHours(arm: Arm, profile: Boolean): Double {
@@ -106,11 +133,11 @@ object NodePool {
      * before a queued one, each in queue order. Work at or above the priority floor goes first; only when there is none
      * does the node take [Demand.belowFloor] work, by the same rules, so a node already up never idles while such work
      * waits behind the local machine's queue. A job fits when its largest case's cores fit the node, and a profile job
-     * only an on-demand node runs. [excluded] is the job the local machine takes next when it is free, which a node
+     * prefers an on-demand node unless its selector explicitly requests spot. [excluded] is the job the local machine takes next when it is free, which a node
      * leaves to it.
      */
     fun pick(node: NodeShape, helpable: List<Demand>, queued: List<Demand>, excluded: Long? = null): NodeWork? {
-        fun fits(d: Demand) = d.cores <= node.cores && (!d.profile || node.onDemand)
+        fun fits(d: Demand) = d.cores <= node.cores && (!NodeTags.onDemand(d.profile, d.nodeTags) || node.onDemand) && NodeTags.matches(d.nodeTags, node.tags)
         val order = compareByDescending<Pair<Demand, NodeWork>> { it.first.priority }.thenBy { it.first.hosts }
         for (below in listOf(false, true)) {
             val help = helpable.filter { it.belowFloor == below && fits(it) }.map { it to NodeWork.Help(it.jobId) }
@@ -256,6 +283,8 @@ data class NodePoolReport(
 data class NodeReport(
     val instance: String, val type: String, val market: String, val doing: String, val job: Long? = null, val manual: Boolean = false,
     val launchedAt: Long? = null, val adopted: Boolean = false,
+    val tags: Set<String> = emptySet(),
+    val cpu: CpuCapabilities? = null,
 )
 
 /** The pool as a restarted worker adopts it, in `aws/pool.json`, written on each change: how many nodes were

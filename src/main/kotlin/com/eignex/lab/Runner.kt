@@ -169,7 +169,7 @@ class Runner(
             // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
             // A shared job is taken, or joined while nodes run it, under the crews' lock, so it cannot end meanwhile.
             val job = synchronized(crews.lock) {
-                store.next(nodesUp = awsActive(), exclude = crews.failing())?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
+                store.next(nodesUp = awsActive(), exclude = crews.failing(), nodeTags = config.localNodeTags)?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
             }
             if (job == null) {
                 Thread.sleep(IDLE_POLL_MS)
@@ -181,6 +181,10 @@ class Runner(
 
     /** Run the [job] the queue handed out to its end, or to a yield. False when the runner is stopping meanwhile. */
     internal fun runJob(job: Job): Boolean {
+        if (!NodeTags.matches(job.experiment?.nodeTags, config.localNodeTags)) {
+            store.finish(job.id, Status.FAILED, "local node does not match the job's required and excluded tags")
+            return true
+        }
         if (shared(job)) return runShared(job)
         if (job.experiment?.profile?.runTimeoutSec != null) {
             workWithDeadline(job)
@@ -479,6 +483,10 @@ class Runner(
          *  ([Store.requeueSplitIterations]): an iteration's arms are compared, so they run on one machine. */
         lost: ((Collection<Int>) -> Unit)? = null,
     ): Dispatched {
+        require(NodeTags.matches(job.experiment?.nodeTags, host.nodeTags)) { "node ${host.id} does not match the job's tag selector" }
+        dir.createDirectories().resolve("node-${host.id.replace('/', '_')}.json").writeAtomically(
+            Json.encodeToString(NodeObservation.serializer(), NodeObservation(host.id, host.nodeTags, host.cpu)))
+
         // [next] hands out only cases left to run, which a host that started earlier can hold as running.
         val queued = job.commands.filter { it.status == Status.QUEUED || next != null }.associateBy { it.index }
         val pending = ArrayDeque(if (next == null) queued.values else emptyList())
@@ -625,7 +633,7 @@ class Runner(
     }
 
     private fun yields(jobId: Long, host: ExecutionHost): Boolean =
-        if (host.yieldsToPriority) store.shouldYield(jobId) else store.job(jobId)?.paused == true
+        if (host.yieldsToPriority) store.shouldYield(jobId, config.localNodeTags) else store.job(jobId)?.paused == true
 
     /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. Cloud nodes do not hold it back:
      *  the restarted worker adopts them ([AwsWorker.recover]). */
@@ -946,6 +954,8 @@ class Runner(
     /** The lab machine itself: worktrees under the data directory, the shared corpus cache, the lab's core budget. */
     private inner class LocalHost(private val job: Job, private val primary: String, private val log: File) : ExecutionHost {
         override val cores get() = config.cores
+        override val nodeTags get() = config.localNodeTags
+        override val cpu get() = config.cpuCapabilities
         override val corpus get() = config.corpusDir.toString()
         override val yieldsToUpdates = true
         override val yieldsToPriority = true

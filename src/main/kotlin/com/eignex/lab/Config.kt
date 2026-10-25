@@ -95,7 +95,11 @@ data class Config(
     val volumesRoot: Path = Path("/Volumes"),
     /** Whether the lab's directories answer within a timeout ([VolumeAccess]): this process's own, unless a test gives one. */
     val volumeAccess: VolumeAccess = VolumeAccess.shared,
+    /** Operator labels on the local node; CPU and placement facts are detected rather than overridden. */
+    val nodeTags: Set<String> = env("LAB_NODE_TAGS", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
+    val cpuCapabilities: CpuCapabilities = NodeTags.localCapabilities,
 ) {
+    val localNodeTags: Set<String> get() = NodeTags.observed(cpuCapabilities, nodeTags)
     init {
         require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
             "LAB_SHARED_PATHS entries must stay inside the worktree: $sharedPaths"
@@ -125,7 +129,7 @@ data class Config(
     /** Colima's Lima directory on the host, which holds its VM's disks: `_disks` with the data disk Docker writes to. */
     val colimaDisks: Path get() = Path(System.getProperty("user.home"), ".colima", "_lima")
     /** The AWS settings, when `$LAB_DATA/aws/aws.properties` exists: experiments with `"host": "aws"` need them. */
-    val aws: AwsConfig? by lazy { AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) }
+    val aws: AwsConfig? get() = AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties"))
     fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
 
     /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
