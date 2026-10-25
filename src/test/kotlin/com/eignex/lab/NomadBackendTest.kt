@@ -100,6 +100,53 @@ class NomadBackendTest {
         assertEquals(Status.DONE, store.job(id)!!.status)
     }
 
+    @Test fun `provisional log retries are bounded and fenced without overwriting accepted output`() {
+        val id = setup(); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val logs = backend().logs; val bytes = "provisional".toByteArray()
+        assertEquals(bytes.size.toLong(), logs.append(claim.owner, 0, "out", 0, bytes))
+        assertEquals(bytes.size.toLong(), logs.append(claim.owner, 0, "out", 0, bytes))
+        assertFailsWith<IllegalArgumentException> { logs.append(claim.owner, 0, "out", 0, "different".toByteArray()) }
+        val directory = root.resolve("jobs/$id")
+        assertEquals("provisional", Files.readString(WorkerLogs.resolve(store, directory, id, listOf("0.out"))!!))
+        assertFalse(Files.exists(directory.resolve("0.out")))
+        assertFailsWith<ExecutionFenced> { logs.append(claim.owner, 99, "out", 0, bytes) }
+        var offset = logs.append(claim.owner, 1, "err", 0, byteArrayOf(1))
+        while (offset < WorkerLogs.MAX_BYTES) offset = logs.append(claim.owner, 1, "err", offset, ByteArray(WorkerLogs.CHUNK_BYTES))
+        assertEquals(WorkerLogs.MAX_BYTES, offset)
+        assertEquals(offset, logs.append(claim.owner, 1, "err", offset, bytes))
+        store.execution.loseSession(session.id, "revoked")
+        assertNull(WorkerLogs.resolve(store, directory, id, listOf("0.out")))
+        assertFailsWith<ExecutionFenced> { logs.append(claim.owner, 0, "out", bytes.size.toLong(), bytes) }
+    }
+
+    @Test fun `durable event projection supplies lab tail and never recreates trimmed ended jobs`() {
+        val id = setup(); register(); val backend = backend()
+        backend.reconcile()
+        val path = root.resolve("jobs/$id/job.log")
+        assertTrue(Files.readString(path).contains("session-created"))
+        assertFalse(Files.readString(path).contains(token))
+        store.requestCancel(id); backend.reconcile()
+        assertTrue(Files.readString(path).contains("CANCELLED"))
+        deleteTree(path.parent); backend.reconcile()
+        assertFalse(Files.exists(path.parent))
+    }
+
+    @Test fun `accepted output still ingests after cancellation wins before reconciliation`() {
+        val id = setup(); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val bytes = "accepted before cancel".toByteArray(); val hash = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, hash, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now()-1, now(), "{}") }, mapOf("0.out" to hash)))
+        store.requestCancel(id)
+        assertEquals(listOf(id), store.execution.pendingProjectionJobs())
+        backend().reconcile()
+        assertEquals(Status.CANCELLED, store.job(id)!!.status)
+        assertEquals("accepted before cancel", Files.readString(root.resolve("jobs/$id/0.out")))
+        assertTrue(store.execution.pendingProjectionJobs().isEmpty())
+    }
+
     @Test fun `lost allocation fences incomplete iteration and enqueues a replacement with new credentials`() {
         val id = setup(); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!
@@ -126,6 +173,12 @@ class NomadBackendTest {
         val claim = Json.decodeFromString<IterationClaim>(claimed.bodyAsText())
         assertEquals(HttpStatusCode.BadRequest, client.get("/worker/v1/sessions/session/inputs/" + "f".repeat(64)) { credentials() }.status)
         assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/session/phase") { credentials(); setBody(Json.encodeToString(WorkerPhase(claim.owner, "executing"))) }.status)
+        assertEquals(HttpStatusCode.OK, client.put("/worker/v1/sessions/session/logs/0/out?offset=0") {
+            credentials(); header("X-Lab-Attempt", Json.encodeToString(claim.owner)); setBody("live output")
+        }.status)
+        assertEquals(HttpStatusCode.Conflict, client.put("/worker/v1/sessions/session/logs/0/out?offset=0") {
+            credentials(); setBody("missing attempt")
+        }.status)
         assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/session/progress") { credentials(); setBody(Json.encodeToString(WorkerProgress(claim.owner, claim.indices.first()))) }.status)
         store.requestCancel(session.jobId)
         val late = client.post("/worker/v1/sessions/session/renew") { credentials(); setBody(Json.encodeToString(claim.owner)) }

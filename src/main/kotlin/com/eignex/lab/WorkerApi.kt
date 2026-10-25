@@ -65,6 +65,16 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.caseStarted(body.owner, body.index); call.respond(HttpStatusCode.NoContent)
             }
+            put("/logs/{index}/{stream}") {
+                require(workAllowed()); val s = call.auth()
+                val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                require(owner.session == s.id && owner.allocation == s.allocation)
+                val bytes = call.receiveChannel().readRemaining((WorkerLogs.CHUNK_BYTES + 1).toLong()).readByteArray()
+                require(bytes.size <= WorkerLogs.CHUNK_BYTES)
+                val offset = backend.logs.append(owner, call.parameters["index"]!!.toInt(), call.parameters["stream"]!!,
+                    call.request.queryParameters["offset"]!!.toLong(), bytes)
+                call.respond(UploadReply(offset))
+            }
             post("/build-failed") {
                 require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerBuildError>(call.bodyText())
                 require(body.owner.session == s.id && body.owner.allocation == s.allocation)

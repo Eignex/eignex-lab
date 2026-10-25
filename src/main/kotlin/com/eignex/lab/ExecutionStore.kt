@@ -31,10 +31,22 @@ data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: 
 @Serializable
 data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: String, val payload: String, val acknowledged: Boolean)
 
+@Serializable data class LiveLog(val session: String, val iteration: String, val generation: Int)
+@Serializable data class ExecutionEvent(val id: Long, val session: String?, val detail: String, val at: Long)
+
 class ExecutionFenced(message: String) : IllegalStateException(message)
 
 /** All worker mutations share Store's IMMEDIATE write transaction, including cancellation and case projection. */
 class ExecutionStore internal constructor(private val store: Store) {
+    fun events(job: Long): List<ExecutionEvent> = store.executionTransaction { db ->
+        db.sqlRows("SELECT * FROM execution_events WHERE job_id = ? ORDER BY id DESC LIMIT 5000", job) {
+            ExecutionEvent(it.getLong("id"), it.getString("session_id"), it.getString("detail"), it.getLong("at"))
+        }.reversed()
+    }
+    fun liveLog(job: Long, index: Int, at: Long = now()): LiveLog? = store.executionTransaction { db ->
+        db.sqlRows("SELECT a.* FROM iteration_attempts a JOIN execution_sessions s ON s.id = a.session_id WHERE a.job_id = ? AND a.state IN $ACTIVE_ATTEMPTS AND a.lease_until > ? AND s.desired != 'stop' AND s.allocation_id = a.allocation_id", job, at, map = ::attemptRow)
+            .singleOrNull { index in it.indices }?.let { LiveLog(it.session, it.iteration, it.generation) }
+    }
     fun capacityLeases(at: Long = now()): List<ManualCapacityLease> = store.executionTransaction { db ->
         db.sqlRows("SELECT * FROM capacity_leases WHERE expires_at > ? ORDER BY id", at) { ManualCapacityLease(it.getString("id"), it.getString("pool"), it.getInt("nodes"), it.getLong("expires_at")) }
     }
@@ -227,6 +239,14 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun submission(id: String): String = store.executionTransaction { db -> db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single() }
     fun hasActiveAttempt(session: String): Boolean = store.executionTransaction { db -> db.sqlRows("SELECT 1 FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", session) { true }.isNotEmpty() }
     fun failureCount(job: Long): Int = store.executionTransaction { db -> db.sqlRows("SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail LIKE 'lost:infrastructure:%'", job) { it.getInt(1) }.single() }
+    fun pendingProjectionJobs(): List<Long> = store.executionTransaction { db -> db.sqlRows("""
+        SELECT DISTINCT a.job_id FROM iteration_attempts a JOIN jobs j ON j.id = a.job_id
+        WHERE a.state = 'committed' AND j.backend = 'nomad' AND (
+          NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id)
+          OR EXISTS (SELECT 1 FROM commands c WHERE c.job_id = a.job_id AND c.status IN ('DONE', 'FAILED')
+            AND NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx)))
+        ORDER BY a.job_id
+    """.trimIndent()) { it.getLong(1) } }
     fun ingested(job: Long): Set<String> = store.executionTransaction { db -> db.sqlRows("SELECT iteration_id FROM execution_ingestion WHERE job_id = ?", job) { it.getString(1) }.toSet() }
     fun markIngested(job: Long, iteration: String) = store.executionTransaction { db -> db.sqlUpdate("INSERT OR IGNORE INTO execution_ingestion (job_id, iteration_id) VALUES (?, ?)", job, iteration) }
     fun observed(id: String, detail: String, at: Long = now()) = store.executionTransaction { db ->

@@ -266,3 +266,27 @@ Targeted tests exercise real Git bundle export/checkout, trust rejection, build 
 budgets and fenced failures. The connected Nomad test now builds its fixture from source in the Docker allocation,
 then exercises coordinator restart and forced allocation loss after arm A. Native macOS CI runs the same source
 build and independent-supervisor contracts. Real solver/JFR canaries and provider Spot gates remain outstanding.
+
+## Logs and execution reporting
+
+`lab tail ID` reads a bounded projection of durable execution events in the usual `job.log`, including final
+status and preparation failures. Restarting the coordinator reconstructs it from SQLite. Accepted iterations still ingest their files and central
+checks if cancellation or permanent failure wins before the next reconciliation; the ended status is preserved. Ended jobs are not
+continually rewritten, so trimming their files remains effective. `/jobs/ID/execution` renders sessions,
+allocation/node identities, phase/generation, accepted iterations and budgets in the browser; JSON clients retain
+the existing structured response.
+
+Workers stream provisional stdout/stderr once per second in chunks of at most 64 KiB, with idempotent byte
+offsets and an 8 MiB ceiling per stream. Output belongs to a session/iteration/generation directory and requires
+the current signed allocation and attempt lease. `/jobs/ID/files/N.out` and `lab cat ID N.out` fall back to this
+active attempt only while no accepted file exists. Revocation removes that fallback immediately; a late write
+can reach only the old private attempt path. Accepted files and captures still come from checksum-verified whole
+iteration commit and are never overwritten by streaming output. Full output becomes available after acceptance;
+the execution page explains the provisional limit. Transport retry and log streaming never hold up a solver or its
+lease heartbeat. Provisional logs remain visible in Files for diagnosis until normal job-file retention removes them.
+
+Tests cover duplicate/mismatched chunks, size limits, authentication, stale ownership, accepted-file separation,
+and durable event reconstruction without recreating trimmed jobs. The real connected test additionally requires
+output to be visible before acceptance and the final log to report `DONE`, across coordinator restart and forced
+allocation loss. These are canary reporting checks; automatic queue planning/admission and live rollout gates remain
+open as documented in the migration plan.

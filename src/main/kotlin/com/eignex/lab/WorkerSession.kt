@@ -73,9 +73,10 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             }, 10, 10, TimeUnit.SECONDS)
             fun remaining() = (deadline.get() - System.nanoTime()) / 1_000_000
             fun phase(value: String) { check(remaining() > 0); retry { json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
+            val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
+            val logs = streamLogs(claim, directory)
             try {
                 phase("preparing")
-                val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
                 val result = executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing") }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::remaining)
                 phase("uploading")
                 val outputs = mutableMapOf<String, String>()
@@ -96,9 +97,34 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             } catch (failure: WorkerBuildFailure) {
                 retry { json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return
-            } finally { deadline.set(0); heartbeat.shutdownNow() }
+            } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow() }
         }
         } finally { nativeOwnership?.close() }
+    }
+
+    private fun streamLogs(claim: IterationClaim, directory: Path): AutoCloseable {
+        val offsets = mutableMapOf<String, Long>()
+        val service = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-output").apply { isDaemon = true } }
+        service.scheduleWithFixedDelay({
+            for (index in claim.indices) for (stream in listOf("out", "err")) {
+                if (Thread.currentThread().isInterrupted) return@scheduleWithFixedDelay
+                val name = "$index.$stream"; val path = directory.resolve(name)
+                val offset = offsets[name] ?: 0
+                if (!Files.isRegularFile(path) || offset >= WorkerLogs.MAX_BYTES) continue
+                runCatching {
+                    val bytes = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
+                        val count = minOf((input.length() - offset).coerceAtLeast(0), WorkerLogs.CHUNK_BYTES.toLong()).toInt()
+                        input.seek(offset); ByteArray(count).also { input.readFully(it) }
+                    }
+                    if (bytes.isNotEmpty()) {
+                        val response = request("logs/$index/$stream?offset=$offset", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), claim.owner)
+                        val accepted = Json.decodeFromString<UploadReply>(String(response.body())).offset
+                        require(accepted in offset..minOf(offset + bytes.size, WorkerLogs.MAX_BYTES)); offsets[name] = accepted
+                    }
+                } // Provisional output retries independently; accepted artifacts still transfer in full.
+            }
+        }, 0, 1, TimeUnit.SECONDS)
+        return AutoCloseable { service.shutdownNow() }
     }
 
     private fun download(bundle: WorkerBundle): java.io.InputStream {

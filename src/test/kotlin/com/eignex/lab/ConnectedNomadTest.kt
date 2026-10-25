@@ -31,6 +31,7 @@ class ConnectedNomadTest {
         val script = """#!/usr/bin/env bash
             set -eu
             for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
+            echo portable-worker-start
             sleep 2
             mkdir -p "${'$'}out"
             echo '{"stats":{"fixture":true}}' > "${'$'}out/record.json"
@@ -63,11 +64,16 @@ class ConnectedNomadTest {
         var server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(store, backend, artifacts) { true } }.start()
         val session = backend.enqueue(job, manifest, template, "http://127.0.0.1:$port")
         try {
-            var restarted = false; var lost = false
+            var restarted = false; var lost = false; var sawLive = false
             val deadline = System.nanoTime() + 120_000_000_000
             while (System.nanoTime() < deadline) {
                 backend.reconcile()
                 val current = store.job(job)!!
+                if (current.commands.any { it.status == Status.RUNNING } && !Files.exists(root.resolve("jobs/$job/0.out"))) {
+                    WorkerLogs.resolve(store, root.resolve("jobs/$job"), job, listOf("0.out"))?.let { file ->
+                        if (Files.readString(file).contains("portable-worker-start")) sawLive = true
+                    }
+                }
                 if (!restarted && current.commands.first().status == Status.RUNNING) {
                     server.stop(0, 1000)
                     backend = NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") })
@@ -85,6 +91,8 @@ class ConnectedNomadTest {
                 Thread.sleep(250)
             }
             assertEquals(Status.DONE, store.job(job)!!.status, "allocations: ${client.allocations(session.nomadJobId)}")
+            assertTrue(sawLive, "case output was visible before paired acceptance")
+            assertTrue(Files.readString(root.resolve("jobs/$job/job.log")).contains("status: DONE"))
             assertTrue(restarted && lost, "both coordinator restart and forced allocation loss ran")
             assertTrue(store.execution.sessions(job).size >= 2)
             assertEquals(2, store.job(job)!!.done)
