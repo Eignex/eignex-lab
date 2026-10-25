@@ -1,0 +1,272 @@
+package com.eignex.lab
+
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.sql.Connection
+import java.sql.ResultSet
+
+@Serializable
+data class ExecutionSession(
+    val id: String, val jobId: Long, val generation: Int, val executionClass: String, val release: String,
+    val budget: ResourceBudget, val nomadJobId: String, val desired: String, val allocation: String?, val node: String?,
+)
+
+@Serializable
+data class AttemptOwner(val session: String, val allocation: String, val iteration: String, val generation: Int, val token: String)
+
+@Serializable
+data class IterationClaim(val owner: AttemptOwner, val indices: List<Int>, val leaseUntil: Long)
+
+@Serializable
+data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt: Long, val finishedAt: Long, val record: String? = null) {
+    init { require(index >= 0 && finishedAt >= startedAt) }
+}
+
+@Serializable
+data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap())
+
+@Serializable
+data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: String, val payload: String, val acknowledged: Boolean)
+
+class ExecutionFenced(message: String) : IllegalStateException(message)
+
+/** All worker mutations share Store's IMMEDIATE write transaction, including cancellation and case projection. */
+class ExecutionStore internal constructor(private val store: Store) {
+    fun session(id: String): ExecutionSession? = store.executionTransaction { it.session(id) }
+    fun sessions(jobId: Long? = null): List<ExecutionSession> = store.executionTransaction { db ->
+        db.sqlRows("SELECT * FROM execution_sessions" + if (jobId == null) " ORDER BY id" else " WHERE job_id = ? ORDER BY id",
+            *listOfNotNull(jobId).toTypedArray(), map = ::sessionRow)
+    }
+
+    /** The coordinator chooses the credential before persisting intent; a retry must supply identical inputs. */
+    fun createSession(id: String, jobId: Long, executionClass: String, release: String, budget: ResourceBudget,
+                      token: String, payload: String, at: Long = now()): ExecutionSession = store.executionTransaction { db ->
+        require(id.matches(Regex("[a-z0-9-]{1,64}")) && executionClass.matches(Regex("[a-z][a-z0-9-]{0,31}")))
+        require(release.isNotBlank() && token.length >= 32)
+        val job = store.job(jobId) ?: error("missing experiment")
+        require(job.backend == ExecutionBackendKind.NOMAD && !job.cancelRequested && job.status in setOf(Status.QUEUED, Status.RUNNING))
+        val nomadId = "lab-$jobId-$executionClass-$id-1"
+        db.session(id)?.let { old ->
+            require(old.jobId == jobId && old.executionClass == executionClass && old.release == release && old.budget == budget)
+            require(db.sqlRows("SELECT token_hash FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single() == digest(token))
+            require(db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single() == payload)
+            return@executionTransaction old
+        }
+        db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
+            id, jobId, executionClass, release, Json.encodeToString(budget), nomadId, digest(token), at)
+        db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
+        db.event(jobId, id, "session-created", at)
+        db.session(id)!!
+    }
+
+    /** Call only after authenticating the allocation against Nomad's job/task identity. Never rebind a live session. */
+    fun bind(id: String, token: String, allocation: String, node: String, release: String, at: Long = now()): ExecutionSession = store.executionTransaction { db ->
+        val s = db.authenticate(id, token)
+        require(allocation.isNotBlank() && node.isNotBlank() && release == s.release)
+        if (s.allocation != null && (s.allocation != allocation || s.node != node)) throw ExecutionFenced("allocation superseded")
+        db.sqlUpdate("UPDATE execution_sessions SET allocation_id = ?, node_id = ?, observed_at = ? WHERE id = ?", allocation, node, at, id)
+        db.sqlUpdate("UPDATE jobs SET status = 'RUNNING', started_at = COALESCE(started_at, ?), running_since = COALESCE(running_since, ?) WHERE id = ?", at, at, s.jobId)
+        db.session(id)!!
+    }
+
+    fun claim(id: String, token: String, allocation: String, at: Long = now(), leaseMs: Long = LEASE_MS): IterationClaim? {
+        expire(at)
+        return store.executionTransaction { db ->
+            require(leaseMs in 1..LEASE_MS)
+            val session = db.authenticate(id, token, allocation)
+            if (store.job(session.jobId)!!.paused || session.desired != "run") return@executionTransaction null
+            // An HTTP retry of a claim returns the existing ownership, never a second concurrent iteration.
+            val active = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS ORDER BY generation DESC", id) { attemptRow(it) }.singleOrNull()
+            if (active != null) {
+                // Claim tokens are derived from the scoped session secret; only their digest is persisted.
+                val claimToken = claimToken(token, active.iteration, active.generation)
+                return@executionTransaction IterationClaim(AttemptOwner(id, allocation, active.iteration, active.generation, claimToken), active.indices, active.leaseUntil)
+            }
+            val next = db.iterations(session.jobId).entries.firstOrNull { (_, rows) -> rows.all { it.status == "QUEUED" && it.host == null } }
+                ?: return@executionTransaction null
+            val iteration = next.key
+            val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
+            val claimToken = claimToken(token, iteration, generation)
+            val indices = next.value.map { it.index }
+            db.sqlUpdate("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?)",
+                session.jobId, iteration, generation, id, allocation, digest(claimToken), at + leaseMs, Json.encodeToString(indices), at)
+            for (index in indices) db.sqlUpdate("UPDATE commands SET host = ? WHERE job_id = ? AND idx = ?", session.node, session.jobId, index)
+            db.event(session.jobId, id, "claimed:$iteration:$generation", at)
+            IterationClaim(AttemptOwner(id, allocation, iteration, generation, claimToken), indices, at + leaseMs)
+        }
+    }
+
+    fun renew(owner: AttemptOwner, at: Long = now(), leaseMs: Long = LEASE_MS): Long = store.executionTransaction { db ->
+        require(leaseMs in 1..LEASE_MS)
+        val a = db.attempt(owner, at)
+        db.sqlUpdate("UPDATE iteration_attempts SET lease_until = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", at + leaseMs, a.jobId, owner.iteration, owner.generation)
+        at + leaseMs
+    }
+
+    fun phase(owner: AttemptOwner, phase: String, at: Long = now()) = store.executionTransaction { db ->
+        require(phase in listOf("preparing", "executing", "uploading"))
+        val a = db.attempt(owner, at)
+        val states = listOf("claimed", "preparing", "executing", "uploading")
+        require(states.indexOf(phase) >= states.indexOf(a.state)) { "phase cannot go backwards" }
+        db.sqlUpdate("UPDATE iteration_attempts SET state = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", phase, a.jobId, owner.iteration, owner.generation)
+        if (phase == "executing") for (index in a.indices) db.sqlUpdate("UPDATE commands SET status = 'RUNNING', started_at = COALESCE(started_at, ?) WHERE job_id = ? AND idx = ?", at, a.jobId, index)
+    }
+
+    /** Artifacts must have been checksum-verified before this transaction. A lost acknowledgement is idempotent. */
+    internal fun commit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Boolean = store.executionTransaction { db ->
+        val a = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
+        if (a.state == "committed") {
+            if (a.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
+            return@executionTransaction true
+        }
+        db.attempt(owner, at)
+        require(a.state == "uploading") { "attempt is not uploading" }
+        require(result.cases.map { it.index }.sorted() == a.indices.sorted()) { "all arms must be committed together, exactly once" }
+        val node = db.session(owner.session)!!.node!!
+        for (case in result.cases) {
+            case.record?.let { Json.parseToJsonElement(it) }
+            db.sqlUpdate("UPDATE commands SET status = ?, exit_code = ?, started_at = ?, finished_at = ?, phase = NULL, host = ? WHERE job_id = ? AND idx = ?",
+                if (case.exitCode == 0) "DONE" else "FAILED", case.exitCode, case.startedAt, case.finishedAt, node, a.jobId, case.index)
+            db.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", case.record?.let(store::storedRecord), a.jobId, case.index)
+        }
+        db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            Json.encodeToString(result), at, a.jobId, owner.iteration, owner.generation)
+        db.event(a.jobId, owner.session, "committed:${owner.iteration}:${owner.generation}", at)
+        true
+    }
+
+    /** Retire this credential before allowing a replacement session. Completed attempts remain accepted. */
+    fun loseSession(id: String, reason: String, at: Long = now()) = store.executionTransaction { db ->
+        db.session(id)?.let { s ->
+            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason.take(1024), id)
+            db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", id, map = ::attemptRow)
+                .forEach { db.invalidate(it, "lost", at) }
+            db.stopIntent(s)
+            db.event(s.jobId, id, "lost:${reason.take(1024)}", at)
+        }
+    }
+
+    fun expire(at: Long = now()) = store.executionTransaction { db ->
+        db.sqlRows("SELECT DISTINCT job_id FROM iteration_attempts WHERE state IN $ACTIVE_ATTEMPTS AND lease_until <= ?", at) { it.getLong(1) }
+            .forEach { db.expire(it, at) }
+    }
+
+    fun intents(): List<ExecutionIntent> = store.executionTransaction { db ->
+        db.sqlRows("SELECT * FROM execution_outbox WHERE acknowledged = 0 ORDER BY rowid") {
+            ExecutionIntent(it.getString("id"), it.getLong("job_id"), it.getString("session_id"), it.getString("operation"), it.getString("payload"), false)
+        }
+    }
+    fun acknowledge(id: String) = store.executionTransaction { it.sqlUpdate("UPDATE execution_outbox SET acknowledged = 1 WHERE id = ?", id) }
+
+    /** Rollback needs an external proof of stopped allocations; never expose as a backend toggle. */
+    fun releaseToLegacy(jobId: Long, stopped: Set<String>) = store.executionTransaction { db ->
+        val sessions = db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", jobId, map = ::sessionRow)
+        require(sessions.all { it.desired == "stop" && it.nomadJobId in stopped }) { "verify every allocation stopped before rollback" }
+        require(db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", jobId) { true }.isEmpty())
+        require(store.job(jobId)?.status in setOf(Status.QUEUED, Status.RUNNING))
+        db.sqlUpdate("UPDATE jobs SET backend = 'legacy', status = 'QUEUED', local = 0, running_since = NULL WHERE id = ?", jobId)
+    }
+
+    internal fun cancelIn(db: Connection, jobId: Long, at: Long) {
+        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", jobId, map = ::attemptRow)
+            .forEach { db.invalidate(it, "cancelled", at) }
+        db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", jobId, map = ::sessionRow).forEach { s ->
+            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id)
+            db.stopIntent(s)
+        }
+        db.sqlUpdate("UPDATE jobs SET status = 'CANCELLED', cancel_requested = 1, finished_at = ?, running_since = NULL WHERE id = ?", at, jobId)
+        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", jobId)
+        db.event(jobId, null, "cancelled", at)
+    }
+
+    private fun Connection.stopIntent(s: ExecutionSession) {
+        sqlUpdate("INSERT OR IGNORE INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'stop', ?)", "${s.id}:stop", s.jobId, s.id, s.nomadJobId)
+    }
+    private fun Connection.session(id: String) = sqlRows("SELECT * FROM execution_sessions WHERE id = ?", id, map = ::sessionRow).singleOrNull()
+    private fun Connection.authenticate(id: String, token: String, allocation: String? = null): ExecutionSession {
+        val s = session(id) ?: throw ExecutionFenced("unknown session")
+        val hash = sqlRows("SELECT token_hash FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
+        if (!MessageDigest.isEqual(hash.toByteArray(), digest(token).toByteArray())) throw ExecutionFenced("invalid credential")
+        if (s.desired == "stop" || (allocation != null && s.allocation != allocation)) throw ExecutionFenced("session fenced")
+        val job = store.job(s.jobId)!!
+        if (job.backend != ExecutionBackendKind.NOMAD || job.cancelRequested || job.status !in setOf(Status.QUEUED, Status.RUNNING)) throw ExecutionFenced("experiment fenced")
+        return s
+    }
+    private fun Connection.findAttempt(o: AttemptOwner): Attempt? {
+        val a = sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND allocation_id = ? AND iteration_id = ? AND generation = ?", o.session, o.allocation, o.iteration, o.generation, map = ::attemptRow).singleOrNull() ?: return null
+        if (!MessageDigest.isEqual(a.tokenHash.toByteArray(), digest(o.token).toByteArray())) throw ExecutionFenced("invalid attempt credential")
+        return a
+    }
+    private fun Connection.attempt(o: AttemptOwner, at: Long): Attempt {
+        val a = findAttempt(o) ?: throw ExecutionFenced("unknown attempt")
+        val s = session(o.session) ?: throw ExecutionFenced("unknown session")
+        val job = store.job(a.jobId)!!
+        if (s.desired == "stop" || s.allocation != o.allocation || a.state !in ACTIVE_STATES || a.leaseUntil <= at || job.cancelRequested || job.backend != ExecutionBackendKind.NOMAD || job.status !in setOf(Status.RUNNING, Status.QUEUED)) throw ExecutionFenced("attempt fenced")
+        return a
+    }
+    private fun Connection.expire(jobId: Long, at: Long) {
+        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS AND lease_until <= ?", jobId, at, map = ::attemptRow)
+            .forEach { a ->
+                invalidate(a, "lost", at)
+                // Expired credentials cannot bind again and fetch a fresh iteration.
+                val s = session(a.session)!!
+                sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", a.session)
+                stopIntent(s)
+            }
+    }
+    private fun Connection.invalidate(a: Attempt, state: String, at: Long) {
+        sqlUpdate("UPDATE iteration_attempts SET state = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", state, at, a.jobId, a.iteration, a.generation)
+        for (index in a.indices) {
+            sqlUpdate("UPDATE commands SET status = 'QUEUED', host = NULL, exit_code = NULL, started_at = NULL, finished_at = NULL, phase = NULL WHERE job_id = ? AND idx = ?", a.jobId, index)
+            sqlUpdate("UPDATE cases SET record = NULL, lab_check = NULL, stdout = NULL WHERE job_id = ? AND idx = ?", a.jobId, index)
+        }
+        event(a.jobId, a.session, "$state:${a.iteration}:${a.generation}", at)
+    }
+    private data class IterationRow(val index: Int, val status: String, val host: String?, val key: String)
+    private fun Connection.iterations(jobId: Long): Map<String, List<IterationRow>> = sqlRows(
+        "SELECT m.idx, m.status, m.host, c.problem_idx, c.seed, c.repeat FROM commands m LEFT JOIN cases c ON c.job_id = m.job_id AND c.idx = m.idx WHERE m.job_id = ? ORDER BY m.idx", jobId,
+    ) { r ->
+        val key = if (r.getObject("problem_idx") == null) "command:${r.getInt("idx")}" else "${r.getInt("problem_idx")}:${r.getObject("seed") ?: "none"}:${r.getInt("repeat")}"
+        IterationRow(r.getInt("idx"), r.getString("status"), r.getString("host"), key)
+    }.groupBy { it.key }
+    private fun Connection.event(job: Long, session: String?, detail: String, at: Long) = sqlUpdate("INSERT INTO execution_events (job_id, session_id, detail, at) VALUES (?, ?, ?, ?)", job, session, detail, at)
+
+    companion object {
+        const val LEASE_MS = 90_000L
+        private val ACTIVE_STATES = setOf("claimed", "preparing", "executing", "uploading")
+        private const val ACTIVE_ATTEMPTS = "('claimed', 'preparing', 'executing', 'uploading')"
+        private val random = SecureRandom()
+        fun token(): String = ByteArray(32).also(random::nextBytes).joinToString("") { "%02x".format(it) }
+        internal fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+        private fun claimToken(secret: String, iteration: String, generation: Int): String {
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(javax.crypto.spec.SecretKeySpec(secret.toByteArray(), "HmacSHA256"))
+            return mac.doFinal("$iteration:$generation".toByteArray()).joinToString("") { "%02x".format(it) }
+        }
+        private fun sessionRow(r: ResultSet) = ExecutionSession(r.getString("id"), r.getLong("job_id"), r.getInt("generation"), r.getString("execution_class"), r.getString("release"), Json.decodeFromString(r.getString("budget")), r.getString("nomad_job_id"), r.getString("desired"), r.getString("allocation_id"), r.getString("node_id"))
+        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: String, val leaseUntil: Long, val tokenHash: String, val result: String?)
+        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), r.getString("state"), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"))
+        internal fun migrate(db: Connection) {
+            db.createStatement().use { s ->
+                s.execute("""CREATE TABLE IF NOT EXISTS execution_sessions (id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, generation INTEGER NOT NULL, execution_class TEXT NOT NULL, release TEXT NOT NULL, budget TEXT NOT NULL, nomad_job_id TEXT NOT NULL UNIQUE, desired TEXT NOT NULL, token_hash TEXT NOT NULL, allocation_id TEXT, node_id TEXT, created_at INTEGER NOT NULL, observed_at INTEGER, observation TEXT)""")
+                s.execute("""CREATE TABLE IF NOT EXISTS iteration_attempts (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, generation INTEGER NOT NULL, session_id TEXT NOT NULL, allocation_id TEXT NOT NULL, token_hash TEXT NOT NULL, lease_until INTEGER NOT NULL, state TEXT NOT NULL, indices TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, result TEXT, PRIMARY KEY (job_id, iteration_id, generation))""")
+                s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")
+                s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_session_iteration ON iteration_attempts (session_id) WHERE state IN $ACTIVE_ATTEMPTS")
+                s.execute("CREATE TABLE IF NOT EXISTS execution_outbox (id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, session_id TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0)")
+                s.execute("CREATE TABLE IF NOT EXISTS execution_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, session_id TEXT, detail TEXT NOT NULL, at INTEGER NOT NULL)")
+                s.execute("CREATE INDEX IF NOT EXISTS session_experiment ON execution_sessions (job_id)")
+            }
+        }
+    }
+}
+
+internal fun Connection.sqlUpdate(sql: String, vararg values: Any?): Int = prepareStatement(sql).use { s ->
+    values.forEachIndexed { i, value -> s.setObject(i + 1, value) }; s.executeUpdate()
+}
+internal fun <T> Connection.sqlRows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = prepareStatement(sql).use { s ->
+    values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
+    s.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
+}

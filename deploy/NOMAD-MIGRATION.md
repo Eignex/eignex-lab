@@ -7,7 +7,10 @@ builds within explicit CPU and memory budgets. Recording measurements does not a
 
 Implementation has started in [the isolated execution prototype](nomad/README.md): reusable resource budgets,
 Nomad batch-job rendering, and a TLS/ACL sandbox with real Linux sharing, hard-limit, OOM, and cancellation checks.
-Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
+Durable execution ownership now has additive session, attempt, event, and outbox tables, explicit backend selection,
+transactional leases/fencing, complete-iteration acceptance, and cancellation/rollback guards. Legacy queue and
+restart recovery exclude Nomad-owned experiments. The worker API and actual Nomad reconciler follow in the stack;
+there is no production selector yet. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
 replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.
 
 ## Outcome and decisions

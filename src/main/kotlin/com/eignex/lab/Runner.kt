@@ -412,14 +412,14 @@ class Runner(
      */
     internal fun recoverShared() {
         val schedules = store.schedules()
-        for (job in store.active(withCommands = false)) {
+        for (job in store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.LEGACY }) {
             val spec = job.experiment ?: continue
             if (!spec.auto || spec.host == Experiments.AUTO_HOST) continue
             if (Placement.host(spec, job.name, config, schedules) == Experiments.AUTO_HOST && store.share(job.id)) {
                 log(job.id, "shared: the local machine and cloud nodes may each run its iterations")
             }
         }
-        for (job in store.active().filter { it.status == Status.RUNNING && shared(it) }) {
+        for (job in store.active().filter { it.backend == ExecutionBackendKind.LEGACY && it.status == Status.RUNNING && shared(it) }) {
             val dir = config.jobDir(job.id)
             runCatching { killOrphan(dir.resolve("setup.pid")) }
             job.commands.filter { it.status == Status.RUNNING && (it.host == null || it.host == ExecutionHost.LOCAL) }.forEach {
