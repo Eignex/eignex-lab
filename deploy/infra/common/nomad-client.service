@@ -1,0 +1,13 @@
+[Unit]
+Description=Disposable lab Nomad client
+After=network-online.target docker.service
+Requires=docker.service
+[Service]
+ExecStart=/usr/local/bin/nomad agent -config=/etc/eignex-lab/client.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+KillMode=control-group
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target

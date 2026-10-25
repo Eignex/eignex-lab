@@ -1,0 +1,21 @@
+{
+  "name": "lab-native-client",
+  "data_dir": "/Users/lab/eignex-lab-data/nomad/client",
+  "datacenter": "lab",
+  "bind_addr": "127.0.0.1",
+  "ports": {"http": 4649, "rpc": 4650, "serf": 4651},
+  "server": {"enabled": false},
+  "client": {
+    "enabled": true, "servers": ["100.64.0.10:4647"], "node_class": "lab-mac",
+    "reserved": {"cpu": 500, "memory": 1024}
+  },
+  "plugin": [{"raw_exec": {"config": [{"enabled": true}]}}],
+  "acl": {"enabled": true},
+  "tls": {
+    "http": true, "rpc": true, "verify_server_hostname": true, "verify_https_client": true,
+    "ca_file": "/Users/lab/eignex-lab-data/nomad/nomad-agent-ca.pem",
+    "cert_file": "/Users/lab/eignex-lab-data/nomad/global-client-nomad.pem",
+    "key_file": "/Users/lab/eignex-lab-data/nomad/global-client-nomad-key.pem"
+  },
+  "consul": {"auto_advertise": false, "server_auto_join": false, "client_auto_join": false}
+}
