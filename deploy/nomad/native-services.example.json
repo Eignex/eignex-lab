@@ -1,0 +1,19 @@
+{
+  "dataDir": "/Users/lab/eignex-lab-data",
+  "labLauncher": "/Users/lab/eignex-lab-data/releases/current/bin/eignex-lab",
+  "workerLauncher": "/Users/lab/eignex-lab-data/releases/RELEASE/bin/eignex-lab",
+  "nomadBinary": "/Users/lab/eignex-lab-data/nomad/bin/nomad-2.0.7",
+  "python": "/usr/bin/python3",
+  "supervisorSocket": "/Users/lab/eignex-lab-data/nomad/process.sock",
+  "localLock": "/Users/lab/eignex-lab-data/nomad/native.lock",
+  "home": "/Users/lab",
+  "path": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+  "javaHome": "/Users/lab/.gradle/jdks/JDK25",
+  "serverConfig": "/Users/lab/eignex-lab-data/nomad/server.json",
+  "clientConfig": "/Users/lab/eignex-lab-data/nomad/client.json",
+  "coordinatorConfig": "/Users/lab/eignex-lab-data/nomad/coordinator.json",
+  "labEnvironment": {
+    "LAB_JOBS": "/Users/lab/eignex-lab-data/jobs",
+    "LAB_CORPUS": "/Users/lab/.cache/klause-bench/corpus"
+  }
+}

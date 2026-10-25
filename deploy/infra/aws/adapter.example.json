@@ -1,0 +1,7 @@
+{
+  "region": "eu-north-1", "profile": "lab-nomad-adapter", "deployment": "lab", "pool": "general-spot",
+  "group": "COPY_MODULE_GROUP_NAME", "renewFunction": "COPY_MODULE_RENEW_FUNCTION",
+  "inventoryFile": "/Users/lab/eignex-lab-data/nomad/aws-inventory.json",
+  "capacityTokenFile": "/Users/lab/eignex-lab-data/nomad/capacity.token",
+  "coordinator": "http://127.0.0.1:8091"
+}

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+mkdir -p /etc/eignex-lab
+cat > /etc/eignex-lab/node.json <<'EIGNEX_NODE_CONFIG'
+${config}
+EIGNEX_NODE_CONFIG
+exec python3 /opt/eignex-lab/bootstrap-gcp.py '${secret}' /etc/eignex-lab/node.json

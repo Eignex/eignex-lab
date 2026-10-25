@@ -1,0 +1,8 @@
+[Unit]
+Description=Emergency six-hour host lifetime bound
+[Timer]
+OnActiveSec=6h
+AccuracySec=1min
+Unit=lab-lifetime.service
+[Install]
+WantedBy=timers.target
