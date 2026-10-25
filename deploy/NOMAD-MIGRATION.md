@@ -9,8 +9,9 @@ objective -6 and retained JFR recordings. The cloud allocation reported cgroup-v
 
 Normal API submissions, schedules and confirmations now select Nomad. The old EC2 launcher configuration and its
 IAM control policy have been archived and removed from active production configuration. The runner still hosts
-schedules, maintenance and local analysis; its remaining legacy executor code has not yet been deleted. Live
-scale-to-zero/from-zero, interruption recovery and a stable rollout remain acceptance work.
+schedules, maintenance and local analysis; its remaining legacy executor code has not yet been deleted. The Spot
+pool automatically retired to zero after its idle period, then new queued demand launched a fresh worker and
+started preparation for job 8366. Live interruption recovery and a stable rollout remain acceptance work.
 
 Revised after PR #127: maximize cloud utilization by sharing nodes across experiments, profiles, measurements, and
 builds within explicit CPU and memory budgets. Recording measurements does not automatically require a whole node.

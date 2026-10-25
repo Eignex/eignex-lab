@@ -1521,6 +1521,7 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
         append("</div>")
     }
     config.aws?.let { append(launchGauge(config, it)) }
+    if (config.executionBackend == ExecutionBackendKind.NOMAD) append("<div class=\"muted small\">Nomad · <a href=\"/capacity/view\">cloud capacity and reservations</a></div>")
     append("</div>")
 }
 

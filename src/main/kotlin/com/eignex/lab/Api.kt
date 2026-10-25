@@ -448,14 +448,22 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         // The runner fetches within seconds and, when the lab's upstream moved, updates between the running job's cases.
         // Start a cloud node by hand ([ManualLaunch]): the runner's cloud worker launches it on its next poll.
         get("/cloud/nodes") {
+            if (config.executionBackend == ExecutionBackendKind.NOMAD) {
+                call.respond(HttpStatusCode.Conflict, "Nomad manages cloud capacity: use /capacity and /capacity/leases")
+                return@get
+            }
             val report = readPoolReport(config)
             if (report == null) call.respond(HttpStatusCode.NotFound, "the cloud worker has not reported yet")
             else call.respond(report)
         }
         post("/cloud/nodes") {
-            val aws = AwsConfig.load(config.dataDir.resolve("aws").resolve("aws.properties"))
+            if (config.executionBackend == ExecutionBackendKind.NOMAD) {
+                call.respond(HttpStatusCode.Conflict, "Nomad manages cloud capacity: use /capacity/leases")
+                return@post
+            }
+            val aws = config.aws
             if (aws == null) {
-                call.respond(HttpStatusCode.Conflict, "the lab has no cloud settings: run deploy/aws-setup.sh")
+                call.respond(HttpStatusCode.Conflict, "the lab has no cloud settings: configure Nomad using deploy/nomad/README.md")
                 return@post
             }
             val text = call.receiveText()
@@ -655,7 +663,7 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
         return
     }
     val aws = requireNotNull(config.aws) {
-        "the lab has no cloud settings: run deploy/aws-setup.sh"
+        "the lab has no cloud settings: configure Nomad using deploy/nomad/README.md"
     }
     require(Experiments.arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
         "reference runs stay on the local machine, which has the reference solvers"

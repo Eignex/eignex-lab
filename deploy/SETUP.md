@@ -30,19 +30,20 @@ Fetch raw artifacts promptly: ended jobs trim after seven days or sooner on low 
 
 Use `deploy/lab update` for code updates between cases. Check `logs/update.log` if an update fails.
 
-## Optional AWS workers
+## Native and cloud execution with Nomad
 
-From an admin AWS CLI session with SSH access to the lab Mac:
+Use the [Nomad runbook](nomad/README.md) for the native Mac client, process supervisor, queue admission and capacity
+services. Provider infrastructure is separate: [AWS and GCP modules](infra/README.md) supply disposable Spot workers,
+scoped identity and independent capacity expiry through the same worker protocol.
 
-```sh
-INSTANCE_TYPES=c7i.2xlarge,c7g.2xlarge deploy/aws-setup.sh user@lab-host
-```
+Set `LAB_EXECUTION_BACKEND=nomad`, `LAB_NOMAD_QUEUE_SETTINGS` and `LAB_NOMAD_CAPACITY_SETTINGS` in the service
+environment after configuring the coordinator. Normal submissions, schedules and confirmations use Nomad; analysis
+and maintenance remain local. The queue links to `/capacity/view` for live reservations and pool state.
 
-Restart the runner, then adjust pool limits and `tags.<family/type/instance>` labels in
-`$LAB_DATA/aws/aws.properties`; changes are reread automatically. Local labels use `LAB_NODE_TAGS` in `lab.env`.
-Architecture/SIMD facts are probed, not overridden by labels. See [AwsConfig](../src/main/kotlin/com/eignex/lab/Aws.kt)
-for settings and defaults.
+Use shared vCPU and memory budgets, finite pool/global vCPU limits and Spot pools. Profiles and measurements share
+capacity within those budgets. On-demand requires an explicit selector. Local labels use `LAB_NODE_TAGS`; target
+architecture/SIMD capabilities must match worker hardware. Keep native Mac limits explicitly advisory.
 
-A node runs several jobs at once, one case per two physical cores across all of them; each job stays within its own
-`parallel`. Profile and measurement jobs get a node to themselves. An on-demand node runs queued profiles first and,
-unless `onDemand=true` or started by hand, nothing else, retiring once idle.
+The old cloud setup script is removed. Nomad ignores retired `aws/aws.properties` files and rejects legacy
+`/cloud/nodes` operations; operator capacity requests use expiring `/capacity/leases`. Preserve historical results
+and archive existing settings before removing old infrastructure.
