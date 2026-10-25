@@ -1251,7 +1251,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                 if (!rows.next()) return@generateSequence null
                 Schedule(
                     rows.getLong("id"), rows.getString("name"), rows.getString("ref"),
-                    Json.decodeFromString<ExperimentSpec>(rows.getString("experiment")),
+                    storedExperiment(rows.getString("experiment")),
                     rows.getInt("parallel"), rows.getInt("priority"),
                     rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
                     rows.longOrNull("checked_at"), rows.getInt("launch") == 1,
@@ -1865,7 +1865,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         Status.valueOf(rows.getString("status")), rows.getInt("cancel_requested") == 1, rows.getInt("setup_done") == 1,
         rows.getLong("created_at"), rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
         rows.getString("error"), rows.getInt("parallel"), rows.getInt("priority"), rows.getInt("paused") == 1,
-        rows.getString("experiment")?.let { Json.decodeFromString<ExperimentSpec>(it) },
+        rows.getString("experiment")?.let(::storedExperiment),
         runMs = rows.getLong("run_ms"),
         runningSince = rows.longOrNull("running_since"),
         local = rows.getInt("local") == 1,
