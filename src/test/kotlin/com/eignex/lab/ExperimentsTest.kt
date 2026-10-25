@@ -584,12 +584,11 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `a profile job names a klause main and no problems, configs, seeds or repeats`() {
+    fun `a profile job names an Eignex main and no problems configs seeds or repeats`() {
         val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.klause.bench.profile.Timing", listOf("a=1")), description = "d")
 
         Experiments.validate(profile, maxParallel = 4)
-        for (main in listOf("java.lang.Runtime", "com.eignex.klause.bench.target.BenchCli", "com.eignex.klause.bench.profile",
-            "com.eignex.klause.bench.profile.X; rm -rf /", "com.eignex.klause.bench.profile.a.B")) {
+        for (main in listOf("java.lang.Runtime", "com.eignex", "com.eignex.klause.bench.profile.X; rm -rf /", "com.eignex.bad-name.Main")) {
             assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main)), maxParallel = 4) }
         }
         assertFailsWith<IllegalArgumentException> {

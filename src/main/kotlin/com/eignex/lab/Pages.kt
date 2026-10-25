@@ -87,6 +87,7 @@ internal fun jobPage(
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
+    append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
     append("<dt>created</dt><dd>${ago(job.createdAt)}</dd>")
@@ -991,9 +992,12 @@ internal fun referencesPage(
 private fun singleCaseSection(config: Config, job: Job, spec: ExperimentSpec): String = buildString {
     val profile = spec.profile
     if (profile != null) {
-        append("<h2>Profile</h2><p>Runs <code>${esc(profile.main)}</code>")
+        append("<h2>Profile</h2><p>Runs <code>${esc(profile.script ?: profile.main)}</code>")
         if (profile.args.isNotEmpty()) append(" with <code>${esc(profile.args.joinToString(" "))}</code>")
-        append(" from the build at the job's commit, recording JFR to <code>profile.jfr</code> in <code>${"$"}OUT</code>.</p>")
+        append(" from <code>${esc(spec.repository)}</code> at the job's commit")
+        if (profile.script == null) append(", recording JFR to <code>profile.jfr</code> in <code>${"$"}OUT</code>")
+        else append("; its output files are kept in <code>${"$"}OUT</code>")
+        append(".</p>")
         append("<p>Time limit: ${esc(Experiments.profileLimitText(spec))} (${Experiments.duration(Experiments.PROFILE_TIMEOUT_MS)} unless the spec's ")
         append("<code>timeout</code> says, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}); at it the main gets SIGTERM, and SIGKILL ${Experiments.STOP_GRACE_SEC} s later if still running.</p>")
         Experiments.profileRunTimeoutSec(profile)?.let { append("<p>Whole-job active-time limit: $it seconds, including setup and cleanup.</p>") }
@@ -1789,7 +1793,7 @@ private fun refText(config: Config, job: Job): String {
     val sha = job.sha ?: job.ref.takeIf { isSha }
     val commit = sha?.let { full ->
         val short = full.take(9)
-        commitUrl(config.repoUrl, full)?.let { "<a href=\"$it\" title=\"$full\">$short</a>" } ?: short
+        commitUrl(Repositories.url(job.experiment?.repository ?: Repositories.DEFAULT), full)?.let { "<a href=\"$it\" title=\"$full\">$short</a>" } ?: short
     }
     return "<code>" + listOfNotNull(esc(job.ref).takeUnless { isSha }, commit).joinToString(" ") + "</code>"
 }

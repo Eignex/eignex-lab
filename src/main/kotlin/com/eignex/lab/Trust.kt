@@ -31,12 +31,25 @@ class Trust(
     private val github: (String) -> String,
 ) {
     private val verified: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    @Volatile private var repositoryCheckedAt: Long = 0
 
     /** The repository's `owner/name`, from its GitHub URL; null for another repository, where only `main` runs. */
     private val slug: String? = Regex("github\\.com[/:]([^/]+/[^/]+?)(\\.git)?/?$").find(repoUrl)?.groupValues?.get(1)
 
+    /** Confirm GitHub still owns this slug; transferred repositories and redirects fail closed. */
+    fun requireRepository(refresh: Boolean = false) {
+        val repository = slug ?: return
+        Repositories.requireAllowed(repository)
+        if (!refresh && System.currentTimeMillis() - repositoryCheckedAt < BRANCH_TTL_MS) return
+        val actual = Json.parseToJsonElement(github("/repos/$repository")) as JsonObject
+        if (actual["full_name"]?.jsonPrimitive?.content?.equals(repository, ignoreCase = true) != true)
+            throw UntrustedCommit("repository $repository is no longer owned at that Eignex slug")
+        repositoryCheckedAt = System.currentTimeMillis()
+    }
+
     /** Fails with [UntrustedCommit] unless [sha] is on `main` or on a branch only trusted users pushed to. */
     fun requireCommit(sha: String, ref: String) {
+        requireRepository()
         if (sha in verified) return
         if (git(listOf("merge-base", "--is-ancestor", sha, MAIN)).first == 0) {
             verified += sha
@@ -58,6 +71,7 @@ class Trust(
 
     /** Fails with [UntrustedCommit] when [branch], other than `main`, had a push by anyone but a trusted user. */
     fun requireBranch(branch: String) {
+        requireRepository()
         if (branch == MAIN) return
         val who = untrustedPushers(branch)
         if (who.isNotEmpty()) {

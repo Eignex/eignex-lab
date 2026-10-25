@@ -30,7 +30,7 @@ class CancelTest {
             updateCheckSec = 0,
         )
         val store = Store(config.dataDir.createDirectories().resolve("lab.db"))
-        val runner = Runner(config, store)
+        val runner = Runner(config, store, sourceUrl = { repo.toString() })
         val id: Long
 
         init {

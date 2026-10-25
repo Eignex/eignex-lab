@@ -208,12 +208,16 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 
 ### Profile jobs
 
-A profile job runs one `main` of klause's build, once, at a commit: for a measurement the experiments cannot express,
-such as timing a component on captured inputs. It is not for running the build's tests, lint or other gates: CI runs
-those on every push. The lab runs no shell scripts or commands a job supplies; the code a profile job runs is the
-class it names, from the commit it names, which must pass the trust check below. Instead of `problems` and arms, its
-spec names a class in `com.eignex.klause.bench.profile` (klause-bench's package for them) and its arguments (`profile`), and `base` gives the commit (`ref`), the
-time it may take (`timeout` in ms: **10 minutes by default, at most 2 hours**) and its cores (`processors`):
+A profile job runs a committed JVM main or executable from an Eignex repository, once, at a commit. It is for
+measurements the solver experiments cannot express, rather than tests or lint gates. `repository` is a GitHub slug
+such as `Eignex/koblas`, defaulting to `Eignex/klause`. Only `Eignex/<name>` is accepted: arbitrary owners, Git URLs,
+SSH remotes and local paths are refused. The runner also checks GitHub's repository identity before building, so a
+slug transferred outside Eignex cannot run through a redirect. The existing trusted-pusher check applies separately
+to each repository and commit.
+
+A JVM profile names `profile.main`, a class under `com.eignex`, plus literal `args`. `base` gives its commit (`ref`),
+time limit (`timeout` in ms: **10 minutes by default, at most 2 hours**) and cores (`processors`). Existing Klause
+profiles keep their bench classpath and CLI/bench build by default:
 
 ```json
 {
@@ -224,14 +228,80 @@ time it may take (`timeout` in ms: **10 minutes by default, at most 2 hours**) a
 }
 ```
 
-The lab builds the commit as for an experiment (on a cloud node, from the build cache when it holds it) and runs the class on
-the bench's classpath with each argument passed as it is, no shell between, under a JFR recording written to
+The lab builds the commit and runs the class on its classpath with each argument passed literally, under a JFR recording written to
 `$OUT/profile.jfr`. `$OUT` is a directory whose files are kept with the job; the corpus cache is `$KLAUSE_CORPUS`, and
 the built CLI and bench are `$KLAUSE_CLI` and `$KLAUSE_BENCH`, for the class to read. Its stdout, stderr, exit and
 `$OUT` come back to the job directory (from a cloud node as well), read with `lab cat`, `lab files` and `lab fetch` and listed on
 the job page. From a cloud node, at most 1 GiB of `$OUT` comes back, smallest files first; the rest are listed with their sizes
 in `$OUT/omitted.tsv` and are lost with the instance, so a profile writes summaries rather than raw dumps. It queues, pauses, cancels and retries as an experiment does, and goes
 local first like every job: the local machine when it is free, else an on-demand cloud node. Locally it runs alone, as every job does.
+
+For another repository, give its preparation tasks in `profile.buildTasks` and its repository-relative runtime
+entries in `profile.classpath`. A classpath entry can name a classes directory, a jar, or a directory ending in a
+jar wildcard. `profile.jvmArgs` adds JVM options. The tasks run during setup, before measurement; no Klause modules
+or provenance commands are added. For example, the lab can profile its own startup check:
+
+```json
+{
+  "name": "lab-startup",
+  "description": "Record JFR for the lab startup host check",
+  "repository": "Eignex/eignex-lab",
+  "base": {"ref": "main"},
+  "profile": {
+    "main": "com.eignex.lab.MainKt",
+    "args": ["check"],
+    "buildTasks": ["installDist"],
+    "classpath": ["build/install/eignex-lab/lib/*"]
+  }
+}
+```
+
+The equivalent client accepts repeated `--build` and `--classpath` options before the existing positional arguments:
+
+```bash
+deploy/lab profile --repo Eignex/eignex-lab --build installDist \
+  --classpath 'build/install/eignex-lab/lib/*' \
+  com.eignex.lab.MainKt main "Record startup host check" local 600 check
+```
+
+For a repository's own capture harness, use `profile.script` instead of `main`. It must name a tracked executable
+within the checkout; a symlink outside it is refused. `buildTasks` is optional for a script that builds its own
+runtimes. `$OUT`, `$LAB_REPOSITORY` and `$LAB_WORKTREE` are available to both entry points. The script controls its
+own instrumentation and child processes; the lab does not force JFR onto benchmark JVMs. `outputArgument`, such as
+`--output`, passes that flag and `$OUT/report` to a harness that publishes a report directory; an overriding copy in
+`args` is refused. There is no inline shell-command field. Top-level legacy `script` jobs remain retired.
+
+Local mirrors are separated by repository, with the existing Klause mirror retained. Cloud repositories and
+worktrees are also separated, and profile builds bypass the Klause-specific distribution cache. Their stdout,
+stderr and output files follow the existing profile retrieval and cancellation rules.
+
+#### Koblas benchmark captures
+
+Koblas's committed `koblas-bench/capture-report.sh` orchestrates its JVM JMH, Native and vendor arms. Its reports
+contain per-arm CSVs and `metadata.txt` with hardware, source commit, run settings and resolved libraries. The lab
+runs this harness directly and retains its report, rather than interpreting benchmark rows as solver results:
+
+```json
+{
+  "name": "koblas-dot-smoke",
+  "description": "Check the committed Koblas dot capture harness on the lab host",
+  "repository": "Eignex/koblas",
+  "base": {"ref": "main", "timeout": "1800000"},
+  "profile": {
+    "script": "koblas-bench/capture-report.sh",
+    "args": ["--smoke", "--operation", "dot", "--libraries", "openblas"],
+    "outputArgument": "--output"
+  }
+}
+```
+
+Submit a capture with `deploy/lab koblas main "Check Koblas dot capture" --smoke --operation dot --libraries openblas`.
+This shorthand uses the default ten-minute limit; use a JSON spec to request a longer capture. The report is under
+`cases/0/out/report/` and can be read with `lab files`, `lab cat` and `lab fetch`. The harness decides which arms the
+selected revision supports. Vendor libraries and Native toolchains must be available on the execution host; the
+lab does not install them or carry a prebuilt Native executable between architectures. See Koblas's committed
+`koblas-bench/README.md` for the platform requirements and measurement conventions. A smoke run verifies the path;
+it is not performance evidence.
 
 Every profile job is time-boxed. With no `timeout` it gets 10 minutes (`lab profile` sends none unless given its
 `timeout-sec`); a `timeout` over 2 hours is cut to 2 hours, which the job log, the job page and the submit response

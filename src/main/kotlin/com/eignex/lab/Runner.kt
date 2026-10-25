@@ -57,6 +57,8 @@ class Runner(
     },
     /** The self-updater; null builds the lab's own from the config. A test gives its own. */
     private val selfUpdater: SelfUpdater? = null,
+    /** Source transport override for isolated tests; submitted repositories are always validated first. */
+    private val sourceUrl: (String) -> String = { Repositories.source(config, it) },
 ) {
     /** Checks each finished case's solution claim with the lab's own external checkers, off the dispatch thread. */
     internal val checks = CaseChecks(store, sourceChecker, ::log)
@@ -79,12 +81,16 @@ class Runner(
     private val mirrorLock = Any()
 
     /** Which commits a job may build: checked on the mirror and against GitHub's record of who pushed what. */
-    internal val trust = Trust(
-        config.trustedUsers,
-        config.repoUrl,
-        git = { args -> synchronized(mirrorLock) { gitIn(config.mirror.toFile(), args) } },
-        github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) },
-    )
+    private val trusts = ConcurrentHashMap<String, Trust>()
+
+    private fun trust(repository: String): Trust = trusts.computeIfAbsent(repository) {
+        Repositories.requireAllowed(repository)
+        Trust(config.trustedUsers, sourceUrl(repository),
+            git = { args -> synchronized(mirrorLock) { gitIn(mirror(repository).toFile(), args) } },
+            github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
+    }
+
+    private fun mirror(repository: String) = Repositories.mirror(config, repository)
 
     private val updater by lazy {
         selfUpdater ?: SelfUpdater(
@@ -652,15 +658,20 @@ class Runner(
             // A launch asked for while the last run is still going waits for it rather than queueing a second; it stays
             // requested, so it queues on the first poll after that run ends.
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue
-            val advertised = advertised(schedule.ref)
+            val repository = schedule.experiment.repository
+            Repositories.requireAllowed(repository)
+            val mirror = mirror(repository)
+            val advertised = advertised(schedule.ref, repository)
             if (!schedule.launchRequested && advertised != null && advertised == schedule.lastSha) continue
             val fetched = runCatching {
                 withRetry(null, "schedule ${schedule.name}: fetching") {
                     synchronized(mirrorLock) {
-                        if (!config.mirror.exists()) {
-                            capture(config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+                        if (!mirror.exists()) {
+                            mirror.parent.createDirectories()
+                            capture(config.dataDir.toFile(), "git clone --mirror ${quote(sourceUrl(repository))} ${quote(mirror.toString())}")
                         }
-                        capture(config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+                        capture(mirror.toFile(), "git remote set-url origin ${quote(sourceUrl(repository))}")
+                        capture(mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
                     }
                 }
             }
@@ -672,7 +683,7 @@ class Runner(
             }
             // A ref origin no longer has is not retried: it waits for the next interval like an unmoved one.
             val sha = runCatching {
-                synchronized(mirrorLock) { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}") }
+                synchronized(mirrorLock) { capture(mirror.toFile(), "git rev-parse --verify ${quote(schedule.ref + "^{commit}")}") }
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
@@ -690,10 +701,10 @@ class Runner(
     }
 
     /** The commit origin advertises for branch or tag [ref]; null when it names neither, or origin does not answer. */
-    private fun advertised(ref: String): String? = runCatching {
+    private fun advertised(ref: String, repository: String): String? = runCatching {
         capture(
             config.dataDir.toFile(),
-            "GIT_TERMINAL_PROMPT=0 git ls-remote ${quote(config.repoUrl)} ${quote("refs/heads/$ref")} ${quote("refs/tags/$ref")}",
+            "GIT_TERMINAL_PROMPT=0 git ls-remote ${quote(sourceUrl(repository))} ${quote("refs/heads/$ref")} ${quote("refs/tags/$ref")}",
         )
     }.getOrNull()?.lineSequence()?.map { it.substringBefore('\t').trim() }?.firstOrNull { SHA.matches(it) }
 
@@ -705,6 +716,7 @@ class Runner(
      */
     private fun setupExperiment(job: Job, dir: Path): String {
         val spec = checkNotNull(job.experiment)
+        val mirror = mirror(spec.repository)
         val log = dir.resolve("setup.log").toFile()
         log.writeText("")
         val (arms, shas) = resolveArms(job, spec, log)
@@ -718,15 +730,17 @@ class Runner(
                     // What a failed try left would make the next one refuse the path.
                     removeTree(path)
                     path.parent.createDirectories()
-                    sh(job.id, log, config.mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
+                    sh(job.id, log, mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
                 }
             }
-            linkShared(path)
-            withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
+            if (spec.repository == Repositories.DEFAULT) linkShared(path)
+            val tasks = spec.profile?.let { ProfileRuns.buildTasks(spec.repository, it) }
+                ?: klauseBuildTasks(referenceOnly).split(' ')
+            if (tasks.isNotEmpty()) withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
                 val start = log.length()
                 try {
                     sh(job.id, log, path.toFile(),
-                        "./gradlew ${klauseBuildTasks(referenceOnly)} --max-workers=${config.gradleWorkers} -q" +
+                        "./gradlew ${tasks.joinToString(" ", transform = ::quote)} --max-workers=${config.gradleWorkers} -q" +
                             if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
                 } catch (e: Exception) {
                     if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
@@ -738,7 +752,7 @@ class Runner(
                 // The measurement launcher goes in before provenance describes the installed build, as on a node.
                 if (spec.measuresCli) sh(job.id, log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
                 // The manifest describes the CLI and bench a Klause case runs; a reference case runs neither.
-                if (!referenceOnly) sh(job.id, log, path.toFile(), Experiments.captureProvenance(path.toString()))
+                if (!referenceOnly && !spec.isProfile) sh(job.id, log, path.toFile(), Experiments.captureProvenance(path.toString()))
             }
         }
         if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
@@ -759,11 +773,13 @@ class Runner(
     internal fun resolveArms(job: Job, spec: ExperimentSpec, log: File): Pair<List<Arm>, Map<String, String>> {
         val planned = store.arms(job.id)
         val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
-        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(job.id, log) } }
+        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(job.id, log, spec.repository) } }
         val shas = synchronized(mirrorLock) {
-            planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith(::resolve) }
+            planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith { resolve(it, spec.repository) } }
         }
         // Before anything is built: a job runs only code a trusted user pushed ([Trust]).
+        val trust = trust(spec.repository)
+        withRetry(job.id, "checking repository ownership") { trust.requireRepository(refresh = true) }
         for ((ref, sha) in shas) withRetry(job.id, "checking who pushed $ref") { trust.requireCommit(sha, ref) }
         return arms to shas
     }
@@ -891,7 +907,7 @@ class Runner(
     /** The command line of one case of [spec] on [host], in [worktree]: a profile's main, or a solve of [problem]. */
     private fun caseCommand(spec: ExperimentSpec, arm: Arm, problem: Problem, seed: Long?, index: Int, worktree: String, host: ExecutionHost): String {
         val profile = spec.profile
-        return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus, arm.debug)
+        return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus, arm.debug, spec.repository)
         else if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, seed, index)
         else Experiments.command(worktree, problem, arm, seed, index, host.corpus)
     }
@@ -1118,15 +1134,20 @@ class Runner(
         store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$jobId")
     }
 
-    private fun fetchMirror(jobId: Long, log: File) {
-        if (!config.mirror.exists()) {
-            sh(jobId, log, config.dataDir.toFile(), "git clone --mirror ${quote(config.repoUrl)} ${quote(config.mirror.toString())}")
+    private fun fetchMirror(jobId: Long, log: File, repository: String) {
+        val mirror = mirror(repository)
+        val source = sourceUrl(repository)
+        if (!mirror.exists()) {
+            mirror.parent.createDirectories()
+            sh(jobId, log, config.dataDir.toFile(), "git clone --mirror ${quote(source)} ${quote(mirror.toString())}")
         }
-        sh(jobId, log, config.mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
+        // Do not inherit a changed remote from an old mirror or another job.
+        sh(jobId, log, mirror.toFile(), "git remote set-url origin ${quote(source)}")
+        sh(jobId, log, mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
     }
 
-    private fun resolve(ref: String): String =
-        runCatching { capture(config.mirror.toFile(), "git rev-parse --verify ${quote(ref + "^{commit}")}") }
+    private fun resolve(ref: String, repository: String): String =
+        runCatching { capture(mirror(repository).toFile(), "git rev-parse --verify ${quote(ref + "^{commit}")}") }
             .getOrElse { error("unknown ref: $ref (not on origin; is it pushed?)") }
 
     /**
@@ -1318,9 +1339,12 @@ class Runner(
             if (link.isSymbolicLink()) Files.delete(link)
         }
         synchronized(mirrorLock) {
-            if (config.mirror.exists()) {
-                runCatching { capture(config.mirror.toFile(), "git worktree remove --force ${quote(path.toString())}") }
-                runCatching { capture(config.mirror.toFile(), "git worktree prune") }
+            if (path.resolve(".git").exists()) {
+                runCatching {
+                    val common = capture(path.toFile(), "git rev-parse --path-format=absolute --git-common-dir")
+                    capture(File(common), "git worktree remove --force ${quote(path.toString())}")
+                    capture(File(common), "git worktree prune")
+                }
             }
         }
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) deleteTree(path)

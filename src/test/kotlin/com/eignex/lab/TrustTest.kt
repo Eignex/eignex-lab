@@ -23,6 +23,7 @@ class TrustTest {
             }
         },
         github = { path ->
+            if (path == "/repos/Eignex/klause") return@Trust "{\"full_name\":\"Eignex/klause\"}"
             calls += path
             val branch = java.net.URLDecoder.decode(Regex("ref=([^&]+)").find(path)!!.groupValues[1], Charsets.UTF_8).removePrefix("refs/heads/")
             val page = Regex("page=(\\d+)$").find(path)!!.groupValues[1].toInt()
@@ -32,7 +33,7 @@ class TrustTest {
     )
 
     @Test
-    fun `a commit on main runs without asking GitHub`() {
+    fun `a commit on main needs no branch activity`() {
         val calls = mutableListOf<String>()
         trust(onMain = setOf("abc"), calls = calls).requireCommit("abc", "main")
         assertEquals(emptyList(), calls)
