@@ -2,6 +2,9 @@
 
 Proposed on 2026-10-25. This is an implementation plan; no runtime or infrastructure changes have been made.
 
+Revised after PR #127: maximize cloud utilization by sharing nodes across experiments, profiles, measurements, and
+builds within explicit CPU and memory budgets. Recording measurements does not automatically require a whole node.
+
 ## Outcome and decisions
 
 Run experiment execution through Nomad while retaining native macOS solves, portable cloud workers, and recovery
@@ -14,10 +17,11 @@ persistent state, TLS, ACLs, and an explicit single-server configuration; never 
 Back up the Nomad server's state alongside the lab database. Additional servers, if later needed, belong together
 on a low-latency network, rather than splitting a quorum between the Mac and clouds.
 
-Use native process execution on both platforms initially: `raw_exec` on macOS and an isolated Linux process driver
-where the packaged workload permits it. Do not require a container registry or a VM for native Mac solves.
-Existing reference solvers may continue to use their own Docker runtime. Verify driver compatibility in step 0;
-changing Linux driver or packaging must be recorded as an execution-environment change.
+Use `raw_exec` on macOS so local solves remain native. Use the Docker task driver for Linux cloud workers with hard
+CPU limits and bounded memory, covering the worker and all its child processes. Cloud worker images are portable
+OCI artifacts with immutable identities and a configurable registry; they must not depend on ECR or another cloud's
+registry API. Existing local reference solvers may continue to use their own Docker runtime. Verify compatibility
+in step 0 and record driver/packaging differences as execution-environment changes.
 
 Nomad owns process placement and allocation lifecycle. The lab retains admission by experiment priority, placement
 exceptions, pairing, and between-iteration pause/yield decisions. This preserves the lab's benchmark semantics
@@ -68,12 +72,13 @@ prepares its inputs once, pulls complete iterations belonging only to that exper
 is exhausted, the lab requests a yield, or its node drains. Several sessions can participate in one experiment.
 The session cannot choose another experiment, provision machines, or mutate the database directly.
 
-This granularity avoids a Nomad submission and full toolchain startup for every short solve. It also preserves
-the existing one-active-experiment-per-host model and the existing per-host case parallel limit. Nomad sessions
-reserve the configured host benchmark budget, leaving capacity for the OS and supervision. Fixed capacity pools
-initially make the Linux reservation predictable. On the Mac, reserve the lab budget and use a local execution
-lock as an additional guard against a concurrent legacy runner. Validate that a second measured session cannot
-start on the same host. Do not assume Nomad CPU MHz, vCPUs, physical cores, or Mac performance cores are equivalent.
+This granularity avoids a Nomad submission and full toolchain startup for every short solve. Multiple cloud sessions
+from different experiments share a node whenever their budgets fit. Size each session for its runnable work and
+parallel limit, rather than reserving a whole host by default; use smaller sessions to fill remaining capacity.
+Preserve the per-experiment, per-host case parallel cap across sessions. Profiles and measurement sessions use the
+same resource-based admission as ordinary work and do not trigger whole-node reservations or draining other jobs.
+Keep the existing one-local-experiment policy on the Mac initially and a local ownership lock against a concurrent
+legacy runner. Do not assume Nomad CPU MHz, vCPUs, physical cores, or Mac performance cores are equivalent.
 
 The worker preserves intra-iteration order/concurrency, JVM flags, timeouts, and measurement wrappers. If an
 iteration is interrupted, discard its partial comparison and rerun all its arms on the replacement host. Completed
@@ -84,6 +89,41 @@ Use deterministic job IDs such as `lab-<experiment>-<execution-class>-<session>-
 API. Persist submission intent before calling Nomad. A reconciler can discover whether an ambiguous registration
 succeeded and retry the same identity. Start with ordinary generated job specifications; parameterized dispatch
 is unnecessary and introduces distinct dispatch identities and payload limits.
+
+## Resource budgets and sharing
+
+Define a provider-neutral session budget in logical vCPUs, MiB of memory, and maximum active cases. Include solver
+threads, benchmark/worker JVMs, JIT, GC, profiling overhead, and any preparation running in that allocation. Keep a
+separate node reserve for the OS, Nomad, artifact transfer, and supervision. All active reservations must fit the
+remaining node capacity; initially disable memory oversubscription. Translate the vCPU budget to Nomad's CPU units
+using the node's fingerprinted topology/frequency, and verify the resulting runtime limit instead of assuming a
+fixed MHz value per vCPU. Record the budget, actual CPU quota/period, memory ceiling, and enforcement mechanism.
+
+On Linux, set the Docker task's `cpu_hard_limit = true` and a finite memory ceiling corresponding to its reservation.
+Inspect the resulting cgroup CPU and memory limits and test the full process tree under load. Nomad's ordinary
+`resources.cpu` is a relative share and can burst; a scheduler reservation, `nice`, JVM `ActiveProcessorCount`, or a
+Gradle worker count alone does not establish a hard CPU ceiling. See
+[Nomad CPU behavior](https://developer.hashicorp.com/nomad/docs/architecture/cpu) and the
+[Docker task settings](https://developer.hashicorp.com/nomad/docs/job-declare/task-driver/docker).
+
+The cap applies to the sum of all concurrent cases and helpers in a session. Choose case concurrency and JVM/thread
+settings to fit that cap; keep any desired physical-core headroom explicit in the budget. A profile or measurement
+session may use only part of a node, with ordinary work or another profile using the rest. Shared cache, memory
+bandwidth, SMT siblings, host scheduling, and CPU frequency can still affect timing. Record colocated work and
+cgroup throttling/OOM observations so comparisons describe the conditions actually measured; quotas do not make
+shared-host timing identical to isolated timing. Keep all arms of an iteration on the same host and under the same
+declared budget, while allowing background load to vary.
+
+For example, a 16-vCPU cloud node with 2 vCPUs reserved for the host can admit three 4-vCPU solve sessions and one
+2-vCPU build allocation, provided their memory budgets fit. No session grows past its CPU cap when its neighbors
+finish. If an experiment needs less than its current reservation, end or resize sessions at safe iteration
+boundaries so other queued work can use that capacity; do not create simultaneous replacement sessions that exceed
+the budget. Dynamic resizing is optional for the first cut, but right-sized shared allocations are required.
+
+Native macOS has no equivalent Linux cgroup CPU quota in this design. Keep bounded case concurrency, thread
+settings, and host admission budgets, and report enforcement as advisory native scheduling. Do not claim that a
+Nomad reservation or JVM flag hard-caps a native Mac process tree. The Linux hard-limit acceptance gate and the
+native Mac admission/cleanup gate are distinct; native Mac execution remains a requirement.
 
 ## Durable state and worker contract
 
@@ -131,7 +171,7 @@ Nomad's `raw_exec` documentation specifically notes the risk of leaking processe
 This matters because the current runner deliberately creates process sessions. Implement a host-local supervisor
 that records process identity/start time, forwards signals to the complete owned group, and cleans up after abrupt
 worker or client death. Do not kill by an unchecked reused PID. The supervisor must remain outside the worker's
-failure boundary. On Linux, verify cgroup cleanup as well as application signal forwarding. See the
+failure boundary. On Linux, verify container/cgroup cleanup as well as application signal forwarding. See the
 [raw execution driver documentation](https://developer.hashicorp.com/nomad/docs/deploy/task-driver/raw_exec).
 
 Keep the current one-local-experiment policy, `LAB_CORES`, `LAB_DEFAULT_PARALLEL`, `LAB_MAX_PARALLEL`, and reserves
@@ -146,9 +186,11 @@ Keep repository allowlisting, trusted-ref checks, immutable commit resolution, a
 Generate a portable work manifest identifying source, commits, cases, toolchain, resource budget, and artifact hashes.
 Do not send a shell command string with embedded host paths as the cross-host contract.
 
-Workers stage verified source/toolchain/build artifacts into their own cache and render paths locally. Reuse node
-caches across sessions; stage and validate extraction before making a cache entry visible. Deduplicate builds with
-locks. Preserve the current cache corruption checks and retry transfers without rerunning an already captured solve.
+Cloud worker images contain the pinned toolchain and worker; native Mac releases contain the corresponding native
+tools. Workers stage verified source/build artifacts into their own cache and render paths locally. Reuse node
+caches across sessions through bounded cache volumes; stage and validate extraction before making a cache entry
+visible. Deduplicate builds with locks. Preserve the current cache corruption checks and retry transfers without
+rerunning an already captured solve.
 Key caches by repository, full SHA, OS, architecture, toolchain/runtime identity, and build options. Source-only or
 portable JVM artifacts may be shared only when their manifest explicitly establishes that portability. JFR/profile
 launcher changes remain per attempt and cannot contaminate reusable baseline builds.
@@ -159,21 +201,32 @@ Add an optional object-storage adapter for large captures and remote caching; pr
 that adapter. S3 compatibility is one implementation, not the universal storage contract. Preserve current retained
 file paths and `lab fetch`/Files behavior through an ingestion projection.
 
-Schedule preparation outside measured intervals. On a node, do not compile another session's commits while a solve
-is measured. Bound build concurrency, cache disk usage, upload size, and retries. Report preparation, execution,
-uploading, and transfer-backoff as separate phases.
+Allow preparation and builds beside solves, profiles, and measurement jobs whenever their budgets fit. Give a build
+its own bounded allocation, or include it within its session's existing CPU and memory ceiling; do not spend the
+same reservation twice. Gradle daemons, compiler subprocesses, compression, and cache transfers must remain inside
+the owning allocation or an explicitly budgeted helper allocation. Configure Gradle workers and JVM heap within
+those limits. Lower priority can improve responsiveness but does not replace hard enforcement. Publish builds to
+the verified cache so execution sessions do not each rebuild a commit. Bound cache disk usage, upload size, and
+retries, and report preparation, execution, uploading, and transfer-backoff as separate phases. On the native Mac,
+respect its advisory host budget and report the different enforcement guarantees.
 
 ## Cloud capacity, Spot, and portability
 
 Extract the pure pressure, admission, quota, and retirement policy from `Nodes.kt`, `Estimates.kt`, and `AwsWorker`
 into a provider-independent policy. Preserve local-first behavior, launch priority floor, sustained pressure,
 cooldown, compatible hardware selection, and existing warm workers taking eligible lower-priority work.
+Carry forward PR #127's accounting for already provisioned compatible cores and its distinction between ordinary
+and profile/on-demand pools. Replace its whole-node profile/measurement exclusivity with the resource budget policy
+above. Pool purchasing restrictions remain separate from whether several sessions can share a node.
 
 Do not let every pending allocation start a cloud machine immediately. Export desired worker counts by capability
 pool, using the current estimates and policy. A small metrics collector on the Mac makes this demand available to
 Nomad Autoscaler. Feed a queue-aware/pass-through policy that can grow from zero; CPU utilization of existing nodes
 cannot bootstrap a pool with no nodes. Account for booting workers and existing allocations to avoid repeated
 launches for the same backlog. Expired coordinator metrics must not authorize growth.
+Account for free and reserved CPU/memory on partially occupied nodes, including build allocations. Do not count a
+node as full merely because one experiment runs there. Report every session/experiment on the node, its budget,
+actual usage, free capacity, and throttling/OOM observations so the migration preserves PR #127's useful visibility.
 
 Start with fixed, homogeneous pool shapes and separate architecture/market classes. Record physical cores, hardware
 threads, SIMD capabilities, memory, and effective benchmark budget. Pools may contain equivalent instance types only
@@ -231,20 +284,22 @@ Each step is a reviewable change. Runtime switches remain off until that step's 
 
 | Step | Deliverable and main code boundaries | Acceptance / exit condition |
 | --- | --- | --- |
-| 0 | Add `deploy/nomad/` sandbox configuration and pin versions. Prototype native Mac and Linux execution, private networking, cleanup, resource reservations, and session replacement. | Real Mac solve and JFR capture run without a VM. Worker/client SIGKILL leaves no solver JVM. Two measured sessions cannot overlap on one host. Allocation replacement and batch completion semantics are understood. |
+| 0 | Add `deploy/nomad/` sandbox configuration and pin versions. Prototype native Mac execution, Linux Docker hard CPU/memory limits, private networking, cleanup, shared sessions, and replacement. | Real Mac solve and JFR capture run without a VM. Worker/client SIGKILL leaves no solver JVM. Two Linux measurement sessions and a build coexist within verified runtime limits, including child processes; exceeding CPU is throttled and excess memory is bounded. Mac advisory limits are reported accurately. |
 | 1 | Add execution session/attempt/outbox tables and transactional transitions in `Store.kt`; add an `ExecutionBackend` interface and explicit per-experiment backend choice. | Existing execution remains the default. Ambiguous submission, repeated commit, generation replacement, and cancel/upload races have deterministic outcomes. Legacy and Nomad cannot own an experiment simultaneously. |
-| 2 | Extract `WorkManifest`, `IterationExecutor`, `ProcessSupervisor`, and verified cache staging from `Runner.kt`, `ExecutionHost.kt`, `CliMeasurements.kt`, `Termination.kt`, and `AwsBuildCache.kt`. Add a `worker` entry point in `Main.kt`. | The standalone worker runs a complete paired iteration and profiles from a manifest with no database or provider access. Existing termination, measurements, provenance, and cache-corruption tests still apply. |
+| 2 | Extract `WorkManifest`, `ResourceBudget`, `IterationExecutor`, `ProcessSupervisor`, and verified cache staging from `Runner.kt`, `ExecutionHost.kt`, `CliMeasurements.kt`, `Termination.kt`, and `AwsBuildCache.kt`. Add a `worker` entry point in `Main.kt` and portable cloud worker images. | The standalone worker runs a paired iteration and profiles from a manifest with no database or provider access. Concurrent case/helper use fits the session budget. Existing termination, measurements, provenance, and cache-corruption tests still apply. |
 | 3 | Add `WorkerApi.kt`, `ArtifactStore.kt`, `NomadClient.kt`, and `NomadBackend.kt`. Split planning/admission/reconciliation into a coordinator; replace `Crews` as the completion authority for Nomad work. | A real local Nomad batch session reports cases through the normal UI/API. Restarting the coordinator reattaches to its allocation and does not wipe completed work or duplicate submissions. Cancel, pause, resume, retries, volume holds, and transfer retries pass. |
 | 4 | Extend `deploy/install.sh`, `deploy/update.sh`, and `SelfUpdater.kt` for the Mac services and execution lock. Switch an explicit canary set to native Mac Nomad sessions. | Existing workload kinds pass, including ordinary runs, committed profiles, reference runs, confirmations, scheduled runs, and capture analysis. Local concurrency and priority/yield behavior match the current policy. |
-| 5 | Add provider-independent capacity configuration/metrics and `deploy/infra/aws/` plus image/bootstrap and interruption handling. Introduce Nomad Autoscaler and independent capacity expiry. | A tagged cloud-only job starts a Spot worker from zero, completes, and scales down. A forced termination halfway through a comparison reruns the entire unfinished iteration. Capacity shortages and quota failures are visible. Expiry passes while the Mac is offline. |
+| 5 | Add provider-independent capacity configuration/metrics and `deploy/infra/aws/` plus image/bootstrap and interruption handling. Introduce Nomad Autoscaler and independent capacity expiry. | A tagged cloud-only job starts a Spot worker from zero. Several experiments, including measurements and builds, fill one node before extra capacity is rented. Forced loss reruns each unfinished iteration. Capacity shortages and quota failures are visible. Idle scale-down and expiry with the Mac offline pass. |
 | 6 | Add `deploy/infra/gcp/` as a second reference adapter and a provider-neutral Linux integration environment. | The same experiment and worker run on GCP Spot, recover from forced loss, and scale down without edits to shared Kotlin execution code. Both providers enforce the same purchasing and expiry rules. |
-| 7 | Migrate cloud reporting and manual operations in `Pages.kt`, `Waiting.kt`, `Api.kt`, `ManualLaunch.kt`, and `deploy/lab`. Roll out Nomad by workload class and execution pool. | Placement, waiting reasons, host contributions, logs, captures, and `lab wait`/fetch/retry/cancel remain usable. Nomad/allocation identities are available for diagnosis. Operator capacity requests respect finite limits and expire. |
+| 7 | Migrate cloud reporting and manual operations in `Pages.kt`, `Waiting.kt`, `Api.kt`, `ManualLaunch.kt`, and `deploy/lab`. Roll out Nomad by workload class and execution pool. | Placement, waiting reasons, host contributions, logs, captures, and `lab wait`/fetch/retry/cancel remain usable. Show all experiments on a node, CPU/memory budgets, available capacity, throttling, and allocation identities. Operator capacity requests respect finite limits and expire. |
 | 8 | Make Nomad the default, then remove legacy AWS execution after a stable observation period. Update `deploy/SETUP.md` and deployment examples. | Remove `AwsWorker`, `AwsHost`, SSH execution/transfer logic, pool adoption state, and provider shell commands from shared execution code. Retain domain pressure/placement policy, central checks, and necessary native process supervision. |
 
 Proposed new Kotlin files live under `src/main/kotlin/com/eignex/lab/`; names above describe boundaries and are not
 a requirement to introduce one class per file. Keep the existing source trusted/restricted behavior throughout.
 Extend the existing `SharedJobsTest`, `CancelTest`, `PlacementTest`, `NodeTagsTest`, `CliMeasurementsTest`,
 `TerminationTest`, `VolumesTest`, and `AwsBuildCacheTest` contracts rather than replacing them with mocks of Nomad.
+Extend PR #127's multi-job capacity/fairness coverage and replace its exclusivity expectations for the Nomad backend
+with hard-budget sharing checks. Legacy-backend behavior remains unchanged until its workload is migrated.
 Add focused backend/API tests plus real scheduler and OS integration runs for behavior that mocks cannot establish.
 
 ## Cutover and rollback
@@ -289,6 +344,12 @@ run again after reconciliation. A Mac server outage prevents scheduling; provide
 10. Mac offline past the capacity lease: provider desired capacity reaches zero and replacement billing does not continue.
 11. AWS and GCP Spot execute the same manifest without provider changes to the worker or experiment spec.
 12. Rollback with completed and in-flight work; no simultaneous legacy/Nomad ownership and no mixed-attempt comparisons.
+13. Multiple experiments, profiles, measurements, and a build share one Linux node within CPU and memory budgets;
+    no automatic whole-node exclusivity or measurement-driven drain occurs.
+14. CPU saturation, idle neighbors, forked JVM/compiler children, and memory exhaustion demonstrate actual cgroup
+    enforcement. Record throttling and resource-limit failures separately from solver verdicts.
+15. A partly occupied node admits additional fitting work; a workload larger than remaining CPU or memory waits or
+    contributes to new capacity demand. Per-experiment/per-host parallel caps still hold across sessions.
 
 Live Mac and cloud checks are explicit migration gates, not work claimed complete by writing this plan. Run targeted
 local tests for each implementation change and use GitHub CI for the full repository gate. This planning-only
@@ -302,6 +363,8 @@ change requires no solver execution, infrastructure provisioning, or full Gradle
   [allocation rescheduling](https://developer.hashicorp.com/nomad/docs/job-specification/reschedule), and
   [disconnect/reconnect policy](https://developer.hashicorp.com/nomad/docs/job-specification/disconnect).
 - [Nomad resource requests](https://developer.hashicorp.com/nomad/docs/job-specification/resources).
+- [Nomad CPU shares, core accounting, and hard limits](https://developer.hashicorp.com/nomad/docs/architecture/cpu).
+- [Docker task CPU and memory settings](https://developer.hashicorp.com/nomad/docs/job-declare/task-driver/docker).
 - [Nomad on-demand batch autoscaling example](https://developer.hashicorp.com/nomad/tutorials/autoscaler/horizontal-cluster-scaling-on-demand-batch).
 - [Autoscaler target adapters](https://developer.hashicorp.com/nomad/tools/autoscaling/plugins/target).
 - [AWS Auto Scaling desired capacity and replacement](https://docs.aws.amazon.com/autoscaling/ec2/userguide/asg-capacity-limits.html).
