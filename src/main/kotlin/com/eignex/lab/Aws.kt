@@ -19,7 +19,7 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 
 /**
- * Where the lab runs experiments on AWS, read from `$LAB_DATA/aws/aws.properties` (written by `deploy/aws-setup.sh`),
+ * Retired executor configuration, read from `$LAB_DATA/aws/aws.properties` only with the legacy backend,
  * so no service needs reinstalling to change it. The CLI's credentials are a named [profile] in `~/.aws/credentials`.
  */
 data class AwsConfig(

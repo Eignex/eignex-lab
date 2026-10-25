@@ -136,8 +136,8 @@ data class Config(
     val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
     /** Colima's Lima directory on the host, which holds its VM's disks: `_disks` with the data disk Docker writes to. */
     val colimaDisks: Path get() = Path(System.getProperty("user.home"), ".colima", "_lima")
-    /** The AWS settings, when `$LAB_DATA/aws/aws.properties` exists: experiments with `"host": "aws"` need them. */
-    val aws: AwsConfig? get() = AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties"))
+    /** Retired executor settings are never activated by a Nomad installation, even if an old file remains. */
+    val aws: AwsConfig? get() = if (executionBackend == ExecutionBackendKind.LEGACY) AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) else null
     fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
 
     /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or

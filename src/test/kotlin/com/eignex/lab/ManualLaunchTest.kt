@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import io.ktor.client.request.header
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -149,6 +150,24 @@ class ManualLaunchTest {
             assertEquals(HttpStatusCode.Conflict, refused.status)
             assertContains(refused.bodyAsText(), "the lab has no cloud settings")
         }
+    }
+
+    @Test
+    fun `Nomad cannot reactivate legacy cloud launch settings`() {
+        val config = lab().copy(executionBackend = ExecutionBackendKind.NOMAD)
+        assertTrue(config.dataDir.resolve("aws/aws.properties").exists())
+        assertNull(config.aws)
+        testApplication {
+            application { api(config, Store(config.database), host) }
+            val launch = client.post("/cloud/nodes")
+            assertEquals(HttpStatusCode.Conflict, launch.status)
+            assertContains(launch.bodyAsText(), "/capacity/leases")
+            assertEquals(HttpStatusCode.Conflict, client.get("/cloud/nodes").status)
+        }
+        assertFalse(ManualLaunch.file(config).exists())
+        val summary = workSummary(config, emptyList(), emptyMap())
+        assertContains(summary, "/capacity/view")
+        assertFalse("Start a node" in summary)
     }
 
     @Test
