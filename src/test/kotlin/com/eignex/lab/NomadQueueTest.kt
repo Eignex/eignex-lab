@@ -37,7 +37,7 @@ class NomadQueueTest {
         listOf(target(NomadPlatform.MAC, "native"), target(NomadPlatform.LINUX, "portable-spot")),
         ResourceBudget(1000, 512), caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 4)
     private val file = root.resolve("queue.json").also { Files.writeString(it, Json.encodeToString(settings)) }
-    private val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), minFreeBytes = 0, solveJavaOpts = "-Xmx256m",
+    private val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), minFreeBytes = 0, solveJavaOpts = "-Xmx256m", cores = 8,
         cpuCapabilities = CpuCapabilities("arm64", setOf("neon"), "fixture", true), executionBackend = ExecutionBackendKind.NOMAD, nomadQueueSettings = file)
     private var publications = 0
     private var completions = 0
