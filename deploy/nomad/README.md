@@ -1,8 +1,9 @@
-# Nomad execution prototype
+# Nomad execution
 
-This is the first implementation slice of [the migration plan](../NOMAD-MIGRATION.md). It renders real Nomad batch
-sessions and checks Linux CPU/memory enforcement and sharing in a separate single-node cluster. It does not start
-the lab API/runner, open `lab.db`, change lab placement, or provision cloud infrastructure.
+Production uses Nomad for ordinary submissions, schedules and confirmations, with native Mac execution and Linux
+Spot workers. See [the migration status](../NOMAD-MIGRATION.md) for verified canaries and outstanding removal gates.
+The sandbox commands below create an isolated cluster; managed services and automatic admission are documented
+later in this runbook.
 
 The reusable Kotlin pieces are `ResourceBudget`, `NomadCpuCapacity`, and `NomadBatchJob`. The operator-only command
 `eignex-lab nomad-spec <session.json>` validates a session and prints native Nomad Job JSON. It does not submit it.
@@ -58,10 +59,8 @@ The Mac starts the native Nomad agent as the current user, with the same loopbac
 VM. The probe runs native Python processes and saves `native-verification.json`. Its CPU/memory settings are
 scheduling budgets, not hard quotas. Native execution still needs the host's usual tooling and permissions.
 
-Step 0 remains open until real native solver/JFR runs, the host-local process supervisor, abrupt worker/client-death
-cleanup, and session replacement/reconciliation have been verified. A successful synthetic probe does not satisfy
-those gates. Durable attempts and the production worker/backend integration follow this prototype; legacy lab
-execution remains the only active backend.
+Synthetic probes complement real native solver/JFR runs and live Spot acceptance. They exercise isolated service
+failure and replacement without changing production jobs. Consult the migration status for production evidence.
 
 ## Render a session
 
@@ -125,11 +124,11 @@ The worker listener defaults to loopback, separately from the operator API. A no
 `privateNetwork=true` and an authenticated encrypted private route, or an HTTPS proxy terminating on loopback.
 HTTP workers outside loopback must explicitly set `LAB_WORKER_PRIVATE_TRANSPORT=true` for that private route.
 
-Session admission is currently an internal/operator operation, not a normal experiment submission selector.
+Session admission is automatic when the Nomad backend and queue settings are enabled.
 `NomadBackend.enqueue` validates the manifest against the stored experiment, arm commits and case plan, then
-persists the session, credential hash, manifest and Nomad submission intent together. Native/cloud preparation,
-normal queue admission and the canary operator workflow follow in the stack. Do not manually edit a running job's
-backend column. Existing production submissions still select legacy execution.
+persists the session, credential hash, manifest and Nomad submission intent together. Native/cloud preparation and
+normal queue admission use this protocol. Do not manually edit a running job's
+backend column. Production submissions select Nomad through the explicit backend setting.
 
 Every `/worker/v1/sessions/<id>/` request carries its scoped session token, allocation ID and a signed Nomad workload
 identity. Named identities have audience `eignex-lab-worker` and a ten-minute lifetime. Their renewable file lives at
@@ -208,9 +207,8 @@ explicit `--restart-agents` maintenance option after draining native work. In-fl
 release paths. Release pruning is disabled after native Nomad service installation; remove old worker releases only
 after reconciliation proves no allocation or process uses them. Keep server snapshots and manifests needed for rollback.
 
-The managed service/ownership tests do not establish real solver, reference, confirmation, whole-run profile and
-capture-analysis canary acceptance. Queue/source-preparation admission remains the next rollout boundary; these
-gates must pass before changing the production backend default or removing legacy execution.
+Managed service/ownership tests complement live solver acceptance. Reference, confirmation, whole-run profile,
+capture-analysis and interruption canaries must pass before final legacy execution removal.
 
 ## Provider-neutral capacity and operations
 
@@ -265,15 +263,16 @@ Source export must itself run in the budgeted preparation/helper allocation so G
 charged to that allocation. The publication utility does not start an unbudgeted coordinator-side build.
 Additional data inputs live under `lab-inputs/` and cannot replace committed code. Workers fetch the exact approved
 ref from that local bundle and check out the full SHA. Git state is retained for committed profile entry points
-that use `git ls-files`; no external Git source or provider SDK runs in this build path. Source tree symlinks are
-rejected before build/publication. Source inputs are still supplied through the private artifact service.
+that use `git ls-files`; no external Git source or provider SDK runs in this build path. Git symlinks are checked out
+as ordinary blobs, preserving their committed content without following host filesystem links. Source inputs are
+supplied through the private artifact service.
 
 Prepared builds are atomically published with a checksum inventory. Cache identity includes the source/archive,
 full SHA, OS/architecture, declared toolchain/build recipe, actual JDK identity and effective build budget. A lock
 prevents duplicate builds within the cache; corrupted or incomplete output rebuilds before execution. Every
 iteration gets a private copy, keeping measurements and profiles from changing the baseline. Caches currently
-belong to the allocation; shared bounded host cache volumes and normal queue preparation/admission remain separate
-migration work. The legacy runner remains the submission default.
+belong to the allocation; shared bounded host cache volumes remain optional follow-up work. Normal queue
+preparation/admission runs through the coordinator.
 
 A failed source build reports its bounded diagnostic tail through its authenticated attempt. The coordinator
 fences all sibling sessions and records a permanent `source-build` failure, rather than repeatedly treating a

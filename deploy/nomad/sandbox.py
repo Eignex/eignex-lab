@@ -92,6 +92,7 @@ class Sandbox:
 
     def config(self):
         linux = platform.system() == "Linux"
+        (self.state / "status").mkdir(exist_ok=True)
         # JSON configuration avoids interpolating paths into HCL strings or shell commands.
         return {
             "name": self.name, "data_dir": str(self.state / "data"), "datacenter": "lab-prototype",
@@ -101,6 +102,7 @@ class Sandbox:
                           "serf": f"127.0.0.1:{self.port + 2}"},
             "server": {"enabled": True, "bootstrap_expect": 1},
             "client": {"enabled": True, "node_class": "lab-prototype-linux" if linux else "lab-prototype-mac",
+                       "host_volume": [{"lab-status": {"path": str(self.state / "status"), "read_only": True}}],
                        "servers": [f"127.0.0.1:{self.port + 1}"], "reserved": {"cpu": 500, "memory": 256}},
             "acl": {"enabled": True},
             "tls": {"http": True, "rpc": True, "verify_server_hostname": True, "verify_https_client": True,

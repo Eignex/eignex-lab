@@ -1,6 +1,16 @@
 # Nomad migration plan
 
-Proposed on 2026-10-25. Implementation is in progress; production execution has not been switched to Nomad.
+Proposed on 2026-10-25. Production submissions switched to Nomad on 2026-10-26.
+
+The Mac runs the persistent TLS/ACL server, native client, process supervisor, admission coordinator and capacity
+services. Native SME2 job 8364 and AWS Spot AVX512 job 8365 each solved both arms of `sporttournament06`, proved
+objective -6 and retained JFR recordings. The cloud allocation reported cgroup-v2 hard enforcement: 1 vCPU and
+4608 MiB for solving, 2 vCPUs and 4096 MiB for preparation. Native limits remain advisory.
+
+Normal API submissions, schedules and confirmations now select Nomad. The old EC2 launcher configuration and its
+IAM control policy have been archived and removed from active production configuration. The runner still hosts
+schedules, maintenance and local analysis; its remaining legacy executor code has not yet been deleted. Live
+scale-to-zero/from-zero, interruption recovery and a stable rollout remain acceptance work.
 
 Revised after PR #127: maximize cloud utilization by sharing nodes across experiments, profiles, measurements, and
 builds within explicit CPU and memory budgets. Recording measurements does not automatically require a whole node.
@@ -20,9 +30,9 @@ Capacity collection accounts for build/solve demand, booting workers, shared res
 limits, fresh signed grants and independent expiry. AWS and GCP Spot modules use the same worker/capacity protocol;
 source checking runs independently of reconciliation so it cannot stall fresh capacity health.
 
-Production execution remains on the legacy backend until native solver/JFR and live Spot canaries, interruption
-recovery, source checks and a stable rollout pass. Those acceptance gates, followed by final default cutover and
-legacy execution/provider removal, remain outstanding. The opt-in setup is documented in the
+Native solver/JFR and live Spot canaries have passed, and production uses the explicit Nomad backend setting.
+Interruption recovery, source checks for supported formats and a stable rollout still gate final legacy code
+removal. The setup is documented in the
 [Nomad runbook](nomad/README.md) and [provider modules](infra/README.md).
 
 ## Outcome and decisions
