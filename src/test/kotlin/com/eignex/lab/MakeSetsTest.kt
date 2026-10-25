@@ -56,7 +56,7 @@ class MakeSetsTest {
         MakeSets.draw(features, references, sets, setOf("sat", "pb"), LocalDate.of(2026, 1, 2))
 
         val sat = sets.resolve("sat.txt").readLines()
-        assertEquals("# sat: problems with the sat theme, drawn 2026-01-02 by klause-lab make-sets", sat[0])
+        assertEquals("# sat: problems with the sat theme, drawn 2026-01-02 by eignex-lab make-sets", sat[0])
         assertEquals(listOf("# easy: 8", "# medium: 11", "# hard: 1"), sat.filter { it.startsWith("# ") && ": " in it && "theme" !in it && "tiers" !in it })
         val pb = sets.resolve("pb.txt").readLines().filter { !it.startsWith("#") }
         val drawn = sat.filter { !it.startsWith("#") }

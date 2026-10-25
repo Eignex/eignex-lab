@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Client for the klause lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
+# Client for the eignex lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
 #   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab profile <main> <ref> <description> [host] [timeout-sec] [arg...]
@@ -90,7 +90,7 @@
 #   lab corpus                                               rsync the local bench corpus to the server's LAB_REMOTE_CORPUS
 #                                                            (default .cache/klause-bench/corpus; set it to the server's
 #                                                            LAB_CORPUS when that is elsewhere, an external drive say)
-# The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/klause-lab/password.
+# The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/eignex-lab/password.
 #   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
 #                                                            running cloud job (an AWS instance), through the server with the
 #                                                            lab's own key and host keys; LAB_REMOTE_JOBS is the server's
@@ -99,10 +99,10 @@ set -euo pipefail
 host="${LAB_HOST:-192.168.50.104}"
 url="${LAB_URL:-http://$host:8420}"
 # Every call carries the lab's password (HTTP Basic, no user name): LAB_PASSWORD, else the file LAB_PASSWORD_FILE,
-# ~/.config/klause-lab/password by default. It reaches curl through a private config file, never its command line.
-password="${LAB_PASSWORD:-$(cat "${LAB_PASSWORD_FILE:-$HOME/.config/klause-lab/password}" 2>/dev/null || true)}"
+# ~/.config/eignex-lab/password by default. It reaches curl through a private config file, never its command line.
+password="${LAB_PASSWORD:-$(cat "${LAB_PASSWORD_FILE:-$HOME/.config/eignex-lab/password}" 2>/dev/null || true)}"
 curl() {
-  [[ -n "$password" ]] || { echo "no lab password: set LAB_PASSWORD or put it in ~/.config/klause-lab/password" >&2; exit 2; }
+  [[ -n "$password" ]] || { echo "no lab password: set LAB_PASSWORD or put it in ~/.config/eignex-lab/password" >&2; exit 2; }
   local auth status=0
   auth="$(umask 077; mktemp)"
   printf 'user = ":%s"\n' "$password" > "$auth"
@@ -110,7 +110,7 @@ curl() {
   rm -f "$auth"
   return "$status"
 }
-data="${LAB_REMOTE_DATA:-klause-lab-data}"
+data="${LAB_REMOTE_DATA:-eignex-lab-data}"
 # The server's LAB_JOBS and LAB_CORPUS, relative to its home unless absolute, for lab ssh and lab corpus.
 remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
 remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
@@ -339,8 +339,8 @@ ssh) job="$1"; n="${2:-0}"; shift; shift || true
   remote="id=\$(sed -n '$((n + 1))p' $remote_jobs/$job/aws-instances | cut -d' ' -f1) && [ -n \"\$id\" ] && cd $data/aws || { echo 'no such running instance' >&2; exit 1; }
     region=\$(sed -n 's/^region=//p' aws.properties); profile=\$(sed -n 's/^profile=//p' aws.properties)
     ip=\$(PATH=/opt/homebrew/bin:\$PATH aws --profile \$profile --region \$region ec2 describe-instances --instance-ids \$id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-    exec ssh -i klause-lab.pem -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=accept-new -o CheckHostIP=no \
-      -o HostKeyAlias=klause-lab-\$region-\$id ubuntu@\$ip $(printf '%q ' "$@")"
+    exec ssh -i eignex-lab.pem -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=accept-new -o CheckHostIP=no \
+      -o HostKeyAlias=eignex-lab-\$region-\$id ubuntu@\$ip $(printf '%q ' "$@")"
   if [[ $# -eq 0 ]]; then exec ssh -t "$host" "$remote"; else exec ssh "$host" "$remote"; fi ;;
 health) curl -fsS "$url/health" | jq . ;;
 node)

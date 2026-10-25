@@ -16,7 +16,7 @@ import kotlinx.serialization.json.JsonPrimitive
 /**
  * Draw klause-bench's named problem sets from classified problems and the lab's reference results:
  *
- *     klause-lab make-sets <features-dir> <references.csv> <sets-dir> [set,…]
+ *     eignex-lab make-sets <features-dir> <references.csv> <sets-dir> [set,…]
  *
  * `<features-dir>` holds `klause-bench select suite=<s> per-family=1000000 features=true` output, one `<suite>.jsonl`
  * per suite. `<references.csv>` is the lab's reference_rows as `collection,problem,feasible,proven,elapsed_ms`
@@ -61,7 +61,7 @@ internal object MakeSets {
 
     fun main(args: List<String>): Int {
         if (args.size !in 3..4) {
-            System.err.println("usage: klause-lab make-sets <features-dir> <references.csv> <sets-dir> [set,…]")
+            System.err.println("usage: eignex-lab make-sets <features-dir> <references.csv> <sets-dir> [set,…]")
             return 2
         }
         draw(Path.of(args[0]), Path.of(args[1]), Path.of(args[2]), args.getOrNull(3)?.split(",")?.toSet() ?: SETS.toSet())
@@ -118,7 +118,7 @@ internal object MakeSets {
                 }
             }
             val lines = mutableListOf(
-                "# $name: problems with the $name theme, drawn $today by klause-lab make-sets",
+                "# $name: problems with the $name theme, drawn $today by eignex-lab make-sets",
                 "# tiers by the reference's time to prove: easy < 1 s, medium < 10 s, hard < 60 s",
             )
             for (tier in TIERS) {

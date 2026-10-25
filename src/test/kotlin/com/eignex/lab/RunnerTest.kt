@@ -65,7 +65,7 @@ class RunnerTest {
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true)
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
-            "echo \"\$KLAUSE_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
+            "echo \"\$EIGNEX_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
             "echo \"\$KLAUSE_CLI_PREFLIGHT_OPTS\" > \"\$JOB_DIR/preflight\""
         val id = store.create("cli", "main", listOf(case to 60L), experiment = spec)
         config.worktree(id).createDirectories()
@@ -90,7 +90,7 @@ class RunnerTest {
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measureCliResources = true)
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
-            "echo \"\$KLAUSE_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
+            "echo \"\$EIGNEX_LAB_PROFILE_DIR\" > \"\$JOB_DIR/dir\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\" && " +
             "echo \"\$KLAUSE_CLI_PREFLIGHT_OPTS\" > \"\$JOB_DIR/preflight\""
         val id = store.create("cli", "main", listOf(case to 60L), experiment = spec)
         config.worktree(id).createDirectories()
@@ -133,7 +133,7 @@ class RunnerTest {
         val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, profileCli = true, profileCompilation = "jfr+log")
         val source = config.dataDir.resolve("sample.log").apply { writeText(log) }
         val case = "mkdir -p \"\$JOB_DIR/cases/0\" && echo '{\"ok\":true}' > \"\$JOB_DIR/cases/0/record.json\" && " +
-            "cp ${quote(source.toString())} \"\$KLAUSE_LAB_PROFILE_DIR/hotspot-compilation.log\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\""
+            "cp ${quote(source.toString())} \"\$EIGNEX_LAB_PROFILE_DIR/hotspot-compilation.log\" && echo \"\$KLAUSE_CLI_OPTS\" > \"\$JOB_DIR/opts\""
         val id = store.create("cli", "main", emptyList(), experiment = spec)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "abc123") }, listOf(Problem("s", "p")), Experiments.cases(1, 1, emptyList()),
             listOf(case to 60L))

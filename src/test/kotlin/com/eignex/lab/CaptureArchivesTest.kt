@@ -51,12 +51,12 @@ class CaptureArchivesTest {
         val case = tree.resolve(profile).createDirectories()
         case.resolve(CliMeasurements.COMPILATION_LOG).writeText(sample)
         CliMeasurements.writeManifest(case, 0, 1, "m-1", "lab", "solve-one", 0, "-Xmx1g", null, macOs = false, compilation = "jfr+log")
-        CompilationReports.analyzeAndWrite(case, source, WorkerProvenance(analyzer = "klause-lab compilation analyser, report schema 1"))
+        CompilationReports.analyzeAndWrite(case, source, WorkerProvenance(analyzer = "eignex-lab compilation analyser, report schema 1"))
         tree.resolve("evidence/returned-files/job.log").writeText("job 6971\n")
         val catalog = JsonObject(mapOf(
             "campaign" to JsonPrimitive("compilation-test"),
             "purpose" to JsonPrimitive("Retain a profiled case's captures"),
-            "references" to JsonArray(listOf(JsonPrimitive("https://github.com/Eignex/klause-lab/issues/51"))),
+            "references" to JsonArray(listOf(JsonPrimitive("https://github.com/Eignex/eignex-lab/issues/51"))),
             "limitations" to JsonArray(listOf(JsonPrimitive("A test archive."))),
             "roles" to JsonObject(CampaignEvidence.ROLES.associateWith { JsonArray(listOf(JsonPrimitive("$profile/${CompilationReports.REPORT}"))) }),
         ))

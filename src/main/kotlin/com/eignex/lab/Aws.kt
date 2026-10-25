@@ -102,7 +102,7 @@ data class AwsConfig(
             fun get(key: String, default: String? = null) = p.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() } ?: default
             return AwsConfig(
                 region = requireNotNull(get("region")) { "aws.properties needs region" },
-                profile = get("profile", "klause-lab")!!,
+                profile = get("profile", "eignex-lab")!!,
                 instanceType = get("instanceType", "c7i.2xlarge")!!,
                 maxInstances = get("maxInstances", "4")!!.toInt(),
                 vcpuQuota = get("vcpuQuota", "$DEFAULT_VCPU_QUOTA")!!.toInt(),
@@ -208,7 +208,7 @@ open class AwsCli(private val aws: AwsConfig) {
 
     private companion object {
         const val UBUNTU_IMAGE = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-        const val TAG = "klause-lab"
+        const val TAG = "eignex-lab"
         const val VOLUME_GB = 100
         const val ERROR_CHARS = 2000
     }
@@ -228,7 +228,7 @@ open class Ssh(
         "ssh", "-i", aws.keyFile,
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "HostKeyAlias=klause-lab-${aws.region}-$instance",
+        "-o", "HostKeyAlias=eignex-lab-${aws.region}-$instance",
         "-o", "CheckHostIP=no",
         "-o", "UserKnownHostsFile=$knownHosts",
         "-o", "ConnectTimeout=15",
@@ -268,7 +268,7 @@ open class Ssh(
      * writes its process group to a file, and on a cancel the group gets SIGTERM, then SIGKILL two seconds later.
      */
     private fun execOnce(script: String, timeoutSec: Long, cancelled: () -> Boolean): Pair<Int, String> {
-        val group = "/tmp/klause-lab-step-${UUID.randomUUID()}"
+        val group = "/tmp/eignex-lab-step-${UUID.randomUUID()}"
         val process = start("ps -o pgid= -p $$ > $group; bash -c ${quote(script)}; e=$?; rm -f $group; exit ${'$'}e")
         val output = StringBuilder()
         val reader = thread(isDaemon = true) { output.append(process.inputStream.bufferedReader().readText()) }
@@ -441,7 +441,7 @@ class AwsHost(
             export JOB_DIR=$jobDir KLAUSE_DEBUG=true KLAUSE_CLI_OPTS=${quote(javaOptions)} KLAUSE_CLI_PREFLIGHT_OPTS=${quote(runtimeOptions)}
             export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1
             mkdir -p ${'$'}JOB_DIR/cases
-            ${profile?.let { "mkdir -p ${quote(it)}; export KLAUSE_LAB_PROFILE_DIR=${quote(it)}" }.orEmpty()}
+            ${profile?.let { "mkdir -p ${quote(it)}; export EIGNEX_LAB_PROFILE_DIR=${quote(it)}" }.orEmpty()}
             timeout -k 30 ${command.timeoutSec} bash -c ${quote(command.cmd)} > ${'$'}JOB_DIR/$i.out 2> ${'$'}JOB_DIR/$i.err
             e=${'$'}?
             echo "exit=${'$'}e"
@@ -590,7 +590,7 @@ class AwsHost(
         const val HOME = "/home/ubuntu"
         const val ENV = "export JAVA_HOME=/opt/jdk PATH=/opt/jdk/bin:/usr/local/bin:${'$'}PATH"
         private const val SHA_DIR = 12
-        private const val RECORD = "----klause-lab-record----"
+        private const val RECORD = "----eignex-lab-record----"
         /** Marks the instance's kernel log lines about killed processes, sent back for a case that ended by signal. */
         private const val KERNEL = "kernel-log: "
         /** Marks the instance's SHA-256 of each output file of a case, sent back before its record ([outputHashes]). */
@@ -852,10 +852,10 @@ class AwsWorker(
      *  hand. */
     private fun buy(size: InstanceSize, onDemand: Boolean, manual: Boolean): Node {
         runCatching { cli.admitThisMachine() }
-        val userData = Files.createTempFile("klause-lab-user-data", ".sh").toFile()
+        val userData = Files.createTempFile("eignex-lab-user-data", ".sh").toFile()
         try {
             userData.writeText(bootstrap())
-            val name = "klause-lab-node-${launched.incrementAndGet()}"
+            val name = "eignex-lab-node-${launched.incrementAndGet()}"
             val (id, market) = if (onDemand) cli.launch(name, userData, size.type) to ON_DEMAND else spotFirst(name, userData, size.type, manual)
             return Node(id, size, market, System.currentTimeMillis(), manual).also { nodes[id] = it }
                 .also { println("aws: launched ${size.type} $market ${if (manual) "manual " else ""}node $id") }
@@ -1300,7 +1300,7 @@ class AwsWorker(
         ln -sf /opt/minizinc/bin/minizinc /usr/local/bin/minizinc
         curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip
         unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
-        touch /var/lib/klause-ready
+        touch /var/lib/eignex-lab-ready
     """.trimIndent() + "\n"
 
         /**
@@ -1310,26 +1310,26 @@ class AwsWorker(
          */
         internal fun watchdog(minutes: Long): String = if (minutes <= 0) "" else """
         touch $HEARTBEAT && chown ubuntu:ubuntu $HEARTBEAT
-        cat > /usr/local/sbin/klause-lab-watchdog <<'EOF'
+        cat > /usr/local/sbin/eignex-lab-watchdog <<'EOF'
         #!/bin/bash
         age=${'$'}(( ${'$'}(date +%s) - ${'$'}(stat -c %Y $HEARTBEAT) ))
         if [ "${'$'}age" -gt ${minutes * 60} ]; then
-          logger "klause-lab: no heartbeat from the lab for ${'$'}age s, powering off"
+          logger "eignex-lab: no heartbeat from the lab for ${'$'}age s, powering off"
           shutdown -h now
         fi
         EOF
-        chmod +x /usr/local/sbin/klause-lab-watchdog
-        printf '[Service]\nType=oneshot\nExecStart=/usr/local/sbin/klause-lab-watchdog\n' > /etc/systemd/system/klause-lab-watchdog.service
-        printf '[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1min\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/klause-lab-watchdog.timer
+        chmod +x /usr/local/sbin/eignex-lab-watchdog
+        printf '[Service]\nType=oneshot\nExecStart=/usr/local/sbin/eignex-lab-watchdog\n' > /etc/systemd/system/eignex-lab-watchdog.service
+        printf '[Timer]\nOnBootSec=5min\nOnUnitActiveSec=1min\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/eignex-lab-watchdog.timer
         systemctl daemon-reload
-        systemctl enable --now klause-lab-watchdog.timer
+        systemctl enable --now eignex-lab-watchdog.timer
 """.trimIndent() + "\n"
 
         /** The file a node's watchdog checks the age of ([watchdog]), which the lab touches. */
-        const val HEARTBEAT = "/var/lib/klause-lab-heartbeat"
+        const val HEARTBEAT = "/var/lib/eignex-lab-heartbeat"
         /** Touch the heartbeat; a node launched before the watchdog has no file, and that is no failure. */
         internal const val TOUCH_HEARTBEAT = "touch $HEARTBEAT 2>/dev/null || true"
-        private const val READY = "/var/lib/klause-ready"
+        private const val READY = "/var/lib/eignex-lab-ready"
 
         /**
          * What a restarted worker runs on a node it adopts ([adopt]): kill every process the previous runner left there,
@@ -1353,7 +1353,7 @@ class AwsWorker(
             sleep 1
             left=$(stale | tr '\n' ' ')
             [ -z "${'$'}left" ] || { echo "stale processes survived: ${'$'}left"; exit 4; }
-            rm -rf ~/jobs /tmp/klause-lab-step-* || { echo 'job files not removed'; exit 5; }
+            rm -rf ~/jobs /tmp/eignex-lab-step-* || { echo 'job files not removed'; exit 5; }
             $TOUCH_HEARTBEAT
             if test -f $READY; then echo ready; else echo booting; fi
         """.trimIndent()

@@ -1171,7 +1171,7 @@ class Runner(
             put("KLAUSE_CLI_OPTS", javaOptions)
             // The bench's `--version` check before the solve runs without the recording options.
             put("KLAUSE_CLI_PREFLIGHT_OPTS", runtimeOptions)
-            profile?.let { put("KLAUSE_LAB_PROFILE_DIR", it.toString()) }
+            profile?.let { put("EIGNEX_LAB_PROFILE_DIR", it.toString()) }
             // Host BLAS libraries otherwise size their own thread pools to the machine.
             put("OPENBLAS_NUM_THREADS", "1")
             put("VECLIB_MAXIMUM_THREADS", "1")

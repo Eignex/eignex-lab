@@ -29,7 +29,7 @@ class CliMeasurementsTest {
         val profile = dir.resolve("profile")
         Files.createDirectories(profile)
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
-        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
         builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m -XX:ActiveProcessorCount=1 ${CliMeasurements.options(profile.toString())}"
 
         val process = builder.start()
@@ -56,7 +56,7 @@ class CliMeasurementsTest {
         val profile = Files.createDirectories(dir.resolve("profile"))
         fun run(vararg args: String): String {
             val builder = ProcessBuilder(listOf(cli.toString()) + args).redirectErrorStream(true)
-            builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+            builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
             val process = builder.start()
             val output = process.inputStream.bufferedReader().readText()
             assertEquals(0, process.waitFor(), output)
@@ -94,7 +94,7 @@ class CliMeasurementsTest {
         assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
         val profile = Files.createDirectories(dir.resolve("profile"))
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
-        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
         builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m ${CliMeasurements.options(profile.toString(), "jfr+log")}"
 
         val process = builder.start()
@@ -120,7 +120,7 @@ class CliMeasurementsTest {
         val cli = macLauncher(dir, "#!/bin/bash\nprintf '%s\\n' \$KLAUSE_CLI_OPTS\n")
         val profile = Files.createDirectories(dir.resolve("profile"))
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
-        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
         val options = CliMeasurements.options(profile.toString(), "jfr+log")
         builder.environment()["KLAUSE_CLI_OPTS"] = options
 
@@ -206,7 +206,7 @@ class CliMeasurementsTest {
         val cli = macLauncher(dir, "#!/bin/bash\necho \"args: \$*\"\nexit 3\n")
         val profile = Files.createDirectories(dir.resolve("profile"))
         val builder = ProcessBuilder(cli.toString(), "solve", "two words").redirectErrorStream(true)
-        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()
@@ -226,7 +226,7 @@ class CliMeasurementsTest {
             val profile = Files.createDirectories(dir.resolve("profile"))
             // In a session of its own, as the runner starts a case, so the group can be signalled as the runner does.
             val builder = ProcessBuilder(inSession(cli.toString())).redirectErrorStream(true)
-            builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+            builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
             val process = builder.start()
             try {
                 val output = process.inputStream.bufferedReader()
@@ -413,7 +413,7 @@ class CliMeasurementsTest {
         val profile = dir.resolve("profile")
         Files.createDirectories(profile)
         val builder = ProcessBuilder(cli.toString(), "two words", "dollar\$value", "")
-        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()
@@ -438,7 +438,7 @@ class CliMeasurementsTest {
         val profile = dir.resolve("profile")
         Files.createDirectories(profile)
         val builder = ProcessBuilder(cli.toString())
-        builder.environment()["KLAUSE_LAB_PROFILE_DIR"] = profile.toString()
+        builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
         val process = builder.start()
         var child: Long? = null
         try {

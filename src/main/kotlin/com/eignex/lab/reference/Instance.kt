@@ -69,7 +69,7 @@ object CorpusFiles {
      *  whose collections the bench walks to discover instances. */
     fun <T> withPlainFile(file: File, block: (File) -> T): T {
         if (!isCompressed(file)) return block(file)
-        val staging = File(System.getProperty("user.home"), ".cache/klause-lab/plain").apply { mkdirs() }
+        val staging = File(System.getProperty("user.home"), ".cache/eignex-lab/plain").apply { mkdirs() }
         val dir = Files.createTempDirectory(staging.toPath(), "plain-").toFile()
         try {
             val plain = File(dir, file.name.removeSuffix(SUFFIX))

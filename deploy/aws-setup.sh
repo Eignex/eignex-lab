@@ -8,13 +8,13 @@
 # ADMIN_PROFILE (default: the CLI's default profile).
 #
 # It creates, or reuses when they exist:
-#   - an SSH key pair `klause-lab`, its private key installed on the lab Mac;
-#   - a security group `klause-lab` in the default VPC that admits SSH only from the lab Mac's public address;
-#   - an IAM user `klause-lab` whose only rights are to launch tagged instances of INSTANCE_TYPE with that key and group,
-#     tag them at launch, terminate instances tagged klause-lab, read the public Ubuntu image id, and admit the Mac's
-#     current address to the group (its address can change); its access key goes into the Mac's `klause-lab` profile;
-#   - an S3 bucket `klause-lab-corpus-<account>-<region>` holding a copy of the corpus cache, and an instance role
-#     `klause-lab-instance` that may read and write only that bucket, which the IAM user may pass to its instances;
+#   - an SSH key pair `eignex-lab`, its private key installed on the lab Mac;
+#   - a security group `eignex-lab` in the default VPC that admits SSH only from the lab Mac's public address;
+#   - an IAM user `eignex-lab` whose only rights are to launch tagged instances of INSTANCE_TYPE with that key and group,
+#     tag them at launch, terminate instances tagged eignex-lab, read the public Ubuntu image id, and admit the Mac's
+#     current address to the group (its address can change); its access key goes into the Mac's `eignex-lab` profile;
+#   - an S3 bucket `eignex-lab-corpus-<account>-<region>` holding a copy of the corpus cache, and an instance role
+#     `eignex-lab-instance` that may read and write only that bucket, which the IAM user may pass to its instances;
 #   - EC2's spot service-linked role `AWSServiceRoleForEC2Spot`, which the account needs before any spot launch and
 #     which the lab's IAM user may not create;
 #   - `$LAB_DATA/aws/aws.properties` on the Mac, which the lab reads: no service needs reinstalling.
@@ -28,7 +28,7 @@ quota="${VCPU_QUOTA:-128}"
 family="${type%%.*}"
 types="$(for size in 2xlarge:8 4xlarge:16 8xlarge:32 12xlarge:48 16xlarge:64; do
   if [[ ${size#*:} -le $quota ]]; then printf '"%s.%s",' "$family" "${size%%:*}"; fi; done | sed 's/,$//')"
-name=klause-lab
+name=eignex-lab
 admin=(aws --region "$region" --output text ${ADMIN_PROFILE:+--profile "$ADMIN_PROFILE"})
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -44,14 +44,14 @@ mac_ip="$(ssh "$host" 'curl -fsS https://checkip.amazonaws.com')"
 echo "lab Mac's public address: $mac_ip"
 
 # Key pair: a fresh one whenever the Mac does not hold the private key of the existing one.
-if ssh "$host" "test -f ~/klause-lab-data/aws/$name.pem" && "${admin[@]}" ec2 describe-key-pairs --key-names "$name" >/dev/null 2>&1; then
+if ssh "$host" "test -f ~/eignex-lab-data/aws/$name.pem" && "${admin[@]}" ec2 describe-key-pairs --key-names "$name" >/dev/null 2>&1; then
   echo "key pair $name: kept"
 else
   "${admin[@]}" ec2 delete-key-pair --key-name "$name" >/dev/null 2>&1 || true
   "${admin[@]}" ec2 create-key-pair --key-name "$name" --key-type ed25519 --query KeyMaterial > "$work/$name.pem"
-  ssh "$host" 'mkdir -p ~/klause-lab-data/aws && chmod 700 ~/klause-lab-data/aws'
-  scp -q "$work/$name.pem" "$host:klause-lab-data/aws/$name.pem"
-  ssh "$host" "chmod 600 ~/klause-lab-data/aws/$name.pem"
+  ssh "$host" 'mkdir -p ~/eignex-lab-data/aws && chmod 700 ~/eignex-lab-data/aws'
+  scp -q "$work/$name.pem" "$host:eignex-lab-data/aws/$name.pem"
+  ssh "$host" "chmod 600 ~/eignex-lab-data/aws/$name.pem"
   echo "key pair $name: created, private key on the Mac"
 fi
 
@@ -61,7 +61,7 @@ sg="$("${admin[@]}" ec2 describe-security-groups --filters "Name=group-name,Valu
   --query 'SecurityGroups[0].GroupId')"
 if [[ "$sg" == "None" ]]; then
   sg="$("${admin[@]}" ec2 create-security-group --group-name "$name" --vpc-id "$vpc" \
-    --description "SSH from the klause lab Mac" --query GroupId)"
+    --description "SSH from the eignex lab Mac" --query GroupId)"
 fi
 "${admin[@]}" ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr "$mac_ip/32" \
   >/dev/null 2>&1 || true
@@ -142,16 +142,16 @@ echo "IAM user $name: policy set, new access key $key"
 # The Mac's side: the profile the lab's AWS CLI uses, and the lab's settings.
 ssh "$host" "export PATH=/opt/homebrew/bin:\$PATH; aws configure set aws_access_key_id '$key' --profile $name && \
   aws configure set aws_secret_access_key '$secret' --profile $name && aws configure set region '$region' --profile $name"
-ssh "$host" "cat > ~/klause-lab-data/aws/aws.properties" <<EOF
+ssh "$host" "cat > ~/eignex-lab-data/aws/aws.properties" <<EOF
 region=$region
 profile=$name
 instanceType=$type
 maxInstances=$max
 vcpuQuota=$quota
 keyName=$name
-keyFile=/Users/$(ssh "$host" whoami)/klause-lab-data/aws/$name.pem
+keyFile=/Users/$(ssh "$host" whoami)/eignex-lab-data/aws/$name.pem
 securityGroup=$sg
 corpusBucket=$bucket
 instanceProfile=$role
 EOF
-echo "wrote ~/klause-lab-data/aws/aws.properties on $host; restart the lab (lab update) to start the AWS worker"
+echo "wrote ~/eignex-lab-data/aws/aws.properties on $host; restart the lab (lab update) to start the AWS worker"

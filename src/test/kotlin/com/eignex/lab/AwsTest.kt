@@ -91,10 +91,10 @@ class AwsTest {
         val file = dir.resolve("aws.properties")
 
         assertNull(AwsConfig.load(file))
-        file.toFile().writeText("region=eu-north-1\nkeyName=klause-lab\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
+        file.toFile().writeText("region=eu-north-1\nkeyName=eignex-lab\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
         val aws = AwsConfig.load(file)!!
 
-        assertEquals(listOf("c7i.2xlarge", "4", "4", "klause-lab"), listOf(aws.instanceType, "${aws.maxInstances}", "${aws.cores}", aws.profile))
+        assertEquals(listOf("c7i.2xlarge", "4", "4", "eignex-lab"), listOf(aws.instanceType, "${aws.maxInstances}", "${aws.cores}", aws.profile))
     }
 
     @Test
@@ -473,7 +473,7 @@ class AwsTest {
         val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
             override fun start(script: String, mergeErrors: Boolean): Process {
                 scripts += script
-                val reply = if (scripts.size == 1) "exit=0\n----klause-lab-record----\n{\"elapsedMs\":5}" else "captured"
+                val reply = if (scripts.size == 1) "exit=0\n----eignex-lab-record----\n{\"elapsedMs\":5}" else "captured"
                 return ProcessBuilder("printf", "%s\n", reply).start()
             }
         }
@@ -499,7 +499,7 @@ class AwsTest {
         val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
             override fun start(script: String, mergeErrors: Boolean): Process {
                 scripts += script
-                val reply = if (scripts.size == 1) "exit=0\n----klause-lab-record----\n{\"elapsedMs\":5}" else "captured"
+                val reply = if (scripts.size == 1) "exit=0\n----eignex-lab-record----\n{\"elapsedMs\":5}" else "captured"
                 return ProcessBuilder("printf", "%s\n", reply).start()
             }
         }
@@ -522,7 +522,7 @@ class AwsTest {
     fun `an AWS case reports executing, its retry backoff after SSH dropped, and its output transfer`() {
         val dir = Files.createTempDirectory("aws")
         dir.resolve("aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n")
-        val replies = ArrayDeque(listOf("Connection reset", "exit=1\n----klause-lab-record----\n{\"elapsedMs\":10175}", ""))
+        val replies = ArrayDeque(listOf("Connection reset", "exit=1\n----eignex-lab-record----\n{\"elapsedMs\":10175}", ""))
         val scripts = ArrayList<String>()
         val ssh = object : Ssh("i-1", "10.0.0.1", AwsConfig.load(dir.resolve("aws.properties"))!!, dir.resolve("known")) {
             override fun start(script: String, mergeErrors: Boolean): Process {

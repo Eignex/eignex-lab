@@ -336,7 +336,7 @@ data class SourceProvenance(
 /** Who made the report: the lab release it ran on, its host, when, and the analysis job that asked, if one did. */
 @Serializable
 data class WorkerProvenance(
-    val analyzer: String = "klause-lab compilation analyser, report schema ${CompilationReports.SCHEMA}",
+    val analyzer: String = "eignex-lab compilation analyser, report schema ${CompilationReports.SCHEMA}",
     val labRelease: String? = null,
     val labSha: String? = null,
     val host: String? = null,

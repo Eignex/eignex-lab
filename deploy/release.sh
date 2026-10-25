@@ -8,13 +8,13 @@ release() {
   id="$(git -C "$here" rev-parse --short HEAD)-$(date +%Y%m%d%H%M%S)"
   # Explicit returns: this runs inside $(...), where bash 3.2 does not carry set -e.
   mkdir -p "$releases" || return 1
-  cp -R "$here/build/install/klause-lab" "$releases/$id" || return 1
+  cp -R "$here/build/install/eignex-lab" "$releases/$id" || return 1
   ln -sfn "$id" "$releases/current" || return 1
   local old
   for old in $(ls -1dt "$releases"/*/ | sed 's:/$::' | grep -v '/current$' | tail -n +4); do
     [[ "$(basename "$old")" == "$id" ]] || rm -rf "$old"
   done
-  echo "$releases/current/bin/klause-lab"
+  echo "$releases/current/bin/eignex-lab"
 }
 
 # restart_services: stop both services so their service manager starts them again on releases/current. A command
@@ -27,6 +27,6 @@ restart_services() {
     pids="$(pgrep -af 'com\.eignex\.lab\.MainKt (api|runner)$' || true)"
     [[ -n "$pids" ]] && kill $pids
     ;;
-  Linux) systemctl --user restart klause-lab-api klause-lab-runner ;;
+  Linux) systemctl --user restart eignex-lab-api eignex-lab-runner ;;
   esac
 }

@@ -7,7 +7,7 @@ import kotlin.io.path.Path
 /** Server settings, all from the environment so that launchd plists carry them. */
 data class Config(
     /** Queue database, worktrees and Gradle live here, and per-job outputs unless [jobsDir] puts them elsewhere. */
-    val dataDir: Path = Path(env("LAB_DATA", "${System.getProperty("user.home")}/klause-lab-data")),
+    val dataDir: Path = Path(env("LAB_DATA", "${System.getProperty("user.home")}/eignex-lab-data")),
     /** Each job's files, one directory per job: on a volume of its own, such as an external drive, when set. */
     val jobsDir: Path = Path(env("LAB_JOBS", "$dataDir/jobs")),
     /** The klause repository to fetch refs from. */
@@ -21,7 +21,7 @@ data class Config(
     val trustedUsers: Set<String> = env("LAB_TRUSTED_USERS", "rasros").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     /** The lab's own launcher, which a reference arm's cases run ([com.eignex.lab.reference.ReferenceCli]): the
      *  current release, so a case needs no klause build. */
-    val launcher: String = env("LAB_LAUNCHER", "$dataDir/releases/current/bin/klause-lab"),
+    val launcher: String = env("LAB_LAUNCHER", "$dataDir/releases/current/bin/eignex-lab"),
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
     val corpusDir: Path = Path(env("LAB_CORPUS", "${System.getProperty("user.home")}/.cache/klause-bench/corpus")),
     val port: Int = env("LAB_PORT", "8420").toInt(),
@@ -41,7 +41,7 @@ data class Config(
     /** Cores the running cases may hold together, a case holding its arm's `processors`; two are left for the JVMs
      *  around the solves and the machine itself. */
     val cores: Int = env("LAB_CORES", (Runtime.getRuntime().availableProcessors() - 2).coerceAtLeast(1).toString()).toInt(),
-    /** The klause-lab checkout the services were installed from; the runner updates from it between jobs. */
+    /** The eignex-lab checkout the services were installed from; the runner updates from it between jobs. */
     val sourceDir: Path? = System.getenv("LAB_SOURCE")?.takeIf { it.isNotBlank() }?.let { Path(it) },
     /** Seconds between update checks; `0` turns self-update off. */
     val updateCheckSec: Long = env("LAB_UPDATE_CHECK_SEC", "300").toLong(),

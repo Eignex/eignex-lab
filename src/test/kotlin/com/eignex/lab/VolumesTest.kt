@@ -24,8 +24,8 @@ class VolumesTest {
 
     /** A lab with its data on the internal disk and its job files and corpus on the external volume `Ros`. */
     private fun external(root: Path = Path("/Volumes")) = Config(
-        dataDir = Path("/Users/lab/klause-lab-data"),
-        jobsDir = root.resolve("Ros/klause-lab/jobs"),
+        dataDir = Path("/Users/lab/eignex-lab-data"),
+        jobsDir = root.resolve("Ros/eignex-lab/jobs"),
         corpusDir = root.resolve("Ros/klause-bench/corpus"),
         passwordHash = null,
         volumesRoot = root,
@@ -49,10 +49,10 @@ class VolumesTest {
     fun `a path under the volumes root needs the volume it names`() {
         val root = Path("/Volumes")
 
-        assertEquals(Path("/Volumes/Ros"), Volumes.mountPointOf(Path("/Volumes/Ros/klause-lab/jobs"), root))
+        assertEquals(Path("/Volumes/Ros"), Volumes.mountPointOf(Path("/Volumes/Ros/eignex-lab/jobs"), root))
         assertEquals(Path("/Volumes/Ros"), Volumes.mountPointOf(Path("/Volumes/Ros"), root))
         assertNull(Volumes.mountPointOf(Path("/Volumes"), root))
-        assertNull(Volumes.mountPointOf(Path("/Users/lab/klause-lab-data/jobs"), root))
+        assertNull(Volumes.mountPointOf(Path("/Users/lab/eignex-lab-data/jobs"), root))
     }
 
     @Test
@@ -119,7 +119,7 @@ class VolumesTest {
         Files.createDirectories(root.resolve("Ros"))
         assertEquals("job files volume ${root.resolve("Ros")} is not mounted", Volumes.missing(config))
         assertFailsWith<IllegalStateException> { config.createJobDir(1) }
-        assertFalse(Files.exists(root.resolve("Ros/klause-lab")))
+        assertFalse(Files.exists(root.resolve("Ros/eignex-lab")))
     }
 
     @Test
