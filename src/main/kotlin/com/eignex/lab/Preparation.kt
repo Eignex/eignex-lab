@@ -63,7 +63,6 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
                 checkActive(); val target = tree.resolve(built.relativize(file))
                 if (Files.isDirectory(file, NOFOLLOW_LINKS)) Files.createDirectories(target) else Files.copy(file, target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
             } }
-            if (!manifest.experiment.isProfile && manifest.arms.any { it.arm.values["backend"] != REFERENCE_BACKEND }) run(tree, Experiments.captureProvenance(tree.toString()))
             tree
         }
         val primary = prepared.getValue(manifest.arms.first().sha)

@@ -50,6 +50,15 @@ class IterationExecutor(
                 runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
             require(exit == 0) { "measurement launcher setup failed" }
         }
+        // Provenance binds absolute distribution/runtime paths and launcher metadata. Capture only after
+        // relocation and measurement installation, on the host and in the tree that actually runs the cases.
+        if (!manifest.experiment.isProfile) for ((sha, worktree) in worktrees) {
+            if (manifest.arms.none { it.sha == sha && it.arm.values["backend"] != REFERENCE_BACKEND }) continue
+            val exit = supervisor.run(listOf("bash", "-c", Experiments.captureProvenance(worktree.toString())), worktree,
+                environment(), directory.resolve("provenance-$sha.out"), directory.resolve("provenance-$sha.err"), 60,
+                runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
+            if (exit != 0) throw WorkerBuildFailure("execution provenance capture failed (exit $exit)")
+        }
         prepared()
         val timedOut = java.util.concurrent.atomic.AtomicBoolean()
         val cpu = Semaphore(manifest.budget.cpuMillis)
