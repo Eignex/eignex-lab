@@ -22,7 +22,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
         checkRun()
         val build = requireNotNull(bundle.build)
-        val identity = ExecutionStore.digest(listOf("build-cache-v1", Json.encodeToString(bundle), Json.encodeToString(budget),
+        val identity = ExecutionStore.digest(listOf("build-cache-v2", Json.encodeToString(bundle), Json.encodeToString(budget),
             System.getProperty("java.vendor"), System.getProperty("java.version"), System.getProperty("os.name"), System.getProperty("os.arch")).joinToString("\n"))
         Files.createDirectories(root)
         val destination = root.resolve(identity)
@@ -65,6 +65,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 if (build.gitBundle != null) {
                     Files.createDirectory(tree)
                     run(listOf("git", "-c", "core.hooksPath=/dev/null", "init"), tree)
+                    // Portable checkouts retain symlink blobs as plain files and never follow host paths.
+                    run(listOf("git", "config", "--local", "core.symlinks", "false"), tree)
                     run(listOf("git", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", source.resolve(safeRelative(build.gitBundle)).toString(), "refs/lab-source/${bundle.commit}"), tree)
                     run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", bundle.commit), tree)
                     Files.walk(tree).use { paths -> require(paths.noneMatch(Files::isSymbolicLink)) { "source tree contains unsupported links" } }

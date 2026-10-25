@@ -132,6 +132,10 @@ class PortableWorkerTest {
         }
         git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
         Files.writeString(repository.resolve("gradlew"), "mkdir -p build; git rev-parse HEAD > build/commit")
+        Files.writeString(repository.resolve(".rules"), "committed documentation")
+        Files.createSymbolicLink(repository.resolve("AGENTS.md"), Path.of(".rules"))
+        val outside = root.resolve("host-secret"); Files.writeString(outside, "must never be read by checkout")
+        Files.createSymbolicLink(repository.resolve("outside.link"), outside)
         git("add", "."); git("commit", "-m", "fixture")
         val commit = git("rev-parse", "HEAD")
         git("remote", "add", "origin", "https://private-token@example.com/secret.git")
@@ -146,6 +150,11 @@ class PortableWorkerTest {
         val source = VerifiedCache(root.resolve("sources")).stage(manifest) { Files.newInputStream(output) }
         val tree = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(manifest, source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
         assertEquals(commit, Files.readString(tree.resolve("build/commit")).trim())
+        assertFalse(Files.isSymbolicLink(tree.resolve("AGENTS.md")))
+        assertEquals(".rules", Files.readString(tree.resolve("AGENTS.md")))
+        assertEquals(outside.toString(), Files.readString(tree.resolve("outside.link")))
+        val status = ProcessBuilder("git", "-C", tree.toString(), "status", "--porcelain", "--", "AGENTS.md", "outside.link").start()
+        assertEquals("", status.inputStream.bufferedReader().readText()); assertEquals(0, status.waitFor())
         assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
         assertFalse(git("for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
     }
