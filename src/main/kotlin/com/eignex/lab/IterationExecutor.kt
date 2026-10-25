@@ -29,7 +29,11 @@ class IterationExecutor(
         val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) == Triple(selected.first().problem, selected.first().seed, selected.first().repeat) }
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
-        val corpus = Files.createDirectories(directory.resolve("corpus"))
+        val corpus = directory.resolve("corpus")
+        if (manifest.inputCorpus != null) {
+            val input = cache.stage(manifest.inputCorpus, ::checkRun) { bundleInput(manifest.inputCorpus) }
+            copyTree(input, corpus, ::checkRun)
+        } else Files.createDirectories(corpus)
         val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             val source = cache.stage(bundle, ::checkRun) { bundleInput(bundle) }
@@ -60,9 +64,9 @@ class IterationExecutor(
                     check(remainingLeaseMs() > 0) { "lease expired before starting case" }
                     starting(case)
                     val worktree = worktrees.getValue(manifest.arms[case.arm].sha)
-                    val problem = case.problem.copy(model = case.problem.model?.let { worktree.resolve(safeRelative(it)).toString() },
-                        data = case.problem.data?.let { worktree.resolve(safeRelative(it)).toString() },
-                        includeDirs = case.problem.includeDirs.map { worktree.resolve(safeRelative(it)).toString() })
+                    val problem = case.problem.copy(model = case.problem.model?.let { portablePath(it, worktree, corpus).toString() },
+                        data = case.problem.data?.let { portablePath(it, worktree, corpus).toString() },
+                        includeDirs = case.problem.includeDirs.map { portablePath(it, worktree, corpus).toString() })
                     val command = manifest.experiment.profile?.let { Experiments.profileCommand(worktree.toString(), it, case.index, corpus.toString(), arm.debug, manifest.experiment.repository) }
                         ?: if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(launcher, problem, arm, case.seed, case.index)
                         else Experiments.command(worktree.toString(), problem, arm, case.seed, case.index, corpus.toString())
@@ -109,5 +113,15 @@ class IterationExecutor(
             val target = destination.resolve(source.relativize(path))
             if (Files.isDirectory(path)) Files.createDirectories(target) else Files.copy(path, target, COPY_ATTRIBUTES)
         } }
+    }
+}
+
+/** Resolve only known portable roots; old manifests keep their worktree-relative interpretation. */
+internal fun portablePath(value: String, source: Path, corpus: Path): Path {
+    val relative = safeRelative(value)
+    return when (relative.first().toString()) {
+        "lab-source" -> source.resolve(relative.subpath(1, relative.nameCount))
+        "lab-corpus" -> corpus.resolve(relative.subpath(1, relative.nameCount))
+        else -> source.resolve(relative)
     }
 }

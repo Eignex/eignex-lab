@@ -63,7 +63,7 @@ class CapacityCollector(
                     // Unknown allocations consume the whole node until a known budget is available.
                     val budget = session?.budget ?: ResourceBudget(pool.cpuMillis, pool.availableMemoryMiB)
                     CapacityReservation(allocation.getValue("ID").jsonPrimitive.content, session?.jobId ?: -1, budget,
-                        if (session?.executionClass == "build") CapacityWork.BUILD else CapacityWork.SOLVE)
+                        if (session?.executionClass in setOf("build", "prepare")) CapacityWork.BUILD else CapacityWork.SOLVE)
                 }
             if (ready && reservations.isEmpty()) idle.putIfAbsent(id, at) else idle.remove(id)
             CapacityNode(id, pool.id, when { instance.draining -> CapacityNodeState.DRAINING; ready -> CapacityNodeState.READY; else -> CapacityNodeState.BOOTING }, reservations, idle[id], instance.countedInTarget)
@@ -78,10 +78,11 @@ class CapacityCollector(
             val job = store.job(s.jobId)!!; val experiment = job.experiment!!
             val onDemand = NodeTags.onDemand(experiment.isProfile, experiment.nodeTags)
             require(pool.market == if (onDemand) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT) { "session purchasing policy differs from pool" }
-            val pressure = Estimates.pressureCoreHours(job, estimates::lookup, settings.localCores) / pending.count { it.jobId == job.id }.coerceAtLeast(1)
+            val pressure = if (manifest.preparationTimeoutSec != null) manifest.budget.cpuMillis / 1000.0 * manifest.preparationTimeoutSec / 3600.0
+                else Estimates.pressureCoreHours(job, estimates::lookup, settings.localCores) / pending.count { it.jobId == job.id }.coerceAtLeast(1)
             CapacityDemand(s.id, job.id, manifest.budget.copy(parallel = minOf(manifest.budget.parallel, job.parallel)), pressure, job.priority, job.parallel, experiment.nodeTags,
                 pool.market, experiment.host != Experiments.AWS_HOST && NodeTags.matches(experiment.nodeTags, localTags),
-                when { s.executionClass == "build" -> CapacityWork.BUILD; experiment.isProfile -> CapacityWork.PROFILE; experiment.measuresCli -> CapacityWork.MEASUREMENT; else -> CapacityWork.SOLVE }, pool.id)
+                when { s.executionClass in setOf("build", "prepare") -> CapacityWork.BUILD; experiment.isProfile -> CapacityWork.PROFILE; experiment.measuresCli -> CapacityWork.MEASUREMENT; else -> CapacityWork.SOLVE }, pool.id)
         }
         val inventoryAge = inventories.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }

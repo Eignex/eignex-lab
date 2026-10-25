@@ -26,7 +26,7 @@ data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt:
 }
 
 @Serializable
-data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false)
+data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false, val preparation: PreparationResult? = null)
 
 @Serializable
 data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: String, val payload: String, val acknowledged: Boolean)
@@ -121,6 +121,16 @@ class ExecutionStore internal constructor(private val store: Store) {
                 // Claim tokens are derived from the scoped session secret; only their digest is persisted.
                 val claimToken = claimToken(token, active.iteration, active.generation)
                 return@executionTransaction IterationClaim(AttemptOwner(id, allocation, active.iteration, active.generation, claimToken), active.indices, active.leaseUntil, active.parallel)
+            }
+            if (session.executionClass == "prepare") {
+                if (store.job(session.jobId)!!.setupDone || db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { it.getInt(1) }.isNotEmpty()) return@executionTransaction null
+                val iteration = "preparation"
+                val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
+                val claimToken = claimToken(token, iteration, generation)
+                db.sqlUpdate("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at, parallel_limit) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', '[]', ?, 1)",
+                    session.jobId, iteration, generation, id, allocation, digest(claimToken), at + leaseMs, at)
+                db.event(session.jobId, id, "claimed:$iteration:$generation", at)
+                return@executionTransaction IterationClaim(AttemptOwner(id, allocation, iteration, generation, claimToken), emptyList(), at + leaseMs)
             }
             val next = db.iterations(session.jobId).entries.firstOrNull { (_, rows) -> rows.all { it.status == "QUEUED" && it.host == null } }
                 ?: return@executionTransaction null
@@ -224,6 +234,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         }
         db.attempt(owner, at)
         if (store.job(a.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) throw ProfileRunTimeout()
+        require((a.iteration == "preparation") == (result.preparation != null))
         require(!result.runTimedOut || store.job(a.jobId)?.experiment?.profile?.runTimeoutSec != null)
         require(a.state == "uploading") { "attempt is not uploading" }
         require(result.cases.map { it.index }.sorted() == a.indices.sorted()) { "all arms must be committed together, exactly once" }

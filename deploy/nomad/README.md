@@ -302,3 +302,16 @@ and durable event reconstruction without recreating trimmed jobs. The real conne
 output to be visible before acceptance and the final log to report `DONE`, across coordinator restart and forced
 allocation loss. These are canary reporting checks; automatic queue planning/admission and live rollout gates remain
 open as documented in the migration plan.
+
+### Allocation-scoped preparation
+
+A preparation manifest sets `preparationTimeoutSec` and has no cases. The worker uses its existing allocation
+identity, renewable attempt lease, process supervisor and CPU/memory reservation to build approved source inputs,
+resolve selections, and publish checksummed source and corpus bundles. The result records portable `lab-source/`
+and `lab-corpus/` paths rather than allocation filesystem paths. Solve manifests can carry the prepared corpus in
+`inputCorpus`; workers verify and stage it before rendering commands.
+
+Preparation acceptance is durable before planning. Lost allocations replace the same pinned preparation inputs;
+accepted preparation survives coordinator restarts without completing an experiment or running preparation twice.
+A source/build error remains a permanent failure, and cancellation fences preparation uploads and acceptance.
+Capacity collection accounts for queued preparation as build demand under the same provider-neutral vCPU limit.

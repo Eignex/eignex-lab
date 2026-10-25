@@ -36,6 +36,37 @@ class PortableWorkerTest {
         } finally { process.destroy(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); process.destroyForcibly() }
     }
 
+    @Test fun `preparation selects portable files and publishes verified build and corpus bundles`(): Unit = service { socket ->
+        val script = """#!/usr/bin/env bash
+            set -eu
+            corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"
+            corpus="${'$'}{corpus%% *}"
+            mkdir -p "${'$'}corpus"
+            printf 'model contents' > "${'$'}corpus/model.mps"
+            printf '{"suite":"s","problem":"p","model":"%s/model.mps","format":"mps"}\n' "${'$'}corpus"
+        """.trimIndent()
+        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
+        val spec = ExperimentSpec("prepare", problems = listOf(mapOf("suite" to "s")), base = mapOf("backend" to "reference", "solver" to "highs"))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }
+        val manifest = WorkManifest("prepare", "release", spec, arms, emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
+        val uploads = mutableMapOf<String, Path>()
+        val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch)
+        val result = executor.run(manifest, root.resolve("prepare"), { null }, { 80000 }) { file ->
+            hashFile(file).also { sha -> uploads[sha] = file }
+        }
+        assertEquals("lab-corpus/model.mps", result.selections.single().single().model)
+        val corpus = requireNotNull(result.corpus)
+        val contents = VerifiedCache(root.resolve("verify")).stage(corpus) { Files.newInputStream(uploads.getValue(corpus.sha256)) }
+        assertEquals("model contents", Files.readString(contents.resolve("model.mps")))
+        val prepared = result.bundles.single()
+        val source = VerifiedCache(root.resolve("verify")).stage(prepared) { Files.newInputStream(uploads.getValue(prepared.sha256)) }
+        assertEquals(script, Files.readString(source.resolve(bundle.files.single().path)))
+        assertEquals(contents.resolve("model.mps"), portablePath(result.selections.single().single().model!!, source, contents))
+        assertFailsWith<IllegalStateException> { portableProblem(Problem("s", "p", model = "/outside/model"), source, contents) }
+        assertFailsWith<IllegalArgumentException> { portablePath("lab-corpus/../escape", source, contents) }
+    }
+
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {
         val (manifest, bytes) = bundle(mapOf("bin/tool" to "hello"))
         val cache = VerifiedCache(root.resolve("cache"), 1024 * 1024)

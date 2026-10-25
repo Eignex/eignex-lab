@@ -86,9 +86,15 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val logs = streamLogs(claim, directory)
             try {
                 phase("preparing")
-                val result = executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing") }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
+                val result = if (manifest.preparationTimeoutSec != null) {
+                    val preparation = PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
+                        WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(supervisorSocket)), ::download,
+                        if (CliMeasurements.localMacOs) "mac" else "linux", workerArch())
+                        .run(manifest, directory, ::runRemainingMs, ::remaining) { file -> upload(file, claim.owner) }
+                    IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
+                } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing") }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
                 phase("uploading")
-                val outputs = mutableMapOf<String, String>()
+                val outputs = result.artifacts.toMutableMap()
                 for (case in result.cases) {
                     for (suffix in listOf("out", "err", "exit", "termination")) {
                         val name = "${case.index}.$suffix"; val file = directory.resolve(name)

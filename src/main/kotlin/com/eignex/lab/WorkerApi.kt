@@ -91,7 +91,8 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
             }
             get("/inputs/{sha}") {
                 require(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
-                require(store.execution.manifest(s.id).bundles.any { it.sha256 == sha })
+                val manifest = store.execution.manifest(s.id)
+                require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
                 val file = artifacts.readFile(s.jobId, sha)
                 val range = call.request.headers[HttpHeaders.Range] ?: "bytes=0-"
                 val match = requireNotNull(Regex("bytes=([0-9]+)-([0-9]*)").matchEntire(range))

@@ -1,0 +1,127 @@
+package com.eignex.lab
+
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.Path
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+@Serializable
+data class PreparationResult(
+    val selections: List<List<Problem>>, val bundles: List<WorkerBundle>, val corpus: WorkerBundle? = null,
+    val features: List<ProblemFeatures> = emptyList(), val artifacts: Map<String, String> = emptyMap(),
+)
+
+/** Relative roots in the domain plan have the same meaning on every worker. */
+internal fun portableProblem(problem: Problem, source: Path, corpus: Path): Problem {
+    fun path(value: String): String {
+        val file = Path.of(value).let { if (it.isAbsolute) it else source.resolve(it) }.toAbsolutePath().normalize()
+        return when {
+            file.startsWith(corpus.toAbsolutePath().normalize()) -> "lab-corpus/" + corpus.toAbsolutePath().normalize().relativize(file)
+            file.startsWith(source.toAbsolutePath().normalize()) -> "lab-source/" + source.toAbsolutePath().normalize().relativize(file)
+            else -> error("selection returned a path outside its source and corpus")
+        }.replace('\\', '/').also { safeRelative(it) }
+    }
+    return problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
+}
+
+internal fun workerEnvironment(mac: Boolean): Map<String, String> = System.getenv().filterKeys {
+    it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || mac && it == "DOCKER_HOST"
+} + mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+
+/** Preparation is a worker operation under the same supervisor, cgroup and ownership lease as solves. */
+class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
+                          private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
+                          private val os: String, private val arch: String) {
+    fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
+            upload: (Path) -> String): PreparationResult {
+        Files.createDirectories(directory)
+        val timeout = requireNotNull(manifest.preparationTimeoutSec)
+        val expires = System.nanoTime() + timeout * 1_000_000_000
+        fun remaining(): Long = minOf(remainingLeaseMs(), (expires - System.nanoTime()) / 1_000_000)
+        fun checkActive() {
+            check(remaining() > 0) { "preparation allowance expired" }
+            if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+        }
+        val corpus = Files.createDirectories(directory.resolve("corpus"))
+        val env = workerEnvironment(os == "mac")
+        val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
+        fun run(tree: Path, command: String, output: Path = log) {
+            checkActive()
+            val exit = supervisor.run(listOf("bash", "-c", command), tree, env, output, errors, timeout,
+                graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining)
+            if (exit != 0) throw WorkerBuildFailure("preparation command failed (exit $exit): " + Files.readString(errors).takeLast(8192))
+        }
+        val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
+            val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
+            val input = cache.stage(bundle, ::checkActive) { download(bundle) }
+            val built = if (bundle.build == null) input else builds.prepare(bundle, input, manifest.budget, env, remainingRunMs, ::remaining)
+            val tree = directory.resolve("worktrees/$sha")
+            Files.walk(built).use { paths -> paths.forEach { file ->
+                checkActive(); val target = tree.resolve(built.relativize(file))
+                if (Files.isDirectory(file, NOFOLLOW_LINKS)) Files.createDirectories(target) else Files.copy(file, target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
+            } }
+            if (!manifest.experiment.isProfile && manifest.arms.any { it.arm.values["backend"] != REFERENCE_BACKEND }) run(tree, Experiments.captureProvenance(tree.toString()))
+            tree
+        }
+        val primary = prepared.getValue(manifest.arms.first().sha)
+        val json = Json { ignoreUnknownKeys = true }
+        fun select(selection: Map<String, String>, name: String): List<Problem> {
+            val output = directory.resolve("$name.jsonl")
+            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary"
+            run(primary, "cd ${quote("$primary/klause-bench")} && JAVA_OPTS=${quote(options)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
+                "./build/install/klause-bench/bin/klause-bench select ${Experiments.selectArgs(selection)}", output)
+            return Files.readAllLines(output).filter { it.startsWith("{") }.map { json.decodeFromString<Problem>(it) }
+        }
+        val spec = manifest.experiment
+        val selections = when {
+            spec.isProfile -> listOf(listOf(Experiments.profileProblem(spec)))
+            spec.problemList.isNotEmpty() -> listOf(spec.problemList.map { problem ->
+                val resolved = select(mapOf("suite" to problem.suite, "name" to problem.problem, "per-family" to "1000000", "files" to "true"), "exact-${spec.problemList.indexOf(problem)}")
+                    .single { it.suite == problem.suite && it.problem == problem.problem }
+                portableProblem(resolved, primary, corpus)
+            })
+            else -> spec.problems.mapIndexed { index, selection ->
+                val mode = Experiments.referenceFilter(spec, selection)
+                val asked = if (Experiments.refills(mode, selection)) Experiments.uncapped(selection) else selection
+                select(asked + ("files" to "true"), "selection-$index").map { portableProblem(it, primary, corpus) }
+            }
+        }
+        val artifacts = mutableMapOf<String, String>()
+        val bundles = prepared.map { (sha, tree) ->
+            val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
+            archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip")) }
+        }
+        val corpusBundle = if (Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
+            archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), ::checkActive)
+                .also { artifacts["preparation/corpus.zip"] = upload(directory.resolve("corpus.zip")) }
+        } else null
+        for (name in listOf("setup.log", "setup.err") + selections.indices.map { "selection-$it.jsonl" }) {
+            val path = directory.resolve(name)
+            if (Files.isRegularFile(path)) artifacts["preparation/$name"] = upload(path)
+        }
+        require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
+        return PreparationResult(selections, bundles, corpusBundle, artifacts = artifacts)
+    }
+}
+
+/** Archive inventory and stream are bounded independently; links and special files never leave a worker. */
+internal fun archive(tree: Path, output: Path, identity: WorkerBundle, checkActive: () -> Unit): WorkerBundle {
+    var total = 0L
+    val files = Files.walk(tree).use { paths -> paths.filter { !Files.isDirectory(it, NOFOLLOW_LINKS) }.sorted().map { path ->
+        checkActive(); require(Files.isRegularFile(path, NOFOLLOW_LINKS))
+        val bytes = Files.size(path); require(bytes <= 32L * 1024 * 1024 * 1024 - total); total += bytes
+        InputFile(tree.relativize(path).toString().replace('\\', '/'), hashFile(path), bytes, Files.isExecutable(path))
+    }.toList() }
+    require(files.isNotEmpty())
+    ZipOutputStream(Files.newOutputStream(output)).use { zip -> for (file in files) {
+        checkActive(); zip.putNextEntry(ZipEntry(file.path).apply { time = 0 })
+        Files.newInputStream(tree.resolve(file.path)).use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) { checkActive(); val count = input.read(buffer); if (count < 0) break; zip.write(buffer, 0, count) }
+        }; zip.closeEntry()
+    } }
+    return identity.copy(sha256 = hashFile(output), files = files, build = null)
+}
