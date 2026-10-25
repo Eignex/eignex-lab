@@ -1526,7 +1526,8 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
 /**
  * The cloud launch gauge, from the worker's `aws/nodes.json` ([NodePoolReport]): the pressure against the threshold for
  * the next node as a bar, how long it has stood over it against `nodeSustainMin`, the cooldown left, what holds the
- * next node back, and the nodes up, with their sizes, markets and what each is doing. A report an older lab wrote has
+ * next node back, and the nodes up, with their sizes, markets, the cases running of each one's capacity and what each is
+ * doing, for every job it runs at once. A report an older lab wrote has
  * no gate fields; the threshold is then worked out from the settings, and the rest left out.
  */
 private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
@@ -1563,11 +1564,13 @@ private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
     } else {
         append("cloud nodes: ${report.nodes.size} (")
         append(report.nodes.joinToString(", ") { node ->
-            val doing = node.job?.let { job -> esc(node.doing).replace("job $job", "<a href=\"/jobs/$job\">job $job</a>") } ?: esc(node.doing)
+            val doing = esc(node.doing).replace(Regex("\\bjob (\\d+)")) { "<a href=\"/jobs/${it.groupValues[1]}\">job ${it.groupValues[1]}</a>" }
             val manual = if (node.manual) " <span title=\"started by hand\">manual</span>" else ""
+            val profiles = if (node.ordinary) "" else " <span title=\"bought on demand for profile jobs: it takes no other work, and retires once none waits\">profiles only</span>"
+            val slots = node.slots?.let { " <span title=\"cases running of the node's capacity, one per two physical cores, shared by every job on it\">${node.busySlots ?: 0}/$it cases</span>" }.orEmpty()
             val adopted = if (node.adopted) " <span title=\"taken back after a lab restart\">adopted</span>" else ""
             val age = node.launchedAt?.let { " up ${wallText((at - it).coerceAtLeast(0) / 3_600_000.0)}" }.orEmpty()
-            "<span title=\"${esc(node.instance + " · " + node.tags.sorted().joinToString())}\">${esc(node.type)} ${esc(node.market)}</span>$manual$adopted$age $doing"
+            "<span title=\"${esc(node.instance + " · " + node.tags.sorted().joinToString())}\">${esc(node.type)} ${esc(node.market)}</span>$manual$profiles$adopted$age$slots $doing"
         })
         append(")")
     }

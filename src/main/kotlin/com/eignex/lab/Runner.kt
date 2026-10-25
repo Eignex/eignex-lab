@@ -577,7 +577,8 @@ class Runner(
     /**
      * Start what [pending] holds of [job] on [host], in order, within the job's case limit and the host's core budget: a
      * case too big for the cores left waits for room rather than letting smaller later ones jump it. One case always
-     * may run. Each is rendered for [host] as it starts ([render]), and its iteration marked started.
+     * may run, as far as the job goes; a cloud node shared with other jobs must also have room for it ([ExecutionHost.acquire]),
+     * which the case gives back when it ends. Each is rendered for [host] as it starts ([render]), and its iteration marked started.
      */
     private fun start(
         job: Job, dir: Path, host: ExecutionHost, pending: ArrayDeque<Command>, active: MutableMap<Int, Future<Int>>,
@@ -585,13 +586,27 @@ class Runner(
     ) {
         val limit = host.parallel(store.parallel(job.id))
         while (pending.isNotEmpty() && active.size < limit &&
-            (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores)
+            (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores) &&
+            host.acquire(pending.first().cores)
         ) {
-            val command = render(pending.removeFirst())
-            iterationOf[command.index]?.let(started::add)
-            ProfileRunDeadline.checkActive()
-            store.commandStarted(job.id, command.index, host.id, command.cmd)
-            active[command.index] = pool.submit(ProfileRunDeadline.task { host.run(command, dir) })
+            val cores = pending.first().cores
+            var submitted = false
+            try {
+                val command = render(pending.removeFirst())
+                iterationOf[command.index]?.let(started::add)
+                ProfileRunDeadline.checkActive()
+                store.commandStarted(job.id, command.index, host.id, command.cmd)
+                active[command.index] = pool.submit(ProfileRunDeadline.task {
+                    try {
+                        host.run(command, dir)
+                    } finally {
+                        host.release(cores)
+                    }
+                })
+                submitted = true
+            } finally {
+                if (!submitted) host.release(cores)
+            }
         }
     }
 

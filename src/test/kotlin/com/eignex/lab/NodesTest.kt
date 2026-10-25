@@ -2,6 +2,8 @@ package com.eignex.lab
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class NodesTest {
     private val sizes = listOf(InstanceSize("c7i.2xlarge", 8), InstanceSize("c7i.4xlarge", 16), InstanceSize("c7i.8xlarge", 32))
@@ -75,9 +77,9 @@ class NodesTest {
     }
 
     @Test
-    fun `a node is the smallest size that covers its share of the pressure, capped well below the largest`() {
-        fun size(cores: Int = 1, pressure: Double, nodes: Int = 0, free: Int = 128, max: Int = 16) =
-            NodePool.size(sizes, cores, pressure, nodes, free, max)?.type
+    fun `a node is the smallest size that covers the pressure the nodes up leave, capped well below the largest`() {
+        fun size(cores: Int = 1, pressure: Double, covered: Int = 0, free: Int = 128, max: Int = 16) =
+            NodePool.size(sizes, cores, pressure, covered, free, max)?.type
 
         assertEquals("c7i.2xlarge", size(pressure = 2.0))
         assertEquals("c7i.2xlarge", size(pressure = 8.0))
@@ -85,8 +87,13 @@ class NodesTest {
         // More pressure than one capped node covers: still capped, the next launch adds another node instead.
         assertEquals("c7i.4xlarge", size(pressure = 200.0))
         assertEquals("c7i.8xlarge", size(pressure = 200.0, max = 32))
-        // Shared over the nodes up: a third node for 24 core-hours needs only a small one.
-        assertEquals("c7i.2xlarge", size(pressure = 24.0, nodes = 2))
+        // The nodes up cover their cores for two hours each: beside two 2xlarge nodes, 24 core-hours need only a small one.
+        assertEquals("c7i.2xlarge", size(pressure = 24.0, covered = 8))
+        // The second node's threshold beside a 4xlarge (8 cores): 20 core-hours, of which it covers 16, so a 2xlarge;
+        // splitting the pressure evenly would have bought another 4xlarge.
+        assertEquals("c7i.2xlarge", size(pressure = 20.0, covered = 8))
+        assertEquals("c7i.4xlarge", size(pressure = 30.0, covered = 8))
+        assertEquals("c7i.2xlarge", size(pressure = 5.0, covered = 64))
         // A case's own cores win over the cap, and the quota over everything.
         assertEquals("c7i.8xlarge", size(cores = 16, pressure = 1.0))
         assertEquals(null, size(cores = 16, pressure = 1.0, free = 16))
@@ -133,6 +140,83 @@ class NodesTest {
         assertEquals(NodeWork.Claim(2), NodePool.pick(onDemand, emptyList(), queued))
         assertEquals(NodeWork.Claim(4), NodePool.pick(spot, emptyList(), queued, excluded = 3))
         assertEquals(NodeWork.Claim(1), NodePool.pick(NodeShape(8, onDemand = false), emptyList(), queued))
+    }
+
+    @Test
+    fun `an on-demand node runs the profile jobs it was bought for before anything else, and only them unless it takes ordinary work`() {
+        val onDemand = NodeShape(cores = 4, onDemand = true)
+        val profileOnly = onDemand.copy(ordinary = false)
+        val urgent = Demand(1, 9.0, 1, priority = 9)
+        val profile = Demand(8280, 0.1, 1, profile = true)
+        val running = Demand(8270, 1.0, 1, priority = 5, hosts = 1)
+
+        assertEquals(NodeWork.Claim(8280), NodePool.pick(onDemand, listOf(running), listOf(urgent, profile)))
+        assertEquals(NodeWork.Claim(8280), NodePool.pick(profileOnly, listOf(running), listOf(urgent, profile)))
+        // No profile left: ordinary work, unless the node keeps to profiles, which then retires once idle long enough.
+        assertEquals(NodeWork.Claim(1), NodePool.pick(onDemand, listOf(running), listOf(urgent)))
+        assertEquals(null, NodePool.pick(profileOnly, listOf(running), listOf(urgent)))
+        // A selector asking for on demand is work for it too.
+        val asksOnDemand = Demand(3, 1.0, 1, nodeTags = NodeSelector(require = setOf("on-demand")))
+        assertEquals(NodeWork.Claim(3), NodePool.pick(profileOnly.copy(tags = setOf("on-demand")), emptyList(), listOf(urgent, asksOnDemand)))
+        // A spot node keeps priority order and never takes the profile.
+        assertEquals(NodeWork.Claim(1), NodePool.pick(NodeShape(4, onDemand = false), listOf(running), listOf(urgent, profile)))
+    }
+
+    @Test
+    fun `a busy node takes another job that fits its free slots, and empties for an exclusive one`() {
+        val node = NodeShape(cores = 8, onDemand = true)
+        val small = Demand(2, 1.0, 1)
+        val wide = Demand(3, 1.0, 4)
+
+        // Beside job 1, with one slot left: the job already on it is not taken twice, and a 4-core case needs two slots.
+        assertEquals(NodeWork.Claim(2), NodePool.pick(node, listOf(Demand(1, 1.0, 1, hosts = 1)), listOf(wide, small), free = 1, on = setOf(1)))
+        assertEquals(null, NodePool.pick(node, emptyList(), listOf(wide), free = 1, on = setOf(1)))
+        assertEquals(NodeWork.Claim(3), NodePool.pick(node, emptyList(), listOf(wide), free = 2, on = setOf(1)))
+        assertEquals(null, NodePool.pick(node, emptyList(), listOf(small), free = 0, on = setOf(1)))
+        // A profile or measuring job keeps the node to itself: next in line on a busy node, the node waits for it.
+        val profile = Demand(8280, 0.1, 1, profile = true)
+        assertEquals(NodeWork.Wait(8280), NodePool.pick(node, emptyList(), listOf(profile, small), free = 3, on = setOf(8270)))
+        assertEquals(NodeWork.Claim(8280), NodePool.pick(node, emptyList(), listOf(profile, small)))
+        val measuring = Demand(4, 1.0, 1, priority = 3, measures = true)
+        assertEquals(NodeWork.Wait(4), NodePool.pick(node, emptyList(), listOf(small, measuring), free = 3, on = setOf(1)))
+        // An exclusive job below the next one in line does not hold the node.
+        assertEquals(NodeWork.Claim(2), NodePool.pick(node, emptyList(), listOf(small.copy(priority = 5), measuring), free = 3, on = setOf(1)))
+    }
+
+    @Test
+    fun `a node runs one case per two physical cores, a case of more cores taking more slots`() {
+        assertEquals(listOf(1, 1, 2, 4, 8), listOf(1, 2, 4, 8, 16).map { NodePool.slots(it) })
+        assertEquals(listOf(1, 1, 2, 2, 4, 4), listOf(1, 2, 3, 4, 8, 16).map { NodePool.caseSlots(it, capacity = 4) })
+    }
+
+    @Test
+    fun `a node's slots go first come first served across its jobs, and a job just taken holds its reservation`() {
+        val slots = NodeSlots(4)
+
+        slots.reserve(1, 4)
+        assertEquals(0, slots.free(now = 0))
+        assertTrue(slots.acquire(1, 1, now = 0))
+        // Its first case ends the reservation.
+        assertEquals(3, slots.free(now = 0))
+        assertTrue(slots.acquire(1, 1, now = 0))
+        assertTrue(slots.acquire(2, 1, now = 0))
+        assertEquals(listOf(3, 1), listOf(slots.busy, slots.free(now = 0)))
+        // Job 3 needs two: it waits, and no other job takes the slot left before it.
+        assertFalse(slots.acquire(3, 2, now = 0))
+        assertEquals(0, slots.free(now = 0))
+        assertFalse(slots.acquire(1, 1, now = 10))
+        slots.release(1)
+        assertFalse(slots.acquire(2, 1, now = 20))
+        assertTrue(slots.acquire(3, 2, now = 20))
+        assertEquals(4, slots.busy)
+        // A job that stopped asking leaves the line.
+        slots.release(2)
+        assertFalse(slots.acquire(4, 3, now = 30))
+        assertTrue(slots.acquire(1, 1, now = 30 + NodeSlots.STALE_MS + 1))
+        // A job that leaves the node gives up its place and its reservation.
+        slots.reserve(5, 2)
+        slots.leave(5)
+        assertEquals(1, slots.free(now = 30 + NodeSlots.STALE_MS + 1))
     }
 
     @Test

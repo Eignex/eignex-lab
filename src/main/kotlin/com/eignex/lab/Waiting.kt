@@ -226,12 +226,17 @@ object Waiting {
         val stale = (view.now - pool.updatedAt).takeIf { it > STALE_REPORT_MS }
             ?.let { " (pool report ${LaunchGate.minutes(it)} min old)" }.orEmpty()
         val profile = spec?.isProfile == true
-        val free = pool.nodes.filter { it.doing == IDLE && (!profile || it.market == AwsWorker.ON_DEMAND) }
-        if (free.isNotEmpty()) return "cloud: a free node takes it at its next poll$stale"
+        // A profile needs an idle on-demand node, as it keeps a node to itself; other work any node with room that takes
+        // it (a node runs several jobs at once).
+        val free = pool.nodes.filter { node ->
+            if (profile) node.doing == IDLE && node.market == AwsWorker.ON_DEMAND
+            else (node.free ?: (node.doing == IDLE)) && node.ordinary
+        }
+        if (free.isNotEmpty()) return "cloud: a node with room takes it at its next poll$stale"
         val nodes = when {
             pool.nodes.isEmpty() -> ""
-            profile -> "no on-demand node free, as a profile needs; "
-            else -> "${pool.nodes.size} ${if (pool.nodes.size == 1) "node" else "nodes"} up, none free; "
+            profile -> "no on-demand node idle, as a profile needs; "
+            else -> "${pool.nodes.size} ${if (pool.nodes.size == 1) "node" else "nodes"} up, none with room; "
         }
         return "cloud: $nodes${launch(pool, aws, view.cores)}$stale"
     }
@@ -261,7 +266,7 @@ object Waiting {
     fun cloudSummary(pool: NodePoolReport?, aws: AwsConfig, cores: Int, now: Long): String {
         if (pool == null) return "no pool report yet"
         val nodes = if (pool.nodes.isEmpty()) "no nodes up" else "nodes: " + pool.nodes.joinToString(", ") { node ->
-            "${node.type} ${node.market}${if (node.manual) " manual" else ""} ${node.doing}"
+            "${node.type} ${node.market}${if (node.manual) " manual" else ""}${node.slots?.let { " (${node.busySlots ?: 0}/$it cases)" }.orEmpty()} ${node.doing}"
         }
         val stale = (now - pool.updatedAt).takeIf { it > STALE_REPORT_MS }?.let { " · report ${LaunchGate.minutes(it)} min old" }.orEmpty()
         return "${launch(pool, aws, cores)} · $nodes$stale"
@@ -319,7 +324,7 @@ object Waiting {
      * cloud nodes the pool report says work on it. A shared job can run on both at once, each host on whole iterations.
      */
     private fun runningOn(job: Job, view: QueueView): String {
-        val nodes = view.pool?.nodes.orEmpty().filter { it.job == job.id }
+        val nodes = view.pool?.nodes.orEmpty().filter { job.id in it.jobs }
         val local = "the local machine: " + (view.local?.takeIf { it.id == job.id }?.doing ?: "running")
         val cloud = "${nodes.size} cloud ${if (nodes.size == 1) "node" else "nodes"}: " + nodes.joinToString(", ") { "${it.type} ${it.market} ${it.doing}" }
         return when {
