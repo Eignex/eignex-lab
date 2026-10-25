@@ -198,6 +198,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         }.getOrElse { error ->
             val cause = generateSequence(error) { it.cause }.last()
             System.err.println("worker: ${cause.javaClass.simpleName}: ${when (cause) { is java.nio.file.NoSuchFileException -> "missing file ${cause.file}"; is ExecutionFenced -> "allocation fenced"; is IllegalStateException -> cause.message?.take(160); else -> "session ended" }}")
+            // Frames identify failed runtime checks without logging manifests, environment, or credentials.
+            cause.stackTrace.take(12).forEach { frame -> System.err.println("worker: at $frame") }
             1
         }
     }
