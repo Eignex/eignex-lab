@@ -99,6 +99,11 @@ data class Config(
     val nodeTags: Set<String> = env("LAB_NODE_TAGS", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     val cpuCapabilities: CpuCapabilities = NodeTags.localCapabilities,
 ) {
+    val nomadCapacitySettings: Path? get() = System.getenv("LAB_NOMAD_CAPACITY_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path)
+    val nomadCapacityReport: Path get() = dataDir.resolve("nomad/capacity-report.json")
+    val nativeExecutionLock: Path get() = Path(env("LAB_NATIVE_EXECUTION_LOCK", "$dataDir/nomad/native.lock"))
+    val nativeYield: Path get() = dataDir.resolve("nomad/update-pending")
+
     val localNodeTags: Set<String> get() = NodeTags.observed(cpuCapabilities, nodeTags)
     init {
         require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {

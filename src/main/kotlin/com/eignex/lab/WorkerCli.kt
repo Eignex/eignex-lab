@@ -13,7 +13,8 @@ object WorkerCli {
         val root = Path.of(args[1]).toAbsolutePath(); Files.createDirectories(root)
         val mac = CliMeasurements.localMacOs
         val executor = IterationExecutor(ProcessSupervisor(Path.of(args[2])), VerifiedCache(root.resolve("cache")),
-            { Files.newInputStream(root.resolve("inputs/${it.sha256}.zip")) }, args[3], if (mac) "mac" else "linux", workerArch())
+            { Files.newInputStream(root.resolve("inputs/${it.sha256}.zip")) }, args[3], if (mac) "mac" else "linux", workerArch(),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(Path.of(args[2]))))
         val deadline = System.nanoTime() + 70_000_000_000
         val results = manifest.cases.groupBy { Triple(it.problem, it.seed, it.repeat) }.values.mapIndexed { index, cases ->
             executor.run(manifest, cases.map { it.index }, root.resolve("attempt-$index"), "offline-worker", 1) { (deadline - System.nanoTime()) / 1_000_000 }

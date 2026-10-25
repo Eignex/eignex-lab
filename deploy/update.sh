@@ -21,5 +21,6 @@ JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 bin="$(release "$here" "$LAB_DATA")"
 "$bin" check
+# Nomad agents and its supervisor stay on their pinned binaries; accepted remote work survives this restart.
 restart_services
 echo "running $(readlink "$LAB_DATA/releases/current")"

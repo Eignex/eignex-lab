@@ -105,6 +105,16 @@ settings() {
 
 xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<< "$1"; }
 
+# Nomad's server/client/supervisor have independent lifetimes. Existing agents require an explicit maintenance
+# command to change or restart; ordinary installs/updates may restart only the coordinator.
+if [[ -n "${LAB_NOMAD_NATIVE_CONFIG:-}" ]]; then
+  native_args=(--config "$LAB_NOMAD_NATIVE_CONFIG")
+  if [[ -n "$dry" ]]; then native_args+=(--output "$(mktemp -d)")
+  else native_args+=(--install)
+  fi
+  PATH="$path" python3 "$here/deploy/nomad/native_services.py" "${native_args[@]}"
+fi
+
 # plist <label> <keep-alive dict> <working dir> <log> <program args...>
 plist() {
   local label="$1" keepalive="$2" workdir="$3" log="$4"

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+mkdir -p /etc/eignex-lab
+cat > /etc/eignex-lab/node.json <<'EIGNEX_NODE_CONFIG'
+${config}
+EIGNEX_NODE_CONFIG
+exec /opt/eignex-lab/bootstrap-aws.sh '${secret}' '${region}' /etc/eignex-lab/node.json

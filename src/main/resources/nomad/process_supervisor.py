@@ -26,6 +26,12 @@ MAC = sys.platform == "darwin"
 REGISTRY = None
 LAUNCH_LOCK = threading.Lock()
 STOPPING = threading.Event()
+NATIVE_LOCK = None
+OWNER_LOCK = threading.Lock()
+OWNER = None
+OWNER_REFS = 0
+EXPERIMENT_MARKERS = {}
+OWNER_FILE = None
 
 
 class BsdInfo(ctypes.Structure):
@@ -99,9 +105,66 @@ def cleanup(marker, grace_ms=0):
     send_signal(found, signal.SIGKILL)
 
 
+def reserve(connection, experiment):
+    global OWNER, OWNER_REFS
+    if not isinstance(experiment, str) or not experiment or len(experiment) > 80:
+        raise ValueError("invalid experiment owner")
+    acquired = False
+    try:
+        while not acquired:
+            with OWNER_LOCK:
+                if STOPPING.is_set():
+                    return
+                if OWNER is None:
+                    try:
+                        if NATIVE_LOCK is not None:
+                            fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        OWNER = experiment
+                        if OWNER_FILE is not None:
+                            OWNER_FILE.write_text(experiment)
+                    except BlockingIOError:
+                        pass
+                if OWNER == experiment:
+                    OWNER_REFS += 1
+                    acquired = True
+            if not acquired:
+                ready, _, _ = select.select([connection], [], [], .1)
+                if ready and not connection.recv(64):
+                    return
+                if STOPPING.is_set():
+                    return
+        connection.sendall(b'{"reserved":true}\n')
+        expiry = time.monotonic() + 80
+        while time.monotonic() < expiry and not STOPPING.is_set():
+            ready, _, _ = select.select([connection], [], [], .5)
+            if ready:
+                if not connection.recv(64):
+                    break
+                expiry = time.monotonic() + 80
+    finally:
+        if acquired:
+            with LAUNCH_LOCK:
+                with OWNER_LOCK:
+                    OWNER_REFS -= 1
+                    if OWNER_REFS == 0:
+                        try:
+                            for marker, owner in list(EXPERIMENT_MARKERS.items()):
+                                if owner == experiment:
+                                    cleanup(marker)
+                            if OWNER_FILE is not None:
+                                OWNER_FILE.unlink(missing_ok=True)
+                            OWNER = None
+                            if NATIVE_LOCK is not None:
+                                fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_UN)
+                        except Exception:
+                            STOPPING.set()
+                            raise
+
+
 def serve_request(connection):
     marker = uuid.uuid4().hex
     process = None
+    cleaned = False
     try:
         connection.settimeout(5)
         pending = b""
@@ -114,12 +177,31 @@ def serve_request(connection):
                 raise ValueError("request too large")
         line, pending = pending.split(b"\n", 1)
         request = json.loads(line)
+        if request.get("operation") == "reserve":
+            connection.settimeout(None)
+            reserve(connection, request["experiment"])
+            return
+        if NATIVE_LOCK is not None:
+            with OWNER_LOCK:
+                if OWNER is None or request.get("experiment") != OWNER:
+                    raise ValueError("native execution has no host reservation")
         argv = request["argv"]
         if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\0" not in x for x in argv):
             raise ValueError("invalid argv")
         timeout = request["timeoutSec"]
         if not 0 < timeout <= 604800:
             raise ValueError("invalid timeout")
+        grace_ms = request.get("graceMs", 10000)
+        run_ms = request.get("runRemainingMs")
+        run_limited = False
+        if run_ms is not None:
+            if not 0 < run_ms <= 604800000:
+                raise ValueError("invalid profile deadline")
+            # Reserve shutdown and cleanup/transfer time inside the total active-time allowance.
+            grace_ms = min(grace_ms, run_ms // 10)
+            work_ms = max(0, run_ms - grace_ms - min(30000, run_ms // 10))
+            run_limited = work_ms < timeout * 1000
+            timeout = min(timeout, work_ms / 1000)
         environment = dict(request["environment"])
         environment[MARKER] = marker
         lease_ms = request["leaseMs"]
@@ -127,22 +209,29 @@ def serve_request(connection):
             raise ValueError("invalid lease")
         with open(request["stdout"], "wb") as out, open(request["stderr"], "wb") as err:
             with LAUNCH_LOCK:
+                if NATIVE_LOCK is not None:
+                    with OWNER_LOCK:
+                        if OWNER is None or request.get("experiment") != OWNER:
+                            raise ValueError("native reservation ended before launch")
                 if STOPPING.is_set():
                     raise RuntimeError("service stopping")
                 (REGISTRY / marker).write_text(marker)
+                EXPERIMENT_MARKERS[marker] = request.get("experiment")
                 process = subprocess.Popen(argv, cwd=request["directory"], env=environment, stdout=out,
                                            stderr=err, start_new_session=True)
             deadline = time.monotonic() + timeout
             lease = time.monotonic() + lease_ms / 1000
             connection.settimeout(None)
             code = None
+            run_timed_out = False
             while process.poll() is None:
                 current = time.monotonic()
                 if current >= lease:
                     raise TimeoutError("lease expired")
                 if current >= deadline:
-                    cleanup(marker, min(request.get("graceMs", 10000), max(0, int((lease-current)*1000))))
+                    cleanup(marker, min(grace_ms, max(0, int((lease-current)*1000))))
                     code = 124
+                    run_timed_out = run_limited
                     break
                 ready, _, _ = select.select([connection], [], [], 0 if pending else .1)
                 if ready:
@@ -162,8 +251,10 @@ def serve_request(connection):
             if code is None:
                 code = process.wait()
             cleanup(marker)
+            cleaned = True
             process.wait(timeout=10)
-            connection.sendall((json.dumps({"exitCode": code if code >= 0 else 128-code}) + "\n").encode())
+            connection.sendall((json.dumps({"exitCode": code if code >= 0 else 128-code,
+                                            "runTimedOut": run_timed_out}) + "\n").encode())
             # Keep the read side open until the worker consumes the result. Closing with an unread
             # heartbeat can reset a Unix socket and hide an otherwise completed process's exit.
             connection.shutdown(socket.SHUT_WR)
@@ -176,7 +267,11 @@ def serve_request(connection):
     except Exception as error:
         print(f"supervisor request ended: {type(error).__name__}", file=sys.stderr, flush=True)
         # Do not log requests: they can contain paths and runtime credentials.
-        cleanup(marker)
+        try:
+            cleanup(marker)
+            cleaned = True
+        except Exception:
+            STOPPING.set()  # Retain the registry and refuse new launches until recovery succeeds.
         if process is not None:
             try:
                 process.wait(timeout=10)
@@ -187,25 +282,37 @@ def serve_request(connection):
         except OSError:
             pass
     finally:
-        (REGISTRY / marker).unlink(missing_ok=True)
+        if cleaned:
+            (REGISTRY / marker).unlink(missing_ok=True)
+        with LAUNCH_LOCK:
+            EXPERIMENT_MARKERS.pop(marker, None)
         connection.close()
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", type=Path, required=True)
+    parser.add_argument("--local-lock", type=Path)
     args = parser.parse_args()
-    global REGISTRY
+    global REGISTRY, NATIVE_LOCK, OWNER_FILE
     os.umask(0o077)
     args.socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock = open(str(args.socket) + ".lock", "a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if args.local_lock:
+        args.local_lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        NATIVE_LOCK = open(args.local_lock, "a")
+        OWNER_FILE = Path(str(args.local_lock) + ".owner")
+        fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_EX)
     REGISTRY = args.socket.parent / (args.socket.name + ".owners")
     REGISTRY.mkdir(mode=0o700, exist_ok=True)
     for record in REGISTRY.iterdir():
         if len(record.name) == 32 and all(c in "0123456789abcdef" for c in record.name):
             cleanup(record.name)
             record.unlink()
+    if OWNER_FILE is not None:
+        OWNER_FILE.unlink(missing_ok=True)
+        fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_UN)
     args.socket.unlink(missing_ok=True)
 
     def stop(_signal, _frame):
@@ -214,6 +321,8 @@ def main():
             for record in REGISTRY.iterdir():
                 cleanup(record.name)
                 record.unlink(missing_ok=True)
+        if OWNER_FILE is not None:
+            OWNER_FILE.unlink(missing_ok=True)
         args.socket.unlink(missing_ok=True)
         os._exit(0)
 

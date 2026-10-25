@@ -39,6 +39,8 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
+      - name: Validate native service configuration
+        run: python3 -m unittest discover -s deploy/nomad -p 'test_*.py'
       - name: Build experimental Nomad session renderer
         run: ./gradlew installDist
       - name: Install pinned Nomad prototype

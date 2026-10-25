@@ -34,6 +34,7 @@ data class NomadBatchJob(
     val datacenter: String = "lab-prototype",
     val schemaVersion: Int = 1,
     val networkMode: String? = null,
+    val statusHostVolume: String? = null,
 ) {
     init {
         require(schemaVersion == 1) { "unsupported Nomad session schema: $schemaVersion" }
@@ -49,6 +50,7 @@ data class NomadBatchJob(
             NomadPlatform.MAC -> require(image == null) { "native Mac sessions do not use a container image" }
         }
         require(networkMode == null || (platform == NomadPlatform.LINUX && networkMode == "host"))
+        require(statusHostVolume == null || (platform == NomadPlatform.LINUX && statusHostVolume == "lab-status"))
         budget.nomadCpuMHz(cpuCapacity)
     }
 
@@ -75,6 +77,9 @@ data class NomadBatchJob(
             add(buildJsonObject {
                 put("Name", "session")
                 put("Count", 1)
+                statusHostVolume?.let { source -> putJsonObject("Volumes") {
+                    putJsonObject("status") { put("Type", "host"); put("Source", source); put("ReadOnly", true) }
+                } }
                 putJsonObject("RestartPolicy") {
                     put("Attempts", 0)
                     put("Mode", "fail")
@@ -111,12 +116,16 @@ data class NomadBatchJob(
                 put("init", true)
             }
         }
+        statusHostVolume?.let { putJsonArray("VolumeMounts") { add(buildJsonObject {
+            put("Volume", "status"); put("Destination", "/lab-status"); put("ReadOnly", true)
+        }) } }
         putJsonObject("Resources") {
             put("CPU", budget.nomadCpuMHz(cpuCapacity))
             put("MemoryMB", budget.memoryMiB)
         }
         putJsonObject("Env") {
             environment.forEach { (key, value) -> put(key, value) }
+            statusHostVolume?.let { put("LAB_WORKER_DRAIN_FILE", "/lab-status/draining") }
             put("LAB_SESSION_CPU_MILLIS", budget.cpuMillis.toString())
             put("LAB_SESSION_MEMORY_MIB", budget.memoryMiB.toString())
             put("LAB_SESSION_PARALLEL", budget.parallel.toString())
