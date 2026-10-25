@@ -29,7 +29,13 @@ object Checkers {
         return SourceChecker(
         adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(minizinc::tool),
             SmtChecker(dolmen::binary, algebraic = Z3AlgebraicCheck(z3::tool))),
-        locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config)),
+        locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config), problemPaths = { problem, revision ->
+            if (revision == null) problem else {
+                fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))
+                    com.eignex.lab.portablePath(value, config.worktree(revision.job), config.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
+                problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
+            }
+        }),
         workRoot = dir(config).resolve("tmp"),
     )
     }

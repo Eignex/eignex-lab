@@ -17,6 +17,104 @@ import kotlin.test.*
 
 /** Enabled only by connected_probe.py against its isolated TLS/ACL sandbox and local pinned registry. */
 class ConnectedNomadTest {
+    @Test fun `automatic queue builds selects stages corpus and solves after coordinator restart`() {
+        assumeTrue(System.getenv("LAB_NOMAD_INTEGRATION") == "1")
+        val state = Path.of(System.getenv("LAB_NOMAD_TEST_STATE"))
+        val root = Files.createTempDirectory(state, "queue-")
+        val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
+        val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("token"),
+            NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
+        val repository = Files.createDirectory(root.resolve("source"))
+        val script = """#!/usr/bin/env bash
+            set -eu
+            [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }
+            corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"
+            corpus="${'$'}{corpus%% *}"
+            if [[ "${'$'}{1:-}" == select ]]; then
+                mkdir -p "${'$'}corpus"
+                echo prepared-model > "${'$'}corpus/model.mps"
+                printf '{"suite":"s","problem":"p","model":"%s/model.mps","format":"mps"}\n' "${'$'}corpus"
+                exit 0
+            fi
+            test -f "${'$'}corpus/model.mps"
+            for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
+            mkdir -p "${'$'}out"
+            sleep 0.2
+            echo '{"stats":{"preparedCorpus":true}}' > "${'$'}out/record.json"
+        """.trimIndent()
+        Files.writeString(repository.resolve("bench-source"), script)
+        Files.writeString(repository.resolve("gradlew"), """#!/usr/bin/env bash
+            set -eu
+            target=klause-bench/build/install/klause-bench/bin
+            mkdir -p "${'$'}target"
+            cp bench-source "${'$'}target/klause-bench"
+            chmod u+x "${'$'}target/klause-bench"
+        """.trimIndent())
+        fun git(vararg args: String): String {
+            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText(); check(process.waitFor() == 0) { output }; return output.trim()
+        }
+        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
+        git("add", "."); git("commit", "-m", "test: fixture")
+        val sha = git("rev-parse", "HEAD")
+        val spec = ExperimentSpec("automatic-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")),
+            seeds = listOf(1, 2), host = Experiments.AWS_HOST)
+        val job = store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val budget = ResourceBudget(2000, 2048, 2)
+        val template = NomadBatchJob("template", NomadPlatform.LINUX, "lab-prototype-linux",
+            NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,
+            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), networkMode = "host")
+        val port = System.getenv("LAB_NOMAD_TEST_API_PORT").toInt()
+        val settings = NomadQueueSettings("connected-probe", "http://127.0.0.1:$port",
+            listOf(NomadQueueTarget(template, setOf(if (workerArch() == "arm64") "arch:arm64" else "arch:x86_64"))),
+            preparationBudget = ResourceBudget(1000, 1024), preparationTimeoutSec = 60, caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 2)
+        val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), minFreeBytes = 0, solveJavaOpts = "-Xmx256m")
+        var publications = 0
+        val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> = { _, _, _ ->
+            publications++
+            val archive = root.resolve("source.zip")
+            val bundle = SourceInputs({ _, commit -> check(commit == sha) }).publish(repository, Repositories.DEFAULT, sha, "linux", workerArch(), "fixture",
+                WorkerBuild(listOf("installDist")), archive)
+            Files.newInputStream(archive).use { artifacts.put(job, bundle.sha256, Files.size(archive), 0, it) }
+            Experiments.arms(spec).map { PlannedArm(it, sha) } to listOf(bundle)
+        }
+        var backend = NomadBackend(store, client, artifacts, { root.resolve("jobs/$it") })
+        var queue = NomadQueue(config, store, backend, artifacts, settings, { true }, completed = {}, source = source)
+        var server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(store, backend, artifacts) { true } }.start()
+        try {
+            var restarted = false
+            val deadline = System.nanoTime() + 120_000_000_000
+            while (System.nanoTime() < deadline) {
+                backend.reconcile()
+                if (!restarted && store.execution.accepted(job).any { it.second.preparation != null }) {
+                    server.stop(0, 1000)
+                    val fresh = Store(root.resolve("lab.db"))
+                    backend = NomadBackend(fresh, client, artifacts, { root.resolve("jobs/$it") })
+                    queue = NomadQueue(config, fresh, backend, artifacts, settings, { true }, completed = {}, source = source)
+                    server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(fresh, backend, artifacts) { true } }.start()
+                    restarted = true
+                }
+                queue.reconcile()
+                if (store.job(job)!!.status in setOf(Status.DONE, Status.FAILED)) break
+                Thread.sleep(250)
+            }
+            assertEquals(Status.DONE, store.job(job)!!.status, store.job(job)!!.error)
+            assertTrue(restarted)
+            assertEquals(1, publications)
+            assertEquals(4, store.job(job)!!.done)
+            assertTrue(store.job(job)!!.commands.all { it.cmd.contains("worktrees/") })
+            assertEquals(1, store.execution.accepted(job).count { it.second.preparation != null })
+            assertEquals(2, store.execution.accepted(job).count { it.second.preparation == null })
+            assertTrue(store.caseRecordText(job, 0)!!.contains("preparedCorpus"))
+            assertEquals("prepared-model", Files.readString(root.resolve("jobs/$job/nomad/prepared-corpus/model.mps")).trim())
+            assertTrue(store.casePlan(job).all { it.problem.model == "lab-corpus/model.mps" })
+        } finally {
+            store.requestCancel(job)
+            for (session in store.execution.sessions(job)) client.stop(session.nomadJobId)
+            server.stop(1000, 3000)
+        }
+    }
+
     @Test fun `real Nomad allocation authenticates runs a paired iteration and commits through HTTP`() {
         assumeTrue(System.getenv("LAB_NOMAD_INTEGRATION") == "1")
         val state = Path.of(System.getenv("LAB_NOMAD_TEST_STATE"))

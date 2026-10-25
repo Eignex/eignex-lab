@@ -623,7 +623,7 @@ class Runner(
      * After a scheduled run, queue a [Confirm] job for the problems it flipped against the run before it of the same
      * experiment at another commit. Nothing is queued for a confirmation itself, a first run, or a run with no flips.
      */
-    private fun queueConfirmation(job: Job) {
+    internal fun queueConfirmation(job: Job) {
         val spec = job.experiment ?: return
         val series = job.name.substringBefore('@', "")
         if (series.isEmpty() || series.endsWith(Confirm.SUFFIX) || store.schedules().none { it.name == series }) return
@@ -637,7 +637,8 @@ class Runner(
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
         if (flips.confirmable.isEmpty()) return
         val confirmation = Confirm.spec(series, spec, before, after, flips, job.id)
-        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
+        if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
+        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation, backend = config.executionBackend)
         log(job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
             "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +
             "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${previous.id}: queued confirmation job $id")
@@ -726,7 +727,7 @@ class Runner(
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
             val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)), auto = false, machines = null)
-            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
+            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec, backend = config.executionBackend)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }

@@ -36,6 +36,30 @@ class ExecutionStoreTest {
         return id
     }
 
+    @Test fun `preparation has fenced ownership before a plan and survives coordinator restart`() {
+        val spec = ExperimentSpec("prepare")
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        store.execution.createSession("prep", id, "prepare", "release", budget, token, "{}", 1000)
+        store.execution.bind("prep", token, "allocation", "node", "release", 1000)
+        val first = store.execution.claim("prep", token, "allocation", 1100)!!
+        assertTrue(first.indices.isEmpty())
+        assertEquals(first, Store(file).execution.claim("prep", token, "allocation", 1101))
+        store.execution.loseSession("prep", "infrastructure:spot", 1200)
+        store.execution.createSession("replacement", id, "prepare", "release", budget, token, "{}", 1200)
+        store.execution.bind("replacement", token, "allocation-2", "node-2", "release", 1200)
+        val next = store.execution.claim("replacement", token, "allocation-2", 1300)!!
+        assertEquals(2, next.owner.generation)
+        assertFailsWith<ExecutionFenced> { store.execution.renew(first.owner, 1301) }
+        store.execution.phase(next.owner, "uploading", 1301)
+        val result = IterationResult(emptyList(), preparation = PreparationResult(emptyList(), emptyList()))
+        assertTrue(store.execution.commit(next.owner, result, 1302))
+        val restarted = Store(file)
+        assertEquals(result, restarted.execution.accepted(id).single().second)
+        assertTrue(restarted.execution.commit(next.owner, result, 1303))
+        assertNull(restarted.execution.claim("replacement", token, "allocation-2", 1304))
+        assertFalse(restarted.job(id)!!.setupDone)
+    }
+
     @Test fun `profile allowance survives replacement and expires without another infrastructure retry`() {
         val id = profile(); bind(id, "first")
         val first = store.execution.claim("first", token, "alloc-first", 1100)!!

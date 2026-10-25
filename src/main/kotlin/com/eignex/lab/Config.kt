@@ -98,7 +98,10 @@ data class Config(
     /** Operator labels on the local node; CPU and placement facts are detected rather than overridden. */
     val nodeTags: Set<String> = env("LAB_NODE_TAGS", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     val cpuCapabilities: CpuCapabilities = NodeTags.localCapabilities,
+    val executionBackend: ExecutionBackendKind = ExecutionBackendKind.entries.single { it.wire == env("LAB_EXECUTION_BACKEND", "legacy") },
+    val nomadQueueSettings: Path? = System.getenv("LAB_NOMAD_QUEUE_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path),
 ) {
+    val nomadQueue: NomadQueueSettings? get() = nomadQueueSettings?.let { kotlinx.serialization.json.Json.decodeFromString<NomadQueueSettings>(Files.readString(it)) }
     val nomadCapacitySettings: Path? get() = System.getenv("LAB_NOMAD_CAPACITY_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path)
     val nomadCapacityReport: Path get() = dataDir.resolve("nomad/capacity-report.json")
     val nativeExecutionLock: Path get() = Path(env("LAB_NATIVE_EXECUTION_LOCK", "$dataDir/nomad/native.lock"))

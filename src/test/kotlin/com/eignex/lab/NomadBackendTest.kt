@@ -39,14 +39,14 @@ class NomadBackendTest {
     private lateinit var session: ExecutionSession
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
-    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX): Long {
+    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false): Long {
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
         val plannedProblems = List(problems) { Problem("s", "p$it") }
         val id = store.create(name, "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
-        store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
+        if (!preparation) store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("bin/bench", "c".repeat(64), 5)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "test")
-        manifest = WorkManifest("session", "release", spec, arms, cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2))
+        manifest = WorkManifest("session", "release", spec, arms, if (preparation) emptyList() else cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2), preparationTimeoutSec = if (preparation) 60 else null)
         val command = if (platform == NomadPlatform.LINUX) listOf("worker") else listOf("/releases/fixture/bin/eignex-lab", "worker")
         val image = if (platform == NomadPlatform.LINUX) "registry/worker@sha256:" + "d".repeat(64) else null
         session = backend().enqueue(id, manifest, NomadBatchJob("placeholder", platform, "fixture", NomadCpuCapacity(4000, 4), manifest.budget, command, image), "http://127.0.0.1:8091")
@@ -62,6 +62,88 @@ class NomadBackendTest {
         return "$payload.${b64(signature)}"
     }
     private fun register() = backend().register(session.id, token, "allocation", jwt(), "release")
+
+    @Test fun `Spot loss replaces preparation before there are planned commands`() {
+        val id = setup(preparation = true); backend().reconcile(); register()
+        val first = backend().claim(session.id, token, "allocation")!!
+        assertEquals("preparation", first.owner.iteration)
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "lost")
+        backend(Store(file)).reconcile()
+        val replacement = store.execution.sessions(id).single { it.desired != "stop" }
+        assertEquals("prepare", replacement.executionClass)
+        assertNotEquals(session.id, replacement.id)
+        assertNotNull(store.execution.manifest(replacement.id).preparationTimeoutSec)
+        assertTrue(store.job(id)!!.commands.isEmpty())
+        assertFailsWith<ExecutionFenced> { store.execution.renew(first.owner) }
+    }
+
+    @Test fun `accepted preparation is retained without completing the experiment or preparing twice`() {
+        val id = setup(preparation = true); backend().reconcile(); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val bytes = "prepared source".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        val prepared = manifest.bundles.single().copy(sha256 = sha)
+        val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
+        store.execution.phase(claim.owner, "preparing")
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(Problem("s", "p"))))
+        val preparation = PreparationResult(selected, listOf(prepared), artifacts = outputs)
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = preparation))
+        backend(Store(file)).reconcile()
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertFalse(store.job(id)!!.setupDone)
+        assertEquals(1, store.execution.sessions(id).size)
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertEquals(preparation, store.execution.accepted(id).single().second.preparation)
+        assertEquals("prepared source", Files.readString(root.resolve("jobs/$id/preparation/${prepared.commit}.zip")))
+    }
+
+    @Test fun `selection approval is durable idempotent and cannot be changed by a preparing worker`() {
+        val spec = ExperimentSpec("selection", problems = listOf(mapOf("suite" to "s", "reference" to "proven", "max" to "1")), host = "auto")
+        val id = setup(2, spec, preparation = true); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "preparing")
+        store.putReferences(listOf(("" to "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
+        val requested = listOf(listOf(Problem("s", "p0"), Problem("s", "p1")))
+        val selected = backend().selectPreparation(claim.owner, requested)
+        assertEquals(listOf("p1"), selected.single().map { it.problem })
+        store.retireReferenceRows("", "gecode")
+        assertEquals(selected, backend(Store(file)).selectPreparation(claim.owner, requested))
+        assertFailsWith<ExecutionFenced> { backend().selectPreparation(claim.owner, requested.map { it.reversed() }) }
+        val bytes = "source".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        val outputs = mapOf("preparation/${manifest.bundles.single().commit}.zip" to sha)
+        val forged = PreparationResult(listOf(listOf(Problem("s", "p0"))), listOf(manifest.bundles.single().copy(sha256 = sha)), artifacts = outputs)
+        store.execution.phase(claim.owner, "uploading")
+        assertFailsWith<IllegalArgumentException> { backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = forged)) }
+        assertTrue(store.execution.accepted(id).isEmpty())
+    }
+
+    @Test fun `empty approved selection is a permanent preparation failure`() {
+        val spec = ExperimentSpec("empty", problems = listOf(mapOf("suite" to "s", "reference" to "proven")), host = "auto")
+        val id = setup(1, spec, preparation = true); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "preparing")
+        assertFailsWith<ExecutionFenced> { backend().selectPreparation(claim.owner, listOf(listOf(Problem("s", "p0")))) }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertTrue(store.job(id)!!.error!!.contains("reference filter"))
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+    }
+
+    @Test fun `pending source checks preserve accepted output without blocking reconciliation or finishing early`() {
+        val id = setup(1); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") }))
+        var ready = false
+        val asynchronous = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { _, _ -> if (ready) "valid" else null })
+        asynchronous.reconcile()
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertEquals(1, store.execution.accepted(id).size)
+        assertTrue(store.execution.checksComplete(id).isEmpty())
+        ready = true; asynchronous.reconcile()
+        assertEquals(Status.DONE, store.job(id)!!.status)
+    }
 
     @Test fun `nondefault namespace scopes both submitted jobs and signed worker registration`() {
         control.namespace = "benchmarks"; setup(); backend().reconcile()
@@ -117,13 +199,23 @@ class NomadBackendTest {
     @Test fun `cloud admission refuses local placement exceptions and respects schedule cloud opt in`() {
         val spec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), host = "auto")
         for ((candidate, name) in listOf(spec.copy(host = "lab") to "test", spec to "test${Confirm.SUFFIX}", spec to "schedule@sha",
-            spec.copy(problemList = listOf(Problem("s", "p0"))) to "test",
-            spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "scip")) to "test",
-            spec.copy(profile = ProfileMain(main = "Main", runTimeoutSec = 1)) to "test")) {
+            spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "scip")) to "test")) {
             assertFailsWith<IllegalArgumentException>(name) { setup(1, candidate, name) }
         }
         store.createSchedule("schedule", "main", spec, 3600)
         setup(1, spec, "schedule@sha")
+    }
+
+    @Test fun `cloud workers can stage exact problem lists`() {
+        val spec = ExperimentSpec("exact", problemList = listOf(Problem("s", "p0")), host = "auto")
+        val id = setup(1, spec)
+        assertEquals(id, session.jobId)
+    }
+
+    @Test fun `cloud workers enforce the whole run profile deadline`() {
+        val spec = ExperimentSpec("bounded", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1), host = "auto")
+        val id = setup(1, spec)
+        assertEquals(id, session.jobId)
     }
 
     @Test fun `ambiguous registration retries persisted identity and coordinator restart retains claims`() {
