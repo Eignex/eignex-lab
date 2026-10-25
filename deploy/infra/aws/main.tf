@@ -7,6 +7,7 @@ locals {
   trust_control = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { AWS = var.control_principal_arn }, Action = "sts:AssumeRole" }] })
   trust_lambda  = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }] })
   node_config = {
+    provider     = "aws"
     pool         = var.pool_id, nodeClass = var.node_class, datacenter = var.datacenter, servers = var.nomad_servers,
     workerImage  = var.worker_image, vcpus = var.vcpus, memoryMiB = var.memory_mib,
     architecture = var.architecture, minimumFeatures = var.minimum_features, lifetimeSeconds = 21600
@@ -233,7 +234,10 @@ resource "aws_iam_role_policy" "scaler" {
     { Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:DescribeScalingActivities", "autoscaling:DescribeInstanceRefreshes"], Resource = "*" },
     # The autoscaler can change desired capacity, but cannot reopen max/min after cloud expiry.
     { Effect = "Allow", Action = ["autoscaling:UpdateAutoScalingGroup"], Resource = aws_autoscaling_group.workers.arn, Condition = { Null = { "autoscaling:MaxSize" = "true", "autoscaling:MinSize" = "true" } } },
-    { Effect = "Allow", Action = ["autoscaling:TerminateInstanceInAutoScalingGroup", "autoscaling:CreateOrUpdateTags"], Resource = aws_autoscaling_group.workers.arn }
+    { Effect = "Allow", Action = ["autoscaling:TerminateInstanceInAutoScalingGroup"], Resource = aws_autoscaling_group.workers.arn },
+    # Preserve ownership tags used by independent expiry. The pinned plugin writes only lifecycle phase tags.
+    { Effect = "Allow", Action = ["autoscaling:CreateOrUpdateTags"], Resource = aws_autoscaling_group.workers.arn,
+    Condition = { "ForAllValues:StringLike" = { "aws:TagKeys" = ["nomad_autoscaler_lifecycle_phase_*"] }, Null = { "aws:TagKeys" = "false" } } }
   ] })
 }
 resource "aws_iam_role" "adapter" {
