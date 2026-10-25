@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import re
+import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -42,19 +43,25 @@ class InstallTest(unittest.TestCase):
                 expected = root / "custom-data" if configured_data else home / "eignex-lab-data"
                 self.assertIn(f"checked data: {expected}", result.stdout)
                 for role in ("api", "runner"):
-                    unit = (units / f"eignex-lab-{role}.service").read_text()
-                    self.assertIn(f'Environment="LAB_DATA={expected}"', unit)
-                    self.assertEqual(1, unit.count('Environment="LAB_DATA='))
-                    self.assertIn(f"WorkingDirectory={expected}", unit)
-                    self.assertIn(f"ExecStart={launcher} {role}", unit)
+                    if os.uname().sysname == "Darwin":
+                        raw = (units / f"com.eignex.lab.{role}.plist").read_bytes()
+                        plist = plistlib.loads(raw)
+                        self.assertEqual(str(expected), plist["EnvironmentVariables"]["LAB_DATA"])
+                        self.assertEqual(1, raw.count(b"<key>LAB_DATA</key>"))
+                        self.assertEqual(str(expected), plist["WorkingDirectory"])
+                        self.assertEqual([str(launcher), role], plist["ProgramArguments"][-2:])
+                    else:
+                        unit = (units / f"eignex-lab-{role}.service").read_text()
+                        self.assertIn(f'Environment="LAB_DATA={expected}"', unit)
+                        self.assertEqual(1, unit.count('Environment="LAB_DATA='))
+                        self.assertIn(f"WorkingDirectory={expected}", unit)
+                        self.assertIn(f"ExecStart={launcher} {role}", unit)
             finally:
                 shutil.rmtree(units)
 
-    @unittest.skipUnless(os.uname().sysname == "Linux", "checks systemd rendering")
     def test_default_data_is_exported_to_host_check_and_services(self):
         self.install(configured_data=False)
 
-    @unittest.skipUnless(os.uname().sysname == "Linux", "checks systemd rendering")
     def test_explicit_data_is_preserved_without_duplicate_environment(self):
         self.install(configured_data=True)
 
