@@ -23,7 +23,7 @@ class ConnectedNomadTest {
         val root = Files.createTempDirectory(state, "lab-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
-        val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")))
+        val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), host = "auto")
         val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
         val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
         val job = store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)

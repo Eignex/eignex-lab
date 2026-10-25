@@ -144,6 +144,16 @@ bound aggregate case threads; durable claim grants preserve the experiment's per
 Workers renew every ten seconds and stop owned processes ten seconds before their last confirmed lease would expire,
 using monotonic local time. A volume hold blocks registration, new claims, renewals and acceptance; stop intents remain
 available. Pause drains at the iteration boundary. Cancellation fences ownership before stop delivery.
+Deletion waits until every session's durable stop has been acknowledged. An explicit `lab retry` starts a fresh
+infrastructure retry allowance while preserving the previous loss events. The coordinator's configured namespace
+scopes both job submission and signed allocation identity verification. Admission enforces stored host placement
+and the existing local-only exceptions, including confirmations, reference runs and local schedules.
+
+Profiles with `runTimeoutSec` use the experiment's durable accumulated active time. Lease responses carry the
+remaining whole-run allowance; workers track it monotonically across preparation, builds, execution and transfers.
+Supervision reserves shutdown and cleanup time inside that allowance. Expiry permanently fails and fences the run
+rather than spending infrastructure retries. Accepted timeout captures still ingest after failure. Ordinary case
+timeouts retain the existing 30-second shutdown grace for JVM/JFR output.
 
 Uploads resume from the confirmed byte offset and publish only after size/checksum verification and filesystem sync.
 Input downloads use bounded ranges and resume without rerunning captured cases. Accepted artifacts are projected into

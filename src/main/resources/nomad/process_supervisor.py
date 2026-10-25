@@ -191,6 +191,17 @@ def serve_request(connection):
         timeout = request["timeoutSec"]
         if not 0 < timeout <= 604800:
             raise ValueError("invalid timeout")
+        grace_ms = request.get("graceMs", 10000)
+        run_ms = request.get("runRemainingMs")
+        run_limited = False
+        if run_ms is not None:
+            if not 0 < run_ms <= 604800000:
+                raise ValueError("invalid profile deadline")
+            # Reserve shutdown and cleanup/transfer time inside the total active-time allowance.
+            grace_ms = min(grace_ms, run_ms // 10)
+            work_ms = max(0, run_ms - grace_ms - min(30000, run_ms // 10))
+            run_limited = work_ms < timeout * 1000
+            timeout = min(timeout, work_ms / 1000)
         environment = dict(request["environment"])
         environment[MARKER] = marker
         lease_ms = request["leaseMs"]
@@ -212,13 +223,15 @@ def serve_request(connection):
             lease = time.monotonic() + lease_ms / 1000
             connection.settimeout(None)
             code = None
+            run_timed_out = False
             while process.poll() is None:
                 current = time.monotonic()
                 if current >= lease:
                     raise TimeoutError("lease expired")
                 if current >= deadline:
-                    cleanup(marker, min(request.get("graceMs", 10000), max(0, int((lease-current)*1000))))
+                    cleanup(marker, min(grace_ms, max(0, int((lease-current)*1000))))
                     code = 124
+                    run_timed_out = run_limited
                     break
                 ready, _, _ = select.select([connection], [], [], 0 if pending else .1)
                 if ready:
@@ -240,7 +253,8 @@ def serve_request(connection):
             cleanup(marker)
             cleaned = True
             process.wait(timeout=10)
-            connection.sendall((json.dumps({"exitCode": code if code >= 0 else 128-code}) + "\n").encode())
+            connection.sendall((json.dumps({"exitCode": code if code >= 0 else 128-code,
+                                            "runTimedOut": run_timed_out}) + "\n").encode())
             # Keep the read side open until the worker consumes the result. Closing with an unread
             # heartbeat can reset a Unix socket and hide an otherwise completed process's exit.
             connection.shutdown(socket.SHUT_WR)
