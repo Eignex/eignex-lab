@@ -5,3 +5,6 @@ namespace "default" {
 node {
   policy = "read"
 }
+host_volume "lab-status" {
+  capabilities = ["mount-readonly"]
+}

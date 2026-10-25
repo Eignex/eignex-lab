@@ -22,7 +22,7 @@ class ConnectedNomadTest {
         val state = Path.of(System.getenv("LAB_NOMAD_TEST_STATE"))
         val root = Files.createTempDirectory(state, "queue-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
-        val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("token"),
+        val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"),
             NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
         val repository = Files.createDirectory(root.resolve("source"))
         val script = """#!/usr/bin/env bash
@@ -63,7 +63,7 @@ class ConnectedNomadTest {
         val budget = ResourceBudget(2000, 2048, 2)
         val template = NomadBatchJob("template", NomadPlatform.LINUX, "lab-prototype-linux",
             NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,
-            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), networkMode = "host")
+            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), networkMode = "host", statusHostVolume = "lab-status")
         val port = System.getenv("LAB_NOMAD_TEST_API_PORT").toInt()
         val settings = NomadQueueSettings("connected-probe", "http://127.0.0.1:$port",
             listOf(NomadQueueTarget(template, setOf(if (workerArch() == "arm64") "arch:arm64" else "arch:x86_64"))),
@@ -120,7 +120,7 @@ class ConnectedNomadTest {
         val state = Path.of(System.getenv("LAB_NOMAD_TEST_STATE"))
         val root = Files.createTempDirectory(state, "lab-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
-        val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
+        val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
         val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), host = "auto")
         val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
         val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
@@ -128,6 +128,7 @@ class ConnectedNomadTest {
         store.plan(job, arms, problems, cases, cases.map { "fixture" to 5L })
         val script = """#!/usr/bin/env bash
             set -eu
+            [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }
             for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
             echo portable-worker-start
             sleep 2
@@ -156,7 +157,7 @@ class ConnectedNomadTest {
         val manifest = WorkManifest(sessionId, "connected-probe", spec, arms, cases.mapIndexed { i, c -> WorkCase(i, c.arm, problems[c.problem], c.seed, c.repeat, 5) }, listOf(bundle), budget)
         val template = NomadBatchJob("placeholder", NomadPlatform.LINUX, "lab-prototype-linux",
             NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,
-            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), datacenter = "lab-prototype", networkMode = "host")
+            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), datacenter = "lab-prototype", networkMode = "host", statusHostVolume = "lab-status")
         var backend = NomadBackend(store, client, artifacts, { root.resolve("jobs/$it") })
         val port = System.getenv("LAB_NOMAD_TEST_API_PORT").toInt()
         var server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(store, backend, artifacts) { true } }.start()

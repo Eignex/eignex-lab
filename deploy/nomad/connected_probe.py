@@ -21,6 +21,12 @@ def main():
     try:
         box.start()
         started = True
+        box.cli("acl", "policy", "apply", "probe-coordinator", ROOT / "deploy/nomad/coordinator-policy.hcl")
+        token = json.loads(box.cli("acl", "token", "create", "-json", "-name=probe-coordinator", "-policy=probe-coordinator"))["SecretID"]
+        coordinator_token = state / "coordinator.token"
+        coordinator_token.touch(mode=0o600, exist_ok=True)
+        coordinator_token.chmod(0o600)
+        coordinator_token.write_text(token)
         password = state / "store-password"
         password.touch(mode=0o600, exist_ok=True)
         password.write_text("isolated-probe-keystore")
