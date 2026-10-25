@@ -21,7 +21,7 @@ class PortableWorkerTest {
             files.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() }
         } }.toByteArray()
         val manifest = WorkerBundle(MessageDigest.getInstance("SHA-256").digest(bytes).hex(), files.map { (name, text) ->
-            InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong(), name.endsWith("/klause-bench"))
+            InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong(), name.endsWith("/klause-bench") || name.endsWith("/klause-cli"))
         }, Repositories.DEFAULT, "a".repeat(40), if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(), "fixture")
         return manifest to bytes
     }
@@ -121,6 +121,37 @@ class PortableWorkerTest {
         val tree = VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { ByteArrayInputStream(bytes) }
         assertEquals(0, Files.size(tree.resolve("empty.dzn")))
         assertEquals(tree, VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { error("verified input reused") })
+    }
+
+    @Test fun `case provenance is recaptured after relocation and measurement launcher installation`(): Unit = service { socket ->
+        val bench = """#!/usr/bin/env bash
+            set -eu
+            cli="../klause-cli/build/install/klause-cli-jvm/bin/klause-cli"
+            case "${'$'}1" in
+              --help) echo 'bench provenance out=<file>'; exit 0;;
+              provenance) printf '%s\n' "${'$'}PWD:$(cksum "${'$'}cli")" > "${'$'}{2#out=}"; exit 0;;
+              solve-one)
+                [[ "$(cat build/provenance.json)" == "${'$'}PWD:$(cksum "${'$'}cli")" ]] || exit 42
+                "${'$'}cli"
+                mkdir -p "${'$'}JOB_DIR/cases/0"
+                echo '{"feasible":true}' > "${'$'}JOB_DIR/cases/0/result.json";;
+            esac
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf(
+            "klause-bench/build/install/klause-bench/bin/klause-bench" to bench,
+            "klause-bench/build/provenance.json" to "stale preparation path and launcher",
+            CliMeasurements.CLI to "#!/usr/bin/env bash\nexit 0\n",
+        ))
+        val spec = ExperimentSpec("provenance", problems = listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.RESOURCES)
+        val arms = Experiments.arms(spec).map { PlannedArm(it, input.commit) }
+        val manifest = WorkManifest("provenance", "release", spec, arms, listOf(WorkCase(0, 0, Problem("s", "p"), null, 0, 10)), listOf(input), ResourceBudget(1000, 512))
+        val directory = root.resolve("relocated-attempt")
+        val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            { ByteArrayInputStream(bytes) }, "/unused", input.os, input.arch)
+            .run(manifest, listOf(0), directory, "node", 1) { 80000 }
+        assertEquals(0, result.cases.single().exitCode)
+        assertContains(result.cases.single().record!!, "\"feasible\":true")
+        assertTrue(Files.walk(directory.resolve("cases/0")).use { paths -> paths.anyMatch { it.fileName.toString() == "resources.txt" } })
     }
 
     @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->
@@ -260,8 +291,11 @@ class PortableWorkerTest {
         val flushed = root.resolve("capture-flushed")
         val script = """
             #!/usr/bin/env python3
-            import signal, time
+            import signal, sys, time
             from pathlib import Path
+            if '--help' in sys.argv:
+                print('fixture without provenance support')
+                raise SystemExit(0)
             def flush(_signal, _frame):
                 time.sleep(12)
                 Path('$flushed').write_text('complete')
