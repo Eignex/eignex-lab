@@ -230,3 +230,39 @@ Worker credentials cannot create these requests. Existing wait/fetch/retry/cance
 
 Provider-side capacity expiry, private-network bootstrap and real AWS/GCP Spot canaries follow in the infrastructure
 stack. The collector/packing tests alone do not establish live provisioning, quota handling or billing expiry.
+
+
+## Source builds inside worker budgets
+
+A `WorkerBundle` may include a `build` recipe with explicit Gradle task paths and a bounded timeout. Builds run
+through the independent supervisor before execution (an empty task list only stages a committed script), inside the same session CPU/memory ceiling as the worker
+and its helper JVMs. They do not claim an extra node or a second reservation. Gradle uses a private home, no
+persistent daemon, bounded worker count and JVM heap, and in-process Kotlin compilation. A one-second disk check
+holds preparation when cache usage exceeds its budget or the volume has less than 1 GiB free. This is a runtime
+guard, not a filesystem quota; configure host/volume quotas where a hard disk ceiling is required.
+
+`SourceInputs` exports an approved Git tip and its reachable history only after its mandatory source-trust
+callback succeeds. The archive contains Git objects, never the mirror's remotes, hooks, credentials or configuration.
+Source export must itself run in the budgeted preparation/helper allocation so Git packing and compression are
+charged to that allocation. The publication utility does not start an unbudgeted coordinator-side build.
+Additional data inputs live under `lab-inputs/` and cannot replace committed code. Workers fetch the exact approved
+ref from that local bundle and check out the full SHA. Git state is retained for committed profile entry points
+that use `git ls-files`; no external Git source or provider SDK runs in this build path. Source tree symlinks are
+rejected before build/publication. Source inputs are still supplied through the private artifact service.
+
+Prepared builds are atomically published with a checksum inventory. Cache identity includes the source/archive,
+full SHA, OS/architecture, declared toolchain/build recipe, actual JDK identity and effective build budget. A lock
+prevents duplicate builds within the cache; corrupted or incomplete output rebuilds before execution. Every
+iteration gets a private copy, keeping measurements and profiles from changing the baseline. Caches currently
+belong to the allocation; shared bounded host cache volumes and normal queue preparation/admission remain separate
+migration work. The legacy runner remains the submission default.
+
+A failed source build reports its bounded diagnostic tail through its authenticated attempt. The coordinator
+fences all sibling sessions and records a permanent `source-build` failure, rather than repeatedly treating a
+compiler error as Spot loss. A stale generation cannot fail replacement work. Failure acknowledgements are
+idempotent. Transport loss and actual allocation revocation continue to replace whole unfinished iterations.
+
+Targeted tests exercise real Git bundle export/checkout, trust rejection, build reuse/corruption recovery, helper
+budgets and fenced failures. The connected Nomad test now builds its fixture from source in the Docker allocation,
+then exercises coordinator restart and forced allocation loss after arm A. Native macOS CI runs the same source
+build and independent-supervisor contracts. Real solver/JFR canaries and provider Spot gates remain outstanding.

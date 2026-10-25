@@ -140,6 +140,23 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.event(a.jobId, owner.session, "phase:$phase:${owner.iteration}:${owner.generation}", at)
     }
 
+    /** A source/build error is permanent work failure, not another infrastructure revocation. */
+    fun rejectBuild(owner: AttemptOwner, detail: String, at: Long = now()) = store.executionTransaction { db ->
+        val reason = "source-build: " + detail.take(16_384)
+        val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
+        if (store.job(prior.jobId)?.let { it.status == Status.FAILED && it.error == reason } == true) return@executionTransaction
+        val attempt = db.attempt(owner, at)
+        require(attempt.state in setOf("claimed", "preparing")) { "build failure outside preparation" }
+        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", attempt.jobId, map = ::attemptRow)
+            .forEach { db.invalidate(it, "source-build-failed", at) }
+        db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", attempt.jobId, map = ::sessionRow).forEach { session ->
+            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id); db.stopIntent(session)
+        }
+        db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ?", reason, at, at, attempt.jobId)
+        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", attempt.jobId)
+        db.event(attempt.jobId, owner.session, "source-build-failed", at)
+    }
+
     fun caseStarted(owner: AttemptOwner, index: Int, at: Long = now()) = store.executionTransaction { db ->
         val a = db.attempt(owner, at); require(index in a.indices && a.state == "executing") { "case start outside executing iteration" }
         db.sqlUpdate("UPDATE commands SET status = 'RUNNING', started_at = COALESCE(started_at, ?) WHERE job_id = ? AND idx = ?", at, a.jobId, index)

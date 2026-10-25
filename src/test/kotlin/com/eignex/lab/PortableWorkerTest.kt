@@ -46,8 +46,75 @@ class PortableWorkerTest {
         assertEquals("hello", Files.readString(cache.stage(manifest) { ByteArrayInputStream(bytes) }.resolve("bin/tool")))
         assertFailsWith<IllegalArgumentException> { cache.stage(manifest.copy(sha256 = "0".repeat(64))) { ByteArrayInputStream(bytes) } }
         assertFailsWith<IllegalArgumentException> { InputFile("../escape", "a".repeat(64), 1) }
+        assertFailsWith<IllegalArgumentException> { cache.stage(manifest.copy(files = listOf(InputFile("huge", "a".repeat(64), Long.MAX_VALUE)))) { error("oversized declaration must fail before download") } }
         val undeclared = manifest.copy(files = listOf(InputFile("other", ExecutionStore.digest("hello"), 5)))
         assertFailsWith<IllegalArgumentException> { cache.stage(undeclared) { ByteArrayInputStream(bytes) } }
+    }
+
+    @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->
+        val repository = Files.createDirectory(root.resolve("repo"))
+        fun git(vararg args: String): String {
+            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); assertEquals(0, process.exitValue(), output)
+            return output.trim()
+        }
+        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
+        Files.writeString(repository.resolve("gradlew"), "mkdir -p build; git rev-parse HEAD > build/commit")
+        git("add", "."); git("commit", "-m", "fixture")
+        val commit = git("rev-parse", "HEAD")
+        git("remote", "add", "origin", "https://private-token@example.com/secret.git")
+        var trusted = false
+        val inputs = SourceInputs(requireTrusted = { repo, sha -> assertEquals(Repositories.DEFAULT, repo); assertEquals(commit, sha); check(trusted) })
+        val output = root.resolve("source.zip")
+        assertFailsWith<IllegalStateException> { inputs.publish(repository, Repositories.DEFAULT, commit, "linux", workerArch(), "fixture", WorkerBuild(listOf("installDist")), output) }
+        assertFalse(Files.exists(output)); trusted = true
+        val os = if (CliMeasurements.localMacOs) "mac" else "linux"
+        val manifest = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", WorkerBuild(listOf("installDist")), output)
+        assertEquals(listOf("source.git.bundle"), manifest.files.map { it.path })
+        val source = VerifiedCache(root.resolve("sources")).stage(manifest) { Files.newInputStream(output) }
+        val tree = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(manifest, source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        assertEquals(commit, Files.readString(tree.resolve("build/commit")).trim())
+        assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
+        assertFalse(git("for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
+    }
+
+    @Test fun `source builds share their session budget cache once and rebuild corrupt outputs`(): Unit = service { socket ->
+        val count = root.resolve("build-count")
+        val script = """#!/usr/bin/env bash
+            set -eu
+            printf 'build\n' >> '${count}'
+            [[ "${'$'}GRADLE_USER_HOME" != "${'$'}HOME/.gradle" ]]
+            [[ "${'$'}JAVA_TOOL_OPTIONS" == *'-Xmx170m'* ]]
+            [[ " ${'$'}* " == *' --max-workers=2 '* ]]
+            mkdir -p build
+            echo prepared > build/output
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("source")).stage(input) { ByteArrayInputStream(bytes) }
+        val bundle = input.copy(build = WorkerBuild(listOf(":cli:installDist")))
+        val cache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket))
+        val budget = ResourceBudget(2000, 512)
+        val tree = cache.prepare(bundle, source, budget, System.getenv()) { 10000 }
+        assertEquals("prepared", Files.readString(tree.resolve("build/output")).trim())
+        assertEquals(tree, cache.prepare(bundle, source, budget, System.getenv()) { 10000 })
+        assertEquals(1, Files.readAllLines(count).size)
+        Files.writeString(tree.resolve("build/output"), "corrupt")
+        cache.prepare(bundle, source, budget, System.getenv()) { 10000 }
+        assertEquals(2, Files.readAllLines(count).size)
+        assertEquals(script, Files.readString(source.resolve("gradlew")))
+        assertFailsWith<IllegalArgumentException> { WorkerBuild(listOf("--init-script=untrusted")) }
+        assertFailsWith<IllegalArgumentException> { cache.prepare(bundle, source, budget, System.getenv()) { 0 } }
+    }
+
+    @Test fun `failed build preserves a bounded diagnostic and never publishes a cache entry`(): Unit = service { socket ->
+        val (input, bytes) = bundle(mapOf("gradlew" to "echo expected-compile-failure >&2; exit 3"))
+        val source = VerifiedCache(root.resolve("sources")).stage(input) { ByteArrayInputStream(bytes) }
+        val failure = assertFailsWith<WorkerBuildFailure> {
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(input.copy(build = WorkerBuild(listOf("installDist"))), source,
+                ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        }
+        assertTrue(failure.detail.contains("expected-compile-failure")); assertTrue(failure.detail.contains("exit 3"))
+        assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch(Files::isDirectory) })
     }
 
     @Test fun `standalone executor runs a complete paired iteration and leaves baseline unchanged`(): Unit = service { socket ->

@@ -19,6 +19,7 @@ import java.nio.file.Files
 @Serializable data class WorkerRegistration(val release: String)
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
 @Serializable data class WorkerPhase(val owner: AttemptOwner, val phase: String)
+@Serializable data class WorkerBuildError(val owner: AttemptOwner, val detail: String)
 @Serializable data class WorkerProgress(val owner: AttemptOwner, val index: Int)
 @Serializable data class LeaseReply(val leaseMs: Long)
 @Serializable data class UploadReply(val offset: Long)
@@ -63,6 +64,11 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerProgress>(call.bodyText())
                 require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.caseStarted(body.owner, body.index); call.respond(HttpStatusCode.NoContent)
+            }
+            post("/build-failed") {
+                require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerBuildError>(call.bodyText())
+                require(body.owner.session == s.id && body.owner.allocation == s.allocation)
+                store.execution.rejectBuild(body.owner, body.detail); call.respond(HttpStatusCode.NoContent)
             }
             post("/commit") {
                 val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)

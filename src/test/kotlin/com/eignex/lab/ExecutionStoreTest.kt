@@ -28,6 +28,21 @@ class ExecutionStoreTest {
         store.execution.commit(claim.owner, result(claim), 1020)
     }
 
+    @Test fun `source build failure stops siblings once and a fenced generation cannot fail replacement work`() {
+        val id = job(); bind(id, "a"); bind(id, "b")
+        val lost = store.execution.claim("a", token, "alloc-a", 1001)!!
+        store.execution.loseSession("a", "revoked", 1002)
+        val replacement = store.execution.claim("b", token, "alloc-b", 1003)!!
+        assertFailsWith<ExecutionFenced> { store.execution.rejectBuild(lost.owner, "compile failed", 1004) }
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        store.execution.rejectBuild(replacement.owner, "compile failed", 1005)
+        store.execution.rejectBuild(replacement.owner, "compile failed", 1006) // Lost failure acknowledgement.
+        assertEquals(Status.FAILED, Store(file).job(id)!!.status)
+        assertEquals("source-build: compile failed", store.job(id)!!.error)
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertEquals(0, store.execution.accepted(id).size)
+    }
+
     @Test fun `nomad ownership excludes legacy claims and restart recovery`() {
         val id = job()
         assertNull(store.next()); assertTrue(store.nodeQueue().isEmpty()); assertNull(store.claimForNode(id))

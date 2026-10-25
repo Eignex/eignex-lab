@@ -37,9 +37,20 @@ class ConnectedNomadTest {
             echo portable-worker-output
         """.trimIndent()
         val path = "klause-bench/build/install/klause-bench/bin/klause-bench"
-        val zip = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { it.putNextEntry(ZipEntry(path)); it.write(script.toByteArray()); it.closeEntry() } }.toByteArray()
+        val buildScript = """#!/usr/bin/env bash
+            set -eu
+            mkdir -p '${path.substringBeforeLast('/')}'
+            cp bench-source '$path'
+            chmod u+x '$path'
+            python3 -c 'import time; end=time.monotonic()+0.25; x=1; exec("while time.monotonic()<end: x=(x+1)%1234567")'
+        """.trimIndent()
+        val sources = mapOf("bench-source" to script, "gradlew" to buildScript)
+        val zip = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
+            for ((name, value) in sources) { zip.putNextEntry(ZipEntry(name)); zip.write(value.toByteArray()); zip.closeEntry() }
+        } }.toByteArray()
         val hash = java.security.MessageDigest.getInstance("SHA-256").digest(zip).hex()
-        val bundle = WorkerBundle(hash, listOf(InputFile(path, ExecutionStore.digest(script), script.toByteArray().size.toLong(), true)), Repositories.DEFAULT, sha, "linux", workerArch(), "fixture")
+        val bundle = WorkerBundle(hash, sources.map { (name, value) -> InputFile(name, ExecutionStore.digest(value), value.toByteArray().size.toLong()) },
+            Repositories.DEFAULT, sha, "linux", workerArch(), "fixture", build = WorkerBuild(listOf("installDist")))
         artifacts.put(job, hash, zip.size.toLong(), 0, ByteArrayInputStream(zip))
         val sessionId = UUID.randomUUID().toString()
         val budget = ResourceBudget(1000, 1024, 1)

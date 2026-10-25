@@ -13,6 +13,7 @@ class IterationExecutor(
     private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
     private val bundleInput: (WorkerBundle) -> java.io.InputStream,
     private val launcher: String, private val os: String, private val arch: String,
+    private val buildCache: WorkerBuildCache? = null,
 ) {
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
             prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingLeaseMs: () -> Long): IterationResult {
@@ -25,7 +26,9 @@ class IterationExecutor(
         val corpus = Files.createDirectories(directory.resolve("corpus"))
         val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            val cached = cache.stage(bundle) { bundleInput(bundle) }
+            val source = cache.stage(bundle) { bundleInput(bundle) }
+            val cached = if (bundle.build == null) source else requireNotNull(buildCache) { "source build cache is not configured" }
+                .prepare(bundle, source, manifest.budget, environment(), remainingLeaseMs)
             val destination = directory.resolve("worktrees").resolve(sha)
             // Measurement launchers and per-attempt runtime output never change a reusable cache entry.
             copyTree(cached, destination)
@@ -76,7 +79,7 @@ class IterationExecutor(
         } finally { threads.shutdownNow() }
     }
 
-    private fun environment(): Map<String, String> = System.getenv().filterKeys { it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") } +
+    private fun environment(): Map<String, String> = System.getenv().filterKeys { it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || os == "mac" && it == "DOCKER_HOST" } +
         mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
     private fun copyTree(source: Path, destination: Path) {
         require(!Files.exists(destination)) { "attempt worktree already exists" }

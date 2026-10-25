@@ -13,7 +13,11 @@ import java.util.zip.ZipInputStream
 /** Bounded, locked, checksum-verified extraction with atomic publication. No archive-supplied links or modes. */
 class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024) {
     fun stage(bundle: WorkerBundle, download: () -> InputStream): Path {
-        require(bundle.files.sumOf { it.bytes } in 1..maxBytes)
+        val declaredBytes = bundle.files.fold(0L) { total, file ->
+            require(file.bytes <= maxBytes - total) { "expanded archive exceeds cache limit" }
+            total + file.bytes
+        }
+        require(declaredBytes > 0)
         Files.createDirectories(root)
         val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
         val destination = root.resolve(key)

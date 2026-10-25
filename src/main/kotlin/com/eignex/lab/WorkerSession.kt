@@ -49,7 +49,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
-            { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch())
+            { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(supervisorSocket)))
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
         try {
         while (true) {
@@ -92,6 +93,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 Files.writeString(resourceFile, Json.encodeToString(observation.copy(counters = ResourceObservation.counters())))
                 outputs["nomad/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}-resources.json"] = upload(resourceFile, claim.owner)
                 retry { json("commit", Json.encodeToString(WorkerCommit(claim.owner, result.copy(artifacts = outputs)))) }
+            } catch (failure: WorkerBuildFailure) {
+                retry { json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
+                return
             } finally { deadline.set(0); heartbeat.shutdownNow() }
         }
         } finally { nativeOwnership?.close() }
