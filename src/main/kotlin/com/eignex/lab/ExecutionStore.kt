@@ -35,7 +35,27 @@ class ExecutionFenced(message: String) : IllegalStateException(message)
 
 /** All worker mutations share Store's IMMEDIATE write transaction, including cancellation and case projection. */
 class ExecutionStore internal constructor(private val store: Store) {
+    fun capacityLeases(at: Long = now()): List<ManualCapacityLease> = store.executionTransaction { db ->
+        db.sqlRows("SELECT * FROM capacity_leases WHERE expires_at > ? ORDER BY id", at) { ManualCapacityLease(it.getString("id"), it.getString("pool"), it.getInt("nodes"), it.getLong("expires_at")) }
+    }
+    fun requestCapacity(pool: String, nodes: Int, ttlMs: Long, at: Long = now()): ManualCapacityLease = store.executionTransaction { db ->
+        require(nodes > 0 && ttlMs in 1..3_600_000)
+        val lease = ManualCapacityLease(java.util.UUID.randomUUID().toString(), pool, nodes, at + ttlMs)
+        db.sqlUpdate("INSERT INTO capacity_leases (id, pool, nodes, expires_at) VALUES (?, ?, ?, ?)", lease.id, lease.pool, lease.nodes, lease.expiresAt)
+        lease
+    }
+    fun releaseCapacity(id: String): Boolean = store.executionTransaction { it.sqlUpdate("DELETE FROM capacity_leases WHERE id = ?", id) == 1 }
+
     fun session(id: String): ExecutionSession? = store.executionTransaction { it.session(id) }
+    fun reports(job: Long): List<ExecutionSessionReport> = store.executionTransaction { db ->
+        db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
+            val s = sessionRow(row)
+            val active = db.sqlRows("SELECT state, generation FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { it.getString(1) to it.getInt(2) }.singleOrNull()
+            val done = db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE session_id = ? AND state = 'committed'", s.id) { it.getInt(1) }.single()
+            val observed = row.getObject("observed_at")?.let { row.getLong("observed_at") }
+            ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed)
+        }
+    }
     fun sessions(jobId: Long? = null): List<ExecutionSession> = store.executionTransaction { db ->
         db.sqlRows("SELECT * FROM execution_sessions" + if (jobId == null) " ORDER BY id" else " WHERE job_id = ? ORDER BY id",
             *listOfNotNull(jobId).toTypedArray(), map = ::sessionRow)
@@ -310,6 +330,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("CREATE TABLE IF NOT EXISTS execution_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, session_id TEXT, detail TEXT NOT NULL, at INTEGER NOT NULL)")
                 val columns = s.executeQuery("PRAGMA table_info(execution_sessions)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 if ("manifest" !in columns) s.execute("ALTER TABLE execution_sessions ADD COLUMN manifest TEXT")
+                s.execute("CREATE TABLE IF NOT EXISTS capacity_leases (id TEXT PRIMARY KEY, pool TEXT NOT NULL, nodes INTEGER NOT NULL, expires_at INTEGER NOT NULL)")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_ingestion (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, PRIMARY KEY (job_id, iteration_id))")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_checks (job_id INTEGER NOT NULL, idx INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (job_id, idx))")
                 s.execute("CREATE INDEX IF NOT EXISTS session_experiment ON execution_sessions (job_id)")

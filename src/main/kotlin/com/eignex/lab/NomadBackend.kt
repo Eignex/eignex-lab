@@ -13,6 +13,7 @@ class NomadBackend(
     private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
     private val checkCase: (Long, Int) -> String = { _, _ -> "not-required" },
     private val nativeMayClaim: (Long) -> Boolean = { true },
+    private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
 ) : ExecutionBackend {
     override val kind = ExecutionBackendKind.NOMAD
     private val identities = NomadIdentity(nomad::jwks)
@@ -20,6 +21,9 @@ class NomadBackend(
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
     fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
         require(workAllowed())
+        admit(manifest, template)
+        require(if (template.platform == NomadPlatform.LINUX) template.command == listOf("worker") else template.command.size == 2 && template.command[1] == "worker")
+        if (template.platform == NomadPlatform.MAC) require(Path.of(template.command.first()).isAbsolute && "current" !in Path.of(template.command.first()).map { it.toString() }) { "native workers require a pinned release launcher" }
         val job = store.job(jobId) ?: error("missing experiment")
         require(job.backend == ExecutionBackendKind.NOMAD && job.experiment == manifest.experiment)
         require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())

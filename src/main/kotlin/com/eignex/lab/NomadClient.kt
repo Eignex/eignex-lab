@@ -21,6 +21,9 @@ interface NomadControl {
     fun allocations(job: String): List<NomadAllocation>
     fun allocation(id: String): NomadAllocation?
     fun jwks(): JsonObject
+    fun nodes(): List<JsonObject> = emptyList()
+    fun node(id: String): JsonObject? = null
+    fun nodeAllocations(id: String): List<JsonObject> = emptyList()
 }
 
 data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0) {
@@ -36,6 +39,9 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
     override fun stop(id: String) { request("DELETE", "/v1/job/${encode(id)}", missing = true) }
     override fun allocations(job: String): List<NomadAllocation> = request("GET", "/v1/job/${encode(job)}/allocations", missing = true)?.jsonArray?.map { allocationRow(it.jsonObject) } ?: emptyList()
     override fun allocation(id: String) = request("GET", "/v1/allocation/${encode(id)}", missing = true)?.jsonObject?.let(::allocationRow)
+    override fun nodes() = request("GET", "/v1/nodes")!!.jsonArray.map { it.jsonObject }
+    override fun node(id: String) = request("GET", "/v1/node/${encode(id)}", missing = true)?.jsonObject
+    override fun nodeAllocations(id: String) = request("GET", "/v1/node/${encode(id)}/allocations")!!.jsonArray.map { it.jsonObject }
     override fun jwks() = request("GET", "/.well-known/jwks.json")!!.jsonObject
     private fun request(method: String, path: String, body: JsonElement? = null, missing: Boolean = false): JsonElement? {
         val uri = URI.create(address.toString().trimEnd('/') + path + "?namespace=${encode(namespace)}")

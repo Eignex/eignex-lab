@@ -193,3 +193,40 @@ after reconciliation proves no allocation or process uses them. Keep server snap
 The managed service/ownership tests do not establish real solver, reference, confirmation, whole-run profile and
 capture-analysis canary acceptance. Queue/source-preparation admission remains the next rollout boundary; these
 gates must pass before changing the production backend default or removing legacy execution.
+
+## Provider-neutral capacity and operations
+
+`capacity.example.json` defines homogeneous capability pools, purchasing market, explicit host reserves, finite
+node/vCPU limits, sustained pressure, cooldown and idle retirement. Cloud profiles preserve the existing explicit
+on-demand purchasing policy unless their tags request Spot; measurements/builds do not reserve a whole node.
+Every session budget includes its helpers. The policy packs free CPU and memory on ready nodes, accounts for booting
+nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
+Only old empty nodes contribute to voluntary scale-in. Terminating machines still consume quota until gone, without
+restoring an obsolete provider target count. CPU budgets are logical vCPUs, separately from Nomad's MHz conversion.
+
+Set the coordinator's optional `capacity` object to `{"settingsFile":"/private/capacity.json",
+"inventoryFiles":["/private/aws-inventory.json"],"healthTokenFile":"/private/capacity.token"}`.
+Provider adapters write versioned `CapacityInventory` JSON atomically: observation time, pool IDs, instance IDs,
+draining/target-count state and classified capacity failures. They contain no control credentials. The collector
+joins this with live Nomad allocations; an unknown allocation conservatively consumes a whole node. It reuses
+`Estimates` and `NodePool` pressure calculations and persists cooldown/idle history across restarts.
+Inventory and Nomad observations must remain within 30 seconds, including collection time. Missing/stale inventory,
+unavailable local volumes or an expired monotonic sample return no growth authorization. Capacity collectors never
+provision instances. Control credentials and purchasing-specific operations stay in provider adapters.
+
+The private worker listener exposes read-only `/capacity/snapshot`, `/capacity/metrics` and a narrow instant query
+endpoint at `/capacity/api/v1/query`. They require the separate capacity token, not a worker credential. The instant
+endpoint implements only `lab_capacity_desired_nodes{pool="POOL"}` for the Autoscaler's Prometheus APM plugin and
+`pass-through` strategy (`query_window="instant"`). It requires no Prometheus server and does not implement PromQL.
+Use the text endpoint if an existing Prometheus deployment should collect it. Stale data produces an error, never
+an old count that can authorize growth.
+
+On the operator API, `/capacity/view` shows every allocation/experiment, its budgets, pool purchasing, desired counts,
+unreserved CPU/memory and capacity failures. `lab capacity` shows its JSON; `lab execution ID` shows session/allocation
+identities, phases and generations. Set `LAB_NOMAD_CAPACITY_SETTINGS` on the ordinary API to the same settings file,
+then use `lab capacity request POOL NODES [TTL_SECONDS]`, `lab capacity leases`, or `lab capacity release LEASE_ID`.
+Requests persist, remain within pool/vCPU limits and expire within one hour; they cannot change a pool's market.
+Worker credentials cannot create these requests. Existing wait/fetch/retry/cancel and accepted output paths remain.
+
+Provider-side capacity expiry, private-network bootstrap and real AWS/GCP Spot canaries follow in the infrastructure
+stack. The collector/packing tests alone do not establish live provisioning, quota handling or billing expiry.

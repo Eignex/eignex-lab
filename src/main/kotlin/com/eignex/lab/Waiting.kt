@@ -155,6 +155,7 @@ object Waiting {
     fun waiting(job: Job, view: QueueView): String {
         if (job.cancelRequested) return "cancel requested: it ends without running"
         if (job.paused) return "paused: no host takes it until it is resumed (lab resume ${job.id})"
+        if (job.backend == ExecutionBackendKind.NOMAD) return "Nomad: waiting for session admission or compatible capacity; lab execution ${job.id} shows allocations"
         val host = job.experiment?.host
         val parts = mutableListOf<String>()
         when (Placement.where(host)) {
@@ -308,7 +309,7 @@ object Waiting {
         val local = view.localQueue.indexOf(job.id).takeIf { it >= 0 }?.plus(1)
         val doing = when (job.status) {
             Status.QUEUED -> null
-            Status.RUNNING -> runningOn(job, view) + (if (hosts.size > 1) "; by host: ${hosts.joinToString(", ") { it.text() }}" else "")
+            Status.RUNNING -> (if (job.backend == ExecutionBackendKind.NOMAD) "Nomad sessions; accepted results and source checks determine completion" else runningOn(job, view)) + (if (hosts.size > 1) "; by host: ${hosts.joinToString(", ") { it.text() }}" else "")
             else -> "ended ${job.status}"
         }
         return JobPlacement(
