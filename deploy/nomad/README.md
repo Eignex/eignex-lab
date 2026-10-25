@@ -186,6 +186,14 @@ registering anything using `--config native-services.json --output /temporary/re
 then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` integrates this
 with `deploy/install.sh`, including its dry run. This does not opt normal submissions in to Nomad.
 
+A loopback client needs an explicit HTTP advertise address, as supplied in `client.example.json`; Nomad refuses
+an implicit localhost advertisement at startup. Verify the client's actual CPU attributes before creating queue
+templates. On the production Apple M4, Nomad 2.0.7 reported frequencies of 4 and 2 MHz and total compute of 28,
+which underflowed `cpu.usablecompute` after the host reserve. Configure the documented
+[`client.cpu_total_compute` override](https://developer.hashicorp.com/nomad/docs/configuration/client#cpu_total_compute)
+with the host's reviewed scheduling calibration, then read the exported `cpu.usablecompute` and `cpu.numcores`
+again. Pin those exact attributes in queue templates; native resource enforcement remains advisory.
+
 The supervisor and legacy runner share the same POSIX record lock (`LAB_NATIVE_EXECUTION_LOCK`, default
 `$LAB_DATA/nomad/native.lock`). A native session reserves it across iteration boundaries and transfers. Several
 sessions of the same experiment can share the supervisor's reservation; another experiment and the legacy runner
