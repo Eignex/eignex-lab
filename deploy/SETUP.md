@@ -66,14 +66,31 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
 - `host` and `machines` are no longer followed: the lab places every job itself (see Running on cloud nodes). They are still
   accepted, so older specs and clients work, and the reply's `placement` says where the job went and that they were
   ignored.
-- `measureCliResources: true` (with explicit `parallel: 1`) measures physical peak RSS, user/system CPU and wall time
+- `measurement` selects one recording mode for experiment CLI cases. Omit it for ordinary runs. The modes are
+  `none`, `resources`, `jfr`, `compilation`, and `compilation+log`. Recording modes default to `parallel: 1`;
+  explicitly requesting another parallel limit is refused. The same field works in scheduled experiments.
+  Existing specs using `measureCliResources`, `profileCli` and `profileCompilation` remain supported. When both
+  forms are supplied they must agree. The server expands modes into the existing stored fields, so equivalent
+  old and new specs keep the same experiment fingerprint. A committed `profile` entry point controls its own
+  recordings; `measurement` applies to solver experiments.
+
+  | Mode | Recording | Equivalent legacy settings |
+  | --- | --- | --- |
+  | `none` (default) | Ordinary run | All recording flags absent |
+  | `resources` | Physical process resources | `measureCliResources: true` |
+  | `jfr` | JFR plus process resources | `profileCli: true` |
+  | `compilation` | JFR including every compilation | `profileCli: true`, `profileCompilation: "jfr"` |
+  | `compilation+log` | Compilation recording plus HotSpot inlining log | `profileCli: true`, `profileCompilation: "jfr+log"` |
+
+  The client can set the mode without editing a spec: `lab run --measurement compilation experiment.json`.
+- `measurement: "resources"` measures physical peak RSS, user/system CPU and wall time
   for ordinary Klause CLI cases through GNU/BSD time. It keeps the ordinary CLI JVM options and records no JFR,
   compilation log or allocation samples. Each invocation retains `resources.txt`, `measurement.json` and a bound
   `solve-record.json` under `cases/<index>/profile-<uuid>/`; the manifest identifies `external-time` instrumentation
   and allocation as `not collected`. Placement follows the lab's ordinary automatic policy. This option is for native
   CLI arms, so reference-backend arms are rejected. Confirmations preserve it. Resource measurements are observations,
   not enforced process memory/CPU limits or source proof certificates.
-- `profileCli: true` (with explicit `parallel: 1`) records the whole CLI JVM under JFR's `profile` settings and
+- `measurement: "jfr"` records the whole CLI JVM under JFR's `profile` settings and
   measures its physical peak RSS and user/system CPU. It is placed like any other job, local first, then a node. On a
   node (Linux) GNU time measures the CLI; on the local machine (macOS here), which has no GNU time, BSD `time -l` does, its report
   converted by the launcher, which passes SIGTERM, SIGINT and SIGHUP on to the CLI. Both write `resources.txt` with the same
@@ -84,7 +101,7 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   Each invocation has its own directory, including retries after a runner restart. Its metadata includes the instance,
   command and exit, full CLI JVM options, and the SHA-256 of a preserved `solve-record.json` when the solve returned one.
   A profiling job runs with a parallel limit of one, however it is edited through the client or API.
-  It already includes resource measurement; omit `measureCliResources` when profiling.
+  It already includes resource measurement.
   These are separate profiling runs: JFR and launcher overhead affect timing. Compare uninstrumented runs for runtime,
   at the same revisions, hardware, heap settings and solver budgets. JFR allocation weights estimate allocated bytes;
   RSS is the launch process's high-water mark, including the CLI JVM and its launcher, in KiB. Missing or interrupted
@@ -92,10 +109,10 @@ is one job command the lab writes itself; there is no other kind of job. `lab ru
   Profiling changes generated launch scripts only in that job's worktrees (on a node after build caching); solver jars
   and the baseline revision are unchanged. On a node, killing the timer kills its CLI child through Linux's
   parent-death signal; locally, the runner's kill of the case's process group reaches it.
-- `profileCompilation` (with `profileCli: true`) also records every JIT compilation of the CLI JVM: through startup,
-  the solve and shutdown. `"jfr"` records `jdk.Compilation` with no threshold
+- `measurement: "compilation"` also records every JIT compilation of the CLI JVM: through startup,
+  the solve and shutdown. It records `jdk.Compilation` with no threshold
   (`-XX:StartFlightRecording=…,settings=profile,jdk.Compilation#threshold=0ms,…`; the profile settings otherwise keep
-  only compilations of 100 ms or more). `"jfr+log"` also passes `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation
+  only compilations of 100 ms or more). `measurement: "compilation+log"` also passes `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation
   -XX:LogFile=<profile dir>/hotspot-compilation.log`. That is HotSpot's compilation log, with every task's calls and
   whether each was inlined, so the helpers and inlined callees inside each compiled root show up. The log runs to
   hundreds of MB per run, so ask for it only when inlining matters. From a node it comes back gzipped
@@ -273,14 +290,19 @@ package because the pinned upstream Linux bundle is x86-only; use an appropriate
 version is needed (`arm64Ami` overrides that architecture independently of `ami`). Graviton core counts use one vCPU
 per core. Compiled distribution caches are separated by CPU architecture.
 
-The profile and Koblas clients accept repeatable selectors before their positional arguments:
+Submission commands accept `--tags` with comma-separated required tags and `!` before exclusions. Repeat the
+flag to add more tags. `lab run` merges them with any selectors already in its JSON file. The older
+`--require-tag` and `--exclude-tag` flags remain aliases. Profile and Koblas submissions also accept `--timeout`
+in seconds (the server keeps its existing default and maximum). Most jobs need none of these options:
 
 ```bash
-deploy/lab koblas --require-tag arch:x86_64 --require-tag simd:avx2 \
-  --exclude-tag simd:avx512 --exclude-tag spot main "AVX2 capture" --smoke --operation dot
+deploy/lab koblas --tags 'arch:x86_64,simd:avx2,!simd:avx512,!spot' \
+  main "AVX2 capture" --smoke --operation dot
 
-deploy/lab koblas --require-tag arch:arm64 --require-tag simd:sme \
+deploy/lab koblas --tags 'arch:arm64,simd:sme' --timeout 1800 \
   main "SME-capable host capture" --smoke --operation dot
+
+deploy/lab run --tags 'simd:avx2,!spot' --measurement jfr experiment.json
 ```
 
 ### Profile jobs
@@ -333,13 +355,16 @@ or provenance commands are added. For example, the lab can profile its own start
 }
 ```
 
-The equivalent client accepts repeated `--build` and `--classpath` options before the existing positional arguments:
+The equivalent client accepts repeated `--build` and `--classpath` options. Use `--timeout` for its limit and
+`--` before arguments passed literally to the main; no host placeholder is needed:
 
 ```bash
 deploy/lab profile --repo Eignex/eignex-lab --build installDist \
-  --classpath 'build/install/eignex-lab/lib/*' \
-  com.eignex.lab.MainKt main "Record startup host check" local 600 check
+  --classpath 'build/install/eignex-lab/lib/*' --timeout 600 \
+  com.eignex.lab.MainKt main "Record startup host check" -- check
 ```
+
+The older positional `[host] [timeout-sec] [arg...]` form is still accepted without `--`; the host remains ignored.
 
 For a repository's own capture harness, use `profile.script` instead of `main`. It must name a tracked executable
 within the checkout; a symlink outside it is refused. `buildTasks` is optional for a script that builds its own

@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # Client for the eignex lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
-#   lab run <experiment.json>                               queue an experiment: problems × configs × seeds, one case each
+#   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
-#   lab koblas <ref> <description> [capture-report options...]
+#   lab koblas [--tags expr --timeout sec] <ref> <description> [capture-report options...]
 #                                                            queue the committed Koblas capture harness and keep its report
-#   lab profile [--repo Eignex/name --build task --classpath path] <main> <ref> <description> [host] [timeout-sec] [arg...]
+#   lab profile [--tags expr --timeout sec --repo Eignex/name --build task --classpath path] <main> <ref> <description> -- [arg...]
 #                                                            queue a committed JVM main from an Eignex repository
 #                                                            run once with [arg...] in a build of <ref>, under JFR, locally
-#                                                            or on a cloud node (on demand, never spot); [host] is ignored, the lab
-#                                                            places jobs (pass - to skip it); for measurements experiments
+#                                                            or on a cloud node (on demand unless tags request spot); the lab
+#                                                            places jobs; for measurements experiments
 #                                                            cannot express, NOT for running tests, lint or other gates (CI
 #                                                            runs those). <ref> must be main or a branch only trusted users
-#                                                            pushed to. [timeout-sec] is its time limit: 600 (10 min) when
+#                                                            pushed to. --timeout is its time limit in seconds: 600 (10 min) when
 #                                                            empty or left out, capped at 7200 (2 h); at it the main gets
 #                                                            SIGTERM, then SIGKILL 30 s later, so it should write results
-#                                                            as it goes or flush them on shutdown
+#                                                            as it goes or flush them on shutdown. The old [host] [timeout-sec]
+#                                                            positional form is still accepted without the -- delimiter.
+# Submission options: --tags 'arch:x86_64,simd:avx2,!spot' requires tags and excludes !tags; repeat or comma-separate.
+# --measurement none|resources|jfr|compilation|compilation+log selects an experiment's CLI recording.
 #   lab analyze <id>                                        queue an analysis job: the lab's compilation analyser rerun over the
 #                                                            retained captures of ended profileCli job <id>, writing each case's
 #                                                            compilation-report.json afresh; no build, no solver, no klause code.
@@ -118,51 +121,88 @@ remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
 remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
 node_require='[]' node_exclude='[]'
+timeout='' measurement=''
+# Shared submission options, kept separate from arguments passed to a committed main or capture harness.
+submission_option() {
+  local expression parsed
+  case "$1" in
+    --tags)
+      expression="${2:?--tags needs comma-separated tags, with ! before exclusions}"
+      parsed="$(jq -cn --arg value "$expression" '
+        $value | split(",") | map(gsub("^\\s+|\\s+$"; "")) |
+        if any(.[]; test("^!?[a-z0-9][a-z0-9:._/-]*$") | not) then error("invalid node tag") else
+          {require: map(select(startswith("!") | not)), exclude: map(select(startswith("!")) | ltrimstr("!"))} end')" || exit 2
+      node_require="$(jq -c --argjson added "$parsed" '. + $added.require | unique' <<< "$node_require")"
+      node_exclude="$(jq -c --argjson added "$parsed" '. + $added.exclude | unique' <<< "$node_exclude")" ;;
+    --require-tag) node_require="$(jq -c --arg tag "${2:?--require-tag needs a tag}" '. + [$tag]' <<< "$node_require")" ;;
+    --exclude-tag) node_exclude="$(jq -c --arg tag "${2:?--exclude-tag needs a tag}" '. + [$tag]' <<< "$node_exclude")" ;;
+    --timeout)
+      timeout="${2:?--timeout needs seconds}"
+      [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || { echo '--timeout must be a positive number of seconds' >&2; exit 2; } ;;
+    *) return 1 ;;
+  esac
+}
+submission_payload() {
+  jq --argjson required "$node_require" --argjson excluded "$node_exclude" --arg measurement "$measurement" --arg timeout "$timeout" '
+    . + (if ($required + $excluded | length) == 0 then {} else
+      {nodeTags: {require: (((.nodeTags.require // []) + $required) | unique), exclude: (((.nodeTags.exclude // []) + $excluded) | unique)}} end) +
+      (if $measurement == "" then {} else {measurement: $measurement} end) |
+    if $timeout == "" then . else .base = ((.base // {}) + {timeout: (($timeout | tonumber) * 1000 | tostring)}) end'
+}
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
-run) curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @"$1" "$url/experiments"; echo ;;
-koblas)
+run)
   while [[ $# -gt 0 ]]; do
+    if submission_option "$@"; then shift 2; continue; fi
     case "$1" in
-      --require-tag) node_require="$(jq -c --arg tag "${2:?--require-tag needs a tag}" '. + [$tag]' <<< "$node_require")"; shift 2 ;;
-      --exclude-tag) node_exclude="$(jq -c --arg tag "${2:?--exclude-tag needs a tag}" '. + [$tag]' <<< "$node_exclude")"; shift 2 ;;
+      --measurement) measurement="${2:?--measurement needs a recording mode}"; shift 2 ;;
+      --) shift; break ;;
       *) break ;;
     esac
   done
+  [[ $# -eq 1 ]] || { echo 'usage: lab run [--tags expr --measurement mode] <experiment.json>' >&2; exit 2; }
+  submission_payload < "$1" | curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
+koblas)
+  while [[ $# -gt 0 ]]; do
+    if submission_option "$@"; then shift 2; else break; fi
+  done
   [[ $# -ge 2 ]] || { echo "usage: lab koblas <ref> <description> [capture-report options...]" >&2; exit 2; }
   ref="$1" description="$2"; shift 2
-  jq -n --arg ref "$ref" --arg description "$description" --argjson required "$node_require" --argjson excluded "$node_exclude" --args \
+  jq -n --arg ref "$ref" --arg description "$description" --args \
     '{name: "koblas-bench", repository: "Eignex/koblas", description: $description, base: {ref: $ref},
-      profile: {script: "koblas-bench/capture-report.sh", outputArgument: "--output", args: $ARGS.positional}} +
-      (if ($required + $excluded | length) == 0 then {} else {nodeTags: {require: $required, exclude: $excluded}} end)' -- "$@" |
+      profile: {script: "koblas-bench/capture-report.sh", outputArgument: "--output", args: $ARGS.positional}}' -- "$@" | submission_payload |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 profile)
   repository=Eignex/klause
   build_tasks='[]' classpath='[]'
   while [[ $# -gt 0 ]]; do
+    if submission_option "$@"; then shift 2; continue; fi
     case "$1" in
-      --require-tag) node_require="$(jq -c --arg tag "${2:?--require-tag needs a tag}" '. + [$tag]' <<< "$node_require")"; shift 2 ;;
-      --exclude-tag) node_exclude="$(jq -c --arg tag "${2:?--exclude-tag needs a tag}" '. + [$tag]' <<< "$node_exclude")"; shift 2 ;;
       --repo) repository="${2:?--repo needs Eignex/name}"; shift 2 ;;
       --build) build_tasks="$(jq -c --arg value "${2:?--build needs a Gradle task}" '. + [$value]' <<< "$build_tasks")"; shift 2 ;;
       --classpath) classpath="$(jq -c --arg value "${2:?--classpath needs a relative path}" '. + [$value]' <<< "$classpath")"; shift 2 ;;
       *) break ;;
     esac
   done
-  [[ $# -ge 3 ]] || { echo "usage: lab profile <main> <ref> <description> [host, ignored] [timeout-sec, default 600, at most 7200] [arg...]" >&2; exit 2; }
-  main="$1" ref="$2" description="$3" timeout="${5:-}"
-  shift $(( $# < 5 ? $# : 5 ))
+  [[ $# -ge 3 ]] || { echo 'usage: lab profile [--timeout sec] <main> <ref> <description> -- [arg...]' >&2; exit 2; }
+  main="$1" ref="$2" description="$3"
+  shift 3
+  if [[ "${1:-}" == -- ]]; then
+    shift
+  elif [[ -z "$timeout" ]]; then
+    # Legacy [host, ignored] [timeout-sec] positions. The -- delimiter selects the simpler form.
+    timeout="${2:-}"
+    shift $(( $# < 2 ? $# : 2 ))
+  fi
   [[ -z "$timeout" || "$timeout" =~ ^[1-9][0-9]*$ ]] || { echo "timeout-sec must be a positive number of seconds (default 600, at most 7200)" >&2; exit 2; }
   name="profile-$(echo "${main##*.}" | tr '[:upper:]' '[:lower:]')"
   # No timeout leaves the lab's default, 10 min; the lab caps any limit at 2 h. [host] is read for older callers and
   # not sent: the lab places every job itself.
   jq -n --arg name "$name" --arg main "$main" --arg ref "$ref" --arg description "$description" \
-    --argjson required "$node_require" --argjson excluded "$node_exclude" --arg repository "$repository" --argjson buildTasks "$build_tasks" --argjson classpath "$classpath" \
-    --arg timeout "${timeout:+$(( timeout * 1000 ))}" --args \
+    --arg repository "$repository" --argjson buildTasks "$build_tasks" --argjson classpath "$classpath" --args \
     '{name: $name, repository: $repository, description: $description,
       profile: {main: $main, args: $ARGS.positional, buildTasks: $buildTasks, classpath: $classpath},
-      base: ({ref: $ref} + (if $timeout == "" then {} else {timeout: $timeout} end))} +
-      (if ($required + $excluded | length) == 0 then {} else {nodeTags: {require: $required, exclude: $excluded}} end)' -- "$@" |
+      base: {ref: $ref}}' -- "$@" | submission_payload |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 script) echo "lab script is retired: the lab runs only committed code; use lab profile <main> <ref> <description>" >&2; exit 2 ;;
 analyze)
