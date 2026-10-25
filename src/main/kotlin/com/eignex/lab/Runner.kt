@@ -158,24 +158,33 @@ class Runner(
             // Only between jobs: an update builds on this machine and restarts the runner, so a job yields to it
             // between its cases (see dispatch) and the update runs here with nothing running locally. Cloud nodes keep
             // working meanwhile and are adopted after the restart; the iterations they hold then go back whole.
-            updater.maybeUpdate()
-            // Also only between jobs, so no case of the runner's starts a container while images go.
-            runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
-            val ready = recover()
-            if (!disk.allowsWork() || !ready) {
+            val ownership = NativeExecutionLock.tryAcquire(config.nativeExecutionLock)
+            if (ownership == null) {
+                if (updater.due()) { config.nativeYield.parent.createDirectories(); config.nativeYield.writeText("update pending\n") }
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
-            // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
-            // A shared job is taken, or joined while nodes run it, under the crews' lock, so it cannot end meanwhile.
-            val job = synchronized(crews.lock) {
-                store.next(nodesUp = awsActive(), exclude = crews.failing(), nodeTags = config.localNodeTags)?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
-            }
-            if (job == null) {
-                Thread.sleep(IDLE_POLL_MS)
-                continue
-            }
-            if (!runJob(job)) return
+            try {
+                updater.maybeUpdate()
+                Files.deleteIfExists(config.nativeYield)
+                // Also only between jobs, so no case of the runner's starts a container while images go.
+                runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
+                val ready = recover()
+                if (!disk.allowsWork() || !ready) {
+                    Thread.sleep(IDLE_POLL_MS)
+                    continue
+                }
+                // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
+                // A shared job is taken, or joined while nodes run it, under the crews' lock, so it cannot end meanwhile.
+                val job = synchronized(crews.lock) {
+                    store.next(nodesUp = awsActive(), exclude = crews.failing(), nodeTags = config.localNodeTags)?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
+                }
+                if (job == null) {
+                    Thread.sleep(IDLE_POLL_MS)
+                    continue
+                }
+                if (!runJob(job)) return
+            } finally { ownership.close() }
         }
     }
 

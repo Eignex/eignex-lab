@@ -50,6 +50,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val observation = ResourceObservation.read(manifest.budget)
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch())
+        val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
+        try {
         while (true) {
             if (System.getenv("LAB_WORKER_DRAIN_FILE")?.let { Files.exists(Path.of(it)) } == true) return
             val response = retry { json("claim", "{}") }
@@ -92,6 +94,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 retry { json("commit", Json.encodeToString(WorkerCommit(claim.owner, result.copy(artifacts = outputs)))) }
             } finally { deadline.set(0); heartbeat.shutdownNow() }
         }
+        } finally { nativeOwnership?.close() }
     }
 
     private fun download(bundle: WorkerBundle): java.io.InputStream {

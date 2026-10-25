@@ -159,3 +159,37 @@ iteration, an API/coordinator restart, forced allocation loss, generation replac
 It stops its own agent and registry and retains private diagnostic state under `build/nomad-connected`. Never upload
 that directory: it contains the sandbox CA, client keys, ACL token, allocation identities and session credentials.
 Only test reports and non-secret verification summaries are CI artifacts.
+
+## Managed native services and updates
+
+`native_services.py` manages four separate launchd daemons: the persistent Nomad server, native client, independent
+process supervisor and lab coordinator. Copy the server/client/coordinator/native-services examples to private local
+configuration, replacing every example path and private-network address. The native daemon runs as the lab user.
+Server and client state directories are distinct and persistent; both require TLS and ACLs. Keep all state and keys
+private and back up the Nomad server snapshot alongside the lab database. Bootstrap its ACLs and issue the restricted
+coordinator token separately; never give the management token to a worker.
+
+On the Mac, `python3 deploy/nomad/native_services.py --init-runtime "$LAB_DATA/nomad" --server-ip PRIVATE_IP` installs
+the checksum-pinned native binary and initializes CA/server/client/CLI certificates. Set up the coordinator's PKCS12
+stores from those CLI credentials and CA. Provide the private route before starting the client. Render without
+registering anything using `--config native-services.json --output /temporary/review-directory`; review the plists,
+then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` integrates this
+with `deploy/install.sh`, including its dry run. This does not opt normal submissions in to Nomad.
+
+The supervisor and legacy runner share the same POSIX record lock (`LAB_NATIVE_EXECUTION_LOCK`, default
+`$LAB_DATA/nomad/native.lock`). A native session reserves it across iteration boundaries and transfers. Several
+sessions of the same experiment can share the supervisor's reservation; another experiment and the legacy runner
+wait. The ownership marker survives supervisor death, so the legacy runner cannot take the host before recovery has
+cleaned recorded processes. Closing the last reservation stops any still-owned process before releasing the lock.
+A missing or damaged supervisor holds native execution rather than granting unchecked ownership.
+
+Native sessions drain for a pause, a higher-priority compatible local job, or an update. The runner takes the lock
+before updating or executing local work; remote Linux allocations continue. Ordinary updates restart only the
+API/runner/coordinator. They leave the Nomad agents and supervisor running. Changing those services requires the
+explicit `--restart-agents` maintenance option after draining native work. In-flight workers must use immutable
+release paths. Release pruning is disabled after native Nomad service installation; remove old worker releases only
+after reconciliation proves no allocation or process uses them. Keep server snapshots and manifests needed for rollback.
+
+The managed service/ownership tests do not establish real solver, reference, confirmation, whole-run profile and
+capture-analysis canary acceptance. Queue/source-preparation admission remains the next rollout boundary; these
+gates must pass before changing the production backend default or removing legacy execution.

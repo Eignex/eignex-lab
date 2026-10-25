@@ -48,7 +48,7 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
             }
             post("/claim") {
                 require(workAllowed()); call.auth()
-                val c = call.credentials(); val claim = store.execution.claim(c[0], c[1], c[2])
+                val c = call.credentials(); val claim = backend.claim(c[0], c[1], c[2])
                 if (claim == null) call.respond(HttpStatusCode.NoContent) else call.respond(claim)
             }
             post("/renew") {

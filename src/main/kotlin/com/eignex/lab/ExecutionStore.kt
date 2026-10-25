@@ -198,6 +198,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun checkComplete(job: Long, index: Int, detail: String) = store.executionTransaction { db ->
         db.sqlUpdate("INSERT OR REPLACE INTO execution_checks (job_id, idx, detail) VALUES (?, ?, ?)", job, index, detail.take(1024))
     }
+    fun pauseClock(job: Long) = store.executionTransaction { db ->
+        db.sqlUpdate("UPDATE jobs SET run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status = 'RUNNING' AND NOT EXISTS (SELECT 1 FROM execution_sessions WHERE job_id = ? AND desired != 'stop')", now(), job, job)
+    }
     fun failIfActive(job: Long, error: String) = store.executionTransaction { db ->
         db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, now(), job)
     }

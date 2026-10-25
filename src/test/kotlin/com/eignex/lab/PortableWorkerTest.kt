@@ -25,9 +25,10 @@ class PortableWorkerTest {
         }, Repositories.DEFAULT, "a".repeat(40), if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(), "fixture")
         return manifest to bytes
     }
-    private fun <T> service(block: (Path) -> T): T {
+    private fun <T> service(localLock: Boolean = false, block: (Path) -> T): T {
         val socket = root.resolve("supervisor.sock")
-        val process = ProcessBuilder("python3", supervisorScript.toString(), "--socket", socket.toString()).redirectError(root.resolve("service.err").toFile()).start()
+        val command = listOf("python3", supervisorScript.toString(), "--socket", socket.toString()) + if (localLock) listOf("--local-lock", root.resolve("native.lock").toString()) else emptyList()
+        val process = ProcessBuilder(command).redirectError(root.resolve("service.err").toFile()).start()
         try {
             val deadline = System.nanoTime() + 5_000_000_000
             while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline) { root.resolve("service.err").toFile().readText() }; Thread.sleep(20) }
@@ -84,6 +85,29 @@ class PortableWorkerTest {
             while (live(child) && System.nanoTime() < stopped) Thread.sleep(20)
             assertFalse(live(child), "detached child survived worker loss")
         } finally { future.cancel(true); executor.shutdownNow() }
+    }
+
+    @Test fun `native reservations and the legacy runner share one cross process ownership lock`(): Unit = service(localLock = true) { socket ->
+        val path = root.resolve("native.lock")
+        val legacy = NativeExecutionLock.tryAcquire(path)!!
+        val thread = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val waiting = thread.submit<AutoCloseable> { ProcessSupervisor(socket).reserve("job-a") }
+        try {
+            Thread.sleep(150); assertFalse(waiting.isDone)
+            // A failed second lock attempt in this JVM must not drop its first POSIX lock.
+            assertNull(NativeExecutionLock.tryAcquire(path)); assertFalse(waiting.isDone)
+            legacy.close()
+            val first = waiting.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            val second = ProcessSupervisor(socket).reserve("job-a")
+            try {
+                assertNull(NativeExecutionLock.tryAcquire(path))
+                first.close(); Thread.sleep(100); assertNull(NativeExecutionLock.tryAcquire(path))
+            } finally { first.close(); second.close() }
+            val until = System.nanoTime() + 3_000_000_000
+            var available: NativeExecutionLock? = null
+            while (available == null && System.nanoTime() < until) { available = NativeExecutionLock.tryAcquire(path); if (available == null) Thread.sleep(20) }
+            assertNotNull(available).close()
+        } finally { waiting.cancel(true); thread.shutdownNow() }
     }
 
     @Test fun `a completion concurrent with heartbeat preserves its process exit`(): Unit = service { socket ->

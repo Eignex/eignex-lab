@@ -38,11 +38,15 @@ object NomadCoordinatorCli {
         val checks = com.eignex.lab.checker.CaseChecks(store, { com.eignex.lab.checker.Checkers.of(config) }) { job, line ->
             config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
         }
-        val backend = NomadBackend(store, client, artifacts, config::jobDir, disk::allowsWork) { job, index ->
+        val backend = NomadBackend(store, client, artifacts, config::jobDir, disk::allowsWork, checkCase = { job, index ->
             val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
             if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(arm.values)) "not-required"
             else checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
-        }
+        }, nativeMayClaim = { job ->
+            !Files.exists(config.nativeYield) && !store.shouldYield(job, config.localNodeTags) &&
+                store.active(withCommands = false).none { other -> other.id != job && other.status == Status.QUEUED && !other.paused && !other.cancelRequested &&
+                    other.priority > (store.job(job)?.priority ?: Int.MIN_VALUE) && other.experiment?.host != Experiments.AWS_HOST && NodeTags.matches(other.experiment?.nodeTags, config.localNodeTags) }
+        })
         thread(isDaemon = true, name = "nomad-reconcile") {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching { backend.reconcile() }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }

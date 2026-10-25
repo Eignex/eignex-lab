@@ -12,6 +12,7 @@ class NomadBackend(
     private val store: Store, private val nomad: NomadControl, private val artifacts: ArtifactStore,
     private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
     private val checkCase: (Long, Int) -> String = { _, _ -> "not-required" },
+    private val nativeMayClaim: (Long) -> Boolean = { true },
 ) : ExecutionBackend {
     override val kind = ExecutionBackendKind.NOMAD
     private val identities = NomadIdentity(nomad::jwks)
@@ -37,7 +38,7 @@ class NomadBackend(
         val id = manifest.session
         val nomadId = "lab-$jobId-solve-$id-1"
         val original = template.copy(id = nomadId, environment = template.environment + mapOf(
-            "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token, "LAB_WORKER_API" to api,
+            "LAB_WORKER_EXPERIMENT" to jobId.toString(), "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token, "LAB_WORKER_API" to api,
             "LAB_WORKER_RELEASE" to manifest.release, "LAB_WORKER_IDENTITY_FILE" to "${'$'}{NOMAD_TASK_DIR}/lab-worker.jwt",
         )).render()
         val payload = authenticatedJob(original, id, manifest.release)
@@ -59,6 +60,17 @@ class NomadBackend(
         identities.verify(jwt, session, allocation)
         if (session.allocation != allocation) throw ExecutionFenced("allocation is not bound")
         return session
+    }
+
+    fun claim(id: String, token: String, allocation: String): IterationClaim? {
+        val session = store.execution.session(id) ?: throw ExecutionFenced("unknown session")
+        val spec = Json.parseToJsonElement(store.execution.submission(id)).jsonObject
+        if (spec["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
+            (store.localBusy() || !nativeMayClaim(session.jobId))) {
+            store.execution.drain(id)
+            return null
+        }
+        return store.execution.claim(id, token, allocation)
     }
 
     fun commit(owner: AttemptOwner, result: IterationResult): Boolean {
@@ -130,6 +142,10 @@ class NomadBackend(
             }
             val sessions = store.execution.sessions(job.id)
             if (!current.paused && store.unclaimed(job.id) > 0 && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
+                store.execution.pauseClock(job.id)
+                val previous = sessions.last()
+                val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
+                if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
                 if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
                 else replace(sessions.last())
             }

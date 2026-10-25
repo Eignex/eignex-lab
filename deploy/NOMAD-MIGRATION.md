@@ -13,7 +13,8 @@ restart recovery exclude Nomad-owned experiments. The worker API and actual Noma
 there is no production selector yet. The connected stack now includes a separate worker listener, Nomad mTLS client,
 signed allocation identities, resumable/checksummed HTTP artifacts and durable reconciliation/completion. The real
 Linux integration test exercises coordinator restart and allocation loss. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
-an independent same-user process service and a provider-neutral OCI worker build. Native fixture execution and
+an independent same-user process service and a provider-neutral OCI worker build. Native service rendering/install,
+shared legacy/Nomad ownership, priority/update draining and release retention are implemented behind explicit configuration. Native fixture execution and
 cleanup are exercised on macOS CI; real Mac solver/JFR canaries and cloud gates remain required. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
 replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.
 
