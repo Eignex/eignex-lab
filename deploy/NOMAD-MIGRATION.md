@@ -13,7 +13,9 @@ restart recovery exclude Nomad-owned experiments. The worker API and actual Noma
 there is no production selector yet. The connected stack now includes a separate worker listener, Nomad mTLS client,
 signed allocation identities, resumable/checksummed HTTP artifacts and durable reconciliation/completion. The real
 Linux integration test exercises coordinator restart and allocation loss. The stack also adds the portable manifest/executor, bounded verified ZIP cache,
-an independent same-user process service and a provider-neutral OCI worker build. Native service rendering/install,
+an independent same-user process service and a provider-neutral OCI worker build. Approved Git export and checksum-verified worker build caching now run source builds inside the session budget, with permanent build-failure fencing; automatic queue preparation/admission remains outstanding. Durable event logs, bounded provisional case output and execution reporting preserve the existing tail/files paths for admitted sessions. A provider-neutral capacity collector and shared CPU/memory packing policy now expose fresh demand, booting-worker
+accounting, finite vCPU limits, purchasing restrictions, expiring manual requests and allocation reports. Provider-side
+Spot infrastructure, signed fresh capacity grants, pinned Autoscaler policy rendering, Linux bootstrap/interruption handling and independent AWS expiry are implemented in [the opt-in infrastructure modules](infra/README.md). A GCP Spot reference module adds expiring IAM resize permission and independent zero-target expiry with the same worker protocol. Live AWS/GCP cloud acceptance remains required. Native service rendering/install,
 shared legacy/Nomad ownership, priority/update draining and release retention are implemented behind explicit configuration. Native fixture execution and
 cleanup are exercised on macOS CI; real Mac solver/JFR canaries and cloud gates remain required. Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
 replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.

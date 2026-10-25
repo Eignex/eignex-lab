@@ -13,15 +13,24 @@ class NomadBackend(
     private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
     private val checkCase: (Long, Int) -> String = { _, _ -> "not-required" },
     private val nativeMayClaim: (Long) -> Boolean = { true },
+    private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
 ) : ExecutionBackend {
     override val kind = ExecutionBackendKind.NOMAD
-    private val identities = NomadIdentity(nomad::jwks)
+    val logs = WorkerLogs(store, jobDirectory)
+    private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
 
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
     fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
         require(workAllowed())
+        admit(manifest, template)
+        require(if (template.platform == NomadPlatform.LINUX) template.command == listOf("worker") else template.command.size == 2 && template.command[1] == "worker")
+        if (template.platform == NomadPlatform.MAC) require(Path.of(template.command.first()).isAbsolute && "current" !in Path.of(template.command.first()).map { it.toString() }) { "native workers require a pinned release launcher" }
         val job = store.job(jobId) ?: error("missing experiment")
         require(job.backend == ExecutionBackendKind.NOMAD && job.experiment == manifest.experiment)
+        if (template.platform == NomadPlatform.LINUX) {
+            val reason = Placement.localOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
+            require(reason == null && Experiments.storedHost(manifest.experiment.host) != Experiments.LAB_HOST) { reason ?: "experiment is placed on the local host" }
+        } else require(Experiments.storedHost(manifest.experiment.host) != Experiments.AWS_HOST) { "experiment is cloud-only" }
         require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
         require(template.budget == manifest.budget)
         val planned = store.casePlan(jobId).associateBy { it.index }
@@ -41,7 +50,7 @@ class NomadBackend(
             "LAB_WORKER_EXPERIMENT" to jobId.toString(), "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token, "LAB_WORKER_API" to api,
             "LAB_WORKER_RELEASE" to manifest.release, "LAB_WORKER_IDENTITY_FILE" to "${'$'}{NOMAD_TASK_DIR}/lab-worker.jwt",
         )).render()
-        val payload = authenticatedJob(original, id, manifest.release)
+        val payload = authenticatedJob(JsonObject(original + ("Namespace" to JsonPrimitive(nomad.namespace))), id, manifest.release)
         return store.execution.createSession(id, jobId, "solve", manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest))
     }
 
@@ -89,9 +98,12 @@ class NomadBackend(
 
     override fun reconcile() {
         // Stops remain deliverable during holds; growth and acceptance do not.
+        val logJobs = store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.NOMAD }.map { it.id }.toMutableSet()
+        store.execution.expireRunDeadlines()
         store.execution.expire()
         for (intent in store.execution.intents()) {
             val session = store.execution.session(intent.session) ?: continue
+            logJobs += intent.jobId
             when (intent.operation) {
                 "submit" -> {
                     if (session.desired == "stop") { store.execution.acknowledge(intent.id); continue }
@@ -107,7 +119,8 @@ class NomadBackend(
             store.execution.acknowledge(intent.id)
         }
         if (!workAllowed()) return
-        for (job in store.active().filter { it.backend == ExecutionBackendKind.NOMAD }) {
+        logJobs += store.execution.pendingProjectionJobs()
+        for (job in store.jobsByIds(logJobs.toList()).filter { it.backend == ExecutionBackendKind.NOMAD }) {
             val accepted = store.execution.accepted(job.id)
             val checked = store.execution.checksComplete(job.id)
             val ingested = store.execution.ingested(job.id)
@@ -119,6 +132,7 @@ class NomadBackend(
                 }
             }
             val current = store.job(job.id)!!
+            if (current.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
             if (current.commands.isNotEmpty() && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
                 current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
                 // finishIfComplete rechecks cancellation and projections under the store's write lock.
@@ -149,6 +163,16 @@ class NomadBackend(
                 if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
                 else replace(sessions.last())
             }
+        }
+        for (job in logJobs) {
+            val current = store.job(job) ?: continue
+            val events = store.execution.events(job)
+            val text = events.joinToString("\n", postfix = "\n") { event ->
+                "${java.time.Instant.ofEpochMilli(event.at)} ${event.session ?: "experiment"} ${event.detail}"
+            } + "status: ${current.status}\n" + (current.error?.let { "error: $it\n" } ?: "")
+            val path = jobDirectory(job).resolve("job.log")
+            Files.createDirectories(path.parent)
+            if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
         }
     }
 

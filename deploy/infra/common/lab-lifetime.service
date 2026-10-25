@@ -1,0 +1,5 @@
+[Unit]
+Description=Emergency lab host shutdown (cloud capacity expiry remains authoritative)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff
