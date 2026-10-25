@@ -28,7 +28,7 @@ class InstallTest(unittest.TestCase):
                 settings += f'LAB_DATA="{root / "custom-data"}"\n'
             (config / "lab.env").write_text(settings)
             gradle = project / "gradlew"
-            gradle.write_text('#!/bin/bash\n[[ "$*" != *printJavaHome* ]] || echo /test-jdk\nexit 0\n')
+            gradle.write_text('#!/bin/bash\nif [[ "$*" == *printJavaHome* ]]; then echo /test-jdk; else [[ "$*" == *"clean installDist"* ]] || exit 1; fi\n')
             gradle.chmod(0o755)
             launcher = project / "build/install/eignex-lab/bin/eignex-lab"
             launcher.parent.mkdir(parents=True)

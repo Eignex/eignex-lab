@@ -16,7 +16,7 @@ git -C "$here" pull --ff-only
 # started outside it, so a build run by hand while solves run takes as little from them as it can; `lab update`
 # avoids the overlap altogether.
 background=(nice -n 19); [[ "$(uname)" == Darwin ]] && background=(taskpolicy -b)
-(cd "$here" && "${background[@]}" ./gradlew --no-daemon installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
+(cd "$here" && "${background[@]}" ./gradlew --no-daemon clean installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
 JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 bin="$(release "$here" "$LAB_DATA")"

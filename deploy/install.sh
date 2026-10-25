@@ -76,7 +76,8 @@ echo "docker: $docker_mode"
 
 # Gradle itself needs a Java to launch; any 17+ on PATH does. The services run on the toolchain JDK.
 command -v java >/dev/null || [[ -n "${JAVA_HOME:-}" ]] || { echo "install any JDK 17+ so Gradle can launch"; exit 1; }
-(cd "$here" && ./gradlew installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
+# Clear generated launchers from previous project names before packaging the distribution.
+(cd "$here" && ./gradlew clean installDist --max-workers="${LAB_GRADLE_WORKERS:-2}" -q)
 JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 echo "services run on $JAVA_HOME"
