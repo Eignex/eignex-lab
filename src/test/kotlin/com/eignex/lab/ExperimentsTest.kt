@@ -257,10 +257,10 @@ class ExperimentsTest {
         val problem = Problem("hakank", "golf", format = "MINIZINC", model = "/c/golf.mzn", data = "/c/golf.dzn",
             includeDirs = listOf("/c/lib"))
 
-        val command = Experiments.referenceCommand("/lab/bin/klause-lab", problem, arm, 4, 2)
+        val command = Experiments.referenceCommand("/lab/bin/eignex-lab", problem, arm, 4, 2)
 
         assertEquals(
-            "exec '/lab/bin/klause-lab' reference 'problem=golf' 'format=MINIZINC' 'model=/c/golf.mzn' " +
+            "exec '/lab/bin/eignex-lab' reference 'problem=golf' 'format=MINIZINC' 'model=/c/golf.mzn' " +
                 "'data=/c/golf.dzn' 'include=/c/lib' 'solver=chuffed' 'timeout=60000' 'solver-seed=4' " +
                 "out=\"\$JOB_DIR/cases/2\"",
             command,
@@ -305,7 +305,7 @@ class ExperimentsTest {
         val arm = Arm("ref", mapOf("backend" to "reference", "solver" to "chuffed", "fixed" to "true"))
         val problem = Problem("hakank", "golf", format = "MINIZINC", model = "/c/golf.mzn")
 
-        val command = Experiments.referenceCommand("/lab/bin/klause-lab", problem, arm, null, 0)
+        val command = Experiments.referenceCommand("/lab/bin/eignex-lab", problem, arm, null, 0)
 
         assertContains(command, "'solver=chuffed' 'fixed=true'")
         assertFalse("backend=" in command)

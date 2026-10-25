@@ -86,10 +86,10 @@ class Solchecker(
         const val UPSTREAM_VERSION = "1.0.4"
         /** The binary's identity, the upstream release and the lab's patch, which also names its directory so a binary
          *  built otherwise is never reused. */
-        const val VERSION = "$UPSTREAM_VERSION+klause-lab-longnum-1"
+        const val VERSION = "$UPSTREAM_VERSION+eignex-lab-longnum-1"
         /** The lab's patch to the upstream sources, a resource beside this class. */
         const val PATCH = "solchecker-1.0.4-longnum.patch"
-        const val PATCH_SHA256 = "c0cf7c98c63029468072bad151a8ff93f986bfc051f49a66cdcfd6a205f611e5"
+        const val PATCH_SHA256 = "fea62f2aa48bb13729e72e40c918b8dd11d8e5c440ae8cf093570ba5220a37be"
         /** The checker version each verdict records: the binary's identity and the patch it was built with. */
         const val CHECKER_VERSION = "$VERSION (patch sha256 $PATCH_SHA256)"
         /** The upstream archive, byte for byte as Zuse Institute Berlin published it: a resource beside this class, with

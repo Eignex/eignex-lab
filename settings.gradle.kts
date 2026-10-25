@@ -1,4 +1,4 @@
-rootProject.name = "klause-lab"
+rootProject.name = "eignex-lab"
 
 plugins {
     // Provisions the JDK the build asks for, so the server needs only a Java to launch Gradle.

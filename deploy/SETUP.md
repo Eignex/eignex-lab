@@ -1,4 +1,4 @@
-# klause lab setup
+# eignex lab setup
 
 An experiment server for klause. An experiment solves a selection of problems under one or more configurations,
 one problem per case. The server builds each commit the configurations name, runs the cases, one experiment at a
@@ -8,7 +8,7 @@ It runs on macOS or Linux. The lab runs work on its local machine (a Mac here) a
 on cloud nodes rented from a cloud provider (AWS EC2 here; see Running on cloud nodes). Both services log the koblas backend at startup: the engine, and whichever host BLAS
 it finds. They refuse to start (exit 78) unless koblas runs its Vector API engine, which is what klause's Level 1
 calls use, so no timing comes from the scalar fallback. Host BLAS serves only Level 2 and 3, which klause does not
-call, so it is reported and not required. `klause-lab check` prints the report and does nothing else.
+call, so it is reported and not required. `eignex-lab check` prints the report and does nothing else.
 
 ## Experiments
 
@@ -290,10 +290,10 @@ naming one is refused, and one still queued fails when it is planned.
 
 Every page and API call, `/health` included, needs the lab's password, sent as HTTP Basic with any user name or none:
 a browser asks for it once (leave the user name empty), `curl -u :<password>` sends it, and `lab` sends it from
-`LAB_PASSWORD` or `~/.config/klause-lab/password`. The lab keeps only a salted SHA-256 hash of it, committed in
+`LAB_PASSWORD` or `~/.config/eignex-lab/password`. The lab keeps only a salted SHA-256 hash of it, committed in
 `src/main/resources/lab-password` and safe to publish, since the password is 32 random bytes no one can guess from it;
 a slow hash would add nothing for such a secret, and every wrong password a stranger sends would cost the lab
-machine CPU its cases' timings would feel. `LAB_PASSWORD_HASH` overrides it. To change it, run `klause-lab password`
+machine CPU its cases' timings would feel. `LAB_PASSWORD_HASH` overrides it. To change it, run `eignex-lab password`
 (the installed binary, or `./gradlew run --args=password`), commit the hash it prints, and hand the password it
 prints to the clients; the lab takes the new one when it updates. A header that passed is remembered by its digest;
 failed passwords are limited to 10 a minute from one client and 60 a minute in all, past which a request gets 429
@@ -320,7 +320,7 @@ directory cannot be created, the job stays queued. The runner sets an experiment
 every commit the arms name once, each in its own worktree. It then runs `klause-bench select` at the first arm's commit,
 which also fetches the corpus, and writes one
 command per case: a `klause-bench solve-one` of one problem in one arm's worktree, or for a reference arm the lab's own
-`klause-lab reference` on the problem's files (see Reference results). Every arm of a problem runs back to
+`eignex-lab reference` on the problem's files (see Reference results). Every arm of a problem runs back to
 back, in an order rotated per problem, so drift and pauses spread evenly over the arms; with seeds or repeats the arms
 alternate, every arm running once per seed and repeat before the next (A, B, A, B, not A, A, B, B). A case always solves (an older
 bench's result cache is turned off) and its record lands in the store. `lab cases <id>` lists them, as does `GET
@@ -380,7 +380,7 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
 | Format | Checker (licence) | Policy | Unchecked, and why |
 | --- | --- | --- | --- |
 | XCSP3 | the official XCSP3 solution checker (MIT), built from pinned upstream sources, `org.xcsp.parser.callbacks.SolutionChecker` | `lab-xcsp3-solution-checker-2.5.1+ca58fc79a42374d080aac4d1410874e748cf0a05-v1` | lexicographic (multi-)objectives, which the checker does not manage: `unsupported`, in the checker's words |
-| MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin), built with the lab's input-limit patch as `1.0.4+klause-lab-longnum-1` | `lab-mps-solchecker-1.0.4-longnum-v1` | a value with no exact decimal of at most 4095 characters (solchecker reads only decimals, so a fraction such as `1/3` is not rounded for it, nor a longer decimal cut); a SOL line over 8190 characters; an MPS file solchecker cannot read, in its words |
+| MPS | the MIPLIB 2017 solution checker `solchecker` from `miplib2017-testscript-v1.0.4.zip` (MIT, Zuse Institute Berlin), built with the lab's input-limit patch as `1.0.4+eignex-lab-longnum-1` | `lab-mps-solchecker-1.0.4-longnum-v1` | a value with no exact decimal of at most 4095 characters (solchecker reads only decimals, so a fraction such as `1/3` is not rounded for it, nor a longer decimal cut); a SOL line over 8190 characters; an MPS file solchecker cannot read, in its words |
 | MiniZinc (integer) | MiniZinc with Gecode (`minizinc --solver gecode`; MiniZinc MPL-2.0, Gecode MIT) | `lab-minizinc-gecode-v1` | floats: no external exact checker for floats (a witness with `% klause-exact:`, `% klause-coordinate:` or `% klause-float-` lines, a float approximation, or a model with `var float` variables); a witness naming FlatZinc-introduced variables (`X_INTRODUCED_*`), which only Klause's own compilation maps back to the model; a witness MiniZinc cannot read as data for the model (integers for an enum-typed array), in its words |
 | SMT-LIB | Dolmen 0.10 (BSD-2-Clause), the pinned release binary; for a model with algebraic numbers (`root-obj`) Dolmen cannot read, Z3 (MIT) | `lab-smtlib-dolmen-0.10-v2`; `lab-smtlib-z3-algebraic-<z3 version>-v2` for Z3's verdicts | optimisation claims (Dolmen checks a model, not an objective); UNSAT claims have no witness and are compared with stored reference verdicts; an incremental source or one with uninterpreted functions, for the Z3 path |
 | DIMACS, OPB, WCNF | none | `reported-result-v1` | no checker: the solver's own report |
@@ -420,7 +420,7 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
   `miplib.zib.de/downloads`, recovered from a retained copy matching klause's build pin while that site answered
   HTTP 503; the lab checks them against the pin before unpacking them. It applies the lab's patch (below) with
   `patch -p1`, compiles the four `checker/src` files with `c++ -O2 … -lgmp -lz` (Homebrew's `gmp` on the Mac) and
-  keeps only the binary, `$LAB_DATA/checkers/solchecker-1.0.4+klause-lab-longnum-1/solchecker`, under 1 MB: the build
+  keeps only the binary, `$LAB_DATA/checkers/solchecker-1.0.4+eignex-lab-longnum-1/solchecker`, under 1 MB: the build
   tree is deleted as soon as it is built. A build that fails leaves MPS checks `not-run`, saying why, and is tried again ten
   minutes later. An unpatched binary left in `solchecker-1.0.4/` from before is never used and can be deleted.
 
@@ -433,7 +433,7 @@ consumed by the lab and never forwarded to the bench (`SourceValidation.forBench
   into and rationals printed from from 1024 to 16384 bytes (with `toString`'s matching assert), and `SOL_MAX_LINELEN`,
   the SOL reader's line buffer, from 1024 to 8192. A plain decimal of 4095 characters expands to at most about 8200
   in that buffer. Parsing, arithmetic and tolerances are upstream's. The binary's version is
-  `1.0.4+klause-lab-longnum-1`, its directory is named after it, and each verdict records it with the patch's SHA-256
+  `1.0.4+eignex-lab-longnum-1`, its directory is named after it, and each verdict records it with the patch's SHA-256
   as `checkerVersion` and the binary's SHA-256 as `checkerSha256`, under the policy
   `lab-mps-solchecker-1.0.4-longnum-v1`. Job 7165's Bell3a points (cases 25, 26, 27, 30 and 31, witness SHA-256
   `b7038bec…`), whose objective `1564851723957962726619/1759218604441600` has a 53-character exact decimal, were
@@ -726,8 +726,8 @@ to the reference results as it finishes, keyed by collection and problem; a stro
 `{"problems": {"suite": "satlib"}, "base": {"backend": "reference", "timeout": "60000"}}` fills in clasp's verdicts
 on all of SATLIB.
 
-The lab runs reference solvers itself (`klause-lab reference`, from the current release in `LAB_LAUNCHER`, by
-default `$LAB_DATA/releases/current/bin/klause-lab`), so a reference case runs no klause code. The bench is built only
+The lab runs reference solvers itself (`eignex-lab reference`, from the current release in `LAB_LAUNCHER`, by
+default `$LAB_DATA/releases/current/bin/eignex-lab`), so a reference case runs no klause code. The bench is built only
 to select the problems and resolve their files (`select files=true`), and a job whose arms are all reference arms skips
 the klause CLI build. z3, cvc5, kissat, HiGHS and `minizinc` come from `PATH`; `LAB_Z3`, `LAB_CVC5`, `LAB_KISSAT` and
 `LAB_HIGHS` name another binary, and `LAB_Z3_MEMORY_MB` (default 2048) caps z3's memory; the algebraic SMT-LIB checker uses the same z3.
@@ -1080,20 +1080,20 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
 `nodeMaxVcpus`, `nodeWatchdogMin`. `market`, `spotFallback` and `nodeLaunchCoreHours` are no longer read.
 
 - One-time setup: `deploy/aws-setup.sh [user@lab-host]`, from a machine with an admin session (`aws login`). It
-  creates an SSH key pair, a security group admitting SSH from the local machine only, and an IAM user `klause-lab` that may only
-  launch tagged instances of one type, tag them, terminate instances tagged `klause-lab` and read the Ubuntu image id.
+  creates an SSH key pair, a security group admitting SSH from the local machine only, and an IAM user `eignex-lab` that may only
+  launch tagged instances of one type, tag them, terminate instances tagged `eignex-lab` and read the Ubuntu image id.
   The admin session is the CLI's default profile unless `ADMIN_PROFILE` names another; the lab itself only ever uses
-  the local machine's `klause-lab` profile. The script also creates EC2's spot service-linked role, which spot launches need and
-  the `klause-lab` user may not create.
-  It installs the AWS CLI on the local machine if missing, writes the user's key into its `klause-lab` profile and writes
+  the local machine's `eignex-lab` profile. The script also creates EC2's spot service-linked role, which spot launches need and
+  the `eignex-lab` user may not create.
+  It installs the AWS CLI on the local machine if missing, writes the user's key into its `eignex-lab` profile and writes
   `$LAB_DATA/aws/aws.properties` (region, instance type `c7i.2xlarge`, `maxInstances` and `vcpuQuota`, now 8 and the account's 128 on-demand vCPUs, `cores` 4, `maxHours` 24,
   the MiniZinc version, the corpus bucket and instance profile). The lab reads that file; restart the services to
   start the cloud worker. After that the worker rereads it on every poll, so a raised `vcpuQuota` or a new
   `maxInstances` applies to the next launch without a restart.
-- The corpus cache lives in a private S3 bucket in the same region, `klause-lab-corpus-<account>-<region>`. An instance
+- The corpus cache lives in a private S3 bucket in the same region, `eignex-lab-corpus-<account>-<region>`. An instance
   syncs it down while it builds (fast and free within the region) and, after planning, pushes back any collection it
   had to fetch from its source, so each collection is downloaded from the internet once. The instances reach it through
-  the role `klause-lab-instance`, which may read and write only that bucket.
+  the role `eignex-lab-instance`, which may read and write only that bucket.
 - The bucket also holds Gradle's dependency cache and wrapper distribution as one archive, restored before every build
   and refreshed after one, and each commit's built distributions: `builds/verified-v2-plain/<sha>.tar.zst`, or
   `builds/verified-v2/<sha>.tar.zst` from when builds packaged the MIPLIB solchecker (which then goes unused). An instance that finds its commit there
@@ -1139,7 +1139,7 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
 - The pool outlives the lab's restarts, lab updates included. The worker keeps each node (instance, size, market,
   address, whether started by hand, first launch, commits built) in `$LAB_DATA/aws/pool.json`, rewritten on each
   change. A restarted worker, before it launches or sweeps anything, adopts each node of that file that still runs as a
-  lab instance (still tagged `klause-lab`): it must be `running`, have a public address, answer SSH within 60 s (no long retries), and have every process the previous
+  lab instance (still tagged `eignex-lab`): it must be `running`, have a public address, answer SSH within 60 s (no long retries), and have every process the previous
   runner left on it killed (each SSH session the lab started) and its job files (`~/jobs`) removed, checked after the
   kill; its builds and corpus stay. The adopted node then takes work as any node, its age still counted from its first
   launch. Adoption fails closed: a node that does not pass is terminated with the reason logged, a lab instance not in
@@ -1152,7 +1152,7 @@ setup step a local job runs in `jobs/<id>/setup.step` while it runs, so the reas
   launch; adoption keeps that deadline. An idle node, launched or adopted, retires after `nodeIdleMin`. The sweep
   terminates, every 5 minutes, any lab-tagged instance that is not one of the worker's nodes (holding off while a launch
   is in progress). And each node runs a watchdog, a systemd timer installed at boot, that powers it off once the lab
-  has not touched its heartbeat file (`/var/lib/klause-lab-heartbeat`, touched every 5 minutes and on adoption) for
+  has not touched its heartbeat file (`/var/lib/eignex-lab-heartbeat`, touched every 5 minutes and on adoption) for
   `nodeWatchdogMin` minutes (30; 0 turns it off for nodes launched after), so a lab that stays down, or a Mac that is
   off, leaves no node billing until `maxHours`. A lab update's restart takes far less. Nodes launched before the watchdog
   existed have none and rely on `maxHours`. Every termination is logged with its reason.
@@ -1180,12 +1180,12 @@ The lab answers at `https://lab.eignex.com` from anywhere, and only with its pas
 network sits behind the ISP's carrier-grade NAT, so nothing can connect in to it, router forwarding included; the local
 machine (the local machine) connects out to a relay instead:
 
-- The relay is an EC2 instance `klause-relay` (t4g.micro, eu-north-1) with the Elastic IP `klause-relay`, a security
+- The relay is an EC2 instance `eignex-relay` (t4g.micro, eu-north-1) with the Elastic IP `eignex-relay`, a security
   group open to 22, 80 and 443, and Caddy, which serves the domain with a Let's Encrypt certificate it renews itself
   and passes every request to `127.0.0.1:8420`. Its `tunnel` user can hold that one reverse forward and nothing else:
   no shell, no command, no other port.
-- The local machine holds the tunnel: the launchd daemon `com.eignex.klause-relay` runs `ssh -N -R 127.0.0.1:8420:...` to the
-  relay as the lab's user with `~/.ssh/klause-lab-relay`, starts at boot and reconnects after a drop. Its errors go
+- The local machine holds the tunnel: the launchd daemon `com.eignex.lab.relay` runs `ssh -N -R 127.0.0.1:8420:...` to the
+  relay as the lab's user with `~/.ssh/eignex-lab-relay`, starts at boot and reconnects after a drop. Its errors go
   to `$LAB_DATA/logs/relay.log`.
 - DNS for `eignex.com` is hosted at DigitalOcean (the registrar only points there); the `lab` A record names the
   Elastic IP.
@@ -1194,7 +1194,7 @@ machine (the local machine) connects out to a relay instead:
 the Elastic IP carries over to a rebuilt relay, so DNS stays put, and with a DigitalOcean token in
 `~/.config/digitalocean/token` it sets the A record too. It ends by printing the one step left, on the local machine:
 `sudo deploy/relay/install-tunnel.sh <relay-ip>`, which installs the daemon and forgets the old relay's host key. The
-relay is tagged only `Name=klause-relay`, never `klause-lab`, so the cloud worker's cleanup of its own instances leaves
+relay is tagged only `Name=eignex-relay`, never `eignex-lab`, so the cloud worker's cleanup of its own instances leaves
 it alone. Expose the lab only while its password check is live: a request without it must get 401.
 
 ## Crash safety
@@ -1311,7 +1311,7 @@ the lab's Gradle home stay in `LAB_DATA` on the internal SSD: builds and the dat
 which a USB hard disk serves at a fraction of the speed, while job files and the corpus are written and read in bulk.
 
 ```
-LAB_JOBS=/Volumes/Ros/klause-lab/jobs
+LAB_JOBS=/Volumes/Ros/eignex-lab/jobs
 LAB_CORPUS=/Volumes/Ros/klause-bench/corpus
 LAB_TRIM_AGE_DAYS=90
 ```
@@ -1331,7 +1331,7 @@ binary it runs has Full Disk Access, and it does not fail the calls meanwhile, i
 own, by listing it and making and removing a small file there, and given up on after 10 s. The outcome is kept for
 15 s, and while a probe is stuck no second one of the same directory starts. A directory that does not answer, or
 refuses, holds the queue with a reason that names the fix, such as "cannot access job files directory
-/Volumes/Ros/klause-lab/jobs within 10 s: macOS may be blocking the lab's java from removable volumes; grant Full Disk
+/Volumes/Ros/eignex-lab/jobs within 10 s: macOS may be blocking the lab's java from removable volumes; grant Full Disk
 Access to /Library/Java/…/bin/java in System Settings → Privacy & Security → Full Disk Access". The queue page, `/disk`
 (`volumes[].problem`), `lab placement` and `lab health` (`held`) show it, and a job's files are answered `503` with it
 at once. The runner checks the volumes before anything else at start, then starts the cloud worker, which keeps
@@ -1353,19 +1353,19 @@ Disk Access. To move an existing lab:
    "services run on …" and in its warning; on a running lab the hold's reason names it). In System Settings →
    Privacy & Security → Full Disk Access, click +, press Cmd-Shift-G, paste the path, click Open and switch it on.
    Grant it again whenever the services move to another JDK.
-2. Copy while the lab runs: `rsync -a ~/klause-lab-data/jobs/ /Volumes/Ros/klause-lab/jobs/` and
+2. Copy while the lab runs: `rsync -a ~/eignex-lab-data/jobs/ /Volumes/Ros/eignex-lab/jobs/` and
    `rsync -a ~/.cache/klause-bench/corpus/ /Volumes/Ros/klause-bench/corpus/`.
-3. Stop the services: `sudo launchctl bootout system/com.eignex.klause-lab.runner` and
-   `sudo launchctl bootout system/com.eignex.klause-lab.api`.
+3. Stop the services: `sudo launchctl bootout system/com.eignex.lab.runner` and
+   `sudo launchctl bootout system/com.eignex.lab.api`.
 4. Run the same rsyncs again, with `--delete`, for what changed meanwhile.
-5. Set `LAB_JOBS`, `LAB_CORPUS` and `LAB_TRIM_AGE_DAYS` in `~/.config/klause-lab/lab.env`.
+5. Set `LAB_JOBS`, `LAB_CORPUS` and `LAB_TRIM_AGE_DAYS` in `~/.config/eignex-lab/lab.env`.
 6. Rerun `deploy/install.sh`, which writes the settings into both services and starts them (it asks for sudo).
 7. Check `lab health` and `/disk`: no `held` and no volume `problem`. Then move the old copies aside and delete them
    once all is well.
 
 ## What a case runs in
 
-A case runs `klause-bench solve-one` in its arm's worktree, or `klause-lab reference` for a reference arm, with this
+A case runs `klause-bench solve-one` in its arm's worktree, or `eignex-lab reference` for a reference arm, with this
 environment:
 
 | variable | value |
@@ -1471,13 +1471,13 @@ they stay the same, Docker's space is free inside the VM for new images but not 
 `colima delete` and a fresh VM (then rebuilding the images) gives it back.
 
 `lab docker-cleanup` asks the runner for a cleanup at its next free moment. On the server,
-`klause-lab docker-cleanup` (in `$LAB_DATA/releases/current/bin`) cleans up at once, whatever the interval; it still
+`eignex-lab docker-cleanup` (in `$LAB_DATA/releases/current/bin`) cleans up at once, whatever the interval; it still
 skips while a container runs and exits 1 when it did. The built-in task is the default; to run it from cron or
 launchd instead, set `LAB_DOCKER_CLEANUP_DAYS=0`, rerun `install.sh`, and call the subcommand weekly with what the
 services get: `JAVA_HOME`, a `PATH` with `docker` and `colima`, and on Colima its `DOCKER_HOST`. For example in crontab:
 
 ```sh
-0 4 * * 0  JAVA_HOME=/path/to/jdk-25 PATH=/opt/homebrew/bin:/usr/bin:/bin DOCKER_HOST=unix://$HOME/.colima/default/docker.sock $HOME/klause-lab-data/releases/current/bin/klause-lab docker-cleanup >> $HOME/klause-lab-data/logs/docker-cleanup.log 2>&1
+0 4 * * 0  JAVA_HOME=/path/to/jdk-25 PATH=/opt/homebrew/bin:/usr/bin:/bin DOCKER_HOST=unix://$HOME/.colima/default/docker.sock $HOME/eignex-lab-data/releases/current/bin/eignex-lab docker-cleanup >> $HOME/eignex-lab-data/logs/docker-cleanup.log 2>&1
 ```
 
 A cron entry can run during a job, between its reference cases: the job's images stay, since its commits name them,
@@ -1490,7 +1490,7 @@ but the pruning competes with its cases for the disk. The runner's own cleanup w
 2. For SSH access from the dev PC, enable Remote Login on macOS and install the PC's key with `ssh-copy-id`. The
    lab itself clones klause over HTTPS and needs no key.
 3. Clone this repository on the server and run `deploy/install.sh`. It builds the lab, runs the host check, and
-   registers the services. Settings live in `~/.config/klause-lab/lab.env`, which the first run creates with every
+   registers the services. Settings live in `~/.config/eignex-lab/lab.env`, which the first run creates with every
    setting commented out at its default; rerun the script after changing it. The services get a fixed PATH
    (Homebrew's and the system directories on macOS, `~/.local/bin` and the system ones on Linux); `LAB_PATH` puts
    more in front. `LAB_INSTALL_DRY_RUN=1 deploy/install.sh` writes the service files to a temporary directory and
@@ -1502,6 +1502,40 @@ but the pruning competes with its cases for the disk. The runner's own cleanup w
 5. Prefer Ethernet to Wi-Fi: a Wi-Fi link that drops leaves the server unreachable while it keeps working.
 
 Logs go to `$LAB_DATA/logs/{api,runner}.log`.
+
+## Upgrading from Klause Lab
+
+The project and launcher are now `eignex-lab`. Existing installations need a one-time manual migration before
+using `deploy/update.sh`; a normal self-update does not migrate paths, service registrations or cloud resources.
+
+1. Let running jobs finish and stop the old services. On macOS, boot out and remove the
+   `/Library/LaunchDaemons/com.eignex.klause-lab.{api,runner,colima}.plist` files that exist, and disable any old
+   login agents under `~/Library/LaunchAgents/`. On Linux, run
+   `systemctl --user disable --now klause-lab-api klause-lab-runner`, remove their unit files from
+   `~/.config/systemd/user/`, and run `systemctl --user daemon-reload`.
+2. Copy `~/.config/klause-lab/` to `~/.config/eignex-lab/`, including `lab.env` and the client password file.
+   Move `~/klause-lab-data` to `~/eignex-lab-data`, or keep the existing data directory and set `LAB_DATA` to its
+   absolute path in the new `lab.env`. Preserve external `LAB_JOBS` and `LAB_CORPUS` paths. Review explicit paths
+   in the copied configuration, especially `LAB_LAUNCHER`, whose executable is now `bin/eignex-lab`. Client hosts
+   also need their password configuration copied and `LAB_REMOTE_DATA` set if the server retains its old data path.
+3. If using AWS workers, terminate the old lab worker instances before starting the renamed runner: it discovers
+   only instances tagged `eignex-lab`. Run `deploy/aws-setup.sh` to provision the renamed IAM user, instance role,
+   profile, key, security group and corpus bucket. This script writes to `~/eignex-lab-data/aws/`; if retaining a
+   custom `LAB_DATA`, move the generated settings and key there and correct `keyFile`. Populate the new corpus
+   bucket as described under Running on cloud nodes, and retire the old cloud resources when no longer needed.
+4. Run `deploy/install.sh` to build the new launcher and register the renamed services. Do not leave the old
+   services enabled alongside them. Update any cron entries and client `LAB_PASSWORD_FILE` overrides.
+5. If using the public relay, stop and remove the old `com.eignex.klause-relay` launchd daemon. Copy
+   `~/.ssh/klause-lab-relay` and its `.pub` file to `~/.ssh/eignex-lab-relay` and its `.pub` file, preserving their
+   permissions, then install the new tunnel daemon against the existing relay IP. The existing relay accepts the
+   copied key. When rebuilding it with `deploy/relay/create.sh`, the new resource name is `eignex-relay`; migrate
+   the Elastic IP's `Name` tag first to reuse its address, or update DNS and retire the old relay and address.
+
+Klause solver names, its CLI environment variables, shared Docker image tags and corpus paths keep their existing
+names. The lab's measurement wrapper now uses `EIGNEX_LAB_PROFILE_DIR`; any custom case commands using the old
+`KLAUSE_LAB_PROFILE_DIR` must be updated. The checker identity is now `1.0.4+eignex-lab-longnum-1`, with a new
+patch SHA-256 because its introductory comment names Eignex Lab; its source changes and verdict semantics are
+unchanged. Older saved reports retain their recorded provenance; new reports identify `eignex-lab`.
 
 ## Updating
 

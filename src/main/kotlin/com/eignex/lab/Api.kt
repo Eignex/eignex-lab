@@ -158,7 +158,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 Admission.ADMIT -> Unit
                 Admission.THROTTLE -> call.respondText("too many failed passwords; try again in a minute", status = HttpStatusCode.TooManyRequests)
                 Admission.REFUSE -> {
-                    call.response.headers.append(HttpHeaders.WWWAuthenticate, "Basic realm=\"klause lab\", charset=\"UTF-8\"")
+                    call.response.headers.append(HttpHeaders.WWWAuthenticate, "Basic realm=\"eignex lab\", charset=\"UTF-8\"")
                     call.respondText("password required", status = HttpStatusCode.Unauthorized)
                 }
             }

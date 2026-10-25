@@ -5,23 +5,23 @@
 #   deploy/relay/create.sh [domain] [user@lab-host]     default lab.eignex.com and rasmusros@192.168.50.104
 # Settings: AWS_REGION (default eu-north-1), ADMIN_PROFILE (default: the CLI's default profile), INSTANCE_TYPE
 # (default t4g.micro; a t4g.nano runs out of memory on its first package install).
-# It creates, or reuses when they exist: the Mac's tunnel key (~/.ssh/klause-lab-relay), an admin key pair
-# `klause-relay-admin` (private key in ~/.ssh here), a security group `klause-relay` open to 22, 80 and 443, the
-# instance `klause-relay`, and an Elastic IP `klause-relay`, which a rebuilt relay takes over so DNS stays put. With
+# It creates, or reuses when they exist: the Mac's tunnel key (~/.ssh/eignex-lab-relay), an admin key pair
+# `eignex-relay-admin` (private key in ~/.ssh here), a security group `eignex-relay` open to 22, 80 and 443, the
+# instance `eignex-relay`, and an Elastic IP `eignex-relay`, which a rebuilt relay takes over so DNS stays put. With
 # a DigitalOcean token in ~/.config/digitalocean/token it points the domain's A record at the address. It tags
-# nothing `klause-lab`, so the lab's own cleanup of its instances never touches the relay. Last, run
+# nothing `eignex-lab`, so the lab's own cleanup of its instances never touches the relay. Last, run
 # install-tunnel.sh with sudo on the Mac, which it prints.
 set -euo pipefail
 domain="${1:-lab.eignex.com}"
 host="${2:-rasmusros@192.168.50.104}"
 region="${AWS_REGION:-eu-north-1}"
 type="${INSTANCE_TYPE:-t4g.micro}"
-name=klause-relay
+name=eignex-relay
 aws=(aws --region "$region" --output text ${ADMIN_PROFILE:+--profile "$ADMIN_PROFILE"})
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 
-key="$(ssh "$host" 'test -f ~/.ssh/klause-lab-relay || ssh-keygen -q -t ed25519 -N "" -C klause-lab-relay-tunnel -f ~/.ssh/klause-lab-relay; cat ~/.ssh/klause-lab-relay.pub')"
+key="$(ssh "$host" 'test -f ~/.ssh/eignex-lab-relay || ssh-keygen -q -t ed25519 -N "" -C eignex-lab-relay-tunnel -f ~/.ssh/eignex-lab-relay; cat ~/.ssh/eignex-lab-relay.pub')"
 sed -e "s|__TUNNEL_KEY__|$key|" -e "s|__DOMAIN__|$domain|" "$here/user-data.sh" > "$work/user-data.sh"
 
 admin="$HOME/.ssh/$name-admin"
@@ -32,7 +32,7 @@ test -f "$admin" || ssh-keygen -q -t ed25519 -N "" -C "$name-admin" -f "$admin"
 vpc="$("${aws[@]}" ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId')"
 sg="$("${aws[@]}" ec2 describe-security-groups --filters Name=group-name,Values=$name Name=vpc-id,Values="$vpc" --query 'SecurityGroups[0].GroupId')"
 if [[ "$sg" == None ]]; then
-  sg="$("${aws[@]}" ec2 create-security-group --group-name $name --description "klause lab relay: HTTPS and key-only SSH" --vpc-id "$vpc" --query GroupId)"
+  sg="$("${aws[@]}" ec2 create-security-group --group-name $name --description "eignex lab relay: HTTPS and key-only SSH" --vpc-id "$vpc" --query GroupId)"
   for port in 22 80 443; do
     "${aws[@]}" ec2 authorize-security-group-ingress --group-id "$sg" \
       --ip-permissions "IpProtocol=tcp,FromPort=$port,ToPort=$port,IpRanges=[{CidrIp=0.0.0.0/0}],Ipv6Ranges=[{CidrIpv6=::/0}]" >/dev/null
@@ -69,4 +69,4 @@ if [[ -f "$token" ]]; then
 else
   echo "add the DNS record yourself: A $domain -> $ip"
 fi
-echo "then, on the lab Mac: sudo ~/Workspaces/klause-lab/deploy/relay/install-tunnel.sh $ip"
+echo "then, on the lab Mac: sudo ~/Workspaces/eignex-lab/deploy/relay/install-tunnel.sh $ip"

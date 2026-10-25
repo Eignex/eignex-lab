@@ -400,6 +400,6 @@ class CompilationReportsTest {
         assertEquals(emptyList(), report.methods.single().byTier)
         assertEquals(SourceProvenance(6971, 0, "s/p", "control", "main", "5374cd79b487183b51bbe1981a70f1312bc31888"), report.provenance.source)
         assertNull(report.provenance.archive)
-        assertEquals("klause-lab compilation analyser, report schema 1", report.provenance.worker.analyzer)
+        assertEquals("eignex-lab compilation analyser, report schema 1", report.provenance.worker.analyzer)
     }
 }

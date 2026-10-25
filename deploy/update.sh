@@ -5,10 +5,10 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 . "$here/deploy/release.sh"
-envfile="$HOME/.config/klause-lab/lab.env"
+envfile="$HOME/.config/eignex-lab/lab.env"
 unset JAVA_HOME
 if [[ -f "$envfile" ]]; then set -a; . "$envfile"; set +a; fi
-LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
+LAB_DATA="${LAB_DATA:-$HOME/eignex-lab-data}"
 [[ -L "$LAB_DATA/releases/current" ]] || { echo "no release yet: run deploy/install.sh first"; exit 1; }
 
 git -C "$here" pull --ff-only

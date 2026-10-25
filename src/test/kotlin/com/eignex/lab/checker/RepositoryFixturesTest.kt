@@ -113,7 +113,7 @@ class RepositoryFixturesTest {
         val found = locate(problem.copy(model = node), pinnedHash).getOrThrow()
         assertEquals(pinnedText, found.model.readText())
         // A worktree on a host the lab does not know is cut at the collection.
-        val elsewhere = "/Users/someone/klause-lab-data/work/7407@${pinned.take(12)}/$path"
+        val elsewhere = "/Users/someone/eignex-lab-data/work/7407@${pinned.take(12)}/$path"
         assertEquals(pinnedText, locate(problem.copy(model = elsewhere), pinnedHash).getOrThrow().model.readText())
     }
 

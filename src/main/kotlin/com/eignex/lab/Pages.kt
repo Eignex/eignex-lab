@@ -29,7 +29,7 @@ internal fun indexPage(
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
 ): String = buildString {
     val front = before == null && name == null
-    append(head("klause lab", live = before == null))
+    append(head("eignex lab", live = before == null))
     append("<header><h1>Queue</h1>")
     append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active)}</p></header>")
     if (front) {
@@ -80,7 +80,7 @@ internal fun jobPage(
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
-    append(head("${job.id} ${job.name} · klause lab", live = active))
+    append(head("${job.id} ${job.name} · eignex lab", live = active))
     append("<header><h1>${job.id} ${esc(job.name)}</h1>")
     job.experiment?.description?.takeIf { it.isNotBlank() }?.let { append("<p class=\"description\">${esc(it)}</p>") }
     append("</header>")
@@ -524,7 +524,7 @@ internal fun comparePage(
     cases: List<CaseResult>,
     references: Map<Pair<String, String>, Reference> = emptyMap(),
 ): String = buildString {
-    append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · klause lab", live = false))
+    append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab", live = false))
     append("<header><h1>Compare ")
     append(jobs.joinToString(" · ") { "<a href=\"/jobs/${it.id}\">${it.id} ${esc(it.name)}</a>" })
     append("</h1></header><div>")
@@ -553,7 +553,7 @@ internal fun trendPage(
 ): String = buildString {
     // Not live for the page-wide refresh, which refetches the whole page: the charts have no live parts, and a page whose
     // points are computing polls a small progress call instead ([trendPoll]).
-    append(head("${name ?: "regression"} · klause lab", live = false, tab = Tab.REGRESSION))
+    append(head("${name ?: "regression"} · eignex lab", live = false, tab = Tab.REGRESSION))
     if (name == null) {
         append("<header><h1>Regression</h1></header><p class=\"muted\">No schedule yet: <code>lab schedule</code> sets one up, ")
         append("and its runs chart here, one point per commit.</p></body></html>")
@@ -922,7 +922,7 @@ internal fun referencesPage(
     val visible = coverage.filter { c ->
         QFNRA_BENCHMARKS.any { c.collection.startsWith(it) } || HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) }
     }
-    append(head("reference · klause lab", live = false, tab = Tab.REFERENCE))
+    append(head("reference · eignex lab", live = false, tab = Tab.REFERENCE))
     append("<header><h1>Reference</h1><p class=\"muted\">${visible.sumOf { it.rows }} results from ")
     append("${visible.map { it.solver }.distinct().size} solvers over ${visible.map { it.collection }.distinct().size} collections")
     append("</p></header>")
@@ -1236,7 +1236,7 @@ private fun problemLink(collection: String, problem: String) = "/problem${query(
 
 /** One problem: every reference solver's verdict on it, and every time the lab ran it. */
 internal fun problemPage(report: ProblemReport, repoUrl: String): String = buildString {
-    append(head("${report.problem} · klause lab", live = report.runs.any { it.status in ACTIVE }, tab = Tab.REFERENCE))
+    append(head("${report.problem} · eignex lab", live = report.runs.any { it.status in ACTIVE }, tab = Tab.REFERENCE))
     append("<header><h1><code>${esc(report.problem)}</code></h1><p class=\"muted\">")
     append("<a href=\"/references${query("collection" to report.collection)}\">${esc(report.collection)}</a></p></header>")
     append("<h2>Reference <small>${report.references.size} solvers, strongest first</small></h2>")
@@ -1315,7 +1315,7 @@ internal fun diskPage(
     /** Why the runner holds its queue ([Volumes.hold]); null when it does not. */
     held: String? = null,
 ): String = buildString {
-    append(head("disk · klause lab", live = false))
+    append(head("disk · eignex lab", live = false))
     append("<header><h1>Disk</h1></header>")
     if (held != null) append("<p class=\"FAILED\">The queue is held: ${esc(held)}</p>")
     if (volumes.isNotEmpty()) append(volumesSection(volumes))
@@ -1423,7 +1423,7 @@ private fun dockerSection(report: DiskReport): String = buildString {
 }
 
 internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
-    append(head("$jobId files · klause lab", live = false))
+    append(head("$jobId files · eignex lab", live = false))
     append("<header><h1><a href=\"/jobs/$jobId\">$jobId</a> / files</h1></header>")
     if (files.isEmpty()) append("<p class=\"muted\">No files yet.</p>")
     append("<div class=\"scroll\"><table><tr><th>path</th><th class=\"num\">size</th></tr>")
@@ -1916,7 +1916,7 @@ private fun trendPoll(runs: Int, computing: Int): String = if (computing == 0) "
 
 private fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE) = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE</style></head>
-<body${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">klause lab</a>${tabs(tab)}</nav>"""
+<body${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">eignex lab</a>${tabs(tab)}</nav>"""
 
 private fun tabs(active: Tab) = Tab.entries.joinToString("") {
     "<a href=\"${it.href}\"${if (it == active) " class=\"on\" aria-current=\"page\"" else ""}>${it.label}</a>"

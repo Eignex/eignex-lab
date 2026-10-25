@@ -55,7 +55,7 @@ internal object CliMeasurements {
         else "GNU time peak RSS of the CLI process, KiB"
 
     /**
-     * The step that installs the measurement launcher in [worktree]'s CLI: with `KLAUSE_LAB_PROFILE_DIR` set, the CLI
+     * The step that installs the measurement launcher in [worktree]'s CLI: with `EIGNEX_LAB_PROFILE_DIR` set, the CLI
      * runs under a measurement that writes `resources.txt` there, with the same keys in the same units on both
      * systems (`peakRssKiB`, `userSeconds`, `systemSeconds`, `wallSeconds`, `exit`). On Linux, an AWS node, GNU time
      * measures it, and `setpriv --pdeathsig` makes the CLI die with its timer. On macOS ([macOs]), the lab Mac, which
@@ -75,17 +75,17 @@ internal object CliMeasurements {
             if ! test -f ${quote("$cli.lab-original")}; then
                 cp -p ${quote(cli)} ${quote("$cli.lab-original")}
             fi
-            cat > ${quote("$cli.lab-measurement")} <<'KLAUSE_LAB_CLI_MEASUREMENT'
+            cat > ${quote("$cli.lab-measurement")} <<'EIGNEX_LAB_CLI_MEASUREMENT'
             #!/usr/bin/env bash
             set -euo pipefail
             delegate="${'$'}{0}.lab-original"
             # A bare `--version` is the bench's check that the CLI starts, not the solve: it runs unmeasured, so it
             # cannot write over the solve's recording, log or resources.
-            if [[ -n "${'$'}{KLAUSE_LAB_PROFILE_DIR:-}" && ! ( ${'$'}# -eq 1 && ${'$'}1 == --version ) ]]; then
+            if [[ -n "${'$'}{EIGNEX_LAB_PROFILE_DIR:-}" && ! ( ${'$'}# -eq 1 && ${'$'}1 == --version ) ]]; then
 ${if (macOs) macMeasure(time) else linuxMeasure(time)}
             fi
             exec "${'$'}delegate" "${'$'}@"
-            KLAUSE_LAB_CLI_MEASUREMENT
+            EIGNEX_LAB_CLI_MEASUREMENT
             chmod +x ${quote("$cli.lab-measurement")}
             mv ${quote("$cli.lab-measurement")} ${quote(cli)}
         """.trimIndent()
@@ -126,10 +126,10 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
  * the timer is still its parent: one killed before then would otherwise leave the CLI running.
  */
 private fun linuxMeasure(time: String) = """
-                export KLAUSE_LAB_TIMER_PID=${'$'}${'$'}
+                export EIGNEX_LAB_TIMER_PID=${'$'}${'$'}
                 exec ${quote(time)} --format='peakRssKiB=%M\nuserSeconds=%U\nsystemSeconds=%S\nwallSeconds=%e\nexit=%x' \
-                    --output="${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt" setpriv --pdeathsig KILL -- \
-                    bash -c '[[ ${'$'}PPID == "${'$'}KLAUSE_LAB_TIMER_PID" ]] || kill -KILL ${'$'}${'$'}; exec "${'$'}@"' bash "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
+                    --output="${'$'}EIGNEX_LAB_PROFILE_DIR/resources.txt" setpriv --pdeathsig KILL -- \
+                    bash -c '[[ ${'$'}PPID == "${'$'}EIGNEX_LAB_TIMER_PID" ]] || kill -KILL ${'$'}${'$'}; exec "${'$'}@"' bash "${'$'}delegate" "${'$'}@"""".removePrefix("\n")
 
 /**
  * macOS: BSD `time -l`, whose report the launcher turns into `resources.txt`; its `maximum resident set size` is in
@@ -137,7 +137,7 @@ private fun linuxMeasure(time: String) = """
  * shell cannot do for a signal ignored when it started. The launcher passes each on to the timer's child, the CLI.
  */
 private fun macMeasure(time: String) = """
-                raw="${'$'}KLAUSE_LAB_PROFILE_DIR/time.txt"
+                raw="${'$'}EIGNEX_LAB_PROFILE_DIR/time.txt"
                 trap '' TERM HUP INT
                 ${quote(time)} -l -o "${'$'}raw" perl -e '${'$'}SIG{${'$'}_} = "DEFAULT" for qw(TERM HUP INT); exec @ARGV or die "exec: ${'$'}!\n"' \
                     "${'$'}delegate" "${'$'}@" &
@@ -154,7 +154,7 @@ private fun macMeasure(time: String) = """
                         { for (i = 2; i <= NF; i++) if (${'$'}i == "real") wall = ${'$'}(i - 1); else if (${'$'}i == "user") user = ${'$'}(i - 1); else if (${'$'}i == "sys") sys = ${'$'}(i - 1) }
                         /maximum resident set size/ { rss = ${'$'}1 }
                         END { printf "peakRssKiB=%d\nuserSeconds=%.2f\nsystemSeconds=%.2f\nwallSeconds=%.2f\nexit=%d\n", int(rss / 1024), user, sys, wall, code }
-                    ' "${'$'}raw" > "${'$'}KLAUSE_LAB_PROFILE_DIR/resources.txt"
+                    ' "${'$'}raw" > "${'$'}EIGNEX_LAB_PROFILE_DIR/resources.txt"
                     rm -f "${'$'}raw"
                 fi
                 exit "${'$'}status"""".removePrefix("\n")

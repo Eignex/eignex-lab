@@ -28,7 +28,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: klause-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference")
         exitProcess(2)
     }
     val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->
@@ -39,7 +39,7 @@ fun main(args: Array<String>) {
     val config = Config()
     config.dataDir.createDirectories()
     val store = Store(config.database)
-    println("klause-lab $mode: data=${config.dataDir} repo=${config.repoUrl} corpus=${config.corpusDir}")
+    println("eignex-lab $mode: data=${config.dataDir} repo=${config.repoUrl} corpus=${config.corpusDir}")
     when (mode) {
         "api" -> {
             Background.self()

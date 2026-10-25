@@ -52,7 +52,7 @@ class AwsPoolTest {
                     scripts.computeIfAbsent(instance) { Collections.synchronizedList(ArrayList()) } += script
                     val (out, code) = when {
                         instance in unreachable -> "ssh: connect to host $ip port 22: Connection refused" to 255
-                        "kill -KILL" in script && "klause-lab-step" in script -> "ready" to 0
+                        "kill -KILL" in script && "eignex-lab-step" in script -> "ready" to 0
                         else -> "" to 0
                     }
                     return ProcessBuilder("bash", "-c", "printf '%s\\n' \"\$OUT\"; exit $code")
@@ -180,7 +180,7 @@ class AwsPoolTest {
         val aws = lab().aws!!
         val script = AwsWorker.bootstrap(aws)
 
-        assertTrue("klause-lab-watchdog.timer" in script && "-gt 1800" in script && "shutdown -h now" in script, script)
+        assertTrue("eignex-lab-watchdog.timer" in script && "-gt 1800" in script && "shutdown -h now" in script, script)
         assertTrue("shutdown -h +1440" in script)
         assertFalse("watchdog" in AwsWorker.bootstrap(aws.copy(nodeWatchdogMin = 0)))
         for (shell in listOf(script, AwsWorker.ADOPT_SCRIPT)) {

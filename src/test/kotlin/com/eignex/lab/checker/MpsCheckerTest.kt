@@ -103,7 +103,7 @@ class MpsCheckerTest {
         assertEquals(Policies.MPS, valid.policy)
         // The verdict names the patched build: its version, the patch's digest and the binary's own.
         assertEquals("lab-mps-solchecker-1.0.4-longnum-v1", valid.policy)
-        assertEquals("1.0.4+klause-lab-longnum-1 (patch sha256 ${Solchecker.PATCH_SHA256})", valid.checkerVersion)
+        assertEquals("1.0.4+eignex-lab-longnum-1 (patch sha256 ${Solchecker.PATCH_SHA256})", valid.checkerVersion)
         assertEquals(sha256(accepting), valid.checkerSha256)
         val invalid = check(fake("Check SOL: Integrality 1 Constraints 0 Objective 0"))
         assertEquals(LabCheck.INVALID, invalid.state)
@@ -194,7 +194,7 @@ class MpsCheckerTest {
         val dir = Files.createTempDirectory("checkers").toFile()
         val solchecker = realSolchecker(dir)
         // Only the patched binary is kept, under its own version: no archive, no build tree, no unpatched build reused.
-        assertEquals(listOf("solchecker-1.0.4+klause-lab-longnum-1/solchecker"),
+        assertEquals(listOf("solchecker-1.0.4+eignex-lab-longnum-1/solchecker"),
             dir.walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.toList())
         assertEquals(solchecker.binary(), solchecker.binary())
         val model = model()

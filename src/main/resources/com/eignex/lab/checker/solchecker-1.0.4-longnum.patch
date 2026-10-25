@@ -1,4 +1,4 @@
-klause-lab patch longnum-1 to the MIPLIB 2017 solchecker 1.0.4 (miplib2017-testscript-v1.0.4.zip, checker/src).
+eignex-lab patch longnum-1 to the MIPLIB 2017 solchecker 1.0.4 (miplib2017-testscript-v1.0.4.zip, checker/src).
 It raises three fixed input limits and changes nothing else; numbers are still parsed into exact GMP rationals:
 - a number read: strlen < 32 -> < 4096 characters (the assert in Rational::fromString);
 - the shared I/O buffer numbers are expanded into and printed from: 1024 -> 16384 bytes (and toString's assert);

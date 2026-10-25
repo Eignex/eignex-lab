@@ -30,8 +30,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * Package and verify campaign evidence without extracting archives: `klause-lab campaign-evidence pack <root> <output>`
- * and `klause-lab campaign-evidence verify <archive> <manifest>` (see deploy/SETUP.md). Such an archive, placed under
+ * Package and verify campaign evidence without extracting archives: `eignex-lab campaign-evidence pack <root> <output>`
+ * and `eignex-lab campaign-evidence verify <archive> <manifest>` (see deploy/SETUP.md). Such an archive, placed under
  * the lab's archive directory, is what an analysis job analyses saved captures from ([CaptureArchives]), verified by
  * [verify] first. An archive is a gzipped POSIX tar of every staged file in path order, with no times, owners or modes
  * beyond 0644, so packing the same tree twice gives the same bytes. Its manifest is JSON as Python's
@@ -44,7 +44,7 @@ internal object CampaignEvidence {
 
     /** The command line: what to print and the exit status, 1 on a rejected tree or archive, 2 on a usage error. */
     fun main(args: List<String>): Int {
-        val usage = "usage: klause-lab campaign-evidence pack <root> <output> | verify <archive> <manifest>"
+        val usage = "usage: eignex-lab campaign-evidence pack <root> <output> | verify <archive> <manifest>"
         if (args.size != 3 || args[0] !in setOf("pack", "verify")) {
             System.err.println(usage)
             return 2

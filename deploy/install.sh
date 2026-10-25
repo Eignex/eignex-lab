@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build klause-lab and register its services with the host's service manager: launchd daemons on macOS, which
+# Build eignex-lab and register its services with the host's service manager: launchd daemons on macOS, which
 # start at boot without a login and run as this user, and systemd user units with lingering on Linux.
 # LAB_INSTALL_DRY_RUN=1 checks and writes the service files to a temporary directory, and registers nothing; it
 # builds only when there is no build yet.
@@ -7,7 +7,7 @@ set -euo pipefail
 dry="${LAB_INSTALL_DRY_RUN:-}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 . "$here/deploy/release.sh"
-envfile="$HOME/.config/klause-lab/lab.env"
+envfile="$HOME/.config/eignex-lab/lab.env"
 if [[ ! -f "$envfile" ]]; then
   if [[ -n "$dry" ]]; then envfile="$here/deploy/lab.env.example"
   else mkdir -p "$(dirname "$envfile")"; cp "$here/deploy/lab.env.example" "$envfile"
@@ -15,7 +15,7 @@ if [[ ! -f "$envfile" ]]; then
 fi
 unset JAVA_HOME LAB_DOCKER LAB_PATH
 set -a; . "$envfile"; set +a
-LAB_DATA="${LAB_DATA:-$HOME/klause-lab-data}"
+LAB_DATA="${LAB_DATA:-$HOME/eignex-lab-data}"
 [[ -n "$dry" ]] || mkdir -p "$LAB_DATA/logs"
 os="$(uname -s)"
 
@@ -88,7 +88,7 @@ if [[ -n "$external" && "$os" == Darwin ]]; then
   echo "  in System Settings → Privacy & Security → Full Disk Access: click +, press Cmd-Shift-G, paste the path above," >&2
   echo "  click Open and switch it on. Do it again whenever the JDK above changes." >&2
 fi
-if [[ -n "$dry" ]]; then bin="$here/build/install/klause-lab/bin/klause-lab"; else bin="$(release "$here" "$LAB_DATA")"; fi
+if [[ -n "$dry" ]]; then bin="$here/build/install/eignex-lab/bin/eignex-lab"; else bin="$(release "$here" "$LAB_DATA")"; fi
 "$bin" check   # fails here, before anything is registered, on a host without SIMD
 
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an
@@ -144,7 +144,7 @@ Darwin)
   roles=(api runner)
   [[ "$docker_mode" == colima ]] && roles=(colima api runner)
   for role in "${roles[@]}"; do
-    label="com.eignex.klause-lab.$role"
+    label="com.eignex.lab.$role"
     case "$role" in
     colima) plist "$label" '<true/>' "$HOME" "$LAB_DATA/logs/colima.log" "$(PATH="$path" command -v colima)" start -f ;;
     # caffeinate holds the machine awake for as long as the runner lives, whatever the energy settings say.
@@ -156,7 +156,7 @@ Darwin)
   done
   [[ -n "$dry" ]] && { echo "dry run: service files in $stage"; exit 0; }
   # Login agents under the same labels, or brew's own colima agent, would run a second copy once someone logs in.
-  for agent in "$HOME"/Library/LaunchAgents/com.eignex.klause-lab.*.plist "$HOME/Library/LaunchAgents/sh.brew.colima.plist"; do
+  for agent in "$HOME"/Library/LaunchAgents/com.eignex.lab.*.plist "$HOME/Library/LaunchAgents/sh.brew.colima.plist"; do
     [[ -f "$agent" ]] || continue
     launchctl bootout "gui/$(id -u)" "$agent" 2>/dev/null || true
     mv "$agent" "$agent.disabled"
@@ -165,7 +165,7 @@ Darwin)
   # A colima started by hand would hold the VM the daemon is about to start.
   [[ "$docker_mode" == colima ]] && PATH="$path" colima stop >/dev/null 2>&1 || true
   for role in "${roles[@]}"; do
-    label="com.eignex.klause-lab.$role"
+    label="com.eignex.lab.$role"
     sudo launchctl bootout "system/$label" 2>/dev/null || true
     # bootout returns before the job is gone (colima waits for its VM), and bootstrapping the label while it is
     # still loaded fails with "Input/output error".
@@ -184,7 +184,7 @@ Linux)
     {
       cat <<UNIT
 [Unit]
-Description=klause lab $role
+Description=eignex lab $role
 After=network-online.target
 
 [Service]
@@ -205,12 +205,12 @@ StandardError=append:$LAB_DATA/logs/$role.log
 [Install]
 WantedBy=default.target
 UNIT
-    } > "$units/klause-lab-$role.service"
+    } > "$units/eignex-lab-$role.service"
   done
   [[ -n "$dry" ]] && { echo "dry run: service files in $units"; exit 0; }
   systemctl --user daemon-reload
-  systemctl --user enable klause-lab-api klause-lab-runner
-  systemctl --user restart klause-lab-api klause-lab-runner
+  systemctl --user enable eignex-lab-api eignex-lab-runner
+  systemctl --user restart eignex-lab-api eignex-lab-runner
   loginctl enable-linger "$(id -un)"   # start at boot without a login session
   ;;
 esac

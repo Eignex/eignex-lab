@@ -46,9 +46,9 @@ class DiskGuardTest {
     @Test
     fun `the disk page shows each volume, its space and the lab's directories on it, and why the queue is held`() {
         val volumes = listOf(
-            VolumeReport("/", 80 * BYTES_PER_GB, 500 * BYTES_PER_GB, listOf(VolumePath("LAB_DATA", "data", "/Users/lab/klause-lab-data"))),
+            VolumeReport("/", 80 * BYTES_PER_GB, 500 * BYTES_PER_GB, listOf(VolumePath("LAB_DATA", "data", "/Users/lab/eignex-lab-data"))),
             VolumeReport("/Volumes/Ros", null, null, listOf(
-                VolumePath("LAB_JOBS", "job files", "/Volumes/Ros/klause-lab/jobs"),
+                VolumePath("LAB_JOBS", "job files", "/Volumes/Ros/eignex-lab/jobs"),
                 VolumePath("LAB_CORPUS", "corpus", "/Volumes/Ros/klause-bench/corpus"),
             ), "job files volume /Volumes/Ros is not mounted"),
         )
@@ -59,7 +59,7 @@ class DiskGuardTest {
         assertTrue("The queue is held: job files volume /Volumes/Ros is not mounted" in page, page)
         assertTrue("<code>/Volumes/Ros</code>" in page && "/Volumes/Ros/klause-bench/corpus" in page && "LAB_CORPUS" in page, page)
         assertTrue(size(80 * BYTES_PER_GB) in page && size(500 * BYTES_PER_GB) in page, page)
-        assertTrue("/Users/lab/klause-lab-data" in page, page)
+        assertTrue("/Users/lab/eignex-lab-data" in page, page)
     }
 
     @Test

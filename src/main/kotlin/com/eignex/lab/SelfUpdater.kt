@@ -5,7 +5,7 @@ import java.nio.file.Path
 import kotlin.system.exitProcess
 
 /**
- * Keeps the lab on the newest klause-lab commit. At most every [intervalMs], or at once when [requestFile] exists (`lab
+ * Keeps the lab on the newest eignex-lab commit. At most every [intervalMs], or at once when [requestFile] exists (`lab
  * update` writes it), it fetches [source], the checkout the services were installed from, and finds whether its
  * upstream is ahead. An update never overlaps a job: the runner asks [due] between a job's cases and yields the job
  * when it is, then calls [maybeUpdate] with nothing running. That runs `deploy/update.sh`, which pulls, builds a new
