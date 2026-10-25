@@ -2,11 +2,12 @@
 """Mac-side AWS inventory + renewal adapter. It cannot directly open the group or write leases."""
 import argparse
 import json
-import os
 from pathlib import Path
-import tempfile
 import time
 import urllib.request
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+from capacity_files import write_atomic
 
 
 def inventory(asg, group, deployment, pool, at=None):
@@ -26,16 +27,6 @@ def inventory(asg, group, deployment, pool, at=None):
     failures = {pool: activities[0].get("StatusMessage", "capacity unavailable")[:500]} if activities and activities[0]["StatusCode"] == "Failed" else {}
     return {"observedAt": int((time.time() if at is None else at) * 1000), "pools": [pool], "instances": instances, "failures": failures}
 
-
-def write_atomic(path, value):
-    path = Path(path); path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".inventory-")
-    try:
-        with os.fdopen(descriptor, "w") as output:
-            json.dump(value, output); output.flush(); os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
 
 
 def once(config, asg, functions):

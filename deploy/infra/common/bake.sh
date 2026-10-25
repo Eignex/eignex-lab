@@ -16,11 +16,13 @@ if hashlib.sha256(archive).hexdigest() != pin['sha256']['linux_' + arch]:
 binary = Path('/usr/local/bin/nomad'); binary.write_bytes(zipfile.ZipFile(io.BytesIO(archive)).read('nomad')); binary.chmod(0o755)
 PY
 install -d -m 755 /opt/eignex-lab
-install -m 755 "$root"/deploy/infra/common/*.py "$root"/deploy/infra/aws/bootstrap-aws.{py,sh} /opt/eignex-lab/
+python3 -m venv /opt/eignex-lab/host-venv
+/opt/eignex-lab/host-venv/bin/python3 -m pip install -r "$root/deploy/infra/aws/requirements.txt"
+install -m 755 "$root"/deploy/infra/common/*.py "$root"/deploy/infra/aws/bootstrap-aws.{py,sh} "$root"/deploy/infra/gcp/bootstrap-gcp.py /opt/eignex-lab/
 install -m 755 "$root/src/main/resources/node-capabilities.sh" /opt/eignex-lab/
 install -m 644 "$root"/deploy/infra/common/*.service "$root"/deploy/infra/common/*.timer /etc/systemd/system/
 docker pull "$LAB_WORKER_IMAGE"
 docker image inspect "$LAB_WORKER_IMAGE" > /opt/eignex-lab/worker-image.json
-python3 -m pip freeze > /opt/eignex-lab/host-python.lock
+/opt/eignex-lab/host-venv/bin/python3 -m pip freeze > /opt/eignex-lab/host-python.lock
 systemctl daemon-reload
 # Leave all lab services disabled in the image. Boot fetches the private host identity and validates the shape first.

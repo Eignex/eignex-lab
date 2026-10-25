@@ -1,0 +1,10 @@
+{
+  "PROJECT": "dedicated-lab-project", "ZONE": "europe-north1-a", "GROUP": "COPY_MODULE_GROUP_NAME",
+  "POOL": "general-spot", "OWNERSHIP": "COPY_MODULE_OWNERSHIP",
+  "BUCKET": "COPY_MODULE_LEASE_BUCKET_NAME",
+  "serviceAccount": "COPY_MODULE_ADAPTER_SERVICE_ACCOUNT",
+  "renewUrl": "COPY_MODULE_RENEW_URL",
+  "inventoryFile": "/Users/lab/eignex-lab-data/nomad/gcp-inventory.json",
+  "capacityTokenFile": "/Users/lab/eignex-lab-data/nomad/capacity.token",
+  "coordinator": "http://127.0.0.1:8091"
+}
