@@ -57,6 +57,16 @@ class NomadBatchJobTest {
     }
 
     @Test
+    fun `cloud interruption status is a read only host volume rather than a control credential`() {
+        val group = spec.copy(statusHostVolume = "lab-status").render().getValue("TaskGroups").jsonArray.single().jsonObject
+        assertEquals("lab-status", group.getValue("Volumes").jsonObject.getValue("status").jsonObject.getValue("Source").jsonPrimitive.content)
+        val task = group.getValue("Tasks").jsonArray.single().jsonObject
+        assertEquals("true", task.getValue("VolumeMounts").jsonArray.single().jsonObject.getValue("ReadOnly").jsonPrimitive.content)
+        assertEquals("/lab-status/draining", task.getValue("Env").jsonObject.getValue("LAB_WORKER_DRAIN_FILE").jsonPrimitive.content)
+        assertFailsWith<IllegalArgumentException> { spec.copy(statusHostVolume = "private-identity") }
+    }
+
+    @Test
     fun `native Mac uses raw execution and declares advisory enforcement`() {
         val job = spec.copy(platform = NomadPlatform.MAC, nodeClass = "lab-probe-mac", image = null).render()
         val task = job.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject

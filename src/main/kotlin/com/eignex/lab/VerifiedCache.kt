@@ -12,13 +12,19 @@ import java.util.zip.ZipInputStream
 
 /** Bounded, locked, checksum-verified extraction with atomic publication. No archive-supplied links or modes. */
 class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024) {
-    fun stage(bundle: WorkerBundle, download: () -> InputStream): Path {
-        require(bundle.files.sumOf { it.bytes } in 1..maxBytes)
+    fun stage(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path {
+        checkActive()
+        val declaredBytes = bundle.files.fold(0L) { total, file ->
+            require(file.bytes <= maxBytes - total) { "expanded archive exceeds cache limit" }
+            total + file.bytes
+        }
+        require(declaredBytes > 0)
         Files.createDirectories(root)
         val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
         val destination = root.resolve(key)
         synchronized(fileLockFor(root.resolve("$key.lock"))) {
         FileChannel.open(root.resolve("$key.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
+            checkActive()
             if (valid(destination, bundle)) return destination
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
             val staging = Files.createTempDirectory(root, "$key-")
@@ -29,6 +35,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                     val digest = MessageDigest.getInstance("SHA-256")
                     val buffer = ByteArray(64 * 1024); var bytes = 0L
                     while (true) {
+                        checkActive()
                         val n = input.read(buffer); if (n < 0) break
                         bytes += n; require(bytes <= maxBytes) { "archive exceeds cache limit" }
                         output.write(buffer, 0, n); digest.update(buffer, 0, n)
@@ -38,6 +45,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 val expected = bundle.files.associateBy { it.path }; val seen = mutableSetOf<String>()
                 ZipInputStream(Files.newInputStream(archive)).use { zip ->
                     while (true) {
+                        checkActive()
                         val entry = zip.nextEntry ?: break
                         val relative = safeRelative(entry.name.removeSuffix("/"))
                         val target = tree.resolve(relative)
@@ -47,7 +55,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                         Files.createDirectories(target.parent)
                         Files.newOutputStream(target, CREATE_NEW).use { output ->
                             var size = 0L; val buffer = ByteArray(64 * 1024)
-                            while (true) { val n = zip.read(buffer); if (n < 0) break; size += n; require(size <= file.bytes) { "expanded file exceeds declared size" }; output.write(buffer, 0, n) }
+                            while (true) { checkActive(); val n = zip.read(buffer); if (n < 0) break; size += n; require(size <= file.bytes) { "expanded file exceeds declared size" }; output.write(buffer, 0, n) }
                             require(size == file.bytes)
                         }
                         require(hashFile(target) == file.sha256) { "file checksum mismatch" }
@@ -56,6 +64,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 }
                 require(seen == expected.keys) { "archive is incomplete" }
                 require(valid(tree, bundle))
+                checkActive()
                 Files.move(tree, destination, ATOMIC_MOVE)
                 return destination
             } finally { remove(staging) }

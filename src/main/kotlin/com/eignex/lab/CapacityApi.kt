@@ -7,7 +7,7 @@ import io.ktor.server.request.*
 import kotlinx.serialization.json.*
 import io.ktor.server.routing.*
 
-/** Read-only collector endpoints use their own secret; a worker credential grants no capacity access. */
+/** Private capacity endpoints use their own secret; a worker credential grants no capacity access. */
 fun Application.capacityApi(collector: CapacityCollector) {
     routing {
         route("/capacity") {
@@ -32,6 +32,7 @@ fun Application.capacityApi(collector: CapacityCollector) {
             }
             get("/api/v1/query") { call.query(call.request.queryParameters["query"]) }
             post("/api/v1/query") { call.query(call.receiveParameters()["query"]) }
+            get("/grant/{pool}") { call.respond(collector.grant(requireNotNull(call.parameters["pool"]))) }
             get("/snapshot") { call.respond(collector.snapshot()) }
             get("/metrics") { call.respondText(collector.metrics(), ContentType.Text.Plain) }
         }

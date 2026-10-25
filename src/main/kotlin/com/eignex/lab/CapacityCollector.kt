@@ -18,6 +18,8 @@ data class CapacityIntegration(val settingsFile: String, val inventoryFiles: Lis
 @Serializable
 data class CapacitySnapshot(val generatedAt: Long, val ageMs: Long, val decision: CapacityDecision, val nodes: List<CapacityNode>, val failures: Map<String, String>, val pools: List<CapacityPool> = emptyList(), val healthy: Boolean = true)
 @Serializable
+data class CapacityGrant(val payload: String, val signature: String)
+@Serializable
 private data class CapacityState(val history: Map<String, CapacityHistory> = emptyMap(), val idleSince: Map<String, Long> = emptyMap())
 
 class CapacityCollector(
@@ -102,6 +104,23 @@ class CapacityCollector(
         val age = (monotonic() - sample.nanos) / 1_000_000
         check(age in 0..FRESH_MS) { "capacity sample expired" }
         return sample.snapshot.copy(ageMs = age)
+    }
+    /** Only a fresh reconciliation may renew provider capacity. The provider verifies with its own clock. */
+    fun grant(pool: String): CapacityGrant {
+        val sample = snapshot()
+        val definition = requireNotNull(pools[pool]) { "unknown capacity pool" }
+        val payload = buildJsonObject {
+            put("schemaVersion", 1); put("pool", pool); put("maxNodes", definition.maxNodes)
+            put("desired", sample.decision.desired.getValue(pool)); put("issuedAt", clock())
+            put("nonce", java.util.UUID.randomUUID().toString())
+        }.toString().toByteArray(Charsets.UTF_8)
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        val key = Files.readString(tokenFile).trim().toByteArray(Charsets.UTF_8)
+        require(key.size >= 32) { "capacity key too short" }
+        mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+        mac.update("eignex-capacity-v1\n".toByteArray(Charsets.UTF_8))
+        return CapacityGrant(java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload),
+            mac.doFinal(payload).joinToString("") { "%02x".format(it.toInt() and 255) })
     }
     fun metrics(): String = snapshot().let { sample -> settings.pools.joinToString("\n", postfix = "\n") { p ->
         "lab_capacity_desired_nodes{pool=\"${p.id}\"} ${sample.decision.desired.getValue(p.id)}\nlab_capacity_sample_timestamp_seconds{pool=\"${p.id}\"} ${sample.generatedAt / 1000.0}"
