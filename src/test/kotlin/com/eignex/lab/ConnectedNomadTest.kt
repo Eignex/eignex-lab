@@ -23,7 +23,7 @@ class ConnectedNomadTest {
         val root = Files.createTempDirectory(state, "lab-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
-        val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")))
+        val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), host = "auto")
         val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
         val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
         val job = store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
@@ -31,6 +31,7 @@ class ConnectedNomadTest {
         val script = """#!/usr/bin/env bash
             set -eu
             for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
+            echo portable-worker-start
             sleep 2
             mkdir -p "${'$'}out"
             echo '{"stats":{"fixture":true}}' > "${'$'}out/record.json"
@@ -63,11 +64,16 @@ class ConnectedNomadTest {
         var server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(store, backend, artifacts) { true } }.start()
         val session = backend.enqueue(job, manifest, template, "http://127.0.0.1:$port")
         try {
-            var restarted = false; var lost = false
+            var restarted = false; var lost = false; var sawLive = false
             val deadline = System.nanoTime() + 120_000_000_000
             while (System.nanoTime() < deadline) {
                 backend.reconcile()
                 val current = store.job(job)!!
+                if (current.commands.any { it.status == Status.RUNNING } && !Files.exists(root.resolve("jobs/$job/0.out"))) {
+                    WorkerLogs.resolve(store, root.resolve("jobs/$job"), job, listOf("0.out"))?.let { file ->
+                        if (Files.readString(file).contains("portable-worker-start")) sawLive = true
+                    }
+                }
                 if (!restarted && current.commands.first().status == Status.RUNNING) {
                     server.stop(0, 1000)
                     backend = NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") })
@@ -85,6 +91,8 @@ class ConnectedNomadTest {
                 Thread.sleep(250)
             }
             assertEquals(Status.DONE, store.job(job)!!.status, "allocations: ${client.allocations(session.nomadJobId)}")
+            assertTrue(sawLive, "case output was visible before paired acceptance")
+            assertTrue(Files.readString(root.resolve("jobs/$job/job.log")).contains("status: DONE"))
             assertTrue(restarted && lost, "both coordinator restart and forced allocation loss ran")
             assertTrue(store.execution.sessions(job).size >= 2)
             assertEquals(2, store.job(job)!!.done)
@@ -93,6 +101,12 @@ class ConnectedNomadTest {
             assertTrue(Files.readString(root.resolve("jobs/$job/0.out")).contains("portable-worker-output"))
             assertTrue(store.caseRecordText(job, 0)!!.contains("fixture"))
             assertTrue(Files.list(root.resolve("jobs/$job/nomad")).use { files -> files.anyMatch { it.fileName.toString().endsWith("-2-resources.json") } }, "replacement committed generation 2")
+            val acceptedAllocation = assertNotNull(store.execution.reports(job).single { it.committed > 0 }.session.allocation)
+            val exited = System.nanoTime() + 10_000_000_000
+            while (client.allocation(acceptedAllocation)?.client !in setOf("complete", "failed", "lost") && System.nanoTime() < exited) Thread.sleep(100)
+            assertTrue(client.allocation(acceptedAllocation)?.client in setOf("complete", "failed", "lost"), "accepted worker exited")
+            val attempts = state.resolve("data/alloc/$acceptedAllocation/worker/local/worker/attempts")
+            assertTrue(!Files.exists(attempts) || Files.list(attempts).use { !it.findAny().isPresent }, "accepted private workspaces are released")
             // A fresh coordinator replays no submission and preserves accepted work.
             NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") }).reconcile()
             assertEquals(Status.DONE, store.job(job)!!.status)

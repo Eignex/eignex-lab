@@ -53,7 +53,8 @@ The adapter publishes inventory before requesting a signed grant from `/capacity
 requires healthy volumes and provider/Nomad observations no older than 30 seconds. The cloud function verifies
 HMAC, pool, finite maximum and timestamp using its own clock; stale metrics cannot renew capacity. Only the cloud
 function can reopen the group's maximum. The autoscaler can change desired capacity but cannot change minimum or
-maximum. After 30 minutes without renewal, expiry first sets **min/desired/max to zero**, then removes remaining
+maximum. Its tagging permission is limited to the pinned plugin's lifecycle phase keys, so it cannot alter the
+lab ownership tags that independent expiry verifies. After 30 minutes without renewal, expiry first sets **min/desired/max to zero**, then removes remaining
 exactly tagged lab workers. Detection is within 35 minutes plus provider execution/termination latency. A six-hour
 host watchdog is a secondary bound; it does not replace expiry because an ASG replaces independently stopped hosts.
 

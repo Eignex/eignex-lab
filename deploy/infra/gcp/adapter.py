@@ -19,9 +19,9 @@ def inventory(cloud, at=None):
         items.extend(page.get('managedInstances', [])); token = page.get('nextPageToken')
         if not token:
             break
-    instances = [{'id':item['instance'].removeprefix('https://www.googleapis.com/compute/v1/'), 'pool':c['POOL'],
+    instances = [{'id':(item.get('instance') or 'booting-' + (item.get('name') or str(index))).removeprefix('https://www.googleapis.com/compute/v1/'), 'pool':c['POOL'],
         'draining':item.get('currentAction') in ('DELETING', 'ABANDONING'),
-        'countedInTarget':item.get('currentAction') not in ('DELETING', 'ABANDONING')} for item in items]
+        'countedInTarget':item.get('currentAction') not in ('DELETING', 'ABANDONING')} for index, item in enumerate(items)]
     for i in range(max(0, group['targetSize'] - sum(i['countedInTarget'] for i in instances))):
         instances.append({'id':f'booting-{i}', 'pool':c['POOL']})
     errors = [error.get('message', 'capacity unavailable')[:500] for item in items for error in item.get('lastAttempt', {}).get('errors', {}).get('errors', [])]

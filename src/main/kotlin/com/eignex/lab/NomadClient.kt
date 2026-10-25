@@ -15,6 +15,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManagerFactory
 
 interface NomadControl {
+    val namespace: String get() = "default"
     fun job(id: String): JsonObject?
     fun submit(job: JsonObject)
     fun stop(id: String)
@@ -32,7 +33,7 @@ data class NomadAllocation(val id: String, val job: String, val node: String, va
 
 /** Control credentials stay in this process. No redirects, unverified TLS, provider credentials or worker token reuse. */
 class NomadClient(private val address: URI, private val tokenFile: Path, private val client: HttpClient,
-                  private val namespace: String = "default") : NomadControl {
+                  override val namespace: String = "default") : NomadControl {
     init { require(address.scheme == "https" || (address.scheme == "http" && address.host in setOf("127.0.0.1", "localhost", "::1"))); require(address.rawQuery == null && address.userInfo == null) }
     override fun job(id: String) = request("GET", "/v1/job/${encode(id)}", missing = true)?.jsonObject
     override fun submit(job: JsonObject) { request("POST", "/v1/jobs", buildJsonObject { put("Job", job); put("EnforceIndex", true); put("JobModifyIndex", 0) }) }

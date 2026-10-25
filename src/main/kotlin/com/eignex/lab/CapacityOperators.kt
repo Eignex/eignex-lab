@@ -35,7 +35,10 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store) {
         }
         get("/jobs/{id}/execution") {
             val id = call.parameters["id"]!!.toLong()
-            if (store.job(id) == null) call.respond(HttpStatusCode.NotFound) else call.respond(store.execution.reports(id))
+            if (store.job(id) == null) call.respond(HttpStatusCode.NotFound)
+            else if (call.request.headers[HttpHeaders.Accept]?.contains("text/html") == true)
+                call.respondText(executionPage(id, store.execution.reports(id)), ContentType.Text.Html)
+            else call.respond(store.execution.reports(id))
         }
     }
 }

@@ -28,6 +28,58 @@ class ExecutionStoreTest {
         store.execution.commit(claim.owner, result(claim), 1020)
     }
 
+    private fun profile(): Long {
+        val spec = ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1))
+        val id = store.create("profile", "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val cases = Experiments.cases(1, 1, emptyList())
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Experiments.profileProblem(spec)), cases, cases.map { "true" to 720L })
+        return id
+    }
+
+    @Test fun `profile allowance survives replacement and expires without another infrastructure retry`() {
+        val id = profile(); bind(id, "first")
+        val first = store.execution.claim("first", token, "alloc-first", 1100)!!
+        assertEquals(800, store.execution.remainingRunMs("first", 1200))
+        store.execution.loseSession("first", "infrastructure:lost", 1300)
+        bind(id, "second")
+        assertEquals(200, Store(file).execution.remainingRunMs("second", 1800))
+        store.execution.claim("second", token, "alloc-second", 1800)!!
+        assertFailsWith<ExecutionFenced> { store.execution.runTimedOut(first.owner, 1801) }
+        store.execution.expireRunDeadlines(1999)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        store.execution.expireRunDeadlines(2000)
+        assertEquals(Status.FAILED, Store(file).job(id)!!.status)
+        assertEquals(ProfileRunTimeout().message, store.job(id)!!.error)
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertEquals(1, store.execution.failureCount(id))
+    }
+
+    @Test fun `gracefully timed out profile retains its accepted result and failure across acknowledgement retry`() {
+        val id = profile(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1100)!!
+        store.execution.phase(claim.owner, "uploading", 1700)
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 124, 1100, 1700) }, runTimedOut = true)
+        assertTrue(store.execution.commit(claim.owner, result, 1800))
+        assertTrue(Store(file).execution.commit(claim.owner, result, 1801))
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertEquals(1, store.execution.accepted(id).size)
+        assertEquals(Status.FAILED, store.job(id)!!.commands.single().status)
+        assertEquals(listOf(id), store.execution.pendingProjectionJobs())
+        assertTrue(store.retry(id))
+        store.execution.expireRunDeadlines(1802)
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+    }
+
+    @Test fun `expired profile rejects acceptance before the next coordinator reconciliation`() {
+        val id = profile(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1100)!!
+        store.execution.phase(claim.owner, "uploading", 1700)
+        assertFailsWith<ProfileRunTimeout> { store.execution.commit(claim.owner, result(claim), 2000) }
+        assertTrue(store.execution.accepted(id).isEmpty())
+        assertNull(store.execution.claim("s", token, "alloc-s", 2000))
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+    }
+
     @Test fun `source build failure stops siblings once and a fenced generation cannot fail replacement work`() {
         val id = job(); bind(id, "a"); bind(id, "b")
         val lost = store.execution.claim("a", token, "alloc-a", 1001)!!

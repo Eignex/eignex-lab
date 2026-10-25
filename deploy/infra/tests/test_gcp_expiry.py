@@ -68,6 +68,15 @@ class GcpCapacityTest(unittest.TestCase):
         self.assertEqual('projects/p/zones/z/instances/node',value['instances'][0]['id'])
         self.assertIn('quota exhausted',value['failures']['general'])
 
+    def test_boots_without_an_instance_url_still_count_towards_the_desired_target(self):
+        cloud = Mock(config={'POOL':'general'},group='https://fixture/group')
+        cloud.owned.return_value = {'targetSize':1}
+        cloud.request.return_value = {'managedInstances':[{'name':'not-created-yet','instance':'','currentAction':'CREATING'}]}
+        value = adapter.inventory(cloud,at=1000)
+        self.assertEqual(1,len(value['instances']))
+        self.assertEqual('booting-not-created-yet',value['instances'][0]['id'])
+        self.assertTrue(value['instances'][0]['countedInTarget'])
+
     def test_cloud_expiry_uses_resize_zero_and_refuses_wrong_group_ownership(self):
         http = Mock(); http.request.return_value.content = b'{}'
         http.request.return_value.json.return_value = {'description':'wrong'}
