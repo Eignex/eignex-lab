@@ -1,0 +1,16 @@
+deployment_id = "lab"
+pool_id = "general-spot"
+ami_id = "ami-REPLACE_WITH_BAKED_IMMUTABLE_IMAGE"
+instance_type = "c7i.4xlarge"
+vcpus = 16
+memory_mib = 32768
+max_nodes = 4
+max_vcpus = 64
+subnet_ids = ["subnet-REPLACE_WITH_PRIVATE_ROUTED_SUBNET"]
+security_group_ids = ["sg-REPLACE_WITH_PRIVATE_NOMAD_ONLY_RULES"]
+control_principal_arn = "arn:aws:iam::000000000000:role/lab-control"
+bootstrap_secret_arn = "arn:aws:secretsmanager:eu-north-1:000000000000:secret:lab-worker-bootstrap"
+signing_secret_arn = "arn:aws:secretsmanager:eu-north-1:000000000000:secret:lab-capacity-signing"
+nomad_servers = ["100.64.0.10:4647"]
+node_class = "general-spot"
+worker_image = "registry.example/lab-worker@sha256:REPLACE_WITH_64_HEX_DIGEST"

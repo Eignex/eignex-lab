@@ -101,6 +101,7 @@ data class Job(
     val counts: CommandCounts? = null,
     /** Whether the local machine works on it now: it took the job, or joined it while cloud nodes ran it. */
     val local: Boolean = false,
+    val backend: ExecutionBackendKind = ExecutionBackendKind.LEGACY,
 ) {
     /** Time the job has spent running, so far or in all; waiting in the queue, paused or yielded, does not count. */
     fun elapsedMs(now: Long): Long = runMs + (runningSince?.let { now - it } ?: 0)
@@ -312,6 +313,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                 // The job a runner from before the column ran on the local machine.
                 it.execute("UPDATE jobs SET local = 1 WHERE status = 'RUNNING' AND $HOST = 'lab'")
             }
+            if ("backend" !in jobColumns) it.execute("ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'legacy'")
+            ExecutionStore.migrate(this)
             val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
@@ -402,9 +405,10 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         parallel: Int = 1,
         priority: Int = 0,
         experiment: ExperimentSpec? = null,
+        backend: ExecutionBackendKind = ExecutionBackendKind.LEGACY,
     ): Long = transaction {
         val id = connection.prepareStatement(
-            "INSERT INTO jobs (name, ref, status, created_at, parallel, priority, experiment) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (name, ref, status, created_at, parallel, priority, experiment, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             java.sql.Statement.RETURN_GENERATED_KEYS,
         ).use {
             it.setString(1, name)
@@ -414,6 +418,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             it.setInt(5, parallel)
             it.setInt(6, priority)
             it.setString(7, experiment?.let { spec -> Json.encodeToString(spec) })
+            it.setString(8, backend.wire)
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
@@ -572,7 +577,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     }
 
     /** [record] as it is stored ([StoredRecords.compact]), its provenance kept once in `provenances`. In a transaction. */
-    private fun storedRecord(record: String): String {
+    internal fun storedRecord(record: String): String {
         val compacted = StoredRecords.compact(record) ?: return record
         compacted.provenance?.let { (sha, json) -> keepProvenance(sha, json) }
         return compacted.text
@@ -750,6 +755,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      */
     @Synchronized
     fun claimIteration(jobId: Long, holder: String): List<Int>? = transaction {
+        if (job(jobId)?.backend != ExecutionBackendKind.LEGACY) return@transaction null
         data class Row(val index: Int, val iteration: Any, val queued: Boolean, val held: Boolean)
         val rows = connection.prepareStatement(
             "SELECT m.idx, c.problem_idx, c.seed, c.repeat, m.status, m.host FROM commands m " +
@@ -812,7 +818,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      */
     @Synchronized
     fun helpable(): List<Pair<Job, Int>> = jobsWhere(
-        "status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) AND $NOT_PROFILE AND EXISTS $UNCLAIMED $QUEUE_ORDER",
+        "backend = 'legacy' AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) AND $NOT_PROFILE AND EXISTS $UNCLAIMED $QUEUE_ORDER",
         Status.RUNNING.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
     ).map { it to unclaimed(it.id) }
 
@@ -858,6 +864,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      */
     @Synchronized
     fun recoverShared(jobId: Long) = transaction {
+        if (job(jobId)?.backend != ExecutionBackendKind.LEGACY) return@transaction
         update("UPDATE commands SET status = ?, host = NULL, started_at = NULL, phase = NULL " +
             "WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", Status.QUEUED.name, jobId)
         requeueSplit(jobId, null)
@@ -1061,7 +1068,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun next(nodesUp: Boolean = false, exclude: Collection<Long> = emptyList(), nodeTags: Set<String>? = null): Job? = transaction {
         val running = connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND local = 1 ORDER BY id LIMIT 1",
+            "SELECT id FROM jobs WHERE backend = 'legacy' AND status = ? AND local = 1 ORDER BY id LIMIT 1",
         ).use {
             it.setString(1, Status.RUNNING.name)
             it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
@@ -1129,7 +1136,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      */
     @Synchronized
     fun nodeQueue(): List<Job> = jobsWhere(
-        "status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $QUEUE_ORDER",
+        "backend = 'legacy' AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $QUEUE_ORDER",
         Status.QUEUED.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
     )
 
@@ -1141,7 +1148,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun claimForNode(id: Long): Job? = transaction {
         val claimed = update(
-            "UPDATE jobs SET status = ? WHERE id = ? AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?)",
+            "UPDATE jobs SET status = ? WHERE backend = 'legacy' AND id = ? AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?)",
             Status.RUNNING.name, id, Status.QUEUED.name, Experiments.AUTO_HOST, Experiments.AWS_HOST,
         ) == 1
         if (claimed) markRunning(id, now())
@@ -1201,6 +1208,10 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun requestCancel(jobId: Long): CancelOutcome = transaction {
         val job = job(jobId) ?: return@transaction CancelOutcome.MISSING
+        if (job.backend == ExecutionBackendKind.NOMAD && job.status in setOf(Status.QUEUED, Status.RUNNING)) {
+            execution.cancelIn(connection, jobId, now())
+            return@transaction CancelOutcome.CANCELLED
+        }
         when (job.status) {
             Status.QUEUED -> {
                 update("UPDATE jobs SET status = ?, cancel_requested = 1, finished_at = ? WHERE id = ?",
@@ -1282,8 +1293,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      *  there is no such job or it has not ended, since the runner may still be writing it. */
     @Synchronized
     fun deleteJob(id: Long): Boolean = transaction {
-        val deleted = update("DELETE FROM jobs WHERE id = ? AND status NOT IN (?, ?)", id, Status.QUEUED.name, Status.RUNNING.name) == 1
-        if (deleted) for (table in listOf("commands", "arms", "problems", "cases")) update("DELETE FROM $table WHERE job_id = ?", id)
+        val deleted = update("""DELETE FROM jobs WHERE id = ? AND status NOT IN (?, ?) AND NOT EXISTS (
+            SELECT 1 FROM execution_sessions s WHERE s.job_id = jobs.id AND (s.desired != 'stop' OR NOT EXISTS (
+                SELECT 1 FROM execution_outbox o WHERE o.id = s.id || ':stop' AND o.acknowledged = 1)))""",
+            id, Status.QUEUED.name, Status.RUNNING.name) == 1
+        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
         deleted
     }
 
@@ -1714,6 +1728,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             Status.QUEUED.name, jobId, Status.FAILED.name, Status.CANCELLED.name,
         ) == 1
         if (reopened) {
+            if (job(jobId)?.backend == ExecutionBackendKind.NOMAD) execution.retryIn(connection, jobId, now())
             update(
                 "UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND status IN (?, ?)",
                 Status.QUEUED.name, jobId, Status.CANCELLED.name, Status.RUNNING.name,
@@ -1854,7 +1869,14 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         runMs = rows.getLong("run_ms"),
         runningSince = rows.longOrNull("running_since"),
         local = rows.getInt("local") == 1,
+        backend = ExecutionBackendKind.entries.single { it.wire == rows.getString("backend") },
     )
+
+    val execution = ExecutionStore(this)
+
+    /** Shares this connection's monitor and IMMEDIATE transaction with legacy state and cancellation. */
+    @Synchronized
+    internal fun <T> executionTransaction(block: (Connection) -> T): T = transaction { block(connection) }
 
     private fun update(sql: String, vararg values: Any?) = connection.prepareStatement(sql).use { statement ->
         values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
@@ -1935,7 +1957,7 @@ private const val UNCLAIMED = "(SELECT 1 FROM commands m WHERE m.job_id = jobs.i
  * shared (`auto`), and the shared jobs cloud nodes run that still have an iteration no host has claimed, which the
  * local machine joins. Not the job it works on.
  */
-private const val LOCAL_QUEUE = "cancel_requested = 0 AND paused = 0 AND local = 0 AND " +
+private const val LOCAL_QUEUE = "backend = 'legacy' AND cancel_requested = 0 AND paused = 0 AND local = 0 AND " +
     "(status = 'QUEUED' AND $HOST IN ('lab', 'auto') OR status = 'RUNNING' AND $HOST = 'auto' AND $NOT_PROFILE AND EXISTS $UNCLAIMED)"
 
 /** How many hosts work on job `jobs` now: the hosts holding its claimed, unfinished cases. None for a queued job. */

@@ -1,0 +1,22 @@
+{
+  "maxVcpus": 64,
+  "localCores": 8,
+  "localPressureHours": 0.25,
+  "pools": [
+    {
+      "id": "general",
+      "nodeClass": "general-linux-amd64-spot",
+      "vcpus": 16,
+      "memoryMiB": 65536,
+      "maxNodes": 4,
+      "tags": ["arch:x86_64", "simd:avx2"],
+      "market": "spot",
+      "reserveCpuMillis": 2000,
+      "reserveMemoryMiB": 1024,
+      "minPriority": 0,
+      "sustainedMs": 30000,
+      "cooldownMs": 60000,
+      "idleMs": 300000
+    }
+  ]
+}
