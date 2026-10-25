@@ -39,6 +39,23 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
+      - name: Build experimental Nomad session renderer
+        run: ./gradlew installDist
+      - name: Install pinned Nomad prototype
+        run: python3 deploy/nomad/sandbox.py install
+      - name: Start isolated Nomad prototype
+        run: python3 deploy/nomad/sandbox.py start
+      - name: Verify shared sessions and hard resource limits
+        run: python3 deploy/nomad/sandbox.py verify
+      - name: Stop Nomad prototype
+        if: always()
+        run: python3 deploy/nomad/sandbox.py stop
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nomad-prototype-verification
+          path: build/nomad-prototype/verification.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         if: always()
         with:

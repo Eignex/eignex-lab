@@ -1,9 +1,14 @@
 # Nomad migration plan
 
-Proposed on 2026-10-25. This is an implementation plan; no runtime or infrastructure changes have been made.
+Proposed on 2026-10-25. Implementation is in progress; production execution has not been switched to Nomad.
 
 Revised after PR #127: maximize cloud utilization by sharing nodes across experiments, profiles, measurements, and
 builds within explicit CPU and memory budgets. Recording measurements does not automatically require a whole node.
+
+Implementation has started in [the isolated execution prototype](nomad/README.md): reusable resource budgets,
+Nomad batch-job rendering, and a TLS/ACL sandbox with real Linux sharing, hard-limit, OOM, and cancellation checks.
+Step 0 is still open: native Mac solver/JFR runs, independent process supervision after abrupt death, and session
+replacement remain acceptance gates. The lab's production runner and cloud infrastructure are unchanged.
 
 ## Outcome and decisions
 
@@ -352,8 +357,8 @@ run again after reconciliation. A Mac server outage prevents scheduling; provide
     contributes to new capacity demand. Per-experiment/per-host parallel caps still hold across sessions.
 
 Live Mac and cloud checks are explicit migration gates, not work claimed complete by writing this plan. Run targeted
-local tests for each implementation change and use GitHub CI for the full repository gate. This planning-only
-change requires no solver execution, infrastructure provisioning, or full Gradle check.
+local tests for each implementation change and use GitHub CI for the full repository gate. Planning-only edits
+require no solver execution or infrastructure provisioning; runtime changes must pass their listed acceptance gates.
 
 ## Documentation checked for this plan
 
