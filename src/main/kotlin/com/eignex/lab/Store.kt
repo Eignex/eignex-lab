@@ -1293,7 +1293,10 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      *  there is no such job or it has not ended, since the runner may still be writing it. */
     @Synchronized
     fun deleteJob(id: Long): Boolean = transaction {
-        val deleted = update("DELETE FROM jobs WHERE id = ? AND status NOT IN (?, ?)", id, Status.QUEUED.name, Status.RUNNING.name) == 1
+        val deleted = update("""DELETE FROM jobs WHERE id = ? AND status NOT IN (?, ?) AND NOT EXISTS (
+            SELECT 1 FROM execution_sessions s WHERE s.job_id = jobs.id AND (s.desired != 'stop' OR NOT EXISTS (
+                SELECT 1 FROM execution_outbox o WHERE o.id = s.id || ':stop' AND o.acknowledged = 1)))""",
+            id, Status.QUEUED.name, Status.RUNNING.name) == 1
         if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
         deleted
     }
@@ -1725,6 +1728,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             Status.QUEUED.name, jobId, Status.FAILED.name, Status.CANCELLED.name,
         ) == 1
         if (reopened) {
+            if (job(jobId)?.backend == ExecutionBackendKind.NOMAD) execution.retryIn(connection, jobId, now())
             update(
                 "UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND status IN (?, ?)",
                 Status.QUEUED.name, jobId, Status.CANCELLED.name, Status.RUNNING.name,

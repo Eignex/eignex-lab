@@ -11,6 +11,8 @@ LEASE_SECONDS = 1800
 
 def verify(grant, key, pool, max_nodes, now_ms=None):
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    if not isinstance(grant, dict) or not {"payload", "signature"}.issubset(grant):
+        raise ValueError("invalid capacity grant")
     payload = grant["payload"]
     signature = grant["signature"]
     if not isinstance(payload, str) or len(payload) > 8192 or not isinstance(signature, str):

@@ -53,7 +53,8 @@ The adapter publishes inventory before requesting a signed grant from `/capacity
 requires healthy volumes and provider/Nomad observations no older than 30 seconds. The cloud function verifies
 HMAC, pool, finite maximum and timestamp using its own clock; stale metrics cannot renew capacity. Only the cloud
 function can reopen the group's maximum. The autoscaler can change desired capacity but cannot change minimum or
-maximum. After 30 minutes without renewal, expiry first sets **min/desired/max to zero**, then removes remaining
+maximum. Its tagging permission is limited to the pinned plugin's lifecycle phase keys, so it cannot alter the
+lab ownership tags that independent expiry verifies. After 30 minutes without renewal, expiry first sets **min/desired/max to zero**, then removes remaining
 exactly tagged lab workers. Detection is within 35 minutes plus provider execution/termination latency. A six-hour
 host watchdog is a secondary bound; it does not replace expiry because an ASG replaces independently stopped hosts.
 
@@ -83,3 +84,51 @@ auto-delete disks disappear, and **no replacement appears**. Attempt stale autos
 old grant; both must fail. Restart control services and verify only fresh reconciliation reopens capacity. Retain
 account/pool IDs, timestamps, grants with signatures redacted, cloud audit events and allocation provenance as gate
 evidence. Production cutover remains blocked on these real gates and the native Mac solver/JFR gates.
+
+## GCP Spot reference
+
+`gcp/` implements the same inventory, fresh signed grant, 30-minute renewable lease, five-minute cloud expiry,
+private host bootstrap and interruption obligations using a zonal Spot managed instance group. The worker image,
+manifest, resource budgets, artifact protocol and shared execution code do not change. Copy the GCP variables and
+adapter examples and the GCP autoscaler example; supply the actual module outputs. The group starts at zero with
+opportunistic updates and no surge. A Spot worker is deleted on preemption, its boot disk auto-deletes, and there
+is no on-demand fallback. Private VMs have no external address: provide Cloud NAT/private API access and the private
+route to the Mac before launching them. Set firewall rules for the same restricted Nomad/artifact paths as AWS.
+
+Use a **dedicated GCP project**, with finite Spot/preemptible CPU and regional machine-family quotas matching the
+intended aggregate `maxVcpus`. The module validates each pool's `maxNodes * vcpus` against its budget; MIG itself has
+no ASG-style hard maximum. Verify the actual project quotas and denial of an oversized resize before rollout.
+A dedicated project also bounds the project-level Compute/IAM permissions needed by this reference adapter;
+managed groups do not support the resource-name IAM restriction that would scope these operations like AWS ASGs.
+
+The scaler's custom resize role is conditional on `request.time`. Its initial deadline is 1970 and only the
+cloud renewal function advances it to cloud time plus 30 minutes after verifying a fresh signed coordinator grant.
+The function reads IAM policy version 3, changes only the exact dedicated scaler binding, and preserves its etag
+and all unrelated bindings. The Mac adapter can invoke the function and read inventory; it cannot edit IAM, read
+the signing key, or renew a lease directly. The scaler cannot alter its own binding. The independent expiry
+function resizes the managed group to zero after the lease expires; natural IAM deadline expiry also prevents a
+stale scaler reopening it. Detection is within 35 minutes plus IAM propagation, scheduler and termination latency.
+
+The cloud renewal identity necessarily has project `getIamPolicy`/`setIamPolicy`: this is administrative code in
+the dedicated lab project. Review it and restrict deployment access. Never give that role to the Mac, worker or
+scaler. Do not grant these service accounts additional inherited resize permissions that bypass the lease. The
+module creates separate worker, adapter, scaler, renewal, expiry, scheduler and build service accounts and creates
+no private service-account keys. Only host bootstrap reads the bootstrap secret; only renewal reads the separate
+capacity signing secret. Cloud Run functions require dedicated authenticated invokers, with no `allUsers` grant.
+
+Use ADC/federated identity and service-account impersonation for Mac control. Install `gcp/requirements.txt` in an
+adapter venv. Configure the adapter's `serviceAccount` from the output. For Autoscaler, generate an impersonated
+ADC configuration for the scaler service account (for example `gcloud auth application-default login
+--impersonate-service-account=SCALER_EMAIL`) and reference that trusted private credential configuration in its
+`credentials` option; do not download a service-account key. Keep adapter and scaler identities distinct. The
+module grants the configured `control_member` token creation only on those two accounts. Native Mac services
+need no GCP credentials. Build the same base Linux image with `common/bake.sh` and publish a named immutable GCE
+image before applying the module. Function image builds use a separate build account/repository, unrelated to
+the experiment worker registry. Enable Cloud Monitoring alerting for function/scheduler failures and verify its
+notification route before production use.
+
+Repeat the AWS live gates on GCP Spot using the **identical experiment and immutable worker digest**. Record the
+preemption/loss recovery, pairing, idle retirement, and Mac-offline zero target/no replacements. Attempt a resize
+with the stale scaler identity after its IAM deadline and verify denial, even with an otherwise valid OAuth token.
+Verify source/build artifacts, CPU/memory observations and output projection are unchanged apart from execution
+provenance. A validated module or a generic Linux Docker smoke run does not satisfy this second-provider gate.

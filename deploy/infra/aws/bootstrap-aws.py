@@ -14,4 +14,4 @@ with urllib.request.urlopen(request, timeout=3) as response:
     instance = response.read().decode()
 client = boto3.client('secretsmanager', region_name=region, config=Config(connect_timeout=3, read_timeout=5, retries={'total_max_attempts': 3}))
 value = client.get_secret_value(SecretId=secret)['SecretString']
-subprocess.run(['python3', '/opt/eignex-lab/bootstrap.py', config, instance], input=value.encode(), check=True)
+subprocess.run([sys.executable, '/opt/eignex-lab/bootstrap.py', config, instance], input=value.encode(), check=True)

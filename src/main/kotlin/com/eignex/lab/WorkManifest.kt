@@ -8,11 +8,22 @@ data class InputFile(val path: String, val sha256: String, val bytes: Long, val 
     init { safeRelative(path); require(sha256.matches(SHA256) && bytes >= 0) }
 }
 
+/** A trusted source build runs inside the session's existing CPU/memory reservation. */
+@Serializable
+data class WorkerBuild(val tasks: List<String> = emptyList(), val timeoutSec: Long = 1800, val gitBundle: String? = null) {
+    init {
+        require(tasks.all { it.matches(Regex(":?[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)*")) && !it.startsWith("-") })
+        require(timeoutSec in 1..7200)
+        gitBundle?.let(::safeRelative)
+    }
+}
+
 /** A coordinator-approved archive. Executables and cache identities are explicit, not inferred from ZIP metadata. */
 @Serializable
 data class WorkerBundle(
     val sha256: String, val files: List<InputFile>, val repository: String, val commit: String,
     val os: String, val arch: String, val toolchain: String, val buildOptions: List<String> = emptyList(),
+    val build: WorkerBuild? = null,
 ) {
     init {
         require(sha256.matches(SHA256) && commit.matches(Regex("[a-f0-9]{40}")))

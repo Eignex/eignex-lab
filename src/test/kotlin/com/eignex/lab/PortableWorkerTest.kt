@@ -46,8 +46,75 @@ class PortableWorkerTest {
         assertEquals("hello", Files.readString(cache.stage(manifest) { ByteArrayInputStream(bytes) }.resolve("bin/tool")))
         assertFailsWith<IllegalArgumentException> { cache.stage(manifest.copy(sha256 = "0".repeat(64))) { ByteArrayInputStream(bytes) } }
         assertFailsWith<IllegalArgumentException> { InputFile("../escape", "a".repeat(64), 1) }
+        assertFailsWith<IllegalArgumentException> { cache.stage(manifest.copy(files = listOf(InputFile("huge", "a".repeat(64), Long.MAX_VALUE)))) { error("oversized declaration must fail before download") } }
         val undeclared = manifest.copy(files = listOf(InputFile("other", ExecutionStore.digest("hello"), 5)))
         assertFailsWith<IllegalArgumentException> { cache.stage(undeclared) { ByteArrayInputStream(bytes) } }
+    }
+
+    @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->
+        val repository = Files.createDirectory(root.resolve("repo"))
+        fun git(vararg args: String): String {
+            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); assertEquals(0, process.exitValue(), output)
+            return output.trim()
+        }
+        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
+        Files.writeString(repository.resolve("gradlew"), "mkdir -p build; git rev-parse HEAD > build/commit")
+        git("add", "."); git("commit", "-m", "fixture")
+        val commit = git("rev-parse", "HEAD")
+        git("remote", "add", "origin", "https://private-token@example.com/secret.git")
+        var trusted = false
+        val inputs = SourceInputs(requireTrusted = { repo, sha -> assertEquals(Repositories.DEFAULT, repo); assertEquals(commit, sha); check(trusted) })
+        val output = root.resolve("source.zip")
+        assertFailsWith<IllegalStateException> { inputs.publish(repository, Repositories.DEFAULT, commit, "linux", workerArch(), "fixture", WorkerBuild(listOf("installDist")), output) }
+        assertFalse(Files.exists(output)); trusted = true
+        val os = if (CliMeasurements.localMacOs) "mac" else "linux"
+        val manifest = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", WorkerBuild(listOf("installDist")), output)
+        assertEquals(listOf("source.git.bundle"), manifest.files.map { it.path })
+        val source = VerifiedCache(root.resolve("sources")).stage(manifest) { Files.newInputStream(output) }
+        val tree = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(manifest, source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        assertEquals(commit, Files.readString(tree.resolve("build/commit")).trim())
+        assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
+        assertFalse(git("for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
+    }
+
+    @Test fun `source builds share their session budget cache once and rebuild corrupt outputs`(): Unit = service { socket ->
+        val count = root.resolve("build-count")
+        val script = """#!/usr/bin/env bash
+            set -eu
+            printf 'build\n' >> '${count}'
+            [[ "${'$'}GRADLE_USER_HOME" != "${'$'}HOME/.gradle" ]]
+            [[ "${'$'}JAVA_TOOL_OPTIONS" == *'-Xmx170m'* ]]
+            [[ " ${'$'}* " == *' --max-workers=2 '* ]]
+            mkdir -p build
+            echo prepared > build/output
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("source")).stage(input) { ByteArrayInputStream(bytes) }
+        val bundle = input.copy(build = WorkerBuild(listOf(":cli:installDist")))
+        val cache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket))
+        val budget = ResourceBudget(2000, 512)
+        val tree = cache.prepare(bundle, source, budget, System.getenv()) { 10000 }
+        assertEquals("prepared", Files.readString(tree.resolve("build/output")).trim())
+        assertEquals(tree, cache.prepare(bundle, source, budget, System.getenv()) { 10000 })
+        assertEquals(1, Files.readAllLines(count).size)
+        Files.writeString(tree.resolve("build/output"), "corrupt")
+        cache.prepare(bundle, source, budget, System.getenv()) { 10000 }
+        assertEquals(2, Files.readAllLines(count).size)
+        assertEquals(script, Files.readString(source.resolve("gradlew")))
+        assertFailsWith<IllegalArgumentException> { WorkerBuild(listOf("--init-script=untrusted")) }
+        assertFailsWith<IllegalArgumentException> { cache.prepare(bundle, source, budget, System.getenv()) { 0 } }
+    }
+
+    @Test fun `failed build preserves a bounded diagnostic and never publishes a cache entry`(): Unit = service { socket ->
+        val (input, bytes) = bundle(mapOf("gradlew" to "echo expected-compile-failure >&2; exit 3"))
+        val source = VerifiedCache(root.resolve("sources")).stage(input) { ByteArrayInputStream(bytes) }
+        val failure = assertFailsWith<WorkerBuildFailure> {
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(input.copy(build = WorkerBuild(listOf("installDist"))), source,
+                ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        }
+        assertTrue(failure.detail.contains("expected-compile-failure")); assertTrue(failure.detail.contains("exit 3"))
+        assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch(Files::isDirectory) })
     }
 
     @Test fun `standalone executor runs a complete paired iteration and leaves baseline unchanged`(): Unit = service { socket ->
@@ -68,6 +135,68 @@ class PortableWorkerTest {
         assertEquals(listOf(0, 0), result.cases.map { it.exitCode }); assertTrue(result.cases.all { it.record?.trim() == "{}" })
         assertEquals(script, Files.readString(cache.stage(bundle) { error("cache") }.resolve(bundle.files.single().path)))
         assertFailsWith<IllegalArgumentException> { executor.run(manifest, listOf(0), root.resolve("partial"), "node", 1) { 10000 } }
+    }
+
+    @Test fun `native profile deadline bounds preparation and the committed profile process`(): Unit = service { socket ->
+        val started = root.resolve("profile-started")
+        val script = "#!/usr/bin/env python3\nfrom pathlib import Path\nimport time\nPath('$started').write_text('started')\ntime.sleep(30)\n"
+        val build = """#!/usr/bin/env bash
+            set -eu
+            git init -q
+            git config user.email fixture@example.com
+            git config user.name fixture
+            git add profile.sh
+            git commit -qm fixture
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("profile.sh" to script, "gradlew" to build))
+        val source = input.copy(files = input.files.map { it.copy(executable = it.path == "profile.sh") }, build = WorkerBuild(listOf("fixture")))
+        val spec = ExperimentSpec("deadline", profile = ProfileMain(script = "profile.sh", runTimeoutSec = 3))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
+        val manifest = WorkManifest("session", "fixture", spec, arms, listOf(WorkCase(0, 0, Experiments.profileProblem(spec), null, 0, 720)), listOf(source), ResourceBudget(1000, 512))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused",
+            source.os, source.arch, WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
+        val before = System.nanoTime()
+        val result = executor.run(manifest, listOf(0), root.resolve("profile-attempt"), "node", 1) { 80000 }
+        assertTrue(Files.exists(started), "committed profile was launched")
+        assertTrue(result.runTimedOut)
+        assertEquals(124, result.cases.single().exitCode)
+        assertTrue(Files.readString(root.resolve("profile-attempt/0.termination")).contains("whole-run"))
+        assertTrue(System.nanoTime() - before < 6_000_000_000, "profile exceeded its whole-run budget")
+    }
+
+    @Test fun `profile preparation consumes the same deadline and cannot continue into execution`(): Unit = service { socket ->
+        val (input, bytes) = bundle(mapOf("gradlew" to "#!/usr/bin/env bash\nexec sleep 30\n"))
+        val source = VerifiedCache(root.resolve("source")).stage(input) { ByteArrayInputStream(bytes) }
+        val deadline = System.nanoTime() + 500_000_000
+        assertFailsWith<ProfileRunTimeout> {
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(input.copy(build = WorkerBuild(listOf("fixture"))),
+                source, ResourceBudget(1000, 512), System.getenv(), remainingRunMs = { (deadline - System.nanoTime()) / 1_000_000 }) { 80000 }
+        }
+        assertTrue(System.nanoTime() < deadline + 2_000_000_000)
+    }
+
+    @Test fun `solver timeout retains the existing thirty second capture flush allowance`(): Unit = service { socket ->
+        val flushed = root.resolve("capture-flushed")
+        val script = """
+            #!/usr/bin/env python3
+            import signal, time
+            from pathlib import Path
+            def flush(_signal, _frame):
+                time.sleep(12)
+                Path('$flushed').write_text('complete')
+                raise SystemExit(0)
+            signal.signal(signal.SIGTERM, flush)
+            time.sleep(60)
+        """.trimIndent()
+        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
+        val spec = ExperimentSpec("flush")
+        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
+        val manifest = WorkManifest("session", "fixture", spec, arms, listOf(WorkCase(0, 0, Problem("s", "p"), null, 0, 1)), listOf(bundle), ResourceBudget(1000, 512))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused", bundle.os, bundle.arch)
+        val result = executor.run(manifest, listOf(0), root.resolve("flush-attempt"), "node", 1) { 80000 }
+        assertEquals(124, result.cases.single().exitCode)
+        assertFalse(result.runTimedOut)
+        assertEquals("complete", Files.readString(flushed))
     }
 
     @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { socket ->

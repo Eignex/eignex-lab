@@ -493,7 +493,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/jobs/{id}/delete") {
             val id = call.parameters["id"]!!.toLong()
             if (!store.deleteJob(id)) {
-                call.respond(HttpStatusCode.Conflict, "no such job, or it has not ended")
+                call.respond(HttpStatusCode.Conflict, "no such job, it has not ended, or its Nomad stop is pending")
             } else {
                 (worktrees(config, id) + config.jobDir(id).toFile()).forEach { deleteTree(it.toPath()) }
                 call.respond(HttpStatusCode.OK, "deleted")
@@ -608,7 +608,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val tail = call.parameters["tail"]?.let {
                 requireNotNull(it.toLongOrNull()?.takeIf { bytes -> bytes in 0..MAX_TAIL_BYTES }) { "tail must be 0 to $MAX_TAIL_BYTES bytes" }
             }
-            val file = jobFile(config.jobDir(id), call.parameters.getAll("path").orEmpty())?.toFile()
+            val segments = call.parameters.getAll("path").orEmpty()
+            val file = (jobFile(config.jobDir(id), segments) ?: WorkerLogs.resolve(store, config.jobDir(id), id, segments))?.toFile()
             when {
                 file == null -> call.respond(HttpStatusCode.NotFound, "no such file")
                 tail != null -> call.respondText(tail(file, tail), ContentType.Text.Plain)

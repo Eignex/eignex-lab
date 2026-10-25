@@ -26,15 +26,27 @@ data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt:
 }
 
 @Serializable
-data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap())
+data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false)
 
 @Serializable
 data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: String, val payload: String, val acknowledged: Boolean)
+
+@Serializable data class LiveLog(val session: String, val iteration: String, val generation: Int)
+@Serializable data class ExecutionEvent(val id: Long, val session: String?, val detail: String, val at: Long)
 
 class ExecutionFenced(message: String) : IllegalStateException(message)
 
 /** All worker mutations share Store's IMMEDIATE write transaction, including cancellation and case projection. */
 class ExecutionStore internal constructor(private val store: Store) {
+    fun events(job: Long): List<ExecutionEvent> = store.executionTransaction { db ->
+        db.sqlRows("SELECT * FROM execution_events WHERE job_id = ? ORDER BY id DESC LIMIT 5000", job) {
+            ExecutionEvent(it.getLong("id"), it.getString("session_id"), it.getString("detail"), it.getLong("at"))
+        }.reversed()
+    }
+    fun liveLog(job: Long, index: Int, at: Long = now()): LiveLog? = store.executionTransaction { db ->
+        db.sqlRows("SELECT a.* FROM iteration_attempts a JOIN execution_sessions s ON s.id = a.session_id WHERE a.job_id = ? AND a.state IN $ACTIVE_ATTEMPTS AND a.lease_until > ? AND s.desired != 'stop' AND s.allocation_id = a.allocation_id", job, at, map = ::attemptRow)
+            .singleOrNull { index in it.indices }?.let { LiveLog(it.session, it.iteration, it.generation) }
+    }
     fun capacityLeases(at: Long = now()): List<ManualCapacityLease> = store.executionTransaction { db ->
         db.sqlRows("SELECT * FROM capacity_leases WHERE expires_at > ? ORDER BY id", at) { ManualCapacityLease(it.getString("id"), it.getString("pool"), it.getInt("nodes"), it.getLong("expires_at")) }
     }
@@ -98,6 +110,10 @@ class ExecutionStore internal constructor(private val store: Store) {
         return store.executionTransaction { db ->
             require(leaseMs in 1..LEASE_MS)
             val session = db.authenticate(id, token, allocation)
+            if (store.job(session.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) {
+                db.failRunDeadline(session.jobId, at)
+                return@executionTransaction null
+            }
             if (store.job(session.jobId)!!.paused || session.desired != "run") return@executionTransaction null
             // An HTTP retry of a claim returns the existing ownership, never a second concurrent iteration.
             val active = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS ORDER BY generation DESC", id) { attemptRow(it) }.singleOrNull()
@@ -131,6 +147,42 @@ class ExecutionStore internal constructor(private val store: Store) {
         at + leaseMs
     }
 
+    fun remainingRunMs(session: String, at: Long = now()): Long? = store.executionTransaction { db ->
+        val job = store.job(requireNotNull(db.session(session)).jobId) ?: throw ExecutionFenced("missing experiment")
+        job.runRemainingMs(at)
+    }
+
+    private fun Job.runRemainingMs(at: Long): Long? = experiment?.profile?.let(Experiments::profileRunTimeoutSec)?.let { it * 1000 - elapsedMs(at) }
+
+    fun runTimedOut(owner: AttemptOwner, at: Long = now()) = store.executionTransaction { db ->
+        val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
+        if (store.job(prior.jobId)?.error == ProfileRunTimeout().message) return@executionTransaction
+        val attempt = db.attempt(owner, at)
+        require(store.job(attempt.jobId)?.experiment?.profile?.runTimeoutSec != null)
+        db.failRunDeadline(attempt.jobId, at)
+    }
+
+    fun expireRunDeadlines(at: Long = now()) = store.executionTransaction { db ->
+        store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.NOMAD }.forEach { job ->
+            val remaining = job.runRemainingMs(at)
+            if (remaining != null && (remaining <= 0 || db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND state = 'committed'", job.id) {
+                Json.decodeFromString<IterationResult>(it.getString(1)).runTimedOut
+            }.any { it })) db.failRunDeadline(job.id, at)
+        }
+    }
+
+    private fun Connection.failRunDeadline(job: Long, at: Long) {
+        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
+            .forEach { invalidate(it, "run-timeout", at) }
+        sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", job, map = ::sessionRow).forEach { s ->
+            sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id); stopIntent(s)
+        }
+        sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
+        sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ?",
+            ProfileRunTimeout().message, at, at, job)
+        event(job, null, "profile-run-timeout", at)
+    }
+
     fun phase(owner: AttemptOwner, phase: String, at: Long = now()) = store.executionTransaction { db ->
         require(phase in listOf("preparing", "executing", "uploading"))
         val a = db.attempt(owner, at)
@@ -138,6 +190,23 @@ class ExecutionStore internal constructor(private val store: Store) {
         require(states.indexOf(phase) >= states.indexOf(a.state)) { "phase cannot go backwards" }
         db.sqlUpdate("UPDATE iteration_attempts SET state = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", phase, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "phase:$phase:${owner.iteration}:${owner.generation}", at)
+    }
+
+    /** A source/build error is permanent work failure, not another infrastructure revocation. */
+    fun rejectBuild(owner: AttemptOwner, detail: String, at: Long = now()) = store.executionTransaction { db ->
+        val reason = "source-build: " + detail.take(16_384)
+        val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
+        if (store.job(prior.jobId)?.let { it.status == Status.FAILED && it.error == reason } == true) return@executionTransaction
+        val attempt = db.attempt(owner, at)
+        require(attempt.state in setOf("claimed", "preparing")) { "build failure outside preparation" }
+        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", attempt.jobId, map = ::attemptRow)
+            .forEach { db.invalidate(it, "source-build-failed", at) }
+        db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", attempt.jobId, map = ::sessionRow).forEach { session ->
+            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id); db.stopIntent(session)
+        }
+        db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ?", reason, at, at, attempt.jobId)
+        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", attempt.jobId)
+        db.event(attempt.jobId, owner.session, "source-build-failed", at)
     }
 
     fun caseStarted(owner: AttemptOwner, index: Int, at: Long = now()) = store.executionTransaction { db ->
@@ -154,6 +223,8 @@ class ExecutionStore internal constructor(private val store: Store) {
             return@executionTransaction true
         }
         db.attempt(owner, at)
+        if (store.job(a.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) throw ProfileRunTimeout()
+        require(!result.runTimedOut || store.job(a.jobId)?.experiment?.profile?.runTimeoutSec != null)
         require(a.state == "uploading") { "attempt is not uploading" }
         require(result.cases.map { it.index }.sorted() == a.indices.sorted()) { "all arms must be committed together, exactly once" }
         val node = db.session(owner.session)!!.node!!
@@ -166,6 +237,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
             Json.encodeToString(result), at, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "committed:${owner.iteration}:${owner.generation}", at)
+        if (result.runTimedOut) db.failRunDeadline(a.jobId, at)
         true
     }
 
@@ -209,7 +281,18 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
     fun submission(id: String): String = store.executionTransaction { db -> db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single() }
     fun hasActiveAttempt(session: String): Boolean = store.executionTransaction { db -> db.sqlRows("SELECT 1 FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", session) { true }.isNotEmpty() }
-    fun failureCount(job: Long): Int = store.executionTransaction { db -> db.sqlRows("SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail LIKE 'lost:infrastructure:%'", job) { it.getInt(1) }.single() }
+    internal fun retryIn(db: Connection, job: Long, at: Long) { db.event(job, null, "manual-retry", at) }
+    fun failureCount(job: Long): Int = store.executionTransaction { db -> db.sqlRows("""SELECT COUNT(*) FROM execution_events
+        WHERE job_id = ? AND detail LIKE 'lost:infrastructure:%' AND id > COALESCE(
+            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""", job, job) { it.getInt(1) }.single() }
+    fun pendingProjectionJobs(): List<Long> = store.executionTransaction { db -> db.sqlRows("""
+        SELECT DISTINCT a.job_id FROM iteration_attempts a JOIN jobs j ON j.id = a.job_id
+        WHERE a.state = 'committed' AND j.backend = 'nomad' AND (
+          NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id)
+          OR EXISTS (SELECT 1 FROM commands c WHERE c.job_id = a.job_id AND c.status IN ('DONE', 'FAILED')
+            AND NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx)))
+        ORDER BY a.job_id
+    """.trimIndent()) { it.getLong(1) } }
     fun ingested(job: Long): Set<String> = store.executionTransaction { db -> db.sqlRows("SELECT iteration_id FROM execution_ingestion WHERE job_id = ?", job) { it.getString(1) }.toSet() }
     fun markIngested(job: Long, iteration: String) = store.executionTransaction { db -> db.sqlUpdate("INSERT OR IGNORE INTO execution_ingestion (job_id, iteration_id) VALUES (?, ?)", job, iteration) }
     fun observed(id: String, detail: String, at: Long = now()) = store.executionTransaction { db ->
