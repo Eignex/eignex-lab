@@ -1,0 +1,102 @@
+package com.eignex.lab
+
+import kotlinx.serialization.json.Json
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.nio.file.Files
+import java.nio.file.Path
+import java.security.MessageDigest
+import java.util.concurrent.CancellationException
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import kotlin.test.*
+
+class PortableWorkerTest {
+    private val root = Files.createTempDirectory("portable-worker").toAbsolutePath()
+    private val supervisorScript = root.resolve("supervisor.py").also { file ->
+        javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, file) }
+    }
+    private fun bundle(files: Map<String, String>): Pair<WorkerBundle, ByteArray> {
+        val bytes = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
+            files.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() }
+        } }.toByteArray()
+        val manifest = WorkerBundle(MessageDigest.getInstance("SHA-256").digest(bytes).hex(), files.map { (name, text) ->
+            InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong(), name.endsWith("/klause-bench"))
+        }, Repositories.DEFAULT, "a".repeat(40), if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(), "fixture")
+        return manifest to bytes
+    }
+    private fun <T> service(block: (Path) -> T): T {
+        val socket = root.resolve("supervisor.sock")
+        val process = ProcessBuilder("python3", supervisorScript.toString(), "--socket", socket.toString()).redirectError(root.resolve("service.err").toFile()).start()
+        try {
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline) { root.resolve("service.err").toFile().readText() }; Thread.sleep(20) }
+            return block(socket)
+        } finally { process.destroy(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); process.destroyForcibly() }
+    }
+
+    @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {
+        val (manifest, bytes) = bundle(mapOf("bin/tool" to "hello"))
+        val cache = VerifiedCache(root.resolve("cache"), 1024 * 1024)
+        val first = cache.stage(manifest) { ByteArrayInputStream(bytes) }
+        assertEquals("hello", Files.readString(first.resolve("bin/tool")))
+        assertEquals(first, cache.stage(manifest) { error("verified cache reused") })
+        Files.writeString(first.resolve("bin/tool"), "bad")
+        assertEquals("hello", Files.readString(cache.stage(manifest) { ByteArrayInputStream(bytes) }.resolve("bin/tool")))
+        assertFailsWith<IllegalArgumentException> { cache.stage(manifest.copy(sha256 = "0".repeat(64))) { ByteArrayInputStream(bytes) } }
+        assertFailsWith<IllegalArgumentException> { InputFile("../escape", "a".repeat(64), 1) }
+        val undeclared = manifest.copy(files = listOf(InputFile("other", ExecutionStore.digest("hello"), 5)))
+        assertFailsWith<IllegalArgumentException> { cache.stage(undeclared) { ByteArrayInputStream(bytes) } }
+    }
+
+    @Test fun `standalone executor runs a complete paired iteration and leaves baseline unchanged`(): Unit = service { socket ->
+        val script = """#!/usr/bin/env bash
+            set -eu
+            for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
+            mkdir -p "${'$'}out"
+            echo '{}' > "${'$'}out/record.json"
+        """.trimIndent()
+        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
+        val spec = ExperimentSpec("paired", grid = mapOf("x" to listOf("a", "b")))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
+        val cases = arms.indices.map { WorkCase(it, it, Problem("s", "p"), 1, 0, 5) }
+        val manifest = WorkManifest("session", "fixture", spec, arms, cases, listOf(bundle), ResourceBudget(2000, 512, 2))
+        val cache = VerifiedCache(root.resolve("cache"))
+        val executor = IterationExecutor(ProcessSupervisor(socket), cache, { ByteArrayInputStream(bytes) }, "unused", bundle.os, bundle.arch)
+        val result = executor.run(manifest, listOf(0, 1), root.resolve("attempt"), "node", 1) { 10000 }
+        assertEquals(listOf(0, 0), result.cases.map { it.exitCode }); assertTrue(result.cases.all { it.record?.trim() == "{}" })
+        assertEquals(script, Files.readString(cache.stage(bundle) { error("cache") }.resolve(bundle.files.single().path)))
+        assertFailsWith<IllegalArgumentException> { executor.run(manifest, listOf(0), root.resolve("partial"), "node", 1) { 10000 } }
+    }
+
+    @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { socket ->
+        val pid = root.resolve("escaped.pid")
+        val code = "import subprocess,time; p=subprocess.Popen(['sleep','60'],start_new_session=True); open('${pid}','w').write(str(p.pid)); time.sleep(60)"
+        val supervisor = ProcessSupervisor(socket)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val future = executor.submit<Int> { supervisor.run(listOf("python3", "-c", code), root, System.getenv(), root.resolve("out"), root.resolve("err"), 60) { 10000 } }
+        try {
+            val until = System.nanoTime() + 5_000_000_000
+            while (!Files.exists(pid)) { check(System.nanoTime() < until); Thread.sleep(20) }
+            val child = Files.readString(pid).toLong()
+            future.cancel(true) // Socket closes exactly as it does on a killed worker; service survives.
+            val stopped = System.nanoTime() + 5_000_000_000
+            while (live(child) && System.nanoTime() < stopped) Thread.sleep(20)
+            assertFalse(live(child), "detached child survived worker loss")
+        } finally { future.cancel(true); executor.shutdownNow() }
+    }
+
+    @Test fun `supervisor reports bounded timeout and worker refuses an expired lease`(): Unit = service { socket ->
+        val supervisor = ProcessSupervisor(socket)
+        assertEquals(124, supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out"), root.resolve("err"), 1, 10) { 10000 })
+        assertFailsWith<CancellationException> { supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out2"), root.resolve("err2"), 60) { 0 } }
+    }
+    private fun live(pid: Long): Boolean {
+        if (!ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) return false
+        val stat = Path.of("/proc/$pid/stat")
+        return if (!CliMeasurements.localMacOs) runCatching { Files.readString(stat).substringAfterLast(")").trim().first() != 'Z' }.getOrDefault(false)
+        else ProcessBuilder("ps", "-p", pid.toString(), "-o", "stat=").start().let { process ->
+            val state = process.inputStream.bufferedReader().readText().trim(); process.waitFor(); state.isNotEmpty() && !state.startsWith("Z")
+        }
+    }
+}

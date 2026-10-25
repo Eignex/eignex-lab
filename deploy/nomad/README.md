@@ -87,3 +87,30 @@ python3 deploy/nomad/sandbox.py cli job run -json job.json
 For `platform: "mac"`, omit `image`, use `nodeClass: "lab-prototype-mac"`, and provide a native executable and args.
 The command is operator supplied for the prototype; it is not a public endpoint for accepting arbitrary commands
 from experiment submissions. Real workers will receive trusted versioned work manifests from the coordinator.
+
+## Portable worker and native supervisor
+
+`WorkManifest` version 1 carries planned arms, full commits, cases, resource budgets and checksum-declared build
+bundles. The executor renders the existing solve/reference/profile commands after staging on its own host.
+Archives are bounded, locked, verified and atomically published; each attempt receives a private copy before any
+measurement launcher is installed. Bundle OS/architecture/toolchain identities prevent accidental cache mixing.
+Reference model/data/include paths in a manifest are relative to its bundle, never coordinator filesystem paths.
+
+Run `python3 src/main/resources/nomad/process_supervisor.py --socket /private/path/process.sock` as a separate
+same-user service on the Mac. The socket and ownership registry are private. It must live outside the Nomad client
+and worker services. Each connection owns a process tree; connection loss, lease expiry and timeout stop it.
+An inherited random marker finds children that create new sessions and are reparented; PID/start identity is
+rechecked before signals. A service restart cleans recorded owners before accepting new work. This assumes trusted
+lab programs preserve their inherited marker; it is not a sandbox for hostile executables. Linux uses the same
+supervision protocol inside its allocation, with the Docker cgroup as the final cleanup/enforcement boundary.
+
+The offline acceptance command is `eignex-lab worker-local manifest.json ROOT SOCKET LAB_LAUNCHER`. Put the approved
+ZIP inputs at `ROOT/inputs/<sha256>.zip`. It runs complete paired iterations without opening SQLite or loading
+provider configuration and writes `ROOT/results.json`. Its bounded 70-second offline lease is for acceptance probes;
+connected workers use coordinator renewals. Real Mac solver/JFR acceptance remains separate from the fixture tests.
+
+Build a portable worker image with `./gradlew installDist` and
+`docker build -f deploy/nomad/worker.Dockerfile --build-arg WORKER_RELEASE=$(git rev-parse HEAD) -t REGISTRY/lab-worker:RELEASE .`.
+Record the resulting registry digest in pool configuration. The pinned multi-architecture JDK base is shared across
+providers; no cloud CLI, provider credential or database is included. The image entrypoint starts its allocation's
+supervisor before invoking the requested worker command.

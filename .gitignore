@@ -3,3 +3,5 @@ build/
 *.db
 *.db-*
 lab-data/
+
+__pycache__/

@@ -20,6 +20,7 @@ fun main(args: Array<String>) {
         "make-sets" -> exitProcess(MakeSets.main(args.drop(1)))
         "docker-cleanup" -> exitProcess(dockerCleanupNow())
         "reference" -> exitProcess(ReferenceCli.main(args.drop(1)))
+        "worker-local" -> exitProcess(WorkerCli.main(args.drop(1)))
         "nomad-spec" -> exitProcess(NomadSpecCli.main(args.drop(1)))
     }
     if (mode == "password") {
@@ -30,7 +31,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference|nomad-spec")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference|nomad-spec|worker-local")
         exitProcess(2)
     }
     val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->
