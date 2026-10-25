@@ -233,7 +233,10 @@ resource "aws_iam_role_policy" "scaler" {
     { Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:DescribeScalingActivities", "autoscaling:DescribeInstanceRefreshes"], Resource = "*" },
     # The autoscaler can change desired capacity, but cannot reopen max/min after cloud expiry.
     { Effect = "Allow", Action = ["autoscaling:UpdateAutoScalingGroup"], Resource = aws_autoscaling_group.workers.arn, Condition = { Null = { "autoscaling:MaxSize" = "true", "autoscaling:MinSize" = "true" } } },
-    { Effect = "Allow", Action = ["autoscaling:TerminateInstanceInAutoScalingGroup", "autoscaling:CreateOrUpdateTags"], Resource = aws_autoscaling_group.workers.arn }
+    { Effect = "Allow", Action = ["autoscaling:TerminateInstanceInAutoScalingGroup"], Resource = aws_autoscaling_group.workers.arn },
+    # Preserve ownership tags used by independent expiry. The pinned plugin writes only lifecycle phase tags.
+    { Effect = "Allow", Action = ["autoscaling:CreateOrUpdateTags"], Resource = aws_autoscaling_group.workers.arn,
+    Condition = { "ForAllValues:StringLike" = { "aws:TagKeys" = ["nomad_autoscaler_lifecycle_phase_*"] }, Null = { "aws:TagKeys" = "false" } } }
   ] })
 }
 resource "aws_iam_role" "adapter" {
