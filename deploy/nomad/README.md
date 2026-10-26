@@ -195,12 +195,12 @@ again. Pin those exact attributes in queue templates; native resource enforcemen
 
 The supervisor and legacy runner share the same POSIX record lock (`LAB_NATIVE_EXECUTION_LOCK`, default
 `$LAB_DATA/nomad/native.lock`). A native session reserves it across iteration boundaries and transfers. Several
-sessions of the same experiment can share the supervisor's reservation; another experiment and the legacy runner
-wait. The ownership marker survives supervisor death, so the legacy runner cannot take the host before recovery has
-cleaned recorded processes. Closing the last reservation stops any still-owned process before releasing the lock.
+experiments can share native execution within the coordinator's atomic aggregate CPU and memory budgets. The legacy
+runner still waits for the supervisor's collective reservation to end. The ownership marker survives supervisor death, so the legacy runner cannot take the host before recovery has
+cleaned recorded processes. Closing an experiment's last reservation cleans up only its processes. The collective lock is released when all experiments finish.
 A missing or damaged supervisor holds native execution rather than granting unchecked ownership.
 
-Native sessions drain for a pause, a higher-priority compatible local job, or an update. The runner takes the lock
+Native sessions drain for a pause or an update; priority orders admission without making an otherwise idle host exclusive. The runner takes the lock
 before updating or executing local work; remote Linux allocations continue. Ordinary updates restart only the
 API/runner/coordinator. They leave the Nomad agents and supervisor running. Changing those services requires the
 explicit `--restart-agents` maintenance option after draining native work. In-flight workers must use immutable
@@ -212,8 +212,8 @@ capture-analysis and interruption canaries must pass before final legacy executi
 
 ## Provider-neutral capacity and operations
 
-`capacity.example.json` defines homogeneous capability pools, purchasing market, explicit host reserves, finite
-node/vCPU limits, sustained pressure, cooldown and idle retirement. Cloud profiles preserve the existing explicit
+`capacity.example.json` defines homogeneous capability pools, purchasing market, explicit host memory reserves, finite
+node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profiles preserve the existing explicit
 on-demand purchasing policy unless their tags request Spot; measurements/builds do not reserve a whole node.
 Every session budget includes its helpers. The policy packs free CPU and memory on ready nodes, accounts for booting
 nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
@@ -224,8 +224,11 @@ Set the coordinator's optional `capacity` object to `{"settingsFile":"/private/c
 "inventoryFiles":["/private/aws-inventory.json"],"healthTokenFile":"/private/capacity.token"}`.
 Provider adapters write versioned `CapacityInventory` JSON atomically: observation time, pool IDs, instance IDs,
 draining/target-count state and classified capacity failures. They contain no control credentials. The collector
-joins this with live Nomad allocations; an unknown allocation conservatively consumes a whole node. It reuses
-`Estimates` and `NodePool` pressure calculations and persists cooldown/idle history across restarts.
+joins this with live Nomad allocations; an unknown allocation conservatively consumes a whole node. It starts a growth
+timer only for demand that cannot fit warm or booting workers, and persists backlog/cooldown/idle history across restarts.
+A small sustained backlog can grow capacity without a core-hour estimate. CPU packing uses all logical vCPU quota;
+Nomad's MHz conversion already incorporates its host reserve. Legacy `localPressureHours` and `reserveCpuMillis` fields
+remain readable but no longer impose another growth threshold or subtract a second CPU reserve.
 Inventory and Nomad observations must remain within 30 seconds, including collection time. Missing/stale inventory,
 unavailable local volumes or an expired monotonic sample return no growth authorization. Capacity collectors never
 provision instances. Control credentials and purchasing-specific operations stay in provider adapters.
@@ -252,9 +255,9 @@ stack. The collector/packing tests alone do not establish live provisioning, quo
 
 A `WorkerBundle` may include a `build` recipe with explicit Gradle task paths and a bounded timeout. Builds run
 through the independent supervisor before execution (an empty task list only stages a committed script), inside the same session CPU/memory ceiling as the worker
-and its helper JVMs. They do not claim an extra node or a second reservation. Gradle uses a private home, no
-persistent daemon, bounded worker count and JVM heap, and in-process Kotlin compilation. A one-second disk check
-holds preparation when cache usage exceeds its budget or the volume has less than 1 GiB free. This is a runtime
+and its helper JVMs. They do not claim an extra node or a second reservation. Gradle uses a repository/toolchain/platform-scoped dependency home, no
+persistent daemon, bounded worker count and JVM heap, and in-process Kotlin compilation. A thirty-second disk check
+holds preparation when a staging build exceeds its budget or the volume has less than 1 GiB free. This is a runtime
 guard, not a filesystem quota; configure host/volume quotas where a hard disk ceiling is required.
 
 `SourceInputs` exports an approved Git tip and its reachable history only after its mandatory source-trust
@@ -267,11 +270,17 @@ that use `git ls-files`; no external Git source or provider SDK runs in this bui
 as ordinary blobs, preserving their committed content without following host filesystem links. Source inputs are
 supplied through the private artifact service.
 
-Prepared builds are atomically published with a checksum inventory. Cache identity includes the source/archive,
-full SHA, OS/architecture, declared toolchain/build recipe, actual JDK identity and effective build budget. A lock
+Prepared builds are atomically published with a checksum inventory. Cache identity includes the approved full SHA and additional input checksums,
+OS/architecture, declared toolchain/build recipe, actual JDK identity and effective build budget. Git pack transport
+bytes do not invalidate a build of the same approved commit. A lock
 prevents duplicate builds within the cache; corrupted or incomplete output rebuilds before execution. Every
-iteration gets a private copy, keeping measurements and profiles from changing the baseline. Caches currently
-belong to the allocation; shared bounded host cache volumes remain optional follow-up work. Normal queue
+iteration gets a private copy, keeping measurements and profiles from changing the baseline. Caches default
+to the allocation unless shared storage is configured. Set native `LAB_WORKER_CACHE_ROOT` to a cache volume with sufficient free space.
+Linux templates set `cacheHostVolume: "lab-cache"`; the coordinator creates a dynamic `mkdir` host volume on each
+managed ready node, without restarting the client. The job requests multi-writer access, and checksum-verified
+builds are single-flight across allocations on that node. Cache eviction is limited to unused outputs/dependency
+homes; a pin protects each build until copying into its attempt finishes. Maintenance scans run at most once per
+node per minute, with a 32 GiB default cache target plus bounded active staging. Spot loss only loses a disposable cache. Normal queue
 preparation/admission runs through the coordinator.
 
 A failed source build reports its bounded diagnostic tail through its authenticated attempt. The coordinator

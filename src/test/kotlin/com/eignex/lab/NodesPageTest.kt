@@ -40,7 +40,7 @@ class NodesPageTest {
         assertContains(page, "data-limit=\"4\"")
         assertContains(page, "avx512:instance")
         assertContains(page, "href=\"/jobs/42\">job 42")
-        assertContains(page, "12.0 vCPU / 60416 MiB")
+        assertContains(page, "14.0 vCPU / 60416 MiB")
         assertContains(page, "allocation&lt;script&gt;")
         assertContains(page, "data-release-capacity=\"${lease.id}\"")
         assertContains(page, "setInterval(refresh, 10000)")

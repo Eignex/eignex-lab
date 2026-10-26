@@ -63,12 +63,14 @@ class ConnectedNomadTest {
         val budget = ResourceBudget(2000, 2048, 2)
         val template = NomadBatchJob("template", NomadPlatform.LINUX, "lab-prototype-linux",
             NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,
-            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), networkMode = "host", statusHostVolume = "lab-status")
+            listOf("worker"), System.getenv("LAB_NOMAD_TEST_IMAGE"), networkMode = "host", statusHostVolume = "lab-status", cacheHostVolume = "lab-cache")
         val port = System.getenv("LAB_NOMAD_TEST_API_PORT").toInt()
         val settings = NomadQueueSettings("connected-probe", "http://127.0.0.1:$port",
             listOf(NomadQueueTarget(template, setOf(if (workerArch() == "arm64") "arch:arm64" else "arch:x86_64"))),
             preparationBudget = ResourceBudget(1000, 1024), preparationTimeoutSec = 60, caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 2)
         val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), minFreeBytes = 0, solveJavaOpts = "-Xmx256m")
+        NomadBuildVolumes(client, settings).reconcile()
+        assertTrue(client.hostVolumes().any { it["Name"]?.jsonPrimitive?.content == "lab-cache" })
         var publications = 0
         val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> = { _, _, _ ->
             publications++

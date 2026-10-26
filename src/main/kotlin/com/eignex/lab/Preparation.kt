@@ -57,13 +57,15 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             val input = cache.stage(bundle, ::checkActive) { download(bundle) }
-            val built = if (bundle.build == null) input else builds.prepare(bundle, input, manifest.budget, env, remainingRunMs, ::remaining)
-            val tree = directory.resolve("worktrees/$sha")
-            Files.walk(built).use { paths -> paths.forEach { file ->
-                checkActive(); val target = tree.resolve(built.relativize(file))
-                if (Files.isDirectory(file, NOFOLLOW_LINKS)) Files.createDirectories(target) else Files.copy(file, target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
-            } }
-            tree
+            fun copy(built: Path): Path {
+                val tree = directory.resolve("worktrees/$sha")
+                Files.walk(built).use { paths -> paths.forEach { file ->
+                    checkActive(); val target = tree.resolve(built.relativize(file))
+                    if (Files.isDirectory(file, NOFOLLOW_LINKS)) Files.createDirectories(target) else Files.copy(file, target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
+                } }
+                return tree
+            }
+            if (bundle.build == null) copy(input) else builds.withPrepared(bundle, input, manifest.budget, env, remainingRunMs, ::remaining, ::copy)
         }
         val primary = prepared.getValue(manifest.arms.first().sha)
         val json = Json { ignoreUnknownKeys = true }

@@ -72,7 +72,7 @@ class NomadQueue(
     private val artifacts: ArtifactStore, private val settings: NomadQueueSettings,
     private val allowed: () -> Boolean,
     private val completed: (Job) -> Unit = Runner(config, store, startCloud = { null })::queueConfirmation,
-    private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !store.shouldYield(job, config.localNodeTags) && !Files.exists(config.nativeYield) },
+    private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> =
         TrustedQueueSources(config, artifacts)::publish,
 ) {
@@ -100,12 +100,15 @@ class NomadQueue(
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
                     val target = fitting.sortedBy { if (it.os == "mac") 0 else 1 }.firstOrNull {
-                        it.os != "mac" || nativeAllowed(job.id) && !store.execution.nativeOwnedByAnother(job.id)
+                        it.os != "mac" || nativeAllowed(job.id) && store.execution.nativeReservation().let { held ->
+                            held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
+                                held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
+                        }
                     } ?: continue
                     val (arms, bundles) = source(job, targets, settings)
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec)
-                    backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget), settings.workerApi)
+                    backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target)), settings.workerApi)
                     continue
                 }
                 val accepted = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null } ?: continue
@@ -141,7 +144,7 @@ class NomadQueue(
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                                     ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
                             val maximum = (current.parallel + budget.parallel - 1) / budget.parallel
-                            nativeAllowed(job.id) && !store.execution.nativeOwnedByAnother(job.id) && nativeSessions.size < maximum
+                            nativeAllowed(job.id) && nativeSessions.size < maximum
                         }
                     }
                     val reserved = store.execution.nativeReservation()
@@ -159,7 +162,7 @@ class NomadQueue(
                         .groupBy { checkNotNull(it.node) }.filterValues { hosted ->
                             hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > current.parallel
                         }.keys
-                    backend.enqueue(job.id, manifest, target.template.copy(budget = budget, excludedNodes = target.template.excludedNodes + excluded), settings.workerApi)
+                    backend.enqueue(job.id, manifest, target.template.copy(budget = budget, nativeCapacity = nativeCapacity(target), excludedNodes = target.template.excludedNodes + excluded), settings.workerApi)
                     sessions = store.execution.sessions(job.id)
                 }
             } catch (failure: IllegalArgumentException) {
@@ -171,6 +174,9 @@ class NomadQueue(
             }
         }
     }
+
+    private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =
+        if (target.os == "mac") ResourceBudget(config.cores * 1000, target.template.budget.memoryMiB) else null
 
     private fun plan(job: Job, recipe: WorkManifest, preparation: PreparationResult) {
         val spec = recipe.experiment

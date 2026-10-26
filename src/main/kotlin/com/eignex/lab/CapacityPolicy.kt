@@ -15,7 +15,8 @@ enum class CapacityNodeState { READY, BOOTING, DRAINING }
 data class CapacityPool(
     val id: String, val nodeClass: String, val vcpus: Int, val memoryMiB: Int, val maxNodes: Int,
     val tags: Set<String>, val market: CapacityMarket = CapacityMarket.SPOT,
-    val reserveCpuMillis: Int = 2000, val reserveMemoryMiB: Int = 1024,
+    /** Legacy policy reserve; Nomad already incorporates its host reserve in CPU-to-quota conversion. */
+    val reserveCpuMillis: Int = 0, val reserveMemoryMiB: Int = 1024,
     val minPriority: Int = 0, val sustainedMs: Long = 30_000, val cooldownMs: Long = 60_000, val idleMs: Long = 300_000,
 ) {
     init {
@@ -27,7 +28,7 @@ data class CapacityPool(
         require("hardware:unknown" !in tags && tags.count { it.startsWith("arch:") } == 1)
         require(tags.none { it in setOf("spot", "on-demand", "local") })
     }
-    val cpuMillis get() = vcpus * 1000 - reserveCpuMillis
+    val cpuMillis get() = vcpus * 1000
     val availableMemoryMiB get() = memoryMiB - reserveMemoryMiB
     val capabilities get() = tags + setOf("cloud", market.tag)
 }
@@ -83,16 +84,23 @@ object CapacityPolicy {
                 b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel
         }
         val ordered = demands.sortedWith(compareByDescending<CapacityDemand> { it.priority }.thenBy { it.id })
-        val remaining = ordered.toMutableList()
+        // Account for warm and already-booting capacity before starting the backlog timer.
+        val remaining = ordered.filter { d ->
+            val bin = bins.filter { fits(d, it) }.minWithOrNull(compareBy<Bin> { it.node.state != CapacityNodeState.READY }
+                .thenBy { pools.getValue(it.node.pool).cpuMillis.toLong() - it.allocations.sumOf { a -> a.budget.cpuMillis.toLong() } }
+                .thenBy { it.node.id })
+            if (bin != null) {
+                bin.allocations += CapacityReservation(d.id, d.job, d.budget, d.work)
+                placements += CapacityPlacement(d.id, bin.node.id, bin.node.pool, bin.node.state == CapacityNodeState.READY)
+            }
+            bin == null
+        }
         for (p in settings.pools) {
-            val eligible = ordered.filter { compatible(it, p) && (it.priority >= p.minPriority || !it.localEligible) }
-            val pressure = eligible.sumOf { it.coreHours }
-            val threshold = NodePool.nextThreshold(NodePool.threshold(settings.localCores, settings.localPressureHours), counts.getValue(p.id))
-            val qualified = eligible.any { !it.localEligible } || pressure >= threshold && eligible.isNotEmpty()
+            val qualified = remaining.any { compatible(it, p) && (it.priority >= p.minPriority || !it.localEligible) }
             val old = previous[p.id] ?: CapacityHistory()
             history[p.id] = old.copy(pressureSince = if (qualified) old.pressureSince ?: at else null)
         }
-        for (d in ordered) {
+        for (d in remaining) {
             // Fit warm and booting bins before considering growth. Best fit fills partial nodes across experiments.
             var bin = bins.filter { fits(d, it) }.minWithOrNull(compareBy<Bin> { if (it.node.state == CapacityNodeState.READY) 0 else 1 }
                 .thenBy { pools.getValue(it.node.pool).cpuMillis.toLong() - it.allocations.sumOf { a -> a.budget.cpuMillis.toLong() } - d.budget.cpuMillis }
@@ -101,9 +109,7 @@ object CapacityPolicy {
                 val candidates = settings.pools.filter { compatible(d, it) }.sortedBy { it.id }
                 val p = candidates.firstOrNull { p ->
                     val h = history.getValue(p.id)
-                    val pressure = remaining.filter { compatible(it, p) && (it.priority >= p.minPriority || !it.localEligible) }.sumOf { it.coreHours }
-                    val enough = !d.localEligible || pressure >= NodePool.nextThreshold(NodePool.threshold(settings.localCores, settings.localPressureHours), counts.getValue(p.id))
-                    enough && (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&
+                    (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&
                         (h.lastIncrease == null || at - h.lastIncrease >= p.cooldownMs) && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus && d.caseParallel <= d.perHostParallel
                 }
                 if (p != null) {
@@ -121,7 +127,6 @@ object CapacityPolicy {
                 bin.allocations += CapacityReservation(d.id, d.job, d.budget, d.work)
                 placements += CapacityPlacement(d.id, bin.node.id, bin.node.pool, bin.node.state == CapacityNodeState.READY)
             }
-            remaining.remove(d)
         }
         for (p in settings.pools) {
             val floor = manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0

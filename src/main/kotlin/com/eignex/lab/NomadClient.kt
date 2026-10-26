@@ -25,6 +25,8 @@ interface NomadControl {
     fun nodes(): List<JsonObject> = emptyList()
     fun node(id: String): JsonObject? = null
     fun nodeAllocations(id: String): List<JsonObject> = emptyList()
+    fun hostVolumes(): List<JsonObject> = emptyList()
+    fun createHostVolume(volume: JsonObject) { error("dynamic host volumes are unavailable") }
 }
 
 data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0) {
@@ -43,9 +45,11 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
     override fun nodes() = request("GET", "/v1/nodes")!!.jsonArray.map { it.jsonObject }
     override fun node(id: String) = request("GET", "/v1/node/${encode(id)}", missing = true)?.jsonObject
     override fun nodeAllocations(id: String) = request("GET", "/v1/node/${encode(id)}/allocations")!!.jsonArray.map { it.jsonObject }
+    override fun hostVolumes() = request("GET", "/v1/volumes", query = "type=host")!!.jsonArray.map { it.jsonObject }
+    override fun createHostVolume(volume: JsonObject) { request("PUT", "/v1/volume/host/create", buildJsonObject { put("Volume", volume) }) }
     override fun jwks() = request("GET", "/.well-known/jwks.json")!!.jsonObject
-    private fun request(method: String, path: String, body: JsonElement? = null, missing: Boolean = false): JsonElement? {
-        val uri = URI.create(address.toString().trimEnd('/') + path + "?namespace=${encode(namespace)}")
+    private fun request(method: String, path: String, body: JsonElement? = null, missing: Boolean = false, query: String? = null): JsonElement? {
+        val uri = URI.create(address.toString().trimEnd('/') + path + "?namespace=${encode(namespace)}" + (query?.let { "&$it" } ?: ""))
         val request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(10)).header("X-Nomad-Token", Files.readString(tokenFile).trim())
             .header("Content-Type", "application/json").method(method, body?.let { HttpRequest.BodyPublishers.ofString(it.toString()) } ?: HttpRequest.BodyPublishers.noBody()).build()
         val response = client.send(request, HttpResponse.BodyHandlers.ofString())

@@ -67,11 +67,7 @@ object NomadCoordinatorCli {
                     detail
                 } finally { pendingChecks.remove(key, future) }
             }
-        }, nativeMayClaim = { job ->
-            !Files.exists(config.nativeYield) && !store.shouldYield(job, config.localNodeTags) &&
-                store.active(withCommands = false).none { other -> other.id != job && other.status == Status.QUEUED && !other.paused && !other.cancelRequested &&
-                    other.priority > (store.job(job)?.priority ?: Int.MIN_VALUE) && other.experiment?.host != Experiments.AWS_HOST && NodeTags.matches(other.experiment?.nodeTags, config.localNodeTags) }
-        }, admit = { manifest, template ->
+        }, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, admit = { manifest, template ->
             if (template.platform == NomadPlatform.MAC) {
                 require(manifest.budget.cpuMillis <= config.cores * 1000 && manifest.budget.parallel <= config.maxParallel)
             } else {
@@ -83,6 +79,7 @@ object NomadCoordinatorCli {
             }
         })
         val queue = config.nomadQueue?.let { queueSettings -> NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork) }
+        val buildVolumes = config.nomadQueue?.let { NomadBuildVolumes(client, it) }
         require(config.executionBackend != ExecutionBackendKind.NOMAD || queue != null) { "LAB_EXECUTION_BACKEND=nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
         if (queue != null) thread(isDaemon = true, name = "nomad-admission") {
             while (!Thread.currentThread().isInterrupted) {
@@ -96,7 +93,11 @@ object NomadCoordinatorCli {
         }
         thread(isDaemon = true, name = "nomad-reconcile") {
             while (!Thread.currentThread().isInterrupted) {
-                runCatching { backend.reconcile(); capacity?.collect() }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }
+                runCatching {
+                    backend.reconcile()
+                    runCatching { buildVolumes?.reconcile() }.onFailure { System.err.println("nomad build cache: ${it.javaClass.simpleName}") }
+                    capacity?.collect()
+                }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }
                 Thread.sleep(10_000)
             }
         }

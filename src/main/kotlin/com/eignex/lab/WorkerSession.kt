@@ -52,9 +52,10 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val manifest = retry { Json.decodeFromString<WorkManifest>(String(json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
+        val builds = WorkerBuildCache(System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of)?.resolve("builds") ?: root.resolve("builds"), ProcessSupervisor(supervisorSocket))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(supervisorSocket)))
+            builds)
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
         try {
         while (true) {
@@ -88,7 +89,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 phase("preparing")
                 val result = if (manifest.preparationTimeoutSec != null) {
                     val preparation = PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
-                        WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(supervisorSocket)), ::download,
+                        builds, ::download,
                         if (CliMeasurements.localMacOs) "mac" else "linux", workerArch())
                         .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                             retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }

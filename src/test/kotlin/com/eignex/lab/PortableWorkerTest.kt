@@ -189,6 +189,11 @@ class PortableWorkerTest {
         assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
         assertFalse(git("for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
 
+        val repacked = manifest.copy(sha256 = "0".repeat(64), files = manifest.files.map { it.copy(sha256 = "1".repeat(64)) })
+        val reused = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket))
+            .withPrepared(repacked, source, ResourceBudget(1000, 512), System.getenv(), { null }, { 10000 }) { it }
+        assertEquals(tree, reused, "transport hashes cannot invalidate an approved commit's identical build recipe")
+
         // Preparation sends this detached checkout through an archive before the solve allocation uses Git.
         Files.createDirectory(tree.resolve("empty-runtime-directory"))
         assertTrue(Files.isDirectory(tree.resolve(".git/refs/heads")))
@@ -222,7 +227,7 @@ class PortableWorkerTest {
         val budget = ResourceBudget(2000, 512)
         val tree = cache.prepare(bundle, source, budget, System.getenv()) { 10000 }
         assertEquals("prepared", Files.readString(tree.resolve("build/output")).trim())
-        assertEquals(tree, cache.prepare(bundle, source, budget, System.getenv()) { 10000 })
+        assertEquals(tree, WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(bundle, source, budget, System.getenv()) { 10000 })
         assertEquals(1, Files.readAllLines(count).size)
         Files.writeString(tree.resolve("build/output"), "corrupt")
         cache.prepare(bundle, source, budget, System.getenv()) { 10000 }
@@ -230,6 +235,47 @@ class PortableWorkerTest {
         assertEquals(script, Files.readString(source.resolve("gradlew")))
         assertFailsWith<IllegalArgumentException> { WorkerBuild(listOf("--init-script=untrusted")) }
         assertFailsWith<IllegalArgumentException> { cache.prepare(bundle, source, budget, System.getenv()) { 0 } }
+    }
+
+    @Test fun `shared builds single flight across allocations and preserve dependency caches across commits`(): Unit = service { socket ->
+        val count = root.resolve("shared-count")
+        val script = """set -eu
+            echo build >> '$count'
+            mkdir -p build
+            if test -f "${'$'}GRADLE_USER_HOME/dependency"; then echo warm > build/dependencies; else echo cold > build/dependencies; fi
+            echo dependency > "${'$'}GRADLE_USER_HOME/dependency"
+            sleep .2
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
+        val built = input.copy(build = WorkerBuild(listOf("installDist")))
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val jobs = (1..2).map { executor.submit<Path> {
+                WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                    .withPrepared(built, source, ResourceBudget(1000, 512), System.getenv(), { null }, { 10000 }) { it }
+            } }
+            assertEquals(jobs[0].get(), jobs[1].get())
+            assertEquals(1, Files.readAllLines(count).size)
+            val next = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                .prepare(built.copy(commit = "b".repeat(40)), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertEquals("warm", Files.readString(next.resolve("build/dependencies")).trim())
+            assertEquals(2, Files.readAllLines(count).size)
+        } finally { executor.shutdownNow() }
+    }
+
+    @Test fun `cache eviction keeps pinned trees until their attempt copy finishes`(): Unit = service { socket ->
+        val (input, bytes) = bundle(mapOf("gradlew" to "mkdir -p build; head -c 48000 /dev/zero > build/output"))
+        val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
+        val cache = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket), maxBytes = 65536)
+        val budget = ResourceBudget(1000, 512)
+        val recipe = input.copy(build = WorkerBuild(listOf("installDist")))
+        val trees = (1..3).map { cache.prepare(recipe.copy(commit = it.toString().repeat(40)), source, budget, System.getenv()) { 10000 } }
+        cache.withPrepared(recipe.copy(commit = "1".repeat(40)), source, budget, System.getenv(), { null }, { 10000 }) { pinned ->
+            cache.maintain(now() + 120000)
+            assertTrue(Files.exists(pinned.resolve("build/output")))
+            assertTrue(trees.drop(1).any { !Files.exists(it) })
+        }
     }
 
     @Test fun `failed build preserves a bounded diagnostic and never publishes a cache entry`(): Unit = service { socket ->
@@ -240,7 +286,7 @@ class PortableWorkerTest {
                 ResourceBudget(1000, 512), System.getenv()) { 10000 }
         }
         assertTrue(failure.detail.contains("expected-compile-failure")); assertTrue(failure.detail.contains("exit 3"))
-        assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch(Files::isDirectory) })
+        assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch { Files.isDirectory(it) && it.fileName.toString().matches(SHA256) } })
     }
 
     @Test fun `standalone executor runs a complete paired iteration and leaves baseline unchanged`(): Unit = service { socket ->
@@ -356,7 +402,7 @@ class PortableWorkerTest {
             assertNull(NativeExecutionLock.tryAcquire(path)); assertFalse(waiting.isDone)
             legacy.close()
             val first = waiting.get(5, java.util.concurrent.TimeUnit.SECONDS)
-            val second = ProcessSupervisor(socket).reserve("job-a")
+            val second = ProcessSupervisor(socket).reserve("job-b")
             try {
                 assertNull(NativeExecutionLock.tryAcquire(path))
                 first.close(); Thread.sleep(100); assertNull(NativeExecutionLock.tryAcquire(path))
@@ -378,6 +424,14 @@ class PortableWorkerTest {
         val supervisor = ProcessSupervisor(socket)
         assertEquals(124, supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out"), root.resolve("err"), 1, 10) { 10000 })
         assertFailsWith<CancellationException> { supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out2"), root.resolve("err2"), 60) { 0 } }
+    }
+
+    @Test fun `supervisor stops while clients disconnect before sending requests`(): Unit = service { socket ->
+        repeat(20) {
+            java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.UNIX).use {
+                it.connect(java.net.UnixDomainSocketAddress.of(socket))
+            }
+        }
     }
     private fun live(pid: Long): Boolean {
         if (!ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) return false

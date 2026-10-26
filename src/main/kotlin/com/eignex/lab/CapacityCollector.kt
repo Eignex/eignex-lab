@@ -31,7 +31,6 @@ class CapacityCollector(
     private data class Sample(val snapshot: CapacitySnapshot, val nanos: Long)
     private val latest = AtomicReference<Sample?>()
     private var state = if (Files.isRegularFile(stateFile)) Json.decodeFromString<CapacityState>(Files.readString(stateFile)) else CapacityState()
-    private val estimates = EstimateHistory(store, settings.localCores)
     private val pools = settings.pools.associateBy { it.id }
     fun authorized(token: String): Boolean = java.security.MessageDigest.isEqual(Files.readString(tokenFile).trim().toByteArray(), token.toByteArray()) && token.length >= 32
 
@@ -78,9 +77,7 @@ class CapacityCollector(
             val job = store.job(s.jobId)!!; val experiment = job.experiment!!
             val onDemand = NodeTags.onDemand(false, experiment.nodeTags)
             require(pool.market == if (onDemand) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT) { "session purchasing policy differs from pool" }
-            val pressure = if (manifest.preparationTimeoutSec != null) manifest.budget.cpuMillis / 1000.0 * manifest.preparationTimeoutSec / 3600.0
-                else Estimates.pressureCoreHours(job, estimates::lookup, settings.localCores) / pending.count { it.jobId == job.id }.coerceAtLeast(1)
-            CapacityDemand(s.id, job.id, manifest.budget.copy(parallel = minOf(manifest.budget.parallel, job.parallel)), pressure, job.priority, job.parallel, experiment.nodeTags,
+            CapacityDemand(s.id, job.id, manifest.budget.copy(parallel = minOf(manifest.budget.parallel, job.parallel)), 0.0, job.priority, job.parallel, experiment.nodeTags,
                 pool.market, experiment.host != Experiments.AWS_HOST && NodeTags.matches(experiment.nodeTags, localTags),
                 when { s.executionClass in setOf("build", "prepare") -> CapacityWork.BUILD; experiment.isProfile -> CapacityWork.PROFILE; experiment.measuresCli -> CapacityWork.MEASUREMENT; else -> CapacityWork.SOLVE }, pool.id)
         }

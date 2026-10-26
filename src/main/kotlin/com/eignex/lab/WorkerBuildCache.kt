@@ -22,15 +22,17 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
         checkRun()
         val build = requireNotNull(bundle.build)
-        val identity = ExecutionStore.digest(listOf("build-cache-v3-jvm", Json.encodeToString(bundle), Json.encodeToString(budget),
-            System.getProperty("java.vendor"), System.getProperty("java.version"), System.getProperty("os.name"), System.getProperty("os.arch")).joinToString("\n"))
+        val identity = identity(bundle, budget)
         Files.createDirectories(root)
         val destination = root.resolve(identity)
-        synchronized(fileLockFor(root.resolve("$identity.lock"))) {
-        FileChannel.open(root.resolve("$identity.lock"), CREATE, WRITE).use { lock -> lock.lock().use {
+        return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs) {
+            maintain()
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
-            if (valid(destination, identity)) return destination.resolve("tree")
+            if (valid(destination, identity)) {
+                Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
+                return@locked destination.resolve("tree")
+            }
             if (Files.exists(destination, NOFOLLOW_LINKS)) delete(destination)
             val staging = Files.createTempDirectory(root, ".build-")
             try {
@@ -42,14 +44,17 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     val at = System.nanoTime()
                     if (at >= nextDiskCheck) {
                         check(Files.getFileStore(root).usableSpace >= 1024L * 1024 * 1024) { "build disk held" }
-                        val used = Files.walk(root).use { it.filter { file -> Files.isRegularFile(file, NOFOLLOW_LINKS) }.mapToLong(Files::size).sum() }
+                        val used = Files.walk(staging).use { it.filter { file -> Files.isRegularFile(file, NOFOLLOW_LINKS) }.mapToLong(Files::size).sum() }
                         require(used <= maxBytes) { "build staging exceeds disk budget" }
-                        nextDiskCheck = at + 1_000_000_000
+                        nextDiskCheck = at + 30_000_000_000
                     }
                     return minOf(remainingLeaseMs(), (deadline - at) / 1_000_000)
                 }
                 val heap = (budget.memoryMiB / 3).coerceAtLeast(16)
-                val env = environment + mapOf("GRADLE_USER_HOME" to staging.resolve("gradle-home").toString(),
+                val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, bundle.toolchain, bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
+                val dependencyHome = root.resolve("dependencies/$dependencyKey")
+                Files.createDirectories(dependencyHome)
+                val env = environment + mapOf("GRADLE_USER_HOME" to dependencyHome.toString(),
                     "JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                     "LAB_SOURCE_COMMIT" to bundle.commit)
                 fun run(argv: List<String>, directory: Path) {
@@ -80,21 +85,92 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     val init = staging.resolve("jvm.init.gradle")
                     Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
-                    run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree)
+                    locked(root.resolve("dependencies-$dependencyKey.lock"), remainingRunMs, remainingLeaseMs, shared = true) {
+                        run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
+                            "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree)
+                        Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
+                    }
                 }
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
-                staging.resolve("gradle-home").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
                 val files = inventory(tree)
                 checkRun()
                 Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files)))
                 Files.move(staging, destination, ATOMIC_MOVE)
-                return destination.resolve("tree")
+                destination.resolve("tree")
             } finally { if (Files.exists(staging, NOFOLLOW_LINKS)) delete(staging) }
-        } }
         }
     }
+    fun <T> withPrepared(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
+                         remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, use: (Path) -> T): T {
+        Files.createDirectories(root)
+        return locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs) {
+            use(prepare(bundle, source, budget, environment, remainingRunMs, remainingLeaseMs))
+        }
+    }
+
+    private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest(listOf(
+        "build-cache-v4", bundle.repository, bundle.commit, bundle.os, bundle.arch, bundle.toolchain,
+        Json.encodeToString(bundle.buildOptions), Json.encodeToString(bundle.build?.tasks.orEmpty()),
+        // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
+        if (bundle.build?.gitBundle == null) bundle.sha256 else "approved-git-commit",
+        Json.encodeToString(bundle.files.filter { it.path != bundle.build?.gitBundle }.sortedBy { it.path }),
+        Json.encodeToString(budget), System.getProperty("java.vendor"), System.getProperty("java.version"),
+        System.getProperty("os.name"), System.getProperty("os.arch"),
+        ExecutionStore.digest(requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText()),
+    ).joinToString("\n"))
+
+    private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, shared: Boolean = false, use: () -> T): T {
+        FileChannel.open(path, CREATE, READ, WRITE).use { channel ->
+            while (true) {
+                if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+                require(lease() > 0) { "build lease expired while waiting for cache" }
+                if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
+                val lock = try { channel.tryLock(0, Long.MAX_VALUE, shared) } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                if (lock != null) return lock.use { use() }
+                Thread.sleep(50)
+            }
+        }
+    }
+
+    /** One maintenance pass per node per minute, using manifests instead of rescanning all build trees. */
+    internal fun maintain(at: Long = now()) {
+        FileChannel.open(root.resolve("maintenance.lock"), CREATE, WRITE).use { channel ->
+            val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+            if (lock == null) return
+            lock.use {
+                val stamp = root.resolve("maintenance.timestamp")
+                if (Files.exists(stamp) && at - Files.getLastModifiedTime(stamp).toMillis() < 60_000) return
+                Files.writeString(stamp, ""); Files.setLastModifiedTime(stamp, java.nio.file.attribute.FileTime.fromMillis(at))
+                data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long)
+                val candidates = mutableListOf<Candidate>()
+                Files.list(root).use { paths -> paths.filter { it.fileName.toString().matches(SHA256) && Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
+                    val manifest = path.resolve("manifest.json")
+                    val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(manifest)) }.getOrNull()
+                    if (entry != null) candidates += Candidate(path, root.resolve("${path.fileName}.pin"), entry.files.sumOf { it.bytes }, Files.getLastModifiedTime(manifest).toMillis())
+                } }
+                val dependencies = root.resolve("dependencies")
+                if (Files.isDirectory(dependencies)) Files.list(dependencies).use { paths -> paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
+                    val bytes = runCatching { Files.walk(path).use { files -> files.filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0) }.sum() } }.getOrDefault(0)
+                    candidates += Candidate(path, root.resolve("dependencies-${path.fileName}.lock"), bytes, Files.getLastModifiedTime(path).toMillis())
+                } }
+                var size = candidates.sumOf { it.bytes }
+                for (candidate in candidates.sortedBy { it.used }) {
+                    if (size <= maxBytes) break
+                    FileChannel.open(candidate.lock, CREATE, WRITE).use { pin ->
+                        val free = try { pin.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                        free?.use {
+                            val trash = root.resolve(".evict-${java.util.UUID.randomUUID()}")
+                            if (Files.exists(candidate.path, NOFOLLOW_LINKS)) {
+                                Files.move(candidate.path, trash, ATOMIC_MOVE); delete(trash); size -= candidate.bytes
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun inventory(tree: Path): List<InputFile> {
         var total = 0L
         return Files.walk(tree).use { paths -> paths.filter { !Files.isDirectory(it, NOFOLLOW_LINKS) }.sorted().map { file ->

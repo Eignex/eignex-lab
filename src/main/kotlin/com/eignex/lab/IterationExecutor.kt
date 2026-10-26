@@ -37,12 +37,14 @@ class IterationExecutor(
         val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             val source = cache.stage(bundle, ::checkRun) { bundleInput(bundle) }
-            val cached = if (bundle.build == null) source else requireNotNull(buildCache) { "source build cache is not configured" }
-                .prepare(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs)
             val destination = directory.resolve("worktrees").resolve(sha)
-            // Measurement launchers and per-attempt runtime output never change a reusable cache entry.
-            copyTree(cached, destination, ::checkRun)
-            destination
+            fun copy(cached: Path): Path {
+                // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
+                copyTree(cached, destination, ::checkRun)
+                return destination
+            }
+            if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
+                .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
         }
         if (manifest.experiment.measuresCli) for (worktree in worktrees.values) {
             val exit = supervisor.run(listOf("bash", "-c", CliMeasurements.install(worktree.toString(), os == "mac")), worktree,

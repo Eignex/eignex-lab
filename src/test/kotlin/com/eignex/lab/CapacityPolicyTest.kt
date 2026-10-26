@@ -3,6 +3,29 @@ package com.eignex.lab
 import kotlin.test.*
 
 class CapacityPolicyTest {
+    @Test fun `small sustained backlog grows beyond two nodes without an estimated core hour threshold`() {
+        val p = pool.copy(sustainedMs = 30000)
+        val configuration = settings.copy(pools = listOf(p), localPressureHours = 1000.0)
+        val nodes = (1..2).map { CapacityNode("full-$it", p.id, CapacityNodeState.READY, listOf(CapacityReservation("used-$it", it.toLong(), ResourceBudget(16000, 16384)))) }
+        val asked = demand("small", 1000).copy(coreHours = 0.0)
+        val first = CapacityPolicy.evaluate(configuration, nodes, listOf(asked), at = 1000)
+        assertEquals(2, first.desired[p.id])
+        val next = CapacityPolicy.evaluate(configuration, nodes, listOf(asked), previous = first.history, at = 31000)
+        assertEquals(3, next.desired[p.id]); assertTrue(next.waiting.isEmpty())
+        val booting = nodes + CapacityNode("booting", p.id, CapacityNodeState.BOOTING)
+        val covered = CapacityPolicy.evaluate(configuration, booting, listOf(asked), previous = next.history, at = 32000)
+        assertEquals(3, covered.desired[p.id]); assertNull(covered.history[p.id]?.pressureSince)
+    }
+
+    @Test fun `logical CPU packing matches Nomad hard quotas without subtracting a second host reserve`() {
+        val p = pool.copy(reserveCpuMillis = 2000)
+        val asks = (1..8).map { demand("build-$it", 2000, 4096, work = CapacityWork.BUILD) }
+        val plan = CapacityPolicy.evaluate(settings.copy(pools = listOf(p)), emptyList(), asks)
+        assertEquals(16000, p.cpuMillis)
+        assertEquals(36400, asks.sumOf { it.budget.nomadCpuMHz(NomadCpuCapacity(36400, 16)) })
+        assertEquals(1, plan.desired[p.id]); assertTrue(plan.waiting.isEmpty())
+    }
+
     private val pool = CapacityPool("general", "general", 16, 65536, 4, setOf("arch:x86_64", "simd:avx2"), sustainedMs = 0, cooldownMs = 0)
     private val settings = CapacitySettings(listOf(pool), 64, localPressureHours = 0.0)
     private fun demand(id: String, cpu: Int = 4000, memory: Int = 8192, job: Long = id.hashCode().toLong(), work: CapacityWork = CapacityWork.SOLVE) =
