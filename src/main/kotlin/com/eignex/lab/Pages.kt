@@ -2054,9 +2054,8 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     append("<header><h1>Nodes</h1><p class=\"muted\">Native execution and cloud workers</p></header>")
     append("<section><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
     val tags = config.localNodeTags.sorted()
-    val summaryTags = tags.filter { !it.startsWith("simd:") || it in setOf("simd:avx2", "simd:avx512", "simd:neon", "simd:sme", "simd:sme2", "simd:sve", "simd:sve2") }
-    append("<p class=\"muted\">${esc(summaryTags.joinToString(" · "))}</p>")
-    if (tags != summaryTags) append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
+    append("<p>${esc(NodeTags.hardwareProfile(config.localNodeTags))}</p>")
+    append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
     append("</section>")
     val pools = settings?.pools ?: snapshot?.pools.orEmpty()
     val configured = config.executionBackend == ExecutionBackendKind.NOMAD && settings != null
@@ -2065,7 +2064,7 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
         append("<form id=\"node-request\" class=\"tools\"><label>Node pool <select id=\"node-pool\" name=\"pool\" required>")
         for (pool in pools) {
             val limit = minOf(pool.maxNodes, settings!!.maxVcpus / pool.vcpus)
-            append("<option value=\"${esc(pool.id)}\" data-limit=\"$limit\"${if (limit == 0) " disabled" else ""}>${esc(pool.id)} · ${pool.vcpus} vCPU / ${pool.memoryMiB} MiB · ${esc(pool.market.tag)} · ${esc(pool.tags.sorted().joinToString(", "))}</option>")
+            append("<option value=\"${esc(pool.id)}\" data-limit=\"$limit\"${if (limit == 0) " disabled" else ""}>${esc(NodeTags.hardwareProfile(pool.tags))} · ${pool.vcpus} vCPU / ${pool.memoryMiB / 1024.0} GiB · ${esc(pool.market.tag)} · ${esc(pool.id)}</option>")
         }
         append("</select></label> <label>Keep at least <input id=\"node-count\" name=\"nodes\" type=\"number\" min=\"1\" value=\"1\" required style=\"width:5em\"> nodes</label> ")
         append("<label>For <select name=\"ttlSec\"><option value=\"900\">15 minutes</option><option value=\"1800\">30 minutes</option><option value=\"3600\">1 hour</option></select></label> ")
@@ -2082,10 +2081,10 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     }
     if (pools.isEmpty()) append("<p class=\"muted\">No cloud pools configured.</p>")
     else {
-        append("<div class=\"scroll\"><table><thead><tr><th>Pool / class</th><th>Hardware</th><th>Capabilities</th><th>Market</th><th>Observed / desired / limit</th></tr></thead><tbody>")
+        append("<div class=\"scroll\"><table><thead><tr><th>Pool / class</th><th>Hardware</th><th>Architecture / SIMD</th><th>Market</th><th>Observed / desired / limit</th></tr></thead><tbody>")
         for (pool in pools) {
             append("<tr><td>${esc(pool.id)}<br><small class=\"muted\">${esc(pool.nodeClass)}</small></td><td>${pool.vcpus} vCPU / ${pool.memoryMiB} MiB</td>")
-            append("<td>${esc(pool.tags.sorted().joinToString(", "))}</td><td>${esc(pool.market.tag)}</td><td>${snapshot?.nodes?.count { it.pool == pool.id } ?: "?"} / ${snapshot?.decision?.desired?.get(pool.id) ?: "?"} / ${pool.maxNodes}</td></tr>")
+            append("<td>${esc(NodeTags.hardwareProfile(pool.tags))}</td><td>${esc(pool.market.tag)}</td><td>${snapshot?.nodes?.count { it.pool == pool.id } ?: "?"} / ${snapshot?.decision?.desired?.get(pool.id) ?: "?"} / ${pool.maxNodes}</td></tr>")
         }
         append("</tbody></table></div>")
     }

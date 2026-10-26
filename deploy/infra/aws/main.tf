@@ -131,7 +131,7 @@ resource "aws_dynamodb_table" "leases" {
 }
 data "archive_file" "functions" {
   type        = "zip"
-  output_path = "${path.module}/functions.zip"
+  output_path = "${path.root}/functions-${var.pool_id}.zip"
   source {
     content  = file("${path.module}/functions.py")
     filename = "functions.py"

@@ -3,3 +3,5 @@ output "renew_function" { value = aws_lambda_function.renew.function_name }
 output "scaler_role_arn" { value = aws_iam_role.scaler.arn }
 output "adapter_role_arn" { value = aws_iam_role.adapter.arn }
 output "expiry_function" { value = aws_lambda_function.expiry.function_name }
+output "scaler_policy_json" { value = aws_iam_role_policy.scaler.policy }
+output "adapter_policy_json" { value = aws_iam_role_policy.adapter.policy }
