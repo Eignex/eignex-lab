@@ -73,6 +73,19 @@ class ExecutionStore internal constructor(private val store: Store) {
             *listOfNotNull(jobId).toTypedArray(), map = ::sessionRow)
     }
 
+    /** Current assignments, including preparation before any case has started; stopped generations are omitted. */
+    internal fun runningNodes(jobs: Collection<Long>): Map<Long, List<RunningNode>> {
+        if (jobs.isEmpty()) return emptyMap()
+        return store.executionTransaction { db ->
+            db.sqlRows("""SELECT s.job_id, s.node_id, s.allocation_id, o.payload
+                FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
+                WHERE s.job_id IN (${jobs.joinToString(",") { "?" }}) AND s.desired != 'stop' AND s.node_id IS NOT NULL
+                ORDER BY s.job_id, s.node_id""", *jobs.toTypedArray()) { row ->
+                row.getLong("job_id") to runningNode(row.getString("node_id"), row.getString("allocation_id"), row.getString("payload"))
+            }.groupBy({ it.first }, { it.second })
+        }
+    }
+
     /** The coordinator chooses the credential before persisting intent; a retry must supply identical inputs. */
     fun createSession(id: String, jobId: Long, executionClass: String, release: String, budget: ResourceBudget,
                       token: String, payload: String, at: Long = now(), manifest: String? = null): ExecutionSession = store.executionTransaction { db ->

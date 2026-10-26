@@ -27,6 +27,7 @@ internal fun indexPage(
     waiting: Map<Long, String> = emptyMap(),
     /** Each running job's hosts and their parts ([Store.hostProgress]), by job. */
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
+    nodes: Map<Long, List<JobNode>> = emptyMap(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("eignex lab", live = before == null))
@@ -38,7 +39,7 @@ internal fun indexPage(
             Estimates.estimate(job, caseHistory, config.cores, config.maxParallel)?.let { job.id to it }
         }.toMap()
         append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(config, active, estimates)}</div>")
-        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates, waiting, hosts)}</div></section>")
+        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates, waiting, hosts, nodes)}</div></section>")
         if (schedules.isNotEmpty()) {
             append("<section><h2>Schedules</h2><div id=\"schedules\" data-live>${schedulesTable(schedules)}</div></section>")
         }
@@ -77,6 +78,7 @@ internal fun jobPage(
     waiting: String? = null,
     /** Each host's part of the job ([Store.hostProgress]). */
     hosts: List<HostProgress> = emptyList(),
+    nodes: List<JobNode> = emptyList(),
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
@@ -102,7 +104,7 @@ internal fun jobPage(
         append(phases.joinToString("<br>") { (index, phase) -> "case $index: ${esc(phaseText(phase, now()))}" })
         append("</dd>")
     }
-    append("<dt>where</dt><dd>${hostCell(config, job, hosts)}</dd>")
+    append("<dt>where</dt><dd>${hostCell(config, job, hosts, nodes)}</dd>")
     job.experiment?.nodeTags?.let { selector ->
         append("<dt>node tags</dt><dd>")
         if (selector.require.isNotEmpty()) append("require ${esc(selector.require.sorted().joinToString())}")
@@ -1646,18 +1648,20 @@ private fun estimateText(config: Config, job: Job, estimate: WorkEstimate?): Str
 private fun activeTable(
     config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>, waiting: Map<Long, String>,
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
+    nodes: Map<Long, List<JobNode>> = emptyMap(),
 ): String {
     if (active.isEmpty()) return "<p class=\"muted\">Nothing running or queued.</p>"
     // One queue by priority, whatever runs each job: the local machine and the cloud nodes take from it in this order
     // as the lab places jobs, each passing over those it may not run.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
-    return jobTable(config, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts)
+    return jobTable(config, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts, nodes = nodes)
 }
 
 private fun jobTable(
     config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
     waiting: Map<Long, String> = emptyMap(), hosts: Map<Long, List<HostProgress>> = emptyMap(),
+    nodes: Map<Long, List<JobNode>> = emptyMap(),
 ): String = buildString {
     if (jobs.isEmpty()) return "<p class=\"muted\">No jobs.</p>"
     append("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>")
@@ -1682,7 +1686,7 @@ private fun jobTable(
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id])}</td>")
+        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id])}</td>")
         append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
@@ -1746,8 +1750,23 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
  * cloud alone; while it runs, the hosts on it now ("local + 2 nodes": the local machine when it works on it, and the
  * nodes) and each host's part of it ([hosts]).
  */
-private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = emptyList()): String {
+private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = emptyList(), nodes: List<JobNode> = emptyList()): String {
     val spec = job.experiment
+    if (job.backend == ExecutionBackendKind.NOMAD && job.status in ACTIVE) {
+        val where = when {
+            nodes.isNotEmpty() && nodes.all { it.local } -> "local"
+            nodes.isNotEmpty() && nodes.none { it.local } -> "cloud"
+            nodes.isNotEmpty() -> "local + cloud"
+            else -> Experiments.hostWord(spec?.host ?: Experiments.AUTO_HOST)
+        }
+        val detail = nodes.joinToString("<br>") { node ->
+            val href = node.anchor?.let { "/nodes#" + URLEncoder.encode(it, "UTF-8").replace("+", "%20") } ?: "/jobs/${job.id}/execution"
+            "<a href=\"${esc(href)}\" title=\"Nomad node ${esc(node.id)}\">${esc(node.name)}</a>" +
+                node.profile?.let { "<br>${esc(it)}" }.orEmpty()
+        }.ifEmpty { if (!job.paused && !job.cancelRequested) "waiting for a node" else "" }
+        return "<span class=\"where${if (where == "cloud") " aws" else ""}\">${esc(where)}</span>" +
+            if (detail.isEmpty()) "" else "<br><small>$detail</small>"
+    }
     val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     if (spec?.host == Experiments.AUTO_HOST) {
@@ -2052,7 +2071,7 @@ if (document.body.hasAttribute('data-refresh')) timer = setInterval(refresh, 100
 internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>, settings: CapacitySettings?): String = buildString {
     append(head("Nodes · eignex lab", live = true, tab = Tab.NODES))
     append("<header><h1>Nodes</h1><p class=\"muted\">Native execution and cloud workers</p></header>")
-    append("<section><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
+    append("<section id=\"local-node\"><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
     val tags = config.localNodeTags.sorted()
     append("<p>${esc(NodeTags.hardwareProfile(config.localNodeTags))}</p>")
     append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
@@ -2096,7 +2115,7 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
             val pool = pools.singleOrNull { it.id == node.pool }
             val cpu = node.reservations.sumOf { it.budget.cpuMillis.toLong() }
             val memory = node.reservations.sumOf { it.budget.memoryMiB.toLong() }
-            append("<tr><td>${esc(node.id)}<br><small class=\"muted\">${esc(node.pool)}</small></td><td>${node.state}</td><td>")
+            append("<tr id=\"node-${esc(node.id)}\"><td>${esc(node.id)}<br><small class=\"muted\">${esc(node.pool)}</small></td><td>${node.state}</td><td>")
             append(node.reservations.joinToString("<br>") { allocation ->
                 (if (allocation.job > 0) "<a href=\"/jobs/${allocation.job}\">job ${allocation.job}</a>" else "external work") +
                     " · ${esc(allocation.id)} · ${allocation.budget.cpuMillis / 1000.0} vCPU / ${allocation.budget.memoryMiB} MiB"
