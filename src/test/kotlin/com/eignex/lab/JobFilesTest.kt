@@ -35,8 +35,8 @@ class JobFilesTest {
             dir.resolve("cases/0").createDirectories().resolve("record.json").writeText("{\"ok\":true}")
             config.jobDir(other).createDirectories().resolve("job.log").writeText("other job")
             Files.createSymbolicLink(dir.resolve("leak.txt"), secret)
-            Files.createSymbolicLink(dir.resolve("shared"), config.sharedDir.createDirectories())
-            config.sharedDir.resolve("cached.txt").writeText("shared cache")
+            Files.createSymbolicLink(dir.resolve("shared"), config.dataDir.resolve("shared").createDirectories())
+            config.dataDir.resolve("shared").resolve("cached.txt").writeText("shared cache")
             Files.createSymbolicLink(dir.resolve("log-link"), dir.resolve("job.log"))
         }
     }

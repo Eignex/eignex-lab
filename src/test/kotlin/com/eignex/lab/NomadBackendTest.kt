@@ -43,7 +43,7 @@ class NomadBackendTest {
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
         val plannedProblems = List(problems) { Problem("s", "p$it") }
-        val id = store.create(name, "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val id = store.create(name, "main", emptyList(), parallel = 2, experiment = spec)
         if (!preparation) store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("bin/bench", "c".repeat(64), 5)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "test")
         manifest = WorkManifest("session", "release", spec, arms, if (preparation) emptyList() else cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2), preparationTimeoutSec = if (preparation) 60 else null)
@@ -322,6 +322,22 @@ class NomadBackendTest {
         assertEquals(2, store.execution.intents().size)
         assertFailsWith<ExecutionFenced> { store.execution.credential(replacement.id, token) }
         assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+    }
+
+    @Test fun `an admission hold preserves active worker leases and progress but blocks new work`() = testApplication {
+        setup(1)
+        var allowed = true
+        application { workerApi(store, backend(), artifacts) { allowed } }
+        fun HttpRequestBuilder.credentials() { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt()) }
+        client.post("/worker/v1/sessions/session/register") { credentials(); setBody(Json.encodeToString(WorkerRegistration("release"))) }
+        val claim = Json.decodeFromString<IterationClaim>(client.post("/worker/v1/sessions/session/claim") { credentials() }.bodyAsText())
+        allowed = false
+        assertEquals(HttpStatusCode.OK, client.post("/worker/v1/sessions/session/renew") { credentials(); setBody(Json.encodeToString(claim.owner)) }.status)
+        assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/session/phase") { credentials(); setBody(Json.encodeToString(WorkerPhase(claim.owner, "executing"))) }.status)
+        assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/session/progress") { credentials(); setBody(Json.encodeToString(WorkerProgress(claim.owner, claim.indices.first()))) }.status)
+        assertEquals(HttpStatusCode.ServiceUnavailable, client.post("/worker/v1/sessions/session/claim") { credentials() }.status)
+        store.requestCancel(session.jobId)
+        assertEquals(HttpStatusCode.Conflict, client.post("/worker/v1/sessions/session/renew") { credentials(); setBody(Json.encodeToString(claim.owner)) }.status)
     }
 
     @Test fun `worker API has no operator routes and scopes mutation and uploads to its signed allocation`() = testApplication {

@@ -24,7 +24,7 @@ data class NomadCoordinatorSettings(
     }
 }
 
-/** Reconciles only explicitly admitted sessions. This mode does not change the legacy submission default. */
+/** Reconciles the lab's Nomad sessions and capacity. */
 object NomadCoordinatorCli {
     fun main(args: List<String>): Int = runCatching {
         require(args.size == 1) { "usage: nomad-coordinator SETTINGS.json" }
@@ -80,7 +80,7 @@ object NomadCoordinatorCli {
         })
         val queue = config.nomadQueue?.let { queueSettings -> NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork) }
         val buildVolumes = config.nomadQueue?.let { NomadBuildVolumes(client, it) }
-        require(config.executionBackend != ExecutionBackendKind.NOMAD || queue != null) { "LAB_EXECUTION_BACKEND=nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
+        require(queue != null) { "Nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
         if (queue != null) thread(isDaemon = true, name = "nomad-admission") {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching { queue.reconcile() }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }

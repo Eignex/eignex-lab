@@ -191,9 +191,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val active = store.active(withCommands = false)
             // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
             val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
-                store.queue(nodesUp = config.aws != null && nodesUp(readPoolReport(config), now())), estimates::lookup, emptyMap(),
+                store.queue(), estimates::lookup, emptyMap(),
                 store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
-                jobNodes(config, store, active.filter { it.backend == ExecutionBackendKind.NOMAD }.map { it.id }))
+                jobNodes(config, store, active.filter { it.backend == "nomad" }.map { it.id }))
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
@@ -249,7 +249,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
             requireDescription(spec)
             requireHost(spec, config)
-            Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config), config.executionBackend)
+            Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config))
             // An analysis needs its job's captures: refused now, saying why, when they are gone or the job has not ended.
             spec.analyze?.let { analyze ->
                 val job = analyze.job
@@ -279,7 +279,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             }
             val arms = Experiments.arms(spec)
             for (ref in arms.map { it.ref }.distinct()) requireRef(ref, Repositories.source(config, spec.repository), trust(spec.repository))
-            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec, backend = config.executionBackend)
+            val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             val notes = (if (spec.isProfile) {
                 listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
                     Experiments.profileCaps(spec).map { "capped: $it" }
@@ -404,7 +404,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
                         hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
-                        nodes = if (job.backend == ExecutionBackendKind.NOMAD && job.status in ACTIVE) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
+                        nodes = if (job.backend == "nomad" && job.status in ACTIVE) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
@@ -448,37 +448,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
         // The runner fetches within seconds and, when the lab's upstream moved, updates between the running job's cases.
-        // Start a cloud node by hand ([ManualLaunch]): the runner's cloud worker launches it on its next poll.
-        get("/cloud/nodes") {
-            if (config.executionBackend == ExecutionBackendKind.NOMAD) {
-                call.respond(HttpStatusCode.Conflict, "Nomad manages cloud capacity: use /capacity and /capacity/leases")
-                return@get
-            }
-            val report = readPoolReport(config)
-            if (report == null) call.respond(HttpStatusCode.NotFound, "the cloud worker has not reported yet")
-            else call.respond(report)
-        }
-        post("/cloud/nodes") {
-            if (config.executionBackend == ExecutionBackendKind.NOMAD) {
-                call.respond(HttpStatusCode.Conflict, "Nomad manages cloud capacity: use /capacity/leases")
-                return@post
-            }
-            val aws = config.aws
-            if (aws == null) {
-                call.respond(HttpStatusCode.Conflict, "the lab has no cloud settings: configure Nomad using deploy/nomad/README.md")
-                return@post
-            }
-            val text = call.receiveText()
-            val start = if (text.isBlank()) NodeStart() else runCatching { DefaultJson.decodeFromString(NodeStart.serializer(), text) }
-                .getOrElse { throw IllegalArgumentException("the body is {\"size\"?, \"market\"?}: ${it.message}") }
-            // Who asked, for the log: the page's button (a browser) or the client (curl), so a launch nobody expected
-            // can be traced.
-            val agent = call.request.headers["User-Agent"].orEmpty()
-            val by = if (agent.startsWith("curl/")) "client" else if (agent.isNotEmpty()) "page" else "unknown"
-            val (status, message) = ManualLaunch.request(config, aws, readPoolReport(config), start, System.currentTimeMillis(), by)
-            println("api: manual launch from the $by (${start.size ?: "queue size"}, ${start.market ?: "spot"}): $status $message")
-            call.respond(HttpStatusCode.fromValue(status), message)
-        }
+        // Retired routes never launch infrastructure; capacity leases are the only manual control.
+        get("/cloud/nodes") { call.respond(HttpStatusCode.Gone, "Use /capacity and /nodes") }
+        post("/cloud/nodes") { call.respond(HttpStatusCode.Gone, "Use /capacity/leases") }
         post("/update") {
             config.updateRequest.toFile().writeText("${System.currentTimeMillis()}\n")
             call.respond(HttpStatusCode.Accepted, "update requested")
@@ -496,9 +468,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // host that runs each case ([Runner.render]).
             store.job(id)?.takeIf { retried }?.let { job ->
                 if (job.commands.isEmpty()) job.experiment?.let { store.place(id, Placement.host(it, job.name, config, store.schedules())) }
-                else Placement.release(store, config, id)
             }
-            call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled job can be retried")
+            call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled Nomad job can be retried; resubmit historical experiments")
         }
         post("/jobs/{id}/delete") {
             val id = call.parameters["id"]!!.toLong()
@@ -660,20 +631,8 @@ private fun worktrees(config: Config, id: Long): List<File> =
 private fun requireHost(spec: ExperimentSpec, config: Config) {
     require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be local, cloud or auto (or lab or aws, their older names)" }
     if (spec.host == Experiments.LAB_HOST) return
-    if (config.executionBackend == ExecutionBackendKind.NOMAD) {
-        require(Placement.cloudCoreLimit(spec, config) >= Experiments.arms(spec).maxOf { it.cores }) { "no configured Nomad cloud worker fits its cases" }
-        return
-    }
-    val aws = requireNotNull(config.aws) {
-        "the lab has no cloud settings: configure Nomad using deploy/nomad/README.md"
-    }
-    require(Experiments.arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
-        "reference runs stay on the local machine, which has the reference solvers"
-    }
-    require(spec.problemList.isEmpty()) { "a cloud experiment selects its problems" }
-    val cores = Experiments.arms(spec).maxOf { it.cores }
-    require(Placement.cloudSizes(spec, config).any { it.cores >= cores }) {
-        "its cases need $cores cores; the largest instance within the ${aws.vcpuQuota}-vCPU quota has ${aws.sizes.last().cores}"
+    require(Placement.cloudCoreLimit(spec, config) >= Experiments.arms(spec).maxOf { it.cores }) {
+        "no configured Nomad cloud worker fits its cases"
     }
 }
 
@@ -738,7 +697,7 @@ private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
         "the schedule's node tags match no allowed host; opt in to cloud execution if a matching cloud type is configured"
     }
     val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
-    Experiments.validate(experiment, if (local) config.maxParallel else nodeCoreLimit(experiment, config), nodeCoreLimit(experiment, config), config.executionBackend)
+    Experiments.validate(experiment, if (local) config.maxParallel else nodeCoreLimit(experiment, config), nodeCoreLimit(experiment, config))
     require(Experiments.arms(experiment).none { "ref" in it.values }) {
         "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
     }

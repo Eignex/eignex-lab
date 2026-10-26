@@ -34,9 +34,9 @@ class RepositoryRunsTest {
             var transportUsed = false
             val runner = Runner(config, store, sourceUrl = { transportUsed = true; error("must not fetch") })
 
-            runner.runJob(checkNotNull(store.next()))
+            kotlin.test.assertFailsWith<IllegalArgumentException> { runner.runJob(checkNotNull(store.startForTest())) }
 
-            assertEquals(Status.FAILED, store.job(id)?.status)
+            assertEquals(Status.RUNNING, store.job(id)?.status)
             assertFalse(transportUsed)
             assertFalse(config.mirror.exists())
         } finally {
@@ -76,72 +76,6 @@ class RepositoryRunsTest {
         } finally {
             root.toFile().deleteRecursively()
         }
-    }
-
-    @Test
-    fun `a generic profile builds the selected repository and keeps its report after cleanup`() {
-        val root = Files.createTempDirectory("repository run")
-        try {
-            val source = root.resolve("source").createDirectories()
-            source.resolve("gradlew").apply {
-                writeText("#!/bin/sh\n[ \"\$1\" = :tools:prepare ] || exit 9\ntouch prepared\n")
-                toFile().setExecutable(true)
-            }
-            source.resolve("capture.sh").apply {
-                writeText("#!/bin/sh\nset -eu\ntest -f prepared\n[ \"\$1\" = --output ]\nmkdir -p \"\$2\"\nprintf '%s' \"\$LAB_REPOSITORY\" > \"\$2/metadata.txt\"\nprintf 'case,ns\\ndot,12\\n' > \"\$2/jvm-simd.csv\"\n")
-                toFile().setExecutable(true)
-            }
-            for (args in listOf(listOf("init", "-q", "-b", "main"), listOf("add", "."),
-                listOf("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "fixture"))) {
-                val (exit, out) = gitIn(source.toFile(), args)
-                check(exit == 0) { out }
-            }
-            val config = Config(dataDir = root.resolve("data").createDirectories(), updateCheckSec = 0,
-                retry = Backoff(1, 1, 1), buildRetry = Backoff(1, 1, 1))
-            val store = Store(config.database)
-            val spec = ExperimentSpec("capture", repository = "Eignex/koblas", description = "a fixture capture",
-                profile = ProfileMain(script = "capture.sh", buildTasks = listOf(":tools:prepare"), outputArgument = "--output"))
-            Experiments.validate(spec, 4)
-            val id = store.create(spec.name, "main", emptyList(), experiment = spec)
-            val runner = Runner(config, store, sourceUrl = { repository ->
-                assertEquals(spec.repository, repository)
-                source.toString()
-            })
-
-            runner.runJob(checkNotNull(store.next()))
-
-            val job = checkNotNull(store.job(id))
-            assertEquals(Status.DONE, job.status, job.error)
-            val report = config.jobDir(id).resolve("cases/0/out/report")
-            assertEquals(spec.repository, report.resolve("metadata.txt").readText())
-            assertContains(report.resolve("jvm-simd.csv").readText(), "dot,12")
-            assertTrue(Repositories.mirror(config, spec.repository).exists())
-            assertFalse(config.mirror.exists())
-            assertFalse(config.worktree(id).exists())
-        } finally {
-            root.toFile().deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `cloud profiles isolate repositories and use their build tasks without Klause caches`() {
-        fun host(repository: String) = AwsHost("i-test", Ssh("i-test", "127.0.0.1",
-            AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null),
-            java.nio.file.Path.of("/tmp/hosts")), 4, "-Xmx1g", repository = repository) { false }
-        val spec = ExperimentSpec("profile", repository = "Eignex/skema", profile = ProfileMain(
-            "com.eignex.skema.profile.MainKt", classpath = listOf("tools/build/install/tools/lib/*"), buildTasks = listOf(":tools:installDist")))
-        val host = host(spec.repository)
-        val sha = "a".repeat(40)
-
-        val script = AwsWorker.profileSetup(spec, host, listOf(sha), 2, Repositories.url(spec.repository))
-
-        assertNotEquals(host.worktree(sha), host("Eignex/koblas").worktree(sha))
-        assertContains(script, "https://github.com/Eignex/skema.git")
-        assertContains(script, "':tools:installDist'")
-        assertFalse("klause" in script || "restore_lab_cache" in script)
-        val process = ProcessBuilder("bash", "-n").start()
-        process.outputStream.bufferedWriter().use { it.write(script) }
-        assertEquals(0, process.waitFor())
     }
 
     @Test

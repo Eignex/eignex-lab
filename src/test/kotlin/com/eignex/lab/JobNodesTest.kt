@@ -13,12 +13,12 @@ class JobNodesTest {
     private val host = HostReport("Mac/Arm64", 10, "java", "engine", true, emptyList())
     private val budget = ResourceBudget(2000, 2048, 2)
     private val pool = CapacityPool("avx2", "linux-avx2-spot", 16, 32768, 8, setOf("arch:x86_64", "simd:avx2"))
-    private val config = Config(dataDir = Files.createTempDirectory("job-nodes"), passwordHash = null, executionBackend = ExecutionBackendKind.NOMAD)
+    private val config = Config(dataDir = Files.createTempDirectory("job-nodes"), passwordHash = null)
     private val store = Store(config.database)
 
     private fun job(): Long {
         val spec = ExperimentSpec("preparing", host = Experiments.AUTO_HOST)
-        return store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        return store.create(spec.name, "main", emptyList(), experiment = spec)
     }
 
     private fun bind(job: Long, session: String, allocation: String, node: String, local: Boolean = false) {

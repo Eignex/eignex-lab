@@ -35,12 +35,12 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `a whole run deadline cannot be routed to AWS`() {
+    fun `Nomad supports whole run deadlines on portable jobs`() {
         for (host in listOf(Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
             val spec = ExperimentSpec("bounded", host = host,
                 profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 180))
 
-            assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
+            Experiments.validate(spec, maxParallel = 4)
         }
     }
 

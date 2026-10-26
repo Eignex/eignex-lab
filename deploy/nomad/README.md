@@ -199,10 +199,10 @@ which underflowed `cpu.usablecompute` after the host reserve. Configure the docu
 with the host's reviewed scheduling calibration, then read the exported `cpu.usablecompute` and `cpu.numcores`
 again. Pin those exact attributes in queue templates; native resource enforcement remains advisory.
 
-The supervisor and legacy runner share the same POSIX record lock (`LAB_NATIVE_EXECUTION_LOCK`, default
+The supervisor and maintenance runner share the same POSIX record lock (`LAB_NATIVE_EXECUTION_LOCK`, default
 `$LAB_DATA/nomad/native.lock`). A native session reserves it across iteration boundaries and transfers. Several
-experiments can share native execution within the coordinator's atomic aggregate CPU and memory budgets. The legacy
-runner still waits for the supervisor's collective reservation to end. The ownership marker survives supervisor death, so the legacy runner cannot take the host before recovery has
+experiments can share native execution within the coordinator's atomic aggregate CPU and memory budgets. The maintenance
+runner still waits for the supervisor's collective reservation to end. The ownership marker survives supervisor death, so the maintenance runner cannot take the host before recovery has
 cleaned recorded processes. Closing an experiment's last reservation cleans up only its processes. The collective lock is released when all experiments finish.
 A missing or damaged supervisor holds native execution rather than granting unchecked ownership.
 
@@ -213,14 +213,14 @@ explicit `--restart-agents` maintenance option after draining native work. In-fl
 release paths. Release pruning is disabled after native Nomad service installation; remove old worker releases only
 after reconciliation proves no allocation or process uses them. Keep server snapshots and manifests needed for rollback.
 
-Managed service/ownership tests complement live solver acceptance. Reference, confirmation, whole-run profile,
-capture-analysis and interruption canaries must pass before final legacy execution removal.
+Managed service/ownership tests complement live solver acceptance. Experiment execution now uses Nomad exclusively;
+the maintenance runner retains capture analysis, reference checking, schedules and confirmations.
 
 ## Provider-neutral capacity and operations
 
 `capacity.example.json` defines homogeneous capability pools, purchasing market, explicit host memory reserves, finite
-node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profiles preserve the existing explicit
-on-demand purchasing policy unless their tags request Spot; measurements/builds do not reserve a whole node.
+node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profiles use Spot unless their tags explicitly request
+on-demand; measurements/builds do not reserve a whole node.
 Every session budget includes its helpers. The policy packs free CPU and memory on ready nodes, accounts for booting
 nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
 Only old empty nodes contribute to voluntary scale-in. Terminating machines still consume quota until gone, without
@@ -341,9 +341,8 @@ Capacity collection accounts for queued preparation as build demand under the sa
 ### Automatic preparation and admission
 
 Set `LAB_NOMAD_QUEUE_SETTINGS` to an absolute JSON settings file based on [queue.example.json](queue.example.json)
-in the API, runner and coordinator environments. Start the coordinator before setting `LAB_EXECUTION_BACKEND=nomad`
-in the API/runner environment. The default remains `legacy` until this explicit cutover. Analysis/recheck jobs still
-run through the local coordinator; ordinary submissions, scheduled experiments and confirmations use the selected backend.
+in the API, runner and coordinator environments. Nomad is the only experiment executor. Analysis/recheck jobs
+run through the local maintenance runner; ordinary submissions, scheduled experiments and confirmations use Nomad.
 
 Replace the example's release, immutable launcher/image, node classes, datacenter, private API address and fingerprinted
 `cpu.usablecompute`/logical CPU values. Declare the native target's usable CPU/memory ceiling and cloud targets within
@@ -373,6 +372,6 @@ across coordinator restarts and configuration changes. Lost workers are replenis
 infrastructure retry limit. Pending solve sessions do not request capacity once all work is claimed. Source checks run
 on a bounded background queue so slow checker installation/execution does not stall capacity health or reconciliation.
 
-Keep the legacy executor and provider infrastructure until native and Spot production canaries, interruption recovery,
-source checks, schedule/confirmation behavior and a stable rollout have passed. Switching the default is not proof that
-old allocations have stopped; use the durable stop/reconciliation gates before deleting their setup.
+Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations). Keep active worker releases
+immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
+state is considered disposable; historical job results and provenance are never runtime-pruning candidates.

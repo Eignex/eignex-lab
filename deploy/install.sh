@@ -56,21 +56,19 @@ Linux) path="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" ;;
 esac
 path="${LAB_PATH:+$LAB_PATH:}$path"
 
-# Docker serves the containerised reference solvers. colima runs it headless on macOS, as a daemon of its own.
+# Optional system Docker serves containerised reference tools. Native macOS workers do not require a VM.
 docker_mode="${LAB_DOCKER:-}"
 if [[ -z "$docker_mode" ]]; then
-  if [[ "$os" == Darwin ]] && PATH="$path" command -v colima >/dev/null; then docker_mode=colima
-  elif [[ "$os" == Linux ]] && PATH="$path" command -v docker >/dev/null; then docker_mode=system
+  if [[ "$os" == Linux ]] && PATH="$path" command -v docker >/dev/null; then docker_mode=system
   else docker_mode=none
   fi
 fi
 # The runner updates itself from this checkout between jobs (LAB_UPDATE_CHECK_SEC=0 turns that off).
 service_env=("LAB_SOURCE=$here" "LAB_DATA=$LAB_DATA")
 case "$docker_mode" in
-colima) service_env+=("DOCKER_HOST=unix://$HOME/.colima/default/docker.sock" "LAB_REQUIRE_DOCKER=true") ;;
 system) service_env+=("LAB_REQUIRE_DOCKER=true") ;;
 none) ;;
-*) echo "LAB_DOCKER must be colima, system or none, not $docker_mode"; exit 1 ;;
+*) echo "LAB_DOCKER must be system or none, not $docker_mode"; exit 1 ;;
 esac
 echo "docker: $docker_mode"
 
@@ -96,7 +94,7 @@ if [[ -n "$dry" ]]; then bin="$here/build/install/eignex-lab/bin/eignex-lab"; el
 # lab.env with comments, blanks and the keys set above removed, quotes stripped. macOS ships bash 3.2, where an
 # empty array is unbound under `set -u`, hence the guarded expansion.
 owned='JAVA_HOME|PATH|LAB_DOCKER|LAB_PATH|LAB_SOURCE|LAB_DATA'
-[[ "$docker_mode" == colima ]] && owned="$owned|DOCKER_HOST|LAB_REQUIRE_DOCKER"
+owned="$owned|LAB_EXECUTION_BACKEND"
 [[ "$docker_mode" == system ]] && owned="$owned|LAB_REQUIRE_DOCKER"
 settings() {
   # grep exits 1 on a lab.env with nothing set, which pipefail would turn into a silent exit.
@@ -154,11 +152,9 @@ case "$os" in
 Darwin)
   stage="$(mktemp -d)"
   roles=(api runner)
-  [[ "$docker_mode" == colima ]] && roles=(colima api runner)
   for role in "${roles[@]}"; do
     label="com.eignex.lab.$role"
     case "$role" in
-    colima) plist "$label" '<true/>' "$HOME" "$LAB_DATA/logs/colima.log" "$(PATH="$path" command -v colima)" start -f ;;
     # caffeinate holds the machine awake for as long as the runner lives, whatever the energy settings say.
     runner) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/runner.log" \
       /usr/bin/caffeinate -i "$bin" runner ;;
@@ -174,12 +170,10 @@ Darwin)
     mv "$agent" "$agent.disabled"
     echo "disabled login agent $agent"
   done
-  # A colima started by hand would hold the VM the daemon is about to start.
-  [[ "$docker_mode" == colima ]] && PATH="$path" colima stop >/dev/null 2>&1 || true
   for role in "${roles[@]}"; do
     label="com.eignex.lab.$role"
     sudo launchctl bootout "system/$label" 2>/dev/null || true
-    # bootout returns before the job is gone (colima waits for its VM), and bootstrapping the label while it is
+    # bootout returns before the job is gone, and bootstrapping the label while it is
     # still loaded fails with "Input/output error".
     for _ in $(seq 60); do sudo launchctl print "system/$label" >/dev/null 2>&1 || break; sleep 1; done
     sudo install -m 644 -o root -g wheel "$stage/$label.plist" "/Library/LaunchDaemons/$label.plist"

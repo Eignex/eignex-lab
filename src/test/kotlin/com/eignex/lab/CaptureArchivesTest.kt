@@ -104,7 +104,7 @@ class CaptureArchivesTest {
         val experiment = ExperimentSpec("analyze-archive", description = "archive", analyze = spec)
         Experiments.validate(experiment, 4)
         store.create(experiment.name, "main", emptyList(), experiment = experiment)
-        return checkNotNull(store.next())
+        return checkNotNull(store.startForTest())
     }
 
     @Test
@@ -277,7 +277,7 @@ class CaptureArchivesTest {
     fun `a schema 1 analysis of a job still shows on its page, its reports in that job's files`() {
         val spec = ExperimentSpec("analyze-6971", description = "again", analyze = AnalyzeSpec(6971))
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
-        store.next()
+        store.startForTest()
         store.finish(id, Status.DONE)
         val v1 = """{"job":6971,"kind":"compilation","reports":[{"case":0,"report":"cases/0/profile-a/compilation-report.json","compilations":3,""" +
             """"compilerMs":12.5,"complete":true,"markers":[]}]}"""

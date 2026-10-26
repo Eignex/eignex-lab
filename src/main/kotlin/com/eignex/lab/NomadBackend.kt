@@ -14,21 +14,20 @@ class NomadBackend(
     private val checkCase: (Long, Int) -> String? = { _, _ -> "not-required" },
     private val nativeMayClaim: (Long) -> Boolean = { true },
     private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
-) : ExecutionBackend {
-    override val kind = ExecutionBackendKind.NOMAD
+) {
     val logs = WorkerLogs(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
 
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
     fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
-        require(workAllowed())
+        check(workAllowed())
         admit(manifest, template)
         require(if (template.platform == NomadPlatform.LINUX) template.command == listOf("worker") else template.command.size == 2 && template.command[1] == "worker")
         if (template.platform == NomadPlatform.MAC) require(Path.of(template.command.first()).isAbsolute && "current" !in Path.of(template.command.first()).map { it.toString() }) { "native workers require a pinned release launcher" }
         val job = store.job(jobId) ?: error("missing experiment")
-        require(job.backend == ExecutionBackendKind.NOMAD && job.experiment == manifest.experiment)
+        require(job.backend == "nomad" && job.experiment == manifest.experiment)
         if (template.platform == NomadPlatform.LINUX) {
-            val reason = Placement.nomadLocalOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
+            val reason = Placement.localOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
             require(reason == null && Experiments.storedHost(manifest.experiment.host) != Experiments.LAB_HOST) { reason ?: "experiment is placed on the local host" }
         } else require(Experiments.storedHost(manifest.experiment.host) != Experiments.AWS_HOST) { "experiment is cloud-only" }
         if (manifest.preparationTimeoutSec == null) require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
@@ -57,7 +56,7 @@ class NomadBackend(
     }
 
     fun register(id: String, token: String, allocation: String, jwt: String, release: String): WorkManifest {
-        require(workAllowed()) { "coordinator volumes unavailable" }
+        check(workAllowed()) { "coordinator volumes unavailable" }
         val session = store.execution.credential(id, token)
         identities.verify(jwt, session, allocation)
         val observed = nomad.allocation(allocation) ?: throw ExecutionFenced("allocation not found")
@@ -85,7 +84,7 @@ class NomadBackend(
     }
 
     fun selectPreparation(owner: AttemptOwner, requested: List<List<Problem>>): List<List<Problem>> {
-        require(workAllowed())
+        check(workAllowed())
         val hash = ExecutionStore.digest(Json.encodeToString(requested))
         store.execution.preparationSelection(owner, hash)?.let { return it }
         val spec = store.execution.manifest(owner.session).experiment
@@ -97,12 +96,12 @@ class NomadBackend(
             store.execution.rejectBuild(owner, "problem selection: ${failure.message?.take(1024)}")
             throw ExecutionFenced("problem selection refused")
         }
-        require(workAllowed())
+        check(workAllowed())
         return store.execution.approvePreparationSelection(owner, hash, selected)
     }
 
     fun commit(owner: AttemptOwner, result: IterationResult): Boolean {
-        require(workAllowed()) { "coordinator volumes unavailable" }
+        check(workAllowed()) { "coordinator volumes unavailable" }
         val session = store.execution.session(owner.session) ?: throw ExecutionFenced("unknown session")
         require((session.executionClass == "prepare") == (result.preparation != null))
         result.preparation?.let { preparation ->
@@ -134,9 +133,9 @@ class NomadBackend(
         return store.execution.commit(owner, result)
     }
 
-    override fun reconcile() {
+    fun reconcile() {
         // Stops remain deliverable during holds; growth and acceptance do not.
-        val logJobs = store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.NOMAD }.map { it.id }.toMutableSet()
+        val logJobs = store.active(withCommands = false).filter { it.backend == "nomad" && it.experiment?.isAnalysis != true }.map { it.id }.toMutableSet()
         store.execution.expireRunDeadlines()
         store.execution.expire()
         for (intent in store.execution.intents()) {
@@ -158,7 +157,7 @@ class NomadBackend(
         }
         if (!workAllowed()) return
         logJobs += store.execution.pendingProjectionJobs()
-        for (job in store.jobsByIds(logJobs.toList()).filter { it.backend == ExecutionBackendKind.NOMAD }) {
+        for (job in store.jobsByIds(logJobs.toList()).filter { it.backend == "nomad" && it.experiment?.isAnalysis != true }) {
             val accepted = store.execution.accepted(job.id)
             val checked = store.execution.checksComplete(job.id)
             val ingested = store.execution.ingested(job.id)

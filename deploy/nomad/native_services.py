@@ -38,7 +38,7 @@ def render(settings):
     env = {"HOME": str(absolute(settings["home"])), "PATH": settings["path"], "JAVA_HOME": str(absolute(settings["javaHome"])),
            "LAB_DATA": str(data), "LAB_NATIVE_EXECUTION_LOCK": str(local_lock)} | settings.get("labEnvironment", {})
     if env["LAB_DATA"] != str(data) or env["LAB_NATIVE_EXECUTION_LOCK"] != str(local_lock):
-        raise ValueError("native and legacy services must use the same data and ownership lock")
+        raise ValueError("native workers and maintenance must use the same data and ownership lock")
     script = ROOT / "src/main/resources/nomad/process_supervisor.py"
     content = script.read_bytes()
     pinned = state / ("supervisor-" + hashlib.sha256(content).hexdigest() + ".py")

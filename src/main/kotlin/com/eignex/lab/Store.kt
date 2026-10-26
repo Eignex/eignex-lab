@@ -36,7 +36,7 @@ data class Command(
     /** Why the lab, or something else, ended its processes ([Termination]), each line with when; read from the job's
      *  directory for a single job's JSON, empty elsewhere. */
     val terminations: List<String> = emptyList(),
-    /** The machine that holds or ran it: [ExecutionHost.LOCAL] for the local machine, a cloud node's instance id;
+    /** The machine that holds or ran it: [RecordedHost.LOCAL] for the local machine, a cloud node's instance id;
      *  null while no host has taken it, and for a case run before the lab recorded where ([CaseResult.host]). */
     val host: String? = null,
 )
@@ -101,7 +101,7 @@ data class Job(
     val counts: CommandCounts? = null,
     /** Whether the local machine works on it now: it took the job, or joined it while cloud nodes ran it. */
     val local: Boolean = false,
-    val backend: ExecutionBackendKind = ExecutionBackendKind.LEGACY,
+    val backend: String = "nomad",
 ) {
     /** Time the job has spent running, so far or in all; waiting in the queue, paused or yielded, does not count. */
     fun elapsedMs(now: Long): Long = runMs + (runningSince?.let { now - it } ?: 0)
@@ -123,7 +123,7 @@ enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
 
 /**
  * One host's part of a job: its cases finished ([done], failed ones included), [running], and [claimed] but not started.
- * [host] is [ExecutionHost.LOCAL] or a cloud node's instance id.
+ * [host] is [RecordedHost.LOCAL] or a cloud node's instance id.
  */
 @Serializable
 data class HostProgress(val host: String, val done: Int, val running: Int, val claimed: Int = 0) {
@@ -149,9 +149,9 @@ data class CaseResult(
     /** Whether its job was instrumented ([ExperimentSpec.instrumented]): its times are no runtime measurement. */
     val instrumented: Boolean = false,
     /**
-     * The machine it ran on, or runs on: [ExecutionHost.LOCAL] for the local machine, a cloud node's instance id. One
+     * The machine it ran on, or runs on: [RecordedHost.LOCAL] for the local machine, a cloud node's instance id. One
      * job's iterations may run on different machines, every arm of one iteration on the same one. A case run before
-     * the lab recorded it reads as its job's host, [ExecutionHost.LOCAL] or [ExecutionHost.CLOUD] for an unknown node;
+     * the lab recorded it reads as its job's host, [RecordedHost.LOCAL] or [RecordedHost.CLOUD] for an unknown node;
      * null while it waits.
      */
     val host: String? = null,
@@ -405,7 +405,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         parallel: Int = 1,
         priority: Int = 0,
         experiment: ExperimentSpec? = null,
-        backend: ExecutionBackendKind = ExecutionBackendKind.LEGACY,
     ): Long = transaction {
         val id = connection.prepareStatement(
             "INSERT INTO jobs (name, ref, status, created_at, parallel, priority, experiment, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -418,7 +417,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             it.setInt(5, parallel)
             it.setInt(6, priority)
             it.setString(7, experiment?.let { spec -> Json.encodeToString(spec) })
-            it.setString(8, backend.wire)
+            it.setString(8, "nomad")
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
         }
@@ -457,7 +456,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun prepareNomad(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>): Boolean = transaction {
         val job = job(jobId) ?: error("missing experiment")
-        require(job.backend == ExecutionBackendKind.NOMAD && !job.cancelRequested && job.status in ACTIVE)
+        require(job.backend == "nomad" && !job.cancelRequested && job.status in ACTIVE)
         if (job.setupDone) return@transaction false
         require(job.commands.isEmpty() && cases.isNotEmpty() && cases.size == commands.size)
         planRows(jobId, arms, problems, cases, commands)
@@ -759,61 +758,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     }
 
     /**
-     * Claim the next iteration of [jobId] no host holds for [holder] ([ExecutionHost.id]): every unfinished case of the
-     * first iteration, in plan order, whose unfinished cases are all queued and unclaimed. An iteration is the arms of
-     * one problem, seed and repeat, compared with each other, so one host runs them all; a command with no planned case
-     * is an iteration of its own. The indices claimed, in order; null when no iteration is left to claim. Every host of
-     * a shared job, the local machine and each cloud node, pulls its work this way ([Runner.dispatch]).
-     */
-    @Synchronized
-    fun claimIteration(jobId: Long, holder: String): List<Int>? = transaction {
-        if (job(jobId)?.backend != ExecutionBackendKind.LEGACY) return@transaction null
-        data class Row(val index: Int, val iteration: Any, val queued: Boolean, val held: Boolean)
-        val rows = connection.prepareStatement(
-            "SELECT m.idx, c.problem_idx, c.seed, c.repeat, m.status, m.host FROM commands m " +
-                "LEFT JOIN cases c ON c.job_id = m.job_id AND c.idx = m.idx " +
-                "WHERE m.job_id = ? AND m.status IN ('QUEUED', 'RUNNING') ORDER BY m.idx",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.executeQuery().use { r ->
-                generateSequence {
-                    if (!r.next()) return@generateSequence null
-                    val index = r.getInt(1)
-                    val iteration: Any = if (r.getObject(2) == null) index else Triple(r.getInt(2), r.longOrNull("seed"), r.getInt(4))
-                    Row(index, iteration, r.getString(5) == Status.QUEUED.name, r.getString(6) != null)
-                }.toList()
-            }
-        }
-        val next = rows.groupBy { it.iteration }.values.firstOrNull { cases -> cases.all { it.queued && !it.held } }
-            ?: return@transaction null
-        for (case in next) {
-            update("UPDATE commands SET host = ? WHERE job_id = ? AND idx = ? AND status = ? AND host IS NULL",
-                holder, jobId, case.index, Status.QUEUED.name)
-        }
-        next.map { it.index }
-    }
-
-    /**
      * Give back what [holder] holds of [jobId]: its claimed cases and any it left running go back to the queue, to be
      * claimed by any host. With [whole], the cases [holder] finished of each iteration it gave back go back too, their
      * results dropped, so the iteration runs again whole wherever it goes next ([requeueSplitIterations]): what a host
      * that yields mid-iteration or is lost leaves. The cases given back.
      */
-    @Synchronized
-    fun unclaim(jobId: Long, holder: String, whole: Boolean): List<Int> = transaction {
-        val held = indices("job_id = ? AND host = ? AND status IN ('QUEUED', 'RUNNING')", jobId, holder)
-        update("UPDATE commands SET status = ?, host = NULL, started_at = NULL, phase = NULL " +
-            "WHERE job_id = ? AND host = ? AND status IN ('QUEUED', 'RUNNING')", Status.QUEUED.name, jobId, holder)
-        if (!whole || held.isEmpty()) return@transaction held
-        held + requeueSplit(jobId, indices("job_id = ? AND host = ? AND status IN ('DONE', 'FAILED')", jobId, holder))
-    }
-
-    private fun indices(where: String, vararg values: Any?): List<Int> =
-        connection.prepareStatement("SELECT idx FROM commands WHERE $where ORDER BY idx").use { statement ->
-            values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
-            statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getInt(1) else null }.toList() }
-        }
-
     /** Cases of [jobId] queued that no host has claimed: the work another host could join it for. */
     @Synchronized
     fun unclaimed(jobId: Long): Int = connection.prepareStatement(
@@ -828,12 +777,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * paused or cancelling, that have an iteration no host has claimed, wherever they run now, the local machine
      * included, by priority, series and age. A profile job is one case, so no second host joins it.
      */
-    @Synchronized
-    fun helpable(): List<Pair<Job, Int>> = jobsWhere(
-        "backend = 'legacy' AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) AND $NOT_PROFILE AND EXISTS $UNCLAIMED $QUEUE_ORDER",
-        Status.RUNNING.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
-    ).map { it to unclaimed(it.id) }
-
     /** Each host's part of the jobs [ids] ([HostProgress]), the local machine first, then the nodes by name; a case that
      *  ran before cases recorded their host is left out. */
     @Synchronized
@@ -841,7 +784,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         connection.prepareStatement(
             "SELECT job_id, host, SUM(status IN ('DONE', 'FAILED')), SUM(status = 'RUNNING'), SUM(status = 'QUEUED') FROM commands " +
                 "WHERE job_id IN (${ids.joinToString(",") { "?" }}) AND host IS NOT NULL GROUP BY job_id, host " +
-                "ORDER BY job_id, host != '${ExecutionHost.LOCAL}', host",
+                "ORDER BY job_id, host != '${RecordedHost.LOCAL}', host",
         ).use { statement ->
             ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
             statement.executeQuery().use { r ->
@@ -859,30 +802,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * `aws`), a shared `auto` job again: every host may then run its iterations. Its finished cases that recorded no
      * host ran where it was taken, which they keep ([CaseResult.host]).
      */
-    @Synchronized
-    fun share(jobId: Long): Boolean = transaction {
-        val job = job(jobId) ?: return@transaction false
-        val spec = job.experiment ?: return@transaction false
-        val ran = if (spec.host == Experiments.AWS_HOST) ExecutionHost.CLOUD else ExecutionHost.LOCAL
-        update("UPDATE commands SET host = ? WHERE job_id = ? AND host IS NULL AND status IN ('DONE', 'FAILED')", ran, jobId)
-        update("UPDATE jobs SET experiment = ? WHERE id = ?",
-            Json.encodeToString(spec.copy(host = Experiments.AUTO_HOST, auto = false, machines = null)), jobId) == 1
-    }
-
     /**
      * After a restart, put running shared job [jobId] back as no host holds it: every case claimed or left running goes
      * back to the queue, each iteration left part done runs again whole, and the local machine works on it no more.
      * The caller queues the job again ([requeue]).
      */
-    @Synchronized
-    fun recoverShared(jobId: Long) = transaction {
-        if (job(jobId)?.backend != ExecutionBackendKind.LEGACY) return@transaction
-        update("UPDATE commands SET status = ?, host = NULL, started_at = NULL, phase = NULL " +
-            "WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", Status.QUEUED.name, jobId)
-        requeueSplit(jobId, null)
-        update("UPDATE jobs SET local = 0 WHERE id = ?", jobId)
-    }
-
     /** Every case of an experiment in command order, with its problem, arm, status and record. */
     @Synchronized
     fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId, whole = true)
@@ -1066,41 +990,15 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { rows -> if (rows.next()) job(rows) else null }
     }?.let { it.copy(commands = commands(it.id)) }
 
-    /**
-     * The job the local machine works on, marked [Job.local]: one left RUNNING there by a crashed runner first, else the
-     * first of its queue ([queueOrder]) not in [exclude], started when it is queued and joined when it is a shared job
-     * cloud nodes run. The queue holds the jobs placed on the local machine alone, the queued `auto` ones, and the
-     * running `auto` ones with an iteration no host has claimed, as one, by priority whatever their placement. Among
-     * equals, the job whose series last finished a run longest ago goes first, one that never has before any that has,
-     * then the oldest: so a schedule that just ran cannot keep going ahead of one that has waited. A series is a
-     * schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name. While [nodesUp], a cloud node is
-     * up or launching to take the `auto` jobs, so among equal priorities the jobs placed on the local machine alone go
-     * first, before series and age decide.
-     */
     @Synchronized
-    fun next(nodesUp: Boolean = false, exclude: Collection<Long> = emptyList(), nodeTags: Set<String>? = null): Job? = transaction {
-        val running = connection.prepareStatement(
-            "SELECT id FROM jobs WHERE backend = 'legacy' AND status = ? AND local = 1 ORDER BY id LIMIT 1",
-        ).use {
-            it.setString(1, Status.RUNNING.name)
-            it.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
-        }
-        val resumable = running?.takeIf { nodeTags == null || NodeTags.matches(job(it)?.experiment?.nodeTags, nodeTags) }
-        if (running != null && resumable == null) update("UPDATE jobs SET status = ?, local = 0 WHERE id = ?", Status.QUEUED.name, running)
-        val id = resumable ?: queueOrder(nodesUp, nodeTags).firstOrNull { it !in exclude }
-        id?.also { claimed ->
-            val previous = job(claimed)
-            val at = now()
-            // A shared job cloud nodes run is joined as it runs; a queued one starts, and one the local machine left
-            // running (a restart) starts its clock again.
-            if (running == claimed || previous?.status == Status.QUEUED) {
-                val interruptedRun = if (running == claimed && previous?.experiment?.profile?.runTimeoutSec != null) {
-                    previous.runningSince?.let { (at - it).coerceAtLeast(0) } ?: 0
-                } else 0
-                markRunning(claimed, at, interruptedRun)
-            }
-            update("UPDATE jobs SET local = 1 WHERE id = ?", claimed)
-        }
+    fun nextAnalysis(): Job? = transaction {
+        val id = connection.prepareStatement("SELECT id FROM jobs WHERE status IN ('QUEUED','RUNNING') " +
+            "AND cancel_requested = 0 AND paused = 0 AND json_extract(experiment, '$.analyze') IS NOT NULL " +
+            "ORDER BY status = 'RUNNING' DESC, priority DESC, id LIMIT 1").use { statement ->
+                statement.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
+            } ?: return@transaction null
+        if (job(id)?.status == Status.QUEUED) markRunning(id, now())
+        update("UPDATE jobs SET local = 1 WHERE id = ?", id)
         id
     }?.let(::job)
 
@@ -1115,26 +1013,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         it.executeUpdate()
     }
 
-    /** The job [next] would take now, without taking it: the first of the local machine's queue ([queueOrder]). */
-    @Synchronized
-    fun peek(nodesUp: Boolean = false, nodeTags: Set<String>? = null): Long? = queueOrder(nodesUp, nodeTags).firstOrNull()
-
     /**
      * The job the local machine is about to take, which a node must leave to it: the first of its queue when the local
      * machine is free, or when the job it runs gives way to that one between cases ([shouldYield]). Null when the local
      * machine keeps what it runs. [nodesUp] is what [next] is given, whether a cloud node is up or launching, so the two
      * agree on the job.
      */
-    @Synchronized
-    fun localNext(nodesUp: Boolean = false, nodeTags: Set<String>? = null): Long? {
-        val first = peek(nodesUp, nodeTags) ?: return null
-        val running = connection.prepareStatement("SELECT priority FROM jobs WHERE status = ? AND local = 1 ORDER BY id LIMIT 1").use {
-            it.setString(1, Status.RUNNING.name)
-            it.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else null }
-        } ?: return first
-        return first.takeIf { (job(it)?.priority ?: Int.MIN_VALUE) > running }
-    }
-
     /** Whether the local machine is running a job. */
     @Synchronized
     fun localBusy(): Boolean = connection.prepareStatement("SELECT 1 FROM jobs WHERE status = ? AND local = 1 LIMIT 1").use {
@@ -1146,35 +1030,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * The queued, unpaused jobs a cloud node may take, `auto` and `aws` ones alike, in the order a node takes them: by
      * priority, then series, then age, as the local machine orders its own. Without their commands, with their counts.
      */
-    @Synchronized
-    fun nodeQueue(): List<Job> = jobsWhere(
-        "backend = 'legacy' AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?) $QUEUE_ORDER",
-        Status.QUEUED.name, Experiments.AUTO_HOST, Experiments.AWS_HOST, withCommands = false,
-    )
-
     /**
      * Claim queued job [id] for a cloud node, which starts it; an `auto` job stays shared, for the local machine and other
      * nodes to join once it is planned. Null when it is no longer one a node may take: a host took it, or it was paused
      * or cancelled meanwhile.
      */
-    @Synchronized
-    fun claimForNode(id: Long): Job? = transaction {
-        val claimed = update(
-            "UPDATE jobs SET status = ? WHERE backend = 'legacy' AND id = ? AND status = ? AND cancel_requested = 0 AND paused = 0 AND $HOST IN (?, ?)",
-            Status.RUNNING.name, id, Status.QUEUED.name, Experiments.AUTO_HOST, Experiments.AWS_HOST,
-        ) == 1
-        if (claimed) markRunning(id, now())
-        claimed
-    }.let { if (it) job(id) else null }
-
     /** A command a crashed runner left RUNNING is rerun from the start: its partial output is not a result. */
-    @Synchronized
-    fun requeueInterrupted(jobId: Long, holder: String = ExecutionHost.LOCAL) = update(
-        "UPDATE commands SET status = ?, started_at = NULL, host = NULL WHERE job_id = ? AND " +
-            "(status = ? AND (host IS NULL OR host = ?) OR status = ? AND host = ?)",
-        Status.QUEUED.name, jobId, Status.RUNNING.name, holder, Status.QUEUED.name, holder,
-    )
-
     @Synchronized
     fun setup(jobId: Long, sha: String) = update("UPDATE jobs SET sha = ?, setup_done = 1 WHERE id = ?", sha, jobId)
 
@@ -1185,7 +1046,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             Status.QUEUED.name, jobId, index, Status.RUNNING.name)
     }
 
-    /** Command [index] of [jobId] starts on [host] ([ExecutionHost.id]) as [cmd], the command line that host rendered
+    /** Command [index] of [jobId] starts on [host] (its recorded node identity) as [cmd], the command line that host rendered
      *  for it ([CasePlan]), which replaces the one written when the job was planned. */
     @Synchronized
     fun commandStarted(jobId: Long, index: Int, host: String? = null, cmd: String? = null) = update(
@@ -1220,7 +1081,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun requestCancel(jobId: Long): CancelOutcome = transaction {
         val job = job(jobId) ?: return@transaction CancelOutcome.MISSING
-        if (job.backend == ExecutionBackendKind.NOMAD && job.status in setOf(Status.QUEUED, Status.RUNNING)) {
+        if (job.backend == "nomad" && job.status in setOf(Status.QUEUED, Status.RUNNING)) {
             execution.cancelIn(connection, jobId, now())
             return@transaction CancelOutcome.CANCELLED
         }
@@ -1664,64 +1525,10 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         if (paused) 1 else 0, jobId, Status.QUEUED.name, Status.RUNNING.name,
     ) == 1
 
-    /**
-     * Whether [jobId], running on the local machine, should stop starting commands: it was paused, or a job in the
-     * local machine's queue ([queueOrder]) has a strictly higher priority. Placement does not matter: a job placed on
-     * the local machine alone, a queued `auto` job, and a shared job nodes run with iterations left to claim all compete
-     * by priority alone, and an equal priority never preempts. A paused or cancelled job does not count.
-     */
     @Synchronized
-    fun shouldYield(jobId: Long, nodeTags: Set<String>? = null): Boolean {
-        if (nodeTags != null) return shouldYieldForTags(jobId, nodeTags)
-        return connection.prepareStatement(
-            "SELECT (SELECT paused FROM jobs WHERE id = ?) OR EXISTS (SELECT 1 FROM jobs WHERE $LOCAL_QUEUE " +
-                "AND id != ? AND priority > (SELECT priority FROM jobs WHERE id = ?))",
-        ).use {
-            it.setLong(1, jobId)
-            it.setLong(2, jobId)
-            it.setLong(3, jobId)
-            it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
-        }
-    }
-
-    private fun shouldYieldForTags(jobId: Long, tags: Set<String>): Boolean {
-        if (connection.prepareStatement("SELECT paused FROM jobs WHERE id = ?").use { s ->
-            s.setLong(1, jobId); s.executeQuery().use { it.next() && it.getInt(1) != 0 }
-        }) return true
-        return connection.prepareStatement("SELECT json_extract(experiment, '$.nodeTags') FROM jobs WHERE $LOCAL_QUEUE AND id != ? AND priority > (SELECT priority FROM jobs WHERE id = ?)").use { s ->
-            s.setLong(1, jobId); s.setLong(2, jobId)
-            s.executeQuery().use { rows ->
-                var found = false
-                while (!found && rows.next()) found = NodeTags.matches(rows.getString(1)?.let { Json.decodeFromString<NodeSelector>(it) }, tags)
-                found
-            }
-        }
-    }
-
-    /**
-     * The local machine's queue in the order [next] takes it ([LOCAL_QUEUE]): the queued, unpaused jobs placed on the
-     * local machine alone or shared, and the shared jobs nodes run that have an iteration no host has claimed, as one
-     * queue by priority, then the fewest hosts on it ([HOSTS_ON]: a queued job has none, so it goes before joining a
-     * running one of equal priority), then series, then age.
-     * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities ([LOCAL_FIRST_ORDER]).
-     */
-    @Synchronized
-    fun queueOrder(nodesUp: Boolean = false, nodeTags: Set<String>? = null): List<Long> = connection.prepareStatement(
-        "SELECT id, json_extract(experiment, '$.nodeTags') AS selector FROM jobs WHERE $LOCAL_QUEUE " + if (nodesUp) LOCAL_FIRST_ORDER else LOCAL_ORDER,
-    ).use {
-        it.executeQuery().use { rows -> generateSequence {
-            if (!rows.next()) null else rows.getLong(1) to rows.getString("selector")
-        }.filter { (_, selector) -> nodeTags == null || NodeTags.matches(selector?.let { Json.decodeFromString<NodeSelector>(it) }, nodeTags) }.map { it.first }.toList() }
-    }
-
-    /**
-     * Every queued, unpaused job, wherever it may run, by priority, series and age: the queue as the pages show it.
-     * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities, as [queueOrder].
-     */
-    @Synchronized
-    fun queue(nodesUp: Boolean = false): List<Long> = connection.prepareStatement(
+    fun queue(): List<Long> = connection.prepareStatement(
         "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
-            if (nodesUp) LOCAL_FIRST_ORDER else QUEUE_ORDER,
+            QUEUE_ORDER,
     ).use {
         it.setString(1, Status.QUEUED.name)
         it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
@@ -1736,11 +1543,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     fun retry(jobId: Long): Boolean = transaction {
         val reopened = update(
             "UPDATE jobs SET status = ?, error = NULL, finished_at = NULL, cancel_requested = 0, paused = 0, running_since = NULL " +
-                "WHERE id = ? AND status IN (?, ?)",
+                "WHERE id = ? AND backend = 'nomad' AND status IN (?, ?)",
             Status.QUEUED.name, jobId, Status.FAILED.name, Status.CANCELLED.name,
         ) == 1
         if (reopened) {
-            if (job(jobId)?.backend == ExecutionBackendKind.NOMAD) execution.retryIn(connection, jobId, now())
+            if (job(jobId)?.backend == "nomad") execution.retryIn(connection, jobId, now())
             update(
                 "UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND status IN (?, ?)",
                 Status.QUEUED.name, jobId, Status.CANCELLED.name, Status.RUNNING.name,
@@ -1798,11 +1605,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
     }
 
-    /**
-     * Place a queued experiment again on [host] whether or not it was planned: the host that takes a planned one next
-     * renders each case's command for itself ([Runner.render]). What [Placement.release] does with a job a node planned
-     * and gave back. False when there is no such queued experiment.
-     */
     @Synchronized
     fun release(jobId: Long, host: String): Boolean {
         val job = job(jobId) ?: return false
@@ -1881,7 +1683,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         runMs = rows.getLong("run_ms"),
         runningSince = rows.longOrNull("running_since"),
         local = rows.getInt("local") == 1,
-        backend = ExecutionBackendKind.entries.single { it.wire == rows.getString("backend") },
+        backend = rows.getString("backend"),
     )
 
     val execution = ExecutionStore(this)
@@ -1944,7 +1746,7 @@ private const val QUEUE_ORDER = "ORDER BY priority DESC, $SERIES_ORDER"
 
 /**
  * Where case `m` ran, as [CaseResult.host] reads it: its recorded host, else, for a case that started before the lab
- * recorded one, its job's host: the local machine, or a cloud node it no longer knows ([ExecutionHost.CLOUD]).
+ * recorded one, its job's host: the local machine, or a cloud node it no longer knows ([RecordedHost.CLOUD]).
  */
 private const val CASE_HOST = "COALESCE(m.host, CASE WHEN m.status IN ('RUNNING', 'DONE', 'FAILED') THEN " +
     "CASE COALESCE(json_extract(j.experiment, '\$.host'), 'lab') WHEN 'aws' THEN 'cloud' WHEN 'auto' THEN NULL ELSE 'local' END END) AS host"
@@ -1957,34 +1759,6 @@ private const val INSTRUMENTED = "COALESCE(json_extract(j.experiment, '\$.measur
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"
-
-/** A job that is not a profile job, which is a single case no second host can join. */
-private const val NOT_PROFILE = "json_extract(experiment, '\$.profile') IS NULL"
-
-/** Whether job `jobs` has a queued case no host has claimed, in SQL. */
-private const val UNCLAIMED = "(SELECT 1 FROM commands m WHERE m.job_id = jobs.id AND m.status = 'QUEUED' AND m.host IS NULL)"
-
-/**
- * The local machine's queue in SQL ([Store.queueOrder]): the queued, unpaused jobs placed on the local machine alone or
- * shared (`auto`), and the shared jobs cloud nodes run that still have an iteration no host has claimed, which the
- * local machine joins. Not the job it works on.
- */
-private const val LOCAL_QUEUE = "backend = 'legacy' AND cancel_requested = 0 AND paused = 0 AND local = 0 AND " +
-    "(status = 'QUEUED' AND $HOST IN ('lab', 'auto') OR status = 'RUNNING' AND $HOST = 'auto' AND $NOT_PROFILE AND EXISTS $UNCLAIMED)"
-
-/** How many hosts work on job `jobs` now: the hosts holding its claimed, unfinished cases. None for a queued job. */
-private const val HOSTS_ON = "(SELECT COUNT(DISTINCT m.host) FROM commands m WHERE m.job_id = jobs.id " +
-    "AND m.status IN ('QUEUED', 'RUNNING') AND m.host IS NOT NULL)"
-
-/** The local machine's order ([Store.queueOrder]): by priority, then the fewest hosts on a job ([HOSTS_ON]), so it
- *  starts a queued job of equal priority rather than join one others already run, then series and age. */
-private const val LOCAL_ORDER = "ORDER BY priority DESC, $HOSTS_ON, $SERIES_ORDER"
-
-/** The local machine's order while a cloud node is up or launching: by priority, then the jobs placed on the local
- *  machine alone before those a node may take, then the fewest hosts ([HOSTS_ON]), series and age. A node can take
- *  the `auto` jobs, so local-only work need not wait behind them; with no node coming, the tie-break would only hold
- *  the `auto` jobs back. */
-private const val LOCAL_FIRST_ORDER = "ORDER BY priority DESC, CASE WHEN $HOST = 'lab' THEN 0 ELSE 1 END, $HOSTS_ON, $SERIES_ORDER"
 
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()
@@ -2041,3 +1815,6 @@ private const val PROVENANCES = 64
 /** How many finished jobs' scoring cases [Store.scoringCases] keeps. */
 private const val SCORING_JOBS = 48
 private const val LOAD_FACTOR = 0.75f
+
+/** Machine labels retained by historical case records; these are not execution backends. */
+internal object RecordedHost { const val LOCAL = "local"; const val CLOUD = "cloud" }

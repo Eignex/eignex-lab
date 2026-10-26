@@ -36,7 +36,7 @@ Use the [Nomad runbook](nomad/README.md) for the native Mac client, process supe
 services. Provider infrastructure is separate: [AWS and GCP modules](infra/README.md) supply disposable Spot workers,
 scoped identity and independent capacity expiry through the same worker protocol.
 
-Set `LAB_EXECUTION_BACKEND=nomad`, `LAB_NOMAD_QUEUE_SETTINGS` and `LAB_NOMAD_CAPACITY_SETTINGS` in the service
+Set `LAB_NOMAD_QUEUE_SETTINGS` and `LAB_NOMAD_CAPACITY_SETTINGS` in the service
 environment after configuring the coordinator. Normal submissions, schedules and confirmations use Nomad; analysis
 and maintenance remain local. The queue links to `/capacity/view` for live reservations and pool state.
 
@@ -47,3 +47,25 @@ architecture/SIMD capabilities must match worker hardware. Keep native Mac limit
 The old cloud setup script is removed. Nomad ignores retired `aws/aws.properties` files and rejects legacy
 `/cloud/nodes` operations; operator capacity requests use expiring `/capacity/leases`. Preserve historical results
 and archive existing settings before removing old infrastructure.
+
+
+## Retiring old installations
+
+Experiment execution uses Nomad exclusively; there is no backend switch or AWS/SSH executor. The maintenance runner
+keeps schedules, confirmations, capture analysis and reference checking. Old job backend labels are retained as
+historical provenance, and those historical jobs remain readable without enabling an old executor.
+
+macOS installation defaults to no Docker VM and never starts Colima. Grant disk access to the configured Java,
+Python and Nomad executables; Xcode-bundled Python may require the enclosing Xcode app's permission too.
+
+Review `python3 deploy/nomad/prune_runtime.py --data "$LAB_DATA"`, then add `--apply` to remove unused release
+directories and named deployment leftovers. The pruner preserves releases referenced by running processes, installed
+services, pending session intents, active jobs and retryable frozen recipes. It never deletes the database, results,
+corpus, artifacts or Nomad allocation state; small retired-release provenance stays in `deployments/retired-runtime`.
+
+The coordinator stores immutable, job-scoped bundles under `$LAB_DATA/nomad/artifacts`. On a small internal disk,
+place that directory on the mounted results volume and retain a symlink at the original path. Copy while the
+coordinator runs, stop only the coordinator for a final synchronization and directory switch, then restart it and
+verify existing artifact reads before deleting the original copy. Keep all historical bundles; the runtime pruner
+does not remove them. The results volume must pass the same mount, disk access and free-space checks as `LAB_JOBS`.
+Admission holds pause new work; existing worker lease and progress updates remain available.

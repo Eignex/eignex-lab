@@ -49,25 +49,28 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 call.respond(backend.register(c[0], c[1], c[2], c[3], body.release))
             }
             post("/claim") {
-                require(workAllowed()); call.auth()
+                check(workAllowed()); call.auth()
                 val c = call.credentials(); val claim = backend.claim(c[0], c[1], c[2])
                 if (claim == null) call.respond(HttpStatusCode.NoContent) else call.respond(claim)
             }
             post("/renew") {
-                require(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.bodyText()); require(owner.session == s.id && owner.allocation == s.allocation)
+                // Lease and status updates must survive admission holds.
+                val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.bodyText()); require(owner.session == s.id && owner.allocation == s.allocation)
                 store.execution.renew(owner); call.respond(LeaseReply(ExecutionStore.LEASE_MS, store.execution.remainingRunMs(s.id)))
             }
             post("/phase") {
-                require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerPhase>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
+                // Lease and status updates must survive admission holds.
+                val s = call.auth(); val body = Json.decodeFromString<WorkerPhase>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.phase(body.owner, body.phase); call.respond(HttpStatusCode.NoContent)
             }
             post("/progress") {
-                require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerProgress>(call.bodyText())
+                // Lease and status updates must survive admission holds.
+                val s = call.auth(); val body = Json.decodeFromString<WorkerProgress>(call.bodyText())
                 require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.caseStarted(body.owner, body.index); call.respond(HttpStatusCode.NoContent)
             }
             put("/logs/{index}/{stream}") {
-                require(workAllowed()); val s = call.auth()
+                check(workAllowed()); val s = call.auth()
                 val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
                 require(owner.session == s.id && owner.allocation == s.allocation)
                 val bytes = call.receiveChannel().readRemaining((WorkerLogs.CHUNK_BYTES + 1).toLong()).readByteArray()
@@ -77,17 +80,19 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 call.respond(UploadReply(offset))
             }
             post("/build-failed") {
-                require(workAllowed()); val s = call.auth(); val body = Json.decodeFromString<WorkerBuildError>(call.bodyText())
+                // Lease and status updates must survive admission holds.
+                val s = call.auth(); val body = Json.decodeFromString<WorkerBuildError>(call.bodyText())
                 require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.rejectBuild(body.owner, body.detail); call.respond(HttpStatusCode.NoContent)
             }
             post("/run-timeout") {
-                require(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.bodyText())
+                // Lease and status updates must survive admission holds.
+                val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.bodyText())
                 require(owner.session == s.id && owner.allocation == s.allocation)
                 store.execution.runTimedOut(owner); call.respond(HttpStatusCode.NoContent)
             }
             post("/selection") {
-                require(workAllowed()); val session = call.auth()
+                check(workAllowed()); val session = call.auth()
                 val body = Json.decodeFromString<WorkerSelection>(call.bodyText(64 * 1024 * 1024))
                 require(body.owner.session == session.id && body.owner.allocation == session.allocation)
                 call.respond(backend.selectPreparation(body.owner, body.selections))
@@ -97,7 +102,7 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
             }
             get("/inputs/{sha}") {
-                require(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
+                check(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
                 val manifest = store.execution.manifest(s.id)
                 require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
                 val file = artifacts.readFile(s.jobId, sha)
@@ -118,12 +123,12 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 }
             }
             get("/uploads/{sha}") {
-                require(workAllowed()); val s = call.auth(); val owner = call.request.headers["X-Lab-Attempt"]?.let { Json.decodeFromString<AttemptOwner>(it) } ?: throw ExecutionFenced("attempt required")
+                check(workAllowed()); val s = call.auth(); val owner = call.request.headers["X-Lab-Attempt"]?.let { Json.decodeFromString<AttemptOwner>(it) } ?: throw ExecutionFenced("attempt required")
                 require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
                 call.respond(UploadReply(artifacts.offset(s.jobId, call.parameters["sha"]!!)))
             }
             put("/uploads/{sha}") {
-                require(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                check(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
                 require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
                 val bytes = call.request.queryParameters["bytes"]!!.toLong(); val offset = call.request.queryParameters["offset"]!!.toLong()
                 val result = call.receiveChannel().toInputStream().use { artifacts.put(s.jobId, call.parameters["sha"]!!, bytes, offset, it) }

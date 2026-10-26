@@ -29,8 +29,6 @@ data class Config(
     val javaHome: String = env("LAB_JAVA_HOME", System.getenv("JAVA_HOME") ?: ""),
     /** JVM flags for every klause-cli solve a command starts. */
     val solveJavaOpts: String = env("LAB_SOLVE_JAVA_OPTS", "-Xmx3g -XX:+UseSerialGC"),
-    val gradleWorkers: Int = env("LAB_GRADLE_WORKERS", "2").toInt(),
-    val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
     /** The most cases one job may run at once, whatever it asks for: each holds its own solve heap, so memory bounds
      *  this, where [cores] bounds the threads. */
     val maxParallel: Int = env("LAB_MAX_PARALLEL", "6").toInt(),
@@ -67,10 +65,6 @@ data class Config(
         .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     /** Days between Docker cleanups, sooner on a low disk; `0` turns the automatic cleanup off. */
     val dockerCleanupDays: Long = env("LAB_DOCKER_CLEANUP_DAYS", "7").toLong(),
-    /** Whether Docker runs in Colima's VM, which `install.sh` points the services' `DOCKER_HOST` into, or, in a shell
-     *  with no `DOCKER_HOST`, a Mac with a Colima VM: a cleanup then trims its disk. */
-    val colima: Boolean = System.getenv("DOCKER_HOST")?.takeIf { it.isNotBlank() }?.contains("/.colima/")
-        ?: (System.getProperty("os.name").orEmpty().startsWith("Mac") && Path(System.getProperty("user.home"), ".colima", "default").toFile().isDirectory),
     /** Retries of a step that talks to the network (fetching the mirror, adding a worktree, a schedule's check): 15 s,
      *  then doubling to at most 5 min, six tries in all, so a network outage of several minutes is ridden out. */
     val retry: Backoff = Backoff(
@@ -78,15 +72,6 @@ data class Config(
         env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
         env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
     ),
-    /** Retries of a build or a plan, which can also fail on a download but more often for good: fewer tries. */
-    val buildRetry: Backoff = Backoff(
-        env("LAB_BUILD_RETRY_ATTEMPTS", "3").toInt(),
-        env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
-        env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
-    ),
-    /** Worktree-relative directories every job shares, separated by `:`; none by default. */
-    val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "")
-        .split(':').map { it.trim() }.filter { it.isNotEmpty() },
     /** The largest saved-capture archive an analysis job reads ([CaptureArchives]). */
     val archiveMaxBytes: Long = env("LAB_ARCHIVE_MAX_MB", "2048").toLong() * BYTES_PER_MB,
     /** The most an archive may unpack to, by its manifest, which also bounds what an analysis job extracts of it. */
@@ -98,7 +83,6 @@ data class Config(
     /** Operator labels on the local node; CPU and placement facts are detected rather than overridden. */
     val nodeTags: Set<String> = env("LAB_NODE_TAGS", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     val cpuCapabilities: CpuCapabilities = NodeTags.localCapabilities,
-    val executionBackend: ExecutionBackendKind = ExecutionBackendKind.entries.single { it.wire == env("LAB_EXECUTION_BACKEND", "legacy") },
     val nomadQueueSettings: Path? = System.getenv("LAB_NOMAD_QUEUE_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path),
     val nomadCapacitySettings: Path? = System.getenv("LAB_NOMAD_CAPACITY_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path),
 ) {
@@ -108,21 +92,9 @@ data class Config(
     val nativeYield: Path get() = dataDir.resolve("nomad/update-pending")
 
     val localNodeTags: Set<String> get() = NodeTags.observed(cpuCapabilities, nodeTags)
-    init {
-        require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
-            "LAB_SHARED_PATHS entries must stay inside the worktree: $sharedPaths"
-        }
-    }
-
     /** Saved-capture archives an analysis job may name by a path under it ([CaptureArchives]). */
     val archiveDir: Path get() = dataDir.resolve("archives")
 
-    val sharedDir: Path get() = dataDir.resolve("shared")
-    /**
-     * The Gradle home the lab's builds use, its own: `~/.gradle` is shared with whatever else builds on the machine,
-     * whose daemons' cache cleanups have left its transform records pointing at files they deleted.
-     */
-    val gradleHome: Path get() = dataDir.resolve("gradle")
     val database: Path get() = dataDir.resolve("lab.db")
     /** A GitHub token the trust check reads the repository's activity with, when the file exists: without one GitHub
      *  allows 60 calls an hour. Read on each use, so adding it needs no reinstall. */
@@ -134,10 +106,6 @@ data class Config(
     val dockerCleanupRequest: Path get() = dataDir.resolve("docker-cleanup-requested")
     /** The last Docker cleanup, as [DockerCleanup] wrote it. */
     val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
-    /** Colima's Lima directory on the host, which holds its VM's disks: `_disks` with the data disk Docker writes to. */
-    val colimaDisks: Path get() = Path(System.getProperty("user.home"), ".colima", "_lima")
-    /** Retired executor settings are never activated by a Nomad installation, even if an old file remains. */
-    val aws: AwsConfig? get() = if (executionBackend == ExecutionBackendKind.LEGACY) AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) else null
     fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
 
     /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or

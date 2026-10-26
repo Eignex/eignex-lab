@@ -57,9 +57,8 @@ class DockerCleanupTest {
         free: Long = 100 * BYTES_PER_GB,
         now: Long = 30 * DockerCleanup.DAY_MS,
         request: Path? = null,
-        colima: Path? = null,
     ) = DockerCleanup(
-        enabled, keep, 7 * DockerCleanup.DAY_MS, state, request, needed, { free }, colima, log = {}, clock = { now }, exec = docker::exec,
+        enabled, keep, 7 * DockerCleanup.DAY_MS, state, request, needed, { free }, log = {}, clock = { now }, exec = docker::exec,
     )
 
     private fun lastAt(state: Path, at: Long) =
@@ -131,18 +130,6 @@ class DockerCleanupTest {
     }
 
     @Test
-    fun `on Colima the VM is trimmed and its disks measured before and after`() {
-        val docker = FakeDocker(images = listing)
-        val disks = dir()
-
-        val run = assertNotNull(cleanup(docker, colima = disks).run("test"))
-
-        assertTrue("colima ssh -- sudo fstrim -av" in docker.commands())
-        assertEquals(20000000 * 1024L, run.hostDiskBefore)
-        assertEquals(20000000 * 1024L, run.hostDiskAfter)
-    }
-
-    @Test
     fun `no tag is removed when the active jobs' needs cannot be read`() {
         val docker = FakeDocker(images = listing)
 
@@ -209,7 +196,7 @@ class DockerCleanupTest {
         var now = 30 * DockerCleanup.DAY_MS
         val docker = FakeDocker(ps = "busy\n")
         val cleanup = DockerCleanup(
-            true, keep, 7 * DockerCleanup.DAY_MS, dir().resolve("state.json"), null, { emptySet() }, { 100 * BYTES_PER_GB }, null,
+            true, keep, 7 * DockerCleanup.DAY_MS, dir().resolve("state.json"), null, { emptySet() }, { 100 * BYTES_PER_GB },
             log = {}, clock = { now }, exec = docker::exec,
         )
 

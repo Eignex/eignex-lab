@@ -137,7 +137,7 @@ class SourceLocator(
         .filter { it.isDirectory && it.name in setOf("lib", "include") }.toList().sorted()
 
     companion object {
-        /** A cloud node's corpus root ([com.eignex.lab.AwsHost]), which a plan made there names its files under. */
+        /** A cloud node's corpus root (historical cloud workers), which a plan made there names its files under. */
         const val NODE_CORPUS = "/home/ubuntu/corpus"
         const val REINDEX_MS = 10 * 60_000L
         private val COMPRESSION = listOf(".zst", ".gz", ".lzma", ".xz", ".bz2")

@@ -113,7 +113,7 @@ class LabCheckTest {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val problems = listOf(Problem("xcsp3-cop", "VRP_LC-09-05-10-s3_c24", format = "XCSP3"))
         val id = store.create("j", "sha", emptyList(), experiment = ExperimentSpec("j", listOf(mapOf("suite" to "s"))))
-        store.next()
+        store.startForTest()
         store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
         store.caseRecord(id, 0, claim)
         assertEquals(WitnessCheck.UNCHECKED, Outcome.of(store.scoringCases(id).single().record)!!.witness)
@@ -149,7 +149,7 @@ class LabCheckTest {
         val problems = listOf(Problem("xcsp3-test", "Circuit-4", collection = "xcsp3-test", format = "XCSP3"),
             Problem("other", "uf20", format = "DIMACS"))
         val target = store.create("vrp", "sha", emptyList(), experiment = ExperimentSpec("vrp", listOf(mapOf("suite" to "s"))))
-        store.next()
+        store.startForTest()
         store.plan(target, listOf(PlannedArm(Arm("a", emptyMap()), "sha"), PlannedArm(Arm("b", emptyMap()), "sha")), problems,
             Experiments.cases(2, 2, emptyList()), List(4) { "true" to 1L })
         val cases = store.casePlan(target)
@@ -167,7 +167,7 @@ class LabCheckTest {
         assertEquals("recheck-$target", spec.name)
         Experiments.validate(spec, 4)
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
-        val job = store.next()!!
+        val job = store.startForTest()!!
         val checker = SourceChecker(listOf(Xcsp3Checker()), SourceLocator(corpus.toFile()), config.dataDir.resolve("checkers/tmp").toFile())
 
         Runner(config, store, sourceChecker = { checker }).analyze(job)

@@ -89,7 +89,7 @@ internal fun jobPage(
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
-    if (job.backend == ExecutionBackendKind.NOMAD) append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
+    if (job.backend == "nomad") append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
     append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
@@ -111,7 +111,7 @@ internal fun jobPage(
         if (selector.exclude.isNotEmpty()) append("; exclude ${esc(selector.exclude.sorted().joinToString())}")
         append("</dd>")
     }
-    if (hosts.size > 1 || hosts.any { it.host != ExecutionHost.LOCAL }) {
+    if (hosts.size > 1 || hosts.any { it.host != RecordedHost.LOCAL }) {
         // One job's iterations may run on different machines, every arm of one iteration on the same one.
         append("<dt>hosts</dt><dd>${hosts.joinToString("<br>") { esc(it.text()) }}")
         append("<br><small class=\"muted\">each iteration's arms ran on one machine; timing across iterations mixes machines</small></dd>")
@@ -135,7 +135,7 @@ internal fun jobPage(
     }
     append("</dl>")
     job.error?.let { append("<pre class=\"error\">${esc(it)}</pre>") }
-    if (job.status == Status.FAILED || job.status == Status.CANCELLED) {
+    if (job.backend == "nomad" && (job.status == Status.FAILED || job.status == Status.CANCELLED)) {
         append("<div class=\"actions\"><button onclick=\"act('/jobs/${job.id}/retry', null, 'Queue job ${job.id} again?')\">retry</button>")
         append("<span class=\"muted\">queues its unfinished cases again; finished ones are kept</span></div>")
     }
@@ -186,7 +186,7 @@ internal fun jobPage(
     }
     append("</h2><div class=\"scroll\"><table><tr><th>#</th><th>command</th><th>status</th><th>host</th><th>started</th>")
     append("<th>elapsed</th><th>output</th></tr>")
-    val legacyHost = if (job.experiment?.host == Experiments.AWS_HOST) ExecutionHost.CLOUD else ExecutionHost.LOCAL
+    val legacyHost = if (job.experiment?.host == Experiments.AWS_HOST) RecordedHost.CLOUD else RecordedHost.LOCAL
     for (command in commands) {
         val exit = command.exitCode?.takeIf { it != 0 }?.let { "<br><small>exit $it</small>" } ?: ""
         append("<tr><td>${command.index}</td><td><code>${esc(command.cmd)}</code></td>")
@@ -1477,13 +1477,12 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
 private enum class WorkKind(val label: String) {
     LOCAL("local only"),
     TOWARD_CLOUD("local or cloud, toward cloud"),
-    BELOW_FLOOR("local or cloud below the priority floor"),
     CLOUD("cloud"),
 }
 
 private fun workKind(config: Config, job: Job): WorkKind = when (Placement.where(job.experiment?.host)) {
     Placement.LOCAL_OR_CLOUD ->
-        if (Placement.belowFloor(job.experiment?.host, job.priority, config.aws?.nodeMinPriority ?: 0)) WorkKind.BELOW_FLOOR else WorkKind.TOWARD_CLOUD
+        WorkKind.TOWARD_CLOUD
     Placement.CLOUD -> WorkKind.CLOUD
     else -> WorkKind.LOCAL
 }
@@ -1509,112 +1508,20 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
     append("</div>")
     val parts = WorkKind.entries.mapNotNull { kind -> split[kind]?.takeIf { it > 0 }?.let { kind to it } }
     if (parts.any { it.first != WorkKind.LOCAL }) {
-        val floor = config.aws?.nodeMinPriority ?: 0
         append("<div class=\"muted small\">")
         append(parts.joinToString(" · ") { (kind, hours) ->
             val title = when (kind) {
                 WorkKind.LOCAL -> "placed on the local machine, or taken by it"
-                WorkKind.TOWARD_CLOUD -> "priority $floor or more: counts toward a node's launch"
-                WorkKind.BELOW_FLOOR -> "under priority $floor: no node takes it, so the local machine runs it"
+                WorkKind.TOWARD_CLOUD -> "eligible for compatible Nomad cloud capacity"
                 WorkKind.CLOUD -> "placed on or running on cloud nodes"
             }
             "<span title=\"$title\">${kind.label} ${coreHoursText(hours)}</span>"
         })
         append("</div>")
     }
-    config.aws?.let { append(launchGauge(config, it)) }
-    if (config.executionBackend == ExecutionBackendKind.NOMAD) append("<div class=\"muted small\">Nomad · <a href=\"/nodes\">nodes and capacity</a></div>")
+    append("<div class=\"muted small\">Nomad · <a href=\"/nodes\">nodes and capacity</a></div>")
     append("</div>")
 }
-
-/**
- * The cloud launch gauge, from the worker's `aws/nodes.json` ([NodePoolReport]): the pressure against the threshold for
- * the next node as a bar, how long it has stood over it against `nodeSustainMin`, the cooldown left, what holds the
- * next node back, and the nodes up, with their sizes, markets, the cases running of each one's capacity and what each is
- * doing, for every job it runs at once. A report an older lab wrote has
- * no gate fields; the threshold is then worked out from the settings, and the rest left out.
- */
-private fun launchGauge(config: Config, aws: AwsConfig): String = buildString {
-    val report = readPoolReport(config)
-        ?: return "<div class=\"muted small\">Cloud: no pool report yet ${startNode(aws, null)}</div>"
-    val count = report.nodes.size + report.launching
-    val threshold = report.threshold ?: NodePool.threshold(config.cores, aws.nodeLaunchLocalHours)
-    val next = report.nextThreshold ?: NodePool.nextThreshold(threshold, count)
-    val over = report.pressure >= next
-    val fill = if (next > 0) (report.pressure / next).coerceIn(0.0, 1.0) else 1.0
-    val which = if (count == 0) "the first node" else "node ${count + 1}"
-    append("<div class=\"gauge-row\"><b>Cloud</b> ")
-    append("<span class=\"gauge\" title=\"pressure: queued local-or-cloud work at priority ${aws.nodeMinPriority} or more, " +
-        "less the job the free local machine takes next, plus the unclaimed work of jobs on cloud nodes\">")
-    append("<i${if (over) " class=\"over\"" else ""} style=\"width:${"%.1f".format(Locale.ROOT, fill * 100)}%\"></i></span> ")
-    append("<span>${coreHoursText(report.pressure)} of ${coreHoursText(next)} core-h for $which</span>")
-    val notes = mutableListOf<String>()
-    val at = report.updatedAt
-    if (over && report.overSince != null && report.sustainMs != null) {
-        notes += "over for ${((at - report.overSince) / MS_PER_MIN).coerceAtLeast(0)} of ${report.sustainMs / MS_PER_MIN} min"
-    }
-    val cooldownLeft = report.lastLaunch?.let { launched -> report.cooldownMs?.let { launched + it - at } }?.takeIf { count > 0 && it > 0 }
-    if (cooldownLeft != null && report.blocker?.startsWith("cooldown") != true) notes += "cooldown ${LaunchGate.minutes(cooldownLeft)} min left"
-    if (report.launching > 0) notes += "${report.launching} launching"
-    report.blocker?.let { blocker ->
-        val hard = blocker in setOf(LaunchGate.AT_MAX, LaunchGate.QUOTA_FULL, LaunchGate.NO_JOB_FILES)
-        notes += "<span class=\"${if (hard) "warn" else "muted"}\">no node: ${esc(blocker)}</span>"
-    }
-    if (now() - at > STALE_REPORT_MS) notes += "report ${ago(at)}"
-    if (notes.isNotEmpty()) append(" <span class=\"muted\">· </span>" + notes.joinToString(" <span class=\"muted\">·</span> "))
-    append("</div><div class=\"muted small\">")
-    if (report.nodes.isEmpty()) {
-        append("cloud nodes: none")
-    } else {
-        append("cloud nodes: ${report.nodes.size} (")
-        append(report.nodes.joinToString(", ") { node ->
-            val doing = esc(node.doing).replace(Regex("\\bjob (\\d+)")) { "<a href=\"/jobs/${it.groupValues[1]}\">job ${it.groupValues[1]}</a>" }
-            val manual = if (node.manual) " <span title=\"started by hand\">manual</span>" else ""
-            val profiles = if (node.ordinary) "" else " <span title=\"bought on demand for profile jobs: it takes no other work, and retires once none waits\">profiles only</span>"
-            val slots = node.slots?.let { " <span title=\"cases running of the node's capacity, one per two physical cores, shared by every job on it\">${node.busySlots ?: 0}/$it cases</span>" }.orEmpty()
-            val adopted = if (node.adopted) " <span title=\"taken back after a lab restart\">adopted</span>" else ""
-            val age = node.launchedAt?.let { " up ${wallText((at - it).coerceAtLeast(0) / 3_600_000.0)}" }.orEmpty()
-            "<span title=\"${esc(node.instance + " · " + node.tags.sorted().joinToString())}\">${esc(node.type)} ${esc(node.market)}</span>$manual$profiles$adopted$age$slots $doing"
-        })
-        append(")")
-    }
-    append(" ${startNode(aws, report)}</div>")
-}
-
-/**
- * The control that starts a cloud node by hand (`POST /cloud/nodes`, [ManualLaunch]): a size, the one the queue calls
- * for first ([NodePoolReport.manualSize]), a market, spot first by default, and the button. The lab refuses it, saying
- * why, at `maxInstances` or with the quota full.
- */
-private fun startNode(aws: AwsConfig, report: NodePoolReport?): String = buildString {
-    val chosen = report?.manualSize
-    append("<span class=\"start-node\"><select id=\"node-size\" title=\"size; the first is the one the queue calls for\">")
-    val sizes = aws.sizes.sortedBy { if (it.type == chosen) 0 else 1 }
-    for (size in sizes) append("<option value=\"${esc(size.type)}\">${esc(size.type)} (${size.vcpus} vCPUs)</option>")
-    append("</select> <select id=\"node-market\"><option value=\"spot\">spot first</option><option value=\"on-demand\">on-demand</option></select> ")
-    append("<button onclick=\"this.disabled = true; act('/cloud/nodes', {size: document.getElementById('node-size').value, " +
-        "market: document.getElementById('node-market').value}, 'Start a cloud node? It retires after ${aws.nodeIdleMin} min with nothing to take.')\">Start a node</button></span>")
-}
-
-/** `aws/nodes.json` as the pages read it, a file from a newer or older lab included. */
-private val NODE_JSON = Json { ignoreUnknownKeys = true }
-
-/** The cloud worker's last pool report ([NodePoolReport]), or null when there is none or it cannot be read. */
-internal fun readPoolReport(config: Config): NodePoolReport? {
-    val file = config.dataDir.resolve("aws").resolve(AwsWorker.NODES_FILE).toFile()
-    return runCatching { NODE_JSON.decodeFromString(NodePoolReport.serializer(), file.readText()) }.getOrNull()
-}
-/**
- * Whether the cloud worker's pool [report] says a node is up or launching, as the runner orders its queue by
- * ([Store.next]). This process has no node of its own to ask, so the queue page reads the report, and only a fresh
- * one: the page's order is then the runner's at best, a poll behind it at worst.
- */
-internal fun nodesUp(report: NodePoolReport?, now: Long): Boolean =
-    report != null && now - report.updatedAt <= STALE_REPORT_MS && (report.nodes.isNotEmpty() || report.launching > 0)
-
-private const val MS_PER_MIN = 60_000L
-/** A pool report older than this says how old it is: the worker rewrites it on every poll. */
-internal const val STALE_REPORT_MS = 2 * 60_000L
 
 /** Core-hours, one decimal under ten and whole above. */
 internal fun coreHoursText(hours: Double): String = if (hours < 10) "%.1f".format(Locale.ROOT, hours) else "%.0f".format(Locale.ROOT, hours)
@@ -1752,7 +1659,7 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
  */
 private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = emptyList(), nodes: List<JobNode> = emptyList()): String {
     val spec = job.experiment
-    if (job.backend == ExecutionBackendKind.NOMAD && job.status in ACTIVE) {
+    if (job.backend == "nomad" && job.status in ACTIVE) {
         val where = when {
             nodes.isNotEmpty() && nodes.all { it.local } -> "local"
             nodes.isNotEmpty() && nodes.none { it.local } -> "cloud"
@@ -1767,7 +1674,7 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
         return "<span class=\"where${if (where == "cloud") " aws" else ""}\">${esc(where)}</span>" +
             if (detail.isEmpty()) "" else "<br><small>$detail</small>"
     }
-    val instances = config.jobDir(job.id).resolve(AwsWorker.INSTANCES_FILE).toFile().takeIf { it.isFile }
+    val instances = config.jobDir(job.id).resolve("aws-instances").toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     if (spec?.host == Experiments.AUTO_HOST) {
         val where = "<span class=\"where\" title=\"shared by the lab: the local machine and cloud nodes each run whole iterations of it\">local or cloud</span>"
@@ -2077,7 +1984,7 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
     append("</section>")
     val pools = settings?.pools ?: snapshot?.pools.orEmpty()
-    val configured = config.executionBackend == ExecutionBackendKind.NOMAD && settings != null
+    val configured = settings != null
     append("<section><h2>Start nodes</h2>")
     if (configured) {
         append("<form id=\"node-request\" class=\"tools\"><label>Node pool <select id=\"node-pool\" name=\"pool\" required>")
