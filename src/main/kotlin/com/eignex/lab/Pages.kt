@@ -127,7 +127,7 @@ internal fun jobPage(
     for (log in listOf("setup.log", "job.log")) {
         if (File(dir, log).isFile) append(" · <a href=\"/jobs/${job.id}/files/$log\">$log</a>")
     }
-    append(" · <a href=\"/jobs/${job.id}?json\">json</a></dd>")
+    append("</dd>")
     holds.maxOfOrNull { it.expiresAt }?.let { end ->
         append("<dt>held</dt><dd>held for download until ${clockTime(end)}: the disk's trim leaves its files alone</dd>")
     }
@@ -2115,7 +2115,7 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
         for (lease in leases) append("<tr><td>${esc(lease.pool)}</td><td>${lease.nodes}</td><td>${clockTime(lease.expiresAt)}</td><td><button type=\"button\" data-release-capacity=\"${esc(lease.id)}\">Release</button></td></tr>")
         append("</tbody></table>")
     }
-    append("</section><p><a href=\"/capacity\">Capacity JSON</a></p></div>")
+    append("</section></div>")
     append(SCRIPT)
     append(NODES_SCRIPT)
     append("</body></html>")
