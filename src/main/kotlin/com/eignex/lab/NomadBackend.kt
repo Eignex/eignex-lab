@@ -210,8 +210,8 @@ class NomadBackend(
                 if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
                 if (native) {
                     val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
-                    val cpu = meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull ?: nativeCapacity?.cpuMillis?.toLong()
-                    val memory = meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull ?: nativeCapacity?.memoryMiB?.toLong()
+                    val cpu = listOfNotNull(meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull, nativeCapacity?.cpuMillis?.toLong()).minOrNull()
+                    val memory = listOfNotNull(meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull, nativeCapacity?.memoryMiB?.toLong()).minOrNull()
                     if (cpu == null || memory == null) {
                         if (store.execution.nativeOwnedByAnother(job.id)) continue
                     } else {
