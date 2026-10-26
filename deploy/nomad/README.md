@@ -185,6 +185,12 @@ registering anything using `--config native-services.json --output /temporary/re
 then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` integrates this
 with `deploy/install.sh`, including its dry run. This does not opt normal submissions in to Nomad.
 
+When job files or the shared worker cache live on an external disk, grant macOS Full Disk Access to both the lab's
+Java executable and the supervisor's Python runtime. For Xcode's bundled Python, macOS can attribute disk access to
+the enclosing Xcode app even when Python itself is enabled; inspect the `tccd` attribution before choosing the entry.
+Restart the drained supervisor after changing its runtime, and verify it can create an output file on the external
+disk before enabling native scheduling. An HTTP 200 health response alone is insufficient: `held` must also be null.
+
 A loopback client needs an explicit HTTP advertise address, as supplied in `client.example.json`; Nomad refuses
 an implicit localhost advertisement at startup. Verify the client's actual CPU attributes before creating queue
 templates. On the production Apple M4, Nomad 2.0.7 reported frequencies of 4 and 2 MHz and total compute of 28,
