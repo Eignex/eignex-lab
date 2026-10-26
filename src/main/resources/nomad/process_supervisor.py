@@ -313,6 +313,10 @@ def main():
 
     def stop(_signal, _frame):
         STOPPING.set()
+
+    def shutdown():
+        # A signal may interrupt Thread.start or subprocess internals. Acquire locks and
+        # launch cleanup helpers only after returning to the ordinary control loop.
         with LAUNCH_LOCK:
             for record in REGISTRY.iterdir():
                 cleanup(record.name)
@@ -327,9 +331,14 @@ def main():
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(args.socket))
         server.listen(64)
-        while True:
-            connection, _ = server.accept()
+        server.settimeout(.5)
+        while not STOPPING.is_set():
+            try:
+                connection, _ = server.accept()
+            except socket.timeout:
+                continue
             threading.Thread(target=serve_request, args=(connection,), daemon=False).start()
+    shutdown()
 
 
 if __name__ == "__main__":

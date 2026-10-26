@@ -425,6 +425,14 @@ class PortableWorkerTest {
         assertEquals(124, supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out"), root.resolve("err"), 1, 10) { 10000 })
         assertFailsWith<CancellationException> { supervisor.run(listOf("sleep", "60"), root, System.getenv(), root.resolve("out2"), root.resolve("err2"), 60) { 0 } }
     }
+
+    @Test fun `supervisor stops while clients disconnect before sending requests`(): Unit = service { socket ->
+        repeat(20) {
+            java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.UNIX).use {
+                it.connect(java.net.UnixDomainSocketAddress.of(socket))
+            }
+        }
+    }
     private fun live(pid: Long): Boolean {
         if (!ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) return false
         val stat = Path.of("/proc/$pid/stat")
