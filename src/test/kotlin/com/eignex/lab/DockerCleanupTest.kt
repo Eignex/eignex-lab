@@ -196,7 +196,7 @@ class DockerCleanupTest {
         var now = 30 * DockerCleanup.DAY_MS
         val docker = FakeDocker(ps = "busy\n")
         val cleanup = DockerCleanup(
-            true, keep, 7 * DockerCleanup.DAY_MS, dir().resolve("state.json"), null, { emptySet() }, { 100 * BYTES_PER_GB }, null,
+            true, keep, 7 * DockerCleanup.DAY_MS, dir().resolve("state.json"), null, { emptySet() }, { 100 * BYTES_PER_GB },
             log = {}, clock = { now }, exec = docker::exec,
         )
 
