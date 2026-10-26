@@ -85,7 +85,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     val init = staging.resolve("jvm.init.gradle")
                     Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
-                    locked(root.resolve("dependencies-$dependencyKey.lock"), remainingRunMs, remainingLeaseMs, shared = true) {
+                    // Gradle's cache lock handshake cannot cross container PID/network namespaces.
+                    // Only one build may write a shared user home; solves and other repositories still run concurrently.
+                    locked(root.resolve("dependencies-$dependencyKey.lock"), remainingRunMs, remainingLeaseMs) {
+                        Files.createDirectories(dependencyHome)
                         run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                             "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree)
                         Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
@@ -120,13 +123,13 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         ExecutionStore.digest(requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText()),
     ).joinToString("\n"))
 
-    private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, shared: Boolean = false, use: () -> T): T {
+    private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, use: () -> T): T {
         FileChannel.open(path, CREATE, READ, WRITE).use { channel ->
             while (true) {
                 if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
                 require(lease() > 0) { "build lease expired while waiting for cache" }
                 if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
-                val lock = try { channel.tryLock(0, Long.MAX_VALUE, shared) } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
                 if (lock != null) return lock.use { use() }
                 Thread.sleep(50)
             }

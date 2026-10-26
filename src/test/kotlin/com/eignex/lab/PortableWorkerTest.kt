@@ -264,6 +264,34 @@ class PortableWorkerTest {
         } finally { executor.shutdownNow() }
     }
 
+    @Test fun `dependency cache writers exclude other processes across build identities`(): Unit = service { socket ->
+        val script = """set -eu
+            python3 - <<'PY'
+import fcntl, os
+from pathlib import Path
+home = Path(os.environ['GRADLE_USER_HOME'])
+with (home.parent.parent / ('dependencies-' + home.name + '.lock')).open('rb') as lock:
+    try:
+        fcntl.lockf(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise AssertionError('another process can enter the Gradle user home while a build writes it')
+(home / 'dependency').write_text('warm')
+PY
+            mkdir -p build
+            cp "${'$'}GRADLE_USER_HOME/dependency" build/result
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
+        val cache = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+        for (commit in listOf("a".repeat(40), "b".repeat(40))) {
+            val tree = cache.prepare(input.copy(commit = commit, build = WorkerBuild(listOf("installDist"))), source,
+                ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertEquals("warm", Files.readString(tree.resolve("build/result")))
+        }
+    }
+
     @Test fun `cache eviction keeps pinned trees until their attempt copy finishes`(): Unit = service { socket ->
         val (input, bytes) = bundle(mapOf("gradlew" to "mkdir -p build; head -c 48000 /dev/zero > build/output"))
         val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
