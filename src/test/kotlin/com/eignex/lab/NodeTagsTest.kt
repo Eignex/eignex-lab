@@ -17,6 +17,19 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class NodeTagsTest {
+    @Test
+    fun `hardware profile shows one SIMD tier without changing compatibility tags`() {
+        val profiles = mapOf(
+            setOf("arch:x86_64", "simd:avx2") to "x86_64 / AVX2",
+            setOf("arch:x86_64", "simd:avx2", "simd:avx512f", "simd:avx512") to "x86_64 / AVX-512",
+            setOf("arch:arm64", "simd:neon") to "ARM64 / NEON",
+            setOf("arch:arm64", "simd:neon", "simd:sve") to "ARM64 / SVE",
+            setOf("arch:arm64", "simd:neon", "simd:sve", "simd:sve2") to "ARM64 / SVE2",
+            setOf("arch:arm64", "simd:neon", "simd:sme", "simd:sme2") to "ARM64 / SME2",
+        )
+        for ((tags, expected) in profiles) assertEquals(expected, NodeTags.hardwareProfile(tags))
+        assertTrue(NodeTags.matches(NodeSelector(require = setOf("simd:avx2")), profiles.keys.elementAt(1)))
+    }
     private fun aws() = AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null)
     private val x86 = CpuCapabilities("x86_64", setOf("avx2", "avx512f"), "test x86", true)
     private val arm = CpuCapabilities("arm64", setOf("neon", "sme", "sme2"), "test arm", true)

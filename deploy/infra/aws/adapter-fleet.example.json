@@ -1,0 +1,15 @@
+{
+  "region": "eu-north-1",
+  "profile": "eignex-lab-nomad-adapter",
+  "deployment": "eignex-lab",
+  "inventoryFile": "/Users/lab/eignex-lab-data/nomad/aws-inventory.json",
+  "capacityTokenFile": "/Users/lab/eignex-lab-data/nomad/capacity.token",
+  "coordinator": "http://127.0.0.1:8091",
+  "pools": [
+    {"pool": "avx512-spot", "group": "COPY_AVX512_GROUP", "renewFunction": "COPY_AVX512_RENEW_FUNCTION"},
+    {"pool": "avx2-spot", "group": "COPY_AVX2_GROUP", "renewFunction": "COPY_AVX2_RENEW_FUNCTION"},
+    {"pool": "neon-spot", "group": "COPY_NEON_GROUP", "renewFunction": "COPY_NEON_RENEW_FUNCTION"},
+    {"pool": "sve-spot", "group": "COPY_SVE_GROUP", "renewFunction": "COPY_SVE_RENEW_FUNCTION"},
+    {"pool": "sve2-spot", "group": "COPY_SVE2_GROUP", "renewFunction": "COPY_SVE2_RENEW_FUNCTION"}
+  ]
+}

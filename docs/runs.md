@@ -55,6 +55,9 @@ kind of cloud node, select its configured pool by CPU, memory, architecture/SIMD
 Choose the minimum total nodes to keep in that pool and a duration of 15–60 minutes. Existing nodes count toward
 the minimum; requests respect the pool and global vCPU limits. Release a request to return that capacity to
 automatic scaling, which retires idle nodes after its normal delay. Additional node shapes need a configured pool.
+Each node shows one CPU architecture and primary SIMD profile, such as `x86_64 / AVX-512` or `ARM64 / SME2`.
+Detected lower instruction sets remain compatibility capabilities. For AVX2-only placement, require `simd:avx2`
+and exclude `simd:avx512`; for NEON-only placement, exclude `simd:sve` and `simd:sme` as well.
 
 `measurement` modes are `none` (default), `resources`, `jfr`, `compilation`, and `compilation+log`.
 Recording modes default to serial execution and require `parallel: 1`.

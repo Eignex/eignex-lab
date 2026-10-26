@@ -8,6 +8,19 @@ and independent cloud functions.
 
 ## AWS Spot
 
+For a fleet of instruction-set profiles, use `deploy/nomad/capacity-architectures.example.json` and the
+`aws-fleet/` module. The AWS shape choices are C5a for AVX2, M7i for AVX-512, M6g for NEON, M7g for SVE, and
+M8g for SVE2. Availability, actual host features, and Nomad usable CPU must be verified in the chosen region.
+Each pool starts at zero and has its own immutable architecture-compatible AMI and worker image, purchasing
+group, renewable lease, and independent expiry. Existing pools can remain in their existing state; the fleet
+module manages only additional pools and adds their exact adapter/scaler policies to the existing control roles.
+The shared collector's vCPU budget applies across all pools, rather than separately to each architecture.
+
+Use `aws/adapter-fleet.example.json` to publish all AWS pools as one inventory. A missing pool prevents publishing
+a partial fresh inventory. Renewals use an independent signed grant for each pool, and one failed renewal does
+not prevent attempts for other pools. Supply one Autoscaler target for every pool. ARM64 and x86_64 templates
+must pin their corresponding image digest; all pools on the same OS/CPU architecture share the same worker image.
+
 `aws/` creates one homogeneous zero-sized Auto Scaling Group, a pinned launch template, separate worker/scaler/
 adapter identities, capacity lease storage, a renewal Lambda, and an independent expiry Lambda scheduled every
 five minutes. `market` defaults to `spot`; failure to buy Spot never falls back to on-demand. Configure a distinct

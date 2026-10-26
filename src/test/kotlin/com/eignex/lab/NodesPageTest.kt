@@ -36,7 +36,7 @@ class NodesPageTest {
         assertContains(page, "href=\"/nodes\" class=\"on\" aria-current=\"page\">Nodes")
         assertContains(page, "Mac/Arm64")
         assertContains(page, "16 vCPU / 65536 MiB")
-        assertContains(page, "simd:avx512")
+        assertContains(page, "x86_64 / AVX-512")
         assertContains(page, "data-limit=\"4\"")
         assertContains(page, "avx512:instance")
         assertContains(page, "href=\"/jobs/42\">job 42")

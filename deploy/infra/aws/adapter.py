@@ -31,18 +31,32 @@ def inventory(asg, group, deployment, pool, at=None):
 
 def once(config, asg, functions):
     started = time.monotonic()
-    value = inventory(asg, config["group"], config["deployment"], config["pool"])
+    definitions = [config | pool for pool in config["pools"]] if "pools" in config else [config]
+    if not definitions or len({pool["pool"] for pool in definitions}) != len(definitions) or len({pool["group"] for pool in definitions}) != len(definitions):
+        raise ValueError("configure distinct pools and groups")
+    observations = [inventory(asg, pool["group"], pool["deployment"], pool["pool"]) for pool in definitions]
+    value = {"observedAt": min(item["observedAt"] for item in observations),
+             "pools": [pool["pool"] for pool in definitions],
+             "instances": [instance for item in observations for instance in item["instances"]],
+             "failures": {pool: reason for item in observations for pool, reason in item["failures"].items()}}
     if time.monotonic() - started > 20:
         raise ValueError("inventory request exceeded freshness bound")
     write_atomic(config["inventoryFile"], value)
     key = Path(config["capacityTokenFile"]).read_text().strip()
-    request = urllib.request.Request(config["coordinator"].rstrip("/") + "/capacity/grant/" + config["pool"], headers={"Authorization": "Bearer " + key})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        grant = json.load(response)
-    result = functions.invoke(FunctionName=config["renewFunction"], InvocationType="RequestResponse", Payload=json.dumps(grant).encode())
-    if result.get("FunctionError"):
-        raise RuntimeError("provider rejected capacity renewal")
-    result["Payload"].close()
+    failed = []
+    for pool in definitions:
+        try:
+            request = urllib.request.Request(config["coordinator"].rstrip("/") + "/capacity/grant/" + pool["pool"], headers={"Authorization": "Bearer " + key})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                grant = json.load(response)
+            result = functions.invoke(FunctionName=pool["renewFunction"], InvocationType="RequestResponse", Payload=json.dumps(grant).encode())
+            result["Payload"].close()
+            if result.get("FunctionError"):
+                raise RuntimeError("provider rejected capacity renewal")
+        except Exception:
+            failed.append(pool["pool"])
+    if failed:
+        raise RuntimeError("capacity renewal held for " + ", ".join(failed))
 
 
 def main():

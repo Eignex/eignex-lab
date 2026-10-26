@@ -25,6 +25,18 @@ data class CpuCapabilities(val arch: String = "unknown", val features: Set<Strin
 object NodeTags {
     private val TAG = Regex("[a-z0-9][a-z0-9:._/-]*")
     val probeScript: String = requireNotNull(NodeTags::class.java.getResource("/node-capabilities.sh")).readText()
+    /** One CPU architecture and its primary SIMD profile; compatibility tags retain the detected capabilities. */
+    fun hardwareProfile(tags: Set<String>): String {
+        val architecture = tags.singleOrNull { it.startsWith("arch:") }?.substringAfter(':')
+        val profiles = when (architecture) {
+            "x86_64" -> listOf("avx512" to "AVX-512", "avx512f" to "AVX-512", "avx2" to "AVX2", "avx" to "AVX", "sse2" to "SSE2")
+            "arm64" -> listOf("sme2" to "SME2", "sme" to "SME", "sve2" to "SVE2", "sve" to "SVE", "neon" to "NEON", "asimd" to "NEON")
+            else -> emptyList()
+        }
+        val simd = profiles.firstOrNull { "simd:${it.first}" in tags }?.second
+        val cpu = when (architecture) { "arm64" -> "ARM64"; "x86_64" -> "x86_64"; else -> "Unknown" }
+        return listOfNotNull(cpu, simd).joinToString(" / ")
+    }
     val localCapabilities: CpuCapabilities by lazy {
         runCatching {
             val process = ProcessBuilder("bash", "-c", probeScript).redirectErrorStream(true).start()
