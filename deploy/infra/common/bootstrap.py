@@ -11,7 +11,8 @@ ROOT = Path('/etc/eignex-lab')
 
 
 def render(config, secret, instance_id, probe, cpus, memory_mib):
-    if probe.get('detected') != '1' or probe.get('arch') != config['architecture']:
+    architecture = {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(probe.get('arch'), probe.get('arch'))
+    if probe.get('detected') != '1' or architecture != config['architecture']:
         raise ValueError('worker architecture or capability detection mismatch')
     if not set(config['minimumFeatures']).issubset(probe.get('features', '').split()):
         raise ValueError('worker SIMD capability mismatch')
