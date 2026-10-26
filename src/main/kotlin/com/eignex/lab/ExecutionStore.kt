@@ -92,7 +92,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         require(id.matches(Regex("[a-z0-9-]{1,64}")) && executionClass.matches(Regex("[a-z][a-z0-9-]{0,31}")))
         require(release.isNotBlank() && token.length >= 32)
         val job = store.job(jobId) ?: error("missing experiment")
-        require(job.backend == ExecutionBackendKind.NOMAD && !job.cancelRequested && job.status in setOf(Status.QUEUED, Status.RUNNING))
+        require(job.backend == "nomad" && !job.cancelRequested && job.status in setOf(Status.QUEUED, Status.RUNNING))
         val nomadId = "lab-$jobId-$executionClass-$id-1"
         db.session(id)?.let { old ->
             require(old.jobId == jobId && old.executionClass == executionClass && old.release == release && old.budget == budget)
@@ -197,7 +197,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     fun expireRunDeadlines(at: Long = now()) = store.executionTransaction { db ->
-        store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.NOMAD }.forEach { job ->
+        store.active(withCommands = false).filter { it.backend == "nomad" }.forEach { job ->
             val remaining = job.runRemainingMs(at)
             if (remaining != null && (remaining <= 0 || db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND state = 'committed'", job.id) {
                 Json.decodeFromString<IterationResult>(it.getString(1)).runTimedOut
@@ -398,7 +398,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun queueRecipe(job: Long, proposed: NomadQueueSettings): NomadQueueSettings = store.executionTransaction { db ->
         val prior = db.sqlRows("SELECT settings FROM execution_queue_recipes WHERE job_id = ?", job) { it.getString(1) }.singleOrNull()
         if (prior != null) return@executionTransaction Json.decodeFromString(prior)
-        require(store.job(job)?.backend == ExecutionBackendKind.NOMAD)
+        require(store.job(job)?.backend == "nomad")
         db.sqlUpdate("INSERT INTO execution_queue_recipes (job_id, settings) VALUES (?, ?)", job, Json.encodeToString(proposed))
         proposed
     }
@@ -411,14 +411,6 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun checksComplete(job: Long): Set<Int> = store.executionTransaction { db -> db.sqlRows("SELECT idx FROM execution_checks WHERE job_id = ?", job) { it.getInt(1) }.toSet() }
 
     /** Rollback needs an external proof of stopped allocations; never expose as a backend toggle. */
-    fun releaseToLegacy(jobId: Long, stopped: Set<String>) = store.executionTransaction { db ->
-        val sessions = db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", jobId, map = ::sessionRow)
-        require(sessions.all { it.desired == "stop" && it.nomadJobId in stopped }) { "verify every allocation stopped before rollback" }
-        require(db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", jobId) { true }.isEmpty())
-        require(store.job(jobId)?.status in setOf(Status.QUEUED, Status.RUNNING))
-        db.sqlUpdate("UPDATE jobs SET backend = 'legacy', status = 'QUEUED', local = 0, running_since = NULL WHERE id = ?", jobId)
-    }
-
     internal fun cancelIn(db: Connection, jobId: Long, at: Long) {
         db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", jobId, map = ::attemptRow)
             .forEach { db.invalidate(it, "cancelled", at) }
@@ -441,7 +433,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         if (!MessageDigest.isEqual(hash.toByteArray(), digest(token).toByteArray())) throw ExecutionFenced("invalid credential")
         if (s.desired == "stop" || (allocation != null && s.allocation != allocation)) throw ExecutionFenced("session fenced")
         val job = store.job(s.jobId)!!
-        if (job.backend != ExecutionBackendKind.NOMAD || job.cancelRequested || job.status !in setOf(Status.QUEUED, Status.RUNNING)) throw ExecutionFenced("experiment fenced")
+        if (job.backend != "nomad" || job.cancelRequested || job.status !in setOf(Status.QUEUED, Status.RUNNING)) throw ExecutionFenced("experiment fenced")
         return s
     }
     private fun Connection.findAttempt(o: AttemptOwner): Attempt? {
@@ -453,7 +445,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         val a = findAttempt(o) ?: throw ExecutionFenced("unknown attempt")
         val s = session(o.session) ?: throw ExecutionFenced("unknown session")
         val job = store.job(a.jobId)!!
-        if (s.desired == "stop" || s.allocation != o.allocation || a.state !in ACTIVE_STATES || a.leaseUntil <= at || job.cancelRequested || job.backend != ExecutionBackendKind.NOMAD || job.status !in setOf(Status.RUNNING, Status.QUEUED)) throw ExecutionFenced("attempt fenced")
+        if (s.desired == "stop" || s.allocation != o.allocation || a.state !in ACTIVE_STATES || a.leaseUntil <= at || job.cancelRequested || job.backend != "nomad" || job.status !in setOf(Status.RUNNING, Status.QUEUED)) throw ExecutionFenced("attempt fenced")
         return a
     }
     private fun Connection.expire(jobId: Long, at: Long) {

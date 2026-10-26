@@ -59,7 +59,7 @@ class ConnectedNomadTest {
         val sha = git("rev-parse", "HEAD")
         val spec = ExperimentSpec("automatic-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")),
             seeds = listOf(1, 2), host = Experiments.AWS_HOST)
-        val job = store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val job = store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec)
         val budget = ResourceBudget(2000, 2048, 2)
         val template = NomadBatchJob("template", NomadPlatform.LINUX, "lab-prototype-linux",
             NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,
@@ -129,7 +129,7 @@ class ConnectedNomadTest {
         val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), host = "auto")
         val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
         val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
-        val job = store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val job = store.create(spec.name, "main", emptyList(), experiment = spec)
         store.plan(job, arms, problems, cases, cases.map { "fixture" to 5L })
         val script = """#!/usr/bin/env bash
             set -eu

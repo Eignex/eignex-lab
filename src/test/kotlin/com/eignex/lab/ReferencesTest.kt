@@ -414,7 +414,7 @@ class ReferencesTest {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val problem = Problem("s", "p", collection = "c")
         val id = store.create("ref", "main", emptyList(), experiment = ExperimentSpec("ref", listOf(mapOf("suite" to "s"))))
-        store.next()
+        store.startForTest()
         store.plan(id, listOf(PlannedArm(Arm("cp-sat", emptyMap()), "sha")), listOf(problem), Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
         store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"sourceHashes":{"model":"m1"}}""")
         store.finish(id, Status.DONE)

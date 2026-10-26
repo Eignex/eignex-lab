@@ -9,7 +9,7 @@ class TrendTest {
     private fun run(store: Store, name: String, solvedOf: List<Boolean>, finish: Boolean = true, first: Int = 0): Long {
         val problems = solvedOf.indices.map { Problem(if (it % 2 == 0) "a" else "b", "p${first + it}") }
         val id = store.create(name, "sha", emptyList(), experiment = ExperimentSpec(name, listOf(mapOf("suite" to "a"))))
-        store.next()
+        store.startForTest()
         store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(problems.size, 1, emptyList()), problems.map { "true" to 1L })
         solvedOf.forEachIndexed { i, solved ->
             store.caseRecord(id, i, if (solved) """{"kind":"satisfy","feasible":true,"timeToBestMs":5,"budgetMs":1000}""" else """{"kind":"satisfy","budgetMs":1000}""")
@@ -31,7 +31,7 @@ class TrendTest {
         store.commandFinished(second, 0, 0)
         val name = Confirm.name("sweep", "sha", second)
         val confirmation = store.create(name, "sha", emptyList(), experiment = ExperimentSpec(name, emptyList()))
-        store.next()
+        store.startForTest()
         val problem = Problem("a", "p0")
         store.plan(confirmation, listOf(PlannedArm(Arm(Confirm.BEFORE, emptyMap()), "a"),
             PlannedArm(Arm(Confirm.AFTER, emptyMap()), "b")), listOf(problem),
@@ -135,7 +135,7 @@ class TrendTest {
     fun `a finished run with no cases is remembered as having no point, not as being computed`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val failed = store.create("sweep@aaa", "sha", emptyList(), experiment = ExperimentSpec("sweep", listOf(mapOf("suite" to "a"))))
-        store.next()
+        store.startForTest()
         store.finish(failed, Status.FAILED)
         val done = run(store, "sweep@bbb", listOf(true))
         val cache = TrendCache()

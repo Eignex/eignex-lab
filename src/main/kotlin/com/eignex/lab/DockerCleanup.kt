@@ -306,7 +306,7 @@ internal fun dockerCleanup(
         referencedImages(store.active(withCommands = false), store::arms, config.dockerKeep.map(DockerCleanup::repository).toSet(), grep)
     },
     freeBytes = { freeBytes(config.dataDir) },
-    colimaDisks = config.colimaDisks.takeIf { config.colima },
+    colimaDisks = null,
     du = DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)).let { runner -> { path -> runner.run(listOf(path.toString())) } },
 )
 

@@ -45,7 +45,7 @@ data class NomadQueueSettings(
     }
     fun matching(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
         NodeTags.matches(spec.nodeTags, target.capabilities) &&
-            (target.os == "mac" || Placement.nomadLocalOnlyReason(spec, name, cloudSchedule) == null &&
+            (target.os == "mac" || Placement.localOnlyReason(spec, name, cloudSchedule) == null &&
                 target.market == if (NodeTags.onDemand(false, spec.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
     }
     fun solveOptions(options: String): String {
@@ -71,7 +71,7 @@ class NomadQueue(
     private val config: Config, private val store: Store, private val backend: NomadBackend,
     private val artifacts: ArtifactStore, private val settings: NomadQueueSettings,
     private val allowed: () -> Boolean,
-    private val completed: (Job) -> Unit = Runner(config, store, startCloud = { null })::queueConfirmation,
+    private val completed: (Job) -> Unit = Runner(config, store)::queueConfirmation,
     private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> =
         TrustedQueueSources(config, artifacts)::publish,
@@ -84,7 +84,7 @@ class NomadQueue(
             store.execution.domainCompleted(id)
         }
         val schedules = store.schedules()
-        for (job in store.active().filter { it.backend == ExecutionBackendKind.NOMAD && !it.paused && !it.cancelRequested }
+        for (job in store.active().filter { it.backend == "nomad" && it.experiment?.isAnalysis != true && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
             try {
                 val settings = store.execution.queueRecipe(job.id, this.settings)

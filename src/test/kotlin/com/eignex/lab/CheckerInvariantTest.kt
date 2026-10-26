@@ -241,7 +241,7 @@ class CheckerInvariantTest {
 
     private fun job(store: Store, record: String): Long {
         val id = store.create("j", "sha", emptyList(), experiment = ExperimentSpec("j", listOf(mapOf("suite" to "s"))))
-        store.next()
+        store.startForTest()
         store.plan(id, listOf(PlannedArm(Arm("base", SourceValidation.SCHEDULED), "sha")), listOf(smt),
             Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
         store.commandStarted(id, 0)

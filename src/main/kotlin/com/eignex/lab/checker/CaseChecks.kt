@@ -1,7 +1,6 @@
 package com.eignex.lab.checker
 
 import com.eignex.lab.ACTIVE
-import com.eignex.lab.AwsHost
 import com.eignex.lab.Config
 import com.eignex.lab.Job
 import com.eignex.lab.Problem
@@ -48,7 +47,7 @@ object Checkers {
             val own = config.worktree(job).toFile()
             listOf(own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
         },
-        worktreeRoots = listOf(config.worktree(0).parent.toString(), "${AwsHost.HOME}/work"),
+        worktreeRoots = listOf(config.worktree(0).parent.toString(), "/home/ubuntu/work"),
     )
 
     /** Where the lab keeps its checker binaries (`$LAB_DATA/checkers`), and only those: scratch inputs go under `tmp`

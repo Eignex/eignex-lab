@@ -236,39 +236,5 @@ class VolumesTest {
         assertNull(Volumes.hold(lab.config))
     }
 
-    @Test
-    fun `a runner whose job files do not answer starts the cloud worker, holds its queue and recovers once they do`() {
-        // The corpus refusing access keeps the queue held after the recovery, so the runner takes no job here.
-        val lab = Blocked(freshMs = 0, corpusRefused = true)
-        val store = Store(lab.base.resolve("lab.db").also { it.parent.createDirectories() })
-        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), seeds = listOf(1), host = Experiments.AUTO_HOST)
-        val id = store.create("ab", "main", emptyList(), experiment = spec)
-        val cases = Experiments.cases(1, 1, spec.seeds)
-        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Problem("s", "p")), cases, cases.map { "true" to 1_000L })
-        assertEquals(id, store.next()?.id)
-        val cloud = CountDownLatch(1)
-        val runner = Runner(lab.config, store, startCloud = { cloud.countDown(); { false } })
 
-        thread(isDaemon = true, name = "test-runner") { runner.loop() }
-
-        assertTrue(cloud.await(5, TimeUnit.SECONDS), "the cloud worker did not start")
-        assertTrue(runner.disk.held.orEmpty().startsWith("cannot access job files directory ${lab.jobs}"), runner.disk.held)
-        assertTrue(JAVA in runner.disk.held.orEmpty(), runner.disk.held)
-        // The recovery tried, found the job files blocked, and left the job as it was.
-        assertTrue(eventually { runner.recoveryWaits != null })
-        assertTrue(runner.recoveryWaits.orEmpty().startsWith("cannot access job files directory"), runner.recoveryWaits)
-        assertFalse(runner.recovered)
-        assertEquals(Status.RUNNING, store.job(id)!!.status)
-
-        lab.gate.countDown()
-
-        assertTrue(eventually { runner.recovered }, "the runner did not recover")
-        assertEquals(Status.QUEUED, store.job(id)!!.status)
-        assertTrue(eventually { runner.disk.held.orEmpty().startsWith("cannot access corpus directory") }, runner.disk.held)
-    }
-
-    private companion object {
-        const val JAVA = "/Library/Java/JavaVirtualMachines/test.jdk/Contents/Home/bin/java"
-        const val TIMEOUT_MS = 300L
-    }
 }

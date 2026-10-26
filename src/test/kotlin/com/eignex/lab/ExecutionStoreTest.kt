@@ -13,7 +13,7 @@ class ExecutionStoreTest {
 
     private fun job(problems: Int = 2): Long {
         val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = listOf(1), host = "auto")
-        val id = store.create("ab", "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val id = store.create("ab", "main", emptyList(), parallel = 2, experiment = spec)
         val cases = Experiments.cases(problems, 2, spec.seeds)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, List(problems) { Problem("s", "p$it") }, cases, cases.map { "true" to 10L })
         return id
@@ -30,7 +30,7 @@ class ExecutionStoreTest {
 
     private fun profile(): Long {
         val spec = ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1))
-        val id = store.create("profile", "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val id = store.create("profile", "main", emptyList(), experiment = spec)
         val cases = Experiments.cases(1, 1, emptyList())
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Experiments.profileProblem(spec)), cases, cases.map { "true" to 720L })
         return id
@@ -38,7 +38,7 @@ class ExecutionStoreTest {
 
     @Test fun `preparation has fenced ownership before a plan and survives coordinator restart`() {
         val spec = ExperimentSpec("prepare")
-        val id = store.create(spec.name, "main", emptyList(), experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
         store.execution.createSession("prep", id, "prepare", "release", budget, token, "{}", 1000)
         store.execution.bind("prep", token, "allocation", "node", "release", 1000)
         val first = store.execution.claim("prep", token, "allocation", 1100)!!
@@ -119,17 +119,6 @@ class ExecutionStoreTest {
         assertEquals(0, store.execution.accepted(id).size)
     }
 
-    @Test fun `nomad ownership excludes legacy claims and restart recovery`() {
-        val id = job()
-        assertNull(store.next()); assertTrue(store.nodeQueue().isEmpty()); assertNull(store.claimForNode(id))
-        assertNull(store.claimIteration(id, "legacy"))
-        bind(id)
-        val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
-        store.recoverShared(id)
-        assertEquals(claim, Store(file).execution.claim("s", token, "alloc-s", 1002))
-        assertEquals(ExecutionBackendKind.NOMAD, Store(file).job(id)!!.backend)
-    }
-
     @Test fun `ambiguous submission and claim reuse stable identities without storing bearer token`() {
         val id = job(); val session = bind(id)
         assertEquals(session, store.execution.createSession("s", id, "solve", "release-1", budget, token, "{}", 1002))
@@ -189,19 +178,6 @@ class ExecutionStoreTest {
         assertEquals(setOf("submit", "stop"), store.execution.intents().map { it.operation }.toSet())
     }
 
-    @Test fun `an incomplete manifest rolls back all projection and rollback requires stopped allocations`() {
-        val id = job(); val session = bind(id)
-        val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
-        store.execution.phase(claim.owner, "uploading", 1002)
-        assertFailsWith<IllegalArgumentException> { store.execution.commit(claim.owner, result(claim).copy(cases = result(claim).cases.take(1)), 1003) }
-        assertEquals(0, store.job(id)!!.done)
-        assertFailsWith<IllegalArgumentException> { store.execution.releaseToLegacy(id, setOf(session.nomadJobId)) }
-        store.execution.loseSession("s", "rollback", 1004)
-        assertFailsWith<IllegalArgumentException> { store.execution.releaseToLegacy(id, emptySet()) }
-        store.execution.releaseToLegacy(id, setOf(session.nomadJobId))
-        assertEquals(id, store.next()?.id)
-    }
-
     @Test fun `several sessions preserve the per experiment per node case cap`() {
         val sharedId = job();
         for (name in listOf("same-a", "same-b")) {
@@ -216,9 +192,16 @@ class ExecutionStoreTest {
         assertEquals(2, store.execution.claim("same-b", token, "alloc-same-b", 1005)!!.parallel)
     }
 
-    @Test fun `old jobs migrate to legacy and survive additional state migration`() {
-        val id = store.create("old", "main", listOf("true" to 1L))
-        assertEquals(ExecutionBackendKind.LEGACY, Store(file).job(id)!!.backend)
-        assertEquals(id, Store(file).next()?.id)
+    @Test fun `historical backend provenance stays readable while new jobs always use Nomad`() {
+        val id = store.create("old", "main", listOf("recorded" to 1L))
+        store.finish(id, Status.DONE)
+        store.executionTransaction { db -> db.createStatement().use { it.execute("ALTER TABLE jobs DROP COLUMN backend") } }
+        val reopened = Store(file)
+        assertEquals("legacy", reopened.job(id)!!.backend)
+        assertEquals(Status.DONE, reopened.job(id)!!.status)
+        assertEquals("recorded", reopened.job(id)!!.commands.single().cmd)
+        assertFalse(reopened.retry(id))
+        val current = reopened.create("new", "main", emptyList())
+        assertEquals("nomad", reopened.job(current)!!.backend)
     }
 }

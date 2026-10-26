@@ -6,12 +6,8 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.util.UUID
 import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
@@ -25,608 +21,87 @@ import com.eignex.lab.checker.Checkers
 import com.eignex.lab.checker.RecheckResult
 import com.eignex.lab.checker.SourceChecker
 
-/**
- * Works the queue one job at a time. Each job checks its ref out into a fresh worktree, builds klause-cli, and
- * runs its commands in order. Every step's outcome is committed to the store before the next starts, so a crash
- * or reboot resumes the job at its first unfinished command; a command cut off mid-run is rerun from scratch.
- *
- * Every process the runner starts leads its own session, so killing that process group reaches everything the
- * command spawned, including children whose parent shell has already died. A case that reaches its time limit, or a
- * profile whose whole-run limit runs out, is stopped gracefully: SIGTERM to its group, [stopGraceMs] for it to flush
- * and exit (a JVM runs its shutdown hooks, JFR dumps its recording), then SIGKILL to what is left. A cancel or a
- * shutdown still kills at once: a cancelled case's results are not wanted, and a case cut off by a shutdown reruns
- * from scratch, while the service manager gives the runner only seconds to stop.
- */
+/** Schedules, retained-capture analysis and maintenance. Experiment execution belongs exclusively to Nomad. */
 class Runner(
     private val config: Config,
     private val store: Store,
-    /** How long a case stopped at its limit has between SIGTERM and SIGKILL; shorter only in tests. */
-    private val stopGraceMs: Long = Experiments.STOP_GRACE_SEC * 1000,
-    /** The lab's source checkers ([com.eignex.lab.checker]); a test gives its own. */
     sourceChecker: () -> SourceChecker = { Checkers.of(config) },
-    /**
-     * Starts the cloud worker when the lab has AWS settings ([AwsWorker]), and gives what tells whether it has a node up
-     * or launching; null without the settings. A test gives its own.
-     */
-    private val startCloud: (Runner) -> (() -> Boolean)? = { runner ->
-        config.aws?.let { aws ->
-            val worker = AwsWorker(runner, store, config, aws)
-            thread(isDaemon = true, name = "aws") { worker.loop() }
-            return@let { worker.active }
-        }
-    },
-    /** The self-updater; null builds the lab's own from the config. A test gives its own. */
     private val selfUpdater: SelfUpdater? = null,
-    /** Source transport override for isolated tests; submitted repositories are always validated first. */
     private val sourceUrl: (String) -> String = { Repositories.source(config, it) },
 ) {
-    /** Checks each finished case's solution claim with the lab's own external checkers, off the dispatch thread. */
     internal val checks = CaseChecks(store, sourceChecker, ::log)
-
-    /** Every process the runner has started and not yet seen exit, so cancel and shutdown can reach them all. */
     private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
-
-    /** The `<n>.termination` file ([Termination]) of each running case's process, where a kill says why first. */
-    private val terminations = ConcurrentHashMap<Process, Path>()
-
-    /** The running cases' processes the lab has killed, whose signal exit is then no outside kill. */
-    private val killed: MutableSet<Process> = ConcurrentHashMap.newKeySet()
-
-    @Volatile
-    private var stopping = false
-
-    internal val lenient = Json { ignoreUnknownKeys = true }
-
-    /** Held over every git operation on the shared mirror, which the schedule thread and job setup both touch. */
+    @Volatile private var stopping = false
     private val mirrorLock = Any()
-
-    /** Which commits a job may build: checked on the mirror and against GitHub's record of who pushed what. */
-    private val trusts = ConcurrentHashMap<String, Trust>()
-
-    private fun trust(repository: String): Trust = trusts.computeIfAbsent(repository) {
-        Repositories.requireAllowed(repository)
-        Trust(config.trustedUsers, sourceUrl(repository),
-            git = { args -> synchronized(mirrorLock) { gitIn(mirror(repository).toFile(), args) } },
-            github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
-    }
-
     private fun mirror(repository: String) = Repositories.mirror(config, repository)
-
-    private val updater by lazy {
-        selfUpdater ?: SelfUpdater(
-            config.sourceDir.takeIf { config.updateCheckSec > 0 },
-            config.updateCheckSec * 1000,
-            config.dataDir.resolve("logs").resolve("update.log").toFile(),
-            requestFile = config.updateRequest.toFile(),
-        )
-    }
-
-    /** Prunes the reference solvers' Docker images and build cache between jobs ([DockerCleanup]). */
+    private val updater by lazy { selfUpdater ?: SelfUpdater(
+        config.sourceDir.takeIf { config.updateCheckSec > 0 }, config.updateCheckSec * 1000,
+        config.dataDir.resolve("logs/update.log").toFile(), requestFile = config.updateRequest.toFile()) }
     private val dockerCleanup by lazy {
         dockerCleanup(config, store) { pattern, revision -> synchronized(mirrorLock) { mirrorGrep(config.mirror.toFile())(pattern, revision) } }
     }
-
-    /**
-     * Why the runner holds its queue, as last checked ([Volumes.hold]): a low disk, or a volume that is missing or does
-     * not answer. Checked first at start, within the probes' timeouts, and before each job.
-     */
     internal val disk = DiskGuard { Volumes.hold(config) }
-
-    /** Whether the startup's recovery ([recover]) has run: until it has, neither the local machine nor a node takes work. */
-    @Volatile
-    internal var recovered = false
+    @Volatile internal var recovered = false
+        private set
+    @Volatile internal var recoveryWaits: String? = null
         private set
 
-    /**
-     * Work the queue. The volumes are checked first, each within a timeout ([VolumeAccess]), and the cloud worker and
-     * the other background threads start whatever that finds: a drive macOS keeps the lab from then holds the queue
-     * with the reason, while the pool is still reported and its nodes kept. The recovery that touches job files
-     * ([recover]) waits for their volume to answer, and runs on the first pass after it does.
-     */
     fun loop() {
         config.dataDir.createDirectories()
-        if (config.requireDocker) awaitDocker()
         disk.allowsWork()
-        startCloud(this)?.let { awsActive = it }
-        // Reference rows lab runs made before sources were kept learn them from those runs' records, off the loop.
-        thread(isDaemon = true, name = "bind-references") {
-            runCatching { store.bindLabReferenceSources() }
-                .onSuccess { if (it > 0) println("bound $it reference rows to their runs' source files") }
-                .onFailure { println("binding reference rows failed: ${it.message}") }
-        }
-        // Ended jobs' bulk goes after LAB_TRIM_AGE_DAYS, or sooner when the job files' volume runs low, past its grace
-        // and never while a download holds the job ([JobTrim]).
-        JobTrim(
-            config.jobsDir, store::ended, { freeBytes(config.jobsDir) }, ::log,
-            held = { store.holds().mapTo(HashSet()) { it.job } },
-            graceMs = config.trimGraceMs, criticalFreeBytes = config.trimCriticalFreeBytes,
-            targetFreeBytes = config.jobsTargetFreeBytes, maxAgeMs = config.trimAgeMs,
-        ).start()
-        // The case records stored before each build provenance was kept once are compacted, a batch at a time, and
-        // the database vacuumed once no job runs ([DbCompaction]).
-        DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } })
-            .start()
-        // On its own thread, so a schedule queues its run on time while a long job holds the runner; the queue's
-        // priorities then decide when it runs.
+        thread(isDaemon = true, name = "bind-references") { runCatching { store.bindLabReferenceSources() } }
+        JobTrim(config.jobsDir, store::ended, { freeBytes(config.jobsDir) }, ::log,
+            held = { store.holds().mapTo(HashSet()) { it.job } }, graceMs = config.trimGraceMs,
+            criticalFreeBytes = config.trimCriticalFreeBytes, targetFreeBytes = config.jobsTargetFreeBytes,
+            maxAgeMs = config.trimAgeMs).start()
+        DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } }).start()
         thread(isDaemon = true, name = "schedules") {
-            while (true) {
+            while (!stopping) {
                 runCatching { enqueueScheduled() }.onFailure { println("schedules: ${it.message}") }
                 Thread.sleep(SCHEDULE_POLL_MS)
             }
         }
-        while (true) {
-            // Only between jobs: an update builds on this machine and restarts the runner, so a job yields to it
-            // between its cases (see dispatch) and the update runs here with nothing running locally. Cloud nodes keep
-            // working meanwhile and are adopted after the restart; the iterations they hold then go back whole.
+        while (!stopping) {
             val ownership = NativeExecutionLock.tryAcquire(config.nativeExecutionLock)
             if (ownership == null) {
                 if (updater.due()) { config.nativeYield.parent.createDirectories(); config.nativeYield.writeText("update pending\n") }
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
-            var idle = false
+            var idle = true
             try {
                 updater.maybeUpdate()
                 Files.deleteIfExists(config.nativeYield)
-                // Also only between jobs, so no case of the runner's starts a container while images go.
                 runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
-                val ready = recover()
-                if (!disk.allowsWork() || !ready) {
-                    idle = true
-                    continue
-                }
-                // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
-                // A shared job is taken, or joined while nodes run it, under the crews' lock, so it cannot end meanwhile.
-                val job = synchronized(crews.lock) {
-                    store.next(nodesUp = awsActive(), exclude = crews.failing(), nodeTags = config.localNodeTags)?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
-                }
-                if (job == null) {
-                    idle = true
-                    continue
-                }
-                if (!runJob(job)) return
-            } finally {
-                ownership.close()
-                if (idle) Thread.sleep(IDLE_POLL_MS)
-            }
+                if (disk.allowsWork() && recover()) store.nextAnalysis()?.let { idle = false; runJob(it) }
+            } finally { ownership.close() }
+            if (idle) Thread.sleep(IDLE_POLL_MS)
         }
     }
 
-    /** Run the [job] the queue handed out to its end, or to a yield. False when the runner is stopping meanwhile. */
+    /** The maintenance runner accepts analysis only; builds, solves and profiles cannot enter this process. */
     internal fun runJob(job: Job): Boolean {
-        if (!NodeTags.matches(job.experiment?.nodeTags, config.localNodeTags)) {
-            store.finish(job.id, Status.FAILED, "local node does not match the job's required and excluded tags")
-            return true
-        }
-        if (shared(job)) return runShared(job)
-        if (job.experiment?.profile?.runTimeoutSec != null) {
-            workWithDeadline(job)
-            return true
-        }
-        if (job.experiment?.isAnalysis == true) {
-            runCatching { analyze(job) }.onFailure { e ->
-                if (stopping) return false
-                log(job.id, "job failed: ${e.message}")
-                store.finish(job.id, Status.FAILED, e.message ?: e.toString())
-            }
-            return true
-        }
-        runCatching { work(job) }.onFailure { e ->
+        require(job.experiment?.isAnalysis == true) { "experiment execution requires Nomad" }
+        runCatching { analyze(job) }.onFailure { failure ->
             if (stopping) return false
-            // A cancel stops the setup step running, or ends a wait to retry one; it is a cancel, not a failure.
-            if (store.cancelRequested(job.id)) return@onFailure cancel(job.id)
-            log(job.id, "job failed: ${e.message}")
-            store.cancelRemaining(job.id)
-            store.finish(job.id, Status.FAILED, e.message ?: e.toString())
-            runCatching { removeWorktree(job.id) }
+            if (store.cancelRequested(job.id)) cancel(job.id)
+            else { log(job.id, "analysis failed: ${failure.message}"); store.finish(job.id, Status.FAILED, failure.message) }
         }
-        return true
+        return !stopping
     }
 
-    private fun work(claimed: Job) {
-        finishWork(claimed, executeWork(claimed))
-    }
-
-    internal fun workWithDeadline(job: Job) {
-        val limit = checkNotNull(job.experiment?.profile?.let(Experiments::profileRunTimeoutSec)) * MS_PER_SEC
-        ProfileRunDeadline(limit - job.elapsedMs(now()), cancelled = { store.cancelRequested(job.id) }, graceMillis = stopGraceMs).use { deadline ->
-            var outcome: Dispatched? = null
-            var failure: Throwable? = null
-            try {
-                outcome = deadline.work { executeWork(job) }
-            } catch (error: Throwable) {
-                if (stopping) return
-                failure = error
-            }
-            if (outcome == Dispatched.YIELDED && failure == null) {
-                if (store.requeue(job.id) == Status.CANCELLED) return cancel(job.id)
-                log(job.id, "job paused between commands")
-                return
-            }
-            try {
-                deadline.cleanup { removeWorktree(job.id) }
-            } catch (cleanup: Throwable) {
-                if (failure == null) failure = cleanup else failure.addSuppressed(cleanup)
-                log(job.id, "worktree cleanup incomplete: ${cleanup.message}")
-            }
-            if (store.cancelRequested(job.id) || outcome == Dispatched.CANCELLED) {
-                store.cancelRemaining(job.id)
-                store.finish(job.id, Status.CANCELLED)
-                log(job.id, "job cancelled")
-            } else if (failure != null || outcome != Dispatched.FINISHED) {
-                store.cancelRemaining(job.id)
-                val error = failure?.message ?: "profile did not finish"
-                store.finish(job.id, Status.FAILED, error)
-                log(job.id, "job failed: $error")
-            } else {
-                store.finish(job.id, Status.DONE)
-                log(job.id, "job finished")
-            }
-        }
-    }
-
-    private fun executeWork(claimed: Job): Dispatched {
-        val dir = config.createJobDir(claimed.id)
-        val job = prepare(claimed, dir)
-        val host = LocalHost(job, job.sha.orEmpty(), dir.resolve("setup.log").toFile())
-        return dispatch(job, dir, host, render = render(job, host))
-    }
-
-    /**
-     * Get [claimed] ready to run its cases on the local machine: what a crashed runner left of it here is killed and
-     * queued again, and the job is set up when it was not, or its worktree is gone ([setupExperiment]): built, and
-     * planned when no host has planned it yet. The job as it then stands.
-     */
-    private fun prepare(claimed: Job, dir: Path): Job {
-        killOrphan(dir.resolve("setup.pid"))
-        claimed.commands.filter { it.status == Status.RUNNING && (it.host == null || it.host == ExecutionHost.LOCAL) }.forEach {
-            killOrphan(dir.resolve("${it.index}.pid"), Termination.file(dir, it.index))
-        }
-        store.requeueInterrupted(claimed.id)
-        var job = checkNotNull(store.job(claimed.id))
-        // What the job's setup is doing, for the placement report ([SetupStep]): each retried step names itself.
-        SetupStep.clear(dir)
-        if (!job.setupDone || !config.worktree(job.id).exists()) {
-            val sha = try {
-                SetupStep.write(dir, SetupStep.STARTING)
-                setupExperiment(job, dir)
-            } finally {
-                SetupStep.clear(dir)
-            }
-            ProfileRunDeadline.checkActive()
-            store.setup(job.id, sha)
-            job = checkNotNull(store.job(job.id))
-        }
-        return job
-    }
-
-    /** The hosts on each shared job in this process, the local machine and the cloud nodes alike ([Crews]). */
-    internal val crews = Crews()
-
-    /** Whether [job] is shared: a `local or cloud` (`auto`) or cloud (`aws`) one, whose iterations every host that may
-     *  run it pulls from the store, rather than a job one host runs whole. */
-    internal fun shared(job: Job): Boolean = job.experiment?.let {
-        (it.host == Experiments.AUTO_HOST || it.host == Experiments.AWS_HOST) && !it.isAnalysis
-    } == true
-
-    /**
-     * Run the local machine's part of shared [job], which it took from the queue or joined while cloud nodes run it:
-     * set it up here (build its commits, and plan it when no host has), then pull its iterations one at a time
-     * ([Store.claimIteration]) beside any nodes on it, as many cases at once as the job's `parallel`, until none is
-     * left, it yields to a higher priority or a pause, or it is cancelled. Then it leaves the job, ending it when it was
-     * the last host on it ([leave]). A setup that fails while other hosts run the job leaves it to them. False when the
-     * runner is stopping meanwhile.
-     */
-    private fun runShared(job: Job): Boolean {
-        var outcome: Dispatched? = null
-        var dispatching = false
-        try {
-            val dir = config.createJobDir(job.id)
-            val ready = prepare(job, dir)
-            val host = LocalHost(ready, ready.sha.orEmpty(), dir.resolve("setup.log").toFile())
-            dispatching = true
-            outcome = dispatch(ready, dir, host, { if (crews.failed(job.id)) null else store.claimIteration(job.id, host.id) },
-                render(ready, host))
-        } catch (e: Throwable) {
-            if (stopping) return false
-            when {
-                store.cancelRequested(job.id) -> outcome = Dispatched.CANCELLED
-                !dispatching && crews.hosts(job.id).size > 1 && (store.job(job.id)?.total ?: 0) > 0 ->
-                    log(job.id, "the local machine could not set the job up and leaves it to the hosts on it: ${e.message}")
-                else -> crews.fail(job.id, e)
-            }
-        }
-        store.setLocal(job.id, false)
-        leave(job.id, ExecutionHost.LOCAL, outcome)
-        return true
-    }
-
-    /**
-     * [host] leaves shared job [jobId], its part ended [outcome] (null when it ran none). The last host to leave ends the
-     * job by what the parts say: cancelled when it was cancelled; failed when a host failed it; done when every case
-     * has run, whoever ran it; else queued again (paused, yielded, its nodes lost or retired with iterations left),
-     * placed by the rules ([Placement.release]) for whichever host takes it next.
-     */
-    internal fun leave(jobId: Long, host: String, outcome: Dispatched?) = synchronized(crews.lock) {
-        val crew = crews.leave(jobId, host, outcome)
-        if (crew == null) {
-            val others = crews.hosts(jobId)
-            if (others.isNotEmpty()) log(jobId, "${hostName(host)} leaves the job; ${others.joinToString { hostName(it) }} still on it")
-            return@synchronized
-        }
-        runCatching { end(jobId, crew) }.onFailure { println("ending job $jobId failed: ${it.message}") }
-    }
-
-    private fun hostName(host: String) = if (host == ExecutionHost.LOCAL) "the local machine" else "node $host"
-
-    private fun end(jobId: Long, crew: Crews.Crew) {
-        val job = store.job(jobId)?.takeIf { it.status == Status.RUNNING } ?: return
-        val failure = crew.failure
-        when {
-            job.cancelRequested || Dispatched.CANCELLED in crew.outcomes -> cancel(jobId)
-            failure != null -> {
-                log(jobId, "job failed: ${failure.message}")
-                store.cancelRemaining(jobId)
-                store.finish(jobId, Status.FAILED, failure.message ?: failure.toString())
-                runCatching { removeWorktree(jobId) }
-            }
-            job.commands.isNotEmpty() && job.commands.none { it.status == Status.QUEUED || it.status == Status.RUNNING } -> {
-                store.finish(jobId, Status.DONE)
-                runCatching { removeWorktree(jobId) }
-                log(jobId, "job finished")
-                runCatching { queueConfirmation(job) }.onFailure { log(jobId, "could not queue a confirmation: ${it.message}") }
-            }
-            else -> {
-                if (store.requeue(jobId) == Status.CANCELLED) return cancel(jobId)
-                log(jobId, if (job.paused) "job paused between iterations; taken up again on resume"
-                    else "no host left on the job with iterations to run: queued again")
-                if (Placement.release(store, config, jobId)) log(jobId, "placed again: locally when the local machine is free, else a cloud node")
-            }
-        }
-    }
-
-    /**
-     * The startup's recovery, once the job files' volume answers ([Volumes.jobFiles]), before any host takes work: jobs
-     * requeued with their cancel requested are cancelled, shared jobs left running go back to the queue
-     * ([recoverShared]), and queued jobs are placed again by the lab's rules. Whether it has run; false while the job
-     * files cannot be used, as everything here logs to them.
-     */
     internal fun recover(): Boolean {
         if (recovered) return true
-        Volumes.jobFiles(config)?.let { problem ->
-            if (recoveryWaits != problem) println("recovery waits for the job files: $problem")
-            recoveryWaits = problem
-            return false
+        Volumes.jobFiles(config)?.let { recoveryWaits = it; return false }
+        for (job in store.active(withCommands = false).filter { it.experiment?.isAnalysis == true }) {
+            if (job.cancelRequested) cancel(job.id)
+            else if (job.status == Status.RUNNING) store.requeue(job.id)
         }
-        // A job requeued with its cancel requested, before a requeue ended such a job, would wait for a host forever.
-        runCatching { store.queuedCancels().forEach(::cancel) }.onFailure { println("cancelling requeued jobs failed: ${it.message}") }
-        // Shared jobs left running lost their hosts with the restart: they go back to the queue, before any host takes work.
-        runCatching { recoverShared() }.onFailure { println("recovering shared jobs failed: ${it.message}") }
-        // Jobs queued before the lab placed them itself may name a host their submitter chose: placed again by the rules.
-        runCatching { Placement.replaceQueued(store, config) }
-            .onSuccess { if (it.isNotEmpty()) println("placed queued jobs again by the lab's rules: $it") }
-            .onFailure { println("placing queued jobs failed: ${it.message}") }
         recovered = true
+        recoveryWaits = null
         return true
     }
 
-    /** Why recovery waited at its last try, so each new reason is logged once; null until it has waited. */
-    @Volatile
-    internal var recoveryWaits: String? = null
-        private set
-
-    /**
-     * Part of the startup's recovery ([recover]), before any host takes work: a job taken whole by one host before jobs
-     * were shared (an `auto` job the local machine or a node took) is shared again where the rules still allow it
-     * ([Store.share]); and each shared
-     * job left running, whose hosts went with the restart, has what the local machine ran of it killed, every case its
-     * hosts held given back, each iteration left part done queued again whole, and goes back to the queue
-     * ([Store.recoverShared]). The local machine and the nodes then take it up again by priority.
-     */
-    internal fun recoverShared() {
-        val schedules = store.schedules()
-        for (job in store.active(withCommands = false).filter { it.backend == ExecutionBackendKind.LEGACY }) {
-            val spec = job.experiment ?: continue
-            if (!spec.auto || spec.host == Experiments.AUTO_HOST) continue
-            if (Placement.host(spec, job.name, config, schedules) == Experiments.AUTO_HOST && store.share(job.id)) {
-                log(job.id, "shared: the local machine and cloud nodes may each run its iterations")
-            }
-        }
-        for (job in store.active().filter { it.backend == ExecutionBackendKind.LEGACY && it.status == Status.RUNNING && shared(it) }) {
-            val dir = config.jobDir(job.id)
-            runCatching { killOrphan(dir.resolve("setup.pid")) }
-            job.commands.filter { it.status == Status.RUNNING && (it.host == null || it.host == ExecutionHost.LOCAL) }.forEach {
-                runCatching { killOrphan(dir.resolve("${it.index}.pid"), Termination.file(dir, it.index)) }
-            }
-            store.recoverShared(job.id)
-            Files.deleteIfExists(dir.resolve(AwsWorker.INSTANCES_FILE))
-            if (store.requeue(job.id) == Status.CANCELLED) {
-                cancel(job.id)
-                continue
-            }
-            log(job.id, "the lab restarted while the job ran: queued again")
-            Placement.release(store, config, job.id)
-        }
-    }
-
-    private fun finishWork(job: Job, outcome: Dispatched) {
-        when (outcome) {
-            Dispatched.CANCELLED -> return cancel(job.id)
-            // Its worktree and finished commands stay, so the job resumes at its next command when picked again.
-            Dispatched.YIELDED -> {
-                if (store.requeue(job.id) == Status.CANCELLED) return cancel(job.id)
-                log(job.id, "job paused between commands")
-                return
-            }
-            Dispatched.FINISHED -> Unit
-            // Only an AWS instance is lost; this dispatch asks for no `lost` callback, so a lost host stays an error.
-            Dispatched.LOST -> error("the lab machine dispatched as a lost host")
-        }
-        // A job that ran every command is done; which commands failed is on the commands. FAILED is kept for a job
-        // that could not run, so a sweep with a few refused instances does not read as a broken job.
-        store.finish(job.id, Status.DONE)
-        removeWorktree(job.id)
-        log(job.id, "job finished")
-        runCatching { queueConfirmation(job) }.onFailure { log(job.id, "could not queue a confirmation: ${it.message}") }
-    }
-
-    /**
-     * Run [job]'s queued commands in index order, up to the job's `parallel` many at once, and record each result
-     * as it ends. The limit is reread from the store on every pass, so it can be raised or lowered while the job
-     * runs: raising it starts more commands at once, lowering it lets the running ones finish and starts no more
-     * until the count is below it. Before each command it checks whether the job was paused or a higher-priority job
-     * waits; then it starts no more and returns once the running ones end, so a job yields only between commands.
-     */
-    internal fun dispatch(
-        job: Job,
-        dir: Path,
-        host: ExecutionHost = LocalHost(job, "", File("/dev/null")),
-        /**
-         * Where the cases come from when a job is shared by several hosts: the next iteration's case indices this
-         * host claimed ([Store.claimIteration]), taken when it has room for another case, null once none is left.
-         * Null runs every queued case. With it, a yield or a pause lets the iterations this host started finish and
-         * gives back the ones it did not start.
-         */
-        next: (() -> Collection<Int>?)? = null,
-        /** Each case's command as [host] runs it ([render]); as planned when not given. */
-        render: (Command) -> Command = { it },
-        /** Told the cases this host held, started or not, when the host went away ([HostLost]): they go back to the
-         *  queue [next] reads, and the dispatch ends [Dispatched.LOST] rather than failing the job. The cases it
-         *  finished of an iteration it did not finish go back with them, to run again beside the rest of it
-         *  ([Store.requeueSplitIterations]): an iteration's arms are compared, so they run on one machine. */
-        lost: ((Collection<Int>) -> Unit)? = null,
-    ): Dispatched {
-        require(NodeTags.matches(job.experiment?.nodeTags, host.nodeTags)) { "node ${host.id} does not match the job's tag selector" }
-        dir.createDirectories().resolve("node-${host.id.replace('/', '_')}.json").writeAtomically(
-            Json.encodeToString(NodeObservation.serializer(), NodeObservation(host.id, host.nodeTags, host.cpu)))
-
-        // [next] hands out only cases left to run, which a host that started earlier can hold as running.
-        val queued = job.commands.filter { it.status == Status.QUEUED || next != null }.associateBy { it.index }
-        val pending = ArrayDeque(if (next == null) queued.values else emptyList())
-        // The iteration each case [next] handed out came with, and the iterations this host has started a case of.
-        val iterationOf = HashMap<Int, Int>()
-        val started = HashSet<Int>()
-        var iterations = 0
-        fun take() {
-            if (next != null) while (pending.isEmpty()) {
-                val claimed = next()?.mapNotNull { queued[it] } ?: break
-                iterations++
-                claimed.forEach { iterationOf[it.index] = iterations }
-                pending.addAll(claimed)
-            }
-        }
-        take()
-        val active = LinkedHashMap<Int, Future<Int>>()
-        val pool = Executors.newCachedThreadPool()
-        var cancelled = false
-        var yielding = false
-        fun cancelling(running: Int) {
-            if (cancelled) return
-            cancelled = true
-            log(job.id, "cancel requested — stopping $running running ${if (running == 1) "case" else "cases"}")
-        }
-        try {
-            while (pending.isNotEmpty() || active.isNotEmpty()) {
-                ProfileRunDeadline.checkActive()
-                // Shutdown kills the commands and leaves them RUNNING to rerun; nothing here may record them.
-                while (stopping) Thread.sleep(CANCEL_POLL_MS)
-                for (index in active.filterValues { it.isDone }.keys) {
-                    // Read before removed: a case whose host was lost is still held, and goes back to the queue.
-                    val exit = active.getValue(index).get()
-                    active.remove(index)
-                    if (exit == CANCELLED_EXIT) {
-                        cancelling(active.size + 1)
-                    } else {
-                        store.commandFinished(job.id, index, exit)
-                        keepRecord(job.id, index, dir)
-                        checks.afterCase(job.id, index)
-                        if (job.experiment?.instrumented == true) reportCompilation(job.id, index, dir)
-                    }
-                }
-                // Another problem only once this host has room for a case of it, so the problems left go to whichever
-                // host frees up first, a host added later included.
-                if (!cancelled && !yielding && active.size < host.parallel(store.parallel(job.id))) take()
-                // Each running command sees the request within a second and kills its own tree; the job ends once
-                // they have.
-                if (!cancelled && store.cancelRequested(job.id)) cancelling(active.size)
-                if (cancelled) {
-                    if (active.isEmpty()) return Dispatched.CANCELLED
-                } else if (yielding || (pending.isNotEmpty() && (yields(job.id, host) || host.yieldsToUpdates && updateDue(job.id)))) {
-                    // A shared job's iteration this host started runs to its end here, so its arms stay on one
-                    // machine; the iterations it claimed and did not start go back whole for any host to take.
-                    if (!yielding && next != null) pending.removeAll { iterationOf[it.index] !in started }
-                    yielding = true
-                    if (active.isEmpty() && (next == null || pending.isEmpty())) {
-                        if (next != null) store.unclaim(job.id, host.id, whole = true)
-                        return Dispatched.YIELDED
-                    }
-                    if (next != null) start(job, dir, host, pending, active, pool, render, iterationOf, started)
-                } else {
-                    start(job, dir, host, pending, active, pool, render, iterationOf, started)
-                }
-                Thread.sleep(DISPATCH_POLL_MS)
-            }
-            return Dispatched.FINISHED
-        } catch (e: ExecutionException) {
-            if (e.cause is HostLost && lost != null) {
-                // What it held goes back, every iteration it did not finish whole ([Store.unclaim]).
-                val held = store.unclaim(job.id, host.id, whole = true)
-                lost(held)
-                log(job.id, "${e.cause?.message}: cases ${held.sorted().joinToString()} go back to the queue")
-                return Dispatched.LOST
-            }
-            // One command's failure to run fails the job, which must not leave its siblings running past it.
-            if (!ProfileRunDeadline.isActive()) running.forEach { kill(it, Termination.SIBLING) }
-            throw e.cause ?: e
-        } finally {
-            pool.shutdown()
-            pool.awaitTermination(KILL_WAIT_SEC, TimeUnit.SECONDS)
-            // A job ends with its cases' checks kept, so what reads it next (a confirmation, a trend) sees them. A
-            // cancelled one ends at once; its checks finish in the background.
-            if (cancelled) checks.release(job.id) else if (!stopping) checks.await(job.id)
-        }
-    }
-
-    /**
-     * Start what [pending] holds of [job] on [host], in order, within the job's case limit and the host's core budget: a
-     * case too big for the cores left waits for room rather than letting smaller later ones jump it. One case always
-     * may run, as far as the job goes; a cloud node shared with other jobs must also have room for it ([ExecutionHost.acquire]),
-     * which the case gives back when it ends. Each is rendered for [host] as it starts ([render]), and its iteration marked started.
-     */
-    private fun start(
-        job: Job, dir: Path, host: ExecutionHost, pending: ArrayDeque<Command>, active: MutableMap<Int, Future<Int>>,
-        pool: java.util.concurrent.ExecutorService, render: (Command) -> Command, iterationOf: Map<Int, Int>, started: MutableSet<Int>,
-    ) {
-        val limit = host.parallel(store.parallel(job.id))
-        while (pending.isNotEmpty() && active.size < limit &&
-            (active.isEmpty() || held(active.keys, job) + pending.first().cores <= host.cores) &&
-            host.acquire(pending.first().cores)
-        ) {
-            val cores = pending.first().cores
-            var submitted = false
-            try {
-                val command = render(pending.removeFirst())
-                iterationOf[command.index]?.let(started::add)
-                ProfileRunDeadline.checkActive()
-                store.commandStarted(job.id, command.index, host.id, command.cmd)
-                active[command.index] = pool.submit(ProfileRunDeadline.task {
-                    try {
-                        host.run(command, dir)
-                    } finally {
-                        host.release(cores)
-                    }
-                })
-                submitted = true
-            } finally {
-                if (!submitted) host.release(cores)
-            }
-        }
-    }
-
-    /**
-     * After a scheduled run, queue a [Confirm] job for the problems it flipped against the run before it of the same
-     * experiment at another commit. Nothing is queued for a confirmation itself, a first run, or a run with no flips.
-     */
     internal fun queueConfirmation(job: Job) {
         val spec = job.experiment ?: return
         val series = job.name.substringBefore('@', "")
@@ -642,7 +117,7 @@ class Runner(
         if (flips.confirmable.isEmpty()) return
         val confirmation = Confirm.spec(series, spec, before, after, flips, job.id)
         if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
-        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation, backend = config.executionBackend)
+        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
         log(job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
             "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +
             "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${previous.id}: queued confirmation job $id")
@@ -653,38 +128,6 @@ class Runner(
         return store.cases(jobId).filter { it.arm == label }
     }
 
-    /** The one reference solver every arm of a reference run names, whose own results its filter then reads: a
-     *  second solver's `missing` is the problems that solver has no result for, whatever the first one has. */
-    private fun referenceSolver(spec: ExperimentSpec): String? {
-        val arms = Experiments.arms(spec)
-        if (arms.any { it.values["backend"] != REFERENCE_BACKEND }) return null
-        return arms.map { it.values["solver"] }.distinct().singleOrNull()
-    }
-
-    private fun yields(jobId: Long, host: ExecutionHost): Boolean =
-        if (host.yieldsToPriority) store.shouldYield(jobId, config.localNodeTags) else store.job(jobId)?.paused == true
-
-    /** Whether a lab update waits, logged once to [jobId] when it makes the job yield. Cloud nodes do not hold it back:
-     *  the restarted worker adopts them ([AwsWorker.recover]). */
-    private fun updateDue(jobId: Long): Boolean = updater.due().also { if (it) log(jobId, "yielding for a lab update") }
-
-    /** Whether a lab update waits for the local machine's next point between cases, for the pages. */
-    internal fun updateWaiting(): Boolean = updater.due()
-
-    /** Whether a cloud node is up or launching ([AwsWorker.active]), which puts the local-only jobs first among equal
-     *  priorities ([Store.next]); always false without AWS settings. */
-    private var awsActive: () -> Boolean = { false }
-
-    /** Cores the running cases at [indices] of [job] hold. */
-    private fun held(indices: Collection<Int>, job: Job): Int = job.commands.filter { it.index in indices }.sumOf { it.cores }
-
-    /**
-     * Queue a run of each due schedule whose ref has moved since its last run, pinned to the commit it resolves to, so
-     * the job records exactly what it ran. A schedule whose ref has not moved queues nothing, and one whose previous run
-     * has not ended waits for it. A branch or tag is first asked of origin directly, one small request, so a check that
-     * finds it unmoved fetches nothing and checks can come every minute or two; the mirror is fetched only when it
-     * moved, or for a ref origin does not advertise, such as a commit.
-     */
     internal fun enqueueScheduled() {
         fun regular(s: Schedule) = s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true
         // A requested launch is looked at on every poll until it queues, without moving the schedule's regular checks:
@@ -731,7 +174,7 @@ class Runner(
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
             val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)), auto = false, machines = null)
-            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec, backend = config.executionBackend)
+            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
@@ -745,296 +188,6 @@ class Runner(
         )
     }.getOrNull()?.lineSequence()?.map { it.substringBefore('\t').trim() }?.firstOrNull { SHA.matches(it) }
 
-    /**
-     * Set an experiment up: build every commit its arms name, each in its own worktree, and on the first setup plan
-     * it. Planning selects the problems with the bench at the first arm's commit, refuses a plan whose estimate is
-     * over [Config.maxExperimentHours] unless the spec confirms it, and writes a command per case. A setup after a
-     * crash or a yield only rebuilds, against the commits the plan recorded.
-     */
-    private fun setupExperiment(job: Job, dir: Path): String {
-        val spec = checkNotNull(job.experiment)
-        val mirror = mirror(spec.repository)
-        val log = dir.resolve("setup.log").toFile()
-        log.writeText("")
-        val (arms, shas) = resolveArms(job, spec, log)
-        val primary = shas.getValue(arms.first().ref)
-        val referenceOnly = arms.all { it.values["backend"] == REFERENCE_BACKEND }
-        removeWorktree(job.id)
-        for (sha in shas.values.distinct()) {
-            val path = experimentWorktree(job.id, sha, primary)
-            withRetry(job.id, "adding the worktree for ${sha.take(9)}") {
-                synchronized(mirrorLock) {
-                    // What a failed try left would make the next one refuse the path.
-                    removeTree(path)
-                    path.parent.createDirectories()
-                    sh(job.id, log, mirror.toFile(), "git worktree add --detach ${quote(path.toString())} $sha")
-                }
-            }
-            if (spec.repository == Repositories.DEFAULT) linkShared(path)
-            val tasks = spec.profile?.let { ProfileRuns.buildTasks(spec.repository, it) }
-                ?: klauseBuildTasks(referenceOnly).split(' ')
-            if (tasks.isNotEmpty()) withRetry(job.id, "building ${sha.take(9)}", config.buildRetry) {
-                val start = log.length()
-                try {
-                    sh(job.id, log, path.toFile(),
-                        "./gradlew ${tasks.joinToString(" ", transform = ::quote)} --max-workers=${config.gradleWorkers} -q" +
-                            if (ProfileRunDeadline.isActive()) " --no-daemon -Pkotlin.compiler.execution.strategy=in-process" else "")
-                } catch (e: Exception) {
-                    if (!ProfileRunDeadline.isActive() && brokenTransforms(log, start)) {
-                        log(job.id, "the build found Gradle's transform cache broken: clearing it before the next try")
-                        clearTransforms(path.toFile())
-                    }
-                    throw e
-                }
-                // The measurement launcher goes in before provenance describes the installed build, as on a node.
-                if (spec.measuresCli) sh(job.id, log, path.toFile(), CliMeasurements.install(path.toString(), CliMeasurements.localMacOs))
-                // The manifest describes the CLI and bench a Klause case runs; a reference case runs neither.
-                if (!referenceOnly && !spec.isProfile) sh(job.id, log, path.toFile(), Experiments.captureProvenance(path.toString()))
-            }
-        }
-        if (job.commands.isEmpty()) plan(job, spec, arms, shas, primary, dir, LocalHost(job, primary, log))
-        // A shared job runs on other hosts meanwhile, each holding whole iterations: its corpora come down before its
-        // cases start, so cases that read one collection never fetch it side by side.
-        else if (shared(job)) spec.problems.forEachIndexed { index, selection ->
-            withRetry(job.id, "fetching the corpora of selection $index", config.buildRetry) {
-                LocalHost(job, primary, log).let { it.select(it.worktree(primary), Experiments.selectArgs(selection)) }
-            }
-        }
-        else adopt(job)
-        dir.resolve("sha").writeAtomically(primary)
-        return primary
-    }
-
-    /** [job]'s arms and the commit each ref names: the ones its plan recorded, or, unplanned, resolved now on the
-     *  freshly fetched mirror. */
-    internal fun resolveArms(job: Job, spec: ExperimentSpec, log: File): Pair<List<Arm>, Map<String, String>> {
-        val planned = store.arms(job.id)
-        val arms = planned.map { it.arm }.ifEmpty { Experiments.arms(spec) }
-        withRetry(job.id, "fetching the mirror") { synchronized(mirrorLock) { fetchMirror(job.id, log, spec.repository) } }
-        val shas = synchronized(mirrorLock) {
-            planned.associate { it.arm.ref to it.sha }.ifEmpty { arms.map { it.ref }.distinct().associateWith { resolve(it, spec.repository) } }
-        }
-        // Before anything is built: a job runs only code a trusted user pushed ([Trust]).
-        val trust = trust(spec.repository)
-        withRetry(job.id, "checking repository ownership") { trust.requireRepository(refresh = true) }
-        for ((ref, sha) in shas) withRetry(job.id, "checking who pushed $ref") { trust.requireCommit(sha, ref) }
-        return arms to shas
-    }
-
-    internal fun plan(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, primary: String, dir: Path, host: ExecutionHost) {
-        // Each selection is capped on its own; a problem two selections share is solved once.
-        // Selections interleave, so a sweep cut short or paused part-way has covered every selection, not the first few.
-        val budgetMs = arms.maxOf { it.timeoutMs }
-        require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; resubmit as a profile job" }
-        if (spec.isProfile) {
-            planCases(job, spec, arms, shas, listOf(Experiments.profileProblem(spec)), host)
-            return
-        }
-        val problems = spec.problemList.ifEmpty { selectProblems(job, spec, host.worktree(primary), budgetMs, dir, host) }
-        require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
-        classify(job, problems, host.worktree(primary), host)
-        val solved = if (arms.any { it.values["backend"] == REFERENCE_BACKEND }) {
-            withFiles(job, problems, host.worktree(primary), host)
-        } else {
-            problems
-        }
-        planCases(job, spec, arms, shas, solved, host)
-    }
-
-    /**
-     * [problems] with the files `select files=true` resolves, which a reference arm's cases solve without the bench.
-     * Asked by name, one suite at a time, so a named problem list resolves as a selection does.
-     */
-    private fun withFiles(job: Job, problems: List<Problem>, worktree: String, host: ExecutionHost): List<Problem> {
-        val resolved = HashMap<Pair<String, String>, Problem>()
-        for ((suite, group) in problems.filter { it.model == null }.groupBy { it.suite }) {
-            val names = group.map { it.problem }
-            require(names.none { name -> name.any { it in GLOB_CHARS } }) {
-                "a reference case needs each problem named exactly; $suite has a pattern among ${names.joinToString()}"
-            }
-            val asked = mapOf("suite" to suite, "name" to names.joinToString(","), "per-family" to "1000000",
-                "files" to "true")
-            val lines = withRetry(job.id, "resolving $suite's problem files", config.buildRetry) {
-                host.select(worktree, Experiments.selectArgs(asked))
-            }
-            for (problem in lines.filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }) {
-                resolved[problem.suite to problem.problem] = problem
-            }
-        }
-        return problems.map { problem ->
-            if (problem.model != null) return@map problem
-            val files = requireNotNull(resolved[problem.suite to problem.problem]) {
-                "the bench resolved no files for ${problem.suite}/${problem.problem}"
-            }
-            problem.copy(format = problem.format.ifEmpty { files.format }, model = files.model, data = files.data,
-                includeDirs = files.includeDirs)
-        }
-    }
-
-    /**
-     * Keep the classifier's features (themes, structure, logic) of the planned [problems] the lab has none for yet,
-     * which the reference scoreboard groups problems by. Asked by name, one suite at a time, so only those are
-     * classified; a failure only leaves them unclassified.
-     */
-    private fun classify(job: Job, problems: List<Problem>, worktree: String, host: ExecutionHost) {
-        val known = store.features(problems.map { it.collection to it.problem }).keys
-        val missing = problems.filter { (it.collection to it.problem) !in known && it.problem.none { c -> c in GLOB_CHARS } }
-        for ((suite, group) in missing.groupBy { it.suite }) {
-            runCatching {
-                val asked = mapOf("suite" to suite, "name" to group.joinToString(",") { it.problem }, "per-family" to "1000000",
-                    "features" to "true")
-                val features = host.select(worktree, Experiments.selectArgs(asked)).filter { it.startsWith("{") }
-                    .map { lenient.decodeFromString<ProblemFeatures>(it) }.filter { it.themes.isNotEmpty() }
-                store.putFeatures(features)
-            }.onFailure {
-                // A cancel stops the job, not only the classifying.
-                if (it is CancellationException) throw it
-                log(job.id, "classifying $suite's problems failed, they stay unclassified: ${it.message}")
-            }
-        }
-    }
-
-    /** The problems [spec]'s selections pick, each selection asked of the bench at [worktree] and filtered and capped. */
-    private fun selectProblems(job: Job, spec: ExperimentSpec, worktree: String, budgetMs: Long, dir: Path, host: ExecutionHost): List<Problem> =
-        interleave(spec.problems.withIndex().map { (index, problemSelection) ->
-            val selection = dir.resolve("selection-$index.jsonl")
-            val mode = Experiments.referenceFilter(spec, problemSelection)
-            // A filtered, capped selection asks the bench for the problems without its caps and caps what the filter
-            // keeps, so the problems the reference never decided are replaced rather than leaving the selection short.
-            val refill = Experiments.refills(mode, problemSelection)
-            val asked = if (refill) Experiments.uncapped(problemSelection) else problemSelection
-            // Selecting can fetch a corpus the cache does not hold yet.
-            val lines = withRetry(job.id, "selecting problems for selection $index", config.buildRetry) {
-                host.select(worktree, Experiments.selectArgs(asked))
-            }
-            selection.toFile().writeText(lines.joinToString("\n", postfix = "\n"))
-            val selected = lines.filter { it.startsWith("{") }.map { lenient.decodeFromString<Problem>(it) }
-            val references = store.references(selected.map { it.collection to it.problem }, referenceSolver(spec))
-            val kept = selected.filter { mode.keeps(references[it.collection to it.problem], budgetMs) }
-            val planned = if (refill) Experiments.cap(kept, problemSelection["per-family"]?.toIntOrNull(), problemSelection["max"]?.toIntOrNull()) else kept
-            log(job.id, "selection $index (${Experiments.selectArgs(problemSelection)}, reference=${mode.name.lowercase()}): " +
-                "${selected.size} selected, ${selected.size - kept.size} left out by the reference filter, ${planned.size} planned")
-            Experiments.defaultCapped(problemSelection, selected)?.let { log(job.id, "selection $index: $it") }
-            planned
-        }).distinctBy { it.suite to it.problem }
-
-    private fun planCases(job: Job, spec: ExperimentSpec, arms: List<Arm>, shas: Map<String, String>, problems: List<Problem>, host: ExecutionHost) {
-        val cases = Experiments.cases(problems.size, arms.size, spec.seeds, spec.repeats)
-        val parallel = spec.parallel ?: config.defaultParallel
-        val hours = Experiments.estimateHours(cases, arms, parallel, host.cores)
-        require(spec.confirm || hours <= config.maxExperimentHours) {
-            "${cases.size} cases could take %.1f h at ×$parallel, over the ${config.maxExperimentHours} h limit; ".format(hours) +
-                "resubmit with \"confirm\": true"
-        }
-        val commands = cases.mapIndexed { index, case ->
-            val arm = arms[case.arm]
-            val cmd = caseCommand(spec, arm, problems[case.problem], case.seed, index, host.worktree(shas.getValue(arm.ref)), host)
-            val timeout = if (spec.profile != null) Experiments.profileTimeoutSec(arm) else Experiments.caseTimeoutSec(arm)
-            CaseCommand(cmd, timeout, arm.cores)
-        }
-        store.planCommands(job.id, arms.map { PlannedArm(it, shas.getValue(it.ref)) }, problems, cases, commands)
-        if (spec.profile != null) {
-            log(job.id, "profile time limit: ${Experiments.profileLimitText(spec)}; SIGTERM at it, SIGKILL ${Experiments.STOP_GRACE_SEC} s later")
-            Experiments.profileCaps(spec).forEach { log(job.id, "capped: $it") }
-        }
-        spec.capped.forEach { log(job.id, "capped to fit the local machine: $it") }
-        log(job.id, "planned ${problems.size} problems × ${arms.size} arms = ${cases.size} cases, up to %.1f h".format(hours))
-    }
-
-    /** The command line of one case of [spec] on [host], in [worktree]: a profile's main, or a solve of [problem]. */
-    private fun caseCommand(spec: ExperimentSpec, arm: Arm, problem: Problem, seed: Long?, index: Int, worktree: String, host: ExecutionHost): String {
-        val profile = spec.profile
-        return if (profile != null) Experiments.profileCommand(worktree, profile, index, host.corpus, arm.debug, spec.repository)
-        else if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, seed, index)
-        else Experiments.command(worktree, problem, arm, seed, index, host.corpus)
-    }
-
-    /**
-     * Take over planned [job], which sets it up afresh: the local machine taking a job a node planned, or a node claiming
-     * one again. Every iteration left part done runs again whole here ([Store.requeueSplitIterations]); the finished
-     * cases and their results stay. Its commands need no rewriting: each is rendered for the host that runs it
-     * ([render]).
-     */
-    internal fun adopt(job: Job) {
-        val again = store.requeueSplitIterations(job.id)
-        if (again.isNotEmpty()) log(job.id, "cases ${again.joinToString()} run again: their iterations were only part done elsewhere")
-    }
-
-    /**
-     * [job]'s commands as [host] runs them. A plan stores each case host-independently, its problem, arm (with the commit
-     * it resolved to) and seed ([Store.casePlan]), beside a command line written for the host that planned it; a host
-     * renders the line for itself as it starts the case, with its own worktrees and corpus, and the store keeps what
-     * it ran ([Store.commandStarted]). So any host can run any case of a planned job, and none has to rewrite the plan
-     * when it takes the job over. A command with no planned case (a job of plain commands) runs as it was written.
-     */
-    internal fun render(job: Job, host: ExecutionHost): (Command) -> Command {
-        val spec = job.experiment ?: return { it }
-        val arms = store.arms(job.id).associateBy { it.arm.label }
-        if (arms.isEmpty()) return { it }
-        val cases = store.casePlan(job.id).associateBy { it.index }
-        return { command ->
-            cases[command.index]?.let { case ->
-                val planned = arms.getValue(case.arm)
-                command.copy(cmd = caseCommand(spec, planned.arm, case.problem, case.seed, case.index, host.worktree(planned.sha), host))
-            } ?: command
-        }
-    }
-
-    /** The lab machine itself: worktrees under the data directory, the shared corpus cache, the lab's core budget. */
-    private inner class LocalHost(private val job: Job, private val primary: String, private val log: File) : ExecutionHost {
-        override val cores get() = config.cores
-        override val nodeTags get() = config.localNodeTags
-        override val cpu get() = config.cpuCapabilities
-        override val corpus get() = config.corpusDir.toString()
-        override val yieldsToUpdates = true
-        override val yieldsToPriority = true
-        override val maxParallel get() = config.maxParallel
-
-        override fun worktree(sha: String) = experimentWorktree(job.id, sha, primary).toString()
-
-        override fun select(worktree: String, args: String): List<String> {
-            val opts = "-Dklause.bench.corpusCache=${config.corpusDir} -Dklause.workspace.root=$worktree"
-            val out = Files.createTempFile("select", ".jsonl")
-            try {
-                sh(job.id, log, File(worktree, "klause-bench"),
-                    "JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off ./build/install/klause-bench/bin/klause-bench " +
-                        "select $args > ${quote(out.toString())}")
-                return out.toFile().readLines()
-            } finally {
-                Files.deleteIfExists(out)
-            }
-        }
-
-        override fun run(command: Command, dir: Path): Int = this@Runner.run(job, command, dir)
-    }
-
-    /** The worktree an experiment builds [sha] in: the job's own for its first arm's commit, a sibling for others. */
-    private fun experimentWorktree(jobId: Long, sha: String, primary: String): Path =
-        if (sha == primary) config.worktree(jobId) else config.worktree(jobId).resolveSibling("$jobId@${sha.take(SHA_DIR_LENGTH)}")
-
-    /**
-     * Keep the record a finished case wrote; a case that wrote none (it could not run) keeps none. Its native solver
-     * stdout files ([CaseFile.stdout]) are hashed and kept beside it, record or not: on the local machine as the solve
-     * wrote them, and for a cloud node's case as they came back whole ([AwsHost]).
-     */
-    internal fun keepRecord(jobId: Long, index: Int, dir: Path) {
-        runCatching { store.caseStdout(jobId, index, CaseFile.stdout(dir, index)) }
-            .onFailure { log(jobId, "case $index: stdout hashes not kept: ${it.message}") }
-        val record = dir.resolve(CASES).resolve(index.toString()).toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()
-        runCatching {
-            val text = record?.readText() ?: return@runCatching
-            Json.parseToJsonElement(text) // a record that does not parse is not kept: it would break every page that reads it
-            store.caseRecord(jobId, index, text)
-            promote(jobId, index, text)
-        }.onFailure { log(jobId, "case $index: record not kept: ${it.message}") }
-    }
-
-    /**
-     * Write the compilation report ([CompilationReports]) of each of case [index]'s profile directories under job
-     * directory [dir] that has none yet, on the lab, once a node's captures have come back too. An analysis job
-     * ([analyzeJob]) writes each one again from the captures still there. A report that cannot be written is logged
-     * and the job goes on: the captures stay for an analysis job to try again.
-     */
     internal fun reportCompilation(jobId: Long, index: Int, dir: Path, analyzeJob: Long? = null): List<Pair<Path, CompilationReport>> =
         runCatching {
             val source = store.caseOf(jobId, index)?.let { (problem, arm) ->
@@ -1164,431 +317,49 @@ class Runner(
             "the archive holds no profile directory whose captures could be analysed", "from archive ${archive.name}")
     }
 
-    /** A case of a reference arm adds its verdict to the reference results as it finishes, so a run cut short still
-     *  contributes what it solved; a stored stronger verdict stays. */
-    private fun promote(jobId: Long, index: Int, record: String) {
-        val (problem, arm) = store.caseOf(jobId, index) ?: return
-        if (arm.values["backend"] != REFERENCE_BACKEND || problem.collection.isEmpty()) return
-        val reference = References.of(Json.parseToJsonElement(record)) ?: return
-        store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$jobId")
-    }
 
-    private fun fetchMirror(jobId: Long, log: File, repository: String) {
-        val mirror = mirror(repository)
-        val source = sourceUrl(repository)
-        if (!mirror.exists()) {
-            mirror.parent.createDirectories()
-            sh(jobId, log, config.dataDir.toFile(), "git clone --mirror ${quote(source)} ${quote(mirror.toString())}")
-        }
-        // Do not inherit a changed remote from an old mirror or another job.
-        sh(jobId, log, mirror.toFile(), "git remote set-url origin ${quote(source)}")
-        sh(jobId, log, mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
-    }
-
-    private fun resolve(ref: String, repository: String): String =
-        runCatching { capture(mirror(repository).toFile(), "git rev-parse --verify ${quote(ref + "^{commit}")}") }
-            .getOrElse { error("unknown ref: $ref (not on origin; is it pushed?)") }
-
-    /**
-     * Point each of [Config.sharedPaths] in the worktree at one directory every job uses, so what a job writes there
-     * outlives its worktree.
-     */
-    private fun linkShared(worktree: Path) {
-        for (relative in config.sharedPaths) {
-            ProfileRunDeadline.checkActive()
-            val target = config.sharedDir.resolve(relative).createDirectories()
-            val link = worktree.resolve(relative)
-            link.parent.createDirectories()
-            if (Files.exists(link, LinkOption.NOFOLLOW_LINKS)) deleteTree(link)
-            Files.createSymbolicLink(link, target)
-        }
-    }
-
-    /**
-     * Run one case's command. Output streams straight to disk; the exit code is written atomically
-     * once the process ends, so a file named `<n>.exit` always holds a complete result. The whole process tree is
-     * killed on timeout or cancellation.
-     */
-    private fun run(job: Job, command: Command, dir: Path): Int {
-        val work = config.worktree(job.id).toFile()
-        val builder = ProcessBuilder(inSession("bash", "-c", command.cmd))
-            .directory(work)
-            .redirectOutput(dir.resolve("${command.index}.out").toFile())
-            .redirectError(dir.resolve("${command.index}.err").toFile())
-        // Each CLI invocation owns its resource artifacts and any requested recording, as on a node.
-        val recordsJfr = job.experiment?.recordsCliJfr == true
-        val measurementId = if (job.experiment?.measuresCli == true) UUID.randomUUID().toString() else null
-        val profile = measurementId?.let { dir.resolve("$CASES/${command.index}/profile-$it").createDirectories() }
-        val compilation = job.experiment?.compilationRecording
-        val runtimeOptions = "${config.solveJavaOpts} -XX:ActiveProcessorCount=${command.cores}".trim()
-        val options = profile?.takeIf { recordsJfr }?.let { CliMeasurements.options(it.toString(), compilation) }.orEmpty()
-        val javaOptions = "$runtimeOptions $options".trim()
-        builder.environment().apply {
-            put("JOB_DIR", dir.toString())
-            put("KLAUSE_DEBUG", "true")
-            // The solve sees the cores its case holds, so a portfolio sizes its threads to them and a single-engine
-            // solve does not size its pools to the whole machine.
-            put("KLAUSE_CLI_OPTS", javaOptions)
-            // The bench's `--version` check before the solve runs without the recording options.
-            put("KLAUSE_CLI_PREFLIGHT_OPTS", runtimeOptions)
-            profile?.let { put("EIGNEX_LAB_PROFILE_DIR", it.toString()) }
-            // Host BLAS libraries otherwise size their own thread pools to the machine.
-            put("OPENBLAS_NUM_THREADS", "1")
-            put("VECLIB_MAXIMUM_THREADS", "1")
-            put("MKL_NUM_THREADS", "1")
-            put("OMP_NUM_THREADS", "1")
-            if (config.javaHome.isNotBlank()) put("JAVA_HOME", config.javaHome)
-        }
-        log(job.id, "command ${command.index}: ${command.cmd}")
-        val process = start(builder, dir.resolve("${command.index}.pid"))
-        terminations[process] = Termination.file(dir, command.index)
-        try {
-            return await(job, command, dir, process).also { exit ->
-                if (profile != null && exit != CANCELLED_EXIT) runCatching {
-                    val record = dir.resolve(CASES).resolve(command.index.toString()).toFile()
-                        .listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
-                    CliMeasurements.writeManifest(profile, command.index, 1, requireNotNull(measurementId), Experiments.LAB_HOST,
-                        command.cmd, exit, javaOptions, record, CliMeasurements.localMacOs, compilation, recordsJfr)
-                }.onFailure { log(job.id, "case ${command.index}: measurement manifest not written: ${it.message}") }
+    internal fun <T> withRetry(jobId: Long?, what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
+        backoff, onRetry = { attempt, wait, error ->
+            val text = "$what failed (try $attempt): ${error.message}; retrying in ${wait / 1000} s"
+            if (jobId == null) println(text) else log(jobId, text)
+        }, sleep = { wait ->
+            val until = now() + wait
+            while (now() < until) {
+                check(!stopping) { "runner stopping" }
+                if (jobId != null && store.cancelRequested(jobId)) throw JobCancelled("cancelled while waiting for $what")
+                Thread.sleep((until - now()).coerceIn(1, 1000))
             }
-        } finally {
-            running.remove(process)
-            terminations.remove(process)
-            killed.remove(process)
-        }
-    }
+        }, step = step)
 
-    private fun await(job: Job, command: Command, dir: Path, process: Process): Int {
-        val deadline = now() + command.timeoutSec * 1000
-        // A profile job's whole-run limit stops its processes from its own thread ([ProfileRunDeadline]), gracefully;
-        // this one only says so, once, and whether the grace ran out.
-        val graceMs = ProfileRunDeadline.graceMillis()
-        var deadlineStop = false
-        fun ended() = ProfileRunDeadline.isActive() && runCatching { ProfileRunDeadline.checkActive() }.isFailure
-        while (!process.waitFor(CANCEL_POLL_MS, TimeUnit.MILLISECONDS)) {
-            if (!stopping && store.cancelRequested(job.id)) {
-                kill(process, Termination.CANCEL)
-                return CANCELLED_EXIT
-            }
-            if (!stopping && process !in killed && ended()) {
-                killed.add(process)
-                deadlineStop = true
-                Termination.record(Termination.file(dir, command.index), Termination.deadline(graceMs))
-            }
-            if (!deadlineStop && now() > deadline) {
-                stopGracefully(process, Termination.timeoutGraceful(command.timeoutSec, stopGraceMs), "timeout")
-                dir.resolve("${command.index}.exit").writeAtomically("timeout\n")
-                return TIMEOUT_EXIT
-            }
-        }
-        // A command the shutdown killed has no result. Leaving it RUNNING in the store makes the next runner
-        // rerun it, as it would after a crash; recording the kill would mark it failed and skip it.
-        while (stopping) Thread.sleep(CANCEL_POLL_MS)
-        val exit = process.exitValue()
-        dir.resolve("${command.index}.exit").writeAtomically("$exit\n")
-        val termination = Termination.file(dir, command.index)
-        // The case can end on the deadline's SIGTERM before the loop above sees the deadline, with any exit when it
-        // traps the signal; a cancel of the job ends the same way.
-        val ended = process !in killed && ended()
-        if (process !in killed && (ended || Termination.signal(exit) != null)) {
-            val reason = when {
-                ended && store.cancelRequested(job.id) -> Termination.CANCEL
-                ended -> Termination.deadline(graceMs).also { deadlineStop = true }
-                else -> Termination.external(exit)
-            }
-            Termination.record(termination, checkNotNull(reason))
-        }
-        if (deadlineStop && exit == Termination.SIGKILL_EXIT) Termination.record(termination, Termination.graceExpired("deadline", graceMs))
-        return exit
-    }
-
-    /** Start a process that leads its own session, and record its pid and start time in [pidFile]. */
-    private fun start(builder: ProcessBuilder, pidFile: Path): Process {
-        val process = ProfileRunDeadline.start(builder, alreadyInSession = true)
+    private fun capture(dir: File, cmd: String): String {
+        val process = ProcessBuilder(Background.prefix + inSession("bash", "-c", cmd)).directory(dir).redirectErrorStream(true).start()
         running.add(process)
-        val handle = process.toHandle()
-        pidFile.writeAtomically("${handle.pid()} ${handle.info().startInstant().map { it.toEpochMilli() }.orElse(0)}\n")
-        return process
+        try {
+            val output = process.inputStream.bufferedReader().readText().trim()
+            check(process.waitFor() == 0) { "git operation failed: $output" }
+            return output
+        } finally { running.remove(process) }
     }
 
-    /**
-     * A runner that died mid-step leaves that step's process group running. Kill it before the step reruns, or the
-     * rerun competes with it for the core. The group outlives its leader when the leader dies first, so a dead
-     * leader still means the group is killed; a live process under that pid with another start time is a reused
-     * pid, and its group is left alone.
-     */
-    private fun killOrphan(pidFile: Path, termination: Path? = null) {
-        if (!pidFile.exists()) return
-        val (pid, started) = pidFile.toFile().readText().trim().split(" ").map { it.toLong() }
-        val leader = ProcessHandle.of(pid)
-        val reused = leader.map { handle ->
-            handle.info().startInstant().map { it.toEpochMilli() != started }.orElse(true)
-        }.orElse(false)
-        if (reused) return
-        println("killing orphaned process group $pid from ${pidFile.fileName}")
-        termination?.let { Termination.record(it, Termination.ORPHAN) }
-        killGroup(pid)
-        leader.ifPresent { it.onExit().get(KILL_WAIT_SEC, TimeUnit.SECONDS) }
-    }
-
-    /** Wait until Docker answers before taking work, since reference commands need it and it starts after boot. */
-    private fun awaitDocker() {
-        var waited = 0L
-        while (ProcessBuilder("docker", "info").redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD).start().waitFor() != 0
-        ) {
-            if (waited % DOCKER_LOG_EVERY_MS == 0L) println("waiting for docker (${waited / 1000} s)")
-            Thread.sleep(DOCKER_POLL_MS)
-            waited += DOCKER_POLL_MS
-        }
-        println("docker is up")
-    }
-
-    /** Kill the running command's tree when the service manager stops the runner. */
-    fun installShutdownHook() {
-        Runtime.getRuntime().addShutdownHook(Thread { stop() })
-    }
-
-    /** Kill every running process, saying why for each case, and record nothing more: the cases rerun. */
+    fun installShutdownHook() { Runtime.getRuntime().addShutdownHook(Thread { stop() }) }
     internal fun stop() {
         stopping = true
-        running.forEach { kill(it, Termination.SHUTDOWN) }
+        running.forEach { process -> killGroup(process.pid()); process.destroyForcibly() }
     }
-
     internal fun cancel(jobId: Long) {
         store.cancelRemaining(jobId)
         store.finish(jobId, Status.CANCELLED)
-        log(jobId, "job cancelled")
-        removeWorktree(jobId)
+        log(jobId, "analysis cancelled")
     }
-
-    /** Remove the job's worktree and, for an experiment, the ones it built other commits in. */
-    private fun removeWorktree(jobId: Long) {
-        val path = config.worktree(jobId)
-        val siblings = path.parent.toFile().listFiles { f -> f.name.startsWith("$jobId@") }.orEmpty()
-        for (sibling in siblings) removeTree(sibling.toPath())
-        removeTree(path)
-    }
-
-    private fun removeTree(path: Path) {
-        // Unlink the shared directories first, so that nothing below can reach the data they point at.
-        for (relative in config.sharedPaths) {
-            ProfileRunDeadline.checkActive()
-            val link = path.resolve(relative)
-            if (link.isSymbolicLink()) Files.delete(link)
-        }
-        synchronized(mirrorLock) {
-            if (path.resolve(".git").exists()) {
-                runCatching {
-                    val common = capture(path.toFile(), "git rev-parse --path-format=absolute --git-common-dir")
-                    capture(File(common), "git worktree remove --force ${quote(path.toString())}")
-                    capture(File(common), "git worktree prune")
-                }
-            }
-        }
-        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) deleteTree(path)
-    }
-
-    /**
-     * Run [step] by [backoff], logging each retry to job [jobId] (or the console without one). The wait stops for a
-     * shutdown, as a running step does, and gives up early when the job's cancel is requested.
-     */
-    internal fun <T> withRetry(jobId: Long?, what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
-        backoff,
-        onRetry = { attempt, waitMs, e ->
-            val message = "$what failed (try $attempt of ${backoff.attempts}), retrying in ${waitMs / MS_PER_SEC} s: ${e.message}"
-            if (jobId != null) log(jobId, message) else println(message)
-        },
-        sleep = { waitMs ->
-            val until = now() + waitMs
-            while (now() < until) {
-                ProfileRunDeadline.checkActive()
-                while (stopping) Thread.sleep(CANCEL_POLL_MS)
-                if (jobId != null && store.cancelRequested(jobId)) throw JobCancelled("cancelled while waiting to retry $what")
-                Thread.sleep((until - now()).coerceIn(1, CANCEL_POLL_MS))
-            }
-        },
-        step = {
-            ProfileRunDeadline.checkActive()
-            // What a cancel of the step then says it stopped ([sh]).
-            val outer = currentStep.get()
-            currentStep.set(what)
-            // And what the placement report says the local machine's setup of the job is doing ([SetupStep]), until
-            // the step ends; a cloud node's steps, which have no setup marker to replace, are left out.
-            val dir = jobId?.takeIf { nodeSetup.get() != true }?.let(config::jobDir)?.takeIf { SetupStep.raw(it) != null }
-            val before = dir?.let(SetupStep::raw)
-            dir?.let { SetupStep.write(it, what) }
-            try {
-                step().also { ProfileRunDeadline.checkActive() }
-            } finally {
-                currentStep.set(outer)
-                dir?.let { SetupStep.restore(it, before) }
-            }
-        },
-    )
-
-    /** Whether this thread sets a job up on a cloud node ([onNode]), whose steps leave the placement report's
-     *  ([SetupStep]) alone: the local machine may set up the same job at once. */
-    private val nodeSetup = ThreadLocal<Boolean>()
-
-    /** Run [block], a cloud node's setup of a job, so its retried steps write no [SetupStep]. */
-    internal fun <T> onNode(block: () -> T): T {
-        nodeSetup.set(true)
-        try {
-            return block()
-        } finally {
-            nodeSetup.remove()
-        }
-    }
-
-    /** The [withRetry] step this thread runs, as its log names it. */
-    private val currentStep = ThreadLocal<String?>()
-
-    /** Whether the build output [log] wrote after [from] says a Gradle transform's file is missing: a cache whose
-     *  records outlived the files they name, which every later build would trip on the same way. */
-    private fun brokenTransforms(log: File, from: Long): Boolean =
-        logSince(log, from).let { "FileNotFoundException" in it && "/transforms/" in it }
-
-    /** What [log] holds after [from], at most [MAX_BUILD_LOG_SCAN] bytes of it; empty when it cannot be read. */
-    private fun logSince(log: File, from: Long): String = runCatching {
-        java.io.RandomAccessFile(log, "r").use { raf ->
-            raf.seek(minOf(from, raf.length()))
-            val bytes = ByteArray((raf.length() - raf.filePointer).coerceAtMost(MAX_BUILD_LOG_SCAN).toInt())
-            raf.readFully(bytes)
-            String(bytes)
-        }
-    }.getOrDefault("")
-
-    /** Stop the lab's Gradle daemons and remove its transform caches, which the next build rebuilds. */
-    private fun clearTransforms(worktree: File) {
-        runCatching { sh(null, File.createTempFile("gradle-stop", ".log"), worktree, "./gradlew --stop -q") }
-        config.gradleHome.resolve("caches").toFile().listFiles().orEmpty()
-            .map { it.resolve("transforms") }.filter { it.isDirectory }.forEach { it.deleteRecursively() }
-    }
-
-    /**
-     * Run setup step [cmd] of job [jobId] in [dir], its output appended to [log]. The step's cancel is checked every
-     * [CANCEL_POLL_MS] while it runs: a cancelled step's process group is stopped ([stopStep]) and [JobCancelled]
-     * thrown, which no retry tries again.
-     */
-    internal fun sh(jobId: Long?, log: File, dir: File, cmd: String) {
-        ProfileRunDeadline.checkActive()
-        if (jobId != null) checkCancel(jobId, cmd)
-        log.appendText("$ $cmd\n")
-        val builder = ProcessBuilder(inSession("bash", "-c", cmd)).directory(dir)
-            .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log))
-        if (config.javaHome.isNotBlank()) builder.environment()["JAVA_HOME"] = config.javaHome
-        builder.environment()["GRADLE_USER_HOME"] = config.gradleHome.toString()
-        val process = start(builder, log.toPath().resolveSibling("setup.pid"))
-        val deadline = now() + config.setupTimeoutSec * MS_PER_SEC
-        var timedOut = false
-        try {
-            while (!process.waitFor(CANCEL_POLL_MS, TimeUnit.MILLISECONDS)) {
-                if (stopping) break
-                if (jobId != null && store.cancelRequested(jobId)) {
-                    log(jobId, "cancel requested — stopping ${currentStep.get() ?: "setup step: $cmd"}")
-                    stopStep(process)
-                    throw JobCancelled("cancelled while ${currentStep.get() ?: "running setup step: $cmd"}")
-                }
-                if (now() > deadline) {
-                    timedOut = true
-                    break
-                }
-            }
-        } finally {
-            running.remove(process)
-        }
-        while (stopping) Thread.sleep(CANCEL_POLL_MS)
-        if (timedOut) {
-            stopStep(process)
-            error("setup step timed out: $cmd")
-        }
-        check(process.exitValue() == 0) { "setup step failed (${process.exitValue()}): $cmd — see setup.log" }
-    }
-
-    /** Throw [JobCancelled] before [what] starts when job [jobId]'s cancel was requested. */
-    private fun checkCancel(jobId: Long, what: String) {
-        if (store.cancelRequested(jobId)) throw JobCancelled("cancelled before ${currentStep.get() ?: what}")
-    }
-
-    /**
-     * Stop a setup step: SIGTERM to its process group, [SETUP_GRACE_MS] for it to go, then SIGKILL. Only the group:
-     * a Gradle daemon the step's client started leaves the group for a session of its own and stays for the next
-     * build, which [killTree]'s walk of the descendants would kill as well. The daemon sees its client go and cancels
-     * that client's build.
-     */
-    private fun stopStep(process: Process) {
-        stopGroups(listOf(process.pid()), SETUP_GRACE_MS)
-        process.destroyForcibly()
-        process.waitFor(KILL_WAIT_SEC, TimeUnit.SECONDS)
-    }
-
-    /** Run a git command the runner needs beside the cases (a schedule's check, removing a worktree) in the
-     *  background, off the solves' cores. Setup steps, which run alone, go through [sh] at full speed. */
-    private fun capture(dir: File, cmd: String): String {
-        val process = ProfileRunDeadline.start(
-            ProcessBuilder(Background.prefix + listOf("bash", "-c", cmd)).directory(dir).redirectErrorStream(true),
-        )
-        val out = process.inputStream.bufferedReader().readText().trim()
-        check(process.waitFor() == 0) { "failed: $cmd: $out" }
-        return out
-    }
-
-    /** Kill [process]'s tree, first recording [reason] when it runs a case. */
-    private fun kill(process: Process, reason: String) {
-        terminations[process]?.let { file ->
-            killed.add(process)
-            Termination.record(file, reason)
-        }
-        killTree(process)
-    }
-
-    /**
-     * Stop [process]'s case gracefully, first recording [reason]: SIGTERM to its process group, up to [stopGraceMs] for
-     * the group to be gone, then SIGKILL to what is left, recorded as a [kind] line of its own.
-     */
-    private fun stopGracefully(process: Process, reason: String, kind: String) {
-        val file = terminations[process]
-        file?.let {
-            killed.add(process)
-            Termination.record(it, reason)
-        }
-        stopGroups(listOf(process.pid()), stopGraceMs) { file?.let { Termination.record(it, Termination.graceExpired(kind, stopGraceMs)) } }
-        killTree(process)
-    }
-
-    private fun killTree(process: Process) {
-        killGroup(process.pid())
-        process.descendants().forEach { it.destroyForcibly() }
-        process.destroyForcibly()
-        process.waitFor(KILL_WAIT_SEC, TimeUnit.SECONDS)
-    }
-
     internal fun log(jobId: Long, message: String) {
-        ProfileRunDeadline.checkActive()
         println("[job $jobId] $message")
         runCatching { config.createJobDir(jobId).resolve("job.log").toFile().appendText("${now()} $message\n") }
     }
-
     private companion object {
         const val IDLE_POLL_MS = 2000L
-        const val CANCEL_POLL_MS = 1000L
-        const val MS_PER_SEC = 1000L
-        /** How far back a run looks for the run before it of the same experiment. */
-        const val PREVIOUS_RUNS = 50
-        const val KILL_WAIT_SEC = 10L
-        /** How long a cancelled or timed-out setup step has between SIGTERM and SIGKILL. */
-        const val SETUP_GRACE_MS = 2000L
-        const val CANCELLED_EXIT = -1000
-        const val TIMEOUT_EXIT = -1001
-        const val DISPATCH_POLL_MS = 100L
-        const val CASES = "cases"
-        const val SHA_DIR_LENGTH = 12
-        const val DOCKER_POLL_MS = 5000L
-        /** How often the schedule thread looks for a due schedule: the most a forced check waits. */
         const val SCHEDULE_POLL_MS = 10_000L
+        const val PREVIOUS_RUNS = 50
         val SHA = Regex("[0-9a-f]{40}")
-        const val DOCKER_LOG_EVERY_MS = 60_000L
     }
 }
 
@@ -1709,8 +480,6 @@ internal fun Path.writeAtomically(text: String) {
     temp.writeText(text)
     Files.move(temp, this, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
 }
-
-internal enum class Dispatched { FINISHED, CANCELLED, YIELDED, LOST }
 
 /** A job's step stopped, or not started, because the job's cancel was requested: never retried ([retrying]). */
 class JobCancelled(message: String) : CancellationException(message)

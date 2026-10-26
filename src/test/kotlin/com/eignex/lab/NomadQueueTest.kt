@@ -38,7 +38,7 @@ class NomadQueueTest {
         ResourceBudget(1000, 512), caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 4)
     private val file = root.resolve("queue.json").also { Files.writeString(it, Json.encodeToString(settings)) }
     private val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), minFreeBytes = 0, solveJavaOpts = "-Xmx256m", cores = 8,
-        cpuCapabilities = CpuCapabilities("arm64", setOf("neon"), "fixture", true), executionBackend = ExecutionBackendKind.NOMAD, nomadQueueSettings = file)
+        cpuCapabilities = CpuCapabilities("arm64", setOf("neon"), "fixture", true), nomadQueueSettings = file)
     private var publications = 0
     private var completions = 0
     private fun input(job: Long, os: String, arch: String): WorkerBundle {
@@ -57,7 +57,7 @@ class NomadQueueTest {
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.map { input(job.id, it.os, it.arch) }
         })
     private fun job(spec: ExperimentSpec = ExperimentSpec("portable", problems = listOf(mapOf("suite" to "s")), host = "auto")): Long =
-        store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec, backend = ExecutionBackendKind.NOMAD)
+        store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec)
     private fun prepare(id: Long, count: Int = 3) {
         val session = store.execution.sessions(id).single { it.executionClass == "prepare" }
         val recipe = store.execution.manifest(session.id)
@@ -107,9 +107,8 @@ class NomadQueueTest {
         }
         assertEquals(HttpStatusCode.Created, response.status)
         val job = store.active().single()
-        assertEquals(ExecutionBackendKind.NOMAD, job.backend)
+        assertEquals("nomad", job.backend)
         assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
-        assertNull(config.aws)
     }
 
     @Test fun `reference filtering refills its cap before atomically publishing the plan`() {
@@ -130,7 +129,7 @@ class NomadQueueTest {
         }
         assertEquals(HttpStatusCode.Created, response.status)
         val job = store.active().single()
-        assertEquals(ExecutionBackendKind.NOMAD, job.backend)
+        assertEquals("nomad", job.backend)
         assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
         assertEquals(600L, job.experiment!!.profile!!.runTimeoutSec)
         assertFailsWith<IllegalArgumentException> { Experiments.validate(job.experiment!!, 4) }
@@ -260,7 +259,6 @@ class NomadQueueTest {
 
     @Test fun `cloud selection needs no AWS settings and profiles use Spot unless explicitly on demand`() {
         val spec = ExperimentSpec("cloud", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60), nodeTags = NodeSelector(require = setOf("cloud")))
-        assertNull(config.aws)
         assertEquals(listOf(CapacityMarket.SPOT), settings.matching(spec, spec.name).map { it.market })
         assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
         assertTrue(settings.matching(spec.copy(nodeTags = NodeSelector(require = setOf("on-demand"))), spec.name).isEmpty())

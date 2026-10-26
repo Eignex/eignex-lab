@@ -34,7 +34,7 @@ class RepositoryRunsTest {
             var transportUsed = false
             val runner = Runner(config, store, sourceUrl = { transportUsed = true; error("must not fetch") })
 
-            runner.runJob(checkNotNull(store.next()))
+            runner.runJob(checkNotNull(store.startForTest()))
 
             assertEquals(Status.FAILED, store.job(id)?.status)
             assertFalse(transportUsed)
@@ -108,7 +108,7 @@ class RepositoryRunsTest {
                 source.toString()
             })
 
-            runner.runJob(checkNotNull(store.next()))
+            runner.runJob(checkNotNull(store.startForTest()))
 
             val job = checkNotNull(store.job(id))
             assertEquals(Status.DONE, job.status, job.error)
@@ -121,27 +121,6 @@ class RepositoryRunsTest {
         } finally {
             root.toFile().deleteRecursively()
         }
-    }
-
-    @Test
-    fun `cloud profiles isolate repositories and use their build tasks without Klause caches`() {
-        fun host(repository: String) = AwsHost("i-test", Ssh("i-test", "127.0.0.1",
-            AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null),
-            java.nio.file.Path.of("/tmp/hosts")), 4, "-Xmx1g", repository = repository) { false }
-        val spec = ExperimentSpec("profile", repository = "Eignex/skema", profile = ProfileMain(
-            "com.eignex.skema.profile.MainKt", classpath = listOf("tools/build/install/tools/lib/*"), buildTasks = listOf(":tools:installDist")))
-        val host = host(spec.repository)
-        val sha = "a".repeat(40)
-
-        val script = AwsWorker.profileSetup(spec, host, listOf(sha), 2, Repositories.url(spec.repository))
-
-        assertNotEquals(host.worktree(sha), host("Eignex/koblas").worktree(sha))
-        assertContains(script, "https://github.com/Eignex/skema.git")
-        assertContains(script, "':tools:installDist'")
-        assertFalse("klause" in script || "restore_lab_cache" in script)
-        val process = ProcessBuilder("bash", "-n").start()
-        process.outputStream.bufferedWriter().use { it.write(script) }
-        assertEquals(0, process.waitFor())
     }
 
     @Test

@@ -42,7 +42,7 @@ data class WorkEstimate(
  * The estimates of the work left in jobs, which the queue page shows and the cloud pressure counts. A job's time a case
  * is its own mean once [MIN_MEASURED] of its cases finished, else the mean of the last finished run of the same
  * experiment ([EstimateHistory]), else each case's whole timeout, the upper bound. A job not planned yet takes its
- * case count from that run too, else the guess from its selections ([NodePool.estimatedCases]).
+ * case count from that run too, else the guess from its selections ([WorkEstimates.estimatedCases]).
  */
 object Estimates {
     /** Finished cases of its own after which a job's mean case time is trusted over an earlier run's. */
@@ -81,11 +81,11 @@ object Estimates {
 
     /**
      * The core-hours a case of [job] is taken to need, by the same rule as [estimate]: its measured mean, an earlier
-     * run's ([history], asked only when needed), else its timeout ([NodePool.meanCaseCoreHours]).
+     * run's ([history], asked only when needed), else its timeout ([WorkEstimates.meanCaseCoreHours]).
      */
     fun caseCoreHours(job: Job, history: (Job) -> CaseHistory?): Double {
         val spec = checkNotNull(job.experiment)
-        val ms = measuredCaseMs(job) ?: history(job)?.meanCaseMs ?: return NodePool.meanCaseCoreHours(spec)
+        val ms = measuredCaseMs(job) ?: history(job)?.meanCaseMs ?: return WorkEstimates.meanCaseCoreHours(spec)
         return ms * meanCores(spec) / MS_PER_HOUR
     }
 
@@ -102,7 +102,7 @@ object Estimates {
             val planned = job.total > 0
             val cases = when {
                 spec.isProfile && !planned -> 1
-                !planned -> earlier?.cases ?: NodePool.estimatedCases(spec)
+                !planned -> earlier?.cases ?: WorkEstimates.estimatedCases(spec)
                 job.status == Status.RUNNING -> job.total - job.done
                 else -> job.total - job.done - job.running
             }.coerceAtLeast(0)
@@ -114,7 +114,7 @@ object Estimates {
                 earlier?.meanCaseMs != null -> earlier.meanCaseMs to EstimateSource.HISTORY
                 else -> timeoutCaseMs(spec) to EstimateSource.TIMEOUT
             }
-            val coreHours = if (source == EstimateSource.TIMEOUT) cases * NodePool.meanCaseCoreHours(spec) else cases * ms * meanCores(spec) / MS_PER_HOUR
+            val coreHours = if (source == EstimateSource.TIMEOUT) cases * WorkEstimates.meanCaseCoreHours(spec) else cases * ms * meanCores(spec) / MS_PER_HOUR
             WorkEstimate(cases, ms, coreHours, cases * ms / concurrent / MS_PER_HOUR, source, fromEarlier?.jobId, guessed,
                 fromEarlier?.sameExperiment ?: true)
         }.getOrNull()
@@ -123,11 +123,11 @@ object Estimates {
     /**
      * The core-hours queued [job] adds to the cloud pressure: its [estimate], from measured or earlier runs' case times
      * when there are any, so the pool reacts to the work a queue really holds. Each case's whole timeout
-     * ([NodePool.coreHours]) is the fallback when the estimate cannot be made.
+     * ([WorkEstimates.coreHours]) is the fallback when the estimate cannot be made.
      */
     fun pressureCoreHours(job: Job, history: (Job) -> CaseHistory?, cores: Int): Double =
         estimate(job, history, cores)?.coreHours
-            ?: NodePool.coreHours(checkNotNull(job.experiment), job.total.takeIf { it > 0 }?.let { it - job.done - job.running })
+            ?: WorkEstimates.coreHours(checkNotNull(job.experiment), job.total.takeIf { it > 0 }?.let { it - job.done - job.running })
 
     /** Whether [spec]'s cases are known before it is planned: an exact problem list, or every selection one problem. */
     private fun exact(spec: ExperimentSpec): Boolean =

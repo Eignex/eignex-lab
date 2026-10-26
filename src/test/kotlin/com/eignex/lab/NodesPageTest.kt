@@ -18,7 +18,7 @@ class NodesPageTest {
         val root = Files.createTempDirectory("nodes-page")
         val path = root.resolve("capacity.json")
         Files.writeString(path, Json.encodeToString(settings))
-        return Config(dataDir = root, passwordHash = null, executionBackend = ExecutionBackendKind.NOMAD, nomadCapacitySettings = path)
+        return Config(dataDir = root, passwordHash = null, nomadCapacitySettings = path)
     }
 
     @Test fun `nodes tab shows hardware allocations and expiring requests with a fresh report`() = testApplication {

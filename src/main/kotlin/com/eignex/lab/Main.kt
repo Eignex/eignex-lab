@@ -43,6 +43,7 @@ fun main(args: Array<String>) {
     if (mode == "check") return
     val config = Config()
     config.dataDir.createDirectories()
+    require(config.nomadQueueSettings != null) { "LAB_NOMAD_QUEUE_SETTINGS is required; experiment execution uses Nomad" }
     val store = Store(config.database)
     println("eignex-lab $mode: data=${config.dataDir} repo=${config.repoUrl} corpus=${config.corpusDir}")
     when (mode) {
@@ -67,7 +68,7 @@ private fun dockerCleanupNow(): Int {
     } else {
         DockerCleanup(
             true, config.dockerKeep, 0, config.dockerCleanupState, null, { emptySet() }, { freeBytes(config.dataDir) },
-            config.colimaDisks.takeIf { config.colima },
+            null,
         )
     }
     return if (cleanup.run("it was run by hand") != null) 0 else 1

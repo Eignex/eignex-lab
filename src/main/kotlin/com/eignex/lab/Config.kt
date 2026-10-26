@@ -67,10 +67,6 @@ data class Config(
         .split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     /** Days between Docker cleanups, sooner on a low disk; `0` turns the automatic cleanup off. */
     val dockerCleanupDays: Long = env("LAB_DOCKER_CLEANUP_DAYS", "7").toLong(),
-    /** Whether Docker runs in Colima's VM, which `install.sh` points the services' `DOCKER_HOST` into, or, in a shell
-     *  with no `DOCKER_HOST`, a Mac with a Colima VM: a cleanup then trims its disk. */
-    val colima: Boolean = System.getenv("DOCKER_HOST")?.takeIf { it.isNotBlank() }?.contains("/.colima/")
-        ?: (System.getProperty("os.name").orEmpty().startsWith("Mac") && Path(System.getProperty("user.home"), ".colima", "default").toFile().isDirectory),
     /** Retries of a step that talks to the network (fetching the mirror, adding a worktree, a schedule's check): 15 s,
      *  then doubling to at most 5 min, six tries in all, so a network outage of several minutes is ridden out. */
     val retry: Backoff = Backoff(
@@ -98,7 +94,6 @@ data class Config(
     /** Operator labels on the local node; CPU and placement facts are detected rather than overridden. */
     val nodeTags: Set<String> = env("LAB_NODE_TAGS", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     val cpuCapabilities: CpuCapabilities = NodeTags.localCapabilities,
-    val executionBackend: ExecutionBackendKind = ExecutionBackendKind.entries.single { it.wire == env("LAB_EXECUTION_BACKEND", "legacy") },
     val nomadQueueSettings: Path? = System.getenv("LAB_NOMAD_QUEUE_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path),
     val nomadCapacitySettings: Path? = System.getenv("LAB_NOMAD_CAPACITY_SETTINGS")?.takeIf { it.isNotBlank() }?.let(::Path),
 ) {
@@ -134,24 +129,3 @@ data class Config(
     val dockerCleanupRequest: Path get() = dataDir.resolve("docker-cleanup-requested")
     /** The last Docker cleanup, as [DockerCleanup] wrote it. */
     val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
-    /** Colima's Lima directory on the host, which holds its VM's disks: `_disks` with the data disk Docker writes to. */
-    val colimaDisks: Path get() = Path(System.getProperty("user.home"), ".colima", "_lima")
-    /** Retired executor settings are never activated by a Nomad installation, even if an old file remains. */
-    val aws: AwsConfig? get() = if (executionBackend == ExecutionBackendKind.LEGACY) AwsConfig.load(dataDir.resolve("aws").resolve("aws.properties")) else null
-    fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
-
-    /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
-     *  does not answer ([Volumes]). */
-    fun createJobDir(id: Long): Path {
-        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
-        return Files.createDirectories(jobDir(id))
-    }
-    fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
-}
-
-private const val MS_PER_SEC = 1000L
-private const val MS_PER_HOUR = 3_600_000L
-private const val MS_PER_DAY = 24 * MS_PER_HOUR
-private const val BYTES_PER_MB = 1024L * 1024
-
-private fun env(name: String, default: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default
