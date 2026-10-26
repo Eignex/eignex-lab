@@ -122,6 +122,20 @@ class NomadQueueTest {
         assertEquals(1, store.job(id)!!.commands.size)
     }
 
+    @Test fun `normal API accepts a bounded cloud profile under Nomad`() = testApplication {
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        val response = client.post("/experiments") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"nodeTags":{"require":["cloud","spot"]}}""")
+        }
+        assertEquals(HttpStatusCode.Created, response.status)
+        val job = store.active().single()
+        assertEquals(ExecutionBackendKind.NOMAD, job.backend)
+        assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
+        assertEquals(600L, job.experiment!!.profile!!.runTimeoutSec)
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(job.experiment!!, 4) }
+    }
+
     @Test fun `one case cannot reserve a nonexistent parallel slot and native saturation spills to Spot`() {
         val id = job(); queue().reconcile(); prepare(id); backend.reconcile()
         NomadQueue(config.copy(cores = 1), store, backend, artifacts, settings, { true }, nativeAllowed = { true },

@@ -364,7 +364,7 @@ object Experiments {
     }
 
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
-    fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
+    fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE, backend: ExecutionBackendKind = ExecutionBackendKind.LEGACY) {
         require(spec.name.isNotBlank()) { "name is required" }
         NodeTags.validate(spec.nodeTags)
         Repositories.requireAllowed(spec.repository)
@@ -398,7 +398,7 @@ object Experiments {
         spec.profile?.let { profile ->
             profile.runTimeoutSec?.let { timeout ->
                 require(timeout in 1..(Long.MAX_VALUE / 1_000_000_000)) { "profile.runTimeoutSec must be positive and fit a monotonic deadline" }
-                require(storedHost(spec.host) == LAB_HOST && !spec.auto) { "profile.runTimeoutSec requires the local host (local, or lab)" }
+                require(backend == ExecutionBackendKind.NOMAD || storedHost(spec.host) == LAB_HOST && !spec.auto) { "profile.runTimeoutSec requires the local host (local, or lab)" }
             }
             ProfileRuns.validate(spec.repository, profile)
             require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }

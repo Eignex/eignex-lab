@@ -248,7 +248,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
             requireDescription(spec)
             requireHost(spec, config)
-            Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config))
+            Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config), config.executionBackend)
             // An analysis needs its job's captures: refused now, saying why, when they are gone or the job has not ended.
             spec.analyze?.let { analyze ->
                 val job = analyze.job
@@ -736,7 +736,7 @@ private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
         "the schedule's node tags match no allowed host; opt in to cloud execution if a matching cloud type is configured"
     }
     val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
-    Experiments.validate(experiment, if (local) config.maxParallel else nodeCoreLimit(experiment, config), nodeCoreLimit(experiment, config))
+    Experiments.validate(experiment, if (local) config.maxParallel else nodeCoreLimit(experiment, config), nodeCoreLimit(experiment, config), config.executionBackend)
     require(Experiments.arms(experiment).none { "ref" in it.values }) {
         "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
     }
