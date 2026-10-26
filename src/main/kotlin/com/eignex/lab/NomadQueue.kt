@@ -76,12 +76,6 @@ class NomadQueue(
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> =
         TrustedQueueSources(config, artifacts)::publish,
 ) {
-    private fun nativeOwnedByAnother(job: Long): Boolean = store.execution.sessions().any { session ->
-        session.jobId != job && session.desired != "stop" &&
-            Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
-                ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-    }
-
     fun reconcile() {
         if (!allowed()) return
         for (id in store.execution.pendingDomainCompletion()) {
@@ -106,7 +100,7 @@ class NomadQueue(
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
                     val target = fitting.sortedBy { if (it.os == "mac") 0 else 1 }.firstOrNull {
-                        it.os != "mac" || nativeAllowed(job.id) && !nativeOwnedByAnother(job.id)
+                        it.os != "mac" || nativeAllowed(job.id) && !store.execution.nativeOwnedByAnother(job.id)
                     } ?: continue
                     val (arms, bundles) = source(job, targets, settings)
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
@@ -147,7 +141,7 @@ class NomadQueue(
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                                     ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
                             val maximum = (current.parallel + budget.parallel - 1) / budget.parallel
-                            nativeAllowed(job.id) && !nativeOwnedByAnother(job.id) && nativeSessions.size < maximum
+                            nativeAllowed(job.id) && !store.execution.nativeOwnedByAnother(job.id) && nativeSessions.size < maximum
                         }
                     }
                     val reserved = store.execution.nativeReservation()

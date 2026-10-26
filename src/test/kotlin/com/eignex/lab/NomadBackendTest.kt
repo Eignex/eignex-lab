@@ -96,6 +96,11 @@ class NomadBackendTest {
         assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
         assertEquals(preparation, store.execution.accepted(id).single().second.preparation)
         assertEquals("prepared source", Files.readString(root.resolve("jobs/$id/preparation/${prepared.commit}.zip")))
+        val problems = selected.flatten()
+        val cases = Experiments.cases(problems.size, manifest.arms.size, manifest.experiment.seeds)
+        store.plan(id, manifest.arms, problems, cases, cases.map { "true" to 5L })
+        repeat(3) { backend(Store(file)).reconcile() }
+        assertEquals(1, store.execution.sessions(id).size, "published cases must not resurrect accepted preparation")
     }
 
     @Test fun `selection approval is durable idempotent and cannot be changed by a preparing worker`() {

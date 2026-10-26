@@ -203,11 +203,13 @@ class NomadBackend(
             val sessions = store.execution.sessions(job.id)
             if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && accepted.none { it.second.preparation != null } && sessions.any { it.executionClass == "prepare" }) && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
                 store.execution.pauseClock(job.id)
-                val previous = sessions.last()
+                // Once preparation is accepted, only admission may create the first solve session. Replacing a
+                // stopped preparation here races plan publication and recreates already accepted preparation.
+                val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: continue
                 val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-                if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
+                if (native && (store.localBusy() || !nativeMayClaim(job.id) || store.execution.nativeOwnedByAnother(job.id))) continue
                 if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
-                else replace(sessions.last())
+                else replace(previous)
             }
         }
         for (job in logJobs) {
