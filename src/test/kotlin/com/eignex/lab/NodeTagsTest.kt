@@ -71,9 +71,7 @@ class NodeTagsTest {
     @Test
     fun `placement chooses cloud only when the local node does not match and refuses unsatisfied selectors`() {
         val root = Files.createTempDirectory("tag placement")
-        val config = Config(dataDir = root, cpuCapabilities = arm)
-        root.resolve("aws").toFile().mkdirs()
-        root.resolve("aws/aws.properties").writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k\nsecurityGroup=sg\ntags.c7i=arch:x86_64,simd:avx2,simd:avx512\n")
+        val config = Config(dataDir = root, cpuCapabilities = arm, nomadQueueSettings = cloudQueue(root))
         val spec = ExperimentSpec("profile", profile = ProfileMain(script = "run.sh"), nodeTags = NodeSelector(require = setOf("simd:avx512")))
 
         assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
@@ -84,9 +82,7 @@ class NodeTagsTest {
     @Test
     fun `submission allows cloud only core capacity and refuses unavailable tags`() = testApplication {
         val root = Files.createTempDirectory("tag api")
-        val config = Config(dataDir = root, cpuCapabilities = arm, cores = 2, maxParallel = 2, passwordHash = null)
-        root.resolve("aws").toFile().mkdirs()
-        root.resolve("aws/aws.properties").writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k\nsecurityGroup=sg\ntags.c7i=simd:avx512\n")
+        val config = Config(dataDir = root, cpuCapabilities = arm, cores = 2, maxParallel = 2, passwordHash = null, nomadQueueSettings = cloudQueue(root))
         val store = Store(config.database)
         application { api(config, store, HostReport("test", 2, "java", "vector", true, emptyList())) }
         suspend fun submit(tag: String) = client.post("/experiments") {
@@ -99,6 +95,10 @@ class NodeTagsTest {
         assertEquals("4", job.experiment!!.base["processors"])
         assertEquals(HttpStatusCode.BadRequest, submit("missing-node").status)
         assertEquals(1, store.active().size)
+    }
+
+    private fun cloudQueue(root: java.nio.file.Path): java.nio.file.Path = root.resolve("queue.json").also {
+        it.writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("simd:avx2", "simd:avx512"))
     }
 
     @Test

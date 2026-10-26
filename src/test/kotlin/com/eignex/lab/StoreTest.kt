@@ -87,17 +87,19 @@ class StoreTest {
         val cancelled = api.requestCancel(id)
         writer.join()
 
-        assertTrue(cancelled == CancelOutcome.REQUESTED && runner.cancelRequested(id))
+        assertEquals(CancelOutcome.CANCELLED, cancelled)
+        assertEquals(Status.CANCELLED, runner.job(id)!!.status)
+        assertTrue(runner.cancelRequested(id))
     }
 
     @Test
-    fun `a job left running by a crashed runner is resumed before a queued one`() {
+    fun `an ordinary running job is never claimed by the maintenance runner`() {
         val store = store()
-        val crashed = store.create("a", "main", listOf("true" to 10L))
-        store.create("b", "main", listOf("true" to 10L))
+        val id = store.create("a", "main", listOf("true" to 10L))
         store.startForTest()
 
-        assertEquals(crashed, store.startForTest()?.id)
+        assertEquals(null, store.nextAnalysis())
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
     }
 
     @Test

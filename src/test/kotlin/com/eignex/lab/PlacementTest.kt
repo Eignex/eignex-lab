@@ -10,11 +10,11 @@ import kotlin.test.assertTrue
 class PlacementTest {
     private val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d")
 
-    private fun config(aws: Boolean = true): Config {
+    private fun config(cloud: Boolean = true): Config {
         val dir = Files.createTempDirectory("lab")
         val queue = dir.resolve("queue.json")
-        if (aws) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText())
-        return Config(dataDir = dir, cores = 8, maxParallel = 6, nomadQueueSettings = queue.takeIf { aws })
+        if (cloud) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000"))
+        return Config(dataDir = dir, cores = 8, maxParallel = 6, nomadQueueSettings = queue.takeIf { cloud })
     }
 
     @Test
@@ -40,7 +40,7 @@ class PlacementTest {
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config))
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST, machines = 3), "e", config))
         assertEquals(Experiments.AUTO_HOST, Placement.host(profile, "p", config))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "e", config(aws = false)))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "e", config(cloud = false)))
     }
 
     @Test
@@ -83,8 +83,8 @@ class PlacementTest {
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, "pinned@abc123", config, schedules))
         assertEquals(Experiments.LAB_HOST, Placement.host(reference, "refs@abc123", config, schedules))
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, Confirm.name("ref", "abc123", 7), config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config(aws = false), schedules))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config(cloud = false), schedules))
         // A submitted job is placed without the schedules: a name alone does not take it off the local machine.
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config))
     }

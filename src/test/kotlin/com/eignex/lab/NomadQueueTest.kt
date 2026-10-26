@@ -132,7 +132,7 @@ class NomadQueueTest {
         assertEquals("nomad", job.backend)
         assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
         assertEquals(600L, job.experiment!!.profile!!.runTimeoutSec)
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(job.experiment!!, 4) }
+        Experiments.validate(job.experiment!!, 4)
     }
 
     @Test fun `one case cannot reserve a nonexistent parallel slot and native saturation spills to Spot`() {

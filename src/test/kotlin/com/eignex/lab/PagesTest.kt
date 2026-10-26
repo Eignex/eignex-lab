@@ -362,10 +362,7 @@ class PagesTest {
 
     @Test
     fun `a submitted host and machine count are not followed, and the lab says it placed the job`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = 8)
-        config.dataDir.resolve("aws").toFile().mkdirs()
-        config.dataDir.resolve("aws/aws.properties").toFile()
-            .writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nvcpuQuota=32\n")
+        val config = lab(cores = 8)
         val store = Store(config.database)
         testApplication {
             application { api(config, store, host) }
@@ -449,10 +446,7 @@ class PagesTest {
 
     @Test
     fun `a job asking for more than the local machine has is cut down to it, and the response and the job page say so`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = 8, maxParallel = 6)
-        config.dataDir.resolve("aws").toFile().mkdirs()
-        config.dataDir.resolve("aws/aws.properties").toFile()
-            .writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nvcpuQuota=32\n")
+        val config = lab(cores = 8).copy(maxParallel = 6)
         val store = Store(config.database)
         testApplication {
             application { api(config, store, host) }
@@ -474,13 +468,10 @@ class PagesTest {
     }
 
     private fun lab(cores: Int = 4, aws: String? = ""): Config {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, cores = cores)
-        if (aws != null) {
-            config.dataDir.resolve("aws").toFile().mkdirs()
-            config.dataDir.resolve("aws/aws.properties").toFile()
-                .writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\n$aws")
-        }
-        return config
+        val root = Files.createTempDirectory("lab")
+        val queue = root.resolve("queue.json")
+        if (aws != null) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000"))
+        return Config(dataDir = root, passwordHash = null, cores = cores, nomadQueueSettings = queue.takeIf { aws != null })
     }
 
     private fun work(id: Long, host: String, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
@@ -493,17 +484,12 @@ class PagesTest {
         workSummary(config, jobs, jobs.associate { it.id to Estimates.estimate(it, { null }, config.cores)!! })
 
     @Test
-    fun `a pool report from an older lab still shows the gauge, its threshold from the settings`() {
-        val config = lab(cores = 10)
-        config.dataDir.resolve("aws/nodes.json").toFile()
-            .writeText("""{"updatedAt": ${now()}, "pressure": 3.25, "launching": 0, "nodes": [], "someday": 1}""")
-
-        val summary = summaryOf(config, emptyList())
-
+    fun `the work summary links to Nomad capacity without the retired pressure gauge`() {
+        val summary = summaryOf(lab(cores = 10), emptyList())
         assertContains(summary, "Work scheduled</b> <span class=\"muted\">none</span>")
-        assertContains(summary, "3.3 of 10 core-h for the first node")
-        assertFalse("no node:" in summary)
-        assertContains(summaryOf(lab(), emptyList()), "Cloud: no pool report yet")
+        assertContains(summary, "nodes and capacity")
+        assertFalse("core-h for the first node" in summary)
+        assertFalse("pool report" in summary)
     }
 
     @Test
