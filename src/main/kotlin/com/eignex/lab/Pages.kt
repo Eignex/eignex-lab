@@ -2053,7 +2053,11 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     append(head("Nodes · eignex lab", live = true, tab = Tab.NODES))
     append("<header><h1>Nodes</h1><p class=\"muted\">Native execution and cloud workers</p></header>")
     append("<section><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
-    append("<p class=\"muted\">${esc(config.localNodeTags.sorted().joinToString(" · "))}</p></section>")
+    val tags = config.localNodeTags.sorted()
+    val summaryTags = tags.filter { !it.startsWith("simd:") || it in setOf("simd:avx2", "simd:avx512", "simd:neon", "simd:sme", "simd:sme2", "simd:sve", "simd:sve2") }
+    append("<p class=\"muted\">${esc(summaryTags.joinToString(" · "))}</p>")
+    if (tags != summaryTags) append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
+    append("</section>")
     val pools = settings?.pools ?: snapshot?.pools.orEmpty()
     val configured = config.executionBackend == ExecutionBackendKind.NOMAD && settings != null
     append("<section><h2>Start nodes</h2>")
