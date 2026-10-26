@@ -50,6 +50,12 @@ deploy/lab run --tags 'arch:x86_64,simd:avx2,!spot' --measurement jfr experiment
 `--tags` requires comma-separated labels; `!` excludes one. Detected architecture/SIMD tags and custom node labels
 are supported. Capability tags do not prove which instructions a benchmark executed.
 
+The **Nodes** tab shows the local machine, cloud pools, active nodes, and their allocations. To start a specific
+kind of cloud node, select its configured pool by CPU, memory, architecture/SIMD tags, and Spot or on-demand market.
+Choose the minimum total nodes to keep in that pool and a duration of 15–60 minutes. Existing nodes count toward
+the minimum; requests respect the pool and global vCPU limits. Release a request to return that capacity to
+automatic scaling, which retires idle nodes after its normal delay. Additional node shapes need a configured pool.
+
 `measurement` modes are `none` (default), `resources`, `jfr`, `compilation`, and `compilation+log`.
 Recording modes default to serial execution and require `parallel: 1`.
 

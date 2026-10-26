@@ -12,15 +12,17 @@ import java.nio.file.Files
 @Serializable data class CapacityRequest(val pool: String, val nodes: Int, val ttlSec: Long = 900)
 
 /** Installed inside the ordinary API's password and same-site gate. No worker route can create a lease. */
-internal fun Application.operatorCapacityApi(config: Config, store: Store) {
+internal fun Application.operatorCapacityApi(config: Config, store: Store, host: HostReport) {
     routing {
         get("/capacity") {
             val snapshot = readCapacityReport(config)
             if (snapshot == null) call.respond(HttpStatusCode.ServiceUnavailable, "Nomad capacity has not reported") else call.respond(snapshot)
         }
-        get("/capacity/view") {
-            call.respondText(capacityPage(readCapacityReport(config), store.execution.capacityLeases()), ContentType.Text.Html)
+        get("/nodes") {
+            val settings = runCatching { config.nomadCapacitySettings?.let { Json.decodeFromString<CapacitySettings>(Files.readString(it)) } }.getOrNull()
+            call.respondText(nodesPage(config, host, readCapacityReport(config), store.execution.capacityLeases(), settings), ContentType.Text.Html)
         }
+        get("/capacity/view") { call.respondRedirect("/nodes") }
         get("/capacity/leases") { call.respond(store.execution.capacityLeases()) }
         post("/capacity/leases") {
             val path = requireNotNull(config.nomadCapacitySettings) { "Nomad capacity is not configured" }
@@ -28,6 +30,7 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store) {
             val request = call.receive<CapacityRequest>()
             val pool = requireNotNull(settings.pools.singleOrNull { it.id == request.pool }) { "unknown pool" }
             require(request.nodes in 1..pool.maxNodes && request.ttlSec in 1..3600) { "capacity requests must fit the pool limit and expire within one hour" }
+            require(request.nodes.toLong() * pool.vcpus <= settings.maxVcpus) { "capacity request exceeds the global vCPU limit" }
             call.respond(HttpStatusCode.Accepted, store.execution.requestCapacity(pool.id, request.nodes, request.ttlSec * 1000))
         }
         delete("/capacity/leases/{id}") {
