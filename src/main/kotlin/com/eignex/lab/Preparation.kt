@@ -131,18 +131,31 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
 /** Archive inventory and stream are bounded independently; links and special files never leave a worker. */
 internal fun archive(tree: Path, output: Path, identity: WorkerBundle, checkActive: () -> Unit): WorkerBundle {
     var total = 0L
-    val files = Files.walk(tree).use { paths -> paths.filter { !Files.isDirectory(it, NOFOLLOW_LINKS) }.sorted().map { path ->
-        checkActive(); require(Files.isRegularFile(path, NOFOLLOW_LINKS))
+    val directories = mutableListOf<String>()
+    val files = Files.walk(tree).use { paths -> paths.sorted().filter { path ->
+        checkActive()
+        if (Files.isDirectory(path, NOFOLLOW_LINKS)) {
+            if (path != tree) directories += tree.relativize(path).toString().replace('\\', '/') + "/"
+            false
+        } else true
+    }.map { path ->
+        require(Files.isRegularFile(path, NOFOLLOW_LINKS))
         val bytes = Files.size(path); require(bytes <= 32L * 1024 * 1024 * 1024 - total); total += bytes
         InputFile(tree.relativize(path).toString().replace('\\', '/'), hashFile(path), bytes, Files.isExecutable(path))
     }.toList() }
     require(files.isNotEmpty())
-    ZipOutputStream(Files.newOutputStream(output)).use { zip -> for (file in files) {
-        checkActive(); zip.putNextEntry(ZipEntry(file.path).apply { time = 0 })
-        Files.newInputStream(tree.resolve(file.path)).use { input ->
-            val buffer = ByteArray(64 * 1024)
-            while (true) { checkActive(); val count = input.read(buffer); if (count < 0) break; zip.write(buffer, 0, count) }
-        }; zip.closeEntry()
-    } }
+    ZipOutputStream(Files.newOutputStream(output)).use { zip ->
+        // Empty directories carry runtime meaning too, including a detached checkout's .git/refs.
+        for (directory in directories) {
+            checkActive(); zip.putNextEntry(ZipEntry(directory).apply { time = 0 }); zip.closeEntry()
+        }
+        for (file in files) {
+            checkActive(); zip.putNextEntry(ZipEntry(file.path).apply { time = 0 })
+            Files.newInputStream(tree.resolve(file.path)).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) { checkActive(); val count = input.read(buffer); if (count < 0) break; zip.write(buffer, 0, count) }
+            }; zip.closeEntry()
+        }
+    }
     return identity.copy(sha256 = hashFile(output), files = files, build = null)
 }

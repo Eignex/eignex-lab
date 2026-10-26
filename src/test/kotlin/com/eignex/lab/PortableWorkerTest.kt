@@ -188,6 +188,20 @@ class PortableWorkerTest {
         assertEquals("", status.inputStream.bufferedReader().readText()); assertEquals(0, status.waitFor())
         assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
         assertFalse(git("for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
+
+        // Preparation sends this detached checkout through an archive before the solve allocation uses Git.
+        Files.createDirectory(tree.resolve("empty-runtime-directory"))
+        assertTrue(Files.isDirectory(tree.resolve(".git/refs/heads")))
+        val preparedArchive = root.resolve("prepared.zip")
+        val prepared = archive(tree, preparedArchive, manifest) {}
+        val restored = VerifiedCache(root.resolve("prepared")).stage(prepared) { Files.newInputStream(preparedArchive) }
+        assertTrue(Files.isDirectory(restored.resolve("empty-runtime-directory")))
+        val revision = ProcessBuilder("git", "-C", restored.toString(), "rev-parse", "HEAD").redirectErrorStream(true).start()
+        assertEquals(commit, revision.inputStream.bufferedReader().readText().trim())
+        assertEquals(0, revision.waitFor())
+        val tracked = ProcessBuilder("git", "-C", restored.toString(), "ls-files", "--error-unmatch", "gradlew").redirectErrorStream(true).start()
+        assertEquals("gradlew", tracked.inputStream.bufferedReader().readText().trim())
+        assertEquals(0, tracked.waitFor())
     }
 
     @Test fun `source builds share their session budget cache once and rebuild corrupt outputs`(): Unit = service { socket ->
