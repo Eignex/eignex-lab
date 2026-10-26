@@ -39,6 +39,14 @@ class BootstrapTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render(config, self.secret, 'i-instance', probe, cpus, memory)
 
+    def test_linux_arm64_alias_retains_hardware_validation(self):
+        config = self.config | {'architecture': 'arm64', 'minimumFeatures': ['asimd', 'sve2']}
+        probe = self.probe | {'arch': 'aarch64', 'features': 'asimd sve sve2'}
+        self.assertEqual('general', render(config, self.secret, 'i-arm', probe, 16, 64000)['client']['node_class'])
+        for incompatible in (probe | {'arch': 'x86_64'}, probe | {'features': 'asimd sve'}):
+            with self.assertRaises(ValueError):
+                render(config, self.secret, 'i-arm', incompatible, 16, 64000)
+
     def test_aws_bootstrap_configuration_activates_the_interruption_service(self):
         infra = Path(__file__).resolve().parents[1]
         config = re.search(r'node_config = \{(.*?)\n  \}', (infra / 'aws/main.tf').read_text(), re.S).group(1)
