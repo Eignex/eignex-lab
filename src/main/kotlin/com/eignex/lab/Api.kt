@@ -192,7 +192,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
             val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
                 store.queue(nodesUp = config.aws != null && nodesUp(readPoolReport(config), now())), estimates::lookup, emptyMap(),
-                store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }))
+                store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
+                jobNodes(config, store, active.filter { it.backend == ExecutionBackendKind.NOMAD }.map { it.id }))
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
@@ -403,6 +404,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
                         hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
+                        nodes = if (job.backend == ExecutionBackendKind.NOMAD && job.status in ACTIVE) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
