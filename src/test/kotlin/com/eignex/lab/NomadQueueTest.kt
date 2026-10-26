@@ -222,6 +222,21 @@ class NomadQueueTest {
         assertEquals(1, store.execution.sessions(waiting).count { it.desired == "run" })
     }
 
+    @Test fun `native ownership is fenced atomically even when admission and replacement race`() {
+        val owner = job(ExperimentSpec("atomic-owner", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue().reconcile()
+        val waiting = job(ExperimentSpec("atomic-waiting", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val original = store.execution.sessions(owner).single()
+        val manifest = store.execution.manifest(original.id).copy(session = java.util.UUID.randomUUID().toString(), experiment = store.job(waiting)!!.experiment!!)
+        val template = settings.targets.single { it.os == "mac" }.template.copy(budget = manifest.budget)
+        assertFailsWith<IllegalStateException> { backend.enqueue(waiting, manifest, template, settings.workerApi) }
+        assertTrue(store.execution.sessions(waiting).isEmpty())
+        assertEquals(Status.QUEUED, store.job(waiting)!!.status)
+        store.requestCancel(owner); backend.reconcile()
+        backend.enqueue(waiting, manifest, template, settings.workerApi)
+        assertEquals(manifest.session, store.execution.sessions(waiting).single().id)
+    }
+
     @Test fun `infrastructure retry limit also applies while some solve workers are still active`() {
         val id = job(); queue().reconcile(); prepare(id); queue().reconcile()
         repeat(4) {
