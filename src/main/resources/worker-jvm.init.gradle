@@ -1,0 +1,7 @@
+// Lab preparation produces JVM binaries. Native release packaging requires a
+// Kotlin/Native compiler host, which Linux ARM64 workers do not provide.
+gradle.beforeProject { project ->
+    project.pluginManager.withPlugin('com.eignex.cli') {
+        project.extensions.getByName('eignexCli').releaseAssetsEnabled.set(false)
+    }
+}
