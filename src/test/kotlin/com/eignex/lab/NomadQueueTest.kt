@@ -193,6 +193,35 @@ class NomadQueueTest {
         assertTrue(Store(root.resolve("lab.db")).execution.pendingDomainCompletion().isEmpty())
     }
 
+    @Test fun `native preparation queues behind another experiment and auto preparation spills to Spot`() {
+        val first = job(ExperimentSpec("first-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val waiting = job(ExperimentSpec("waiting-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val automatic = job(ExperimentSpec("automatic", problems = listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
+        queue().reconcile()
+        assertEquals(1, store.execution.sessions(first).size)
+        assertTrue(store.execution.sessions(waiting).isEmpty(), "a native ownership wait is not an infrastructure attempt")
+        val spill = store.execution.sessions(automatic).single()
+        assertTrue(store.execution.submission(spill.id).contains("hard-quota"))
+        repeat(3) { queue().reconcile() }
+        assertTrue(store.execution.sessions(waiting).isEmpty())
+        store.requestCancel(first); backend.reconcile(); queue().reconcile()
+        assertEquals(1, store.execution.sessions(waiting).size, "native admission resumes when ownership is released")
+        assertEquals(0, store.execution.failureCount(waiting))
+    }
+
+    @Test fun `native replacement also waits behind a different experiment ownership`() {
+        val waiting = job(ExperimentSpec("retry-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue().reconcile()
+        store.execution.loseSession(store.execution.sessions(waiting).single().id, "infrastructure:lost")
+        val owner = job(ExperimentSpec("owner-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue().reconcile(); backend.reconcile()
+        assertEquals(1, store.execution.sessions(waiting).size)
+        assertTrue(store.execution.sessions(waiting).all { it.desired == "stop" })
+        store.requestCancel(owner); backend.reconcile(); backend.reconcile()
+        assertEquals(2, store.execution.sessions(waiting).size)
+        assertEquals(1, store.execution.sessions(waiting).count { it.desired == "run" })
+    }
+
     @Test fun `infrastructure retry limit also applies while some solve workers are still active`() {
         val id = job(); queue().reconcile(); prepare(id); queue().reconcile()
         repeat(4) {

@@ -364,6 +364,12 @@ class ExecutionStore internal constructor(private val store: Store) {
             WHERE s.desired != 'stop' AND json_extract(o.payload, '$.Meta.lab_cpu_enforcement') = 'advisory-native'""".trimIndent()) { it.getLong(1) to it.getLong(2) }.single()
     }
 
+    fun nativeOwnedByAnother(job: Long): Boolean = store.executionTransaction { db ->
+        db.sqlRows("""SELECT 1 FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
+            WHERE s.job_id != ? AND s.desired != 'stop' AND json_extract(o.payload, '$.Meta.lab_cpu_enforcement') = 'advisory-native' LIMIT 1""",
+            job) { true }.isNotEmpty()
+    }
+
     fun queueRecipe(job: Long, proposed: NomadQueueSettings): NomadQueueSettings = store.executionTransaction { db ->
         val prior = db.sqlRows("SELECT settings FROM execution_queue_recipes WHERE job_id = ?", job) { it.getString(1) }.singleOrNull()
         if (prior != null) return@executionTransaction Json.decodeFromString(prior)
