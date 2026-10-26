@@ -164,6 +164,7 @@ class Runner(
                 Thread.sleep(IDLE_POLL_MS)
                 continue
             }
+            var idle = false
             try {
                 updater.maybeUpdate()
                 Files.deleteIfExists(config.nativeYield)
@@ -171,7 +172,7 @@ class Runner(
                 runCatching { dockerCleanup.maybeRun() }.onFailure { println("docker cleanup: ${it.message}") }
                 val ready = recover()
                 if (!disk.allowsWork() || !ready) {
-                    Thread.sleep(IDLE_POLL_MS)
+                    idle = true
                     continue
                 }
                 // While a cloud node is up or launching it can take the auto jobs, so local-only ones go first at equal priority.
@@ -180,11 +181,14 @@ class Runner(
                     store.next(nodesUp = awsActive(), exclude = crews.failing(), nodeTags = config.localNodeTags)?.also { if (shared(it)) crews.join(it.id, ExecutionHost.LOCAL) }
                 }
                 if (job == null) {
-                    Thread.sleep(IDLE_POLL_MS)
+                    idle = true
                     continue
                 }
                 if (!runJob(job)) return
-            } finally { ownership.close() }
+            } finally {
+                ownership.close()
+                if (idle) Thread.sleep(IDLE_POLL_MS)
+            }
         }
     }
 

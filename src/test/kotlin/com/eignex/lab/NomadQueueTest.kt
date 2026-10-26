@@ -122,6 +122,20 @@ class NomadQueueTest {
         assertEquals(1, store.job(id)!!.commands.size)
     }
 
+    @Test fun `normal API accepts a bounded cloud profile under Nomad`() = testApplication {
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        val response = client.post("/experiments") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"nodeTags":{"require":["cloud","spot"]}}""")
+        }
+        assertEquals(HttpStatusCode.Created, response.status)
+        val job = store.active().single()
+        assertEquals(ExecutionBackendKind.NOMAD, job.backend)
+        assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
+        assertEquals(600L, job.experiment!!.profile!!.runTimeoutSec)
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(job.experiment!!, 4) }
+    }
+
     @Test fun `one case cannot reserve a nonexistent parallel slot and native saturation spills to Spot`() {
         val id = job(); queue().reconcile(); prepare(id); backend.reconcile()
         NomadQueue(config.copy(cores = 1), store, backend, artifacts, settings, { true }, nativeAllowed = { true },
@@ -177,6 +191,50 @@ class NomadQueueTest {
         queue().reconcile(); queue().reconcile()
         assertEquals(1, completions)
         assertTrue(Store(root.resolve("lab.db")).execution.pendingDomainCompletion().isEmpty())
+    }
+
+    @Test fun `native preparation queues behind another experiment and auto preparation spills to Spot`() {
+        val first = job(ExperimentSpec("first-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val waiting = job(ExperimentSpec("waiting-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val automatic = job(ExperimentSpec("automatic", problems = listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
+        queue().reconcile()
+        assertEquals(1, store.execution.sessions(first).size)
+        assertTrue(store.execution.sessions(waiting).isEmpty(), "a native ownership wait is not an infrastructure attempt")
+        val spill = store.execution.sessions(automatic).single()
+        assertTrue(store.execution.submission(spill.id).contains("hard-quota"))
+        repeat(3) { queue().reconcile() }
+        assertTrue(store.execution.sessions(waiting).isEmpty())
+        store.requestCancel(first); backend.reconcile(); queue().reconcile()
+        assertEquals(1, store.execution.sessions(waiting).size, "native admission resumes when ownership is released")
+        assertEquals(0, store.execution.failureCount(waiting))
+    }
+
+    @Test fun `native replacement also waits behind a different experiment ownership`() {
+        val waiting = job(ExperimentSpec("retry-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue().reconcile()
+        store.execution.loseSession(store.execution.sessions(waiting).single().id, "infrastructure:lost")
+        val owner = job(ExperimentSpec("owner-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue().reconcile(); backend.reconcile()
+        assertEquals(1, store.execution.sessions(waiting).size)
+        assertTrue(store.execution.sessions(waiting).all { it.desired == "stop" })
+        store.requestCancel(owner); backend.reconcile(); backend.reconcile()
+        assertEquals(2, store.execution.sessions(waiting).size)
+        assertEquals(1, store.execution.sessions(waiting).count { it.desired == "run" })
+    }
+
+    @Test fun `native ownership is fenced atomically even when admission and replacement race`() {
+        val owner = job(ExperimentSpec("atomic-owner", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue().reconcile()
+        val waiting = job(ExperimentSpec("atomic-waiting", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val original = store.execution.sessions(owner).single()
+        val manifest = store.execution.manifest(original.id).copy(session = java.util.UUID.randomUUID().toString(), experiment = store.job(waiting)!!.experiment!!)
+        val template = settings.targets.single { it.os == "mac" }.template.copy(budget = manifest.budget)
+        assertFailsWith<IllegalStateException> { backend.enqueue(waiting, manifest, template, settings.workerApi) }
+        assertTrue(store.execution.sessions(waiting).isEmpty())
+        assertEquals(Status.QUEUED, store.job(waiting)!!.status)
+        store.requestCancel(owner); backend.reconcile()
+        backend.enqueue(waiting, manifest, template, settings.workerApi)
+        assertEquals(manifest.session, store.execution.sessions(waiting).single().id)
     }
 
     @Test fun `infrastructure retry limit also applies while some solve workers are still active`() {
