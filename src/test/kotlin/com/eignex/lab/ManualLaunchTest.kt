@@ -166,7 +166,7 @@ class ManualLaunchTest {
         }
         assertFalse(ManualLaunch.file(config).exists())
         val summary = workSummary(config, emptyList(), emptyMap())
-        assertContains(summary, "/capacity/view")
+        assertContains(summary, "/nodes")
         assertFalse("Start a node" in summary)
     }
 

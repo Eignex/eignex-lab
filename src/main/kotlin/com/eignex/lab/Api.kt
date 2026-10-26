@@ -179,7 +179,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         Trust(config.trustedUsers, Repositories.source(config, repository), git = { 1 to "" },
             github = { path -> Trust.githubApi(config.githubTokenFile.toFile().takeIf { it.isFile }?.readText()?.trim())(path) })
     }
-    operatorCapacityApi(config, store)
+    operatorCapacityApi(config, store, host)
     referenceCache.warm()
     // Every schedule's finished runs computed before anyone asks, so the first trend load after a restart is quick too.
     Trend.warm(store, trendCache)
