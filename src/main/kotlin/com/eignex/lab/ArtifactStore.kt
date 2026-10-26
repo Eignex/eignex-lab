@@ -27,7 +27,8 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
         if (Files.isRegularFile(full)) Files.size(full) else full.resolveSibling("$sha.partial").let { if (Files.exists(it)) Files.size(it) else 0 }
     }
     override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
-        require(bytes in 0..maxBytes && offset in 0..bytes && writable()) { "artifact storage unavailable or limit exceeded" }
+        require(bytes in 0..maxBytes && offset in 0..bytes) { "artifact size or offset limit exceeded" }
+        check(writable()) { "artifact storage temporarily unavailable" }
         val full = path(job, sha); Files.createDirectories(full.parent)
         synchronized(fileLockFor(full)) {
         FileChannel.open(full.resolveSibling("$sha.lock"), CREATE, WRITE).use { channel -> channel.lock().use {

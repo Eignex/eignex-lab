@@ -324,6 +324,22 @@ class NomadBackendTest {
         assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
     }
 
+    @Test fun `an admission hold preserves active worker leases and progress but blocks new work`() = testApplication {
+        setup(1)
+        var allowed = true
+        application { workerApi(store, backend(), artifacts) { allowed } }
+        fun HttpRequestBuilder.credentials() { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt()) }
+        client.post("/worker/v1/sessions/session/register") { credentials(); setBody(Json.encodeToString(WorkerRegistration("release"))) }
+        val claim = Json.decodeFromString<IterationClaim>(client.post("/worker/v1/sessions/session/claim") { credentials() }.bodyAsText())
+        allowed = false
+        assertEquals(HttpStatusCode.OK, client.post("/worker/v1/sessions/session/renew") { credentials(); setBody(Json.encodeToString(claim.owner)) }.status)
+        assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/session/phase") { credentials(); setBody(Json.encodeToString(WorkerPhase(claim.owner, "executing"))) }.status)
+        assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/session/progress") { credentials(); setBody(Json.encodeToString(WorkerProgress(claim.owner, claim.indices.first()))) }.status)
+        assertEquals(HttpStatusCode.ServiceUnavailable, client.post("/worker/v1/sessions/session/claim") { credentials() }.status)
+        store.requestCancel(session.jobId)
+        assertEquals(HttpStatusCode.Conflict, client.post("/worker/v1/sessions/session/renew") { credentials(); setBody(Json.encodeToString(claim.owner)) }.status)
+    }
+
     @Test fun `worker API has no operator routes and scopes mutation and uploads to its signed allocation`() = testApplication {
         setup(1)
         application { workerApi(store, backend(), artifacts) { true } }
