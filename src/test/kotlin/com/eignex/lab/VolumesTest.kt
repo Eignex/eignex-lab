@@ -236,5 +236,9 @@ class VolumesTest {
         assertNull(Volumes.hold(lab.config))
     }
 
+    private companion object {
+        const val JAVA = "/Library/Java/JavaVirtualMachines/test.jdk/Contents/Home/bin/java"
+        const val TIMEOUT_MS = 300L
+    }
 
 }
