@@ -21,7 +21,8 @@
           "JAVA_HOME": "/Users/lab/.gradle/jdks/JDK25",
           "LAB_SUPERVISOR_SOCKET": "/Users/lab/eignex-lab-data/nomad/process.sock",
           "LAB_WORKER_LAUNCHER": "/Users/lab/eignex-lab-data/releases/RELEASE/bin/eignex-lab",
-          "LAB_WORKER_PRIVATE_TRANSPORT": "true"
+          "LAB_WORKER_PRIVATE_TRANSPORT": "true",
+          "LAB_WORKER_CACHE_ROOT": "/Users/lab/eignex-lab-data/nomad/worker-cache"
         }
       }
     },
@@ -38,6 +39,7 @@
         "image": "ghcr.io/eignex/eignex-lab-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "datacenter": "lab",
         "statusHostVolume": "lab-status",
+        "cacheHostVolume": "lab-cache",
         "environment": {"LAB_WORKER_PRIVATE_TRANSPORT": "true"}
       }
     }

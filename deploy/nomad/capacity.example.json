@@ -1,7 +1,6 @@
 {
   "maxVcpus": 64,
   "localCores": 8,
-  "localPressureHours": 0.25,
   "pools": [
     {
       "id": "general",
@@ -11,7 +10,6 @@
       "maxNodes": 4,
       "tags": ["arch:x86_64", "simd:avx2"],
       "market": "spot",
-      "reserveCpuMillis": 2000,
       "reserveMemoryMiB": 1024,
       "minPriority": 0,
       "sustainedMs": 30000,

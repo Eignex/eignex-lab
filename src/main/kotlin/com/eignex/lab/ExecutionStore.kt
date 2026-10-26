@@ -101,7 +101,16 @@ class ExecutionStore internal constructor(private val store: Store) {
             return@executionTransaction old
         }
         val native = db.sqlRows("SELECT json_extract(?, '$.Meta.lab_cpu_enforcement')", payload) { it.getString(1) }.single() == "advisory-native"
-        check(!native || !nativeOwnedByAnother(db, jobId)) { "native execution is reserved by another experiment" }
+        if (native) {
+            val limit = db.sqlRows("SELECT json_extract(?, '$.Meta.lab_native_cpu_limit'), json_extract(?, '$.Meta.lab_native_memory_limit')", payload, payload) {
+                if (it.getObject(1) == null || it.getObject(2) == null) null else it.getLong(1) to it.getLong(2)
+            }.single()
+            if (limit == null) check(!nativeOwnedByAnother(db, jobId)) { "native execution is reserved by another experiment" }
+            else {
+                val held = nativeReservation(db)
+                check(held.first + budget.cpuMillis <= limit.first && held.second + budget.memoryMiB <= limit.second) { "native CPU or memory budget exhausted" }
+            }
+        }
         db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
             id, jobId, executionClass, release, Json.encodeToString(budget), nomadId, digest(token), at)
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
@@ -373,12 +382,12 @@ class ExecutionStore internal constructor(private val store: Store) {
         }.singleOrNull() ?: throw ExecutionFenced("preparation selection was not approved")
     }
 
-    fun nativeReservation(): Pair<Long, Long> = store.executionTransaction { db ->
+    fun nativeReservation(): Pair<Long, Long> = store.executionTransaction(::nativeReservation)
+
+    private fun nativeReservation(db: Connection): Pair<Long, Long> =
         db.sqlRows("""SELECT COALESCE(SUM(json_extract(s.budget, '$.cpuMillis')),0), COALESCE(SUM(json_extract(s.budget, '$.memoryMiB')),0)
             FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
             WHERE s.desired != 'stop' AND json_extract(o.payload, '$.Meta.lab_cpu_enforcement') = 'advisory-native'""".trimIndent()) { it.getLong(1) to it.getLong(2) }.single()
-    }
-
     fun nativeOwnedByAnother(job: Long): Boolean = store.executionTransaction { db -> nativeOwnedByAnother(db, job) }
 
     private fun nativeOwnedByAnother(db: Connection, job: Long): Boolean =

@@ -51,7 +51,7 @@ class NomadQueueTest {
         return WorkerBundle(sha, listOf(InputFile("fixture", ExecutionStore.digest(text), text.length.toLong())), Repositories.DEFAULT,
             "a".repeat(40), os, arch, "fixture")
     }
-    private fun queue(allowed: () -> Boolean = { true }) = NomadQueue(config, store, backend, artifacts, settings, allowed,
+    private fun queue(cores: Int = config.cores, allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, settings, allowed,
         completed = { completions++ }, nativeAllowed = { true }, source = { job, targets, _ ->
             publications++
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.map { input(job.id, it.os, it.arch) }
@@ -193,30 +193,29 @@ class NomadQueueTest {
         assertTrue(Store(root.resolve("lab.db")).execution.pendingDomainCompletion().isEmpty())
     }
 
-    @Test fun `native preparation queues behind another experiment and auto preparation spills to Spot`() {
+    @Test fun `native preparations share CPU and memory budgets and overflow spills to Spot`() {
         val first = job(ExperimentSpec("first-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val second = job(ExperimentSpec("second-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
         val waiting = job(ExperimentSpec("waiting-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
         val automatic = job(ExperimentSpec("automatic", problems = listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
-        queue().reconcile()
+        queue(cores = 2).reconcile()
         assertEquals(1, store.execution.sessions(first).size)
-        assertTrue(store.execution.sessions(waiting).isEmpty(), "a native ownership wait is not an infrastructure attempt")
-        val spill = store.execution.sessions(automatic).single()
-        assertTrue(store.execution.submission(spill.id).contains("hard-quota"))
-        repeat(3) { queue().reconcile() }
+        assertEquals(1, store.execution.sessions(second).size)
+        assertEquals(2000L to 1024L, store.execution.nativeReservation())
         assertTrue(store.execution.sessions(waiting).isEmpty())
-        store.requestCancel(first); backend.reconcile(); queue().reconcile()
-        assertEquals(1, store.execution.sessions(waiting).size, "native admission resumes when ownership is released")
+        assertTrue(store.execution.submission(store.execution.sessions(automatic).single().id).contains("hard-quota"))
+        store.requestCancel(first); backend.reconcile(); queue(cores = 2).reconcile()
+        assertEquals(1, store.execution.sessions(waiting).size)
         assertEquals(0, store.execution.failureCount(waiting))
     }
 
-    @Test fun `native replacement also waits behind a different experiment ownership`() {
+    @Test fun `native replacement waits for resource capacity rather than experiment ownership`() {
         val waiting = job(ExperimentSpec("retry-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
-        queue().reconcile()
+        queue(cores = 1).reconcile()
         store.execution.loseSession(store.execution.sessions(waiting).single().id, "infrastructure:lost")
         val owner = job(ExperimentSpec("owner-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
-        queue().reconcile(); backend.reconcile()
+        queue(cores = 1).reconcile(); backend.reconcile()
         assertEquals(1, store.execution.sessions(waiting).size)
-        assertTrue(store.execution.sessions(waiting).all { it.desired == "stop" })
         store.requestCancel(owner); backend.reconcile(); backend.reconcile()
         assertEquals(2, store.execution.sessions(waiting).size)
         assertEquals(1, store.execution.sessions(waiting).count { it.desired == "run" })

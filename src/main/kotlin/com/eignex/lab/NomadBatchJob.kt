@@ -36,6 +36,8 @@ data class NomadBatchJob(
     val networkMode: String? = null,
     val statusHostVolume: String? = null,
     val excludedNodes: Set<String> = emptySet(),
+    val nativeCapacity: ResourceBudget? = null,
+    val cacheHostVolume: String? = null,
 ) {
     init {
         require(schemaVersion == 1) { "unsupported Nomad session schema: $schemaVersion" }
@@ -53,6 +55,8 @@ data class NomadBatchJob(
         }
         require(networkMode == null || (platform == NomadPlatform.LINUX && networkMode == "host"))
         require(statusHostVolume == null || (platform == NomadPlatform.LINUX && statusHostVolume == "lab-status"))
+        require(cacheHostVolume == null || platform == NomadPlatform.LINUX && cacheHostVolume == "lab-cache")
+        require(nativeCapacity == null || platform == NomadPlatform.MAC && budget.cpuMillis <= nativeCapacity.cpuMillis && budget.memoryMiB <= nativeCapacity.memoryMiB)
         budget.nomadCpuMHz(cpuCapacity)
     }
 
@@ -67,6 +71,7 @@ data class NomadBatchJob(
             put("lab_cpu_millis", budget.cpuMillis.toString())
             put("lab_memory_mib", budget.memoryMiB.toString())
             put("lab_cpu_enforcement", if (platform == NomadPlatform.LINUX) "hard-quota" else "advisory-native")
+            nativeCapacity?.let { put("lab_native_cpu_limit", it.cpuMillis.toString()); put("lab_native_memory_limit", it.memoryMiB.toString()) }
         }
         put("Constraints", buildJsonArray {
             add(constraint("${'$'}{node.class}", nodeClass))
@@ -80,9 +85,13 @@ data class NomadBatchJob(
             add(buildJsonObject {
                 put("Name", "session")
                 put("Count", 1)
-                statusHostVolume?.let { source -> putJsonObject("Volumes") {
-                    putJsonObject("status") { put("Type", "host"); put("Source", source); put("ReadOnly", true) }
-                } }
+                if (statusHostVolume != null || cacheHostVolume != null) putJsonObject("Volumes") {
+                    statusHostVolume?.let { source -> putJsonObject("status") { put("Type", "host"); put("Source", source); put("ReadOnly", true) } }
+                    cacheHostVolume?.let { source -> putJsonObject("cache") {
+                        put("Type", "host"); put("Source", source); put("ReadOnly", false)
+                        put("AccessMode", "single-node-multi-writer"); put("AttachmentMode", "file-system")
+                    } }
+                }
                 putJsonObject("RestartPolicy") {
                     put("Attempts", 0)
                     put("Mode", "fail")
@@ -119,9 +128,10 @@ data class NomadBatchJob(
                 put("init", true)
             }
         }
-        statusHostVolume?.let { putJsonArray("VolumeMounts") { add(buildJsonObject {
-            put("Volume", "status"); put("Destination", "/lab-status"); put("ReadOnly", true)
-        }) } }
+        if (statusHostVolume != null || cacheHostVolume != null) putJsonArray("VolumeMounts") {
+            statusHostVolume?.let { add(buildJsonObject { put("Volume", "status"); put("Destination", "/lab-status"); put("ReadOnly", true) }) }
+            cacheHostVolume?.let { add(buildJsonObject { put("Volume", "cache"); put("Destination", "/lab-cache"); put("ReadOnly", false) }) }
+        }
         putJsonObject("Resources") {
             put("CPU", budget.nomadCpuMHz(cpuCapacity))
             put("MemoryMB", budget.memoryMiB)
@@ -129,6 +139,7 @@ data class NomadBatchJob(
         putJsonObject("Env") {
             environment.forEach { (key, value) -> put(key, value) }
             statusHostVolume?.let { put("LAB_WORKER_DRAIN_FILE", "/lab-status/draining") }
+            cacheHostVolume?.let { put("LAB_WORKER_CACHE_ROOT", "/lab-cache") }
             put("LAB_SESSION_CPU_MILLIS", budget.cpuMillis.toString())
             put("LAB_SESSION_MEMORY_MIB", budget.memoryMiB.toString())
             put("LAB_SESSION_PARALLEL", budget.parallel.toString())

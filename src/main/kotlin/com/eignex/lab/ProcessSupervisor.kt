@@ -14,7 +14,7 @@ import java.nio.file.Path
 import java.util.concurrent.CancellationException
 
 /** Process ownership lives in an independent, same-user service. Closing the connection relinquishes the tree. */
-class ProcessSupervisor(private val socket: Path) {
+class ProcessSupervisor(private val socket: Path, private val experiment: String? = System.getenv("LAB_WORKER_EXPERIMENT")) {
     @Serializable
     private data class Request(val argv: List<String>, val directory: String, val environment: Map<String, String>,
                                val stdout: String, val stderr: String, val timeoutSec: Long, val graceMs: Long, val leaseMs: Long, val experiment: String?,
@@ -60,7 +60,7 @@ class ProcessSupervisor(private val socket: Path) {
                     if (channel.write(buffer) == 0) Thread.sleep(10)
                 }
             }
-            write(Json.encodeToString(Request(argv, directory.toString(), environment, stdout.toString(), stderr.toString(), timeoutSec, graceMs, remaining(), System.getenv("LAB_WORKER_EXPERIMENT"), runRemainingMs)) + "\n")
+            write(Json.encodeToString(Request(argv, directory.toString(), environment, stdout.toString(), stderr.toString(), timeoutSec, graceMs, remaining(), experiment, runRemainingMs)) + "\n")
             var heartbeat = System.nanoTime()
             val response = StringBuilder(); val buffer = ByteBuffer.allocate(4096)
             while (true) {

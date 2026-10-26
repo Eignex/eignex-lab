@@ -207,7 +207,18 @@ class NomadBackend(
                 // stopped preparation here races plan publication and recreates already accepted preparation.
                 val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: continue
                 val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-                if (native && (store.localBusy() || !nativeMayClaim(job.id) || store.execution.nativeOwnedByAnother(job.id))) continue
+                if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
+                if (native) {
+                    val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
+                    val cpu = meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull
+                    val memory = meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull
+                    if (cpu == null || memory == null) {
+                        if (store.execution.nativeOwnedByAnother(job.id)) continue
+                    } else {
+                        val held = store.execution.nativeReservation()
+                        if (held.first + previous.budget.cpuMillis > cpu || held.second + previous.budget.memoryMiB > memory) continue
+                    }
+                }
                 if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
                 else replace(previous)
             }

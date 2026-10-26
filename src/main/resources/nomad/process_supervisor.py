@@ -28,8 +28,7 @@ LAUNCH_LOCK = threading.Lock()
 STOPPING = threading.Event()
 NATIVE_LOCK = None
 OWNER_LOCK = threading.Lock()
-OWNER = None
-OWNER_REFS = 0
+OWNERS = {}
 EXPERIMENT_MARKERS = {}
 OWNER_FILE = None
 
@@ -106,7 +105,6 @@ def cleanup(marker, grace_ms=0):
 
 
 def reserve(connection, experiment):
-    global OWNER, OWNER_REFS
     if not isinstance(experiment, str) or not experiment or len(experiment) > 80:
         raise ValueError("invalid experiment owner")
     acquired = False
@@ -115,23 +113,18 @@ def reserve(connection, experiment):
             with OWNER_LOCK:
                 if STOPPING.is_set():
                     return
-                if OWNER is None:
-                    try:
-                        if NATIVE_LOCK is not None:
-                            fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        OWNER = experiment
-                        if OWNER_FILE is not None:
-                            OWNER_FILE.write_text(experiment)
-                    except BlockingIOError:
-                        pass
-                if OWNER == experiment:
-                    OWNER_REFS += 1
+                try:
+                    if not OWNERS and NATIVE_LOCK is not None:
+                        fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    OWNERS[experiment] = OWNERS.get(experiment, 0) + 1
+                    if OWNER_FILE is not None:
+                        OWNER_FILE.write_text(",".join(sorted(OWNERS)))
                     acquired = True
+                except BlockingIOError:
+                    pass
             if not acquired:
                 ready, _, _ = select.select([connection], [], [], .1)
                 if ready and not connection.recv(64):
-                    return
-                if STOPPING.is_set():
                     return
         connection.sendall(b'{"reserved":true}\n')
         expiry = time.monotonic() + 80
@@ -145,16 +138,19 @@ def reserve(connection, experiment):
         if acquired:
             with LAUNCH_LOCK:
                 with OWNER_LOCK:
-                    OWNER_REFS -= 1
-                    if OWNER_REFS == 0:
+                    OWNERS[experiment] -= 1
+                    if OWNERS[experiment] == 0:
                         try:
                             for marker, owner in list(EXPERIMENT_MARKERS.items()):
                                 if owner == experiment:
                                     cleanup(marker)
+                            del OWNERS[experiment]
                             if OWNER_FILE is not None:
-                                OWNER_FILE.unlink(missing_ok=True)
-                            OWNER = None
-                            if NATIVE_LOCK is not None:
+                                if OWNERS:
+                                    OWNER_FILE.write_text(",".join(sorted(OWNERS)))
+                                else:
+                                    OWNER_FILE.unlink(missing_ok=True)
+                            if not OWNERS and NATIVE_LOCK is not None:
                                 fcntl.lockf(NATIVE_LOCK, fcntl.LOCK_UN)
                         except Exception:
                             STOPPING.set()
@@ -183,7 +179,7 @@ def serve_request(connection):
             return
         if NATIVE_LOCK is not None:
             with OWNER_LOCK:
-                if OWNER is None or request.get("experiment") != OWNER:
+                if request.get("experiment") not in OWNERS:
                     raise ValueError("native execution has no host reservation")
         argv = request["argv"]
         if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and "\0" not in x for x in argv):
@@ -211,7 +207,7 @@ def serve_request(connection):
             with LAUNCH_LOCK:
                 if NATIVE_LOCK is not None:
                     with OWNER_LOCK:
-                        if OWNER is None or request.get("experiment") != OWNER:
+                        if request.get("experiment") not in OWNERS:
                             raise ValueError("native reservation ended before launch")
                 if STOPPING.is_set():
                     raise RuntimeError("service stopping")
