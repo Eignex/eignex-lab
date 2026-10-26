@@ -30,6 +30,9 @@ object NomadCoordinatorCli {
         require(args.size == 1) { "usage: nomad-coordinator SETTINGS.json" }
         val settings = Json.decodeFromString<NomadCoordinatorSettings>(Files.readString(Path.of(args.single())))
         val config = Config()
+        val queueSettings = requireNotNull(config.nomadQueue) { "Nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
+        val nativeCapacity = queueSettings.targets.filter { it.os == "mac" }.minOfOrNull { it.template.budget.memoryMiB }
+            ?.let { ResourceBudget(config.cores * 1000, it) }
         require(Volumes.hold(config) == null) { "coordinator volumes unavailable" }
         Files.createDirectories(config.dataDir)
         val store = Store(config.database)
@@ -67,7 +70,7 @@ object NomadCoordinatorCli {
                     detail
                 } finally { pendingChecks.remove(key, future) }
             }
-        }, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, admit = { manifest, template ->
+        }, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template ->
             if (template.platform == NomadPlatform.MAC) {
                 require(manifest.budget.cpuMillis <= config.cores * 1000 && manifest.budget.parallel <= config.maxParallel)
             } else {
@@ -78,10 +81,9 @@ object NomadCoordinatorCli {
                 require(pool.market == if (NodeTags.onDemand(false, manifest.experiment.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
             }
         })
-        val queue = config.nomadQueue?.let { queueSettings -> NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork) }
-        val buildVolumes = config.nomadQueue?.let { NomadBuildVolumes(client, it) }
-        require(queue != null) { "Nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
-        if (queue != null) thread(isDaemon = true, name = "nomad-admission") {
+        val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork)
+        val buildVolumes = NomadBuildVolumes(client, queueSettings)
+        thread(isDaemon = true, name = "nomad-admission") {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching { queue.reconcile() }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }
                 Thread.sleep(10_000)
@@ -95,7 +97,7 @@ object NomadCoordinatorCli {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching {
                     backend.reconcile()
-                    runCatching { buildVolumes?.reconcile() }.onFailure { System.err.println("nomad build cache: ${it.javaClass.simpleName}") }
+                    runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${it.javaClass.simpleName}") }
                     capacity?.collect()
                 }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }
                 Thread.sleep(10_000)

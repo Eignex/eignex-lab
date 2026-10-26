@@ -39,14 +39,14 @@ class NomadBackendTest {
     private lateinit var session: ExecutionSession
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
-    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false): Long {
+    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session"): Long {
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
         val plannedProblems = List(problems) { Problem("s", "p$it") }
         val id = store.create(name, "main", emptyList(), parallel = 2, experiment = spec)
         if (!preparation) store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("bin/bench", "c".repeat(64), 5)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "test")
-        manifest = WorkManifest("session", "release", spec, arms, if (preparation) emptyList() else cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2), preparationTimeoutSec = if (preparation) 60 else null)
+        manifest = WorkManifest(sessionId, "release", spec, arms, if (preparation) emptyList() else cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2), preparationTimeoutSec = if (preparation) 60 else null)
         val command = if (platform == NomadPlatform.LINUX) listOf("worker") else listOf("/releases/fixture/bin/eignex-lab", "worker")
         val image = if (platform == NomadPlatform.LINUX) "registry/worker@sha256:" + "d".repeat(64) else null
         session = backend().enqueue(id, manifest, NomadBatchJob("placeholder", platform, "fixture", NomadCpuCapacity(4000, 4), manifest.budget, command, image), "http://127.0.0.1:8091")
@@ -62,6 +62,24 @@ class NomadBackendTest {
         return "$payload.${b64(signature)}"
     }
     private fun register() = backend().register(session.id, token, "allocation", jwt(), "release")
+
+    @Test fun `an older native retry uses configured capacity without requiring an idle host`() {
+        val job = setup(platform = NomadPlatform.MAC, preparation = true)
+        val previous = session
+        val frozen = manifest
+        store.execution.loseSession(previous.id, "infrastructure:failed")
+        setup(name = "other", platform = NomadPlatform.MAC, preparation = true, sessionId = "other")
+        fun configured(cpu: Int) = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") },
+            nativeCapacity = ResourceBudget(cpu, 4096))
+
+        configured(3000).reconcile()
+        assertTrue(store.execution.sessions(job).all { it.desired == "stop" }, "another worker's reservation must fit too")
+        configured(4000).reconcile()
+        val replacement = store.execution.sessions(job).single { it.desired != "stop" }
+        assertNotEquals(previous.id, replacement.id)
+        assertEquals(previous.budget, replacement.budget)
+        assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+    }
 
     @Test fun `Spot loss replaces preparation before there are planned commands`() {
         val id = setup(preparation = true); backend().reconcile(); register()

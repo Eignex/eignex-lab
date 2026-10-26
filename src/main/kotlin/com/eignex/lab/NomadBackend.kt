@@ -13,6 +13,7 @@ class NomadBackend(
     private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
     private val checkCase: (Long, Int) -> String? = { _, _ -> "not-required" },
     private val nativeMayClaim: (Long) -> Boolean = { true },
+    private val nativeCapacity: ResourceBudget? = null,
     private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
 ) {
     val logs = WorkerLogs(store, jobDirectory)
@@ -209,8 +210,8 @@ class NomadBackend(
                 if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
                 if (native) {
                     val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
-                    val cpu = meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull
-                    val memory = meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull
+                    val cpu = meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull ?: nativeCapacity?.cpuMillis?.toLong()
+                    val memory = meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull ?: nativeCapacity?.memoryMiB?.toLong()
                     if (cpu == null || memory == null) {
                         if (store.execution.nativeOwnedByAnother(job.id)) continue
                     } else {
