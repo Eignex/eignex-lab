@@ -13,7 +13,7 @@ class PlacementTest {
     private fun config(cloud: Boolean = true): Config {
         val dir = Files.createTempDirectory("lab")
         val queue = dir.resolve("queue.json")
-        if (cloud) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000"))
+        if (cloud) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000").replace("\"logicalCpus\": 8", "\"logicalCpus\": 16"))
         return Config(dataDir = dir, cores = 8, maxParallel = 6, nomadQueueSettings = queue.takeIf { cloud })
     }
 

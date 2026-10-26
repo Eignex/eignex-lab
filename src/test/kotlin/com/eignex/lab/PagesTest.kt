@@ -470,7 +470,7 @@ class PagesTest {
     private fun lab(cores: Int = 4, aws: String? = ""): Config {
         val root = Files.createTempDirectory("lab")
         val queue = root.resolve("queue.json")
-        if (aws != null) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000"))
+        if (aws != null) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000").replace("\"logicalCpus\": 8", "\"logicalCpus\": 16"))
         return Config(dataDir = root, passwordHash = null, cores = cores, nomadQueueSettings = queue.takeIf { aws != null })
     }
 

@@ -108,7 +108,7 @@ curl() {
   return "$status"
 }
 data="${LAB_REMOTE_DATA:-eignex-lab-data}"
-# The server's LAB_JOBS and LAB_CORPUS, relative to its home unless absolute, for lab ssh and lab corpus.
+# The server's LAB_JOBS and LAB_CORPUS, relative to its home unless absolute, for lab corpus.
 remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
 remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
