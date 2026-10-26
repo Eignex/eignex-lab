@@ -87,7 +87,7 @@ internal fun jobPage(
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
-    if (job.backend == ExecutionBackendKind.NOMAD) append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/capacity/view\">capacity</a></dd>")
+    if (job.backend == ExecutionBackendKind.NOMAD) append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
     append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
@@ -1521,7 +1521,7 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
         append("</div>")
     }
     config.aws?.let { append(launchGauge(config, it)) }
-    if (config.executionBackend == ExecutionBackendKind.NOMAD) append("<div class=\"muted small\">Nomad · <a href=\"/capacity/view\">cloud capacity and reservations</a></div>")
+    if (config.executionBackend == ExecutionBackendKind.NOMAD) append("<div class=\"muted small\">Nomad · <a href=\"/nodes\">nodes and capacity</a></div>")
     append("</div>")
 }
 
@@ -1905,9 +1905,9 @@ private fun esc(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").
 
 private const val TAIL_BYTES = 65_536
 
-/** The lab's three views, as the tab bar shows them. */
+/** The lab's views, as the tab bar shows them. */
 internal enum class Tab(val label: String, val href: String) {
-    QUEUE("Queue", "/"), REGRESSION("Regression", "/trend"), REFERENCE("Reference", "/references")
+    QUEUE("Queue", "/"), NODES("Nodes", "/nodes"), REGRESSION("Regression", "/trend"), REFERENCE("Reference", "/references")
 }
 
 /**
@@ -1980,6 +1980,9 @@ nav.tabs a.brand{color:var(--fg);font-weight:700;padding-left:0;margin-right:12p
 a.chip{text-decoration:none;display:inline-block}
 tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
 .filters{align-items:center}.filters input[type=checkbox]{min-width:0;margin:0 4px 0 0}.filters label{display:inline-flex;align-items:center;white-space:nowrap}.filters select{font:inherit;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
+#node-request{align-items:center;gap:12px}#node-request label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#node-request select{font:inherit;padding:4px;max-width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
+#node-request input{min-width:0}#node-request label:first-child{flex-basis:100%}#node-pool{min-width:0}
 .chart svg,.multiple svg{display:block}.chart{width:100%}
 .grid{stroke:var(--line);stroke-width:1}.tick{fill:var(--muted);font-size:11px}.tick.mono{font-family:ui-monospace,monospace}
 .endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}
@@ -2045,37 +2048,119 @@ async function refresh() {
 if (document.body.hasAttribute('data-refresh')) timer = setInterval(refresh, 10000);
 </script>"""
 
-/** Shared-node accounting for the Nomad backend, independent of provider naming. */
-internal fun capacityPage(snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>): String = buildString {
-    append(head("Nomad capacity · eignex lab", live = true))
-    append("<header><h1>Nomad capacity</h1></header><div id=\"capacity\" data-live>")
-    if (snapshot == null) { append("<p>Capacity has not reported.</p></div></body></html>"); return@buildString }
-    append("<p>Report age: ${snapshot.ageMs / 1000}s${if (snapshot.ageMs > CapacityCollector.FRESH_MS) " · stale; growth is held" else ""}</p>")
-    append("<table><thead><tr><th>Pool</th><th>Market</th><th>Desired / limit</th></tr></thead><tbody>")
-    for (pool in snapshot.pools) append("<tr><td>${esc(pool.id)}</td><td>${esc(pool.market.tag)}</td><td>${snapshot.decision.desired[pool.id] ?: 0} / ${pool.maxNodes}</td></tr>")
-    append("</tbody></table><h2>Nodes and allocations</h2><table><thead><tr><th>Node</th><th>State</th><th>Sessions / experiments</th><th>Unreserved CPU / memory</th></tr></thead><tbody>")
-    for (node in snapshot.nodes) {
-        val pool = snapshot.pools.singleOrNull { it.id == node.pool }
-        val cpu = node.reservations.sumOf { it.budget.cpuMillis.toLong() }
-        val memory = node.reservations.sumOf { it.budget.memoryMiB.toLong() }
-        append("<tr><td>${esc(node.id)}<br>${esc(node.pool)}</td><td>${node.state}</td><td>")
-        append(node.reservations.joinToString("<br>") { allocation ->
-            (if (allocation.job > 0) "<a href=\"/jobs/${allocation.job}\">${allocation.job}</a>" else "external work") +
-                " · ${esc(allocation.id)} · ${allocation.budget.cpuMillis / 1000.0} vCPU / ${allocation.budget.memoryMiB} MiB"
-        })
-        append("</td><td>${pool?.let { (it.cpuMillis - cpu).coerceAtLeast(0) / 1000.0 } ?: "?"} vCPU / ${pool?.let { (it.availableMemoryMiB - memory).coerceAtLeast(0) } ?: "?"} MiB</td></tr>")
+/** Node inventory and temporary capacity controls for configured, provider-neutral pools. */
+internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>, settings: CapacitySettings?): String = buildString {
+    append(head("Nodes · eignex lab", live = true, tab = Tab.NODES))
+    append("<header><h1>Nodes</h1><p class=\"muted\">Native execution and cloud workers</p></header>")
+    append("<section><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
+    append("<p class=\"muted\">${esc(config.localNodeTags.sorted().joinToString(" · "))}</p></section>")
+    val pools = settings?.pools ?: snapshot?.pools.orEmpty()
+    val configured = config.executionBackend == ExecutionBackendKind.NOMAD && settings != null
+    append("<section><h2>Start nodes</h2>")
+    if (configured) {
+        append("<form id=\"node-request\" class=\"tools\"><label>Node pool <select id=\"node-pool\" name=\"pool\" required>")
+        for (pool in pools) {
+            val limit = minOf(pool.maxNodes, settings!!.maxVcpus / pool.vcpus)
+            append("<option value=\"${esc(pool.id)}\" data-limit=\"$limit\"${if (limit == 0) " disabled" else ""}>${esc(pool.id)} · ${pool.vcpus} vCPU / ${pool.memoryMiB} MiB · ${esc(pool.market.tag)} · ${esc(pool.tags.sorted().joinToString(", "))}</option>")
+        }
+        append("</select></label> <label>Keep at least <input id=\"node-count\" name=\"nodes\" type=\"number\" min=\"1\" value=\"1\" required style=\"width:5em\"> nodes</label> ")
+        append("<label>For <select name=\"ttlSec\"><option value=\"900\">15 minutes</option><option value=\"1800\">30 minutes</option><option value=\"3600\">1 hour</option></select></label> ")
+        append("<button type=\"submit\">Start / keep nodes</button></form><p id=\"node-feedback\" role=\"status\"></p>")
+        append("<p class=\"muted small\">The selected pool fixes the hardware capabilities and market. The count is a minimum total for that pool, including nodes already running. ")
+        append("Requests share the global ${settings!!.maxVcpus} vCPU limit and expire automatically. Jobs can use these nodes; releasing a request lets automatic scaling retire idle capacity.</p>")
+    } else append("<p class=\"muted\">Nomad capacity settings are unavailable; manual starts are disabled.</p>")
+    append("</section><div id=\"node-capacity\" data-live><section><h2>Cloud pools</h2>")
+    if (snapshot == null) append("<p class=\"warn\">Capacity has not reported. Requests take effect when fresh reports resume.</p>")
+    else {
+        append("<p class=\"${if (snapshot.ageMs > CapacityCollector.FRESH_MS || !snapshot.healthy || snapshot.failures.isNotEmpty()) "warn" else "muted"}\">Report age: ${snapshot.ageMs / 1000}s")
+        if (snapshot.ageMs > CapacityCollector.FRESH_MS || !snapshot.healthy || snapshot.failures.isNotEmpty()) append(" · growth is held")
+        append("</p>")
     }
-    append("</tbody></table>")
-    for (wait in snapshot.decision.waiting) append("<p>${esc(wait.request)}: ${esc(wait.reason)}</p>")
-    for ((pool, reason) in snapshot.failures) append("<p>${esc(pool)}: ${esc(reason)}</p>")
-    if (leases.isNotEmpty()) append("<h2>Operator capacity</h2>" + leases.joinToString("") { "<p>${esc(it.pool)}: ${it.nodes} nodes until ${it.expiresAt} · ${esc(it.id)}</p>" })
-    append("<p><a href=\"/\">Queue</a> · <a href=\"/capacity\">JSON</a></p></div></body></html>")
+    if (pools.isEmpty()) append("<p class=\"muted\">No cloud pools configured.</p>")
+    else {
+        append("<div class=\"scroll\"><table><thead><tr><th>Pool / class</th><th>Hardware</th><th>Capabilities</th><th>Market</th><th>Observed / desired / limit</th></tr></thead><tbody>")
+        for (pool in pools) {
+            append("<tr><td>${esc(pool.id)}<br><small class=\"muted\">${esc(pool.nodeClass)}</small></td><td>${pool.vcpus} vCPU / ${pool.memoryMiB} MiB</td>")
+            append("<td>${esc(pool.tags.sorted().joinToString(", "))}</td><td>${esc(pool.market.tag)}</td><td>${snapshot?.nodes?.count { it.pool == pool.id } ?: "?"} / ${snapshot?.decision?.desired?.get(pool.id) ?: "?"} / ${pool.maxNodes}</td></tr>")
+        }
+        append("</tbody></table></div>")
+    }
+    append("</section><section><h2>Cloud nodes and allocations</h2>")
+    if (snapshot?.nodes.isNullOrEmpty()) append("<p class=\"muted\">${if (snapshot == null) "Node inventory is unavailable." else "No cloud nodes running."}</p>")
+    else {
+        append("<div class=\"scroll\"><table><thead><tr><th>Node / pool</th><th>State</th><th>Sessions / experiments</th><th>Unreserved CPU / memory</th></tr></thead><tbody>")
+        for (node in snapshot!!.nodes) {
+            val pool = pools.singleOrNull { it.id == node.pool }
+            val cpu = node.reservations.sumOf { it.budget.cpuMillis.toLong() }
+            val memory = node.reservations.sumOf { it.budget.memoryMiB.toLong() }
+            append("<tr><td>${esc(node.id)}<br><small class=\"muted\">${esc(node.pool)}</small></td><td>${node.state}</td><td>")
+            append(node.reservations.joinToString("<br>") { allocation ->
+                (if (allocation.job > 0) "<a href=\"/jobs/${allocation.job}\">job ${allocation.job}</a>" else "external work") +
+                    " · ${esc(allocation.id)} · ${allocation.budget.cpuMillis / 1000.0} vCPU / ${allocation.budget.memoryMiB} MiB"
+            }.ifEmpty { "idle" })
+            append("</td><td>${pool?.let { (it.cpuMillis - cpu).coerceAtLeast(0) / 1000.0 } ?: "?"} vCPU / ${pool?.let { (it.availableMemoryMiB - memory).coerceAtLeast(0) } ?: "?"} MiB</td></tr>")
+        }
+        append("</tbody></table></div>")
+    }
+    for (wait in snapshot?.decision?.waiting.orEmpty()) append("<p>${esc(wait.request)}: ${esc(wait.reason)}</p>")
+    for ((pool, reason) in snapshot?.failures.orEmpty()) append("<p class=\"warn\">${esc(pool)}: ${esc(reason)}</p>")
+    append("</section><section><h2>Manual capacity requests</h2>")
+    if (leases.isEmpty()) append("<p class=\"muted\">No active requests.</p>")
+    else {
+        append("<table><thead><tr><th>Pool</th><th>Minimum nodes</th><th>Expires</th><th></th></tr></thead><tbody>")
+        for (lease in leases) append("<tr><td>${esc(lease.pool)}</td><td>${lease.nodes}</td><td>${clockTime(lease.expiresAt)}</td><td><button type=\"button\" data-release-capacity=\"${esc(lease.id)}\">Release</button></td></tr>")
+        append("</tbody></table>")
+    }
+    append("</section><p><a href=\"/capacity\">Capacity JSON</a></p></div>")
+    append(SCRIPT)
+    append(NODES_SCRIPT)
+    append("</body></html>")
 }
+
+private const val NODES_SCRIPT = """<script>
+function nodeLimit() {
+  const pool = document.getElementById('node-pool');
+  const count = document.getElementById('node-count');
+  if (!pool || !count) return;
+  count.max = pool.selectedOptions[0]?.dataset.limit || '0';
+  document.querySelector('#node-request button').disabled = Number(count.max) < 1;
+}
+nodeLimit();
+document.getElementById('node-pool')?.addEventListener('change', nodeLimit);
+document.addEventListener('submit', async function (event) {
+  if (event.target.id !== 'node-request') return;
+  event.preventDefault();
+  const form = event.target, button = form.querySelector('button');
+  const feedback = document.getElementById('node-feedback');
+  button.disabled = true;
+  feedback.textContent = 'Requesting capacity…';
+  try {
+    const data = new FormData(form);
+    const response = await fetch('/capacity/leases', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({pool: data.get('pool'), nodes: Number(data.get('nodes')), ttlSec: Number(data.get('ttlSec'))})});
+    if (!response.ok) throw new Error(await response.text());
+    feedback.textContent = 'Capacity requested. Nodes will start as the pool reconciles.';
+    await refresh();
+  } catch (error) { feedback.textContent = error.message; }
+  finally { nodeLimit(); }
+});
+document.addEventListener('click', async function (event) {
+  const button = event.target.closest('[data-release-capacity]');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const response = await fetch('/capacity/leases/' + encodeURIComponent(button.dataset.releaseCapacity), {method: 'DELETE'});
+    if (!response.ok && response.status !== 404) throw new Error(await response.text());
+    await refresh();
+  } catch (error) { alert(error.message); }
+  finally { button.disabled = false; }
+});
+</script>"""
 
 internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): String = buildString {
     append(head("Execution · job $job", live = true))
     append("<header><h1>Execution · job $job</h1></header><div id=\"execution\" data-live>")
-    append("<p><a href=\"/jobs/$job\">Experiment</a> · <a href=\"/jobs/$job/files/job.log\">Log</a> · <a href=\"/capacity/view\">Capacity</a></p>")
+    append("<p><a href=\"/jobs/$job\">Experiment</a> · <a href=\"/jobs/$job/files/job.log\">Log</a> · <a href=\"/nodes\">Nodes</a></p>")
     append("<table><thead><tr><th>Session / allocation</th><th>Node</th><th>Phase / generation</th><th>Budget</th><th>Accepted iterations</th></tr></thead><tbody>")
     for (report in reports) {
         val session = report.session
