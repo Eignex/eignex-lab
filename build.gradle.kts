@@ -1,11 +1,10 @@
 plugins {
-    kotlin("jvm") version "2.4.10"
-    kotlin("plugin.serialization") version "2.4.10"
+    id("com.eignex.jvm") version "1.3.4"
+    kotlin("plugin.serialization") version "2.4.21"
     application
 }
 
 repositories {
-    mavenCentral()
     maven("https://central.sonatype.com/repository/maven-snapshots/") { mavenContent { snapshotsOnly() } }
 }
 
@@ -25,11 +24,13 @@ dependencies {
     // The official XCSP3 solution checker (MIT), which the lab runs over Klause's XCSP3 witnesses ([com.eignex.lab.checker]).
     implementation(project(":xcsp3-tools"))
     implementation("ch.qos.logback:logback-classic:1.5.18")
-    testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:$ktor")
 }
 
-kotlin { jvmToolchain(25) }
+eignexPublish { publish.set(false) }
+
+// Keep the existing verification gate until the lab has a baseline for KBuild's lint rules.
+eignexLint { enabled.set(false) }
 
 // koblas binds host BLAS through foreign downcalls and runs its own kernels on the Vector API.
 val koblasJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
@@ -41,11 +42,11 @@ application {
 
 tasks.withType<Test>().configureEach { jvmArgs(koblasJvmArgs) }
 
-tasks.test { useJUnitPlatform() }
-
 // install.sh runs the services on the toolchain JDK, so the host needs no JDK 25 of its own.
 tasks.register("printJavaHome") {
-    val home = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) }
+    val home = javaToolchains.launcherFor {
+        languageVersion.set(eignexBuild.jvmToolchain.map(JavaLanguageVersion::of))
+    }
         .map { it.metadata.installationPath.asFile.absolutePath }
     doLast { println(home.get()) }
 }
