@@ -13,6 +13,7 @@ class NomadBackend(
     private val jobDirectory: (Long) -> Path, private val workAllowed: () -> Boolean = { true },
     private val checkCase: (Long, Int) -> String? = { _, _ -> "not-required" },
     private val nativeMayClaim: (Long) -> Boolean = { true },
+    private val nativeCapacity: ResourceBudget? = null,
     private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
 ) {
     val logs = WorkerLogs(store, jobDirectory)
@@ -209,13 +210,12 @@ class NomadBackend(
                 if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
                 if (native) {
                     val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
-                    val cpu = meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull
-                    val memory = meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull
-                    if (cpu == null || memory == null) {
+                    val limit = nativeLimits(meta)
+                    if (limit == null) {
                         if (store.execution.nativeOwnedByAnother(job.id)) continue
                     } else {
                         val held = store.execution.nativeReservation()
-                        if (held.first + previous.budget.cpuMillis > cpu || held.second + previous.budget.memoryMiB > memory) continue
+                        if (held.first + previous.budget.cpuMillis > limit.first || held.second + previous.budget.memoryMiB > limit.second) continue
                     }
                 }
                 if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
@@ -234,6 +234,12 @@ class NomadBackend(
         }
     }
 
+    private fun nativeLimits(meta: JsonObject?): Pair<Long, Long>? {
+        val cpu = listOfNotNull(meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull, nativeCapacity?.cpuMillis?.toLong()).minOrNull() ?: return null
+        val memory = listOfNotNull(meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull, nativeCapacity?.memoryMiB?.toLong()).minOrNull() ?: return null
+        return cpu to memory
+    }
+
     private fun replace(previous: ExecutionSession) {
         val id = UUID.randomUUID().toString(); val token = ExecutionStore.token()
         val manifest = store.execution.manifest(previous.id).copy(session = id)
@@ -242,7 +248,14 @@ class NomadBackend(
             val t = task.jsonObject
             JsonObject(t + ("Env" to JsonObject(t.getValue("Env").jsonObject + mapOf("LAB_WORKER_SESSION" to JsonPrimitive(id), "LAB_WORKER_TOKEN" to JsonPrimitive(token)))))
         }))) }
-        val originalMeta = original.getValue("Meta").jsonObject - "lab_spec_hash"
+        val originalMeta = (original.getValue("Meta").jsonObject - "lab_spec_hash").toMutableMap()
+        if (originalMeta["lab_cpu_enforcement"]?.jsonPrimitive?.content == "advisory-native") {
+            nativeLimits(JsonObject(originalMeta))?.let { (cpu, memory) ->
+                // New intent carries the same limits into the atomic reservation check; history remains immutable.
+                originalMeta["lab_native_cpu_limit"] = JsonPrimitive(cpu.toString())
+                originalMeta["lab_native_memory_limit"] = JsonPrimitive(memory.toString())
+            }
+        }
         val jobId = "lab-${previous.jobId}-${previous.executionClass}-$id-1"
         val job = authenticatedJob(JsonObject(original + mapOf("ID" to JsonPrimitive(jobId), "Name" to JsonPrimitive(jobId), "TaskGroups" to JsonArray(groups), "Meta" to JsonObject(originalMeta))), id, previous.release)
         store.execution.createSession(id, previous.jobId, previous.executionClass, previous.release, previous.budget, token, job.toString(), manifest = Json.encodeToString(manifest))
