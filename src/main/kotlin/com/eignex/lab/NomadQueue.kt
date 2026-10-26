@@ -76,6 +76,12 @@ class NomadQueue(
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> =
         TrustedQueueSources(config, artifacts)::publish,
 ) {
+    private fun nativeOwnedByAnother(job: Long): Boolean = store.execution.sessions().any { session ->
+        session.jobId != job && session.desired != "stop" &&
+            Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
+                ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
+    }
+
     fun reconcile() {
         if (!allowed()) return
         for (id in store.execution.pendingDomainCompletion()) {
@@ -95,9 +101,13 @@ class NomadQueue(
                 require(targets.isNotEmpty()) { "no configured Nomad worker can run this experiment within its resource budget" }
                 var sessions = store.execution.sessions(job.id)
                 if (sessions.isEmpty()) {
-                    val target = targets.sortedBy { if (it.os == "mac") 0 else 1 }.firstOrNull {
+                    val fitting = targets.filter {
                         it.template.budget.cpuMillis >= settings.preparationBudget.cpuMillis && it.template.budget.memoryMiB >= settings.preparationBudget.memoryMiB
-                    }.let { requireNotNull(it) { "no target fits the preparation budget" } }
+                    }
+                    require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
+                    val target = fitting.sortedBy { if (it.os == "mac") 0 else 1 }.firstOrNull {
+                        it.os != "mac" || nativeAllowed(job.id) && !nativeOwnedByAnother(job.id)
+                    } ?: continue
                     val (arms, bundles) = source(job, targets, settings)
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec)
@@ -137,7 +147,7 @@ class NomadQueue(
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                                     ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
                             val maximum = (current.parallel + budget.parallel - 1) / budget.parallel
-                            nativeAllowed(job.id) && nativeSessions.size < maximum
+                            nativeAllowed(job.id) && !nativeOwnedByAnother(job.id) && nativeSessions.size < maximum
                         }
                     }
                     val reserved = store.execution.nativeReservation()
