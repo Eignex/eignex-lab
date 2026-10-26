@@ -12,19 +12,17 @@ class PlacementTest {
 
     private fun config(aws: Boolean = true): Config {
         val dir = Files.createTempDirectory("lab")
-        if (aws) {
-            dir.resolve("aws").toFile().mkdirs()
-            dir.resolve("aws/aws.properties").toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg-1\nvcpuQuota=32\n")
-        }
-        return Config(dataDir = dir, cores = 8, maxParallel = 6)
+        val queue = dir.resolve("queue.json")
+        if (aws) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText())
+        return Config(dataDir = dir, cores = 8, maxParallel = 6, nomadQueueSettings = queue.takeIf { aws })
     }
 
     @Test
-    fun `scheduled runs, confirmations, reference runs, problem lists and bounded profiles stay on the local machine`() {
+    fun `schedules confirmations and reference runs stay local while Nomad handles exact lists and deadlines`() {
         val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
         val bounded = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.T", runTimeoutSec = 60))
 
-        assertEquals(listOf(true, true, true, true, true, false), listOf(
+        assertEquals(listOf(true, true, true, false, false, false), listOf(
             Placement.localOnly(spec, "status-sweep@abc123"),
             Placement.localOnly(spec, "e${Confirm.SUFFIX}"),
             Placement.localOnly(reference, "r"),
@@ -62,28 +60,6 @@ class PlacementTest {
         assertEquals(8, Experiments.arms(gridCapped).maxOf { it.cores })
         assertEquals(spec, Experiments.capToLocal(spec, config.cores, config.maxParallel))
         assertEquals(Experiments.fingerprint(capped), Experiments.fingerprint(capped.copy(capped = emptyList())))
-    }
-
-    @Test
-    fun `queued jobs are placed again by the rules, cut down to fit the local machine, and planned cloud ones released to it`() {
-        val config = config()
-        val store = Store(config.database)
-        val chosen = store.create("a", "main", emptyList(), experiment = spec.copy(name = "a", host = Experiments.AWS_HOST, machines = 2))
-        val mac = store.create("b", "main", emptyList(), experiment = spec.copy(name = "b", host = Experiments.LAB_HOST))
-        val sweep = store.create("s@abc", "main", emptyList(), experiment = spec.copy(name = "s@abc", host = Experiments.LAB_HOST))
-        val planned = store.create("c", "main", listOf("true" to 10L), experiment = spec.copy(name = "c", host = Experiments.AWS_HOST))
-        val onMac = store.create("d", "main", listOf("true" to 10L), experiment = spec.copy(name = "d", host = Experiments.LAB_HOST))
-        val profile = ExperimentSpec("p", base = mapOf("processors" to "12", "timeout" to "180000"),
-            profile = ProfileMain("com.eignex.klause.bench.profile.T"), host = Experiments.AWS_HOST)
-        val big = store.create("p", "main", emptyList(), parallel = 4, experiment = profile)
-
-        assertEquals(listOf(chosen, mac, planned, big), Placement.replaceQueued(store, config))
-        assertEquals(listOf(Experiments.AUTO_HOST, Experiments.AUTO_HOST, Experiments.LAB_HOST, Experiments.AUTO_HOST, Experiments.LAB_HOST,
-            Experiments.AUTO_HOST), listOf(chosen, mac, sweep, planned, onMac, big).map { store.job(it)!!.experiment!!.host })
-        assertEquals(null, store.job(chosen)!!.experiment!!.machines)
-        assertEquals(listOf("8"), listOf(store.job(big)!!.experiment!!.base["processors"]))
-        assertEquals(listOf("processors=12 was asked, capped at the local machine's 8 cores"), store.job(big)!!.experiment!!.capped)
-        assertEquals(emptyList(), Placement.replaceQueued(store, config))
     }
 
     private fun committed(file: String) = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
@@ -149,25 +125,5 @@ class PlacementTest {
         assertTrue(Placement.cloudOptIn(schedule.experiment))
     }
 
-    @Test
-    fun `queued runs follow their schedule's current host when the runner starts, both ways`() {
-        val config = config()
-        val store = Store(config.database)
-        val id = store.createSchedule("ref", "main", spec.copy(name = "ref"), 3600)
-        store.createSchedule("sweep", "main", spec.copy(name = "sweep"), 3600)
-        val run = store.create("ref@abc", "abc", emptyList(), experiment = spec.copy(name = "ref@abc", host = Experiments.LAB_HOST))
-        val sweep = store.create("sweep@abc", "abc", emptyList(), experiment = spec.copy(name = "sweep@abc", host = Experiments.LAB_HOST))
-        val confirmation = Confirm.name("ref", "abc", 1)
-        val confirm = store.create(confirmation, "abc", emptyList(), experiment = spec.copy(name = confirmation, host = Experiments.LAB_HOST))
-        val planned = store.create("ref@def", "def", listOf("true" to 10L), experiment = spec.copy(name = "ref@def", host = Experiments.LAB_HOST))
-        fun hosts() = listOf(run, sweep, confirm, planned).map { store.job(it)!!.experiment!!.host }
 
-        assertEquals(emptyList(), Placement.replaceQueued(store, config))
-        store.updateSchedule(id, spec.copy(name = "ref", host = Experiments.AUTO_HOST), intervalSec = null)
-        assertEquals(listOf(run), Placement.replaceQueued(store, config))
-        assertEquals(listOf(Experiments.AUTO_HOST, Experiments.LAB_HOST, Experiments.LAB_HOST, Experiments.LAB_HOST), hosts())
-        store.updateSchedule(id, spec.copy(name = "ref", host = Experiments.LOCAL_HOST), intervalSec = null)
-        assertEquals(listOf(run), Placement.replaceQueued(store, config))
-        assertEquals(List(4) { Experiments.LAB_HOST }, hosts())
-    }
 }

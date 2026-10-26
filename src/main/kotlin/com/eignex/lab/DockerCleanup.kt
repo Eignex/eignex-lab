@@ -60,13 +60,9 @@ class DockerCleanup(
     /** The reference image tags the queued and running jobs' commits name, or null when one of them could not be read. */
     private val needed: () -> Set<String>?,
     private val freeBytes: () -> Long,
-    /** Colima's VM disks on the host, measured and trimmed after a cleanup; null when Docker does not run in Colima. */
-    private val colimaDisks: Path?,
     private val log: (String) -> Unit = ::println,
     private val clock: () -> Long = System::currentTimeMillis,
     private val exec: (List<String>) -> Pair<Int, String> = ::execute,
-    /** `du -sk`'s lines for a path, null when it timed out or failed; by default run with [exec]. */
-    private val du: ((Path) -> List<String>?)? = null,
 ) {
     private var lastAttempt: Long? = null
 
@@ -114,7 +110,6 @@ class DockerCleanup(
         }
         log("docker cleanup: starting because $why")
         val notes = mutableListOf<String>()
-        val hostBefore = colimaDisks?.let(::allocated)
         val before = df()
 
         val (cacheExit, cacheOut) = exec(listOf("docker", "builder", "prune", "-af", "--filter", "until=$BUILD_CACHE_AGE"))
@@ -138,15 +133,9 @@ class DockerCleanup(
         val pruned = if (pruneExit == 0) pruneOut.lines().count { it.trim().startsWith("deleted:") }
         else 0.also { notes += "image prune failed: ${firstLine(pruneOut)}" }
 
-        var trimmed: String? = null
-        if (colimaDisks != null) {
-            val (trimExit, trimOut) = exec(listOf("colima", "ssh", "--", "sudo", "fstrim", "-av"))
-            if (trimExit == 0) trimmed = trimOut.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("; ")
-            else notes += "fstrim failed: ${firstLine(trimOut)}"
-        }
         val after = df()
         val run = DockerCleanupRun(
-            clock(), why, removed, pruned, cache, before, after, hostBefore, colimaDisks?.let(::allocated), trimmed, notes,
+            clock(), why, removed, pruned, cache, before, after, notes = notes,
         )
         stateFile.parent?.let { Files.createDirectories(it) }
         stateFile.writeAtomically(Json.encodeToString(DockerCleanupRun.serializer(), run))
@@ -159,13 +148,6 @@ class DockerCleanup(
     fun df(): List<DockerUsage> {
         val (exit, out) = exec(listOf("docker", "system", "df", "--format", "{{json .}}"))
         return if (exit == 0) parseDf(out) else emptyList()
-    }
-
-    private fun allocated(path: Path): Long? {
-        if (!Files.exists(path)) return null
-        val out = if (du != null) du(path)?.joinToString("\n") else exec(Background.prefix + listOf("du", "-sk", path.toString()))
-            .let { (exit, out) -> out.takeIf { exit == 0 } }
-        return out?.trim()?.substringBefore('\t')?.trim()?.toLongOrNull()?.let { it * KIB }
     }
 
     private fun firstLine(text: String) = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
@@ -306,8 +288,6 @@ internal fun dockerCleanup(
         referencedImages(store.active(withCommands = false), store::arms, config.dockerKeep.map(DockerCleanup::repository).toSet(), grep)
     },
     freeBytes = { freeBytes(config.dataDir) },
-    colimaDisks = null,
-    du = DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)).let { runner -> { path -> runner.run(listOf(path.toString())) } },
 )
 
 /** The `git grep` [referencedImages] runs in [mirror]. */

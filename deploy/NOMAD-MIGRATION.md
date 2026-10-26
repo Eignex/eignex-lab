@@ -2,6 +2,10 @@
 
 Proposed on 2026-10-25. Production submissions switched to Nomad on 2026-10-26.
 
+Retirement update: the legacy executor, backend switch and AWS/SSH launcher are removed. Nomad is the only
+experiment executor. Historical results and provenance remain readable. The design and staged rollout below
+record the migration; current operational instructions are in [setup](SETUP.md).
+
 The Mac runs the persistent TLS/ACL server, native client, process supervisor, admission coordinator and capacity
 services. Native SME2 job 8364 and AWS Spot AVX512 job 8365 each solved both arms of `sporttournament06`, proved
 objective -6 and retained JFR recordings. The cloud allocation reported cgroup-v2 hard enforcement: 1 vCPU and
@@ -9,7 +13,7 @@ objective -6 and retained JFR recordings. The cloud allocation reported cgroup-v
 
 Normal API submissions, schedules and confirmations now select Nomad. The old EC2 launcher configuration and its
 IAM control policy have been archived and removed from active production configuration. The runner still hosts
-schedules, maintenance and local analysis; its remaining legacy executor code has not yet been deleted. The Spot
+schedules, maintenance and local analysis; its legacy executor code has been deleted. The Spot
 pool automatically retired to zero after its idle period, then new queued demand launched a fresh worker and
 started preparation for job 8366. Live interruption recovery and a stable rollout remain acceptance work.
 
@@ -21,7 +25,7 @@ attempt leases, allocation identity checks, checksummed/resumable artifacts, por
 supervision, and automatic queue preparation/admission. Approved Git inputs are built and selected in budgeted
 allocations. Reference filters and caps are approved durably before resolving files or packaging the corpus, then
 accepted preparation publishes its case plan atomically. API submissions, schedules and confirmations can select
-Nomad through `LAB_EXECUTION_BACKEND=nomad` and [queue settings](nomad/queue.example.json). Admission uses native
+Nomad through [queue settings](nomad/queue.example.json). Admission uses native
 capacity first, shares fitting reservations, and spills into provider-neutral Spot pools; on-demand requires an
 explicit selector. Releases, source inputs and admission templates remain pinned across restarts.
 
@@ -335,10 +339,7 @@ Add focused backend/API tests plus real scheduler and OS integration runs for be
 
 ## Cutover and rollback
 
-Use `legacy` and `nomad` as explicit execution backend values. Store the selected backend on an experiment before
-its first session starts; an environment default affects only new/unstarted work. Keep the old runner available
-during the rollout, but its claim path must refuse work owned by Nomad. Local process and database ownership guards
-must cover both backends, including after a service restart.
+There is no runtime backend toggle or fallback executor. Rollback uses a compatible Nomad application release.
 
 Deploy additive database migrations first. Preserve old case paths and historical `lab`/`aws` placement aliases on
 read; new internal placement and provider identity are separate fields. Keep CLI/API compatibility adapters while
@@ -350,11 +351,8 @@ then shared local/cloud experiments. Run semantic comparisons on fixed manifests
 on the same hardware; exact elapsed-time equality is not the migration criterion. Record runner release, OS, driver,
 toolchain, node and CPU identity so old and new execution environments remain distinguishable in results.
 
-To roll back: stop new Nomad admissions, request sessions to finish started iterations, reconcile accepted results,
-fence any remaining attempts, stop their Nomad jobs, and verify their process trees are gone. Only then release
-unfinished iterations to legacy execution. Retain accepted completed iterations and their original provenance.
-Do not simply flip an environment variable while old allocations are alive. Keep a database/state backup and
-document which deployed application versions can read the additive schema.
+To roll back an application release, retain accepted results, fence stopped attempts, and deploy a compatible
+Nomad release. Never reassign active work to another executor or rewrite accepted provenance.
 
 Update workers using pinned releases and protocol compatibility, not an unversioned `current` path. An in-flight
 worker finishes with its release; new sessions use the new release. Restarting the coordinator should not require

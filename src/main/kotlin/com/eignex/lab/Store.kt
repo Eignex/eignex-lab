@@ -758,13 +758,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     }
 
     /**
-     * Claim the next iteration of [jobId] no host holds for [holder] ([ExecutionHost.id]): every unfinished case of the
-     * first iteration, in plan order, whose unfinished cases are all queued and unclaimed. An iteration is the arms of
-     * one problem, seed and repeat, compared with each other, so one host runs them all; a command with no planned case
-     * is an iteration of its own. The indices claimed, in order; null when no iteration is left to claim. Every host of
-     * a shared job, the local machine and each cloud node, pulls its work this way ([Runner.dispatch]).
-     */
-    /**
      * Give back what [holder] holds of [jobId]: its claimed cases and any it left running go back to the queue, to be
      * claimed by any host. With [whole], the cases [holder] finished of each iteration it gave back go back too, their
      * results dropped, so the iteration runs again whole wherever it goes next ([requeueSplitIterations]): what a host
@@ -997,17 +990,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { rows -> if (rows.next()) job(rows) else null }
     }?.let { it.copy(commands = commands(it.id)) }
 
-    /**
-     * The job the local machine works on, marked [Job.local]: one left RUNNING there by a crashed runner first, else the
-     * first of its queue ([queueOrder]) not in [exclude], started when it is queued and joined when it is a shared job
-     * cloud nodes run. The queue holds the jobs placed on the local machine alone, the queued `auto` ones, and the
-     * running `auto` ones with an iteration no host has claimed, as one, by priority whatever their placement. Among
-     * equals, the job whose series last finished a run longest ago goes first, one that never has before any that has,
-     * then the oldest: so a schedule that just ran cannot keep going ahead of one that has waited. A series is a
-     * schedule's runs (`<schedule>@<sha>`), or an experiment's reruns under its name. While [nodesUp], a cloud node is
-     * up or launching to take the `auto` jobs, so among equal priorities the jobs placed on the local machine alone go
-     * first, before series and age decide.
-     */
     @Synchronized
     fun nextAnalysis(): Job? = transaction {
         val id = connection.prepareStatement("SELECT id FROM jobs WHERE status IN ('QUEUED','RUNNING') " +
@@ -1031,7 +1013,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         it.executeUpdate()
     }
 
-    /** The job [next] would take now, without taking it: the first of the local machine's queue ([queueOrder]). */
     /**
      * The job the local machine is about to take, which a node must leave to it: the first of its queue when the local
      * machine is free, or when the job it runs gives way to that one between cases ([shouldYield]). Null when the local
@@ -1065,7 +1046,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             Status.QUEUED.name, jobId, index, Status.RUNNING.name)
     }
 
-    /** Command [index] of [jobId] starts on [host] ([ExecutionHost.id]) as [cmd], the command line that host rendered
+    /** Command [index] of [jobId] starts on [host] (its recorded node identity) as [cmd], the command line that host rendered
      *  for it ([CasePlan]), which replaces the one written when the job was planned. */
     @Synchronized
     fun commandStarted(jobId: Long, index: Int, host: String? = null, cmd: String? = null) = update(
@@ -1544,23 +1525,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         if (paused) 1 else 0, jobId, Status.QUEUED.name, Status.RUNNING.name,
     ) == 1
 
-    /**
-     * Whether [jobId], running on the local machine, should stop starting commands: it was paused, or a job in the
-     * local machine's queue ([queueOrder]) has a strictly higher priority. Placement does not matter: a job placed on
-     * the local machine alone, a queued `auto` job, and a shared job nodes run with iterations left to claim all compete
-     * by priority alone, and an equal priority never preempts. A paused or cancelled job does not count.
-     */
-    /**
-     * The local machine's queue in the order [next] takes it ([LOCAL_QUEUE]): the queued, unpaused jobs placed on the
-     * local machine alone or shared, and the shared jobs nodes run that have an iteration no host has claimed, as one
-     * queue by priority, then the fewest hosts on it ([HOSTS_ON]: a queued job has none, so it goes before joining a
-     * running one of equal priority), then series, then age.
-     * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities ([LOCAL_FIRST_ORDER]).
-     */
-    /**
-     * Every queued, unpaused job, wherever it may run, by priority, series and age: the queue as the pages show it.
-     * While [nodesUp], the jobs placed on the local machine alone go first among equal priorities, as [queueOrder].
-     */
     @Synchronized
     fun queue(): List<Long> = connection.prepareStatement(
         "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
@@ -1641,11 +1605,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
     }
 
-    /**
-     * Place a queued experiment again on [host] whether or not it was planned: the host that takes a planned one next
-     * renders each case's command for itself ([Runner.render]). What [Placement.release] does with a job a node planned
-     * and gave back. False when there is no such queued experiment.
-     */
     @Synchronized
     fun release(jobId: Long, host: String): Boolean {
         val job = job(jobId) ?: return false

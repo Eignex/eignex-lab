@@ -57,9 +57,8 @@ class DockerCleanupTest {
         free: Long = 100 * BYTES_PER_GB,
         now: Long = 30 * DockerCleanup.DAY_MS,
         request: Path? = null,
-        colima: Path? = null,
     ) = DockerCleanup(
-        enabled, keep, 7 * DockerCleanup.DAY_MS, state, request, needed, { free }, colima, log = {}, clock = { now }, exec = docker::exec,
+        enabled, keep, 7 * DockerCleanup.DAY_MS, state, request, needed, { free }, log = {}, clock = { now }, exec = docker::exec,
     )
 
     private fun lastAt(state: Path, at: Long) =
@@ -128,18 +127,6 @@ class DockerCleanupTest {
         assertEquals(9_200_000_000, DockerCleanup.total(run.dockerBefore))
         assertTrue(commands.none { it.startsWith("colima") }, "no fstrim off Colima")
         assertEquals(run, DockerCleanup.last(state))
-    }
-
-    @Test
-    fun `on Colima the VM is trimmed and its disks measured before and after`() {
-        val docker = FakeDocker(images = listing)
-        val disks = dir()
-
-        val run = assertNotNull(cleanup(docker, colima = disks).run("test"))
-
-        assertTrue("colima ssh -- sudo fstrim -av" in docker.commands())
-        assertEquals(20000000 * 1024L, run.hostDiskBefore)
-        assertEquals(20000000 * 1024L, run.hostDiskAfter)
     }
 
     @Test

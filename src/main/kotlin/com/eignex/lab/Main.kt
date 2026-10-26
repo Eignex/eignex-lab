@@ -68,7 +68,6 @@ private fun dockerCleanupNow(): Int {
     } else {
         DockerCleanup(
             true, config.dockerKeep, 0, config.dockerCleanupState, null, { emptySet() }, { freeBytes(config.dataDir) },
-            null,
         )
     }
     return if (cleanup.run("it was run by hand") != null) 0 else 1

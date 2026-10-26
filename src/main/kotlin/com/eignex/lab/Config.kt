@@ -29,8 +29,6 @@ data class Config(
     val javaHome: String = env("LAB_JAVA_HOME", System.getenv("JAVA_HOME") ?: ""),
     /** JVM flags for every klause-cli solve a command starts. */
     val solveJavaOpts: String = env("LAB_SOLVE_JAVA_OPTS", "-Xmx3g -XX:+UseSerialGC"),
-    val gradleWorkers: Int = env("LAB_GRADLE_WORKERS", "2").toInt(),
-    val setupTimeoutSec: Long = env("LAB_SETUP_TIMEOUT_SEC", "3600").toLong(),
     /** The most cases one job may run at once, whatever it asks for: each holds its own solve heap, so memory bounds
      *  this, where [cores] bounds the threads. */
     val maxParallel: Int = env("LAB_MAX_PARALLEL", "6").toInt(),
@@ -74,15 +72,6 @@ data class Config(
         env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
         env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
     ),
-    /** Retries of a build or a plan, which can also fail on a download but more often for good: fewer tries. */
-    val buildRetry: Backoff = Backoff(
-        env("LAB_BUILD_RETRY_ATTEMPTS", "3").toInt(),
-        env("LAB_RETRY_BASE_SEC", "15").toLong() * MS_PER_SEC,
-        env("LAB_RETRY_MAX_SEC", "300").toLong() * MS_PER_SEC,
-    ),
-    /** Worktree-relative directories every job shares, separated by `:`; none by default. */
-    val sharedPaths: List<String> = env("LAB_SHARED_PATHS", "")
-        .split(':').map { it.trim() }.filter { it.isNotEmpty() },
     /** The largest saved-capture archive an analysis job reads ([CaptureArchives]). */
     val archiveMaxBytes: Long = env("LAB_ARCHIVE_MAX_MB", "2048").toLong() * BYTES_PER_MB,
     /** The most an archive may unpack to, by its manifest, which also bounds what an analysis job extracts of it. */
@@ -103,21 +92,9 @@ data class Config(
     val nativeYield: Path get() = dataDir.resolve("nomad/update-pending")
 
     val localNodeTags: Set<String> get() = NodeTags.observed(cpuCapabilities, nodeTags)
-    init {
-        require(sharedPaths.none { it.startsWith("/") || ".." in it.split('/') }) {
-            "LAB_SHARED_PATHS entries must stay inside the worktree: $sharedPaths"
-        }
-    }
-
     /** Saved-capture archives an analysis job may name by a path under it ([CaptureArchives]). */
     val archiveDir: Path get() = dataDir.resolve("archives")
 
-    val sharedDir: Path get() = dataDir.resolve("shared")
-    /**
-     * The Gradle home the lab's builds use, its own: `~/.gradle` is shared with whatever else builds on the machine,
-     * whose daemons' cache cleanups have left its transform records pointing at files they deleted.
-     */
-    val gradleHome: Path get() = dataDir.resolve("gradle")
     val database: Path get() = dataDir.resolve("lab.db")
     /** A GitHub token the trust check reads the repository's activity with, when the file exists: without one GitHub
      *  allows 60 calls an hour. Read on each use, so adding it needs no reinstall. */
@@ -129,3 +106,20 @@ data class Config(
     val dockerCleanupRequest: Path get() = dataDir.resolve("docker-cleanup-requested")
     /** The last Docker cleanup, as [DockerCleanup] wrote it. */
     val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
+    fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
+
+    /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
+     *  does not answer ([Volumes]). */
+    fun createJobDir(id: Long): Path {
+        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
+        return Files.createDirectories(jobDir(id))
+    }
+    fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
+}
+
+private const val MS_PER_SEC = 1000L
+private const val MS_PER_HOUR = 3_600_000L
+private const val MS_PER_DAY = 24 * MS_PER_HOUR
+private const val BYTES_PER_MB = 1024L * 1024
+
+private fun env(name: String, default: String): String = System.getenv(name)?.takeIf { it.isNotBlank() } ?: default
