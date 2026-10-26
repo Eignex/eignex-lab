@@ -67,6 +67,7 @@ class NomadBackendTest {
         val job = setup(platform = NomadPlatform.MAC, preparation = true)
         val previous = session
         val frozen = manifest
+        val originalSubmission = store.execution.submission(previous.id)
         store.execution.loseSession(previous.id, "infrastructure:failed")
         setup(name = "other", platform = NomadPlatform.MAC, preparation = true, sessionId = "other")
         fun configured(cpu: Int) = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") },
@@ -79,6 +80,10 @@ class NomadBackendTest {
         assertNotEquals(previous.id, replacement.id)
         assertEquals(previous.budget, replacement.budget)
         assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+        assertEquals(originalSubmission, store.execution.submission(previous.id))
+        val meta = Json.parseToJsonElement(store.execution.submission(replacement.id)).jsonObject.getValue("Meta").jsonObject
+        assertEquals("4000", meta.getValue("lab_native_cpu_limit").jsonPrimitive.content)
+        assertEquals("4096", meta.getValue("lab_native_memory_limit").jsonPrimitive.content)
     }
 
     @Test fun `Spot loss replaces preparation before there are planned commands`() {
