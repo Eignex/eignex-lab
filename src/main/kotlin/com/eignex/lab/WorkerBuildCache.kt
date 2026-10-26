@@ -22,7 +22,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
         checkRun()
         val build = requireNotNull(bundle.build)
-        val identity = ExecutionStore.digest(listOf("build-cache-v2", Json.encodeToString(bundle), Json.encodeToString(budget),
+        val identity = ExecutionStore.digest(listOf("build-cache-v3-jvm", Json.encodeToString(bundle), Json.encodeToString(budget),
             System.getProperty("java.vendor"), System.getProperty("java.version"), System.getProperty("os.name"), System.getProperty("os.arch")).joinToString("\n"))
         Files.createDirectories(root)
         val destination = root.resolve(identity)
@@ -78,8 +78,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 } else copy(source, tree, ::checkRun)
                 if (build.tasks.isNotEmpty()) {
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
+                    val init = staging.resolve("jvm.init.gradle")
+                    Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
                     run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                        "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree)
+                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree)
                 }
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
