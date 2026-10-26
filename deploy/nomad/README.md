@@ -213,14 +213,14 @@ explicit `--restart-agents` maintenance option after draining native work. In-fl
 release paths. Release pruning is disabled after native Nomad service installation; remove old worker releases only
 after reconciliation proves no allocation or process uses them. Keep server snapshots and manifests needed for rollback.
 
-Managed service/ownership tests complement live solver acceptance. Reference, confirmation, whole-run profile,
-capture-analysis and interruption canaries must pass before final legacy execution removal.
+Managed service/ownership tests complement live solver acceptance. Experiment execution now uses Nomad exclusively;
+the maintenance runner retains capture analysis, reference checking, schedules and confirmations.
 
 ## Provider-neutral capacity and operations
 
 `capacity.example.json` defines homogeneous capability pools, purchasing market, explicit host memory reserves, finite
-node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profiles preserve the existing explicit
-on-demand purchasing policy unless their tags request Spot; measurements/builds do not reserve a whole node.
+node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profiles use Spot unless their tags explicitly request
+on-demand; measurements/builds do not reserve a whole node.
 Every session budget includes its helpers. The policy packs free CPU and memory on ready nodes, accounts for booting
 nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
 Only old empty nodes contribute to voluntary scale-in. Terminating machines still consume quota until gone, without

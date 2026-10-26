@@ -7,7 +7,7 @@
 #   lab profile [--tags expr --timeout sec --repo Eignex/name --build task --classpath path] <main> <ref> <description> -- [arg...]
 #                                                            queue a committed JVM main from an Eignex repository
 #                                                            run once with [arg...] in a build of <ref>, under JFR, locally
-#                                                            or on a cloud node (on demand unless tags request spot); the lab
+#                                                            or on a Spot cloud node unless tags request on-demand; the lab
 #                                                            places jobs; for measurements experiments
 #                                                            cannot express, NOT for running tests, lint or other gates (CI
 #                                                            runs those). <ref> must be main or a branch only trusted users
@@ -62,23 +62,14 @@
 #   lab show <id> | lab cancel <id> | lab tail <id> [<n> [out|err]]
 #                                                            show adds a queued job's placement and why it waits; cancel a
 #                                                            wrong job, not a long one: the lab bounds runtime itself
-#   lab placement [id] [--json]                              why queued jobs wait and where each will run, read-only: the cloud
-#                                                            pool's pressure against the next threshold, sustain wait, cooldown
-#                                                            and launch blocker; the local machine's job and its phase (its
-#                                                            setup step, or its cases); each active job's placement, priority,
-#                                                            place in the local queue, estimate and reason; a running job's
-#                                                            hosts ("local + 2 nodes") with each host's cases done and running.
-#                                                            With an id, that job's alone; --json prints the lab's JSON
-#                                                            (GET /placement)
+#   lab placement [id] [--json]                              Nomad placement, node budgets and why queued jobs wait
+#                                                            With an id, that job alone; --json prints GET /placement
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
 #   lab host <id> local|cloud|auto                          operators only: override where a queued, unplanned job may run
 #                                                            (the lab places every job itself; agents need not); lab and
 #                                                            aws, the older names of local and cloud, still work
 #   lab machines <id> [n]                                    retired: the cloud node pool sizes itself; the lab ignores it
-#   lab node start [size] [spot|on-demand]                   start a cloud node now, past the pressure threshold: the size the
-#                                                            queue calls for and spot first unless given (e.g. c7i.4xlarge);
-#                                                            it takes work as any node and retires after nodeIdleMin idle
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
@@ -98,7 +89,6 @@
 #                                                            (default .cache/klause-bench/corpus; set it to the server's
 #                                                            LAB_CORPUS when that is elsewhere, an external drive say)
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/eignex-lab/password.
-#   lab ssh <id> [n] [command...]                            a shell (or command) on node n (default 0) of those working on a
 #                                                            running cloud job (an AWS instance), through the server with the
 #                                                            lab's own key and host keys; LAB_REMOTE_JOBS is the server's
 #                                                            LAB_JOBS when not $LAB_REMOTE_DATA/jobs
@@ -417,21 +407,6 @@ fetch)
   fi
   rm -f "$receipt" ;;
 corpus) rsync -az --info=progress2 "$corpus/" "$host:$remote_corpus/" ;;
-ssh) job="$1"; n="${2:-0}"; shift; shift || true
-  # Instances are reached only from the server, which holds the key; their host keys are remembered by instance id,
-  # since AWS hands a terminated instance's address to the next one.
-  remote="id=\$(sed -n '$((n + 1))p' $remote_jobs/$job/aws-instances | cut -d' ' -f1) && [ -n \"\$id\" ] && cd $data/aws || { echo 'no such running instance' >&2; exit 1; }
-    region=\$(sed -n 's/^region=//p' aws.properties); profile=\$(sed -n 's/^profile=//p' aws.properties)
-    ip=\$(PATH=/opt/homebrew/bin:\$PATH aws --profile \$profile --region \$region ec2 describe-instances --instance-ids \$id --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-    exec ssh -i eignex-lab.pem -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=accept-new -o CheckHostIP=no \
-      -o HostKeyAlias=eignex-lab-\$region-\$id ubuntu@\$ip $(printf '%q ' "$@")"
-  if [[ $# -eq 0 ]]; then exec ssh -t "$host" "$remote"; else exec ssh "$host" "$remote"; fi ;;
 health) curl -fsS "$url/health" | jq . ;;
-node)
-  [[ "${1:-}" == start ]] || { echo "usage: lab node start [size] [spot|on-demand]" >&2; exit 2; }
-  shift; size="" market=""
-  for arg in "$@"; do case "$arg" in spot | on-demand) market="$arg" ;; *) size="$arg" ;; esac; done
-  jq -n --arg size "$size" --arg market "$market" '{size: (if $size == "" then null else $size end), market: (if $market == "" then null else $market end)}' |
-    curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/cloud/nodes"; echo ;;
 *) sed -n '2,/^set /{/^#/p}' "$0"; exit 2 ;;
 esac

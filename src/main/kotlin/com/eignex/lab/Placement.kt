@@ -6,15 +6,13 @@ package com.eignex.lab
  * ([Experiments.capToLocal]); explicit node selectors can instead require a compatible cloud node. Its
  * [ExperimentSpec.host] records the decision for the queue: `lab` for a job only the local machine runs, `auto` for one
  * the local machine and cloud nodes share, each running whole iterations of it, or `aws` for cloud-only work.
- * A planned job a node gives back is placed again ([release]), and whichever host takes
- * it next renders each case's command for itself as it starts it in the worker.
+ * Nomad replacements retain the frozen recipe and render case commands for their own worker platform.
  */
 object Placement {
     /**
      * The jobs that stay on the local machine whatever is free: scheduled runs (`<schedule>@<sha>`) and their
      * confirmations, which the sweeps and the trend compare against each other on one machine; reference runs, which
-     * need the local machine's reference solvers; exact problem lists, which only confirmations use; a profile with a
-     * whole-run deadline, which the local machine enforces on its own processes; and an analysis job, which reads
+     * need the local machine's reference solvers; and an analysis job, which reads
      * captures kept on the local machine. [cloudSchedule] says [name] is a run of a schedule that opts in to the cloud
      * ([Placement.cloudSchedule]): such a run may go to either unless another of these reasons holds, and its
      * confirmations still stay.

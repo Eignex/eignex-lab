@@ -62,3 +62,10 @@ Review `python3 deploy/nomad/prune_runtime.py --data "$LAB_DATA"`, then add `--a
 directories and named deployment leftovers. The pruner preserves releases referenced by running processes, installed
 services, pending session intents, active jobs and retryable frozen recipes. It never deletes the database, results,
 corpus, artifacts or Nomad allocation state; small retired-release provenance stays in `deployments/retired-runtime`.
+
+The coordinator stores immutable, job-scoped bundles under `$LAB_DATA/nomad/artifacts`. On a small internal disk,
+place that directory on the mounted results volume and retain a symlink at the original path. Copy while the
+coordinator runs, stop only the coordinator for a final synchronization and directory switch, then restart it and
+verify existing artifact reads before deleting the original copy. Keep all historical bundles; the runtime pruner
+does not remove them. The results volume must pass the same mount, disk access and free-space checks as `LAB_JOBS`.
+Admission holds pause new work; existing worker lease and progress updates remain available.

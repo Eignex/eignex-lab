@@ -38,10 +38,9 @@ data class DockerCleanupRun(
 
 /**
  * Keeps the reference solvers' Docker images from filling the disk. Rebuilding an image leaves its old layers, its
- * build cache and its old tags behind, and on macOS all of that sits in Colima's VM disk, which grows and does not
- * shrink by itself. A cleanup removes build cache older than a week, the tags of the reference repositories that are
- * neither kept nor named by an active job's commit, and dangling images, then on Colima trims the VM's filesystems so
- * the freed blocks can go back to the host.
+ * build cache and its old tags behind. A cleanup removes build cache older than a week, the tags of the reference
+ * repositories that are neither kept nor named by an active job's commit, and dangling images. Historical VM
+ * measurements remain readable in old cleanup reports.
  *
  * It is due [intervalMs] after the last one, sooner when the disk has under [JobTrim.TARGET_FREE_BYTES] free (at most
  * every [LOW_DISK_GAP_MS] then), and at once when [requestFile] exists. The runner calls [maybeRun] between jobs, with
