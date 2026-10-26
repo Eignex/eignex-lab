@@ -292,6 +292,40 @@ PY
         }
     }
 
+    @Test fun `different builds use separate dependency homes concurrently then reuse idle homes`(): Unit = service { socket ->
+        val entered = root.resolve("first-build-entered")
+        val release = root.resolve("release-first-build")
+        val script = """set -eu
+            mkdir -p build
+            printf '%s' "${'$'}GRADLE_USER_HOME" > build/home
+            if test -f "${'$'}GRADLE_USER_HOME/dependency"; then echo warm > build/state; else echo cold > build/state; fi
+            echo dependency > "${'$'}GRADLE_USER_HOME/dependency"
+            if test "${'$'}LAB_SOURCE_COMMIT" = '${"a".repeat(40)}'; then
+                touch '$entered'
+                until test -f '$release'; do sleep .05; done
+            fi
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
+        val cache = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+        fun build(commit: String) = cache.prepare(input.copy(commit = commit.repeat(40), build = WorkerBuild(listOf("installDist"))),
+            source, ResourceBudget(1000, 512), System.getenv()) { 20000 }
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val first = executor.submit<Path> { build("a") }
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!Files.exists(entered)) { check(System.nanoTime() < deadline) { "first build did not start" }; Thread.sleep(20) }
+            val second = executor.submit<Path> { build("b") }.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertFalse(first.isDone, "second build must complete while the first still owns its cache")
+            Files.writeString(release, "")
+            val initial = first.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertNotEquals(Files.readString(initial.resolve("build/home")), Files.readString(second.resolve("build/home")))
+            val next = build("c")
+            assertEquals(Files.readString(initial.resolve("build/home")), Files.readString(next.resolve("build/home")))
+            assertEquals("warm", Files.readString(next.resolve("build/state")).trim())
+        } finally { Files.writeString(release, ""); executor.shutdownNow() }
+    }
+
     @Test fun `cache eviction keeps pinned trees until their attempt copy finishes`(): Unit = service { socket ->
         val (input, bytes) = bundle(mapOf("gradlew" to "mkdir -p build; head -c 48000 /dev/zero > build/output"))
         val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }

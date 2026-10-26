@@ -52,13 +52,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 }
                 val heap = (budget.memoryMiB / 3).coerceAtLeast(16)
                 val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, bundle.toolchain, bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
-                val dependencyHome = root.resolve("dependencies/$dependencyKey")
-                Files.createDirectories(dependencyHome)
-                val env = environment + mapOf("GRADLE_USER_HOME" to dependencyHome.toString(),
-                    "JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
+                val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                     "LAB_SOURCE_COMMIT" to bundle.commit)
-                fun run(argv: List<String>, directory: Path) {
-                    val exit = supervisor.run(argv, directory, env, log, errors, build.timeoutSec,
+                fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env) {
+                    val exit = supervisor.run(argv, directory, runEnvironment, log, errors, build.timeoutSec,
                         graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining)
                     if (exit != 0) {
                         fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
@@ -85,12 +82,11 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     val init = staging.resolve("jvm.init.gradle")
                     Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
-                    // Gradle's cache lock handshake cannot cross container PID/network namespaces.
-                    // Only one build may write a shared user home; solves and other repositories still run concurrently.
-                    locked(root.resolve("dependencies-$dependencyKey.lock"), remainingRunMs, remainingLeaseMs) {
+                    dependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs) { dependencyHome ->
                         Files.createDirectories(dependencyHome)
                         run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                            "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree)
+                            "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree,
+                            env + ("GRADLE_USER_HOME" to dependencyHome.toString()))
                         Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
                     }
                 }
@@ -122,6 +118,23 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         System.getProperty("os.name"), System.getProperty("os.arch"),
         ExecutionStore.digest(requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText()),
     ).joinToString("\n"))
+
+    /** Gradle cannot negotiate cache locks across container namespaces. Reuse the first idle home, or give an
+     * already-admitted concurrent build another home. Scheduling budgets bound concurrency; cache eviction bounds disk. */
+    private fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T {
+        var slot = 0
+        while (true) {
+            if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            require(lease() > 0) { "build lease expired while acquiring dependency cache" }
+            if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
+            val name = if (slot == 0) key else "$key-$slot"
+            FileChannel.open(root.resolve("dependencies-$name.lock"), CREATE, READ, WRITE).use { channel ->
+                val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                if (lock != null) return lock.use { use(root.resolve("dependencies/$name")) }
+            }
+            slot++
+        }
+    }
 
     private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, use: () -> T): T {
         FileChannel.open(path, CREATE, READ, WRITE).use { channel ->
