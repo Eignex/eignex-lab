@@ -274,8 +274,8 @@ Prepared builds are atomically published with a checksum inventory. Cache identi
 OS/architecture, declared toolchain/build recipe, actual JDK identity and effective build budget. Git pack transport
 bytes do not invalidate a build of the same approved commit. A lock
 prevents duplicate builds within the cache; corrupted or incomplete output rebuilds before execution. Every
-iteration gets a private copy, keeping measurements and profiles from changing the baseline. Caches currently
-belong to the allocation. Set native `LAB_WORKER_CACHE_ROOT` to a cache volume with sufficient free space.
+iteration gets a private copy, keeping measurements and profiles from changing the baseline. Caches default
+to the allocation unless shared storage is configured. Set native `LAB_WORKER_CACHE_ROOT` to a cache volume with sufficient free space.
 Linux templates set `cacheHostVolume: "lab-cache"`; the coordinator creates a dynamic `mkdir` host volume on each
 managed ready node, without restarting the client. The job requests multi-writer access, and checksum-verified
 builds are single-flight across allocations on that node. Cache eviction is limited to unused outputs/dependency
