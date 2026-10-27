@@ -82,12 +82,14 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     val init = staging.resolve("jvm.init.gradle")
                     Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
+                    compilationSlot(remainingRunMs, ::remaining) {
                     dependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs) { dependencyHome ->
                         Files.createDirectories(dependencyHome)
                         run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                             "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree,
                             env + ("GRADLE_USER_HOME" to dependencyHome.toString()))
                         Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
+                    }
                     }
                 }
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
@@ -105,6 +107,23 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         Files.createDirectories(root)
         return locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs) {
             use(prepare(bundle, source, budget, environment, remainingRunMs, remainingLeaseMs))
+        }
+    }
+
+    /** Node-local slots bound cold compilers across allocations; warm cache hits bypass this gate. */
+    internal fun <T> compilationSlot(run: () -> Long?, lease: () -> Long, slots: Int =
+        System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2, use: () -> T): T {
+        require(slots in 1..64)
+        while (true) {
+            if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            check(lease() > 0) { "build lease expired while waiting for compiler" }
+            for (slot in 0 until slots) {
+                FileChannel.open(root.resolve("compile-$slot.lock"), CREATE, READ, WRITE).use { channel ->
+                    val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                    if (lock != null) return lock.use { use() }
+                }
+            }
+            Thread.sleep(50)
         }
     }
 

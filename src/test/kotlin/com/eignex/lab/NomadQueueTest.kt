@@ -51,7 +51,7 @@ class NomadQueueTest {
         return WorkerBundle(sha, listOf(InputFile("fixture", ExecutionStore.digest(text), text.length.toLong())), Repositories.DEFAULT,
             "a".repeat(40), os, arch, "fixture")
     }
-    private fun queue(cores: Int = config.cores, allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, settings, allowed,
+    private fun queue(cores: Int = config.cores, allowed: () -> Boolean = { true }, policy: NomadQueueSettings = settings) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
         completed = { completions++ }, nativeAllowed = { true }, source = { job, targets, _ ->
             publications++
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.map { input(job.id, it.os, it.arch) }
@@ -91,8 +91,8 @@ class NomadQueueTest {
         assertEquals("a".repeat(40), planned.sha)
         val solves = store.execution.sessions(id).filter { it.executionClass == "solve" }
         assertEquals(3, solves.size)
-        assertEquals(2, solves.count { store.execution.submission(it.id).contains("advisory-native") })
-        assertEquals(1, solves.count { store.execution.submission(it.id).contains("hard-quota") })
+        assertEquals(3, solves.count { store.execution.submission(it.id).contains("advisory-native") })
+        assertEquals(0, solves.count { store.execution.submission(it.id).contains("hard-quota") })
         assertTrue(solves.all { it.budget.cpuMillis == 1000 && it.budget.memoryMiB == 768 && it.budget.parallel == 1 })
         assertTrue(solves.all { store.execution.manifest(it.id).solveJavaOptions == "-Xmx256m" })
         queue().reconcile(); assertEquals(3, store.execution.sessions(id).count { it.executionClass == "solve" })
@@ -151,14 +151,14 @@ class NomadQueueTest {
         NomadQueue(config, Store(root.resolve("lab.db")), backend, artifacts, changed, { true }, nativeAllowed = { true },
             source = { _, _, _ -> error("source already pinned") }).reconcile()
         val solves = store.execution.sessions(id).filter { it.executionClass == "solve" }
-        assertEquals(3, solves.size)
+        assertEquals(1, solves.size)
         assertTrue(solves.all { it.release == "release" && it.budget.memoryMiB == 768 })
         assertEquals(1, publications)
     }
 
-    @Test fun `cloud admission waits for placement and excludes hosts at the experiment parallel cap`() {
+    @Test fun `explicit cloud per host cap is independent of worker CPU requests`() {
         val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
-        queue().reconcile(); prepare(id, 4); backend.reconcile(); queue().reconcile()
+        queue(policy = settings.copy(perHostParallel = 2)).reconcile(); prepare(id, 4); backend.reconcile(); queue(policy = settings.copy(perHostParallel = 2)).reconcile()
         fun solves() = store.execution.sessions(id).filter { it.executionClass == "solve" }
         fun bind(session: ExecutionSession, node: String) {
             val spec = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
@@ -167,11 +167,11 @@ class NomadQueueTest {
             store.execution.bind(session.id, token, "allocation-${session.id}", node, "release")
         }
         assertEquals(1, solves().size)
-        queue().reconcile(); assertEquals(1, solves().size, "an unplaced session must not cause duplicate placements")
+        queue(policy = settings.copy(perHostParallel = 2)).reconcile(); assertEquals(1, solves().size, "an unplaced session must not cause duplicate placements")
         bind(solves().single { it.node == null }, "cloud-node-a")
-        queue().reconcile(); assertEquals(2, solves().size)
+        queue(policy = settings.copy(perHostParallel = 2)).reconcile(); assertEquals(2, solves().size)
         bind(solves().single { it.node == null }, "cloud-node-a")
-        queue().reconcile(); assertEquals(3, solves().size)
+        queue(policy = settings.copy(perHostParallel = 2)).reconcile(); assertEquals(3, solves().size)
         val thirdSession = solves().single { it.node == null }
         val third = Json.parseToJsonElement(store.execution.submission(thirdSession.id)).jsonObject
         val exclusion = third.getValue("Constraints").jsonArray.map { it.jsonObject }
@@ -179,10 +179,29 @@ class NomadQueueTest {
         assertEquals("!=", exclusion.getValue("Operand").jsonPrimitive.content)
         assertEquals("cloud-node-a", exclusion.getValue("RTarget").jsonPrimitive.content)
         bind(thirdSession, "cloud-node-b")
-        queue().reconcile(); assertEquals(4, solves().size)
+        queue(policy = settings.copy(perHostParallel = 2)).reconcile(); assertEquals(4, solves().size)
         val fourth = store.execution.submission(solves().single { it.node == null }.id)
         assertTrue(fourth.contains("cloud-node-a"))
         assertFalse(fourth.contains("cloud-node-b"), "the other host still has an experiment parallel slot")
+    }
+
+    @Test fun `default cloud workers share nodes and a live vCPU limit bounds frozen jobs`() {
+        val id = job(ExperimentSpec("sharing", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        queue().reconcile(); prepare(id, 4); backend.reconcile()
+        val policy = settings.copy(maxVcpusPerJob = 2)
+        repeat(4) {
+            queue(policy = policy).reconcile()
+            store.execution.sessions(id).filter { it.executionClass == "solve" && it.node == null }.forEach { session ->
+                val spec = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+                assertFalse(spec.getValue("Constraints").jsonArray.any { it.jsonObject["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.unique.id}" })
+                val token = spec.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+                store.execution.bind(session.id, token, "allocation-${session.id}", "same-node", "release")
+            }
+        }
+        val sessions = store.execution.sessions(id).filter { it.executionClass == "solve" }
+        assertEquals(2, sessions.size)
+        assertEquals(2000, sessions.sumOf { it.budget.cpuMillis })
+        assertEquals(setOf("same-node"), sessions.map { it.node }.toSet())
     }
 
     @Test fun `domain completion is acknowledged once across coordinator instances`() {

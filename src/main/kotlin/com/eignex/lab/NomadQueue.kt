@@ -31,10 +31,13 @@ data class NomadQueueSettings(
     val release: String, val workerApi: String, val targets: List<NomadQueueTarget>,
     val preparationBudget: ResourceBudget = ResourceBudget(2000, 4096), val preparationTimeoutSec: Long = 3600,
     val caseMemoryMiB: Int = 4096, val sessionMemoryMiB: Int = 512, val maxSessionsPerJob: Int = 64,
+    /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. */
+    val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
 ) {
     init {
         require(release.isNotBlank() && targets.isNotEmpty() && targets.map { it.template.nodeClass }.distinct().size == targets.size)
         require(preparationTimeoutSec in 1..7200 && preparationBudget.parallel == 1)
+        require(maxVcpusPerJob in 1..1024 && (perHostParallel == null || perHostParallel > 0) && maxConcurrentBuildsPerNode in 1..64)
         require(caseMemoryMiB >= 512 && sessionMemoryMiB >= 256 && maxSessionsPerJob in 1..1024)
         val api = java.net.URI.create(workerApi)
         require(api.scheme in setOf("https", "http") && api.userInfo == null && api.rawQuery == null)
@@ -108,7 +111,7 @@ class NomadQueue(
                     val (arms, bundles) = source(job, targets, settings)
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec)
-                    backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target)), settings.workerApi)
+                    backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     continue
                 }
                 val accepted = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null } ?: continue
@@ -124,7 +127,9 @@ class NomadQueue(
                 }
                 val pending = store.casePlan(job.id).filter { it.status in setOf(Status.QUEUED, Status.RUNNING) }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
-                val limit = minOf(settings.maxSessionsPerJob, pending)
+                val minimumCpu = targets.minOf { checkNotNull(settings.solveBudget(it, current)).cpuMillis }
+                val cpuLimit = maxOf(this.settings.maxVcpusPerJob * 1000, minimumCpu)
+                val limit = minOf(this.settings.maxSessionsPerJob, pending, cpuLimit / minimumCpu)
                 val active = sessions.filter { it.executionClass == "solve" && it.desired != "stop" }
                 if (active.size >= limit) continue
                 val bundles = recipe.bundles.map { original -> preparation.bundles.singleOrNull {
@@ -135,14 +140,15 @@ class NomadQueue(
                     Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                         ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "hard-quota" }
                 for (index in active.size until limit) {
-                    val available = ordered.filter { target ->
+                    val remainingCpu = cpuLimit - sessions.filter { it.executionClass == "solve" && it.desired != "stop" }.sumOf { it.budget.cpuMillis }
+                    val available = ordered.filter { checkNotNull(settings.solveBudget(it, current)).cpuMillis <= remainingCpu }.filter { target ->
                         // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
                         if (target.os != "mac") cloudSessions().none { it.node == null } else {
                             val budget = checkNotNull(settings.solveBudget(target, current))
                             val nativeSessions = sessions.filter { session -> session.executionClass == "solve" && session.desired != "stop" &&
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                                     ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
-                            val maximum = (current.parallel + budget.parallel - 1) / budget.parallel
+                            val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
                             nativeAllowed(job.id) && nativeSessions.size < maximum
                         }
                     }
@@ -157,11 +163,11 @@ class NomadQueue(
                     val budget = checkNotNull(settings.solveBudget(target, current))
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, recipe.arms, cases, bundles, budget,
                         solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus, sharedInputs = preparation.sharedInputs)
-                    val excluded = if (target.os == "mac") emptySet() else cloudSessions().filter { it.node != null }
+                    val excluded = if (target.os == "mac" || this.settings.perHostParallel == null) emptySet() else cloudSessions().filter { it.node != null }
                         .groupBy { checkNotNull(it.node) }.filterValues { hosted ->
-                            hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > current.parallel
+                            hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > this.settings.perHostParallel!!
                         }.keys
-                    backend.enqueue(job.id, manifest, target.template.copy(budget = budget, nativeCapacity = nativeCapacity(target), excludedNodes = target.template.excludedNodes + excluded), settings.workerApi)
+                    backend.enqueue(job.id, manifest, target.template.copy(budget = budget, nativeCapacity = nativeCapacity(target), excludedNodes = target.template.excludedNodes + excluded, perHostParallel = this.settings.perHostParallel, environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     sessions = store.execution.sessions(job.id)
                 }
             } catch (failure: IllegalArgumentException) {

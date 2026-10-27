@@ -382,6 +382,39 @@ PY
         assertFailsWith<IllegalArgumentException> { executor.run(manifest, listOf(0), root.resolve("partial"), "node", 1) { 10000 } }
     }
 
+    @Test fun `long profile command succeeds and retains the literal invocation as an artifact`(): Unit = service { socket ->
+        val argument = "x".repeat(76000)
+        val (input, bytes) = bundle(mapOf("profile.sh" to "#!/usr/bin/env bash\n[[ ${'$'}{#1} == 76000 ]]\n"))
+        val source = input.copy(files = input.files.map { it.copy(executable = true) })
+        val spec = ExperimentSpec("long-command", profile = ProfileMain(script = "profile.sh", args = listOf(argument)))
+        val manifest = WorkManifest("session", "fixture", spec, Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) },
+            listOf(WorkCase(0, 0, Experiments.profileProblem(spec), null, 0, 10)), listOf(source), ResourceBudget(1000, 512))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused", source.os, source.arch)
+        val directory = root.resolve("long-command")
+        val result = executor.run(manifest, listOf(0), directory, "node", 1) { 80000 }
+        assertEquals(0, result.cases.single().exitCode)
+        assertNull(result.cases.single().command)
+        assertTrue(Files.readString(directory.resolve("cases/0/command.sh")).contains(argument))
+    }
+
+    @Test fun `node local compiler slots bound concurrent cold builds across cache instances`() {
+        val cacheRoot = Files.createDirectories(root.resolve("compile-slots"))
+        val first = WorkerBuildCache(cacheRoot, ProcessSupervisor(root.resolve("unused")))
+        val second = WorkerBuildCache(cacheRoot, ProcessSupervisor(root.resolve("unused")))
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val a = pool.submit { first.compilationSlot({ null }, { 10000 }, slots = 1) { entered.countDown(); release.await() } }
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            val b = pool.submit { second.compilationSlot({ null }, { 10000 }, slots = 1) { "compiled" } }
+            assertFailsWith<java.util.concurrent.TimeoutException> { b.get(100, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            release.countDown(); a.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            b.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            assertFailsWith<IllegalStateException> { second.compilationSlot({ null }, { 0 }, slots = 1) { error("not admitted") } }
+        } finally { release.countDown(); pool.shutdownNow() }
+    }
+
     @Test fun `native profile deadline bounds preparation and the committed profile process`(): Unit = service { socket ->
         val started = root.resolve("profile-started")
         val script = "#!/usr/bin/env python3\nfrom pathlib import Path\nimport time\nPath('$started').write_text('started')\ntime.sleep(30)\n"

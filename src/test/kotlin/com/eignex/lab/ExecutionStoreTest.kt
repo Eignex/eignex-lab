@@ -189,7 +189,7 @@ class ExecutionStoreTest {
     @Test fun `several sessions preserve the per experiment per node case cap`() {
         val sharedId = job();
         for (name in listOf("same-a", "same-b")) {
-            store.execution.createSession(name, sharedId, "solve", "release-1", budget, token, "{}", 1000)
+            store.execution.createSession(name, sharedId, "solve", "release-1", budget, token, """{"Meta":{"lab_per_host_parallel":"2"}}""", 1000)
             store.execution.bind(name, token, "alloc-$name", "shared-node", "release-1", 1000)
         }
         val first = store.execution.claim("same-a", token, "alloc-same-a", 1001)!!
@@ -198,6 +198,16 @@ class ExecutionStoreTest {
         store.execution.phase(first.owner, "uploading", 1003)
         store.execution.commit(first.owner, result(first), 1004)
         assertEquals(2, store.execution.claim("same-b", token, "alloc-same-b", 1005)!!.parallel)
+    }
+
+    @Test fun `same job can claim two CPU bounded workers on one node by default`() {
+        val id = job()
+        for (name in listOf("a", "b")) {
+            store.execution.createSession(name, id, "solve", "release-1", budget, token, "{}", 1000)
+            store.execution.bind(name, token, "alloc-$name", "shared", "release-1", 1000)
+        }
+        assertEquals(2, store.execution.claim("a", token, "alloc-a", 1001)!!.parallel)
+        assertEquals(2, store.execution.claim("b", token, "alloc-b", 1002)!!.parallel)
     }
 
     @Test fun `historical backend provenance stays readable while new jobs always use Nomad`() {
