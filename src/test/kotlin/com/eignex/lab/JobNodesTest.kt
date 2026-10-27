@@ -45,9 +45,42 @@ class JobNodesTest {
             assertContains(page, "href=\"/nodes#node-avx2%3Ai-worker\"")
             assertContains(page, "title=\"Nomad node nomad-node-uuid\"")
             assertContains(page, "x86_64 / AVX2")
+            assertContains(page, ">PREPARING</span>")
             assertFalse(page.contains("private-worker-credential"))
         }
         assertContains(client.get("/nodes").bodyAsText(), "id=\"node-avx2:i-worker\"")
+    }
+
+    @Test fun `a started job without a worker waits for capacity in both pages and placement diagnostics`() = testApplication {
+        val id = job()
+        bind(id, "lost", "lost-allocation", "lost-node")
+        store.execution.loseSession("lost", "infrastructure:spot")
+        application { api(config, store, host) }
+        for (path in listOf("/", "/jobs/$id")) {
+            val page = client.get(path) { accept(ContentType.Text.Html) }.bodyAsText()
+            assertContains(page, "class=\"QUEUED\">WAITING</span>")
+            assertContains(page, "waiting for compatible capacity")
+            assertFalse(page.contains("lost-node"))
+        }
+        val queue = client.get("/").bodyAsText()
+        assertContains(queue, "0 running · 0 queued · 1 waiting for capacity")
+        val report = Waiting.report(config, store, { null })
+        assertFalse(report.nodesUp)
+        assertNotNull(report.jobs.single().waiting)
+        assertNull(report.jobs.single().doing)
+        assertEquals(Status.RUNNING, store.job(id)!!.status, "display activity must not rewrite the durable experiment state")
+    }
+
+    @Test fun `completed commands awaiting checks do not claim they need another worker`() {
+        val id = job()
+        bind(id, "finished", "finished-allocation", "finished-node")
+        store.execution.loseSession("finished", "completed")
+        val checking = store.job(id)!!.copy(setupDone = true, counts = CommandCounts(2, 2, 0, 0))
+        val page = jobPage(config, checking, false)
+        assertContains(page, ">CHECKING</span>")
+        assertContains(page, "checking results")
+        assertFalse(page.contains("waiting for a node"))
+        assertFalse(page.contains("waiting for compatible capacity"))
     }
 
     @Test fun `active assignments deduplicate nodes omit stopped sessions and survive a missing capacity report`() = testApplication {

@@ -54,7 +54,11 @@ class CapacityCollector(
         val observations = instances.map { instance ->
             val pool = pools.getValue(instance.pool); val id = "${instance.pool}:${instance.id}"
             val node = byInstance[pool.nodeClass to instance.id]
-            val ready = node?.get("Status")?.jsonPrimitive?.content == "ready" && node["SchedulingEligibility"]?.jsonPrimitive?.content != "ineligible"
+            val status = node?.get("Status")?.jsonPrimitive?.content
+            val eligible = node?.get("SchedulingEligibility")?.jsonPrimitive?.content != "ineligible"
+            val draining = instance.draining || node?.get("Drain")?.jsonPrimitive?.booleanOrNull == true ||
+                node?.get("DrainStrategy")?.let { it != JsonNull } == true
+            val ready = status == "ready" && eligible && !draining
             val reservations = if (node == null) emptyList() else nomad.nodeAllocations(node.getValue("ID").jsonPrimitive.content)
                 .filter { it["ClientStatus"]?.jsonPrimitive?.content in setOf("pending", "running", "unknown") }.map { allocation ->
                     val jobId = allocation.getValue("JobID").jsonPrimitive.content
@@ -65,7 +69,12 @@ class CapacityCollector(
                         if (session?.executionClass in setOf("build", "prepare")) CapacityWork.BUILD else CapacityWork.SOLVE)
                 }
             if (ready && reservations.isEmpty()) idle.putIfAbsent(id, at) else idle.remove(id)
-            CapacityNode(id, pool.id, when { instance.draining -> CapacityNodeState.DRAINING; ready -> CapacityNodeState.READY; else -> CapacityNodeState.BOOTING }, reservations, idle[id], instance.countedInTarget)
+            CapacityNode(id, pool.id, when {
+                draining -> CapacityNodeState.DRAINING
+                ready -> CapacityNodeState.READY
+                status == "down" || !eligible -> CapacityNodeState.UNAVAILABLE
+                else -> CapacityNodeState.BOOTING
+            }, reservations, idle[id], instance.countedInTarget)
         }
         val pending = sessions.filter { s -> s.desired == "run" && (s.executionClass != "solve" || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status in setOf(Status.QUEUED, Status.RUNNING) && !it.paused && !it.cancelRequested } == true &&
             nomad.allocations(s.nomadJobId).none { it.active } }

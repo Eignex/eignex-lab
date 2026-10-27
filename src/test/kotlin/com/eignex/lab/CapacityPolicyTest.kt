@@ -49,6 +49,26 @@ class CapacityPolicyTest {
         val plan = CapacityPolicy.evaluate(settings, listOf(node), listOf(demand("a"), demand("b")))
         assertEquals(1, plan.desired["general"]); assertTrue(plan.placements.all { !it.ready && it.node == "booting" })
     }
+    @Test fun `unavailable nodes cannot satisfy demand and replacements still respect physical vCPU quota`() {
+        val node = CapacityNode("unavailable", pool.id, CapacityNodeState.UNAVAILABLE)
+        val plan = CapacityPolicy.evaluate(settings, listOf(node), listOf(demand("replacement")))
+        assertEquals(2, plan.desired[pool.id])
+        assertTrue(plan.placements.none { it.node == node.id })
+        val limited = CapacityPolicy.evaluate(settings.copy(maxVcpus = pool.vcpus), listOf(node), listOf(demand("replacement")))
+        assertEquals(1, limited.desired[pool.id])
+        assertTrue(limited.placements.isEmpty())
+        assertEquals("capacity or vCPU limit", limited.waiting.single().reason)
+    }
+    @Test fun `cancelled demand withdraws unused launches while pending work and manual requests keep them`() {
+        val nodes = listOf(CapacityNode("booting", pool.id, CapacityNodeState.BOOTING))
+        assertEquals(0, CapacityPolicy.evaluate(settings, nodes, emptyList()).desired[pool.id])
+        assertEquals(1, CapacityPolicy.evaluate(settings, nodes, listOf(demand("pending"))).desired[pool.id])
+        val lease = ManualCapacityLease("manual", pool.id, 1, 2000)
+        assertEquals(1, CapacityPolicy.evaluate(settings, nodes, emptyList(), listOf(lease), at = 1000).desired[pool.id])
+        assertEquals(0, CapacityPolicy.evaluate(settings, nodes, emptyList(), listOf(lease), at = 2000).desired[pool.id])
+        val allocated = nodes.single().copy(reservations = listOf(CapacityReservation("allocation", 1, ResourceBudget(1000, 1024))))
+        assertEquals(1, CapacityPolicy.evaluate(settings, listOf(allocated), emptyList()).desired[pool.id])
+    }
     @Test fun `spot requests never silently enable on demand even when it is warm`() {
         val expensive = pool.copy(id = "explicit", nodeClass = "explicit", market = CapacityMarket.ON_DEMAND)
         val config = settings.copy(pools = listOf(expensive))

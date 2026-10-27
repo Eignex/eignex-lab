@@ -67,6 +67,7 @@ class CapacityCollectorTest {
         assertFailsWith<IllegalStateException> { c.grant(pool.id) }
     }
     @Test fun `booting capacity is preserved and unknown allocations consume a conservative node budget`() {
+        store.execution.requestCapacity(pool.id, 1, 60000, at)
         sample(listOf(CapacityInstance("vm", pool.id)))
         val c = collector(); c.collect()
         assertEquals(CapacityNodeState.BOOTING, c.snapshot().nodes.single().state)
@@ -84,6 +85,26 @@ class CapacityCollectorTest {
         assertEquals(lease, Store(root.resolve("lab.db")).execution.capacityLeases(at).single())
         at += 60000; sample(); val c = collector(); c.collect()
         assertEquals(0, c.snapshot().decision.desired[pool.id]); assertTrue(store.execution.capacityLeases(at).isEmpty())
+    }
+    @Test fun `registered down draining and ineligible clients are never reported as booting capacity`() {
+        sample(listOf(CapacityInstance("vm", pool.id)))
+        fun node(status: String, eligible: Boolean = true, drain: Boolean = false) = buildJsonObject {
+            put("ID", "node"); put("NodeClass", pool.nodeClass); put("Status", status)
+            put("SchedulingEligibility", if (eligible) "eligible" else "ineligible"); put("Drain", drain)
+            putJsonObject("Meta") { put("lab_capacity_id", "vm") }
+        }
+        val c = collector()
+        for ((node, expected) in listOf(
+            node("down") to CapacityNodeState.UNAVAILABLE,
+            node("ready", eligible = false) to CapacityNodeState.UNAVAILABLE,
+            node("ready", drain = true) to CapacityNodeState.DRAINING,
+            node("ready") to CapacityNodeState.READY,
+        )) {
+            control.full = node
+            c.collect()
+            assertEquals(expected, c.snapshot().nodes.single().state)
+            assertEquals(1, c.snapshot().decision.desired[pool.id], "provider-owned instances remain counted against quota")
+        }
     }
     @Test fun `worker listener exposes only authenticated read only capacity diagnostics`() = testApplication {
         sample(); val c = collector(); c.collect()

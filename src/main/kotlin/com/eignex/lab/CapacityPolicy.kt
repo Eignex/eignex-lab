@@ -8,7 +8,7 @@ enum class CapacityMarket(val tag: String) { @SerialName("spot") SPOT("spot"), @
 @Serializable
 enum class CapacityWork { SOLVE, MEASUREMENT, PROFILE, BUILD }
 @Serializable
-enum class CapacityNodeState { READY, BOOTING, DRAINING }
+enum class CapacityNodeState { READY, BOOTING, DRAINING, UNAVAILABLE }
 
 /** A homogeneous, provider-neutral pool. Physical logical-vCPU quota and schedulable budgets stay distinct. */
 @Serializable
@@ -71,7 +71,9 @@ object CapacityPolicy {
         val pools = settings.pools.associateBy { it.id }
         require(nodes.all { it.pool in pools } && manual.all { it.pool in pools && it.nodes <= pools.getValue(it.pool).maxNodes })
         data class Bin(val node: CapacityNode, val allocations: MutableList<CapacityReservation>)
-        val bins = nodes.filter { it.state != CapacityNodeState.DRAINING }.map { Bin(it, it.reservations.toMutableList()) }.toMutableList()
+        // Unavailable instances still spend provider quota, but cannot satisfy pending work.
+        val bins = nodes.filter { it.state in setOf(CapacityNodeState.READY, CapacityNodeState.BOOTING) }
+            .map { Bin(it, it.reservations.toMutableList()) }.toMutableList()
         val counts = settings.pools.associate { it.id to nodes.count { node -> node.pool == it.id && node.countedInTarget } }.toMutableMap()
         val history = previous.toMutableMap()
         val placements = mutableListOf<CapacityPlacement>(); val waiting = mutableListOf<CapacityWait>()
@@ -131,7 +133,9 @@ object CapacityPolicy {
         for (p in settings.pools) {
             val floor = manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0
             val idle = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.READY && it.allocations.isEmpty() && it.node.emptySince?.let { since -> at - since >= p.idleMs } == true }
-            counts[p.id] = maxOf(counts.getValue(p.id) - idle, minOf(floor, counts.getValue(p.id)))
+            // A launch request with no remaining work must not survive indefinitely when Spot is unavailable.
+            val unusedLaunches = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.BOOTING && it.allocations.isEmpty() }
+            counts[p.id] = maxOf(counts.getValue(p.id) - idle - unusedLaunches, minOf(floor, counts.getValue(p.id)))
             // Manual capacity is still finite, quota-bounded and expires. It cannot change purchasing market.
             while (counts.getValue(p.id) < floor && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus) {
                 counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus
