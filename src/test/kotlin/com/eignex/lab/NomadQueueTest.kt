@@ -51,7 +51,7 @@ class NomadQueueTest {
         return WorkerBundle(sha, listOf(InputFile("fixture", ExecutionStore.digest(text), text.length.toLong())), Repositories.DEFAULT,
             "a".repeat(40), os, arch, "fixture")
     }
-    private fun queue(cores: Int = config.cores, allowed: () -> Boolean = { true }, policy: NomadQueueSettings = settings) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
+    private fun queue(cores: Int = config.cores, policy: NomadQueueSettings = settings, allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
         completed = { completions++ }, nativeAllowed = { true }, source = { job, targets, _ ->
             publications++
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.map { input(job.id, it.os, it.arch) }

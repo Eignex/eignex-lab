@@ -38,7 +38,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             try {
                 val tree = staging.resolve("tree")
                 val log = staging.resolve("build.out"); val errors = staging.resolve("build.err")
-                val deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
+                var deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
                 var nextDiskCheck = 0L
                 fun remaining(): Long {
                     val at = System.nanoTime()
@@ -82,7 +82,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     val init = staging.resolve("jvm.init.gradle")
                     Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
-                    compilationSlot(remainingRunMs, ::remaining) {
+                    compilationSlot(remainingRunMs, remainingLeaseMs) {
+                        deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
                     dependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs) { dependencyHome ->
                         Files.createDirectories(dependencyHome)
                         run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",

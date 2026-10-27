@@ -131,6 +131,12 @@ class NomadQueue(
                 val cpuLimit = maxOf(this.settings.maxVcpusPerJob * 1000, minimumCpu)
                 val limit = minOf(this.settings.maxSessionsPerJob, pending, cpuLimit / minimumCpu)
                 val active = sessions.filter { it.executionClass == "solve" && it.desired != "stop" }
+                var keptCpu = 0
+                var keptWorkers = 0
+                for (session in active.filter { it.desired == "run" }) {
+                    if (keptWorkers >= limit || keptCpu + session.budget.cpuMillis > cpuLimit) store.execution.drain(session.id)
+                    else { keptWorkers++; keptCpu += session.budget.cpuMillis }
+                }
                 if (active.size >= limit) continue
                 val bundles = recipe.bundles.map { original -> preparation.bundles.singleOrNull {
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
