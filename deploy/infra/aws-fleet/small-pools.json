@@ -1,0 +1,46 @@
+{
+  "general-small-spot": {
+    "sourcePool": "general-spot",
+    "instanceType": "m7i.large",
+    "spotInstanceTypes": [
+      "m7i.large",
+      "m6i.large",
+      "m6in.large"
+    ],
+    "nodeClass": "linux-amd64-small-spot",
+    "vcpus": 2,
+    "memoryMiB": 8192
+  },
+  "avx2-small-spot": {
+    "sourcePool": "avx2-spot",
+    "instanceType": "c5a.xlarge",
+    "spotInstanceTypes": [],
+    "nodeClass": "linux-amd64-avx2-small-spot",
+    "vcpus": 4,
+    "memoryMiB": 8192
+  },
+  "neon-small-spot": {
+    "sourcePool": "neon-spot",
+    "instanceType": "m6g.large",
+    "spotInstanceTypes": [],
+    "nodeClass": "linux-arm64-neon-small-spot",
+    "vcpus": 2,
+    "memoryMiB": 8192
+  },
+  "sve-small-spot": {
+    "sourcePool": "sve-spot",
+    "instanceType": "m7g.large",
+    "spotInstanceTypes": [],
+    "nodeClass": "linux-arm64-sve-small-spot",
+    "vcpus": 2,
+    "memoryMiB": 8192
+  },
+  "sve2-small-spot": {
+    "sourcePool": "sve2-spot",
+    "instanceType": "m8g.large",
+    "spotInstanceTypes": [],
+    "nodeClass": "linux-arm64-sve2-small-spot",
+    "vcpus": 2,
+    "memoryMiB": 8192
+  }
+}

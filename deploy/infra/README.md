@@ -35,11 +35,23 @@ and independent cloud functions.
 
 For a fleet of instruction-set profiles, use `deploy/nomad/capacity-architectures.example.json` and the
 `aws-fleet/` module. The AWS shape choices are C5a for AVX2, M7i for AVX-512, M6g for NEON, M7g for SVE, and
-M8g for SVE2. Availability, actual host features, and Nomad usable CPU must be verified in the chosen region.
+M8g for SVE2. The [small-pool catalogue](aws-fleet/small-pools.json) adds separate 8-GiB pools for each profile:
+2 vCPUs for AVX-512, NEON, SVE and SVE2, and 4 vCPUs for AVX2 (C5a). Keep each size in its own node class and Auto Scaling Group: mixing sizes
+inside a homogeneous pool would invalidate bootstrap validation, CPU quota conversion and global vCPU accounting.
+Same-size Spot alternatives are supported through the fleet module's `spot_instance_types` field.
+Availability, actual host features, and Nomad usable CPU must be verified in the chosen region.
 Each pool starts at zero and has its own immutable architecture-compatible AMI and worker image, purchasing
 group, renewable lease, and independent expiry. Existing pools can remain in their existing state; the fleet
 module manages only additional pools and adds their exact adapter/scaler policies to the existing control roles.
 The shared collector's vCPU budget applies across all pools, rather than separately to each architecture.
+
+For each catalogue entry, inherit its source pool's pinned AMI, worker image, architecture and required features;
+set the smaller shape, node class, CPU and memory values explicitly. Add the pool to capacity settings, adapter
+inventory, Autoscaler targets and queue templates together. Use a conservative memory reserve (at least 1536 MiB
+for an 8-GiB node), then verify the actual Nomad memory before admitting work. The queue reuses compatible running
+capacity first and otherwise chooses the smallest fitting shape. Larger pools remain available for requests that
+exceed small-node CPU or memory. Bound allocations keep their existing placement; every new pool starts at zero
+and remains Spot-only under the same global vCPU ceiling.
 
 Use `aws/adapter-fleet.example.json` to publish all AWS pools as one inventory. A missing pool prevents publishing
 a partial fresh inventory. Renewals use an independent signed grant for each pool, and one failed renewal does

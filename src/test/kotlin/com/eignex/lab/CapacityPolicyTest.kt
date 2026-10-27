@@ -3,6 +3,18 @@ package com.eignex.lab
 import kotlin.test.*
 
 class CapacityPolicyTest {
+    @Test fun `smallest fitting cold pool wins but warm larger capacity is reused`() {
+        val large = pool.copy(id = "a-large")
+        val small = pool.copy(id = "z-small", nodeClass = "small", vcpus = 2, memoryMiB = 8192)
+        val config = settings.copy(pools = listOf(large, small))
+        val ask = demand("small", 1000, 4608)
+        assertEquals(small.id, CapacityPolicy.evaluate(config, emptyList(), listOf(ask)).placements.single().pool)
+        val warm = CapacityNode("warm-large", large.id, CapacityNodeState.READY)
+        assertEquals(warm.id, CapacityPolicy.evaluate(config, listOf(warm), listOf(ask)).placements.single().node)
+        assertEquals(large.id, CapacityPolicy.evaluate(config, emptyList(), listOf(demand("cpu", 4000, 4608))).placements.single().pool)
+        assertEquals(large.id, CapacityPolicy.evaluate(config, emptyList(), listOf(demand("memory", 1000, 8192))).placements.single().pool)
+    }
+
     @Test fun `small sustained backlog grows beyond two nodes without an estimated core hour threshold`() {
         val p = pool.copy(sustainedMs = 30000)
         val configuration = settings.copy(pools = listOf(p), localPressureHours = 1000.0)

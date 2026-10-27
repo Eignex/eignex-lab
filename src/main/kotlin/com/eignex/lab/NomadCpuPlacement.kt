@@ -10,6 +10,20 @@ internal class NomadCpuPlacement(private val nomad: NomadControl) {
     private var nodes = emptyList<Node>()
 
     @Synchronized
+    fun hasCapacity(template: NomadBatchJob, budget: ResourceBudget): Boolean {
+        refresh()
+        return nodes.any { it.nodeClass == template.nodeClass && it.capacity.logicalCpus == template.cpuCapacity.logicalCpus &&
+            it.id !in template.excludedNodes && it.freeCpu >= budget.nomadCpuMHz(it.capacity) && it.freeMemory >= budget.memoryMiB }
+    }
+
+    private fun refresh() {
+        val at = System.nanoTime()
+        if (sampledAt == Long.MIN_VALUE || at - sampledAt >= 10_000_000_000L) {
+            nodes = sample(); sampledAt = at
+        }
+    }
+
+    @Synchronized
     fun calibrate(job: JsonObject, budget: ResourceBudget): JsonObject {
         if (job["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content != "hard-quota") return job
         val constraints = job.getValue("Constraints").jsonArray.map { it.jsonObject }
@@ -21,10 +35,7 @@ internal class NomadCpuPlacement(private val nomad: NomadControl) {
             value("${'$'}{attr.cpu.numcores}")?.toIntOrNull() ?: return job)
         val excluded = constraints.filter { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.unique.id}" &&
             it["Operand"]?.jsonPrimitive?.content == "!=" }.map { it.getValue("RTarget").jsonPrimitive.content }.toSet()
-        val at = System.nanoTime()
-        if (sampledAt == Long.MIN_VALUE || at - sampledAt >= 10_000_000_000L) {
-            nodes = sample(); sampledAt = at
-        }
+        refresh()
         val candidates = nodes.filter { it.nodeClass == nodeClass && it.capacity.logicalCpus == capacity.logicalCpus && it.id !in excluded }
         val fitting = candidates.filter { it.freeCpu >= budget.nomadCpuMHz(it.capacity) && it.freeMemory >= budget.memoryMiB }
         if (fitting.any { it.capacity == capacity }) return job
