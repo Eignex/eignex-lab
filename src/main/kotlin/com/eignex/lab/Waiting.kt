@@ -92,7 +92,7 @@ object Waiting {
         return PlacementReport(at, ready > 0, "Nomad: $ready ready cloud nodes; see /nodes", view.local, jobs, view.diskHeld)
     }
 
-    fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
+    internal fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
                   hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null): JobPlacement {
         val host = job.experiment?.host ?: Experiments.LAB_HOST
         val estimate = if (job.status in ACTIVE) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
