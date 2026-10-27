@@ -218,8 +218,9 @@ class NomadBackend(
                         if (held.first + previous.budget.cpuMillis > limit.first || held.second + previous.budget.memoryMiB > limit.second) continue
                     }
                 }
-                if (store.execution.failureCount(job.id) > 3) store.execution.failIfActive(job.id, "Nomad infrastructure retry budget exhausted")
-                else replace(previous)
+                // Worker/node loss revokes ownership, never the experiment. Keep its frozen inputs and
+                // accepted results, and let a fresh session wait for any compatible replacement node.
+                replace(previous)
             }
         }
         for (job in logJobs) {

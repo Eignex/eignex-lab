@@ -235,16 +235,21 @@ class NomadQueueTest {
         assertEquals(manifest.session, store.execution.sessions(waiting).single().id)
     }
 
-    @Test fun `infrastructure retry limit also applies while some solve workers are still active`() {
+    @Test fun `repeated Spot losses replenish workers without failing healthy siblings or republishing source`() {
         val id = job(); queue().reconcile(); prepare(id); queue().reconcile()
-        repeat(4) {
-            val active = store.execution.sessions(id).first { it.executionClass == "solve" && it.desired != "stop" }
+        val siblings = store.execution.sessions(id).filter { it.executionClass == "solve" && store.execution.submission(it.id).contains("advisory-native") }.map { it.id }.toSet()
+        repeat(8) {
+            val active = store.execution.sessions(id).single { it.executionClass == "solve" && it.desired != "stop" && store.execution.submission(it.id).contains("hard-quota") }
             store.execution.loseSession(active.id, "infrastructure:spot")
             queue().reconcile()
+            assertEquals(Status.RUNNING, store.job(id)!!.status)
+            assertNull(store.job(id)!!.error)
+            assertEquals(3, store.execution.sessions(id).count { it.executionClass == "solve" && it.desired != "stop" })
+            assertTrue(store.execution.sessions(id).filter { it.id in siblings }.all { it.desired == "run" })
         }
-        assertEquals(Status.FAILED, store.job(id)!!.status)
-        assertTrue(store.job(id)!!.commands.all { it.status == Status.CANCELLED })
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+        assertEquals(8, store.execution.failureCount(id))
+        assertEquals(1, store.execution.accepted(id).size)
         assertEquals(1, publications)
     }
 

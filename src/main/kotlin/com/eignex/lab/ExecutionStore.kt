@@ -317,6 +317,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun submission(id: String): String = store.executionTransaction { db -> db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single() }
     fun hasActiveAttempt(session: String): Boolean = store.executionTransaction { db -> db.sqlRows("SELECT 1 FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", session) { true }.isNotEmpty() }
     internal fun retryIn(db: Connection, job: Long, at: Long) { db.event(job, null, "manual-retry", at) }
+    /** Diagnostic loss count since manual retry; infrastructure losses never exhaust the experiment. */
     fun failureCount(job: Long): Int = store.executionTransaction { db -> db.sqlRows("""SELECT COUNT(*) FROM execution_events
         WHERE job_id = ? AND detail LIKE 'lost:infrastructure:%' AND id > COALESCE(
             (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""", job, job) { it.getInt(1) }.single() }
