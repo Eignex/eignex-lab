@@ -59,7 +59,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             checkActive()
             val exit = supervisor.run(listOf("bash", "-c", command), tree, env, output, errors, timeout,
                 graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining)
-            if (exit != 0) throw WorkerBuildFailure("preparation command failed (exit $exit): " + Files.readString(errors).takeLast(8192))
+            checkPreparationExit(exit) { "preparation command failed (exit $exit): " + Files.readString(errors).takeLast(8192) }
         }
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }

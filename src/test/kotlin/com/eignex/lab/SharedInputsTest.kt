@@ -5,6 +5,23 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class SharedInputsTest {
+    @Test fun `evicted local inputs can be restored from the immutable remote inventory`() {
+        val root = Files.createTempDirectory("evicted-inputs")
+        val transport = Transport()
+        val sha = ExecutionStore.digest("model"); val key = "input-blobs/$sha"
+        transport.objects[key] = "model".toByteArray()
+        val inputs = listOf(SharedInput(InputFile("model", sha, 5), key))
+        val cache = SharedInputs(root, transport, maxBytes = 0)
+        cache.acquire(inputs).use { lease ->
+            SharedInputCache(root.resolve(".lab-inputs"), maxBytes = 0).maintain(force = true)
+            assertEquals("model", Files.readString(lease.directory.resolve("model")))
+        }
+        SharedInputCache(root.resolve(".lab-inputs"), maxBytes = 0).maintain(force = true)
+        cache.acquire(inputs).use { lease -> assertEquals("model", Files.readString(lease.directory.resolve("model"))) }
+        assertEquals(listOf(key, key), transport.gets)
+        assertEquals(emptyList(), transport.puts)
+    }
+
     private class Transport : InputTransport {
         val objects = mutableMapOf<String, ByteArray>()
         val gets = mutableListOf<String>()

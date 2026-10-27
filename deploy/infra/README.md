@@ -170,3 +170,20 @@ preemption/loss recovery, pairing, idle retirement, and Mac-offline zero target/
 with the stale scaler identity after its IAM deadline and verify denial, even with an otherwise valid OAuth token.
 Verify source/build artifacts, CPU/memory observations and output projection are unchanged apart from execution
 provenance. A validated module or a generic Linux Docker smoke run does not satisfy this second-provider gate.
+
+### Regional input cost audit
+
+`aws/audit_inputs.py` reads bucket region, gateway endpoint state, every observed worker's subnet routing,
+plus daily account-level S3 and Data Transfer billing. It does not read or copy object bodies, enable paid
+request metrics, or modify infrastructure. Use an operations identity with EC2/S3 describe and Cost Explorer
+read access; workers and the input signer do not need billing permissions. For example:
+
+```sh
+python3 deploy/infra/aws/audit_inputs.py --cli-credentials \
+  --bucket BUCKET --region REGION --endpoint vpce-ID \
+  --start YYYY-MM-DD --end YYYY-MM-DD --output input-cost-audit.json
+```
+
+The end date is exclusive. `--cli-credentials` uses the AWS CLI credential provider, including `aws login`,
+in memory. Billing is account-wide and delayed; empty recent days or a window with no workers cannot prove
+steady-state cache savings. Inspect usage types and estimated-day flags before attributing costs to the lab.
