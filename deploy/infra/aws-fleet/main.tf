@@ -13,15 +13,16 @@ variable "max_vcpus" {
 }
 variable "pools" {
   type = map(object({
-    ami_id           = string
-    instance_type    = string
-    vcpus            = number
-    memory_mib       = number
-    max_nodes        = number
-    node_class       = string
-    architecture     = string
-    minimum_features = list(string)
-    worker_image     = string
+    ami_id              = string
+    instance_type       = string
+    spot_instance_types = optional(list(string), [])
+    vcpus               = number
+    memory_mib          = number
+    max_nodes           = number
+    node_class          = string
+    architecture        = string
+    minimum_features    = list(string)
+    worker_image        = string
   }))
 }
 
@@ -32,6 +33,7 @@ module "pool" {
   pool_id               = each.key
   ami_id                = each.value.ami_id
   instance_type         = each.value.instance_type
+  spot_instance_types   = each.value.spot_instance_types
   vcpus                 = each.value.vcpus
   memory_mib            = each.value.memory_mib
   max_nodes             = each.value.max_nodes

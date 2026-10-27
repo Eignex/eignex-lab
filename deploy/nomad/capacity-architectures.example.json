@@ -2,10 +2,130 @@
   "maxVcpus": 128,
   "localCores": 8,
   "pools": [
-    {"id": "avx512-spot", "nodeClass": "linux-amd64-avx512-spot", "vcpus": 16, "memoryMiB": 65536, "maxNodes": 8, "tags": ["arch:x86_64", "simd:avx2", "simd:avx512f", "simd:avx512"]},
-    {"id": "avx2-spot", "nodeClass": "linux-amd64-avx2-spot", "vcpus": 16, "memoryMiB": 32768, "maxNodes": 8, "tags": ["arch:x86_64", "simd:avx2"]},
-    {"id": "neon-spot", "nodeClass": "linux-arm64-neon-spot", "vcpus": 16, "memoryMiB": 65536, "maxNodes": 8, "tags": ["arch:arm64", "simd:neon"]},
-    {"id": "sve-spot", "nodeClass": "linux-arm64-sve-spot", "vcpus": 16, "memoryMiB": 65536, "maxNodes": 8, "tags": ["arch:arm64", "simd:neon", "simd:sve"]},
-    {"id": "sve2-spot", "nodeClass": "linux-arm64-sve2-spot", "vcpus": 16, "memoryMiB": 65536, "maxNodes": 8, "tags": ["arch:arm64", "simd:neon", "simd:sve", "simd:sve2"]}
+    {
+      "id": "avx512-spot",
+      "nodeClass": "linux-amd64-avx512-spot",
+      "vcpus": 16,
+      "memoryMiB": 65536,
+      "maxNodes": 8,
+      "tags": [
+        "arch:x86_64",
+        "simd:avx2",
+        "simd:avx512f",
+        "simd:avx512"
+      ]
+    },
+    {
+      "id": "avx2-spot",
+      "nodeClass": "linux-amd64-avx2-spot",
+      "vcpus": 16,
+      "memoryMiB": 32768,
+      "maxNodes": 8,
+      "tags": [
+        "arch:x86_64",
+        "simd:avx2"
+      ]
+    },
+    {
+      "id": "neon-spot",
+      "nodeClass": "linux-arm64-neon-spot",
+      "vcpus": 16,
+      "memoryMiB": 65536,
+      "maxNodes": 8,
+      "tags": [
+        "arch:arm64",
+        "simd:neon"
+      ]
+    },
+    {
+      "id": "sve-spot",
+      "nodeClass": "linux-arm64-sve-spot",
+      "vcpus": 16,
+      "memoryMiB": 65536,
+      "maxNodes": 8,
+      "tags": [
+        "arch:arm64",
+        "simd:neon",
+        "simd:sve"
+      ]
+    },
+    {
+      "id": "sve2-spot",
+      "nodeClass": "linux-arm64-sve2-spot",
+      "vcpus": 16,
+      "memoryMiB": 65536,
+      "maxNodes": 8,
+      "tags": [
+        "arch:arm64",
+        "simd:neon",
+        "simd:sve",
+        "simd:sve2"
+      ]
+    },
+    {
+      "id": "avx512-small-spot",
+      "nodeClass": "linux-amd64-small-spot",
+      "vcpus": 2,
+      "memoryMiB": 8192,
+      "maxNodes": 64,
+      "tags": [
+        "arch:x86_64",
+        "simd:avx2",
+        "simd:avx512f",
+        "simd:avx512"
+      ],
+      "reserveMemoryMiB": 1536
+    },
+    {
+      "id": "avx2-small-spot",
+      "nodeClass": "linux-amd64-avx2-small-spot",
+      "vcpus": 4,
+      "memoryMiB": 8192,
+      "maxNodes": 32,
+      "tags": [
+        "arch:x86_64",
+        "simd:avx2"
+      ],
+      "reserveMemoryMiB": 1536
+    },
+    {
+      "id": "neon-small-spot",
+      "nodeClass": "linux-arm64-neon-small-spot",
+      "vcpus": 2,
+      "memoryMiB": 8192,
+      "maxNodes": 64,
+      "tags": [
+        "arch:arm64",
+        "simd:neon"
+      ],
+      "reserveMemoryMiB": 1536
+    },
+    {
+      "id": "sve-small-spot",
+      "nodeClass": "linux-arm64-sve-small-spot",
+      "vcpus": 2,
+      "memoryMiB": 8192,
+      "maxNodes": 64,
+      "tags": [
+        "arch:arm64",
+        "simd:neon",
+        "simd:sve"
+      ],
+      "reserveMemoryMiB": 1536
+    },
+    {
+      "id": "sve2-small-spot",
+      "nodeClass": "linux-arm64-sve2-small-spot",
+      "vcpus": 2,
+      "memoryMiB": 8192,
+      "maxNodes": 64,
+      "tags": [
+        "arch:arm64",
+        "simd:neon",
+        "simd:sve",
+        "simd:sve2"
+      ],
+      "reserveMemoryMiB": 1536
+    }
   ]
 }

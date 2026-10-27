@@ -22,6 +22,8 @@ class NomadBackend(
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
     private val cpuPlacement = NomadCpuPlacement(nomad)
 
+    internal fun hasCapacity(template: NomadBatchJob, budget: ResourceBudget): Boolean = cpuPlacement.hasCapacity(template, budget)
+
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
     fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
         check(workAllowed())

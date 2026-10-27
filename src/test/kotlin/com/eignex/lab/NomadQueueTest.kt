@@ -14,11 +14,61 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `missing source fails once while network failures remain queued for retry`() {
+        val missing = job()
+        var missingCalls = 0
+        val missingQueue = NomadQueue(config, store, backend, artifacts, settings, { true }, source = { _, _, _ ->
+            missingCalls++
+            throw IllegalArgumentException("source ref 'absent' was not found after a successful fetch")
+        })
+        repeat(2) { missingQueue.reconcile() }
+        assertEquals(Status.FAILED, store.job(missing)!!.status)
+        assertContains(store.job(missing)!!.error!!, "source ref 'absent'")
+        assertEquals(1, missingCalls)
+        assertTrue(store.execution.sessions(missing).isEmpty())
+
+        val network = job()
+        var networkCalls = 0
+        val networkQueue = NomadQueue(config, store, backend, artifacts, settings, { true }, source = { _, _, _ ->
+            networkCalls++
+            throw java.io.IOException("GitHub connection timed out")
+        })
+        repeat(2) { networkQueue.reconcile() }
+        assertEquals(Status.QUEUED, store.job(network)!!.status)
+        assertEquals(2, networkCalls)
+        assertTrue(store.execution.sessions(network).isEmpty())
+    }
+
+    @Test fun `cloud preparation prefers the smallest fitting shape regardless of configuration order`() {
+        val large = target(NomadPlatform.LINUX, "large")
+        val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 2048, 2)))
+        val policy = settings.copy(targets = listOf(large, small))
+        val id = job(ExperimentSpec("small-cloud", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        queue(policy = policy).reconcile()
+        assertContains(store.execution.submission(store.execution.sessions(id).single().id), "\"RTarget\":\"small\"")
+    }
+
+    @Test fun `cloud preparation reuses a running larger shape before starting a small one`() {
+        val large = target(NomadPlatform.LINUX, "large")
+        val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 2048, 2)))
+        control.nodeInventory["warm"] = buildJsonObject {
+            put("ID", "warm"); put("NodeClass", "large"); put("Status", "ready")
+            putJsonObject("Attributes") { put("kernel.name", "linux"); put("cpu.usablecompute", "8000"); put("cpu.numcores", "8") }
+            putJsonObject("NodeResources") { putJsonObject("Memory") { put("MemoryMB", 4096) } }
+        }
+        val id = job(ExperimentSpec("reuse-cloud", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        queue(policy = settings.copy(targets = listOf(small, large))).reconcile()
+        assertContains(store.execution.submission(store.execution.sessions(id).single().id), "\"RTarget\":\"large\"")
+    }
+
     private val root = Files.createTempDirectory("nomad-queue")
     private val store = Store(root.resolve("lab.db"))
     private val artifacts = LocalArtifactStore(root.resolve("artifacts"))
     private val control = object : NomadControl {
         val jobs = mutableMapOf<String, JsonObject>()
+        val nodeInventory = mutableMapOf<String, JsonObject>()
+        override fun nodes() = nodeInventory.values.toList()
+        override fun node(id: String) = nodeInventory[id]
         override fun job(id: String) = jobs[id]
         override fun submit(job: JsonObject) { jobs[job.getValue("ID").jsonPrimitive.content] = job }
         override fun stop(id: String) { jobs.remove(id) }
@@ -54,7 +104,7 @@ class NomadQueueTest {
     private fun queue(cores: Int = config.cores, policy: NomadQueueSettings = settings, allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
         completed = { completions++ }, nativeAllowed = { true }, source = { job, targets, _ ->
             publications++
-            Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.map { input(job.id, it.os, it.arch) }
+            Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
         })
     private fun job(spec: ExperimentSpec = ExperimentSpec("portable", problems = listOf(mapOf("suite" to "s")), host = "auto")): Long =
         store.create(spec.name, "main", emptyList(), parallel = spec.parallel ?: 2, experiment = spec)

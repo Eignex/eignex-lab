@@ -104,7 +104,7 @@ class NomadQueue(
                         it.template.budget.cpuMillis >= settings.preparationBudget.cpuMillis && it.template.budget.memoryMiB >= settings.preparationBudget.memoryMiB
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
-                    val target = fitting.sortedBy { if (it.os == "mac") 0 else 1 }.firstOrNull {
+                    val target = ordered(fitting) { settings.preparationBudget }.firstOrNull {
                         it.os != "mac" || nativeAllowed(job.id) && store.execution.nativeReservation().let { held ->
                             held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
@@ -144,7 +144,7 @@ class NomadQueue(
                 val bundles = recipe.bundles.map { original -> preparation.bundles.singleOrNull {
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
                 } ?: original }
-                val ordered = targets.sortedBy { if (it.os == "mac") 0 else 1 }
+                val ordered = ordered(targets) { checkNotNull(settings.solveBudget(it, current)) }
                 fun cloudSessions() = sessions.filter { session -> session.executionClass == "solve" && session.desired != "stop" &&
                     Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                         ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "hard-quota" }
@@ -191,6 +191,11 @@ class NomadQueue(
 
     private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =
         if (target.os == "mac") ResourceBudget(config.cores * 1000, target.template.budget.memoryMiB) else null
+
+    /** Reuse compatible running capacity before buying the smallest shape that fits this session. */
+    private fun ordered(targets: List<NomadQueueTarget>, budget: (NomadQueueTarget) -> ResourceBudget): List<NomadQueueTarget> =
+        targets.sortedWith(compareBy<NomadQueueTarget> { if (it.os == "mac") 0 else if (backend.hasCapacity(it.template, budget(it))) 1 else 2 }
+            .thenBy { it.template.cpuCapacity.logicalCpus }.thenBy { it.template.budget.memoryMiB }.thenBy { it.template.nodeClass })
 
     private fun plan(job: Job, recipe: WorkManifest, preparation: PreparationResult) {
         val spec = recipe.experiment
@@ -255,7 +260,8 @@ private class TrustedQueueSources(private val config: Config, private val artifa
             Trust.githubApi(config.githubTokenFile.takeIf(Files::isRegularFile)?.let(Files::readString)?.trim()))
         trust.requireRepository(refresh = true)
         val arms = Experiments.arms(spec).map { arm ->
-            val sha = checked(mirror, "rev-parse", "--verify", "${arm.ref}^{commit}")
+            val (exit, sha) = git(mirror, "rev-parse", "--verify", "${arm.ref}^{commit}")
+            require(exit == 0) { "source ref '${arm.ref}' was not found in ${spec.repository} after a successful fetch" }
             require(sha.matches(Regex("[a-f0-9]{40}")))
             trust.requireCommit(sha, arm.ref)
             PlannedArm(arm, sha)
