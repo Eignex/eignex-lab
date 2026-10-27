@@ -47,7 +47,7 @@ class PasswordTest {
     }
 
     @Test
-    fun `failed passwords are throttled per client and in all, and a known one still passes`() {
+    fun `failed passwords are throttled per client only, and a known one still passes`() {
         var now = 0L
         val gate = PasswordGate(Password.hash("secret")) { now }
         assertTrue(gate.allows(basic("", "secret"), "me"))
@@ -56,11 +56,12 @@ class PasswordTest {
         // Throttled without being checked, even with the right password, unless the header already passed.
         assertEquals(Admission.THROTTLE, gate.check(basic("attacker", "secret"), "attacker"))
         assertEquals(Admission.ADMIT, gate.check(basic("", "secret"), "attacker"))
-        repeat(50) { gate.check(basic("", "guess$it"), "client$it") }
-        assertEquals(Admission.THROTTLE, gate.check(basic("newcomer", "secret"), "newcomer"))
+        // Failures from many clients do not lock a newcomer out.
+        repeat(100) { gate.check(basic("", "guess$it"), "client$it") }
+        assertEquals(Admission.ADMIT, gate.check(basic("newcomer", "secret"), "newcomer"))
         assertEquals(Admission.ADMIT, gate.check(basic("", "secret"), "me"))
         now += 60_000
-        assertEquals(Admission.ADMIT, gate.check(basic("newcomer", "secret"), "newcomer"))
+        assertEquals(Admission.ADMIT, gate.check(basic("attacker", "secret"), "attacker"))
     }
 
     @Test
