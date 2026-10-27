@@ -164,6 +164,28 @@ class NomadBackendTest {
         assertTrue(store.execution.accepted(id).isEmpty())
     }
 
+    @Test fun `extra substring annotations do not reject or expand an approved preparation`() {
+        val spec = ExperimentSpec("annotations", problems = listOf(mapOf("suite" to "s", "reference" to "any")), host = "auto")
+        val id = setup(1, spec, preparation = true); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val bytes = "prepared source".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        val prepared = manifest.bundles.single().copy(sha256 = sha)
+        val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
+        store.execution.phase(claim.owner, "preparing")
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(Problem("s", "ej", collection = "miplib"))))
+        val feature = ProblemFeatures("miplib", "ej", listOf("mip"))
+        val preparation = PreparationResult(selected, listOf(prepared), features = listOf(feature, feature.copy(problem = "sutlej")), artifacts = outputs)
+        val result = IterationResult(emptyList(), outputs, preparation = preparation)
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(backend().commit(claim.owner, result))
+        assertTrue(backend().commit(claim.owner, result), "ambiguous acknowledgements retain the normalized acceptance")
+        val accepted = store.execution.accepted(id).single().second.preparation!!
+        assertEquals(selected, accepted.selections)
+        assertEquals(listOf(feature), accepted.features)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+    }
+
     @Test fun `empty approved selection is a permanent preparation failure`() {
         val spec = ExperimentSpec("empty", problems = listOf(mapOf("suite" to "s", "reference" to "proven")), host = "auto")
         val id = setup(1, spec, preparation = true); register()
