@@ -384,12 +384,13 @@ PY
 
     @Test fun `long profile command succeeds and retains the literal invocation as an artifact`(): Unit = service { socket ->
         val argument = "x".repeat(76000)
-        val (input, bytes) = bundle(mapOf("profile.sh" to "#!/usr/bin/env bash\n[[ ${'$'}{#1} == 76000 ]]\n"))
-        val source = input.copy(files = input.files.map { it.copy(executable = true) })
+        val build = "#!/usr/bin/env bash\nset -eu\ngit init -q\ngit config user.email fixture@example.com\ngit config user.name fixture\ngit add profile.sh\ngit commit -qm fixture\n"
+        val (input, bytes) = bundle(mapOf("profile.sh" to "#!/usr/bin/env bash\n[[ ${'$'}{#1} == 76000 ]]\n", "gradlew" to build))
+        val source = input.copy(files = input.files.map { it.copy(executable = true) }, build = WorkerBuild(listOf("fixture")))
         val spec = ExperimentSpec("long-command", profile = ProfileMain(script = "profile.sh", args = listOf(argument)))
         val manifest = WorkManifest("session", "fixture", spec, Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) },
             listOf(WorkCase(0, 0, Experiments.profileProblem(spec), null, 0, 10)), listOf(source), ResourceBudget(1000, 512))
-        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused", source.os, source.arch)
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused", source.os, source.arch, WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
         val directory = root.resolve("long-command")
         val result = executor.run(manifest, listOf(0), directory, "node", 1) { 80000 }
         assertEquals(0, result.cases.single().exitCode)
