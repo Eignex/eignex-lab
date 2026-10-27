@@ -20,6 +20,14 @@ variable "ami_id" {
   }
 }
 variable "instance_type" { type = string }
+variable "spot_instance_types" {
+  type    = list(string)
+  default = []
+  validation {
+    condition     = length(var.spot_instance_types) == length(distinct(var.spot_instance_types))
+    error_message = "Spot alternatives must be unique and qualified for the pool's SIMD requirements."
+  }
+}
 variable "vcpus" { type = number }
 variable "memory_mib" { type = number }
 variable "max_vcpus" { type = number }
