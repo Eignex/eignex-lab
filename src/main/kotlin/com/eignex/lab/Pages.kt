@@ -53,7 +53,7 @@ internal fun indexPage(
     }
     append("</div><div id=\"history\" data-live>")
     val shown = if (front) history.filter { it.status !in ACTIVE } else history
-    append(jobTable(config, shown, emptyMap(), filterable = true))
+    append(jobTable(config, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes))
     append("<p class=\"pager\">")
     if (before != null) append("<a href=\"/${query("name" to name)}\">newest</a> ")
     if (history.size == limit) append("<a href=\"/${query("name" to name, "before" to history.last().id.toString())}\">older</a>")
