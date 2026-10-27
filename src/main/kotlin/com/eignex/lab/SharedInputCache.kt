@@ -76,24 +76,30 @@ internal class SharedInputCache(private val root: Path, private val maxBytes: Lo
             } }
         }
         var size = sizes.values.sum()
-        for (entry in entries.sortedWith(compareBy<Entry> { it.blob }.thenBy { it.used })) {
-            if (size <= maxBytes && at - entry.used <= maxAgeMs) continue
-            if (!entry.blob && entry.path.fileName.toString() in active) continue
-            // Retain the blob anchor while any view still uses its inode.
-            if (entry.blob && entry.files.any { references.getValue(it.key) > 1 }) continue
-            fun remove() {
-                Files.walk(entry.path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
-                for (file in entry.files) {
-                    val count = references.getValue(file.key) - 1; references[file.key] = count
-                    if (count == 0) size -= file.bytes
-                }
+        val removed = mutableSetOf<Path>()
+        fun remove(entry: Entry) {
+            Files.walk(entry.path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+            removed += entry.path
+            for (file in entry.files) {
+                val count = references.getValue(file.key) - 1; references[file.key] = count
+                if (count == 0) size -= file.bytes
             }
-            if (!entry.blob) remove() else {
+        }
+        fun unreferencedBlobs() {
+            for (entry in entries.filter { it.blob }.sortedBy { it.used }) {
+                if (entry.path in removed || size <= maxBytes && at - entry.used <= maxAgeMs ||
+                    entry.files.any { references.getValue(it.key) > 1 }) continue
                 FileChannel.open(entry.path.resolveSibling("${entry.path.fileName}.lock"), CREATE, WRITE).use { channel ->
                     val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
-                    lock?.use { remove() }
+                    lock?.use { remove(entry) }
                 }
             }
+        }
+        unreferencedBlobs()
+        for (entry in entries.filter { !it.blob }.sortedBy { it.used }) {
+            if (size <= maxBytes && at - entry.used <= maxAgeMs || entry.path.fileName.toString() in active) continue
+            remove(entry)
+            unreferencedBlobs()
         }
         val blobs = root.resolve("blobs")
         if (Files.isDirectory(blobs, NOFOLLOW_LINKS)) Files.list(blobs).use { paths -> paths.forEach { path ->

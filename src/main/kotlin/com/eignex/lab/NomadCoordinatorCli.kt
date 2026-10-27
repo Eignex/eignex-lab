@@ -113,4 +113,3 @@ object NomadCoordinatorCli {
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
 }
-

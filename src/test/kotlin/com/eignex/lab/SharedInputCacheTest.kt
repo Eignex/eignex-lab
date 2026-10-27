@@ -5,6 +5,24 @@ import java.nio.file.attribute.FileTime
 import kotlin.test.*
 
 class SharedInputCacheTest {
+    @Test fun `evicting an old blob and view stops when enough space has been reclaimed`() {
+        val root = Files.createTempDirectory("input-blob-lru")
+        val blobs = Files.createDirectories(root.resolve("blobs"))
+        val at = now()
+        val views = listOf("old", "recent").mapIndexed { index, name ->
+            val sha = ExecutionStore.digest(name)
+            val blob = Files.writeString(blobs.resolve(sha), name)
+            val view = Files.createDirectories(root.resolve("views/$sha"))
+            Files.createLink(view.resolve("model"), blob)
+            Files.setLastModifiedTime(view, FileTime.fromMillis(at - (1 - index) * 1000))
+            view
+        }
+        SharedInputCache(root, maxBytes = 6).maintain(at, force = true)
+        assertFalse(Files.exists(views.first()))
+        assertEquals("recent", Files.readString(views.last().resolve("model")))
+        assertTrue(Files.exists(blobs.resolve(ExecutionStore.digest("recent"))))
+    }
+
     @Test fun `old transfers are removed only after their writer releases its blob lock`() {
         val root = Files.createTempDirectory("input-transfer-retention")
         val blobs = Files.createDirectories(root.resolve("blobs"))
