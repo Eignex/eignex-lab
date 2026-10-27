@@ -65,13 +65,13 @@ enum class Admission { ADMIT, REFUSE, THROTTLE }
 /**
  * Whether a request's `Authorization` header carries the password, as HTTP Basic with any user name (none is asked
  * for). A header that passed is remembered by its SHA-256. Failures are rationed besides, [PER_CLIENT] a minute from
- * one client, [OVERALL] a minute in all and [CONCURRENT] checks at once, past which a request is throttled unchecked:
- * whatever a stranger sends costs the lab machine next to nothing, so it cannot slow the cases running there.
+ * one client and [CONCURRENT] checks at once, past which a request is throttled unchecked: whatever a stranger sends
+ * costs the lab machine next to nothing, so it cannot slow the cases running there. There is no limit across clients:
+ * a stranger could use it up and keep everyone else from logging in.
  */
 class PasswordGate(private val stored: String, private val clock: () -> Long = System::currentTimeMillis) {
     private val accepted: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val failures = ConcurrentHashMap<String, Window>()
-    private val overall = Window(0, 0)
     private val hashing = java.util.concurrent.Semaphore(CONCURRENT)
 
     private class Window(var start: Long, var count: Int)
@@ -99,8 +99,7 @@ class PasswordGate(private val stored: String, private val clock: () -> Long = S
     }
 
     private fun exhausted(client: String): Boolean = synchronized(this) {
-        val now = clock()
-        count(overall, now) >= OVERALL || failures[client]?.let { count(it, now) >= PER_CLIENT } == true
+        failures[client]?.let { count(it, clock()) >= PER_CLIENT } == true
     }
 
     private fun fail(client: String) = synchronized(this) {
@@ -109,8 +108,6 @@ class PasswordGate(private val stored: String, private val clock: () -> Long = S
         val window = failures.getOrPut(client) { Window(now, 0) }
         count(window, now)
         window.count++
-        count(overall, now)
-        overall.count++
     }
 
     /** [window]'s count in the current minute, starting a new minute when the last one is over. */
@@ -128,7 +125,6 @@ class PasswordGate(private val stored: String, private val clock: () -> Long = S
         const val MAX_CLIENTS = 10_000
         const val MINUTE_MS = 60_000L
         const val PER_CLIENT = 10
-        const val OVERALL = 60
         const val CONCURRENT = 2
     }
 }
