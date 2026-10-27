@@ -175,23 +175,24 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `CLI profiling requires an explicit serial experiment, wherever it runs`() {
+    fun `CLI profiling accepts normal parallel limits wherever it runs`() {
         val experiment = spec().copy(measurement = Measurement.JFR)
 
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, maxParallel = 4) }
-        for (host in listOf("lab", "auto", "aws")) Experiments.validate(experiment.copy(host = host, parallel = 1), maxParallel = 4)
+        for (host in listOf("lab", "auto", "aws")) for (parallel in listOf(null, 1, 4)) {
+            Experiments.validate(experiment.copy(host = host, parallel = parallel), maxParallel = 4)
+        }
         assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(experiment))
     }
 
     @Test
-    fun `CLI resource measurement requires serial native cases and keeps recording disabled`() {
+    fun `CLI resource measurement accepts parallel native cases and keeps recording disabled`() {
         val measured = spec().copy(measurement = Measurement.RESOURCES, parallel = 1)
 
         for (host in listOf("lab", "auto", "aws")) Experiments.validate(measured.copy(host = host), maxParallel = 4)
         assertTrue(measured.measuresCli)
         assertFalse(measured.recordsCliJfr || measured.instrumented)
         assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(measured))
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(measured.copy(parallel = 2), maxParallel = 4) }
+        Experiments.validate(measured.copy(parallel = 2), maxParallel = 4)
         assertFailsWith<IllegalArgumentException> {
             Experiments.validate(measured.copy(configs = listOf(mapOf("backend" to "reference"))), maxParallel = 4)
         }

@@ -134,7 +134,7 @@ class PortableWorkerTest {
         assertEquals(tree, VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { error("verified input reused") })
     }
 
-    @Test fun `case provenance is recaptured after relocation and measurement launcher installation`(): Unit = service { socket ->
+    @Test fun `parallel measured cases retain separate captures and relocated launcher provenance`(): Unit = service { socket ->
         val bench = """#!/usr/bin/env bash
             set -eu
             cli="../klause-cli/build/install/klause-cli-jvm/bin/klause-cli"
@@ -144,25 +144,39 @@ class PortableWorkerTest {
               solve-one)
                 [[ "$(cat build/provenance.json)" == "${'$'}PWD:$(cksum "${'$'}cli")" ]] || exit 42
                 "${'$'}cli"
-                mkdir -p "${'$'}JOB_DIR/cases/0"
-                echo '{"feasible":true}' > "${'$'}JOB_DIR/cases/0/result.json";;
+                case_dir="$(dirname "${'$'}EIGNEX_LAB_PROFILE_DIR")"
+                echo '{"feasible":true}' > "${'$'}case_dir/result.json";;
             esac
         """.trimIndent()
         val (input, bytes) = bundle(mapOf(
             "klause-bench/build/install/klause-bench/bin/klause-bench" to bench,
             "klause-bench/build/provenance.json" to "stale preparation path and launcher",
-            CliMeasurements.CLI to "#!/usr/bin/env bash\nexit 0\n",
+            CliMeasurements.CLI to """#!/usr/bin/env bash
+                set -eu
+                index="$(basename "$(dirname "${'$'}EIGNEX_LAB_PROFILE_DIR")")"
+                touch "${'$'}JOB_DIR/started-${'$'}index"
+                deadline=${'$'}((SECONDS + 5))
+                until [[ -f "${'$'}JOB_DIR/started-0" && -f "${'$'}JOB_DIR/started-1" ]]; do
+                    (( SECONDS < deadline )) || exit 43
+                    sleep 0.02
+                done
+            """.trimIndent(),
         ))
-        val spec = ExperimentSpec("provenance", problems = listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.RESOURCES)
+        val spec = ExperimentSpec("provenance", problems = listOf(mapOf("suite" to "s")),
+            configs = listOf(mapOf("label" to "a"), mapOf("label" to "b")), parallel = 2, measurement = Measurement.RESOURCES)
         val arms = Experiments.arms(spec).map { PlannedArm(it, input.commit) }
-        val manifest = WorkManifest("provenance", "release", spec, arms, listOf(WorkCase(0, 0, Problem("s", "p"), null, 0, 10)), listOf(input), ResourceBudget(1000, 512))
+        val cases = (0..1).map { WorkCase(it, it, Problem("s", "p"), null, 0, 10) }
+        val manifest = WorkManifest("provenance", "release", spec, arms, cases, listOf(input), ResourceBudget(2000, 1024, 2))
         val directory = root.resolve("relocated-attempt")
         val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
             { ByteArrayInputStream(bytes) }, "/unused", input.os, input.arch)
-            .run(manifest, listOf(0), directory, "node", 1) { 80000 }
-        assertEquals(0, result.cases.single().exitCode)
-        assertContains(result.cases.single().record!!, "\"feasible\":true")
-        assertTrue(Files.walk(directory.resolve("cases/0")).use { paths -> paths.anyMatch { it.fileName.toString() == "resources.txt" } })
+            .run(manifest, listOf(0, 1), directory, "node", 1) { 80000 }
+        assertEquals(2, result.cases.size)
+        for (case in result.cases) {
+            assertEquals(0, case.exitCode)
+            assertContains(case.record!!, "\"feasible\":true")
+            assertTrue(Files.walk(directory.resolve("cases/${case.index}")).use { paths -> paths.anyMatch { it.fileName.toString() == "resources.txt" } })
+        }
     }
 
     @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->

@@ -62,8 +62,15 @@ class SubmissionOptionsTest {
         }
         val profile = spec("""{"name":"e","measurement":"jfr","profile":{"main":"com.eignex.Main"}}""")
         assertFailsWith<IllegalArgumentException> { Experiments.validate(profile, 4) }
-        val parallel = spec("""{"name":"e","problems":{"suite":"s"},"measurement":"resources","parallel":2}""")
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(parallel, 4) }
+    }
+
+    @Test
+    fun `all measurement modes accept parallel cases within the configured limit`() {
+        for (mode in Measurement.entries) {
+            val experiment = ExperimentSpec("e", problems = listOf(mapOf("suite" to "s")), measurement = mode, parallel = 4)
+            Experiments.validate(experiment, 4, 4)
+            assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment.copy(parallel = 5), 4, 4) }
+        }
     }
 
     @Test
@@ -79,13 +86,20 @@ class SubmissionOptionsTest {
         assertEquals(HttpStatusCode.Created, created.status)
         assertEquals(Measurement.RESOURCES, store.active().single().experiment!!.measurement)
         assertEquals(1, store.active().single().parallel)
+        val id = store.active().single().id
+        val parallel = client.post("/jobs/$id/parallel") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"parallel":4}""")
+        }
+        assertEquals(HttpStatusCode.OK, parallel.status)
+        assertEquals(4, store.job(id)!!.parallel)
         val updated = client.post("/schedules/$schedule") {
             contentType(ContentType.Application.Json)
-            setBody("""{"experiment":{"name":"e","description":"record compilations","problems":{"suite":"s"},"measurement":"compilation+log"}}""")
+            setBody("""{"experiment":{"name":"e","description":"record compilations","problems":{"suite":"s"},"measurement":"compilation+log","parallel":4}}""")
         }
         assertEquals(HttpStatusCode.OK, updated.status)
         assertEquals("jfr+log", store.schedules().single().experiment.compilationRecording)
-        assertEquals(1, store.schedules().single().experiment.parallel)
+        assertEquals(4, store.schedules().single().experiment.parallel)
         val rejected = client.post("/experiments") {
             contentType(ContentType.Application.Json)
             setBody("""{"name":"bad","measurement":"jfr","profileCli":false}""")

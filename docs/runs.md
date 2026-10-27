@@ -60,7 +60,8 @@ Detected lower instruction sets remain compatibility capabilities. For AVX2-only
 and exclude `simd:avx512`; for NEON-only placement, exclude `simd:sve` and `simd:sme` as well.
 
 `measurement` modes are `none` (default), `resources`, `jfr`, `compilation`, and `compilation+log`.
-Recording modes default to serial execution and require `parallel: 1`.
+Recording modes default to serial execution. Set `parallel` to run measured cases concurrently within the normal
+CPU and memory budgets; shared-host contention can affect timings.
 
 Set `param.source-validation=true` in `base` for external witness checking. A checked witness does not certify
 optimality. Only an invalid verdict withdraws the solver's claim; unsupported or failed checks leave it unchecked.

@@ -1624,10 +1624,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
     @Synchronized
     fun setParallel(jobId: Long, parallel: Int): Boolean {
-        val spec = job(jobId)?.experiment
-        require(spec?.measuresCli != true || parallel == 1) {
-            "measurement requires parallel=1"
-        }
         return update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
     }
 
