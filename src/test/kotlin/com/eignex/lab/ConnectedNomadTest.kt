@@ -107,9 +107,9 @@ class ConnectedNomadTest {
             assertTrue(store.job(job)!!.commands.all { it.cmd.contains("worktrees/") })
             assertEquals(1, store.execution.accepted(job).count { it.second.preparation != null })
             assertEquals(2, store.execution.accepted(job).count { it.second.preparation == null })
-            assertTrue(store.execution.sessions(job).filter { it.executionClass == "solve" }.any {
+            assertTrue(store.execution.sessions(job).filter { it.executionClass == "solve" }.none {
                 store.execution.submission(it.id).contains("node.unique.id")
-            }, "a second session excludes the host whose experiment parallel slots are reserved")
+            }, "workers share the node within their CPU and memory requests")
             assertTrue(store.caseRecordText(job, 0)!!.contains("preparedCorpus"))
             assertEquals("prepared-model", Files.readString(root.resolve("jobs/$job/nomad/prepared-corpus/model.mps")).trim())
             assertTrue(store.casePlan(job).all { it.problem.model == "lab-corpus/model.mps" })
