@@ -44,6 +44,8 @@ Each pool starts at zero and has its own immutable architecture-compatible AMI a
 group, renewable lease, and independent expiry. Existing pools can remain in their existing state; the fleet
 module manages only additional pools and adds their exact adapter/scaler policies to the existing control roles.
 The shared collector's vCPU budget applies across all pools, rather than separately to each architecture.
+Fleet scaler permissions combine the exact pool group ARNs in one managed policy, preserving each action and
+condition while avoiding AWS's aggregate inline-policy size limit as profiles and sizes are added.
 
 For each catalogue entry, inherit its source pool's pinned AMI, worker image, architecture and required features;
 set the smaller shape, node class, CPU and memory values explicitly. Add the pool to capacity settings, adapter
@@ -203,3 +205,8 @@ python3 deploy/infra/aws/audit_inputs.py --cli-credentials \
 The end date is exclusive. `--cli-credentials` uses the AWS CLI credential provider, including `aws login`,
 in memory. Billing is account-wide and delayed; empty recent days or a window with no workers cannot prove
 steady-state cache savings. Inspect usage types and estimated-day flags before attributing costs to the lab.
+
+Small-node bootstrap checks use a separate OS-visible memory baseline (`bootstrap_memory_mib`), because baked
+kernels can reserve a significant fixed amount of an 8-GiB machine’s RAM. Nominal `memory_mib` still describes
+the homogeneous cloud shape. Never assume that all of it is schedulable: measure Nomad’s node memory minus its
+host reserve and set the capacity pool reserve and queue memory ceiling to fit that measured value.

@@ -13,7 +13,7 @@ locals {
   node_config = {
     provider     = "aws"
     pool         = var.pool_id, nodeClass = var.node_class, datacenter = var.datacenter, servers = var.nomad_servers,
-    workerImage  = var.worker_image, vcpus = var.vcpus, memoryMiB = var.memory_mib,
+    workerImage  = var.worker_image, vcpus = var.vcpus, memoryMiB = coalesce(var.bootstrap_memory_mib, var.memory_mib),
     architecture = var.architecture, minimumFeatures = var.minimum_features, lifetimeSeconds = 21600
   }
 }
@@ -21,6 +21,12 @@ check "finite_capacity" {
   assert {
     condition     = var.vcpus >= 1 && var.memory_mib > 1024 && var.max_nodes * var.vcpus <= var.max_vcpus
     error_message = "The homogeneous pool must fit its explicit vCPU limit."
+  }
+}
+check "bootstrap_memory" {
+  assert {
+    condition     = coalesce(var.bootstrap_memory_mib, var.memory_mib) > 1024 && coalesce(var.bootstrap_memory_mib, var.memory_mib) <= var.memory_mib
+    error_message = "The OS-visible bootstrap memory baseline must fit the nominal instance RAM."
   }
 }
 check "separate_credentials" {
