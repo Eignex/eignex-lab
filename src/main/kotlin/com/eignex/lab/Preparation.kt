@@ -33,6 +33,7 @@ internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = 
     return environment.filterKeys {
         it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL", "KLAUSE_BENCH_CORPUS_MIRROR", "KLAUSE_BENCH_CORPUS_MIRROR_WRITE") || mac && it == "DOCKER_HOST"
     } + (cache?.let { mapOf("XDG_CACHE_HOME" to it) } ?: emptyMap()) +
+        (if (environment["LAB_SHARED_INPUT_ROOT"] != null) mapOf("KLAUSE_BENCH_CORPUS_KEEP_PACKED" to "true") else emptyMap()) +
         mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
 }
 
@@ -77,7 +78,8 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
         val json = Json { ignoreUnknownKeys = true }
         fun select(selection: Map<String, String>, name: String): List<String> {
             val output = directory.resolve("$name.jsonl")
-            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary -Dklause.bench.corpus.shared=true"
+            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary" +
+                if (shared == null) " -Dklause.bench.corpus.shared=true" else ""
             run(primary, "cd ${quote("$primary/klause-bench")} && JAVA_OPTS=${quote(options)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
                 "./build/install/klause-bench/bin/klause-bench select ${Experiments.selectArgs(selection)}", output)
             return Files.readAllLines(output).filter { it.startsWith("{") }

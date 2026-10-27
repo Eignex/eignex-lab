@@ -305,7 +305,23 @@ portable artifacts. The consumer owns fetching, locking and publishing complete 
 keeps the user's normal cache home; Linux workers use `XDG_CACHE_HOME` under `/lab-cache/consumer` unless explicitly
 configured. This reuses collections between allocations on a node; Spot termination still discards that node's
 local cache. Older pinned consumers that do not recognize the shared-cache property keep their previous behavior.
-The retired executor's S3 corpus-pack synchronization is not provided by this node-local cache.
+
+For direct regional input reuse, configure `LAB_SHARED_INPUT_ROOT` and `LAB_SHARED_INPUT_URL` on preparation,
+solve workers and the coordinator. The root is a persistent local input cache; the HTTPS URL is the regional
+object store. Preparation publishes only selected inputs that are missing remotely and returns paths and SHA-256
+checksums. Existing `corpus/` objects, including zstd objects, are reused; new bytes use immutable `input-blobs/`
+content hashes. Corpus data is absent from worker uploads and coordinator artifact projection. A cold solve node
+reads only its required files directly from the store, verifies them and reuses the local bytes. Immutable views
+use hard links, retaining independent versions without per-job file copies. Native checking reuses matching local
+files before considering a remote read. A genuinely missing native input requires one remote read.
+
+Linux roots normally use `/lab-cache/consumer/klause-bench/corpus`, with
+`KLAUSE_BENCH_CORPUS_MIRROR` pointing at the store's `corpus-packs/` prefix. The consumer restores whole collections
+only on a preparation cache miss and owns its corpus formats and source downloads. Native roots should point at
+the populated corpus cache and leave the mirror unset. The optional loopback `LAB_SHARED_INPUT_SIGNER` supplies
+short-lived HTTP capabilities to native workers; no provider credentials enter manifests or consumer processes.
+The portable input transport only uses HTTPS, metadata probes and conditional PUT. See the provider setup in
+`deploy/infra/README.md`. Saved recipes and accepted preparations retain their original inputs and worker release.
 
 A failed source build reports its bounded diagnostic tail through its authenticated attempt. The coordinator
 fences all sibling sessions and records a permanent `source-build` failure, rather than repeatedly treating a

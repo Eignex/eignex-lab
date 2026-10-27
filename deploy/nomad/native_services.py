@@ -68,6 +68,10 @@ def render(settings):
         "process-supervisor": [str(python), str(pinned), "--socket", str(socket), "--local-lock", str(local_lock)],
         "nomad-coordinator": [str(launcher), "nomad-coordinator", str(absolute(settings["coordinatorConfig"]))],
     }
+    if settings.get("inputSigner"):
+        signer = settings["inputSigner"]
+        commands["input-signer"] = [str(absolute(signer["python"])), str(absolute(signer["script"])),
+                                    "--config", str(absolute(signer["config"]))]
     user = settings.get("user", pwd.getpwuid(os.getuid()).pw_name)
     if user == "root":
         raise ValueError("native execution must run as the lab user, never root")

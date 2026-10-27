@@ -10,7 +10,7 @@ class SharedInputsTest {
         val gets = mutableListOf<String>()
         val puts = mutableListOf<String>()
         override fun matches(key: String, file: InputFile, md5: String) = objects[key]?.let {
-            it.size.toLong() == file.bytes && ExecutionStore.digest(String(it)) == file.sha256
+            it.size.toLong() == file.bytes && java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() == file.sha256
         } ?: false
         override fun put(key: String, source: Path, sha: String) { puts += key; objects[key] = Files.readAllBytes(source) }
         override fun get(key: String, destination: Path) { gets += key; Files.write(destination, objects.getValue(key)) }
@@ -52,6 +52,28 @@ class SharedInputsTest {
         assertEquals(first, cache.publish(listOf("model")))
         assertEquals("input-blobs/${ExecutionStore.digest("new")}", first.single().key)
         assertEquals(listOf(first.single().key), transport.puts)
+    }
+
+    @Test fun `an existing compressed object is reused and decoded once by a replacement node`() {
+        val root = Files.createTempDirectory("packed-inputs"); val plain = root.resolve("model.opb")
+        Files.writeString(plain, "model")
+        val packed = root.resolve("model.opb.zst")
+        com.github.luben.zstd.ZstdOutputStreamNoFinalizer(Files.newOutputStream(packed)).use { it.write("model".toByteArray()) }
+        val transport = Transport().also { it.objects["corpus/model.opb.zst"] = Files.readAllBytes(packed) }
+        val input = SharedInputs(root, transport).publish(listOf("model.opb")).single()
+        assertEquals("zstd", input.encoding)
+        assertEquals("corpus/model.opb.zst", input.key)
+        assertEquals(emptyList(), transport.puts)
+        val nativeRoot = Files.createTempDirectory("native-packed-inputs")
+        Files.write(nativeRoot.resolve("model.opb.zst"), Files.readAllBytes(packed))
+        val nativeView = SharedInputs(nativeRoot, transport).resolve(listOf(input))
+        assertEquals("model", Files.readString(nativeView.resolve("model.opb")))
+        assertEquals(emptyList(), transport.gets)
+        val replacement = SharedInputs(Files.createTempDirectory("replacement-inputs"), transport)
+        val view = replacement.resolve(listOf(input))
+        assertEquals("model", Files.readString(view.resolve("model.opb")))
+        assertEquals(view, replacement.resolve(listOf(input)))
+        assertEquals(listOf(input.key), transport.gets)
     }
 
     @Test fun `corrupt remote bytes are never exposed to a job`() {

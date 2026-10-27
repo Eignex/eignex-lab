@@ -21,6 +21,7 @@ dependencies {
     // The MPS reader the SCIP and HiGHS references judge their claims against: the parse klause itself solves.
     implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
+    implementation("com.github.luben:zstd-jni:1.5.7-24")
     // The official XCSP3 solution checker (MIT), which the lab runs over Klause's XCSP3 witnesses ([com.eignex.lab.checker]).
     implementation(project(":xcsp3-tools"))
     implementation("ch.qos.logback:logback-classic:1.5.18")

@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import com.github.luben.zstd.ZstdInputStreamNoFinalizer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.net.URI
@@ -16,8 +17,12 @@ import java.util.Base64
 
 /** Immutable input bytes live in a regional store; jobs carry only paths and checksums. */
 @Serializable
-data class SharedInput(val file: InputFile, val key: String) {
-    init { safeRelative(key); require(!file.executable) }
+data class SharedInput(val file: InputFile, val key: String, val encoding: String = "identity",
+                       val storedSha256: String = file.sha256, val storedBytes: Long = file.bytes) {
+    init {
+        safeRelative(key); require(!file.executable && encoding in setOf("identity", "zstd"))
+        require(SHA256.matches(storedSha256) && storedBytes in 0..32L * 1024 * 1024 * 1024)
+    }
 }
 
 internal interface InputTransport {
@@ -39,15 +44,18 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
             checkActive()
             require(Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical))
             val file = InputFile(root.relativize(path).toString().replace('\\', '/'), hashFile(path), Files.size(path))
-            val md5 = Files.newInputStream(path).use { stream ->
+            val packed = path.resolveSibling(path.fileName.toString() + ".zst")
+            val source = if (Files.isRegularFile(packed, NOFOLLOW_LINKS) && matchesPacked(packed, file)) packed else path
+            val stored = if (source == path) file else file.copy(sha256 = hashFile(source), bytes = Files.size(source))
+            val md5 = Files.newInputStream(source).use { stream ->
                 val digest = MessageDigest.getInstance("MD5"); val buffer = ByteArray(64 * 1024)
                 while (true) { val count = stream.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
                 digest.digest().hex()
             }
-            val original = "$existingPrefix/${file.path}"
-            val key = if (transport.matches(original, file, md5)) original else "input-blobs/${file.sha256}"
-            if (key != original && !transport.matches(key, file, md5)) transport.put(key, path, file.sha256)
-            SharedInput(file, key)
+            val original = "$existingPrefix/${file.path}" + if (source == path) "" else ".zst"
+            val key = if (transport.matches(original, stored, md5)) original else "input-blobs/${stored.sha256}"
+            if (key != original && !transport.matches(key, stored, md5)) transport.put(key, source, stored.sha256)
+            SharedInput(file, key, if (source == path) "identity" else "zstd", stored.sha256, stored.bytes)
         }
     }
 
@@ -74,7 +82,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                         if (!valid(blob, file)) {
                             val staging = Files.createTempFile(blob.parent, ".input-", ".partial")
                             try {
-                                transport.get(input.key, staging)
+                                fetch(input, staging)
                                 check(valid(staging, file)) { "shared input checksum mismatch" }
                                 checkActive()
                                 Files.move(staging, blob, ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
@@ -91,6 +99,40 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     }
 
     private fun Path.toRealPathOrNull(): Path? = runCatching { toRealPath() }.getOrNull()
+
+    private fun matchesPacked(path: Path, file: InputFile): Boolean = runCatching {
+        ZstdInputStreamNoFinalizer(Files.newInputStream(path)).use { input ->
+            val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024); var bytes = 0L
+            while (true) {
+                val count = input.read(buffer); if (count < 0) break
+                bytes += count; require(bytes <= file.bytes); digest.update(buffer, 0, count)
+            }
+            bytes == file.bytes && digest.digest().hex() == file.sha256
+        }
+    }.getOrDefault(false)
+
+    private fun fetch(input: SharedInput, destination: Path) {
+        val packed = Files.createTempFile(destination.parent, ".transfer-", ".partial")
+        try {
+            val local = root.resolve(safeRelative(input.file.path + ".zst"))
+            val source = if (input.encoding == "zstd" && local.toRealPathOrNull()?.startsWith(root.toRealPath()) == true &&
+                valid(local, input.file.copy(sha256 = input.storedSha256, bytes = input.storedBytes))) local else {
+                transport.get(input.key, packed)
+                packed
+            }
+            check(Files.size(source) == input.storedBytes && hashFile(source) == input.storedSha256) { "stored input checksum mismatch" }
+            if (input.encoding == "identity") Files.move(source, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            else ZstdInputStreamNoFinalizer(Files.newInputStream(source)).use { stream ->
+                Files.newOutputStream(destination).use { output ->
+                    val buffer = ByteArray(64 * 1024); var bytes = 0L
+                    while (true) {
+                        val count = stream.read(buffer); if (count < 0) break
+                        bytes += count; check(bytes <= input.file.bytes); output.write(buffer, 0, count)
+                    }
+                }
+            }
+        } finally { Files.deleteIfExists(packed) }
+    }
 
     private fun valid(path: Path, file: InputFile) = Files.isRegularFile(path, NOFOLLOW_LINKS) && Files.size(path) == file.bytes && hashFile(path) == file.sha256
 
@@ -135,8 +177,8 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
     }
     override fun put(key: String, source: Path, sha: String) {
         val digest = sha.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        val request = request("PUT", key, sha).header("If-None-Match", "*").header("x-amz-meta-sha256", sha)
-            .header("x-amz-checksum-sha256", Base64.getEncoder().encodeToString(digest)).PUT(HttpRequest.BodyPublishers.ofFile(source)).build()
+        val request = request("PUT", key, sha).setHeader("If-None-Match", "*").setHeader("x-amz-meta-sha256", sha)
+            .setHeader("x-amz-checksum-sha256", Base64.getEncoder().encodeToString(digest)).PUT(HttpRequest.BodyPublishers.ofFile(source)).build()
         val response = client.send(request, HttpResponse.BodyHandlers.discarding())
         check(response.statusCode() in setOf(200, 201, 204, 412)) { "shared input publication unavailable (${response.statusCode()})" }
     }

@@ -57,7 +57,7 @@ data class WorkManifest(
         require(inputCorpus == null || inputCorpus.repository == experiment.repository)
         require(inputCorpus == null || sharedInputs.isEmpty())
         require(sharedInputs.map { it.file.path }.distinct().size == sharedInputs.size)
-        require(sharedInputs.sumOf { it.file.bytes } in 0..32L * 1024 * 1024 * 1024)
+        require(sharedInputs.fold(0L) { total, input -> Math.addExact(total, input.file.bytes) } in 0..32L * 1024 * 1024 * 1024)
         cases.forEach { case -> (listOfNotNull(case.problem.model, case.problem.data) + case.problem.includeDirs).forEach(::safeRelative) }
         require(bundles.all { it.repository == experiment.repository })
         require(arms.all { arm -> bundles.any { it.commit == arm.sha } })
