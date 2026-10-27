@@ -9,7 +9,8 @@
     ],
     "nodeClass": "linux-amd64-small-spot",
     "vcpus": 2,
-    "memoryMiB": 8192
+    "memoryMiB": 8192,
+    "bootstrapMemoryMiB": 6144
   },
   "avx2-small-spot": {
     "sourcePool": "avx2-spot",
@@ -17,7 +18,8 @@
     "spotInstanceTypes": [],
     "nodeClass": "linux-amd64-avx2-small-spot",
     "vcpus": 4,
-    "memoryMiB": 8192
+    "memoryMiB": 8192,
+    "bootstrapMemoryMiB": 6144
   },
   "neon-small-spot": {
     "sourcePool": "neon-spot",
@@ -25,7 +27,8 @@
     "spotInstanceTypes": [],
     "nodeClass": "linux-arm64-neon-small-spot",
     "vcpus": 2,
-    "memoryMiB": 8192
+    "memoryMiB": 8192,
+    "bootstrapMemoryMiB": 6144
   },
   "sve-small-spot": {
     "sourcePool": "sve-spot",
@@ -33,7 +36,8 @@
     "spotInstanceTypes": [],
     "nodeClass": "linux-arm64-sve-small-spot",
     "vcpus": 2,
-    "memoryMiB": 8192
+    "memoryMiB": 8192,
+    "bootstrapMemoryMiB": 6144
   },
   "sve2-small-spot": {
     "sourcePool": "sve2-spot",
@@ -41,6 +45,7 @@
     "spotInstanceTypes": [],
     "nodeClass": "linux-arm64-sve2-small-spot",
     "vcpus": 2,
-    "memoryMiB": 8192
+    "memoryMiB": 8192,
+    "bootstrapMemoryMiB": 6144
   }
 }

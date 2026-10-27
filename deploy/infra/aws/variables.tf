@@ -30,6 +30,11 @@ variable "spot_instance_types" {
 }
 variable "vcpus" { type = number }
 variable "memory_mib" { type = number }
+variable "bootstrap_memory_mib" {
+  type        = number
+  default     = null
+  description = "OS-visible memory baseline for a baked image; nominal instance RAM remains memory_mib."
+}
 variable "max_vcpus" { type = number }
 variable "max_nodes" {
   type = number

@@ -205,3 +205,8 @@ python3 deploy/infra/aws/audit_inputs.py --cli-credentials \
 The end date is exclusive. `--cli-credentials` uses the AWS CLI credential provider, including `aws login`,
 in memory. Billing is account-wide and delayed; empty recent days or a window with no workers cannot prove
 steady-state cache savings. Inspect usage types and estimated-day flags before attributing costs to the lab.
+
+Small-node bootstrap checks use a separate OS-visible memory baseline (`bootstrap_memory_mib`), because baked
+kernels can reserve a significant fixed amount of an 8-GiB machine’s RAM. Nominal `memory_mib` still describes
+the homogeneous cloud shape. Never assume that all of it is schedulable: measure Nomad’s node memory minus its
+host reserve and set the capacity pool reserve and queue memory ceiling to fit that measured value.
