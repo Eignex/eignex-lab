@@ -15,6 +15,69 @@ import java.util.Base64
 import kotlin.test.*
 
 class NomadBackendTest {
+    private fun cpuNode(id: String, mhz: Int, nodeClass: String = "fixture", cores: Int = 4) = buildJsonObject {
+        put("ID", id); put("NodeClass", nodeClass); put("Status", "ready"); put("SchedulingEligibility", "eligible")
+        putJsonObject("Attributes") { put("kernel.name", "linux"); put("cpu.usablecompute", mhz.toString()); put("cpu.numcores", cores.toString()) }
+        putJsonObject("NodeResources") { putJsonObject("Memory") { put("MemoryMB", 8192) } }
+    }
+
+    @Test fun `pending frozen work is recalibrated for replacement CPU frequency and completes`() {
+        val id = setup(1)
+        val previous = session
+        val frozen = manifest
+        val original = store.execution.submission(previous.id)
+        control.allocations.clear()
+        control.nodeInventory["replacement-node"] = cpuNode("replacement-node", 6000)
+
+        backend().reconcile()
+        backend(Store(file)).reconcile()
+
+        val replacement = store.execution.sessions(id).single { it.desired == "run" }
+        val payload = control.jobs.getValue(replacement.nomadJobId)
+        val task = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
+        assertEquals(3000, task.getValue("Resources").jsonObject.getValue("CPU").jsonPrimitive.int)
+        assertTrue(payload.getValue("Constraints").jsonArray.any { it.jsonObject["LTarget"]?.jsonPrimitive?.content == "${'$'}{attr.cpu.usablecompute}" &&
+            it.jsonObject["RTarget"]?.jsonPrimitive?.content == "6000" })
+        assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+        assertEquals(original, store.execution.submission(previous.id))
+        assertEquals(0, store.execution.failureCount(id))
+        assertFalse(control.jobs.containsKey(previous.nomadJobId))
+
+        useReplacement(id, "replacement-allocation", "replacement-node")
+        val claim = backend().claim(session.id, token, "replacement-allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") }))
+        backend().reconcile()
+        assertEquals(Status.DONE, store.job(id)!!.status)
+        assertEquals(2, store.job(id)!!.done)
+    }
+
+    @Test fun `a busy original CPU shape does not strand work beside a free compatible shape`() {
+        control.nodeInventory["busy"] = cpuNode("busy", 4000)
+        control.nodeInventory["free"] = cpuNode("free", 6000)
+        control.nodeTasks["busy"] = listOf(buildJsonObject {
+            put("ClientStatus", "running")
+            putJsonObject("AllocatedResources") { putJsonObject("Tasks") { putJsonObject("worker") {
+                putJsonObject("Cpu") { put("CpuShares", 4000) }; putJsonObject("Memory") { put("MemoryMB", 1024) }
+            } } }
+        })
+        setup(1)
+        val payload = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+        assertTrue(payload.getValue("Constraints").jsonArray.any { it.jsonObject["LTarget"]?.jsonPrimitive?.content == "${'$'}{attr.cpu.usablecompute}" &&
+            it.jsonObject["RTarget"]?.jsonPrimitive?.content == "6000" })
+        assertEquals(ResourceBudget(2000, 1024, 2), store.execution.manifest(session.id).budget)
+    }
+
+    @Test fun `CPU recalibration leaves an already bound allocation untouched`() {
+        val id = setup(1); register()
+        val original = store.execution.submission(session.id)
+        control.nodeInventory["replacement"] = cpuNode("replacement", 6000)
+        backend().reconcile()
+        assertEquals(listOf(session.id), store.execution.sessions(id).filter { it.desired == "run" }.map { it.id })
+        assertEquals(original, store.execution.submission(session.id))
+        assertNotNull(backend().claim(session.id, token, "allocation"))
+    }
+
     @Test fun `registration omits new optional fields for frozen older workers`() = testApplication {
         setup(preparation = true)
         application { workerApi(store, backend(), artifacts) { true } }
@@ -40,6 +103,11 @@ class NomadBackendTest {
     private val control = object : NomadControl {
         override var namespace = "default"
         val jobs = mutableMapOf<String, JsonObject>(); val allocations = mutableMapOf<String, NomadAllocation>()
+        val nodeInventory = mutableMapOf<String, JsonObject>()
+        val nodeTasks = mutableMapOf<String, List<JsonObject>>()
+        override fun nodes() = nodeInventory.values.toList()
+        override fun node(id: String) = nodeInventory[id]
+        override fun nodeAllocations(id: String) = nodeTasks[id].orEmpty()
         var submissions = 0; var failAfterSubmit = false
         override fun job(id: String) = jobs[id]
         override fun submit(job: JsonObject) { submissions++; jobs[job.getValue("ID").jsonPrimitive.content] = job; if (failAfterSubmit) { failAfterSubmit = false; error("lost acknowledgement") } }

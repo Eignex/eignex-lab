@@ -97,8 +97,12 @@ exactly tagged lab workers. Detection is within 35 minutes plus provider executi
 host watchdog is a secondary bound; it does not replace expiry because an ASG replaces independently stopped hosts.
 
 The image bootstrap checks the actual vCPU count, available memory, architecture and common SIMD flags before
-enabling the client. Calibrate `attr.cpu.usablecompute` for each homogeneous pool and use that exact value in
-session templates; conversion uses it to preserve Docker's actual hard vCPU ceiling. The default host CPU reserve
+enabling the client. Templates provide an initial `attr.cpu.usablecompute` calibration. The coordinator reads
+ready, eligible clients and recalibrates the Nomad CPU request and exact frequency constraint together for each
+compatible shape. Architecture, vCPU count and memory remain pool requirements; GHz can vary among Spot choices.
+Blocked, unallocated sessions can be replaced with another shape's calibration without changing frozen inputs,
+worker releases or vCPU budgets. Bound allocations remain untouched. Conversion preserves Docker's actual hard
+vCPU ceiling. The default host CPU reserve
 is 2000 MHz and memory reserve is 1024 MiB; keep the policy's additional resource reserve consistent. Changing image,
 instance type, reserve, architecture or toolchain creates a new pool calibration and execution provenance.
 

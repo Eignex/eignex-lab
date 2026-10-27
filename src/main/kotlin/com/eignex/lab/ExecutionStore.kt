@@ -287,6 +287,15 @@ class ExecutionStore internal constructor(private val store: Store) {
         }
     }
 
+    fun loseUnallocatedSession(id: String, reason: String, at: Long = now()): Boolean = store.executionTransaction { db ->
+        val s = db.session(id) ?: return@executionTransaction false
+        if (s.desired != "run" || s.allocation != null) return@executionTransaction false
+        db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason.take(1024), id)
+        db.stopIntent(s)
+        db.event(s.jobId, id, "lost:${reason.take(1024)}", at)
+        true
+    }
+
     fun expire(at: Long = now()) = store.executionTransaction { db ->
         db.sqlRows("SELECT DISTINCT job_id FROM iteration_attempts WHERE state IN $ACTIVE_ATTEMPTS AND lease_until <= ?", at) { it.getLong(1) }
             .forEach { db.expire(it, at) }

@@ -6,6 +6,14 @@ import java.util.concurrent.Executors
 import kotlin.test.*
 
 class ExecutionStoreTest {
+    @Test fun `registration winning a placement replacement race preserves ownership`() {
+        val id = job()
+        bind(id)
+        assertFalse(store.execution.loseUnallocatedSession("s", "placement-cpu-capacity", 1001))
+        assertEquals("run", store.execution.session("s")!!.desired)
+        assertNotNull(store.execution.claim("s", token, "alloc-s", 1002))
+    }
+
     private val file = Files.createTempDirectory("execution-state").resolve("lab.db")
     private val store = Store(file)
     private val token = ExecutionStore.token()
