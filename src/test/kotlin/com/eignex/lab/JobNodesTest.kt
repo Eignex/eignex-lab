@@ -57,7 +57,7 @@ class JobNodesTest {
         store.execution.loseSession("lost", "infrastructure:spot")
         application { api(config, store, host) }
         for (path in listOf("/", "/jobs/$id")) {
-            val page = client.get(path).bodyAsText()
+            val page = client.get(path) { accept(ContentType.Text.Html) }.bodyAsText()
             assertContains(page, "class=\"QUEUED\">WAITING</span>")
             assertContains(page, "waiting for compatible capacity")
             assertFalse(page.contains("lost-node"))
