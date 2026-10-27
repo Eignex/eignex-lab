@@ -1,6 +1,7 @@
 """Resolve staged GitHub Release assets from a clean, unauthenticated Gradle consumer."""
 
 import functools
+import hashlib
 import http.server
 import json
 import os
@@ -19,6 +20,10 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def verify(assets, version, gradle):
+    checksums = dict(line.split("  ", 1)[::-1] for line in (assets / "SHA256SUMS").read_text().splitlines())
+    assert set(checksums) == {file.name for file in assets.iterdir() if file.name != "SHA256SUMS"}
+    for name, checksum in checksums.items():
+        assert hashlib.sha256((assets / name).read_bytes()).hexdigest() == checksum, f"Checksum mismatch: {name}"
     metadata = json.loads((assets / f"lab-bench-{version}.module").read_text())
     for variant in metadata["variants"]:
         for dependency in variant.get("dependencies", []):

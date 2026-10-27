@@ -1,7 +1,25 @@
 plugins {
-    id("com.eignex.jvm") version "1.3.5"
+    id("com.eignex.jvm")
+    id("com.eignex.publish.github") apply false
     kotlin("plugin.serialization") version "2.4.21"
     application
+}
+
+// KBuild's platform uses the same anonymous release layout as its plugins.
+allprojects {
+    repositories {
+        ivy {
+            url = uri("https://github.com/Eignex/kbuild/releases/download")
+            patternLayout { artifact("v[revision]/[artifact]-[revision](-[classifier]).[ext]") }
+            metadataSources { gradleMetadata() }
+            content { includeModule("com.eignex", "kbuild-platform") }
+        }
+    }
+}
+
+eignexBuild {
+    jvmToolchain.set(25)
+    jvmTarget.set(25)
 }
 
 repositories {

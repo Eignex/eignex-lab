@@ -1,12 +1,10 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.gradle.api.publish.maven.tasks.GenerateMavenPom
-import org.gradle.api.publish.tasks.GenerateModuleMetadata
 
 plugins {
     kotlin("jvm")
     kotlin("plugin.serialization")
     `java-library`
-    `maven-publish`
+    id("com.eignex.publish.github")
 }
 
 group = "com.eignex"
@@ -56,18 +54,17 @@ publishing {
     }
 }
 
-tasks.register<Sync>("releaseAssets") {
+githubPublish {
+    repository.set("Eignex/eignex-lab")
+    publicationNames.set(listOf("sdk"))
+    releaseTag.set("lab-bench-v$version")
+    assetsDirectory.set(layout.buildDirectory.dir("release-assets"))
+}
+
+tasks.register("releaseAssets") {
     group = "distribution"
-    description = "Stage the SDK and Gradle metadata as flat GitHub Release assets."
-    from(tasks.jar)
-    from(tasks.named<Jar>("sourcesJar"))
-    from(tasks.named<GenerateModuleMetadata>("generateMetadataFileForSdkPublication").flatMap { it.outputFile }) {
-        rename { "lab-bench-$version.module" }
-    }
-    from(tasks.named<GenerateMavenPom>("generatePomFileForSdkPublication").map { it.destination }) {
-        rename { "lab-bench-$version.pom" }
-    }
-    into(layout.buildDirectory.dir("release-assets"))
+    description = "Stage SDK release assets and checksums using KBuild."
+    dependsOn("githubReleaseAssets")
 }
 
 tasks.register<Exec>("verifyRelease") {

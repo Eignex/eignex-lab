@@ -223,7 +223,9 @@ Stage the unpublished SDK using the same metadata and URL layout as a public rel
 The three consumer bench modules accept
 `-PlabBenchRepository=file:///absolute/eignex-lab/lab-bench/build/adapter-repository`
 and `-PlabBenchVersion=0.1.0`. Build the tasks declared in each consumer's committed manifest with those properties.
-Their default repository URL resolves public GitHub Release assets anonymously after publication.
+Their default repository URL resolves public GitHub Release assets anonymously after publication. When restaging
+the same unpublished version, refresh consumer dependencies with `--refresh-dependencies` or select a fresh
+development version so Gradle cannot reuse an earlier SDK artifact.
 
 Arrange the consumer checkouts as `<root>/klause`, `<root>/koblas` and `<root>/kumulant`, then run:
 
@@ -247,12 +249,16 @@ A local run does not validate live Nomad scheduling, remote transport or other h
 ./gradlew :lab-bench:check :lab-bench:verifyRelease -PbenchVersion=0.1.0
 ```
 
-`releaseAssets` stages the JAR, sources JAR, POM, and Gradle Module Metadata under `lab-bench/build/release-assets/`.
+KBuild 1.3.6's `com.eignex.publish.github` helper stages the JAR, sources JAR, POM, Gradle Module Metadata and
+`SHA256SUMS` under `lab-bench/build/release-assets/`. `releaseAssets` is an alias for `githubReleaseAssets`.
+The helper is applied independently of KBuild's library conventions so the SDK has no KBuild platform dependency.
 The SDK version is independent of the service version; local builds default to `0.1.0-SNAPSHOT`.
 `verifyRelease` serves these files using the exact release URL layout and compiles/runs an independent consumer
 with a fresh Gradle user home and no credential environment variables. It also checks the dependency boundary
-and Java 17 bytecode. The consumer downloads ordinary Kotlin dependencies anonymously from Maven Central.
+and Java 17 bytecode, and verifies every staged checksum. The consumer downloads ordinary Kotlin dependencies anonymously from Maven Central.
 
 The `release-bench` workflow validates and publishes assets for tags named `lab-bench-v<version>`, such as
-`lab-bench-v0.1.0`. Only publication uses GitHub credentials. Published versions must keep their asset names and
+`lab-bench-v0.1.0`. The workflow uploads KBuild's staged assets with `gh release create --latest=false` so an SDK
+release does not replace the service's latest-release channel; KBuild's upload task does not expose that flag.
+Only publication uses GitHub credentials. Published versions must keep their asset names and
 contents unchanged; consumers pin an exact SDK version. This change does not publish a release by itself.
