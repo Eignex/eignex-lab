@@ -49,6 +49,16 @@ class CapacityPolicyTest {
         val plan = CapacityPolicy.evaluate(settings, listOf(node), listOf(demand("a"), demand("b")))
         assertEquals(1, plan.desired["general"]); assertTrue(plan.placements.all { !it.ready && it.node == "booting" })
     }
+    @Test fun `unavailable nodes cannot satisfy demand and replacements still respect physical vCPU quota`() {
+        val node = CapacityNode("unavailable", pool.id, CapacityNodeState.UNAVAILABLE)
+        val plan = CapacityPolicy.evaluate(settings, listOf(node), listOf(demand("replacement")))
+        assertEquals(2, plan.desired[pool.id])
+        assertTrue(plan.placements.none { it.node == node.id })
+        val limited = CapacityPolicy.evaluate(settings.copy(maxVcpus = pool.vcpus), listOf(node), listOf(demand("replacement")))
+        assertEquals(1, limited.desired[pool.id])
+        assertTrue(limited.placements.isEmpty())
+        assertEquals("capacity or vCPU limit", limited.waiting.single().reason)
+    }
     @Test fun `spot requests never silently enable on demand even when it is warm`() {
         val expensive = pool.copy(id = "explicit", nodeClass = "explicit", market = CapacityMarket.ON_DEMAND)
         val config = settings.copy(pools = listOf(expensive))

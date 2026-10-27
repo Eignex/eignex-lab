@@ -166,6 +166,11 @@ allowance. Nomad task restarts remain disabled and its reschedule/disconnect pol
 Ordinary solver exits/timeouts remain case outcomes. Linux workers refuse missing or mismatched runtime hard limits;
 native workers report advisory enforcement. Resource counters are retained under each job's `nomad/` files.
 
+The queue distinguishes preparation, waiting for compatible capacity, execution and final result checks without
+rewriting the experiment's durable state. Registered clients that are down or ineligible are unavailable, and draining
+clients cannot take new placements. These instances still consume the physical vCPU quota until the provider removes
+them; replacements may grow only within that quota. Provider launch failures remain visible while Spot requests retry.
+
 `python3 deploy/nomad/connected_probe.py` builds the worker, uses a temporary loopback OCI registry to obtain a real
 image digest, and runs the end-to-end acceptance test against a separate TLS/ACL Nomad sandbox. It exercises a paired
 iteration, an API/coordinator restart, forced allocation loss, generation replacement, checksum ingestion and completion.

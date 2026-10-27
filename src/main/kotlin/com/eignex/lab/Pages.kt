@@ -32,7 +32,7 @@ internal fun indexPage(
     val front = before == null && name == null
     append(head("eignex lab", live = before == null))
     append("<header><h1>Queue</h1>")
-    append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active)}</p></header>")
+    append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active, nodes)}</p></header>")
     if (front) {
         // One pass over the active jobs: the per-row estimates and the summary's totals read the same numbers.
         val estimates = active.mapNotNull { job ->
@@ -88,7 +88,7 @@ internal fun jobPage(
     append("</header>")
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
-    append("<dt>status</dt><dd>${statusCell(job, null)}</dd>")
+    append("<dt>status</dt><dd>${statusCell(job, null, nodes)}</dd>")
     if (job.backend == "nomad") append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
     append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
@@ -1460,8 +1460,11 @@ internal fun shortError(error: String): String =
     Regex("rev-parse --verify '(.+)\\^\\{commit\\}'").find(error)?.let { "unknown ref: ${it.groupValues[1]}" }
         ?: error.lineSequence().first().let { if (it.length > 120) it.take(120) + "…" else it }
 
-private fun summary(config: Config, host: HostReport, active: List<Job>): String {
-    val running = active.count { it.status == Status.RUNNING }
+private fun summary(config: Config, host: HostReport, active: List<Job>, nodes: Map<Long, List<JobNode>>): String {
+    val activities = active.associate { it.id to jobActivity(it, nodes[it.id].orEmpty()) }
+    val waiting = activities.values.count { it == "WAITING" }
+    val checking = activities.values.count { it == "CHECKING" }
+    val running = active.count { it.status == Status.RUNNING } - waiting - checking
     val queued = active.count { it.status == Status.QUEUED }
     val free = runCatching { freeBytes(config.dataDir) }.getOrNull()
     // A low disk on any volume the lab writes to, or a missing one, holds the queue ([Volumes.hold]).
@@ -1469,7 +1472,8 @@ private fun summary(config: Config, host: HostReport, active: List<Job>): String
     val disk = (free?.let { "${size(it)} free" } ?: "free space unknown") +
         (held?.let { " · <span class=\"FAILED\">queue held: ${esc(it)}</span>" } ?: "") + " (<a href=\"/disk\">what uses it</a>)"
     val accel = listOfNotNull(host.vendor, "simd".takeIf { host.simd }).joinToString(", ")
-    return "$running running · $queued queued · $disk · ${esc(host.host)}, ${host.cores} cores" +
+    return "$running running · $queued queued" + (if (waiting > 0) " · $waiting waiting for capacity" else "") +
+        (if (checking > 0) " · $checking checking results" else "") + " · $disk · ${esc(host.host)}, ${host.cores} cores" +
         (if (accel.isEmpty()) "" else ", ${esc(accel)}")
 }
 
@@ -1593,7 +1597,7 @@ private fun jobTable(
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id])}</td>")
+        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id], nodes[job.id].orEmpty())}</td>")
         append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
@@ -1707,21 +1711,24 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
 
 /** A job's status with its notes: cancelling, paused, its place in the queue, its priority and its error. Why a queued
  *  one waits is left to `lab placement`. */
-private fun statusCell(job: Job, position: Int?): String {
+private fun statusCell(job: Job, position: Int?, nodes: List<JobNode>? = null): String {
+    val activity = nodes?.let { jobActivity(job, it) }
     val partial = job.status == Status.DONE && job.failed > 0
     val label = if (partial) {
         "DONE · <a href=\"/jobs/${job.id}?failed\">${job.failed} failed</a>"
     } else {
-        job.status.name
+        activity ?: job.status.name
     }
     val notes = listOfNotNull(
         "cancelling".takeIf { job.cancelRequested && job.status in ACTIVE },
         "<span class=\"badge\">paused</span>".takeIf { job.paused && job.status in ACTIVE },
         "#$position in the queue".takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
+        "waiting for compatible capacity".takeIf { activity == "WAITING" },
+        "ingesting results and checking outputs".takeIf { activity == "CHECKING" },
         job.error?.let { "<span title=\"${esc(it)}\">${esc(shortError(it))}</span>" },
     )
-    val cls = if (partial) "PARTIAL" else job.status.name
+    val cls = when { partial -> "PARTIAL"; activity in setOf("WAITING", "CHECKING") -> "QUEUED"; else -> job.status.name }
     return "<span class=\"$cls\">$label</span>" + notes.joinToString("") { "<br><small>$it</small>" }
 }
 
@@ -2002,7 +2009,8 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     if (snapshot == null) append("<p class=\"warn\">Capacity has not reported. Requests take effect when fresh reports resume.</p>")
     else {
         append("<p class=\"${if (snapshot.ageMs > CapacityCollector.FRESH_MS || !snapshot.healthy || snapshot.failures.isNotEmpty()) "warn" else "muted"}\">Report age: ${snapshot.ageMs / 1000}s")
-        if (snapshot.ageMs > CapacityCollector.FRESH_MS || !snapshot.healthy || snapshot.failures.isNotEmpty()) append(" · growth is held")
+        if (snapshot.ageMs > CapacityCollector.FRESH_MS || !snapshot.healthy) append(" · growth is held")
+        else if (snapshot.failures.isNotEmpty()) append(" · provider launch failures; capacity requests will retry")
         append("</p>")
     }
     if (pools.isEmpty()) append("<p class=\"muted\">No cloud pools configured.</p>")
@@ -2027,7 +2035,10 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
                 (if (allocation.job > 0) "<a href=\"/jobs/${allocation.job}\">job ${allocation.job}</a>" else "external work") +
                     " · ${esc(allocation.id)} · ${allocation.budget.cpuMillis / 1000.0} vCPU / ${allocation.budget.memoryMiB} MiB"
             }.ifEmpty { "idle" })
-            append("</td><td>${pool?.let { (it.cpuMillis - cpu).coerceAtLeast(0) / 1000.0 } ?: "?"} vCPU / ${pool?.let { (it.availableMemoryMiB - memory).coerceAtLeast(0) } ?: "?"} MiB</td></tr>")
+            append("</td><td>")
+            if (node.state == CapacityNodeState.READY) append("${pool?.let { (it.cpuMillis - cpu).coerceAtLeast(0) / 1000.0 } ?: "?"} vCPU / ${pool?.let { (it.availableMemoryMiB - memory).coerceAtLeast(0) } ?: "?"} MiB")
+            else append("not schedulable")
+            append("</td></tr>")
         }
         append("</tbody></table></div>")
     }

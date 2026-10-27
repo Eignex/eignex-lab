@@ -10,6 +10,15 @@ import java.nio.file.Files
 internal data class RunningNode(val id: String, val allocation: String?, val nodeClass: String?, val local: Boolean)
 internal data class JobNode(val id: String, val name: String, val profile: String?, val local: Boolean, val anchor: String?)
 
+/** Durable RUNNING means the experiment has started; it need not currently have a worker. */
+internal fun jobActivity(job: Job, nodes: List<JobNode>): String? = when {
+    job.backend != "nomad" || job.status != Status.RUNNING || job.experiment?.isAnalysis == true || job.paused || job.cancelRequested -> null
+    job.total > 0 && job.done == job.total -> "CHECKING"
+    nodes.isEmpty() -> "WAITING"
+    !job.setupDone -> "PREPARING"
+    else -> null
+}
+
 /** Resolve active bindings from local state without making Nomad requests on the page's refresh path. */
 internal fun jobNodes(config: Config, store: Store, jobs: Collection<Long>): Map<Long, List<JobNode>> {
     if (jobs.isEmpty()) return emptyMap()

@@ -84,22 +84,32 @@ object Waiting {
         val positions = store.queue().withIndex().associate { (index, id) -> id to index + 1 }
         val active = store.active(withCommands = false)
         val progress = store.hostProgress(active.map { it.id })
+        val assignments = jobNodes(config, store, active.filter { it.backend == "nomad" }.map { it.id })
         val jobs = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
-            .map { placement(config, it, view, positions[it.id], history, progress[it.id].orEmpty()) }
-        val nodes = readCapacityReport(config)?.nodes.orEmpty()
-        return PlacementReport(at, nodes.isNotEmpty(), "Nomad: ${nodes.size} cloud nodes; see /nodes", view.local, jobs, view.diskHeld)
+            .map { placement(config, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty()) }
+        val snapshot = readCapacityReport(config)
+        val ready = snapshot?.takeIf { it.healthy && it.ageMs <= CapacityCollector.FRESH_MS }?.nodes.orEmpty().count { it.state == CapacityNodeState.READY }
+        return PlacementReport(at, ready > 0, "Nomad: $ready ready cloud nodes; see /nodes", view.local, jobs, view.diskHeld)
     }
 
     fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
-                  hosts: List<HostProgress> = emptyList()): JobPlacement {
+                  hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null): JobPlacement {
         val host = job.experiment?.host ?: Experiments.LAB_HOST
         val estimate = if (job.status in ACTIVE) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
+        val activity = nodes?.let { jobActivity(job, it) }
         return JobPlacement(job.id, job.name, job.status, Placement.where(host), Experiments.hostWord(host), job.priority,
             job.paused, job.cancelRequested, position.takeIf { job.status == Status.QUEUED },
             view.localQueue.indexOf(job.id).takeIf { it >= 0 }?.plus(1),
             estimate?.let { PlacementEstimate(it.cases, it.coreHours, it.localHours, it.note) },
-            if (job.status == Status.QUEUED) waiting(job, view) else null,
-            if (job.status == Status.RUNNING) if (job.experiment?.isAnalysis == true) "analysing retained results" else "Nomad sessions; accepted results and source checks determine completion" else null,
+            if (job.status == Status.QUEUED || activity == "WAITING") waiting(job, view) else null,
+            if (job.status == Status.RUNNING) when {
+                activity == "WAITING" -> null
+                activity == "CHECKING" -> "ingesting results and checking outputs"
+                activity == "PREPARING" -> "preparing inputs"
+                job.experiment?.isAnalysis == true -> "analysing retained results"
+                !nodes.isNullOrEmpty() -> "running on ${nodes.joinToString { it.name }}"
+                else -> "Nomad sessions; accepted results and source checks determine completion"
+            } else null,
             hosts)
     }
 

@@ -8,7 +8,7 @@ enum class CapacityMarket(val tag: String) { @SerialName("spot") SPOT("spot"), @
 @Serializable
 enum class CapacityWork { SOLVE, MEASUREMENT, PROFILE, BUILD }
 @Serializable
-enum class CapacityNodeState { READY, BOOTING, DRAINING }
+enum class CapacityNodeState { READY, BOOTING, DRAINING, UNAVAILABLE }
 
 /** A homogeneous, provider-neutral pool. Physical logical-vCPU quota and schedulable budgets stay distinct. */
 @Serializable
@@ -71,7 +71,9 @@ object CapacityPolicy {
         val pools = settings.pools.associateBy { it.id }
         require(nodes.all { it.pool in pools } && manual.all { it.pool in pools && it.nodes <= pools.getValue(it.pool).maxNodes })
         data class Bin(val node: CapacityNode, val allocations: MutableList<CapacityReservation>)
-        val bins = nodes.filter { it.state != CapacityNodeState.DRAINING }.map { Bin(it, it.reservations.toMutableList()) }.toMutableList()
+        // Unavailable instances still spend provider quota, but cannot satisfy pending work.
+        val bins = nodes.filter { it.state in setOf(CapacityNodeState.READY, CapacityNodeState.BOOTING) }
+            .map { Bin(it, it.reservations.toMutableList()) }.toMutableList()
         val counts = settings.pools.associate { it.id to nodes.count { node -> node.pool == it.id && node.countedInTarget } }.toMutableMap()
         val history = previous.toMutableMap()
         val placements = mutableListOf<CapacityPlacement>(); val waiting = mutableListOf<CapacityWait>()
