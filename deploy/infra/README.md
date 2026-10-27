@@ -44,6 +44,8 @@ Each pool starts at zero and has its own immutable architecture-compatible AMI a
 group, renewable lease, and independent expiry. Existing pools can remain in their existing state; the fleet
 module manages only additional pools and adds their exact adapter/scaler policies to the existing control roles.
 The shared collector's vCPU budget applies across all pools, rather than separately to each architecture.
+Fleet scaler permissions combine the exact pool group ARNs in one managed policy, preserving each action and
+condition while avoiding AWS's aggregate inline-policy size limit as profiles and sizes are added.
 
 For each catalogue entry, inherit its source pool's pinned AMI, worker image, architecture and required features;
 set the smaller shape, node class, CPU and memory values explicitly. Add the pool to capacity settings, adapter

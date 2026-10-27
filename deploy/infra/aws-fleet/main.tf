@@ -60,11 +60,28 @@ resource "aws_iam_role_policy" "adapter" {
   policy   = module.pool[each.key].adapter_policy_json
 }
 
-resource "aws_iam_role_policy" "scaler" {
-  for_each = var.pools
-  name     = "eignex-lab-pool-${each.key}"
-  role     = var.scaler_role_name
-  policy   = module.pool[each.key].scaler_policy_json
+# All pools have identical scaler actions and conditions. Combine their exact ASG ARNs
+# into one managed policy instead of spending the role's 10-KiB inline-policy budget
+# once for every shape. The original single-pool role policy remains independent.
+locals {
+  scaler_policies = [for pool in values(module.pool) : jsondecode(pool.scaler_policy_json)]
+  scaler_groups   = [for policy in local.scaler_policies : policy.Statement[1].Resource]
+}
+
+resource "aws_iam_policy" "scaler_fleet" {
+  name = "lab-${var.deployment_id}-fleet-scaler"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = length(local.scaler_policies) == 0 ? [] : concat(
+      [local.scaler_policies[0].Statement[0]],
+      [for statement in slice(local.scaler_policies[0].Statement, 1, 4) : merge(statement, { Resource = local.scaler_groups })]
+    )
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "scaler_fleet" {
+  role       = var.scaler_role_name
+  policy_arn = aws_iam_policy.scaler_fleet.arn
 }
 
 output "pools" {
