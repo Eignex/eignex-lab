@@ -71,6 +71,18 @@ class JobNodesTest {
         assertEquals(Status.RUNNING, store.job(id)!!.status, "display activity must not rewrite the durable experiment state")
     }
 
+    @Test fun `completed commands awaiting checks do not claim they need another worker`() {
+        val id = job()
+        bind(id, "finished", "finished-allocation", "finished-node")
+        store.execution.loseSession("finished", "completed")
+        val checking = store.job(id)!!.copy(setupDone = true, counts = CommandCounts(2, 2, 0, 0))
+        val page = jobPage(config, checking, false)
+        assertContains(page, ">CHECKING</span>")
+        assertContains(page, "checking results")
+        assertFalse(page.contains("waiting for a node"))
+        assertFalse(page.contains("waiting for compatible capacity"))
+    }
+
     @Test fun `active assignments deduplicate nodes omit stopped sessions and survive a missing capacity report`() = testApplication {
         val id = job()
         bind(id, "old", "old-allocation", "old-node")

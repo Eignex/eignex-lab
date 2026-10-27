@@ -1674,7 +1674,11 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
             val href = node.anchor?.let { "/nodes#" + URLEncoder.encode(it, "UTF-8").replace("+", "%20") } ?: "/jobs/${job.id}/execution"
             "<a href=\"${esc(href)}\" title=\"Nomad node ${esc(node.id)}\">${esc(node.name)}</a>" +
                 node.profile?.let { "<br>${esc(it)}" }.orEmpty()
-        }.ifEmpty { if (!job.paused && !job.cancelRequested) "waiting for a node" else "" }
+        }.ifEmpty { when {
+            jobActivity(job, nodes) == "CHECKING" -> "checking results"
+            !job.paused && !job.cancelRequested -> "waiting for a node"
+            else -> ""
+        } }
         return "<span class=\"where${if (where == "cloud") " aws" else ""}\">${esc(where)}</span>" +
             if (detail.isEmpty()) "" else "<br><small>$detail</small>"
     }
@@ -2034,7 +2038,7 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
             append(node.reservations.joinToString("<br>") { allocation ->
                 (if (allocation.job > 0) "<a href=\"/jobs/${allocation.job}\">job ${allocation.job}</a>" else "external work") +
                     " · ${esc(allocation.id)} · ${allocation.budget.cpuMillis / 1000.0} vCPU / ${allocation.budget.memoryMiB} MiB"
-            }.ifEmpty { "idle" })
+            }.ifEmpty { if (node.state == CapacityNodeState.READY) "idle" else "no active allocations" })
             append("</td><td>")
             if (node.state == CapacityNodeState.READY) append("${pool?.let { (it.cpuMillis - cpu).coerceAtLeast(0) / 1000.0 } ?: "?"} vCPU / ${pool?.let { (it.availableMemoryMiB - memory).coerceAtLeast(0) } ?: "?"} MiB")
             else append("not schedulable")
