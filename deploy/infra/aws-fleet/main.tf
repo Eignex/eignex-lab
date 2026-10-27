@@ -72,10 +72,10 @@ resource "aws_iam_policy" "scaler_fleet" {
   name = "lab-${var.deployment_id}-fleet-scaler"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = length(local.scaler_policies) == 0 ? [] : concat(
-      [local.scaler_policies[0].Statement[0]],
-      [for statement in slice(local.scaler_policies[0].Statement, 1, 4) : merge(statement, { Resource = local.scaler_groups })]
-    )
+    Statement = flatten([for policy in slice(local.scaler_policies, 0, min(1, length(local.scaler_policies))) : concat(
+      [policy.Statement[0]],
+      [for statement in slice(policy.Statement, 1, 4) : merge(statement, { Resource = local.scaler_groups })]
+    )])
   })
 }
 
