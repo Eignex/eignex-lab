@@ -8,9 +8,12 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
+import java.nio.channels.FileChannel
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardOpenOption.CREATE
+import java.nio.file.StandardOpenOption.WRITE
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Base64
@@ -37,7 +40,9 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         val files = paths.flatMap { relative ->
             val path = root.resolve(safeRelative(relative))
             require(path.toRealPath().startsWith(canonical)) { "input escapes shared root" }
-            if (Files.isDirectory(path, NOFOLLOW_LINKS)) Files.walk(path).use { it.filter { p -> !Files.isDirectory(p, NOFOLLOW_LINKS) }.toList() }
+            if (Files.isDirectory(path, NOFOLLOW_LINKS)) Files.walk(path).use { it.filter { p ->
+                !Files.isDirectory(p, NOFOLLOW_LINKS) && root.relativize(p).first().toString() != ".lab-inputs"
+            }.toList() }
             else listOf(path)
         }.distinct().sorted()
         return files.map { path ->
@@ -71,11 +76,11 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         val view = view(inputs)
         val canonical = root.toRealPath()
         for (input in inputs.filter { candidate -> required == null || required.any {
-            candidate.file.path == it || candidate.file.path.startsWith(it.trimEnd('/') + "/")
+            it.isEmpty() || candidate.file.path == it || candidate.file.path.startsWith(it.trimEnd('/') + "/")
         } }) {
             checkActive()
             val file = input.file; val target = view.resolve(safeRelative(file.path))
-            synchronized(fileLockFor(target)) {
+            synchronized(sharedInputMutex) {
                 Files.createDirectories(target.parent)
                 require(target.parent.toRealPath().startsWith(canonical) && !Files.isSymbolicLink(target))
                 if (valid(target, file)) continue
@@ -83,7 +88,8 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                 val source = if (existing.toRealPathOrNull()?.startsWith(canonical) == true && valid(existing, file)) existing else {
                     val blob = root.resolve(".lab-inputs/blobs/${file.sha256}")
                     Files.createDirectories(blob.parent)
-                    synchronized(fileLockFor(blob)) {
+                    require(blob.parent.toRealPath().startsWith(canonical))
+                    FileChannel.open(blob.resolveSibling("${file.sha256}.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
                         if (!valid(blob, file)) {
                             val staging = Files.createTempFile(blob.parent, ".input-", ".partial")
                             try {
@@ -93,11 +99,14 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                                 Files.move(staging, blob, ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                             } finally { Files.deleteIfExists(staging) }
                         }
-                    }
+                    } }
                     blob
                 }
-                Files.deleteIfExists(target)
-                Files.createLink(target, source)
+                if (!valid(target, file)) {
+                    Files.deleteIfExists(target)
+                    try { Files.createLink(target, source) }
+                    catch (_: java.nio.file.FileAlreadyExistsException) { check(valid(target, file)) }
+                }
                 val localPacked = existing.resolveSibling(existing.fileName.toString() + ".zst")
                 if (input.encoding == "zstd" && !Files.exists(existing, NOFOLLOW_LINKS) &&
                     localPacked.toRealPathOrNull()?.startsWith(canonical) == true &&
@@ -162,6 +171,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
 private val inputSigningClient: HttpClient by lazy {
     HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
 }
+private val sharedInputMutex = Any()
 
 internal fun signInput(signer: URI, signature: InputSignature): SignedInput {
     require(signer.scheme == "http" && signer.host in setOf("127.0.0.1", "localhost", "::1") && signer.userInfo == null)

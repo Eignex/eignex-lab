@@ -61,6 +61,7 @@ object NomadCoordinatorCli {
                         }
                         "not-required"
                     } else {
+                        if (sharedCheckInputs.size >= 64 && !sharedCheckInputs.containsKey(job)) sharedCheckInputs.clear()
                         val inputs = sharedCheckInputs.computeIfAbsent(job) {
                             store.execution.accepted(job).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
                         }
