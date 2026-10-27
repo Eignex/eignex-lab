@@ -38,9 +38,10 @@ internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = 
 }
 
 /** Preparation is a worker operation under the same supervisor, cgroup and ownership lease as solves. */
-class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
+internal class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
-                          private val os: String, private val arch: String) {
+                          private val os: String, private val arch: String,
+                          private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -51,9 +52,8 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             check(remaining() > 0) { "preparation allowance expired" }
             if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout()
         }
-        val shared = SharedInputs.environment()
         val corpus = Files.createDirectories(shared?.root ?: directory.resolve("corpus"))
-        val env = workerEnvironment(os == "mac")
+        val env = workerEnvironment(os == "mac") + (inputSigner?.let { mapOf("KLAUSE_BENCH_CORPUS_SIGNER" to it) } ?: emptyMap())
         val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
         fun run(tree: Path, command: String, output: Path = log) {
             checkActive()

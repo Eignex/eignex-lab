@@ -12,18 +12,15 @@ def statements(bucket, endpoint):
         dict(Sid='LabRegionalInputRead', Effect='Allow', Principal='*', Action='s3:GetObject',
              Resource=[arn + '/' + prefix + '/*' for prefix in ('corpus', 'corpus-packs', 'input-blobs')], Condition=network),
         dict(Sid='LabRegionalInputMiss', Effect='Allow', Principal='*', Action='s3:ListBucket', Resource=arn, Condition=network),
-        dict(Sid='LabRegionalInputPublish', Effect='Allow', Principal='*', Action='s3:PutObject',
-             Resource=[arn + '/input-blobs/*', arn + '/corpus-packs/*'],
-             Condition={'StringEquals': {'aws:SourceVpce': endpoint, 's3:if-none-match': '*'}}),
     ]
 
 
 def native_policy(bucket):
     arn = 'arn:aws:s3:::' + bucket
     return dict(Version='2012-10-17', Statement=[
-        dict(Effect='Allow', Action='s3:GetObject', Resource=[arn + '/corpus/*', arn + '/input-blobs/*']),
+        dict(Effect='Allow', Action='s3:GetObject', Resource=[arn + '/corpus/*', arn + '/input-blobs/*', arn + '/corpus-packs/*']),
         dict(Effect='Allow', Action='s3:ListBucket', Resource=arn),
-        dict(Effect='Allow', Action='s3:PutObject', Resource=arn + '/input-blobs/*',
+        dict(Effect='Allow', Action='s3:PutObject', Resource=[arn + '/input-blobs/*', arn + '/corpus-packs/*'],
              Condition={'StringEquals': {'s3:if-none-match': '*'}}),
     ])
 
@@ -66,7 +63,8 @@ def main():
         policy = dict(Version='2012-10-17', Statement=[])
     additions = statements(args.bucket, endpoint['VpcEndpointId'])
     previous = policy.copy()
-    policy = dict(policy, Statement=[row for row in policy['Statement'] if row.get('Sid') not in {s['Sid'] for s in additions}] + additions)
+    managed = {s['Sid'] for s in additions} | {'LabRegionalInputPublish'}
+    policy = dict(policy, Statement=[row for row in policy['Statement'] if row.get('Sid') not in managed] + additions)
     args.receipt.write_text(json.dumps(dict(endpoint=endpoint['VpcEndpointId'], created=created, previousPolicy=previous), indent=2) + '\n')
     args.receipt.chmod(0o600)
     s3.put_bucket_policy(Bucket=args.bucket, Policy=json.dumps(policy))

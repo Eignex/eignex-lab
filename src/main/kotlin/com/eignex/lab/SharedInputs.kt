@@ -137,18 +137,28 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     private fun valid(path: Path, file: InputFile) = Files.isRegularFile(path, NOFOLLOW_LINKS) && Files.size(path) == file.bytes && hashFile(path) == file.sha256
 
     companion object {
-        fun environment(environment: Map<String, String> = System.getenv()): SharedInputs? {
+        fun environment(environment: Map<String, String> = System.getenv(), publishSignature: ((InputSignature) -> SignedInput)? = null): SharedInputs? {
             val root = environment["LAB_SHARED_INPUT_ROOT"] ?: return null
             val base = requireNotNull(environment["LAB_SHARED_INPUT_URL"])
-            return SharedInputs(Path.of(root), HttpInputTransport(URI(base), environment["LAB_SHARED_INPUT_SIGNER"]?.let(URI::create)))
+            return SharedInputs(Path.of(root), HttpInputTransport(URI(base), environment["LAB_SHARED_INPUT_SIGNER"]?.let(URI::create), publishSignature))
         }
     }
 }
 
-@Serializable private data class InputSignature(val method: String, val key: String, val sha256: String? = null)
-@Serializable private data class SignedInput(val url: String, val headers: Map<String, String> = emptyMap())
+@Serializable internal data class InputSignature(val method: String, val key: String, val sha256: String? = null)
+@Serializable internal data class SignedInput(val url: String, val headers: Map<String, String> = emptyMap())
 
-internal class HttpInputTransport(private val base: URI, private val signer: URI? = null) : InputTransport {
+internal fun signInput(signer: URI, signature: InputSignature): SignedInput {
+    require(signer.scheme == "http" && signer.host in setOf("127.0.0.1", "localhost", "::1") && signer.userInfo == null)
+    val request = HttpRequest.newBuilder(signer).timeout(Duration.ofSeconds(15)).header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(Json.encodeToString(InputSignature.serializer(), signature))).build()
+    val response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build().send(request, HttpResponse.BodyHandlers.ofString())
+    check(response.statusCode() == 200) { "input signing unavailable" }
+    return Json.decodeFromString<SignedInput>(response.body())
+}
+
+internal class HttpInputTransport(private val base: URI, private val signer: URI? = null,
+                                 private val publishSignature: ((InputSignature) -> SignedInput)? = null) : InputTransport {
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
     init {
         require(base.scheme == "https" && base.userInfo == null && base.rawQuery == null)
@@ -156,12 +166,9 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
     }
     private fun request(method: String, key: String, sha: String? = null): HttpRequest.Builder {
         safeRelative(key)
-        val signed = if (signer != null) {
-            val request = HttpRequest.newBuilder(signer).timeout(Duration.ofSeconds(15)).header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(Json.encodeToString(InputSignature.serializer(), InputSignature(method, key, sha)))).build()
-            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
-            check(response.statusCode() == 200) { "input signing unavailable" }
-            Json.decodeFromString<SignedInput>(response.body())
+        val signature = InputSignature(method, key, sha)
+        val signed = if (method == "PUT" && publishSignature != null) publishSignature.invoke(signature) else if (signer != null) {
+            signInput(signer, signature)
         } else SignedInput(base.toString().trimEnd('/') + "/" + key.split('/').joinToString("/") { java.net.URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") })
         val uri = URI(signed.url); require(uri.scheme == "https" && uri.userInfo == null)
         return HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(10)).also { builder -> signed.headers.forEach { (key, value) -> builder.header(key, value) } }

@@ -16,9 +16,9 @@ class InputStoreTest(unittest.TestCase):
         policy = module('input_store').statements('input-bucket', 'vpce-test')
         for row in policy:
             self.assertEqual('vpce-test', row['Condition']['StringEquals']['aws:SourceVpce'])
-        writes = policy[-1]
+        self.assertTrue(all(row['Action'] != 's3:PutObject' for row in policy))
+        writes = module('input_store').native_policy('input-bucket')['Statement'][-1]
         self.assertEqual('*', writes['Condition']['StringEquals']['s3:if-none-match'])
-        self.assertNotIn('arn:aws:s3:::input-bucket/corpus/*', writes['Resource'])
 
     def test_native_signer_can_only_publish_immutable_content_hashes(self):
         signer = module('input_signer')
@@ -27,6 +27,8 @@ class InputStoreTest(unittest.TestCase):
         self.assertEqual('put_object', operation)
         self.assertEqual('*', params['IfNoneMatch'])
         self.assertEqual(sha, headers['x-amz-meta-sha256'])
+        _, pack, _ = signer.signature_request(dict(method='PUT', key='corpus-packs/fixture.tar', sha256=sha), 'cache')
+        self.assertEqual('*', pack['IfNoneMatch'])
         for key in ('corpus/model', '../private', 'other/key', 'input-blobs/bad'):
             with self.assertRaises(ValueError):
                 signer.signature_request(dict(method='PUT', key=key, sha256=sha), 'cache')

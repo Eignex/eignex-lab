@@ -16,14 +16,15 @@ def signature_request(body, bucket):
     if any(part in ('', '.', '..') for part in parts) or '\\' in key or '\x00' in key:
         raise ValueError('invalid key')
     blob = re.fullmatch(r'input-blobs/([a-f0-9]{64})', key)
-    if not blob and not key.startswith('corpus/'):
+    pack = re.fullmatch(r'corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\.tar', key)
+    if not blob and not pack and not key.startswith('corpus/'):
         raise ValueError('key outside input cache')
     params = dict(Bucket=bucket, Key=key)
     headers = {}
     if method == 'PUT':
-        if not blob or body.get('sha256') != blob[1]:
+        sha = body.get('sha256', '')
+        if not re.fullmatch(r'[a-f0-9]{64}', sha) or (not pack and (not blob or sha != blob[1])):
             raise ValueError('writes require a content hash')
-        sha = blob[1]
         checksum = base64.b64encode(bytes.fromhex(sha)).decode()
         params.update(IfNoneMatch='*', Metadata={'sha256': sha}, ChecksumSHA256=checksum)
         headers = {'If-None-Match': '*', 'x-amz-meta-sha256': sha, 'x-amz-checksum-sha256': checksum}

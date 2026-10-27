@@ -97,6 +97,17 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 require(body.owner.session == session.id && body.owner.allocation == session.allocation)
                 call.respond(backend.selectPreparation(body.owner, body.selections))
             }
+            post("/input-signature") {
+                check(workAllowed()); val session = call.auth()
+                require(session.executionClass == "prepare")
+                val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                require(owner.session == session.id && owner.allocation == session.allocation); store.execution.authorize(owner)
+                val signature = Json.decodeFromString<InputSignature>(call.bodyText(8192))
+                require(signature.method == "PUT" && signature.sha256?.matches(SHA256) == true)
+                require(signature.key == "input-blobs/${signature.sha256}" || signature.key.matches(Regex("corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\\.tar")))
+                val signer = java.net.URI(requireNotNull(System.getenv("LAB_SHARED_INPUT_SIGNER")))
+                call.respond(signInput(signer, signature))
+            }
             post("/commit") {
                 val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText(if (s.executionClass == "prepare") 64 * 1024 * 1024 else 4 * 1024 * 1024)); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)

@@ -3,8 +3,9 @@
 ## Regional input cache
 
 `aws/input_store.py` reconnects an existing corpus bucket to an S3 **gateway** endpoint in the workers' region and
-route tables. It preserves existing bucket policy statements and data, records a rollback receipt, grants reads
-only through that endpoint, and permits only conditional creation of new input blobs and corpus packs. Run it with
+route tables. It preserves existing bucket policy statements and data, records a rollback receipt and grants
+credential-free reads only through that endpoint. Writes use short-lived signed URLs and conditional creation
+of new input blobs and corpus packs. Run it with
 `--bucket`, `--region`, `--vpc`, repeated `--route-table`, `--native-user` and `--receipt`. Keep S3 public-access
 blocking enabled. Verify unsigned reads fail outside the VPC and work from a Spot worker. Do not route these reads
 through the Mac, a NAT gateway, another region or an interface endpoint. S3 storage and requests remain billable;
@@ -13,9 +14,13 @@ direct S3-to-EC2 transfer within the same region has no data-transfer charge.
 `aws/input_signer.py --config FILE` is an optional loopback-only native signing service using the existing
 `aws/requirements.txt` environment. Its JSON configuration names `bucket`, `region`, `profile` and optional `port`
 (8093). The signer returns five-minute URLs, never corpus bytes, and only signs input reads or conditional writes
-under a SHA-256 content key. It never distributes provider credentials. Configure native workers/coordinator with
+under a SHA-256 content key or a corpus-pack key. It never distributes provider credentials. Configure native workers/coordinator with
 `LAB_SHARED_INPUT_SIGNER=http://127.0.0.1:8093/`. `native_services.py` accepts an optional `inputSigner` containing
 absolute `python`, `script` and `config` paths, keeping the signer independent of Nomad and lab restarts.
+
+Cloud preparations obtain upload URLs through their authenticated, leased worker API session. An attempt-scoped
+loopback relay lets consumer cache publishers request the same capabilities without receiving the worker token.
+The coordinator signs metadata only; native and cloud uploads send bytes directly to the regional store.
 
 AWS networking and signing are deployment adapters. Portable workers use an HTTPS store and paths/checksums;
 another provider can supply the same HTTP operations and its own regional routing/signing adapter.
