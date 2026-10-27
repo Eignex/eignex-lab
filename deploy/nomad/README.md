@@ -21,7 +21,7 @@ The Linux client runs in a privileged Docker container with the local Docker soc
 this is a local/CI prototype, not the cloud bootstrap configuration. It uses its own node class and data directory.
 
 ```sh
-./gradlew test --tests com.eignex.lab.NomadBatchJobTest installDist
+./gradlew :test --tests com.eignex.lab.NomadBatchJobTest installDist
 export JAVA_HOME="$(./gradlew -q printJavaHome)"
 python3 deploy/nomad/sandbox.py install
 python3 deploy/nomad/sandbox.py start

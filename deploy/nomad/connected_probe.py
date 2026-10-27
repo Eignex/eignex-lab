@@ -56,7 +56,7 @@ def main():
             "LAB_NOMAD_TEST_MHZ": node["Attributes"]["cpu.usablecompute"],
             "LAB_NOMAD_TEST_CPUS": str(node["NodeResources"]["Cpu"]["TotalCpuCores"]),
         }
-        subprocess.run([ROOT / "gradlew", "test", "--tests", "com.eignex.lab.ConnectedNomadTest", "--rerun-tasks"], cwd=ROOT, env=env, check=True, timeout=600)
+        subprocess.run([ROOT / "gradlew", ":test", "--tests", "com.eignex.lab.ConnectedNomadTest", "--rerun-tasks"], cwd=ROOT, env=env, check=True, timeout=600)
         print("Connected Nomad worker, signed identity, hard limits, paired commit and restart checks passed.")
     except Exception:
         if started:
