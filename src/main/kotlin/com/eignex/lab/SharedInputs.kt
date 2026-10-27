@@ -34,7 +34,8 @@ internal interface InputTransport {
     fun get(key: String, destination: Path)
 }
 
-internal class SharedInputs(val root: Path, private val transport: InputTransport, private val existingPrefix: String = "corpus") {
+internal class SharedInputs(val root: Path, private val transport: InputTransport, private val existingPrefix: String = "corpus",
+                           private val maxBytes: Long = 8L * 1024 * 1024 * 1024) {
     fun publish(paths: List<String>, checkActive: () -> Unit = {}): List<SharedInput> {
         val canonical = root.toRealPath()
         val files = paths.flatMap { relative ->
@@ -72,6 +73,12 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         return Files.createDirectories(root.resolve(".lab-inputs/views/$key"))
     }
 
+    fun acquire(inputs: List<SharedInput>, checkActive: () -> Unit = {}, required: List<String>? = null): SharedInputLease {
+        val pin = SharedInputCache(root.resolve(".lab-inputs"), maxBytes).pin(view(inputs))
+        try { return SharedInputLease(resolve(inputs, checkActive, required), pin) }
+        catch (failure: Throwable) { pin.close(); throw failure }
+    }
+
     fun resolve(inputs: List<SharedInput>, checkActive: () -> Unit = {}, required: List<String>? = null): Path {
         val view = view(inputs)
         val canonical = root.toRealPath()
@@ -85,13 +92,26 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                 require(target.parent.toRealPath().startsWith(canonical) && !Files.isSymbolicLink(target))
                 if (valid(target, file)) continue
                 val existing = root.resolve(safeRelative(file.path))
-                val source = if (existing.toRealPathOrNull()?.startsWith(canonical) == true && valid(existing, file)) existing else {
+                fun link(source: Path) {
+                    if (!valid(target, file)) {
+                        Files.deleteIfExists(target)
+                        try { Files.createLink(target, source) }
+                        catch (_: java.nio.file.FileAlreadyExistsException) { check(valid(target, file)) }
+                    }
+                    val localPacked = existing.resolveSibling(existing.fileName.toString() + ".zst")
+                    if (input.encoding == "zstd" && !Files.exists(existing, NOFOLLOW_LINKS) &&
+                        localPacked.toRealPathOrNull()?.startsWith(canonical) == true &&
+                        valid(localPacked, file.copy(sha256 = input.storedSha256, bytes = input.storedBytes))) {
+                        try { Files.createLink(existing, source) } catch (_: java.nio.file.FileAlreadyExistsException) { }
+                    }
+                }
+                if (existing.toRealPathOrNull()?.startsWith(canonical) == true && valid(existing, file)) link(existing) else {
                     val blob = root.resolve(".lab-inputs/blobs/${file.sha256}")
                     Files.createDirectories(blob.parent)
                     require(blob.parent.toRealPath().startsWith(canonical))
                     FileChannel.open(blob.resolveSibling("${file.sha256}.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
                         if (!valid(blob, file)) {
-                            val staging = Files.createTempFile(blob.parent, ".input-", ".partial")
+                            val staging = Files.createTempFile(blob.parent, ".${file.sha256}-input-", ".partial")
                             try {
                                 fetch(input, staging)
                                 check(valid(staging, file)) { "shared input checksum mismatch" }
@@ -99,19 +119,9 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                                 Files.move(staging, blob, ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                             } finally { Files.deleteIfExists(staging) }
                         }
+                        link(blob)
+                        Files.setLastModifiedTime(blob, java.nio.file.attribute.FileTime.fromMillis(now()))
                     } }
-                    blob
-                }
-                if (!valid(target, file)) {
-                    Files.deleteIfExists(target)
-                    try { Files.createLink(target, source) }
-                    catch (_: java.nio.file.FileAlreadyExistsException) { check(valid(target, file)) }
-                }
-                val localPacked = existing.resolveSibling(existing.fileName.toString() + ".zst")
-                if (input.encoding == "zstd" && !Files.exists(existing, NOFOLLOW_LINKS) &&
-                    localPacked.toRealPathOrNull()?.startsWith(canonical) == true &&
-                    valid(localPacked, file.copy(sha256 = input.storedSha256, bytes = input.storedBytes))) {
-                    try { Files.createLink(existing, source) } catch (_: java.nio.file.FileAlreadyExistsException) { }
                 }
             }
         }
@@ -132,7 +142,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     }.getOrDefault(false)
 
     private fun fetch(input: SharedInput, destination: Path) {
-        val packed = Files.createTempFile(destination.parent, ".transfer-", ".partial")
+        val packed = Files.createTempFile(destination.parent, ".${input.file.sha256}-transfer-", ".partial")
         try {
             val local = root.resolve(safeRelative(input.file.path + ".zst"))
             val source = if (input.encoding == "zstd" && local.toRealPathOrNull()?.startsWith(root.toRealPath()) == true &&
@@ -160,7 +170,8 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         fun environment(environment: Map<String, String> = System.getenv(), publishSignature: ((InputSignature) -> SignedInput)? = null): SharedInputs? {
             val root = environment["LAB_SHARED_INPUT_ROOT"] ?: return null
             val base = requireNotNull(environment["LAB_SHARED_INPUT_URL"])
-            return SharedInputs(Path.of(root), HttpInputTransport(URI(base), environment["LAB_SHARED_INPUT_SIGNER"]?.let(URI::create), publishSignature))
+            return SharedInputs(Path.of(root), HttpInputTransport(URI(base), environment["LAB_SHARED_INPUT_SIGNER"]?.let(URI::create), publishSignature),
+                maxBytes = environment["LAB_SHARED_INPUT_MAX_BYTES"]?.toLong() ?: 8L * 1024 * 1024 * 1024)
         }
     }
 }
@@ -219,3 +230,9 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         check(response.statusCode() == 200) { "shared input download unavailable (${response.statusCode()})" }
     }
 }
+
+internal class SharedInputLease(val directory: Path, private val pin: AutoCloseable) : AutoCloseable {
+    override fun close() = pin.close()
+}
+
+internal class SharedCheckInputUnavailable(cause: Throwable) : IllegalStateException("shared checking input temporarily unavailable", cause)

@@ -315,6 +315,14 @@ reads only its required files directly from the store, verifies them and reuses 
 use hard links, retaining independent versions without per-job file copies. Native checking reuses matching local
 files before considering a remote read. A genuinely missing native input requires one remote read.
 
+Derived local blobs and views under `.lab-inputs` have an 8 GiB soft limit, configurable with
+`LAB_SHARED_INPUT_MAX_BYTES`, and a seven-day idle expiry. Maintenance runs at most once per minute on cache use,
+counts hard-linked bytes once, and evicts idle views before unreferenced blobs. Each concurrent solve and source
+check holds a separate filesystem lock pin for its full input use. Process death releases its pin automatically;
+active inputs can temporarily exceed the quota. Old interrupted transfers are removed only when their blob lock
+is free. Consumer-owned collections, remote input objects and historical job artifacts are outside this cleanup.
+Evicted views can be reconstructed from the job's saved input inventory.
+
 Linux roots normally use `/lab-cache/consumer/klause-bench/corpus`, with
 `KLAUSE_BENCH_CORPUS_MIRROR` pointing at the store's `corpus-packs/` prefix. The consumer restores whole collections
 only on a preparation cache miss and owns its corpus formats and source downloads. Native roots should point at
@@ -327,6 +335,10 @@ A failed source build reports its bounded diagnostic tail through its authentica
 fences all sibling sessions and records a permanent `source-build` failure, rather than repeatedly treating a
 compiler error as Spot loss. A stale generation cannot fail replacement work. Failure acknowledgements are
 idempotent. Transport loss and actual allocation revocation continue to replace whole unfinished iterations.
+Preparation/build commands can explicitly report temporary dependency failures with exit `75` (`EX_TEMPFAIL`).
+These exit through infrastructure recovery without calling the permanent build-failure endpoint or spending a
+code attempt. Solver exit codes remain solver outcomes. Consumers must reserve this signal for infrastructure
+failures; ordinary compiler errors and permanent invalid selections remain code failures.
 
 Targeted tests exercise real Git bundle export/checkout, trust rejection, build reuse/corruption recovery, helper
 budgets and fenced failures. The connected Nomad test now builds its fixture from source in the Docker allocation,

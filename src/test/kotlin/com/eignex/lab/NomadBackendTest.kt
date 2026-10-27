@@ -15,6 +15,22 @@ import java.util.Base64
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `registration omits new optional fields for frozen older workers`() = testApplication {
+        setup(preparation = true)
+        application { workerApi(store, backend(), artifacts) { true } }
+        val response = client.post("/worker/v1/sessions/${session.id}/register") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.Authorization, "Bearer $token")
+            header("X-Lab-Allocation", "allocation")
+            header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(WorkerRegistration("release")))
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.bodyAsText()
+        assertFalse("sharedInputs" in Json.parseToJsonElement(body).jsonObject)
+        assertEquals(manifest, Json.decodeFromString<WorkManifest>(body))
+    }
+
     private val root = Files.createTempDirectory("nomad-backend")
     private val file = root.resolve("lab.db")
     private val store = Store(file)

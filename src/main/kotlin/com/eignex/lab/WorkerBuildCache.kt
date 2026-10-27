@@ -61,7 +61,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
                             input.seek((input.length() - 8192).coerceAtLeast(0)); String(ByteArray((input.length() - input.filePointer).toInt()).also { input.readFully(it) })
                         }
-                        throw WorkerBuildFailure("exit $exit\n" + tail(errors) + "\n" + tail(log))
+                        checkPreparationExit(exit) { "exit $exit\n" + tail(errors) + "\n" + tail(log) }
                     }
                 }
                 if (build.gitBundle != null) {

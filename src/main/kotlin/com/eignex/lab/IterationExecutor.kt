@@ -29,9 +29,11 @@ class IterationExecutor(
         val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) == Triple(selected.first().problem, selected.first().seed, selected.first().repeat) }
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
-        val corpus = if (manifest.sharedInputs.isNotEmpty()) {
-            requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.resolve(manifest.sharedInputs, ::checkRun)
-        } else directory.resolve("corpus")
+        val inputs = if (manifest.sharedInputs.isNotEmpty()) {
+            requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.acquire(manifest.sharedInputs, ::checkRun)
+        } else null
+        try {
+        val corpus = inputs?.directory ?: directory.resolve("corpus")
         if (manifest.inputCorpus != null) {
             val input = cache.stage(manifest.inputCorpus, ::checkRun) { bundleInput(manifest.inputCorpus) }
             copyTree(input, corpus, ::checkRun)
@@ -115,6 +117,7 @@ class IterationExecutor(
             }
             return IterationResult(results, runTimedOut = timedOut.get())
         } finally { threads.shutdownNow() }
+        } finally { inputs?.close() }
     }
 
     private fun environment(): Map<String, String> = workerEnvironment(os == "mac")

@@ -109,7 +109,13 @@ class CaseChecks(
         val text = store.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
         val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it) }
-        val check = checker.check(problem, record, revision) ?: return null
+        val inputs = store.execution.accepted(jobId).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
+        val lease = if (inputs.isNotEmpty()) try {
+            val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
+                .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
+            requireNotNull(com.eignex.lab.SharedInputs.environment()).acquire(inputs, required = required)
+        } catch (failure: Exception) { throw com.eignex.lab.SharedCheckInputUnavailable(failure) } else null
+        val check = lease.use { checker.check(problem, record, revision) } ?: return null
         store.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check

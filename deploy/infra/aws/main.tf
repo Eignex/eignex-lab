@@ -1,6 +1,10 @@
 data "aws_partition" "current" {}
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+data "aws_ec2_instance_type" "spot_choices" {
+  for_each      = toset(var.spot_instance_types)
+  instance_type = each.value
+}
 locals {
   name          = "lab-${substr(var.deployment_id, 0, 16)}-${substr(var.pool_id, 0, 16)}-${substr(sha256("${var.deployment_id}/${var.pool_id}"), 0, 8)}"
   tags          = { "lab:deployment" = var.deployment_id, "lab:pool" = var.pool_id }
@@ -60,7 +64,7 @@ resource "aws_launch_template" "worker" {
     }
   }
   dynamic "instance_market_options" {
-    for_each = var.market == "spot" ? [1] : []
+    for_each = var.market == "spot" && length(var.spot_instance_types) == 0 ? [1] : []
     content {
       market_type = "spot"
       spot_options {
@@ -89,9 +93,32 @@ resource "aws_autoscaling_group" "workers" {
   capacity_rebalance        = false # Rebalance surges must not spend unreserved vCPUs.
   protect_from_scale_in     = false
   max_instance_lifetime     = 86400
-  launch_template {
-    id      = aws_launch_template.worker.id
-    version = aws_launch_template.worker.latest_version
+  dynamic "launch_template" {
+    for_each = length(var.spot_instance_types) == 0 ? [1] : []
+    content {
+      id      = aws_launch_template.worker.id
+      version = aws_launch_template.worker.latest_version
+    }
+  }
+  dynamic "mixed_instances_policy" {
+    for_each = length(var.spot_instance_types) > 0 ? [1] : []
+    content {
+      instances_distribution {
+        on_demand_base_capacity                  = 0
+        on_demand_percentage_above_base_capacity = 0
+        spot_allocation_strategy                 = "price-capacity-optimized"
+      }
+      launch_template {
+        launch_template_specification {
+          launch_template_id = aws_launch_template.worker.id
+          version            = aws_launch_template.worker.latest_version
+        }
+        dynamic "override" {
+          for_each = var.spot_instance_types
+          content { instance_type = override.value }
+        }
+      }
+    }
   }
   dynamic "tag" {
     for_each = local.tags
@@ -103,6 +130,12 @@ resource "aws_autoscaling_group" "workers" {
   }
   lifecycle {
     ignore_changes = [desired_capacity, min_size, max_size]
+    precondition {
+      condition = (length(var.spot_instance_types) == 0 || var.market == "spot") && alltrue([
+        for choice in data.aws_ec2_instance_type.spot_choices : choice.default_vcpus == var.vcpus && choice.memory_size == var.memory_mib && contains(choice.supported_architectures, var.architecture)
+      ])
+      error_message = "Spot alternatives must preserve the pool's architecture, vCPU count and memory."
+    }
     precondition {
       condition     = var.vcpus >= 1 && floor(var.vcpus) == var.vcpus && var.memory_mib > 1024 && var.max_nodes * var.vcpus <= var.max_vcpus
       error_message = "Finite homogeneous capacity must fit the vCPU limit."
