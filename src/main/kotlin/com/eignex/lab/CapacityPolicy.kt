@@ -109,7 +109,7 @@ object CapacityPolicy {
                 .thenBy { it.node.id })
             if (bin == null) {
                 val candidates = settings.pools.filter { compatible(d, it) }
-                    .sortedWith(compareBy<CapacityPool> { it.vcpus }.thenBy { it.memoryMiB }.thenBy { it.id })
+                    .sortedWith(compareByDescending<CapacityPool> { it.vcpus }.thenByDescending { it.memoryMiB }.thenBy { it.id })
                 val p = candidates.firstOrNull { p ->
                     val h = history.getValue(p.id)
                     (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&

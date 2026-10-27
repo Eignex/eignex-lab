@@ -39,13 +39,52 @@ class NomadQueueTest {
         assertTrue(store.execution.sessions(network).isEmpty())
     }
 
-    @Test fun `cloud preparation prefers the smallest fitting shape regardless of configuration order`() {
+    @Test fun `cloud preparation prefers the largest fitting shape regardless of configuration order`() {
         val large = target(NomadPlatform.LINUX, "large")
         val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 2048, 2)))
-        val policy = settings.copy(targets = listOf(large, small))
-        val id = job(ExperimentSpec("small-cloud", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        val policy = settings.copy(targets = listOf(small, large))
+        val id = job(ExperimentSpec("large-cloud", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
         queue(policy = policy).reconcile()
+        assertContains(store.execution.submission(store.execution.sessions(id).single().id), "\"RTarget\":\"large\"")
+    }
+
+    @Test fun `cloud preparation fills a running small node before launching a large one`() {
+        val large = target(NomadPlatform.LINUX, "large")
+        val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 2048, 2)))
+        control.nodeInventory["warm"] = buildJsonObject {
+            put("ID", "warm"); put("NodeClass", "small"); put("Status", "ready")
+            putJsonObject("Attributes") { put("kernel.name", "linux"); put("cpu.usablecompute", "2000"); put("cpu.numcores", "2") }
+            putJsonObject("NodeResources") { putJsonObject("Memory") { put("MemoryMB", 2048) } }
+        }
+        val id = job(ExperimentSpec("reuse-small-cloud", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        queue(policy = settings.copy(targets = listOf(large, small))).reconcile()
         assertContains(store.execution.submission(store.execution.sessions(id).single().id), "\"RTarget\":\"small\"")
+    }
+
+    @Test fun `six cloud solve workers select the large pool and share a node`() {
+        val large = target(NomadPlatform.LINUX, "large").let {
+            it.copy(template = it.template.copy(cpuCapacity = NomadCpuCapacity(16000, 16), budget = ResourceBudget(16000, 64512)))
+        }
+        val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 5120)))
+        val policy = settings.copy(targets = listOf(small, large), caseMemoryMiB = 4096, sessionMemoryMiB = 512, maxSessionsPerJob = 6)
+        val id = job(ExperimentSpec("large-solves", problems = listOf(mapOf("suite" to "s")), parallel = 6, host = Experiments.AWS_HOST))
+        queue(policy = policy).reconcile(); prepare(id, 6); backend.reconcile()
+        repeat(6) {
+            queue(policy = policy).reconcile()
+            val session = store.execution.sessions(id).single { it.executionClass == "solve" && it.node == null }
+            val submission = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+            val nodeClass = submission.getValue("Constraints").jsonArray.map { it.jsonObject }
+                .single { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.class}" }.getValue("RTarget").jsonPrimitive.content
+            assertEquals("large", nodeClass)
+            assertFalse(submission.getValue("Constraints").jsonArray.any { it.jsonObject["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.unique.id}" })
+            val token = submission.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject
+                .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+            store.execution.bind(session.id, token, "allocation-${session.id}", "large-node", "release")
+        }
+        val solves = store.execution.sessions(id).filter { it.executionClass == "solve" }
+        assertEquals(6, solves.size)
+        assertTrue(solves.all { it.budget == ResourceBudget(1000, 4608) })
+        assertEquals(setOf("large-node"), solves.map { it.node }.toSet())
     }
 
     @Test fun `cloud preparation reuses a running larger shape before starting a small one`() {
