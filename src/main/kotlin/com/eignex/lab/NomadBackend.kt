@@ -16,6 +16,7 @@ class NomadBackend(
     private val nativeCapacity: ResourceBudget? = null,
     private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
     private val placementPolicy: (JsonObject) -> JsonObject = { it },
+    private val workerRuntime: (JsonObject, WorkManifest) -> Pair<JsonObject, WorkManifest> = { job, manifest -> job to manifest },
 ) {
     val logs = WorkerLogs(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
@@ -263,8 +264,9 @@ class NomadBackend(
 
     private fun replace(previous: ExecutionSession) {
         val id = UUID.randomUUID().toString(); val token = ExecutionStore.token()
-        val manifest = store.execution.manifest(previous.id).copy(session = id)
-        val original = cpuPlacement.calibrate(placementPolicy(Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject), previous.budget)
+        val (runtime, manifest) = workerRuntime(Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject,
+            store.execution.manifest(previous.id).copy(session = id))
+        val original = cpuPlacement.calibrate(placementPolicy(runtime), previous.budget)
         val groups = original.getValue("TaskGroups").jsonArray.map { group -> JsonObject(group.jsonObject + ("Tasks" to JsonArray(group.jsonObject.getValue("Tasks").jsonArray.map { task ->
             val t = task.jsonObject
             JsonObject(t + ("Env" to JsonObject(t.getValue("Env").jsonObject + mapOf("LAB_WORKER_SESSION" to JsonPrimitive(id), "LAB_WORKER_TOKEN" to JsonPrimitive(token)))))
@@ -278,8 +280,8 @@ class NomadBackend(
             }
         }
         val jobId = "lab-${previous.jobId}-${previous.executionClass}-$id-1"
-        val job = authenticatedJob(JsonObject(original + mapOf("ID" to JsonPrimitive(jobId), "Name" to JsonPrimitive(jobId), "TaskGroups" to JsonArray(groups), "Meta" to JsonObject(originalMeta))), id, previous.release)
-        store.execution.createSession(id, previous.jobId, previous.executionClass, previous.release, previous.budget, token, job.toString(), manifest = Json.encodeToString(manifest))
+        val job = authenticatedJob(JsonObject(original + mapOf("ID" to JsonPrimitive(jobId), "Name" to JsonPrimitive(jobId), "TaskGroups" to JsonArray(groups), "Meta" to JsonObject(originalMeta))), id, manifest.release)
+        store.execution.createSession(id, previous.jobId, previous.executionClass, manifest.release, previous.budget, token, job.toString(), manifest = Json.encodeToString(manifest))
     }
 
     private fun project(job: Long, result: IterationResult) {

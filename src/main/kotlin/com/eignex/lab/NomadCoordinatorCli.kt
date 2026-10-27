@@ -73,7 +73,7 @@ object NomadCoordinatorCli {
                     detail
                 } finally { pendingChecks.remove(key, future) }
             }
-        }, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template ->
+        }, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, workerRuntime = NomadWorkerRuntime(queueSettings)::replace, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template ->
             if (template.platform == NomadPlatform.MAC) {
                 require(manifest.budget.cpuMillis <= config.cores * 1000 && manifest.budget.parallel <= config.maxParallel)
             } else {

@@ -436,3 +436,10 @@ processor limits, and at most `maxConcurrentBuildsPerNode` compilers per node
 (default 2). Shared cache locks deduplicate builds and warm hits bypass compiler
 slots. Oversized literal commands remain intact in `cases/<index>/command.sh`
 artifacts without overflowing result metadata.
+
+`workerReplaces` explicitly approves older worker release IDs for a compatible
+infrastructure patch. New solve admissions and infrastructure replacements then
+use the current pinned worker image/launcher and record its new release ID. The
+consumer experiment, resolved commits, arguments, budgets, corpus bundles and
+accepted results remain unchanged; original manifests and submissions remain
+immutable. Releases not listed retain their existing worker runtime.

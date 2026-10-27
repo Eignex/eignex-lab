@@ -33,6 +33,8 @@ data class NomadQueueSettings(
     val caseMemoryMiB: Int = 4096, val sessionMemoryMiB: Int = 512, val maxSessionsPerJob: Int = 64,
     /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. */
     val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
+    /** Explicitly approved infrastructure releases this worker can replace, preserving consumer inputs. */
+    val workerReplaces: Set<String> = emptySet(),
 ) {
     init {
         require(release.isNotBlank() && targets.isNotEmpty() && targets.map { it.template.nodeClass }.distinct().size == targets.size)
@@ -90,7 +92,7 @@ class NomadQueue(
         for (job in store.active().filter { it.backend == "nomad" && it.experiment?.isAnalysis != true && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
             try {
-                val settings = store.execution.queueRecipe(job.id, this.settings)
+                val settings = NomadWorkerRuntime(this.settings).queue(store.execution.queueRecipe(job.id, this.settings))
                 val spec = checkNotNull(job.experiment)
                 val targets = settings.matching(spec, job.name, Placement.cloudSchedule(job.name, schedules))
                     .filter { settings.solveBudget(it, job) != null }
