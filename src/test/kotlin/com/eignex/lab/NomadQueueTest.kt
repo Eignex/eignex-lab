@@ -305,7 +305,7 @@ class NomadQueueTest {
         val solve = store.execution.sessions(id).first { it.executionClass == "solve" }
         store.execution.loseSession(solve.id, "infrastructure:spot")
         queue().reconcile()
-        assertEquals(3, store.execution.sessions(id).count { it.executionClass == "solve" && it.desired != "stop" })
+        assertEquals(2, store.execution.sessions(id).count { it.executionClass == "solve" && it.desired != "stop" })
         assertEquals(1, publications)
         assertEquals(3, store.job(id)!!.commands.size)
     }
