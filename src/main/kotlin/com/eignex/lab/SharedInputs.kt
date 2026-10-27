@@ -93,6 +93,12 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                 }
                 Files.deleteIfExists(target)
                 Files.createLink(target, source)
+                val localPacked = existing.resolveSibling(existing.fileName.toString() + ".zst")
+                if (input.encoding == "zstd" && !Files.exists(existing, NOFOLLOW_LINKS) &&
+                    localPacked.toRealPathOrNull()?.startsWith(canonical) == true &&
+                    valid(localPacked, file.copy(sha256 = input.storedSha256, bytes = input.storedBytes))) {
+                    try { Files.createLink(existing, source) } catch (_: java.nio.file.FileAlreadyExistsException) { }
+                }
             }
         }
         return view
@@ -148,11 +154,15 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
 @Serializable internal data class InputSignature(val method: String, val key: String, val sha256: String? = null)
 @Serializable internal data class SignedInput(val url: String, val headers: Map<String, String> = emptyMap())
 
+private val inputSigningClient: HttpClient by lazy {
+    HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
+}
+
 internal fun signInput(signer: URI, signature: InputSignature): SignedInput {
     require(signer.scheme == "http" && signer.host in setOf("127.0.0.1", "localhost", "::1") && signer.userInfo == null)
     val request = HttpRequest.newBuilder(signer).timeout(Duration.ofSeconds(15)).header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(Json.encodeToString(InputSignature.serializer(), signature))).build()
-    val response = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build().send(request, HttpResponse.BodyHandlers.ofString())
+    val response = inputSigningClient.send(request, HttpResponse.BodyHandlers.ofString())
     check(response.statusCode() == 200) { "input signing unavailable" }
     return Json.decodeFromString<SignedInput>(response.body())
 }

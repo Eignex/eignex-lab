@@ -68,6 +68,7 @@ class SharedInputsTest {
         Files.write(nativeRoot.resolve("model.opb.zst"), Files.readAllBytes(packed))
         val nativeView = SharedInputs(nativeRoot, transport).resolve(listOf(input))
         assertEquals("model", Files.readString(nativeView.resolve("model.opb")))
+        assertTrue(Files.isSameFile(nativeRoot.resolve("model.opb"), nativeView.resolve("model.opb")))
         assertEquals(emptyList(), transport.gets)
         val replacement = SharedInputs(Files.createTempDirectory("replacement-inputs"), transport)
         val view = replacement.resolve(listOf(input))
