@@ -192,10 +192,10 @@ class NomadQueue(
     private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =
         if (target.os == "mac") ResourceBudget(config.cores * 1000, target.template.budget.memoryMiB) else null
 
-    /** Reuse compatible running capacity before buying the smallest shape that fits this session. */
+    /** Reuse compatible running capacity, then prefer larger nodes so sessions share host and build overhead. */
     private fun ordered(targets: List<NomadQueueTarget>, budget: (NomadQueueTarget) -> ResourceBudget): List<NomadQueueTarget> =
         targets.sortedWith(compareBy<NomadQueueTarget> { if (it.os == "mac") 0 else if (backend.hasCapacity(it.template, budget(it))) 1 else 2 }
-            .thenBy { it.template.cpuCapacity.logicalCpus }.thenBy { it.template.budget.memoryMiB }.thenBy { it.template.nodeClass })
+            .thenByDescending { it.template.cpuCapacity.logicalCpus }.thenByDescending { it.template.budget.memoryMiB }.thenBy { it.template.nodeClass })
 
     private fun plan(job: Job, recipe: WorkManifest, preparation: PreparationResult) {
         val spec = recipe.experiment

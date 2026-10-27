@@ -51,9 +51,9 @@ For each catalogue entry, inherit its source pool's pinned AMI, worker image, ar
 set the smaller shape, node class, CPU and memory values explicitly. Add the pool to capacity settings, adapter
 inventory, Autoscaler targets and queue templates together. Use a conservative memory reserve (at least 1536 MiB
 for an 8-GiB node), then verify the actual Nomad memory before admitting work. The queue reuses compatible running
-capacity first and otherwise chooses the smallest fitting shape. Larger pools remain available for requests that
-exceed small-node CPU or memory. Bound allocations keep their existing placement; every new pool starts at zero
-and remains Spot-only under the same global vCPU ceiling.
+capacity first and otherwise prefers larger compatible nodes so workers share host and build overhead. The capacity
+policy uses smaller pools when larger pools exceed its remaining vCPU quota or pool limits. Bound allocations keep
+their existing placement; every new pool starts at zero and remains Spot-only under the same global vCPU ceiling.
 
 Use `aws/adapter-fleet.example.json` to publish all AWS pools as one inventory. A missing pool prevents publishing
 a partial fresh inventory. Renewals use an independent signed grant for each pool, and one failed renewal does

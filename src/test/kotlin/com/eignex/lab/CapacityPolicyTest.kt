@@ -3,16 +3,39 @@ package com.eignex.lab
 import kotlin.test.*
 
 class CapacityPolicyTest {
-    @Test fun `smallest fitting cold pool wins but warm larger capacity is reused`() {
-        val large = pool.copy(id = "a-large")
-        val small = pool.copy(id = "z-small", nodeClass = "small", vcpus = 2, memoryMiB = 8192)
-        val config = settings.copy(pools = listOf(large, small))
+    @Test fun `largest fitting cold pool wins but warm smaller capacity is reused`() {
+        val large = pool.copy(id = "z-large")
+        val small = pool.copy(id = "a-small", nodeClass = "small", vcpus = 2, memoryMiB = 8192)
+        val config = settings.copy(pools = listOf(small, large))
         val ask = demand("small", 1000, 4608)
-        assertEquals(small.id, CapacityPolicy.evaluate(config, emptyList(), listOf(ask)).placements.single().pool)
-        val warm = CapacityNode("warm-large", large.id, CapacityNodeState.READY)
+        assertEquals(large.id, CapacityPolicy.evaluate(config, emptyList(), listOf(ask)).placements.single().pool)
+        val warm = CapacityNode("warm-small", small.id, CapacityNodeState.READY)
         assertEquals(warm.id, CapacityPolicy.evaluate(config, listOf(warm), listOf(ask)).placements.single().node)
         assertEquals(large.id, CapacityPolicy.evaluate(config, emptyList(), listOf(demand("cpu", 4000, 4608))).placements.single().pool)
         assertEquals(large.id, CapacityPolicy.evaluate(config, emptyList(), listOf(demand("memory", 1000, 8192))).placements.single().pool)
+    }
+
+    @Test fun `six memory heavy workers share one large node instead of six small nodes`() {
+        val small = pool.copy(id = "small", nodeClass = "small", vcpus = 2, memoryMiB = 8192, reserveMemoryMiB = 3072)
+        val config = settings.copy(pools = listOf(small, pool))
+        val asks = (1..6).map { demand("solve-$it", 1000, 4608, job = 1).copy(perHostParallel = null) }
+        val plan = CapacityPolicy.evaluate(config, emptyList(), asks)
+        assertEquals(mapOf(small.id to 0, pool.id to 1), plan.desired)
+        assertEquals(6, plan.placements.size)
+        assertEquals(1, plan.placements.map { it.node }.distinct().size)
+        assertTrue(plan.waiting.isEmpty())
+    }
+
+    @Test fun `smaller cold pools remain usable when large nodes exceed quota or pool limits`() {
+        val small = pool.copy(id = "small", nodeClass = "small", vcpus = 2, memoryMiB = 8192)
+        val config = settings.copy(pools = listOf(small, pool))
+        val ask = demand("small", 1000, 4608)
+        val limited = CapacityPolicy.evaluate(config.copy(maxVcpus = 2), emptyList(), listOf(ask))
+        assertEquals(small.id, limited.placements.single().pool)
+        val full = CapacityNode("full", pool.id, CapacityNodeState.READY,
+            listOf(CapacityReservation("busy", 2, ResourceBudget(pool.cpuMillis, pool.availableMemoryMiB))))
+        val capped = CapacityPolicy.evaluate(config.copy(pools = listOf(small, pool.copy(maxNodes = 1))), listOf(full), listOf(ask))
+        assertEquals(small.id, capped.placements.single().pool)
     }
 
     @Test fun `small sustained backlog grows beyond two nodes without an estimated core hour threshold`() {
