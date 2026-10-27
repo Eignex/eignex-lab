@@ -27,9 +27,13 @@ internal fun portableProblem(problem: Problem, source: Path, corpus: Path): Prob
     return problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
 }
 
-internal fun workerEnvironment(mac: Boolean): Map<String, String> = System.getenv().filterKeys {
-    it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || mac && it == "DOCKER_HOST"
-} + mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> {
+    val cache = environment["XDG_CACHE_HOME"] ?: if (mac) null else environment["LAB_WORKER_CACHE_ROOT"]?.let { "$it/consumer" }
+    return environment.filterKeys {
+        it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || mac && it == "DOCKER_HOST"
+    } + (cache?.let { mapOf("XDG_CACHE_HOME" to it) } ?: emptyMap()) +
+        mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+}
 
 /** Preparation is a worker operation under the same supervisor, cgroup and ownership lease as solves. */
 class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
@@ -71,7 +75,7 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
         val json = Json { ignoreUnknownKeys = true }
         fun select(selection: Map<String, String>, name: String): List<String> {
             val output = directory.resolve("$name.jsonl")
-            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary"
+            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary -Dklause.bench.corpus.shared=true"
             run(primary, "cd ${quote("$primary/klause-bench")} && JAVA_OPTS=${quote(options)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
                 "./build/install/klause-bench/bin/klause-bench select ${Experiments.selectArgs(selection)}", output)
             return Files.readAllLines(output).filter { it.startsWith("{") }

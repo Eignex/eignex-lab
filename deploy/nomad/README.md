@@ -300,6 +300,13 @@ homes; a pin protects each build until copying into its attempt finishes. Mainte
 node per minute, with a 32 GiB default cache target plus bounded active staging. Spot loss only loses a disposable cache. Normal queue
 preparation/admission runs through the coordinator.
 
+Preparation also opts into the consumer's shared corpus cache while retaining an isolated corpus output for
+portable artifacts. The consumer owns fetching, locking and publishing complete collections. Native execution
+keeps the user's normal cache home; Linux workers use `XDG_CACHE_HOME` under `/lab-cache/consumer` unless explicitly
+configured. This reuses collections between allocations on a node; Spot termination still discards that node's
+local cache. Older pinned consumers that do not recognize the shared-cache property keep their previous behavior.
+The retired executor's S3 corpus-pack synchronization is not provided by this node-local cache.
+
 A failed source build reports its bounded diagnostic tail through its authenticated attempt. The coordinator
 fences all sibling sessions and records a permanent `source-build` failure, rather than repeatedly treating a
 compiler error as Spot loss. A stale generation cannot fail replacement work. Failure acknowledgements are
