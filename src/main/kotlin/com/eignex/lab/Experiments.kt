@@ -79,6 +79,8 @@ data class ExperimentSpec(
     val repository: String = Repositories.DEFAULT,
     /** Optional required and excluded node tags. Omitted on ordinary jobs. */
     val nodeTags: NodeSelector? = null,
+    /** Repository-owned benchmark plan and execution. */
+    val bench: BenchSpec? = null,
 )
 
 @Serializable
@@ -195,6 +197,7 @@ data class Problem(
     val model: String? = null,
     val data: String? = null,
     val includeDirs: List<String> = emptyList(),
+    val benchCase: com.eignex.lab.bench.BenchCase? = null,
 )
 
 /** The case at one index of an experiment's commands. */
@@ -296,7 +299,7 @@ object Experiments {
             "runtime itself (per-case timeouts, placement on the local machine or a cloud node by load), so don't split or cancel jobs to " +
             "keep them short; read partial results with `lab cases ${job.id}` while it runs"
 
-    private fun exemptFromSplitting(spec: ExperimentSpec) = spec.isProfile || spec.isAnalysis || '@' in spec.name || Confirm.SUFFIX in spec.name
+    private fun exemptFromSplitting(spec: ExperimentSpec) = spec.bench != null || spec.isProfile || spec.isAnalysis || '@' in spec.name || Confirm.SUFFIX in spec.name
 
     /** What [spec] runs apart from its problems: each arm's values with their defaults filled in, labels left out. */
     private fun splitKey(spec: ExperimentSpec): List<Any> = listOf(
@@ -368,7 +371,17 @@ object Experiments {
         require(spec.name.isNotBlank()) { "name is required" }
         NodeTags.validate(spec.nodeTags)
         Repositories.requireAllowed(spec.repository)
-        require(spec.repository == Repositories.DEFAULT || spec.isProfile) { "other Eignex repositories require a profile entry point" }
+        require(spec.repository == Repositories.DEFAULT || spec.isProfile || spec.bench != null) { "other Eignex repositories require a profile or bench entry point" }
+        spec.bench?.let {
+            require(spec.profile == null && spec.analyze == null && !spec.isScript && !spec.measuresCli)
+            require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty() && spec.grid.isEmpty() &&
+                spec.configs == listOf(emptyMap<String, String>()) && spec.repeats == 1) {
+                "bench owns its cases and repetitions; submit its parameters in bench.request"
+            }
+            require(spec.base.keys.all { key -> key == "ref" || key == "label" }) { "bench owns runtime settings and resources" }
+            require(spec.parallel == null || spec.parallel in 1..maxParallel)
+            return
+        }
         requireOptions(spec)
         require(!spec.isScript) { "script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead" }
         spec.analyze?.let { analyze ->

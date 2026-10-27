@@ -40,6 +40,7 @@ public object BenchCli {
                 val context = BenchContext(
                     Path.of(output), environment["LAB_REPOSITORY"],
                     environment["LAB_WORKTREE"]?.let(Path::of),
+                    environment["LAB_CORPUS"]?.let(Path::of),
                 )
                 run(suite, case, context)
             }

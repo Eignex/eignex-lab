@@ -351,6 +351,23 @@ PY
         }
     }
 
+    @Test fun `source builds take their tasks from the committed adapter manifest`(): Unit = service { socket ->
+        val manifest = """{"main":"com.eignex.tools.AdapterKt","classpath":["build/lib/*"],"buildTasks":[":tools:prepare",":tools:linkNative"]}"""
+        val script = """#!/usr/bin/env bash
+            set -eu
+            [[ "${'$'}1" == :tools:prepare && "${'$'}2" == :tools:linkNative ]]
+            printf '%s\n' "${'$'}@" > invocation.txt
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("gradlew" to script, "tools/lab/bench.json" to manifest))
+        val source = VerifiedCache(root.resolve("sources")).stage(input) { ByteArrayInputStream(bytes) }
+        val recipe = input.copy(build = WorkerBuild(listOf(":wrong:legacyTask"), benchManifest = "tools/lab/bench.json"))
+        val prepared = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(recipe, source,
+            ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        val invocation = Files.readAllLines(prepared.resolve("invocation.txt"))
+        assertEquals(listOf(":tools:prepare", ":tools:linkNative"), invocation.take(2))
+        assertFalse(invocation.any { "legacyTask" in it })
+    }
+
     @Test fun `failed build preserves a bounded diagnostic and never publishes a cache entry`(): Unit = service { socket ->
         val (input, bytes) = bundle(mapOf("gradlew" to "echo expected-compile-failure >&2; exit 3"))
         val source = VerifiedCache(root.resolve("sources")).stage(input) { ByteArrayInputStream(bytes) }

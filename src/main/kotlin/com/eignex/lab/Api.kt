@@ -358,6 +358,9 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases))
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
+        get("/experiments/{id}/metrics.csv") {
+            call.respondText(BenchRuns.metricsCsv(store.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
+        }
         get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
         // Every case whole, as JSON Lines: its record with its final witness, its build provenance and the lab's verdict
         // as `labCheck`, its producer record as the database keeps it, cut to its time to best ([StoredRecords]). It is

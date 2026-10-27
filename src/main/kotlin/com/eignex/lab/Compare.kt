@@ -69,6 +69,7 @@ data class Outcome(
     companion object {
         fun of(record: JsonElement?): Outcome? {
             val fields = record as? JsonObject ?: return null
+            if ("caseId" in fields && "solver" !in fields) return null
             fun field(name: String) = fields[name]?.takeUnless { it is JsonObject }?.jsonPrimitive
             // The lab's own verdict ([com.eignex.lab.checker.LabCheck]) speaks for the claim where there is one; the
             // bench's check, if it made one, only for records the lab has not checked.

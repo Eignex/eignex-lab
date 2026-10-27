@@ -10,11 +10,13 @@ data class InputFile(val path: String, val sha256: String, val bytes: Long, val 
 
 /** A trusted source build runs inside the session's existing CPU/memory reservation. */
 @Serializable
-data class WorkerBuild(val tasks: List<String> = emptyList(), val timeoutSec: Long = 1800, val gitBundle: String? = null) {
+data class WorkerBuild(val tasks: List<String> = emptyList(), val timeoutSec: Long = 1800, val gitBundle: String? = null,
+                       val benchManifest: String? = null) {
     init {
         require(tasks.all { it.matches(Regex(":?[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)*")) && !it.startsWith("-") })
         require(timeoutSec in 1..7200)
         gitBundle?.let(::safeRelative)
+        benchManifest?.let(::safeRelative)
     }
 }
 
@@ -40,19 +42,28 @@ data class WorkCase(val index: Int, val arm: Int, val problem: Problem, val seed
 
 /** Portable domain input. Commands and filesystem paths are rendered only after staging on the worker. */
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class WorkManifest(
     val session: String, val release: String, val experiment: ExperimentSpec, val arms: List<PlannedArm>,
     val cases: List<WorkCase>, val bundles: List<WorkerBundle>, val budget: ResourceBudget,
-    val solveJavaOptions: String = "", val schemaVersion: Int = 1,
+    val solveJavaOptions: String = "",
+    @kotlinx.serialization.EncodeDefault val schemaVersion: Int = if (experiment.bench == null) 1 else 2,
     val preparationTimeoutSec: Long? = null, val inputCorpus: WorkerBundle? = null,
     val sharedInputs: List<SharedInput> = emptyList(),
 ) {
     init {
-        require(schemaVersion == 1 && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion == (if (experiment.bench == null) 1 else 2) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
         require(preparationTimeoutSec == null || preparationTimeoutSec in 1..7200)
         require(arms.isNotEmpty() && (cases.isNotEmpty() || preparationTimeoutSec != null) && cases.map { it.index }.distinct().size == cases.size)
         require(arms.all { (preparationTimeoutSec != null || it.arm.cores * 1000L <= budget.cpuMillis) && it.sha.matches(Regex("[a-f0-9]{40}")) })
         require(cases.all { it.arm in arms.indices })
+        cases.forEach { case ->
+            case.problem.benchCase?.let { bench ->
+                require(experiment.bench != null && bench.resources.cpus * 1000L <= budget.cpuMillis)
+                require(bench.resources.memoryMiB <= budget.memoryMiB && bench.resources.timeoutSeconds == case.timeoutSec)
+            }
+            require(experiment.bench == null || case.problem.benchCase != null)
+        }
         require(preparationTimeoutSec == null || cases.isEmpty())
         require(inputCorpus == null || inputCorpus.repository == experiment.repository)
         require(inputCorpus == null || sharedInputs.isEmpty())

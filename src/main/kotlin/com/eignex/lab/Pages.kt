@@ -166,6 +166,8 @@ internal fun jobPage(
     val spec = job.experiment
     if (spec != null && spec.isAnalysis) {
         append(analysisSection(config, job, spec))
+    } else if (spec?.bench != null) {
+        append(benchSection(job, cases))
     } else if (spec != null && (spec.isProfile || spec.isScript)) {
         append(singleCaseSection(config, job, spec))
     } else if (spec != null) {
@@ -2113,4 +2115,24 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): St
         report.observation?.let { append("<tr><td colspan=\"5\">${esc(it)}</td></tr>") }
     }
     append("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>")
+}
+
+private fun benchSection(job: Job, cases: List<CaseResult>): String = buildString {
+    append("<h2>Bench results</h2><p>Repository <code>${esc(job.experiment!!.repository)}</code> · ")
+    append("<a href=\"/experiments/${job.id}/metrics.csv\">metrics CSV</a> · ")
+    append("<a href=\"/experiments/${job.id}/cases\">case records</a> · <a href=\"/jobs/${job.id}/files\">all files</a></p>")
+    for (case in cases) {
+        val result = BenchRuns.result(case.record?.toString())
+        append("<h3>${esc(case.problem.problem)}</h3><p>${esc(result?.status?.name ?: case.status.name)}</p>")
+        result?.message?.let { append("<p>${esc(it)}</p>") }
+        if (result != null && result.metrics.isNotEmpty()) {
+            append("<table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Direction</th></tr>")
+            result.metrics.forEach { metric -> append("<tr><td>${esc(metric.name)}</td><td>${metric.value}</td><td>${esc(metric.unit)}</td><td>${metric.direction.name.lowercase()}</td></tr>") }
+            append("</table>")
+        }
+        result?.artifacts?.forEach { artifact ->
+            val path = artifact.path.split('/').joinToString("/") { java.net.URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") }
+            append("<p><a href=\"/jobs/${job.id}/files/cases/${case.index}/out/$path\">${esc(artifact.path)}</a></p>")
+        }
+    }
 }

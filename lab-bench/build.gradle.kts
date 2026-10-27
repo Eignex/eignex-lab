@@ -83,3 +83,10 @@ tasks.register<Exec>("verifyRelease") {
         languageVersion.set(JavaLanguageVersion.of(25))
     }.get().metadata.installationPath.asFile.absolutePath)
 }
+
+// Mirrors the public release layout so consumer adapters can be tested before a tag exists.
+tasks.register<Sync>("stageAdapterRepository") {
+    dependsOn("releaseAssets")
+    from(layout.buildDirectory.dir("release-assets"))
+    into(layout.buildDirectory.dir("adapter-repository/lab-bench-v$version"))
+}

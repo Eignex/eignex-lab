@@ -104,6 +104,7 @@ class Runner(
 
     internal fun queueConfirmation(job: Job) {
         val spec = job.experiment ?: return
+        if (spec.bench != null) return
         val series = job.name.substringBefore('@', "")
         if (series.isEmpty() || series.endsWith(Confirm.SUFFIX) || store.schedules().none { it.name == series }) return
         val fingerprint = Experiments.fingerprint(spec)

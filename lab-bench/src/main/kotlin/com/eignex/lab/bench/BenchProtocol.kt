@@ -62,11 +62,13 @@ public data class BenchResources(
 
 /** One independently executable workload. Parameters should pin seeds, backends and measurement settings. */
 @Serializable
-public data class BenchCase(
+public data class BenchCase @JvmOverloads constructor(
     public val id: String,
     public val parameters: Map<String, String> = emptyMap(),
     public val resources: BenchResources = BenchResources(),
     public val protocolVersion: Int = BenchProtocol.VERSION,
+    public val inputs: List<BenchInput> = emptyList(),
+    public val attributes: Map<String, String> = emptyMap(),
 ) {
     init {
         BenchProtocol.requireVersion(protocolVersion)

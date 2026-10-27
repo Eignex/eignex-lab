@@ -58,7 +58,7 @@ class IterationExecutor(
         }
         // Provenance binds absolute distribution/runtime paths and launcher metadata. Capture only after
         // relocation and measurement installation, on the host and in the tree that actually runs the cases.
-        if (!manifest.experiment.isProfile) for ((sha, worktree) in worktrees) {
+        if (!manifest.experiment.isProfile && manifest.experiment.bench == null) for ((sha, worktree) in worktrees) {
             if (manifest.arms.none { it.sha == sha && it.arm.values["backend"] != REFERENCE_BACKEND }) continue
             val exit = supervisor.run(listOf("bash", "-c", Experiments.captureProvenance(worktree.toString())), worktree,
                 environment(), directory.resolve("provenance-$sha.out"), directory.resolve("provenance-$sha.err"), 60,
@@ -72,7 +72,8 @@ class IterationExecutor(
         try {
             val results = threads.invokeAll(selected.map { case -> Callable {
                 val arm = manifest.arms[case.arm].arm
-                val permits = Math.multiplyExact(arm.cores, 1000)
+                val permits = Math.multiplyExact(case.problem.benchCase?.resources?.cpus ?: arm.cores, 1000)
+                require(permits <= manifest.budget.cpuMillis) { "bench case exceeds the session CPU budget" }
                 cpu.acquire(permits)
                 try {
                     checkRun()
@@ -82,19 +83,22 @@ class IterationExecutor(
                     val problem = case.problem.copy(model = case.problem.model?.let { portablePath(it, worktree, corpus).toString() },
                         data = case.problem.data?.let { portablePath(it, worktree, corpus).toString() },
                         includeDirs = case.problem.includeDirs.map { portablePath(it, worktree, corpus).toString() })
-                    val command = manifest.experiment.profile?.let { Experiments.profileCommand(worktree.toString(), it, case.index, corpus.toString(), arm.debug, manifest.experiment.repository) }
+                    case.problem.benchCase?.let { BenchRuns.validateInputs(it, worktree, corpus) }
+                    val command = manifest.experiment.bench?.let { BenchRuns.command(worktree, it, requireNotNull(case.problem.benchCase), case.index, corpus, manifest.experiment.repository) }
+                        ?: manifest.experiment.profile?.let { Experiments.profileCommand(worktree.toString(), it, case.index, corpus.toString(), arm.debug, manifest.experiment.repository) }
                         ?: if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(launcher, problem, arm, case.seed, case.index)
                         else Experiments.command(worktree.toString(), problem, arm, case.seed, case.index, corpus.toString())
                     val id = UUID.randomUUID().toString()
                     val profile = if (manifest.experiment.measuresCli) Files.createDirectories(directory.resolve("cases/${case.index}/profile-$id")) else null
-                    val runtime = "${manifest.solveJavaOptions} -XX:ActiveProcessorCount=${arm.cores}".trim()
+                    val runtime = "${manifest.solveJavaOptions} -XX:ActiveProcessorCount=${permits / 1000}".trim()
                     val javaOptions = listOf(runtime, profile?.takeIf { manifest.experiment.recordsCliJfr }?.let { CliMeasurements.options(it.toString(), manifest.experiment.compilationRecording) }.orEmpty()).joinToString(" ").trim()
-                    val env = environment() + mapOf("JOB_DIR" to directory.toString(), "KLAUSE_DEBUG" to "true", "KLAUSE_CLI_OPTS" to javaOptions, "KLAUSE_CLI_PREFLIGHT_OPTS" to runtime) +
+                    val env = environment() + mapOf("JOB_DIR" to directory.toString()) +
+                        (if (manifest.experiment.bench != null) emptyMap() else mapOf("KLAUSE_DEBUG" to "true", "KLAUSE_CLI_OPTS" to javaOptions, "KLAUSE_CLI_PREFLIGHT_OPTS" to runtime)) +
                         (profile?.let { mapOf("EIGNEX_LAB_PROFILE_DIR" to it.toString()) } ?: emptyMap())
                     val start = now()
                     val processRunMs = runRemaining()
                     val graceMs = minOf(Experiments.STOP_GRACE_SEC * 1000, processRunMs?.let { (it / 10).coerceAtLeast(0) } ?: Long.MAX_VALUE)
-                    val exit = try { supervisor.run(listOf("bash", "-c", command), worktree, env,
+                    var exit = try { supervisor.run(listOf("bash", "-c", command), worktree, env,
                         directory.resolve("${case.index}.out"), directory.resolve("${case.index}.err"), case.timeoutSec,
                         graceMs = graceMs, runRemainingMs = processRunMs, remainingLeaseMs = remainingLeaseMs)
                     } catch (_: ProfileRunTimeout) {
@@ -103,8 +107,14 @@ class IterationExecutor(
                         124
                     }
                     val finish = now()
+                    val record = if (manifest.experiment.bench != null) {
+                        val resultFile = directory.resolve("cases/${case.index}/out/result.json")
+                        val processed = BenchRuns.executionRecord(
+                            resultFile.takeIf(Files::isRegularFile)?.let(Files::readString), requireNotNull(case.problem.benchCase), exit)
+                        exit = processed.exit
+                        processed.json
+                    } else directory.resolve("cases/${case.index}").toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     Files.writeString(directory.resolve("${case.index}.exit"), "$exit\n")
-                    val record = directory.resolve("cases/${case.index}").toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     if (profile != null) CliMeasurements.writeManifest(profile, case.index, generation, id, host, command, exit,
                         javaOptions, record, os == "mac", manifest.experiment.compilationRecording, manifest.experiment.recordsCliJfr)
                     ExecutionCaseResult(case.index, exit, start, finish, record, recordedCommand(directory, case.index, command))

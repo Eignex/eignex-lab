@@ -36,7 +36,7 @@ fun main(args: Array<String>) {
         System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator")
         exitProcess(2)
     }
-    val host = runCatching { requireAcceleratedHost() }.getOrElse { e ->
+    val host = runCatching { hostReport() }.getOrElse { e ->
         System.err.println("refusing to start: ${e.message}")
         exitProcess(EX_CONFIG)
     }

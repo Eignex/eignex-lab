@@ -11,6 +11,7 @@ repositories {
 val ktor = "3.2.3"
 
 dependencies {
+    implementation(project(":lab-bench"))
     implementation("io.ktor:ktor-server-core:$ktor")
     implementation("io.ktor:ktor-server-netty:$ktor")
     implementation("io.ktor:ktor-server-content-negotiation:$ktor")
@@ -50,4 +51,19 @@ tasks.register("printJavaHome") {
     }
         .map { it.metadata.installationPath.asFile.absolutePath }
     doLast { println(home.get()) }
+}
+
+// Runs real, already-built consumer adapters through preparation, execution and coordinator ingestion.
+tasks.test { useJUnitPlatform { excludeTags("bench-adapters") } }
+tasks.register<Test>("verifyBenchAdapters") {
+    group = "verification"
+    description = "Verify unpublished SDK adapters from LAB_BENCH_ADAPTER_ROOT through the worker/coordinator path."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("bench-adapters") }
+    environment("JAVA_HOME", javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().metadata.installationPath.asFile.absolutePath)
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
 }
