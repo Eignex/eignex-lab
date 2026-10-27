@@ -15,20 +15,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: 25
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
       # rather than skipping when a tool cannot be had): GMP for building the MIPLIB solchecker.
       - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd libegl1 libgl1
-      # MiniZinc with Gecode, the bundle a cloud node installs.
+      # MiniZinc with Gecode, the bundle a cloud node installs, checked against the SHA-256 the lab pins (NodeTools).
       - run: |
           sudo mkdir -p /opt/minizinc
-          curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/2.9.7/MiniZincIDE-2.9.7-bundle-linux-x86_64.tgz |
-            sudo tar -xz -C /opt/minizinc --strip-components=1
+          curl -fsSL -o /tmp/minizinc.tgz https://github.com/MiniZinc/MiniZincIDE/releases/download/2.9.7/MiniZincIDE-2.9.7-bundle-linux-x86_64.tgz
+          echo "7e78d3a1d6feec2f5b6a43628632decb6995755ade92ff4e51a2188c54ca6399  /tmp/minizinc.tgz" | sha256sum -c -
+          sudo tar -xz -f /tmp/minizinc.tgz -C /opt/minizinc --strip-components=1
           echo /opt/minizinc/bin >> "$GITHUB_PATH"
       # Z3, the checker for algebraic SMT-LIB models Dolmen cannot read: the release build, checked against its SHA-256.
       - run: |
@@ -39,7 +40,7 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-reports
@@ -47,7 +48,7 @@ jobs:
             build/test-results/
             build/reports/tests/
       - run: ./gradlew distZip
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: eignex-lab-distribution
           path: build/distributions/*.zip

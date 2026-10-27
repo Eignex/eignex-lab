@@ -19,6 +19,39 @@ import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 
 /**
+ * The tools a node downloads at first boot ([AwsWorker.bootstrap]), each pinned to a version and its SHA-256, so a
+ * file changed at its source fails the boot instead of running on the node. Each hash was checked against a second
+ * source: Adoptium's API and the release's `.sha256.txt` for the JDK, GitHub's digest and the release's `.sha256` for
+ * MiniZinc, and AWS's PGP signature for the AWS CLI. To move to a newer version, change the version and its hashes
+ * together.
+ */
+internal object NodeTools {
+    const val JDK = "25.0.5+8"
+    /** By Adoptium's architecture name. */
+    val JDK_SHA256 = mapOf(
+        "x64" to "68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb",
+        "aarch64" to "bb5b2ded252f21c6090cf780b0a408ad0d83bbb557e702955643557f13231880",
+    )
+
+    /** The JDK's Temurin download for [arch], which may be a shell expansion such as `$jdk_arch`. */
+    fun jdkUrl(arch: String): String {
+        val file = JDK.replace('+', '_')
+        return "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-${JDK.replace("+", "%2B")}/" +
+            "OpenJDK25U-jdk_${arch}_linux_hotspot_$file.tar.gz"
+    }
+
+    /** The default MiniZinc; only its x86_64 bundle is downloaded, an arm64 node installs Ubuntu's package. */
+    const val MINIZINC = "2.9.7"
+    val MINIZINC_SHA256 = mapOf("2.9.7" to "7e78d3a1d6feec2f5b6a43628632decb6995755ade92ff4e51a2188c54ca6399")
+
+    const val AWSCLI = "2.38.6"
+    val AWSCLI_SHA256 = mapOf(
+        "x86_64" to "66974301c11f8116a6cb96bf72acae57453734b61fa8dd3f56422de9eaab0e42",
+        "aarch64" to "a9f355189a5a25834c015fc07d65e1834f0dbbee1d9bd1c418176f43a463067f",
+    )
+}
+
+/**
  * Where the lab runs experiments on AWS, read from `$LAB_DATA/aws/aws.properties` (written by `deploy/aws-setup.sh`),
  * so no service needs reinstalling to change it. The CLI's credentials are a named [profile] in `~/.aws/credentials`.
  */
@@ -83,6 +116,9 @@ data class AwsConfig(
     val nodeTags: Set<String> = emptySet(),
     val arm64Ami: String? = null,
     val architectures: Map<String, String> = emptyMap(),
+    /** The SHA-256 of [minizinc]'s x86_64 bundle: known for [NodeTools.MINIZINC_SHA256]'s versions, else from
+     *  `minizincSha256`. */
+    val minizincSha256: String = NodeTools.MINIZINC_SHA256.getValue(NodeTools.MINIZINC),
 ) {
     /** The sizes a node can be, smallest first: [instanceType] and the larger sizes of its family up to
      *  [nodeMaxVcpus], within the quota. */
@@ -131,7 +167,15 @@ data class AwsConfig(
                 subnet = get("subnet"),
                 cores = get("cores", "4")!!.toInt(),
                 maxHours = get("maxHours", "24")!!.toInt(),
-                minizinc = get("minizinc", "2.9.7")!!,
+                minizinc = get("minizinc", NodeTools.MINIZINC)!!,
+                minizincSha256 = get("minizincSha256").let { given ->
+                    val version = get("minizinc", NodeTools.MINIZINC)!!
+                    val sha = requireNotNull(given ?: NodeTools.MINIZINC_SHA256[version]) {
+                        "aws.properties names minizinc=$version: give its bundle's SHA-256 as minizincSha256"
+                    }
+                    require(Regex("[0-9a-f]{64}").matches(sha)) { "minizincSha256 must be 64 lowercase hex digits" }
+                    sha
+                },
                 ami = get("ami"),
                 corpusBucket = get("corpusBucket"),
                 instanceProfile = get("instanceProfile"),
@@ -1501,19 +1545,23 @@ class AwsWorker(
         apt-get update -q
         apt-get install -yq git zstd unzip curl xz-utils time jq build-essential libgmp-dev zlib1g-dev
         mkdir -p /opt/jdk /opt/minizinc
+        # Each download is pinned by its SHA-256 ([NodeTools]): a file changed at its source fails the boot, not runs.
+        fetch() { curl -fsSL -o "${'$'}1" "${'$'}2" && echo "${'$'}3  ${'$'}1" | sha256sum -c -; }
         case "${'$'}(uname -m)" in
-          x86_64) jdk_arch=x64; minizinc_arch=x86_64; aws_arch=x86_64 ;;
-          aarch64|arm64) jdk_arch=aarch64; minizinc_arch=aarch64; aws_arch=aarch64 ;;
+          x86_64) jdk_arch=x64; jdk_sha=${NodeTools.JDK_SHA256.getValue("x64")}; aws_arch=x86_64; aws_sha=${NodeTools.AWSCLI_SHA256.getValue("x86_64")} ;;
+          aarch64|arm64) jdk_arch=aarch64; jdk_sha=${NodeTools.JDK_SHA256.getValue("aarch64")}; aws_arch=aarch64; aws_sha=${NodeTools.AWSCLI_SHA256.getValue("aarch64")} ;;
           *) echo 'unsupported CPU architecture'; exit 2 ;;
         esac
-        curl -fsSL https://api.adoptium.net/v3/binary/latest/25/ga/linux/${'$'}jdk_arch/jdk/hotspot/normal/eclipse | tar -xz -C /opt/jdk --strip-components=1
-        if [ "${'$'}minizinc_arch" = x86_64 ]; then
-          curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz | tar -xz -C /opt/minizinc --strip-components=1
+        fetch /tmp/jdk.tar.gz "${NodeTools.jdkUrl("${'$'}jdk_arch")}" "${'$'}jdk_sha"
+        tar -xz -f /tmp/jdk.tar.gz -C /opt/jdk --strip-components=1
+        if [ "${'$'}aws_arch" = x86_64 ]; then
+          fetch /tmp/minizinc.tgz "https://github.com/MiniZinc/MiniZincIDE/releases/download/${aws.minizinc}/MiniZincIDE-${aws.minizinc}-bundle-linux-x86_64.tgz" ${aws.minizincSha256}
+          tar -xz -f /tmp/minizinc.tgz -C /opt/minizinc --strip-components=1
           ln -sf /opt/minizinc/bin/minizinc /usr/local/bin/minizinc
         else
           apt-get install -yq minizinc
         fi
-        curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-${'$'}aws_arch.zip -o /tmp/awscli.zip
+        fetch /tmp/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-${'$'}aws_arch-${NodeTools.AWSCLI}.zip" "${'$'}aws_sha"
         unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install
         touch /var/lib/eignex-lab-ready
     """.trimIndent() + "\n"

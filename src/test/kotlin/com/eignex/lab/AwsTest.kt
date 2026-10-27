@@ -298,6 +298,32 @@ class AwsTest {
     }
 
     @Test
+    fun `a node checks every download it boots with against its pinned SHA-256`() {
+        val aws = AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null)
+        val script = AwsWorker.bootstrap(aws)
+
+        val downloads = script.lines().filter { "curl -" in it && "fetch()" !in it }
+        assertTrue(downloads.isEmpty(), "unchecked downloads: $downloads")
+        assertEquals(3, script.lines().count { it.trimStart().startsWith("fetch /tmp/") })
+        for (sha in NodeTools.JDK_SHA256.values + NodeTools.AWSCLI_SHA256.values + aws.minizincSha256) assertContains(script, sha)
+        assertFalse("latest" in script)
+        val check = ProcessBuilder("bash", "-n").redirectErrorStream(true).start()
+        check.outputStream.use { it.write(script.toByteArray()) }
+        assertEquals(0, check.waitFor(), check.inputStream.bufferedReader().readText())
+    }
+
+    @Test
+    fun `another MiniZinc needs its own SHA-256, and a known one has it already`() {
+        val file = Files.createTempFile("aws", ".properties")
+        file.toFile().writeText("region=eu-north-1\nkeyName=k\nkeyFile=/k.pem\nsecurityGroup=sg\n")
+        assertEquals(NodeTools.MINIZINC_SHA256.getValue("2.9.7"), AwsConfig.load(file)!!.minizincSha256)
+        file.toFile().appendText("minizinc=2.9.8\n")
+        assertFailsWith<IllegalArgumentException> { AwsConfig.load(file) }
+        file.toFile().appendText("minizincSha256=${"a".repeat(64)}\n")
+        assertEquals("a".repeat(64), AwsConfig.load(file)!!.minizincSha256)
+    }
+
+    @Test
     fun `the pool's report carries the launch gate for the pages, and an old report still reads`() {
         val aws = AwsConfig("eu-north-1", "p", "c7i.2xlarge", 4, 32, "k", "/k.pem", "sg", null, 4, 24, "2.9.7", null,
             nodeSustainMin = 10, nodeCooldownMin = 5)
