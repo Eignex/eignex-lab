@@ -29,7 +29,9 @@ class IterationExecutor(
         val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) == Triple(selected.first().problem, selected.first().seed, selected.first().repeat) }
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
-        val corpus = directory.resolve("corpus")
+        val corpus = if (manifest.sharedInputs.isNotEmpty()) {
+            requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.resolve(manifest.sharedInputs, ::checkRun)
+        } else directory.resolve("corpus")
         if (manifest.inputCorpus != null) {
             val input = cache.stage(manifest.inputCorpus, ::checkRun) { bundleInput(manifest.inputCorpus) }
             copyTree(input, corpus, ::checkRun)

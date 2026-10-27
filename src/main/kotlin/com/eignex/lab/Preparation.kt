@@ -12,6 +12,7 @@ import java.util.zip.ZipOutputStream
 data class PreparationResult(
     val selections: List<List<Problem>>, val bundles: List<WorkerBundle>, val corpus: WorkerBundle? = null,
     val features: List<ProblemFeatures> = emptyList(), val artifacts: Map<String, String> = emptyMap(),
+    val sharedInputs: List<SharedInput> = emptyList(),
 )
 
 /** Relative roots in the domain plan have the same meaning on every worker. */
@@ -30,7 +31,7 @@ internal fun portableProblem(problem: Problem, source: Path, corpus: Path): Prob
 internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> {
     val cache = environment["XDG_CACHE_HOME"] ?: if (mac) null else environment["LAB_WORKER_CACHE_ROOT"]?.let { "$it/consumer" }
     return environment.filterKeys {
-        it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || mac && it == "DOCKER_HOST"
+        it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL", "KLAUSE_BENCH_CORPUS_MIRROR", "KLAUSE_BENCH_CORPUS_MIRROR_WRITE") || mac && it == "DOCKER_HOST"
     } + (cache?.let { mapOf("XDG_CACHE_HOME" to it) } ?: emptyMap()) +
         mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
 }
@@ -49,7 +50,8 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             check(remaining() > 0) { "preparation allowance expired" }
             if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout()
         }
-        val corpus = Files.createDirectories(directory.resolve("corpus"))
+        val shared = SharedInputs.environment()
+        val corpus = Files.createDirectories(shared?.root ?: directory.resolve("corpus"))
         val env = workerEnvironment(os == "mac")
         val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
         fun run(tree: Path, command: String, output: Path = log) {
@@ -121,7 +123,10 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip")) }
         }
-        val corpusBundle = if (Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
+        val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
+            .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.distinct()
+        val sharedInputs = if (shared != null) shared.publish(inputPaths, ::checkActive) else emptyList()
+        val corpusBundle = if (shared == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
             archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), ::checkActive)
                 .also { artifacts["preparation/corpus.zip"] = upload(directory.resolve("corpus.zip")) }
         } else null
@@ -130,7 +135,7 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             if (Files.isRegularFile(path)) artifacts["preparation/$name"] = upload(path)
         }
         require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
-        return PreparationResult(selections, bundles, corpusBundle, features, artifacts)
+        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs)
     }
 }
 

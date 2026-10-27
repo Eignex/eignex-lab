@@ -156,7 +156,7 @@ class NomadQueue(
                     } ?: break
                     val budget = checkNotNull(settings.solveBudget(target, current))
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, recipe.arms, cases, bundles, budget,
-                        solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus)
+                        solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus, sharedInputs = preparation.sharedInputs)
                     val excluded = if (target.os == "mac") emptySet() else cloudSessions().filter { it.node != null }
                         .groupBy { checkNotNull(it.node) }.filterValues { hosted ->
                             hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > current.parallel
@@ -188,6 +188,13 @@ class NomadQueue(
         require(spec.confirm || hours <= config.maxExperimentHours) { "${cases.size} cases could take $hours h; resubmit with confirm=true" }
         preparation.corpus?.let { bundle ->
             val root = VerifiedCache(config.dataDir.resolve("nomad/check-inputs")).stage(bundle) { Files.newInputStream(artifacts.file(job.id, bundle.sha256)) }
+            val link = config.jobDir(job.id).resolve("nomad/prepared-corpus")
+            Files.createDirectories(link.parent)
+            if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
+            require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
+        }
+        if (preparation.sharedInputs.isNotEmpty()) {
+            val root = requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.resolve(preparation.sharedInputs)
             val link = config.jobDir(job.id).resolve("nomad/prepared-corpus")
             Files.createDirectories(link.parent)
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())

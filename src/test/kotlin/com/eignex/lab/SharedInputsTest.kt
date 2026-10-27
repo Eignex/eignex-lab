@@ -1,0 +1,85 @@
+package com.eignex.lab
+
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.test.*
+
+class SharedInputsTest {
+    private class Transport : InputTransport {
+        val objects = mutableMapOf<String, ByteArray>()
+        val gets = mutableListOf<String>()
+        val puts = mutableListOf<String>()
+        override fun matches(key: String, file: InputFile, md5: String) = objects[key]?.let {
+            it.size.toLong() == file.bytes && ExecutionStore.digest(String(it)) == file.sha256
+        } ?: false
+        override fun put(key: String, source: Path, sha: String) { puts += key; objects[key] = Files.readAllBytes(source) }
+        override fun get(key: String, destination: Path) { gets += key; Files.write(destination, objects.getValue(key)) }
+    }
+
+    @Test fun `existing regional objects and native files are reused without uploading or copying data`() {
+        val root = Files.createTempDirectory("shared-inputs")
+        val model = root.resolve("collection/model.opb"); Files.createDirectories(model.parent); Files.writeString(model, "model")
+        val transport = Transport().also { it.objects["corpus/collection/model.opb"] = "model".toByteArray() }
+        val cache = SharedInputs(root, transport)
+        val inputs = cache.publish(listOf("collection/model.opb"))
+        val first = cache.resolve(inputs)
+        val second = cache.resolve(inputs)
+        assertEquals("corpus/collection/model.opb", inputs.single().key)
+        assertEquals(first, second)
+        assertTrue(Files.isSameFile(model, first.resolve("collection/model.opb")))
+        assertEquals(emptyList(), transport.gets)
+        assertEquals(emptyList(), transport.puts)
+    }
+
+    @Test fun `a cold replacement node downloads each needed file once and reuses it across views`() {
+        val transport = Transport()
+        val sha = ExecutionStore.digest("model"); val key = "input-blobs/$sha"
+        transport.objects[key] = "model".toByteArray()
+        val input = SharedInput(InputFile("collection/model.opb", sha, 5), key)
+        val cache = SharedInputs(Files.createTempDirectory("cold-inputs"), transport)
+        val first = cache.resolve(listOf(input))
+        assertEquals(first, cache.resolve(listOf(input)))
+        assertEquals("model", Files.readString(first.resolve(input.file.path)))
+        assertEquals(listOf(key), transport.gets)
+        assertEquals(emptyList(), transport.puts)
+    }
+
+    @Test fun `a newly fetched input is published once under its content hash`() {
+        val root = Files.createTempDirectory("new-inputs")
+        Files.writeString(root.resolve("model"), "new")
+        val transport = Transport(); val cache = SharedInputs(root, transport)
+        val first = cache.publish(listOf("model"))
+        assertEquals(first, cache.publish(listOf("model")))
+        assertEquals("input-blobs/${ExecutionStore.digest("new")}", first.single().key)
+        assertEquals(listOf(first.single().key), transport.puts)
+    }
+
+    @Test fun `corrupt remote bytes are never exposed to a job`() {
+        val root = Files.createTempDirectory("corrupt-inputs"); val transport = Transport()
+        val sha = ExecutionStore.digest("model"); val key = "input-blobs/$sha"
+        transport.objects[key] = "wrong".toByteArray()
+        assertFailsWith<IllegalStateException> { SharedInputs(root, transport).resolve(listOf(SharedInput(InputFile("model", sha, 5), key))) }
+        assertFalse(Files.exists(root.resolve(".lab-inputs/blobs/$sha")))
+    }
+
+    @Test fun `different input versions keep independent immutable views`() {
+        val root = Files.createTempDirectory("versioned-inputs"); val transport = Transport()
+        fun input(text: String): SharedInput {
+            val sha = ExecutionStore.digest(text); val key = "input-blobs/$sha"
+            transport.objects[key] = text.toByteArray()
+            return SharedInput(InputFile("collection/model", sha, text.length.toLong()), key)
+        }
+        val cache = SharedInputs(root, transport)
+        val old = cache.resolve(listOf(input("old"))); val newer = cache.resolve(listOf(input("new")))
+        assertEquals("old", Files.readString(old.resolve("collection/model")))
+        assertEquals("new", Files.readString(newer.resolve("collection/model")))
+        assertNotEquals(old, newer)
+    }
+
+    @Test fun `input aliases cannot publish files outside the configured cache`() {
+        val root = Files.createTempDirectory("confined-inputs")
+        val outside = Files.createTempFile("outside-input", ".txt"); Files.writeString(outside, "private")
+        Files.createSymbolicLink(root.resolve("link"), outside)
+        assertFailsWith<IllegalArgumentException> { SharedInputs(root, Transport()).publish(listOf("link")) }
+    }
+}
