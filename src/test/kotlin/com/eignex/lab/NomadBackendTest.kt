@@ -63,7 +63,7 @@ class NomadBackendTest {
         val task = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
         assertEquals(template.image, task.getValue("Config").jsonObject.getValue("image").jsonPrimitive.content)
         assertEquals("patched", task.getValue("Env").jsonObject.getValue("LAB_WORKER_RELEASE").jsonPrimitive.content)
-        assertEquals(0, store.execution.failureCount(id))
+        assertEquals(1, store.execution.failureCount(id), "the existing infrastructure-loss event is preserved")
         assertEquals(frozen.experiment, store.execution.manifest(next.id).experiment)
         assertEquals(frozen.bundles, store.execution.manifest(next.id).bundles)
     }

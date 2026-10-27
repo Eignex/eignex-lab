@@ -255,12 +255,12 @@ class NomadQueueTest {
     }
 
     @Test fun `repeated Spot losses replenish workers without failing healthy siblings or republishing source`() {
-        val id = job(); queue().reconcile(); prepare(id); queue().reconcile()
+        val id = job(); queue().reconcile(); prepare(id); backend.reconcile(); queue(cores = 2).reconcile()
         val siblings = store.execution.sessions(id).filter { it.executionClass == "solve" && store.execution.submission(it.id).contains("advisory-native") }.map { it.id }.toSet()
         repeat(8) {
             val active = store.execution.sessions(id).single { it.executionClass == "solve" && it.desired != "stop" && store.execution.submission(it.id).contains("hard-quota") }
             store.execution.loseSession(active.id, "infrastructure:spot")
-            queue().reconcile()
+            queue(cores = 2).reconcile()
             assertEquals(Status.RUNNING, store.job(id)!!.status)
             assertNull(store.job(id)!!.error)
             assertEquals(3, store.execution.sessions(id).count { it.executionClass == "solve" && it.desired != "stop" })
