@@ -133,7 +133,9 @@ object CapacityPolicy {
         for (p in settings.pools) {
             val floor = manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0
             val idle = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.READY && it.allocations.isEmpty() && it.node.emptySince?.let { since -> at - since >= p.idleMs } == true }
-            counts[p.id] = maxOf(counts.getValue(p.id) - idle, minOf(floor, counts.getValue(p.id)))
+            // A launch request with no remaining work must not survive indefinitely when Spot is unavailable.
+            val unusedLaunches = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.BOOTING && it.allocations.isEmpty() }
+            counts[p.id] = maxOf(counts.getValue(p.id) - idle - unusedLaunches, minOf(floor, counts.getValue(p.id)))
             // Manual capacity is still finite, quota-bounded and expires. It cannot change purchasing market.
             while (counts.getValue(p.id) < floor && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus) {
                 counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus

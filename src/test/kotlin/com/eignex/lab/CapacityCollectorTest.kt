@@ -67,6 +67,7 @@ class CapacityCollectorTest {
         assertFailsWith<IllegalStateException> { c.grant(pool.id) }
     }
     @Test fun `booting capacity is preserved and unknown allocations consume a conservative node budget`() {
+        store.execution.requestCapacity(pool.id, 1, 60000, at)
         sample(listOf(CapacityInstance("vm", pool.id)))
         val c = collector(); c.collect()
         assertEquals(CapacityNodeState.BOOTING, c.snapshot().nodes.single().state)

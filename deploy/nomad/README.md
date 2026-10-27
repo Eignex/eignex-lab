@@ -170,6 +170,8 @@ The queue distinguishes preparation, waiting for compatible capacity, execution 
 rewriting the experiment's durable state. Registered clients that are down or ineligible are unavailable, and draining
 clients cannot take new placements. These instances still consume the physical vCPU quota until the provider removes
 them; replacements may grow only within that quota. Provider launch failures remain visible while Spot requests retry.
+Unused startup requests are withdrawn when their work disappears, unless an unexpired manual capacity request keeps
+them. Already ready, empty nodes retain the configured idle grace period.
 
 `python3 deploy/nomad/connected_probe.py` builds the worker, uses a temporary loopback OCI registry to obtain a real
 image digest, and runs the end-to-end acceptance test against a separate TLS/ACL Nomad sandbox. It exercises a paired
