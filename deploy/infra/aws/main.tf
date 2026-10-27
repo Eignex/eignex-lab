@@ -5,14 +5,6 @@ data "aws_ec2_instance_type" "spot_choices" {
   for_each      = toset(var.spot_instance_types)
   instance_type = each.value
 }
-check "homogeneous_spot_choices" {
-  assert {
-    condition = (length(var.spot_instance_types) == 0 || var.market == "spot") && alltrue([
-      for choice in data.aws_ec2_instance_type.spot_choices : choice.default_vcpus == var.vcpus && choice.memory_size == var.memory_mib && contains(choice.supported_architectures, var.architecture)
-    ])
-    error_message = "Spot alternatives must preserve the pool's architecture, vCPU count and memory."
-  }
-}
 locals {
   name          = "lab-${substr(var.deployment_id, 0, 16)}-${substr(var.pool_id, 0, 16)}-${substr(sha256("${var.deployment_id}/${var.pool_id}"), 0, 8)}"
   tags          = { "lab:deployment" = var.deployment_id, "lab:pool" = var.pool_id }
@@ -138,6 +130,12 @@ resource "aws_autoscaling_group" "workers" {
   }
   lifecycle {
     ignore_changes = [desired_capacity, min_size, max_size]
+    precondition {
+      condition = (length(var.spot_instance_types) == 0 || var.market == "spot") && alltrue([
+        for choice in data.aws_ec2_instance_type.spot_choices : choice.default_vcpus == var.vcpus && choice.memory_size == var.memory_mib && contains(choice.supported_architectures, var.architecture)
+      ])
+      error_message = "Spot alternatives must preserve the pool's architecture, vCPU count and memory."
+    }
     precondition {
       condition     = var.vcpus >= 1 && floor(var.vcpus) == var.vcpus && var.memory_mib > 1024 && var.max_nodes * var.vcpus <= var.max_vcpus
       error_message = "Finite homogeneous capacity must fit the vCPU limit."

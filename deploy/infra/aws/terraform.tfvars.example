@@ -1,7 +1,7 @@
 deployment_id = "lab"
 pool_id = "general-spot"
 # Optional, prequalified alternatives with identical architecture, vCPUs and memory:
-# spot_instance_types = ["m7i.4xlarge", "m6i.4xlarge", "m6id.4xlarge"]
+# spot_instance_types = ["m7i.4xlarge", "m6i.4xlarge", "m6in.4xlarge"]
 ami_id = "ami-REPLACE_WITH_BAKED_IMMUTABLE_IMAGE"
 instance_type = "c7i.4xlarge"
 vcpus = 16
