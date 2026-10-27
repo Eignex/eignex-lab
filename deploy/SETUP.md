@@ -17,9 +17,12 @@ Requires Bash, curl, and jq. Obtain the lab password from the operator and save 
 `~/.config/eignex-lab/password` or `LAB_PASSWORD`. Every API call requires it.
 
 ```sh
-export LAB_URL=http://lab-host:8420
 deploy/lab health
 ```
+
+The client defaults to `https://lab.eignex.com`. Set `LAB_URL` for another API endpoint.
+For a direct connection, `LAB_HOST` retains the `http://<LAB_HOST>:8420` shorthand when `LAB_URL` is unset.
+`lab corpus` requires `LAB_HOST` explicitly set to the corpus server's SSH destination.
 
 ## Storage and updates
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Client for the eignex lab server. LAB_URL defaults to http://<LAB_HOST>:8420, LAB_HOST to 192.168.50.104.
+# Client for the eignex lab server. Defaults to https://lab.eignex.com; LAB_URL overrides the API address.
+# LAB_HOST selects an SSH host for lab corpus and, unless LAB_URL is set, http://<LAB_HOST>:8420 for the API.
 #   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab koblas [--tags expr --timeout sec] <ref> <description> [capture-report options...]
@@ -93,8 +94,9 @@
 #                                                            lab's own key and host keys; LAB_REMOTE_JOBS is the server's
 #                                                            LAB_JOBS when not $LAB_REMOTE_DATA/jobs
 set -euo pipefail
-host="${LAB_HOST:-192.168.50.104}"
-url="${LAB_URL:-http://$host:8420}"
+host="${LAB_HOST:-}"
+url="${LAB_URL:-https://lab.eignex.com}"
+if [[ -n "$host" && -z "${LAB_URL:-}" ]]; then url="http://$host:8420"; fi
 # Every call carries the lab's password (HTTP Basic, no user name): LAB_PASSWORD, else the file LAB_PASSWORD_FILE,
 # ~/.config/eignex-lab/password by default. It reaches curl through a private config file, never its command line.
 password="${LAB_PASSWORD:-$(cat "${LAB_PASSWORD_FILE:-$HOME/.config/eignex-lab/password}" 2>/dev/null || true)}"
@@ -406,7 +408,7 @@ fetch)
     exit 1
   fi
   rm -f "$receipt" ;;
-corpus) rsync -az --info=progress2 "$corpus/" "$host:$remote_corpus/" ;;
+corpus) rsync -az --info=progress2 "$corpus/" "${host:?set LAB_HOST to the corpus server SSH destination}:$remote_corpus/" ;;
 health) curl -fsS "$url/health" | jq . ;;
 *) sed -n '2,/^set /{/^#/p}' "$0"; exit 2 ;;
 esac
