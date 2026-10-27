@@ -42,10 +42,10 @@ data class CapacityNode(val id: String, val pool: String, val state: CapacityNod
 @Serializable
 data class CapacityDemand(
     val id: String, val job: Long, val budget: ResourceBudget, val coreHours: Double, val priority: Int,
-    val perHostParallel: Int, val selector: NodeSelector? = null, val market: CapacityMarket = CapacityMarket.SPOT,
+    val perHostParallel: Int? = null, val selector: NodeSelector? = null, val market: CapacityMarket = CapacityMarket.SPOT,
     val localEligible: Boolean = true, val work: CapacityWork = CapacityWork.SOLVE, val pool: String? = null,
 ) {
-    init { require(id.isNotBlank() && coreHours.isFinite() && coreHours >= 0 && perHostParallel > 0); NodeTags.validate(selector) }
+    init { require(id.isNotBlank() && coreHours.isFinite() && coreHours >= 0 && (perHostParallel == null || perHostParallel > 0)); NodeTags.validate(selector) }
     val caseParallel get() = if (work == CapacityWork.BUILD) 0 else budget.parallel
 }
 @Serializable
@@ -83,7 +83,7 @@ object CapacityPolicy {
             val p = pools.getValue(b.node.pool)
             return compatible(d, p) && b.allocations.sumOf { it.budget.cpuMillis.toLong() } + d.budget.cpuMillis <= p.cpuMillis &&
                 b.allocations.sumOf { it.budget.memoryMiB.toLong() } + d.budget.memoryMiB <= p.availableMemoryMiB &&
-                b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel
+                (d.perHostParallel == null || b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel)
         }
         val ordered = demands.sortedWith(compareByDescending<CapacityDemand> { it.priority }.thenBy { it.id })
         // Account for warm and already-booting capacity before starting the backlog timer.
@@ -112,7 +112,7 @@ object CapacityPolicy {
                 val p = candidates.firstOrNull { p ->
                     val h = history.getValue(p.id)
                     (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&
-                        (h.lastIncrease == null || at - h.lastIncrease >= p.cooldownMs) && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus && d.caseParallel <= d.perHostParallel
+                        (h.lastIncrease == null || at - h.lastIncrease >= p.cooldownMs) && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus && (d.perHostParallel == null || d.caseParallel <= d.perHostParallel)
                 }
                 if (p != null) {
                     val node = CapacityNode("new:${p.id}:${counts.getValue(p.id)}", p.id, CapacityNodeState.BOOTING)

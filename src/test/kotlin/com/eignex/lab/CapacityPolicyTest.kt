@@ -113,6 +113,14 @@ class CapacityPolicyTest {
         val plan = CapacityPolicy.evaluate(config, listOf(CapacityNode("wrong-pool", alternate.id, CapacityNodeState.READY)), listOf(asked))
         assertEquals(pool.id, plan.placements.single().pool)
     }
+    @Test fun `same experiment fills CPU and memory on warm nodes without a default per host cap`() {
+        val asks = (1..16).map { demand("work-$it", 1000, 2048, job = 1).copy(perHostParallel = null) }
+        val plan = CapacityPolicy.evaluate(settings, listOf(CapacityNode("warm", pool.id, CapacityNodeState.READY)), asks)
+        assertEquals(1, plan.desired[pool.id])
+        assertEquals(16, plan.placements.count { it.node == "warm" })
+        assertTrue(plan.waiting.isEmpty())
+    }
+
     @Test fun `per experiment per host cap applies across sessions without build exclusivity`() {
         val work = (1..3).map { demand("a$it", 2000, job = 1).copy(perHostParallel = 2) } + demand("build", 2000, job = 1, work = CapacityWork.BUILD)
         val plan = CapacityPolicy.evaluate(settings, listOf(CapacityNode("warm", pool.id, CapacityNodeState.READY)), work)

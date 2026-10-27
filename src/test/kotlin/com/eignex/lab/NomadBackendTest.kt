@@ -15,6 +15,59 @@ import java.util.Base64
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `sharing policy retires a bound worker only after its current accepted iteration`() {
+        val id = setup()
+        backend().reconcile(); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val frozen = store.execution.manifest(session.id)
+        val changed = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, placementPolicy = { job ->
+            JsonObject(job + ("Meta" to JsonObject(job.getValue("Meta").jsonObject + ("lab_per_host_parallel" to JsonPrimitive("4")))))
+        })
+        changed.reconcile()
+        assertEquals("drain", store.execution.session(session.id)!!.desired)
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(store.execution.commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
+        assertNull(store.execution.claim(session.id, token, "allocation"))
+        assertEquals(frozen, store.execution.manifest(session.id))
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
+    @Test fun `default sharing strips old scheduler exclusions and retains operator exclusions`() {
+        val template = NomadBatchJob("template", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(4000, 4), ResourceBudget(1000, 1024),
+            listOf("worker"), "registry/worker@sha256:" + "d".repeat(64), excludedNodes = setOf("operator"))
+        val settings = NomadQueueSettings("release", "http://localhost:8091", listOf(NomadQueueTarget(template, setOf("arch:x86_64"))))
+        val original = template.copy(excludedNodes = setOf("operator", "old-parallel-cap")).render()
+        val policy = NomadPlacementPolicy(settings)
+        val shared = policy.apply(original)
+        val exclusions = shared.getValue("Constraints").jsonArray.filter { it.jsonObject["Operand"]?.jsonPrimitive?.content == "!=" }
+        assertEquals(listOf("operator"), exclusions.map { it.jsonObject.getValue("RTarget").jsonPrimitive.content })
+        assertEquals(original["TaskGroups"], shared["TaskGroups"])
+        assertEquals(shared, policy.apply(shared))
+    }
+
+    @Test fun `approved worker patch replaces failed infrastructure while freezing all consumer inputs`() {
+        val id = setup()
+        val previous = session
+        val frozen = manifest
+        val before = store.execution.submission(session.id)
+        val template = NomadBatchJob("template", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(4000, 4), frozen.budget,
+            listOf("worker"), "registry/patched@sha256:" + "e".repeat(64))
+        val settings = NomadQueueSettings("patched", "http://localhost:8091", listOf(NomadQueueTarget(template, setOf("arch:x86_64"))), workerReplaces = setOf("release"))
+        store.execution.loseSession(session.id, "infrastructure:worker-bug")
+        val patched = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, workerRuntime = NomadWorkerRuntime(settings)::replace)
+        patched.reconcile(); patched.reconcile()
+        val next = store.execution.sessions(id).single { it.desired == "run" }
+        assertEquals(frozen.copy(session = next.id, release = "patched"), store.execution.manifest(next.id))
+        assertEquals(before, store.execution.submission(previous.id))
+        val payload = Json.parseToJsonElement(store.execution.submission(next.id)).jsonObject
+        val task = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
+        assertEquals(template.image, task.getValue("Config").jsonObject.getValue("image").jsonPrimitive.content)
+        assertEquals("patched", task.getValue("Env").jsonObject.getValue("LAB_WORKER_RELEASE").jsonPrimitive.content)
+        assertEquals(1, store.execution.failureCount(id), "the existing infrastructure-loss event is preserved")
+        assertEquals(frozen.experiment, store.execution.manifest(next.id).experiment)
+        assertEquals(frozen.bundles, store.execution.manifest(next.id).bundles)
+    }
+
     private fun cpuNode(id: String, mhz: Int, nodeClass: String = "fixture", cores: Int = 4) = buildJsonObject {
         put("ID", id); put("NodeClass", nodeClass); put("Status", "ready"); put("SchedulingEligibility", "eligible")
         putJsonObject("Attributes") { put("kernel.name", "linux"); put("cpu.usablecompute", mhz.toString()); put("cpu.numcores", cores.toString()) }

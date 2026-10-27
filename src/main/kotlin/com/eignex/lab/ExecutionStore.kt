@@ -2,7 +2,7 @@ package com.eignex.lab
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
@@ -162,8 +162,10 @@ class ExecutionStore internal constructor(private val store: Store) {
             val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
             val claimToken = claimToken(token, iteration, generation)
             val indices = next.value.map { it.index }
-            val heldParallel = db.sqlRows("SELECT COALESCE(SUM(a.parallel_limit), 0) FROM iteration_attempts a JOIN execution_sessions s ON s.id = a.session_id WHERE a.job_id = ? AND s.node_id = ? AND a.state IN $ACTIVE_ATTEMPTS", session.jobId, session.node) { it.getInt(1) }.single()
-            val available = (store.job(session.jobId)!!.parallel - heldParallel).coerceAtLeast(0)
+            val placement = Json.parseToJsonElement(db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single()).jsonObject
+            val perHost = placement["Meta"]?.jsonObject?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull
+            val heldParallel = if (perHost == null) 0 else db.sqlRows("SELECT COALESCE(SUM(a.parallel_limit), 0) FROM iteration_attempts a JOIN execution_sessions s ON s.id = a.session_id WHERE a.job_id = ? AND s.node_id = ? AND a.state IN $ACTIVE_ATTEMPTS", session.jobId, session.node) { it.getInt(1) }.single()
+            val available = perHost?.let { (it - heldParallel).coerceAtLeast(0) } ?: session.budget.parallel
             val parallel = minOf(session.budget.parallel, indices.size, available)
             if (parallel == 0) return@executionTransaction null
             db.sqlUpdate("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at, parallel_limit) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?)",

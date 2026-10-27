@@ -107,7 +107,7 @@ class IterationExecutor(
                     val record = directory.resolve("cases/${case.index}").toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     if (profile != null) CliMeasurements.writeManifest(profile, case.index, generation, id, host, command, exit,
                         javaOptions, record, os == "mac", manifest.experiment.compilationRecording, manifest.experiment.recordsCliJfr)
-                    ExecutionCaseResult(case.index, exit, start, finish, record, command)
+                    ExecutionCaseResult(case.index, exit, start, finish, record, recordedCommand(directory, case.index, command))
                 } finally { cpu.release(permits) }
             } }).map { future ->
                 try { future.get() } catch (error: java.util.concurrent.ExecutionException) {
@@ -118,6 +118,15 @@ class IterationExecutor(
             return IterationResult(results, runTimedOut = timedOut.get())
         } finally { threads.shutdownNow() }
         } finally { inputs?.close() }
+    }
+
+    /** Large literal arguments stay intact in the invocation and artifact; bounded result metadata uses the planned command. */
+    internal fun recordedCommand(directory: Path, index: Int, command: String): String? {
+        if (command.length <= 65536) return command
+        val file = directory.resolve("cases/$index/command.sh")
+        Files.createDirectories(file.parent)
+        Files.writeString(file, command + "\n")
+        return null
     }
 
     private fun environment(): Map<String, String> = workerEnvironment(os == "mac")

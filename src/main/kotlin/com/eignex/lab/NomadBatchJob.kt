@@ -38,8 +38,10 @@ data class NomadBatchJob(
     val excludedNodes: Set<String> = emptySet(),
     val nativeCapacity: ResourceBudget? = null,
     val cacheHostVolume: String? = null,
+    val perHostParallel: Int? = null,
 ) {
     init {
+        require(perHostParallel == null || perHostParallel > 0)
         require(schemaVersion == 1) { "unsupported Nomad session schema: $schemaVersion" }
         require(ID.matches(id)) { "invalid Nomad job ID" }
         require(excludedNodes.size <= 1024 && excludedNodes.all { ID.matches(it) }) { "invalid excluded node IDs" }
@@ -68,6 +70,7 @@ data class NomadBatchJob(
         putJsonArray("Datacenters") { add(JsonPrimitive(datacenter)) }
         putJsonObject("Meta") {
             put("lab_session_schema", schemaVersion.toString())
+            perHostParallel?.let { put("lab_per_host_parallel", it.toString()) }
             put("lab_cpu_millis", budget.cpuMillis.toString())
             put("lab_memory_mib", budget.memoryMiB.toString())
             put("lab_cpu_enforcement", if (platform == NomadPlatform.LINUX) "hard-quota" else "advisory-native")

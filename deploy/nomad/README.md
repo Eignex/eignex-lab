@@ -421,3 +421,26 @@ on a bounded background queue so slow checker installation/execution does not st
 Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations). Keep active worker releases
 immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
 state is considered disposable; historical job results and provenance are never runtime-pruning candidates.
+
+Job `parallel` determines its total solve CPU request across the cluster (parallel
+cases times the largest arm's CPU request). Each worker reserves its own share. Sessions from the
+same experiment share a node whenever those resources fit. Operator queue settings
+`maxVcpusPerJob` (default 16) and `maxSessionsPerJob` bound job expansion;
+`perHostParallel` optionally caps same-job cases on each node and is unset by
+default. These live limits apply independently of frozen experiment sources and
+prepared inputs. A worker larger than the job ceiling is admitted once so existing
+large requests remain runnable. Existing workers affected by a sharing-policy
+change finish their current iteration before retiring.
+
+Cold compilation uses the worker's CPU/memory reservation, Gradle worker and JVM
+processor limits, and at most `maxConcurrentBuildsPerNode` compilers per node
+(default 2). Shared cache locks deduplicate builds and warm hits bypass compiler
+slots. Oversized literal commands remain intact in `cases/<index>/command.sh`
+artifacts without overflowing result metadata.
+
+`workerReplaces` explicitly approves older worker release IDs for a compatible
+infrastructure patch. New solve admissions and infrastructure replacements then
+use the current pinned worker image/launcher and record its new release ID. The
+consumer experiment, resolved commits, arguments, budgets, corpus bundles and
+accepted results remain unchanged; original manifests and submissions remain
+immutable. Releases not listed retain their existing worker runtime.
