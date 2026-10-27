@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mac-side AWS inventory + renewal adapter. It cannot directly open the group or write leases."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import time
@@ -34,7 +35,10 @@ def once(config, asg, functions):
     definitions = [config | pool for pool in config["pools"]] if "pools" in config else [config]
     if not definitions or len({pool["pool"] for pool in definitions}) != len(definitions) or len({pool["group"] for pool in definitions}) != len(definitions):
         raise ValueError("configure distinct pools and groups")
-    observations = [inventory(asg, pool["group"], pool["deployment"], pool["pool"]) for pool in definitions]
+    # Each pool is independent; serial SDK calls can age a larger fleet past the
+    # collector's freshness bound before its next inventory can be published.
+    with ThreadPoolExecutor(max_workers=min(4, len(definitions))) as workers:
+        observations = list(workers.map(lambda pool: inventory(asg, pool["group"], pool["deployment"], pool["pool"]), definitions))
     value = {"observedAt": min(item["observedAt"] for item in observations),
              "pools": [pool["pool"] for pool in definitions],
              "instances": [instance for item in observations for instance in item["instances"]],
@@ -43,8 +47,7 @@ def once(config, asg, functions):
         raise ValueError("inventory request exceeded freshness bound")
     write_atomic(config["inventoryFile"], value)
     key = Path(config["capacityTokenFile"]).read_text().strip()
-    failed = []
-    for pool in definitions:
+    def renew(pool):
         try:
             request = urllib.request.Request(config["coordinator"].rstrip("/") + "/capacity/grant/" + pool["pool"], headers={"Authorization": "Bearer " + key})
             with urllib.request.urlopen(request, timeout=10) as response:
@@ -54,7 +57,10 @@ def once(config, asg, functions):
             if result.get("FunctionError"):
                 raise RuntimeError("provider rejected capacity renewal")
         except Exception:
-            failed.append(pool["pool"])
+            return pool["pool"]
+        return None
+    with ThreadPoolExecutor(max_workers=min(4, len(definitions))) as workers:
+        failed = [pool for pool in workers.map(renew, definitions) if pool is not None]
     if failed:
         raise RuntimeError("capacity renewal held for " + ", ".join(failed))
 

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -37,11 +38,27 @@ class AwsAdapterTest(unittest.TestCase):
         adapter.once(self.config, Mock(), self.functions)
         value = json.loads((self.root / "inventory.json").read_text())
         self.assertEqual(["avx2", "neon"], [item["pool"] for item in value["instances"]])
-        self.assertEqual(["renew-avx2", "renew-neon"], [call.kwargs["FunctionName"] for call in self.functions.invoke.call_args_list])
+        self.assertCountEqual(["renew-avx2", "renew-neon"], [call.kwargs["FunctionName"] for call in self.functions.invoke.call_args_list])
+
+    @patch.object(adapter.urllib.request, "urlopen")
+    @patch.object(adapter, "inventory")
+    def test_slow_pool_requests_overlap_instead_of_aging_the_entire_fleet(self, inventory, urlopen):
+        barrier = threading.Barrier(2)
+        def observe(*args):
+            barrier.wait(timeout=2)
+            return self.observation(*args)
+        inventory.side_effect = observe
+        urlopen.side_effect = lambda *args, **kwargs: io.BytesIO(b'{}')
+        adapter.once(self.config, Mock(), self.functions)
+        self.assertEqual(2, self.functions.invoke.call_count)
 
     @patch.object(adapter, "inventory")
     def test_missing_pool_does_not_publish_a_partial_fresh_inventory(self, inventory):
-        inventory.side_effect = [self.observation(None, "group-avx2", "lab", "avx2"), ValueError("missing group")]
+        def observe(asg, group, deployment, pool):
+            if pool == "neon":
+                raise ValueError("missing group")
+            return self.observation(asg, group, deployment, pool)
+        inventory.side_effect = observe
         with self.assertRaises(ValueError):
             adapter.once(self.config, Mock(), self.functions)
         self.assertFalse((self.root / "inventory.json").exists())
@@ -52,7 +69,7 @@ class AwsAdapterTest(unittest.TestCase):
     def test_one_failed_renewal_does_not_starve_other_pools(self, inventory, urlopen):
         inventory.side_effect = self.observation
         urlopen.side_effect = lambda *args, **kwargs: io.BytesIO(b'{}')
-        self.functions.invoke.side_effect = [{"FunctionError": "failed", "Payload": Mock()}, {"Payload": Mock()}]
+        self.functions.invoke.side_effect = lambda **kwargs: ({"FunctionError": "failed"} if kwargs["FunctionName"] == "renew-avx2" else {}) | {"Payload": Mock()}
         with self.assertRaisesRegex(RuntimeError, "avx2"):
             adapter.once(self.config, Mock(), self.functions)
         self.assertEqual(2, self.functions.invoke.call_count)
