@@ -162,9 +162,10 @@ class PortableWorkerTest {
                 done
             """.trimIndent(),
         ))
-        val spec = ExperimentSpec("provenance", problems = listOf(mapOf("suite" to "s")), parallel = 2, measurement = Measurement.RESOURCES)
+        val spec = ExperimentSpec("provenance", problems = listOf(mapOf("suite" to "s")),
+            configs = listOf(mapOf("label" to "a"), mapOf("label" to "b")), parallel = 2, measurement = Measurement.RESOURCES)
         val arms = Experiments.arms(spec).map { PlannedArm(it, input.commit) }
-        val cases = (0..1).map { WorkCase(it, 0, Problem("s", "p$it"), null, 0, 10) }
+        val cases = (0..1).map { WorkCase(it, it, Problem("s", "p"), null, 0, 10) }
         val manifest = WorkManifest("provenance", "release", spec, arms, cases, listOf(input), ResourceBudget(2000, 1024, 2))
         val directory = root.resolve("relocated-attempt")
         val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
