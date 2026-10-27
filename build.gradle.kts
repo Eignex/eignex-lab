@@ -55,7 +55,9 @@ tasks.register("printJavaHome") {
 
 // Runs real, already-built consumer adapters through preparation, execution and coordinator ingestion.
 tasks.test { useJUnitPlatform { excludeTags("bench-adapters") } }
+val benchAdapterRoot = providers.environmentVariable("LAB_BENCH_ADAPTER_ROOT")
 tasks.register<Test>("verifyBenchAdapters") {
+    onlyIf("LAB_BENCH_ADAPTER_ROOT must name prepared consumer checkouts") { benchAdapterRoot.isPresent }
     group = "verification"
     description = "Verify unpublished SDK adapters from LAB_BENCH_ADAPTER_ROOT through the worker/coordinator path."
     testClassesDirs = sourceSets.test.get().output.classesDirs
