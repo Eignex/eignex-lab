@@ -79,7 +79,7 @@ internal class SharedInputCache(private val root: Path, private val maxBytes: Lo
         val removed = mutableSetOf<Path>()
         fun remove(entry: Entry) {
             Files.walk(entry.path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
-            removed += entry.path
+            removed.add(entry.path)
             for (file in entry.files) {
                 val count = references.getValue(file.key) - 1; references[file.key] = count
                 if (count == 0) size -= file.bytes

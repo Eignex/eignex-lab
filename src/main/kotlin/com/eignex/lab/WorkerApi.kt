@@ -27,7 +27,7 @@ import java.nio.file.Files
 
 /** Separate listener from the password-authenticated operator API. No operator routes or provider control methods. */
 fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: ArtifactStore, workAllowed: () -> Boolean) {
-    install(ContentNegotiation) { json() }
+    install(ContentNegotiation) { json(Json { encodeDefaults = false }) }
     install(StatusPages) {
         exception<ExecutionFenced> { call, _ -> call.respond(HttpStatusCode.Conflict, "execution fenced") }
         exception<IllegalArgumentException> { call, cause ->
