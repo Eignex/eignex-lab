@@ -141,24 +141,28 @@ The protocol registers a release, claims complete iterations, renews leases, pub
 phases and case starts, uploads checksum-addressed outputs, and commits the full iteration manifest. CPU permits
 bound aggregate case threads; durable claim grants preserve the experiment's per-node parallel cap across sessions.
 Workers renew every ten seconds and stop owned processes ten seconds before their last confirmed lease would expire,
-using monotonic local time. A volume hold blocks registration, new claims, renewals and acceptance; stop intents remain
-available. Pause drains at the iteration boundary. Cancellation fences ownership before stop delivery.
-Deletion waits until every session's durable stop has been acknowledged. An explicit `lab retry` starts a fresh
-infrastructure retry allowance while preserving the previous loss events. The coordinator's configured namespace
-scopes both job submission and signed allocation identity verification. Admission enforces stored host placement
+using monotonic local time. A volume hold blocks registration, new claims and acceptance; existing workers can still
+renew leases and report progress, and stop intents remain available. Pause drains at the iteration boundary.
+Cancellation fences ownership before stop delivery.
+Deletion waits until every session's durable stop has been acknowledged. An explicit `lab retry` preserves previous
+loss events; infrastructure recovery requires no manual retry and has no experiment retry allowance. The coordinator's
+configured namespace scopes both job submission and signed allocation identity verification. Admission enforces stored host placement
 and the existing local-only exceptions, including confirmations, reference runs and local schedules.
 
 Profiles with `runTimeoutSec` use the experiment's durable accumulated active time. Lease responses carry the
 remaining whole-run allowance; workers track it monotonically across preparation, builds, execution and transfers.
 Supervision reserves shutdown and cleanup time inside that allowance. Expiry permanently fails and fences the run
-rather than spending infrastructure retries. Accepted timeout captures still ingest after failure. Ordinary case
+as a workload timeout. Accepted timeout captures still ingest after failure. Ordinary case
 timeouts retain the existing 30-second shutdown grace for JVM/JFR output.
 
 Uploads resume from the confirmed byte offset and publish only after size/checksum verification and filesystem sync.
 Input downloads use bounded ranges and resume without rerunning captured cases. Accepted artifacts are projected into
 existing job paths before completion and source checks are recorded durably. A coordinator restart replays ingestion
-and pending checks rather than resetting claims. Worker or allocation loss reruns only unfinished iterations, with a
-finite infrastructure retry budget. Nomad task restarts remain disabled and its reschedule/disconnect policy is explicit.
+and pending checks rather than resetting claims. Worker or allocation loss fences the old credentials and reruns only
+unfinished iterations on another compatible node. Repeated infrastructure losses never exhaust an experiment or
+discard accepted preparation/results. Recovery uses fresh sessions under the same concurrency, CPU/memory and capacity
+limits, and waits when matching Spot capacity is unavailable. Loss events remain diagnostic history, not a job retry
+allowance. Nomad task restarts remain disabled and its reschedule/disconnect policy is explicit.
 Ordinary solver exits/timeouts remain case outcomes. Linux workers refuse missing or mismatched runtime hard limits;
 native workers report advisory enforcement. Resource counters are retained under each job's `nomad/` files.
 

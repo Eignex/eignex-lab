@@ -127,7 +127,6 @@ class NomadQueue(
                 val limit = minOf(settings.maxSessionsPerJob, pending)
                 val active = sessions.filter { it.executionClass == "solve" && it.desired != "stop" }
                 if (active.size >= limit) continue
-                require(store.execution.failureCount(job.id) <= 3) { "Nomad infrastructure retry budget exhausted" }
                 val bundles = recipe.bundles.map { original -> preparation.bundles.singleOrNull {
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
                 } ?: original }

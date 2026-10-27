@@ -61,7 +61,14 @@ class NomadBackendTest {
         val signature = Signature.getInstance("SHA256withRSA").apply { initSign(pair.private); update(payload.toByteArray()) }.sign()
         return "$payload.${b64(signature)}"
     }
-    private fun register() = backend().register(session.id, token, "allocation", jwt(), "release")
+    private fun register(allocation: String = "allocation") = backend().register(session.id, token, allocation, jwt(allocation), "release")
+    private fun useReplacement(id: Long, allocation: String, node: String) {
+        session = store.execution.sessions(id).single { it.desired == "run" }
+        token = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0].jsonObject
+            .getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+        control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, node, "running", "run")
+        register(allocation)
+    }
 
     @Test fun `an older native retry uses configured capacity without requiring an idle host`() {
         val job = setup(platform = NomadPlatform.MAC, preparation = true)
@@ -86,18 +93,28 @@ class NomadBackendTest {
         assertEquals("4096", meta.getValue("lab_native_memory_limit").jsonPrimitive.content)
     }
 
-    @Test fun `Spot loss replaces preparation before there are planned commands`() {
+    @Test fun `repeated Spot loss replaces preparation on new nodes before there are planned commands`() {
         val id = setup(preparation = true); backend().reconcile(); register()
-        val first = backend().claim(session.id, token, "allocation")!!
-        assertEquals("preparation", first.owner.iteration)
-        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "lost")
-        backend(Store(file)).reconcile()
-        val replacement = store.execution.sessions(id).single { it.desired != "stop" }
-        assertEquals("prepare", replacement.executionClass)
-        assertNotEquals(session.id, replacement.id)
-        assertNotNull(store.execution.manifest(replacement.id).preparationTimeoutSec)
-        assertTrue(store.job(id)!!.commands.isEmpty())
-        assertFailsWith<ExecutionFenced> { store.execution.renew(first.owner) }
+        var allocation = "allocation"
+        repeat(8) { index ->
+            val previous = session
+            val frozen = store.execution.manifest(previous.id)
+            val claim = backend().claim(previous.id, token, allocation)!!
+            assertEquals("preparation", claim.owner.iteration)
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "lost")
+            backend(Store(file)).reconcile()
+            assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+            val replacement = store.execution.sessions(id).single { it.desired == "run" }
+            assertEquals("prepare", replacement.executionClass)
+            assertNotEquals(previous.id, replacement.id)
+            assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+            assertEquals(Status.RUNNING, store.job(id)!!.status)
+            assertNull(store.job(id)!!.error)
+            assertTrue(store.job(id)!!.commands.isEmpty())
+            allocation = "replacement-$index"
+            useReplacement(id, allocation, "replacement-node-$index")
+        }
+        assertEquals(8, store.execution.failureCount(id))
     }
 
     @Test fun `accepted preparation is retained without completing the experiment or preparing twice`() {
@@ -206,22 +223,48 @@ class NomadBackendTest {
         assertEquals(0, store.execution.failureCount(id))
     }
 
-    @Test fun `explicit retry renews the infrastructure allowance without deleting loss history`() {
-        val id = setup()
-        repeat(4) { index ->
-            val active = store.execution.sessions(id).single { it.desired == "run" }
-            control.allocations.clear()
-            control.allocations["failed-$index"] = NomadAllocation("failed-$index", active.nomadJobId, "node", "failed", "run")
+    @Test fun `repeated Spot loss retains committed results and finishes unfinished work on another machine`() {
+        val id = setup(); register()
+        val accepted = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(accepted.owner, "uploading")
+        val result = IterationResult(accepted.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") })
+        backend().commit(accepted.owner, result)
+        backend().reconcile()
+        var allocation = "allocation"
+        repeat(8) { index ->
+            val previous = session
+            val frozen = store.execution.manifest(previous.id)
+            val original = store.execution.submission(previous.id)
+            val claim = backend().claim(previous.id, token, allocation)!!
+            assertTrue(claim.indices.none { it in accepted.indices })
+            store.execution.phase(claim.owner, "executing")
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "lost")
             backend().reconcile()
+            val restarted = Store(file)
+            assertEquals(Status.RUNNING, restarted.job(id)!!.status)
+            assertNull(restarted.job(id)!!.error)
+            assertEquals(accepted.indices.size, restarted.job(id)!!.done)
+            assertEquals(result, restarted.execution.accepted(id).single().second)
+            assertFailsWith<ExecutionFenced> { restarted.execution.renew(claim.owner) }
+            assertFailsWith<ExecutionFenced> { backend(restarted).commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") })) }
+            val replacement = restarted.execution.sessions(id).single { it.desired == "run" }
+            assertNull(replacement.node)
+            assertNull(replacement.allocation)
+            assertEquals(frozen.copy(session = replacement.id), restarted.execution.manifest(replacement.id))
+            assertEquals(original, restarted.execution.submission(previous.id))
+            val constraints = Json.parseToJsonElement(restarted.execution.submission(replacement.id)).jsonObject.getValue("Constraints").jsonArray
+            assertTrue(constraints.none { it.jsonObject["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.unique.id}" && it.jsonObject["Operand"]?.jsonPrimitive?.content == "=" })
+            allocation = "replacement-$index"
+            useReplacement(id, allocation, "replacement-node-$index")
         }
-        assertEquals(Status.FAILED, store.job(id)!!.status)
-        assertEquals(4, store.execution.failureCount(id))
-        assertTrue(store.retry(id))
-        assertEquals(0, Store(file).execution.failureCount(id))
+        val remaining = backend().claim(session.id, token, allocation)!!
+        store.execution.phase(remaining.owner, "uploading")
+        backend().commit(remaining.owner, IterationResult(remaining.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") }))
         backend(Store(file)).reconcile()
-        assertEquals(Status.QUEUED, store.job(id)!!.status)
-        assertEquals(1, store.execution.sessions(id).count { it.desired == "run" })
-        assertEquals(4, store.execution.events(id).count { it.detail.startsWith("lost:infrastructure:") })
+        assertEquals(Status.DONE, store.job(id)!!.status)
+        assertEquals(8, store.execution.failureCount(id))
+        assertEquals(2, store.execution.accepted(id).size)
+        assertEquals(8, store.execution.events(id).count { it.detail.startsWith("lost:infrastructure:") })
     }
 
     @Test fun `cloud admission refuses local placement exceptions and respects schedule cloud opt in`() {
