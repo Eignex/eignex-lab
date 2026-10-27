@@ -116,6 +116,12 @@ jobs:
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Verify native worker, detached process cleanup and durable ownership
         run: ./gradlew test --tests com.eignex.lab.PortableWorkerTest --tests com.eignex.lab.ExecutionStoreTest --tests com.eignex.lab.NomadBatchJobTest --tests com.eignex.lab.NomadBackendTest --tests com.eignex.lab.ProfileRunDeadlineTest --tests com.eignex.lab.NomadQueueTest --tests com.eignex.lab.QueueEfficiencyTest --tests com.eignex.lab.CapacityPolicyTest --tests com.eignex.lab.SharedInputCacheTest --tests com.eignex.lab.SharedInputsTest --tests com.eignex.lab.WorkerFailureTest
+      - name: Package tested controller
+        run: ./gradlew distZip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: eignex-lab-native-distribution
+          path: build/distributions/*.zip
       - uses: actions/upload-artifact@v7
         if: always()
         with:
