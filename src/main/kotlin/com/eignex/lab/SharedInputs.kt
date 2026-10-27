@@ -169,7 +169,7 @@ internal fun signInput(signer: URI, signature: InputSignature): SignedInput {
 
 internal class HttpInputTransport(private val base: URI, private val signer: URI? = null,
                                  private val publishSignature: ((InputSignature) -> SignedInput)? = null) : InputTransport {
-    private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
+    private val client: HttpClient get() = inputSigningClient
     init {
         require(base.scheme == "https" && base.userInfo == null && base.rawQuery == null)
         require(signer == null || signer.scheme == "http" && signer.host in setOf("127.0.0.1", "localhost", "::1"))

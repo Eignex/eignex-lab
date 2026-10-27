@@ -117,8 +117,7 @@ class IterationExecutor(
         } finally { threads.shutdownNow() }
     }
 
-    private fun environment(): Map<String, String> = System.getenv().filterKeys { it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || os == "mac" && it == "DOCKER_HOST" } +
-        mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+    private fun environment(): Map<String, String> = workerEnvironment(os == "mac")
     private fun copyTree(source: Path, destination: Path, checkActive: () -> Unit) {
         require(!Files.exists(destination)) { "attempt worktree already exists" }
         Files.walk(source).use { paths -> paths.forEach { path ->
