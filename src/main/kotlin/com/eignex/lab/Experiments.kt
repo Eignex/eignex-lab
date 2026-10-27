@@ -415,7 +415,6 @@ object Experiments {
             arms(spec).single().let { require(it.cores <= cores) { "the profile asks for ${it.cores} processors; the lab has $cores cores" } }
             return
         }
-        require(!spec.measuresCli || spec.parallel == 1) { "measurement requires parallel=1" }
         require(spec.measurement != Measurement.RESOURCES || arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
             "measurement=resources measures the Klause CLI, not reference-backend arms"
         }
