@@ -57,7 +57,7 @@ class NomadQueueTest {
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.map { input(job.id, it.os, it.arch) }
         })
     private fun job(spec: ExperimentSpec = ExperimentSpec("portable", problems = listOf(mapOf("suite" to "s")), host = "auto")): Long =
-        store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec)
+        store.create(spec.name, "main", emptyList(), parallel = spec.parallel ?: 2, experiment = spec)
     private fun prepare(id: Long, count: Int = 3) {
         val session = store.execution.sessions(id).single { it.executionClass == "prepare" }
         val recipe = store.execution.manifest(session.id)
@@ -90,12 +90,12 @@ class NomadQueueTest {
         assertTrue(planned.setupDone); assertEquals(3, planned.commands.size)
         assertEquals("a".repeat(40), planned.sha)
         val solves = store.execution.sessions(id).filter { it.executionClass == "solve" }
-        assertEquals(3, solves.size)
-        assertEquals(3, solves.count { store.execution.submission(it.id).contains("advisory-native") })
+        assertEquals(2, solves.size)
+        assertEquals(2, solves.count { store.execution.submission(it.id).contains("advisory-native") })
         assertEquals(0, solves.count { store.execution.submission(it.id).contains("hard-quota") })
         assertTrue(solves.all { it.budget.cpuMillis == 1000 && it.budget.memoryMiB == 768 && it.budget.parallel == 1 })
         assertTrue(solves.all { store.execution.manifest(it.id).solveJavaOptions == "-Xmx256m" })
-        queue().reconcile(); assertEquals(3, store.execution.sessions(id).count { it.executionClass == "solve" })
+        queue().reconcile(); assertEquals(2, store.execution.sessions(id).count { it.executionClass == "solve" })
         assertEquals(1, publications)
     }
 
@@ -157,7 +157,7 @@ class NomadQueueTest {
     }
 
     @Test fun `explicit cloud per host cap is independent of worker CPU requests`() {
-        val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), parallel = 4, host = Experiments.AWS_HOST))
         queue(policy = settings.copy(perHostParallel = 2)).reconcile(); prepare(id, 4); backend.reconcile(); queue(policy = settings.copy(perHostParallel = 2)).reconcile()
         fun solves() = store.execution.sessions(id).filter { it.executionClass == "solve" }
         fun bind(session: ExecutionSession, node: String) {
@@ -186,7 +186,7 @@ class NomadQueueTest {
     }
 
     @Test fun `default cloud workers share nodes and a live vCPU limit bounds frozen jobs`() {
-        val id = job(ExperimentSpec("sharing", problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+        val id = job(ExperimentSpec("sharing", problems = listOf(mapOf("suite" to "s")), parallel = 4, host = Experiments.AWS_HOST))
         queue().reconcile(); prepare(id, 4); backend.reconcile()
         val policy = settings.copy(maxVcpusPerJob = 2)
         repeat(4) {
@@ -202,6 +202,16 @@ class NomadQueueTest {
         assertEquals(2, sessions.size)
         assertEquals(2000, sessions.sumOf { it.budget.cpuMillis })
         assertEquals(setOf("same-node"), sessions.map { it.node }.toSet())
+    }
+
+    @Test fun `parallel one requests one worker across the cluster without reserving a node`() {
+        val id = job(ExperimentSpec("one-vcpu", problems = listOf(mapOf("suite" to "s")), parallel = 1, host = Experiments.AWS_HOST))
+        queue().reconcile(); prepare(id, 8); backend.reconcile()
+        repeat(3) { queue().reconcile() }
+        val solves = store.execution.sessions(id).filter { it.executionClass == "solve" && it.desired != "stop" }
+        assertEquals(1, solves.size)
+        assertEquals(1000, solves.single().budget.cpuMillis)
+        assertFalse(store.execution.submission(solves.single().id).contains("node.unique.id"))
     }
 
     @Test fun `domain completion is acknowledged once across coordinator instances`() {
@@ -255,15 +265,15 @@ class NomadQueueTest {
     }
 
     @Test fun `repeated Spot losses replenish workers without failing healthy siblings or republishing source`() {
-        val id = job(); queue().reconcile(); prepare(id); backend.reconcile(); queue(cores = 2).reconcile()
+        val id = job(); queue().reconcile(); prepare(id); backend.reconcile(); queue(cores = 1).reconcile()
         val siblings = store.execution.sessions(id).filter { it.executionClass == "solve" && store.execution.submission(it.id).contains("advisory-native") }.map { it.id }.toSet()
         repeat(8) {
             val active = store.execution.sessions(id).single { it.executionClass == "solve" && it.desired != "stop" && store.execution.submission(it.id).contains("hard-quota") }
             store.execution.loseSession(active.id, "infrastructure:spot")
-            queue(cores = 2).reconcile()
+            queue(cores = 1).reconcile()
             assertEquals(Status.RUNNING, store.job(id)!!.status)
             assertNull(store.job(id)!!.error)
-            assertEquals(3, store.execution.sessions(id).count { it.executionClass == "solve" && it.desired != "stop" })
+            assertEquals(2, store.execution.sessions(id).count { it.executionClass == "solve" && it.desired != "stop" })
             assertTrue(store.execution.sessions(id).filter { it.id in siblings }.all { it.desired == "run" })
         }
         assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })

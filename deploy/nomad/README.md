@@ -422,7 +422,8 @@ Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations)
 immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
 state is considered disposable; historical job results and provenance are never runtime-pruning candidates.
 
-Worker `parallel` determines the worker's CPU and memory request. Sessions from the
+Job `parallel` determines its total solve CPU request across the cluster (parallel
+cases times the largest arm's CPU request). Each worker reserves its own share. Sessions from the
 same experiment share a node whenever those resources fit. Operator queue settings
 `maxVcpusPerJob` (default 16) and `maxSessionsPerJob` bound job expansion;
 `perHostParallel` optionally caps same-job cases on each node and is unset by

@@ -130,7 +130,8 @@ class NomadQueue(
                 val pending = store.casePlan(job.id).filter { it.status in setOf(Status.QUEUED, Status.RUNNING) }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
                 val minimumCpu = targets.minOf { checkNotNull(settings.solveBudget(it, current)).cpuMillis }
-                val cpuLimit = maxOf(this.settings.maxVcpusPerJob * 1000, minimumCpu)
+                val requestedCpu = Math.multiplyExact(Math.multiplyExact(current.parallel, recipe.arms.maxOf { it.arm.cores }), 1000)
+                val cpuLimit = maxOf(minOf(this.settings.maxVcpusPerJob * 1000, requestedCpu), minimumCpu)
                 val limit = minOf(this.settings.maxSessionsPerJob, pending, cpuLimit / minimumCpu)
                 val active = sessions.filter { it.executionClass == "solve" && it.desired != "stop" }
                 var keptCpu = 0
