@@ -103,6 +103,7 @@ class NomadBackend(
 
     fun commit(owner: AttemptOwner, result: IterationResult): Boolean {
         check(workAllowed()) { "coordinator volumes unavailable" }
+        var accepted = result
         val session = store.execution.session(owner.session) ?: throw ExecutionFenced("unknown session")
         require((session.executionClass == "prepare") == (result.preparation != null))
         result.preparation?.let { preparation ->
@@ -120,7 +121,10 @@ class NomadBackend(
             fun identities(groups: List<List<Problem>>) = groups.map { group -> group.map { Triple(it.suite, it.problem, it.collection) } }
             require(identities(selected) == identities(preparation.selections)) { "prepared files differ from the approved selection" }
             val approvedKeys = selected.flatten().map { it.collection to it.problem }.toSet()
-            require(preparation.features.all { (it.collection to it.problem) in approvedKeys }) { "features are outside the approved selection" }
+            // Consumer name filters may also classify substring matches; annotations never expand the approved work.
+            accepted = result.copy(preparation = preparation.copy(features = preparation.features.filter {
+                (it.collection to it.problem) in approvedKeys
+            }))
             require(preparation.corpus == null || preparation.sharedInputs.isEmpty())
             require(preparation.sharedInputs.map { it.file.path }.distinct().size == preparation.sharedInputs.size)
             require(preparation.sharedInputs.fold(0L) { total, input -> Math.addExact(total, input.file.bytes) } in 0..32L * 1024 * 1024 * 1024)
@@ -134,7 +138,7 @@ class NomadBackend(
             require(allowed || result.preparation?.artifacts?.get(name) == sha && name.startsWith("preparation/")) { "artifact does not belong to this iteration" }
             artifacts.file(session.jobId, sha)
         }
-        return store.execution.commit(owner, result)
+        return store.execution.commit(owner, accepted)
     }
 
     fun reconcile() {
