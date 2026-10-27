@@ -12,6 +12,16 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class PortableWorkerTest {
+    @Test fun `consumer caches use the Linux host volume and preserve native or explicit cache homes`() {
+        val environment = mapOf("HOME" to "/home/worker", "LAB_WORKER_CACHE_ROOT" to "/lab-cache", "UNRELATED_SECRET" to "private")
+        assertEquals("/lab-cache/consumer", workerEnvironment(false, environment)["XDG_CACHE_HOME"])
+        assertNull(workerEnvironment(true, environment)["XDG_CACHE_HOME"])
+        for (mac in listOf(false, true)) {
+            assertEquals("/custom", workerEnvironment(mac, environment + ("XDG_CACHE_HOME" to "/custom"))["XDG_CACHE_HOME"])
+            assertFalse("UNRELATED_SECRET" in workerEnvironment(mac, environment))
+        }
+    }
+
     private val root = Files.createTempDirectory("portable-worker").toAbsolutePath()
     private val supervisorScript = root.resolve("supervisor.py").also { file ->
         javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, file) }
@@ -39,6 +49,7 @@ class PortableWorkerTest {
     @Test fun `preparation selects portable files and publishes verified build and corpus bundles`(): Unit = service { socket ->
         val script = """#!/usr/bin/env bash
             set -eu
+            [[ "${'$'}JAVA_OPTS" == *'-Dklause.bench.corpus.shared=true'* ]]
             corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"
             corpus="${'$'}{corpus%% *}"
             mkdir -p "${'$'}corpus"

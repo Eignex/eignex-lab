@@ -44,6 +44,7 @@ object NomadCoordinatorCli {
         }
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
         val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
+        val sharedCheckInputs = java.util.concurrent.ConcurrentHashMap<Long, List<SharedInput>>()
         val capacitySettings = settings.capacity?.let { Json.decodeFromString<CapacitySettings>(Files.readString(Path.of(it.settingsFile))) }
         val backend = NomadBackend(store, client, artifacts, config::jobDir, disk::allowsWork, checkCase = check@{ job, index ->
             val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
@@ -59,12 +60,24 @@ object NomadCoordinatorCli {
                             }
                         }
                         "not-required"
-                    } else checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
+                    } else {
+                        if (sharedCheckInputs.size >= 64 && !sharedCheckInputs.containsKey(job)) sharedCheckInputs.clear()
+                        val inputs = sharedCheckInputs.computeIfAbsent(job) {
+                            store.execution.accepted(job).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
+                        }
+                        if (inputs.isNotEmpty()) try {
+                            val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
+                                .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
+                            requireNotNull(SharedInputs.environment()).resolve(inputs, required = required)
+                        } catch (failure: Exception) { throw SharedCheckInputUnavailable(failure) }
+                        checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
+                    }
                 }
             }
             if (!future.isDone) null else {
                 try { future.get() }
                 catch (failure: java.util.concurrent.ExecutionException) {
+                    if (failure.cause is SharedCheckInputUnavailable) return@check null
                     val detail = "unchecked: source checker failed (${failure.cause?.javaClass?.simpleName})"
                     config.createJobDir(job).resolve("setup.log").toFile().appendText("case $index: $detail\n")
                     detail
@@ -110,3 +123,5 @@ object NomadCoordinatorCli {
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
 }
+
+private class SharedCheckInputUnavailable(cause: Throwable) : IllegalStateException("shared checking input temporarily unavailable", cause)

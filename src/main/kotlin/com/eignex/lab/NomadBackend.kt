@@ -121,6 +121,9 @@ class NomadBackend(
             require(identities(selected) == identities(preparation.selections)) { "prepared files differ from the approved selection" }
             val approvedKeys = selected.flatten().map { it.collection to it.problem }.toSet()
             require(preparation.features.all { (it.collection to it.problem) in approvedKeys }) { "features are outside the approved selection" }
+            require(preparation.corpus == null || preparation.sharedInputs.isEmpty())
+            require(preparation.sharedInputs.map { it.file.path }.distinct().size == preparation.sharedInputs.size)
+            require(preparation.sharedInputs.fold(0L) { total, input -> Math.addExact(total, input.file.bytes) } in 0..32L * 1024 * 1024 * 1024)
             preparation.selections.flatten().forEach { p -> (listOfNotNull(p.model, p.data) + p.includeDirs).forEach(::safeRelative) }
         }
         for ((name, sha) in result.artifacts) {

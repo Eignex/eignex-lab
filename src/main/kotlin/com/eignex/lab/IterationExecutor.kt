@@ -29,7 +29,9 @@ class IterationExecutor(
         val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) == Triple(selected.first().problem, selected.first().seed, selected.first().repeat) }
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
-        val corpus = directory.resolve("corpus")
+        val corpus = if (manifest.sharedInputs.isNotEmpty()) {
+            requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.resolve(manifest.sharedInputs, ::checkRun)
+        } else directory.resolve("corpus")
         if (manifest.inputCorpus != null) {
             val input = cache.stage(manifest.inputCorpus, ::checkRun) { bundleInput(manifest.inputCorpus) }
             copyTree(input, corpus, ::checkRun)
@@ -115,8 +117,7 @@ class IterationExecutor(
         } finally { threads.shutdownNow() }
     }
 
-    private fun environment(): Map<String, String> = System.getenv().filterKeys { it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || os == "mac" && it == "DOCKER_HOST" } +
-        mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+    private fun environment(): Map<String, String> = workerEnvironment(os == "mac")
     private fun copyTree(source: Path, destination: Path, checkActive: () -> Unit) {
         require(!Files.exists(destination)) { "attempt worktree already exists" }
         Files.walk(source).use { paths -> paths.forEach { path ->

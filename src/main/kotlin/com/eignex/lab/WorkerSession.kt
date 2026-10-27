@@ -88,12 +88,18 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             try {
                 phase("preparing")
                 val result = if (manifest.preparationTimeoutSec != null) {
-                    val preparation = PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
-                        builds, ::download,
-                        if (CliMeasurements.localMacOs) "mac" else "linux", workerArch())
-                        .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
-                            retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
-                        }) { file -> upload(file, claim.owner) }
+                    fun signature(input: InputSignature): SignedInput = retry {
+                        val payload = Json.encodeToString(InputSignature.serializer(), input)
+                        Json.decodeFromString<SignedInput>(String(request("input-signature", "POST", HttpRequest.BodyPublishers.ofString(payload), owner = claim.owner).body()))
+                    }
+                    val preparation = InputSigningRelay(::signature).use { relay ->
+                        PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
+                            builds, ::download, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
+                            SharedInputs.environment(publishSignature = ::signature), relay.address)
+                            .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
+                                retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
+                            }) { file -> upload(file, claim.owner) }
+                    }
                     IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
                 } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing") }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
                 phase("uploading")

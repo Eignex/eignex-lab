@@ -12,6 +12,7 @@ import java.util.zip.ZipOutputStream
 data class PreparationResult(
     val selections: List<List<Problem>>, val bundles: List<WorkerBundle>, val corpus: WorkerBundle? = null,
     val features: List<ProblemFeatures> = emptyList(), val artifacts: Map<String, String> = emptyMap(),
+    val sharedInputs: List<SharedInput> = emptyList(),
 )
 
 /** Relative roots in the domain plan have the same meaning on every worker. */
@@ -27,14 +28,20 @@ internal fun portableProblem(problem: Problem, source: Path, corpus: Path): Prob
     return problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
 }
 
-internal fun workerEnvironment(mac: Boolean): Map<String, String> = System.getenv().filterKeys {
-    it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL") || mac && it == "DOCKER_HOST"
-} + mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> {
+    val cache = environment["XDG_CACHE_HOME"] ?: if (mac) null else environment["LAB_WORKER_CACHE_ROOT"]?.let { "$it/consumer" }
+    return environment.filterKeys {
+        it in setOf("PATH", "HOME", "TMPDIR", "JAVA_HOME", "LANG", "LC_ALL", "KLAUSE_BENCH_CORPUS_MIRROR", "KLAUSE_BENCH_CORPUS_MIRROR_WRITE") || mac && it == "DOCKER_HOST"
+    } + (cache?.let { mapOf("XDG_CACHE_HOME" to it) } ?: emptyMap()) +
+        (if (environment["LAB_SHARED_INPUT_ROOT"] != null) mapOf("KLAUSE_BENCH_CORPUS_KEEP_PACKED" to "true") else emptyMap()) +
+        mapOf("OPENBLAS_NUM_THREADS" to "1", "VECLIB_MAXIMUM_THREADS" to "1", "MKL_NUM_THREADS" to "1", "OMP_NUM_THREADS" to "1")
+}
 
 /** Preparation is a worker operation under the same supervisor, cgroup and ownership lease as solves. */
-class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
+internal class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
-                          private val os: String, private val arch: String) {
+                          private val os: String, private val arch: String,
+                          private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -45,8 +52,8 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             check(remaining() > 0) { "preparation allowance expired" }
             if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout()
         }
-        val corpus = Files.createDirectories(directory.resolve("corpus"))
-        val env = workerEnvironment(os == "mac")
+        val corpus = Files.createDirectories(shared?.root ?: directory.resolve("corpus"))
+        val env = workerEnvironment(os == "mac") + (inputSigner?.let { mapOf("KLAUSE_BENCH_CORPUS_SIGNER" to it) } ?: emptyMap())
         val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
         fun run(tree: Path, command: String, output: Path = log) {
             checkActive()
@@ -71,7 +78,8 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
         val json = Json { ignoreUnknownKeys = true }
         fun select(selection: Map<String, String>, name: String): List<String> {
             val output = directory.resolve("$name.jsonl")
-            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary"
+            val options = "-Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$primary" +
+                if (shared == null) " -Dklause.bench.corpus.shared=true" else ""
             run(primary, "cd ${quote("$primary/klause-bench")} && JAVA_OPTS=${quote(options)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
                 "./build/install/klause-bench/bin/klause-bench select ${Experiments.selectArgs(selection)}", output)
             return Files.readAllLines(output).filter { it.startsWith("{") }
@@ -117,7 +125,10 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip")) }
         }
-        val corpusBundle = if (Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
+        val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
+            .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.distinct()
+        val sharedInputs = if (shared != null) shared.publish(inputPaths, ::checkActive) else emptyList()
+        val corpusBundle = if (shared == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
             archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), ::checkActive)
                 .also { artifacts["preparation/corpus.zip"] = upload(directory.resolve("corpus.zip")) }
         } else null
@@ -126,7 +137,7 @@ class PreparationExecutor(private val supervisor: ProcessSupervisor, private val
             if (Files.isRegularFile(path)) artifacts["preparation/$name"] = upload(path)
         }
         require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
-        return PreparationResult(selections, bundles, corpusBundle, features, artifacts)
+        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs)
     }
 }
 

@@ -45,6 +45,7 @@ data class WorkManifest(
     val cases: List<WorkCase>, val bundles: List<WorkerBundle>, val budget: ResourceBudget,
     val solveJavaOptions: String = "", val schemaVersion: Int = 1,
     val preparationTimeoutSec: Long? = null, val inputCorpus: WorkerBundle? = null,
+    val sharedInputs: List<SharedInput> = emptyList(),
 ) {
     init {
         require(schemaVersion == 1 && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
@@ -54,6 +55,9 @@ data class WorkManifest(
         require(cases.all { it.arm in arms.indices })
         require(preparationTimeoutSec == null || cases.isEmpty())
         require(inputCorpus == null || inputCorpus.repository == experiment.repository)
+        require(inputCorpus == null || sharedInputs.isEmpty())
+        require(sharedInputs.map { it.file.path }.distinct().size == sharedInputs.size)
+        require(sharedInputs.fold(0L) { total, input -> Math.addExact(total, input.file.bytes) } in 0..32L * 1024 * 1024 * 1024)
         cases.forEach { case -> (listOfNotNull(case.problem.model, case.problem.data) + case.problem.includeDirs).forEach(::safeRelative) }
         require(bundles.all { it.repository == experiment.repository })
         require(arms.all { arm -> bundles.any { it.commit == arm.sha } })

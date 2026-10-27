@@ -49,6 +49,16 @@ class NativeServicesTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render(settings)
 
+    def test_input_signer_is_separate_and_never_inherits_lab_configuration(self):
+        with tempfile.TemporaryDirectory() as path:
+            settings = self.settings(Path(path))
+            settings["inputSigner"] = dict(python="/cache/venv/bin/python", script="/cache/input_signer.py", config="/cache/signer.json")
+            settings["labEnvironment"]["LAB_SHARED_INPUT_SIGNER"] = "http://127.0.0.1:8093/"
+            plists, _, _ = render(settings)
+            signer = plistlib.loads(plists["com.eignex.lab.input-signer"])
+            self.assertEqual(["/cache/venv/bin/python", "/cache/input_signer.py", "--config", "/cache/signer.json"], signer["ProgramArguments"])
+            self.assertNotIn("LAB_SHARED_INPUT_SIGNER", signer["EnvironmentVariables"])
+
     def test_rejects_development_or_unprotected_agent(self):
         with tempfile.TemporaryDirectory() as path:
             settings = self.settings(Path(path))
