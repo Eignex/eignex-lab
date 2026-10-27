@@ -59,15 +59,20 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         }
     }
 
-    fun resolve(inputs: List<SharedInput>, checkActive: () -> Unit = {}): Path {
+    fun view(inputs: List<SharedInput>): Path {
         require(inputs.isNotEmpty() && inputs.map { it.file.path }.distinct().size == inputs.size)
         Files.createDirectories(root)
-        val canonical = root.toRealPath()
         val inventory = inputs.sortedBy { it.file.path }
         val key = ExecutionStore.digest(Json.encodeToString(kotlinx.serialization.builtins.ListSerializer(SharedInput.serializer()), inventory))
-        val view = root.resolve(".lab-inputs/views/$key")
-        Files.createDirectories(view)
-        for (input in inputs) {
+        return Files.createDirectories(root.resolve(".lab-inputs/views/$key"))
+    }
+
+    fun resolve(inputs: List<SharedInput>, checkActive: () -> Unit = {}, required: List<String>? = null): Path {
+        val view = view(inputs)
+        val canonical = root.toRealPath()
+        for (input in inputs.filter { candidate -> required == null || required.any {
+            candidate.file.path == it || candidate.file.path.startsWith(it.trimEnd('/') + "/")
+        } }) {
             checkActive()
             val file = input.file; val target = view.resolve(safeRelative(file.path))
             synchronized(fileLockFor(target)) {

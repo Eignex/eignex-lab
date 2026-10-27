@@ -16,6 +16,21 @@ class SharedInputsTest {
         override fun get(key: String, destination: Path) { gets += key; Files.write(destination, objects.getValue(key)) }
     }
 
+    @Test fun `planning transfers no bytes and checking fetches only the case inputs`() {
+        val transport = Transport()
+        val inputs = listOf("first", "second").map { name ->
+            val sha = ExecutionStore.digest(name); val key = "input-blobs/$sha"
+            transport.objects[key] = name.toByteArray()
+            SharedInput(InputFile("collection/$name", sha, name.length.toLong()), key)
+        }
+        val cache = SharedInputs(Files.createTempDirectory("planned-inputs"), transport)
+        val planned = cache.view(inputs)
+        assertEquals(emptyList(), transport.gets)
+        assertEquals(planned, cache.resolve(inputs, required = listOf("collection/first")))
+        assertEquals(listOf(inputs.first().key), transport.gets)
+        assertFalse(Files.exists(planned.resolve("collection/second")))
+    }
+
     @Test fun `existing regional objects and native files are reused without uploading or copying data`() {
         val root = Files.createTempDirectory("shared-inputs")
         val model = root.resolve("collection/model.opb"); Files.createDirectories(model.parent); Files.writeString(model, "model")

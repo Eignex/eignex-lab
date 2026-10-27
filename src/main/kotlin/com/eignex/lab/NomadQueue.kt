@@ -194,7 +194,7 @@ class NomadQueue(
             require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
         }
         if (preparation.sharedInputs.isNotEmpty()) {
-            val root = requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.resolve(preparation.sharedInputs)
+            val root = requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.view(preparation.sharedInputs)
             val link = config.jobDir(job.id).resolve("nomad/prepared-corpus")
             Files.createDirectories(link.parent)
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
