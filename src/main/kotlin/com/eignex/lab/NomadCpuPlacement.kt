@@ -59,11 +59,12 @@ internal class NomadCpuPlacement(private val nomad: NomadControl) {
         val cores = attrs["cpu.numcores"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 } ?: return@mapNotNull null
         val allocations = nomad.nodeAllocations(id).filter { it["ClientStatus"]?.jsonPrimitive?.content in setOf("pending", "running", "unknown") }
         val tasks = allocations.flatMap {
-            it["AllocatedResources"]?.jsonObject?.get("Tasks")?.jsonObject?.values?.map { value -> value.jsonObject } ?: return@mapNotNull null
+            ((it["AllocatedResources"] as? JsonObject)?.get("Tasks") as? JsonObject)?.values
+                ?.map { value -> value as? JsonObject ?: return@mapNotNull null } ?: return@mapNotNull null
         }
-        fun memory(resources: JsonObject?) = resources?.get("Memory")?.jsonObject?.get("MemoryMB")?.jsonPrimitive?.longOrNull ?: 0
-        val cpu = tasks.sumOf { it["Cpu"]?.jsonObject?.get("CpuShares")?.jsonPrimitive?.longOrNull ?: mhz.toLong() }
-        val freeMemory = memory(node["NodeResources"]?.jsonObject) - memory(node["ReservedResources"]?.jsonObject) - tasks.sumOf(::memory)
+        fun memory(resources: JsonObject?) = ((resources?.get("Memory") as? JsonObject)?.get("MemoryMB") as? JsonPrimitive)?.longOrNull ?: 0
+        val cpu = tasks.sumOf { ((it["Cpu"] as? JsonObject)?.get("CpuShares") as? JsonPrimitive)?.longOrNull ?: mhz.toLong() }
+        val freeMemory = memory(node["NodeResources"] as? JsonObject) - memory(node["ReservedResources"] as? JsonObject) - tasks.sumOf(::memory)
         Node(id, node.getValue("NodeClass").jsonPrimitive.content, NomadCpuCapacity(mhz, cores), mhz.toLong() - cpu, freeMemory)
     }
 }

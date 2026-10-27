@@ -78,6 +78,14 @@ class NomadBackendTest {
         assertNotNull(backend().claim(session.id, token, "allocation"))
     }
 
+    @Test fun `a pending allocation without resource telemetry does not fail job admission`() {
+        control.nodeInventory["incomplete"] = cpuNode("incomplete", 6000)
+        control.nodeTasks["incomplete"] = listOf(buildJsonObject { put("ClientStatus", "pending"); put("AllocatedResources", JsonNull) })
+        val id = setup(1)
+        assertNotEquals(Status.FAILED, store.job(id)!!.status)
+        assertEquals(1, store.execution.sessions(id).size)
+    }
+
     @Test fun `registration omits new optional fields for frozen older workers`() = testApplication {
         setup(preparation = true)
         application { workerApi(store, backend(), artifacts) { true } }
