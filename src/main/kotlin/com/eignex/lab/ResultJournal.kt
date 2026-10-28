@@ -231,6 +231,16 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
         check(job, sha)
         val pending = synchronized(monitor) { index.containsKey(job to sha) }
+        // Preparation metadata uses the same durable bounded journal as small solve results.
+        // Partial/chunked transfers retain the resumable external-store path.
+        if (!pending && offset == 0L && bytes in 0..65_536 && external.offset(job, sha) == 0L) {
+            val payload = input.readNBytes(bytes.toInt() + 1)
+            require(payload.size.toLong() <= bytes) { "artifact exceeds declared size" }
+            if (payload.size.toLong() == bytes) {
+                putAll(job, mapOf(sha to payload)); return bytes
+            }
+            return external.put(job, sha, bytes, offset, ByteArrayInputStream(payload))
+        }
         if (!pending) return external.put(job, sha, bytes, offset, input)
         require(offset in 0..bytes && size(job, sha) == bytes); verify(job, sha); return bytes
     }
@@ -262,11 +272,15 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             batch.busy = true; batch.readers++
         }
         try {
-            if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES) {
+            val offsets = batch.manifest.blobs.associate { it.sha to external.offset(batch.manifest.job, it.sha) }
+            if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES && offsets.values.all { it == 0L }) {
                 external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
             } else ZipFile(batch.path.toFile()).use { zip ->
                 for (blob in batch.manifest.blobs) zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
-                    external.put(batch.manifest.job, blob.sha, blob.bytes, 0, input)
+                    val offset = offsets.getValue(blob.sha)
+                    require(offset in 0..blob.bytes) { "external artifact size changed" }
+                    input.skipNBytes(offset)
+                    external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
                 }
             }
             synchronized(monitor) {

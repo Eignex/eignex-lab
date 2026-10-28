@@ -339,7 +339,10 @@ Preparation workers report their current phase and exclusive accumulated timings
 execution pages show download, verification, checkout, compiler wait, compilation, workspace creation, selection,
 classification, archive, local-cache publication and upload progress. Reporting runs in a background thread;
 stale reports are marked rather than presented as fresh progress. Reports are fenced to the active preparation
-attempt and survive coordinator restart; timings are also uploaded as the accepted `preparation/timings.json` artifact.
+attempt and survive coordinator restart; timings are also uploaded as the accepted `preparation/timings.json` artifact. Complete metadata uploads up to
+64 KiB use the existing capped internal journal, so their acknowledgement does not wait for an external-volume
+flush. Partial and larger transfers retain their resumable upload path; background drain resumes any existing
+external prefix after interruption.
 
 `SourceInputs` exports an approved Git tip and its reachable history only after its mandatory source-trust
 callback succeeds. The archive contains Git objects, never the mirror's remotes, hooks, credentials or configuration.
