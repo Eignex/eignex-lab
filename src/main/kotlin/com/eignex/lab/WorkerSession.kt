@@ -59,7 +59,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-            builds, inputCache)
+            builds, inputCache, WorkerWorkspaces(root.resolve("workspaces")))
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
         try {
         while (true) {

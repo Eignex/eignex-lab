@@ -125,7 +125,7 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 }
             }
             post("/commit-inline") {
-                withContext(CoordinatorIo.artifacts) {
+                withContext(CoordinatorIo.results) {
                     check(workAllowed()); val session = call.auth()
                     val body = Json.decodeFromString<WorkerInlineCommit>(call.bodyText())
                     require(body.owner.session == session.id && body.owner.allocation == session.allocation)
