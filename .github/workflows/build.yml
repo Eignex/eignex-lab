@@ -59,6 +59,8 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
+      - name: Verify bench SDK release assets
+        run: ./gradlew :lab-bench:verifyRelease
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Validate native service configuration
@@ -89,6 +91,8 @@ jobs:
           path: |
             build/test-results/
             build/reports/tests/
+            lab-bench/build/test-results/
+            lab-bench/build/reports/tests/
       - run: ./gradlew distZip
       - uses: actions/upload-artifact@v7
         with:
@@ -115,7 +119,7 @@ jobs:
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Verify native worker, detached process cleanup and durable ownership
-        run: ./gradlew test --tests com.eignex.lab.PortableWorkerTest --tests com.eignex.lab.ExecutionStoreTest --tests com.eignex.lab.NomadBatchJobTest --tests com.eignex.lab.NomadBackendTest --tests com.eignex.lab.ProfileRunDeadlineTest --tests com.eignex.lab.NomadQueueTest --tests com.eignex.lab.QueueEfficiencyTest --tests com.eignex.lab.CapacityPolicyTest --tests com.eignex.lab.SharedInputCacheTest --tests com.eignex.lab.SharedInputsTest --tests com.eignex.lab.WorkerFailureTest
+        run: ./gradlew :test --tests com.eignex.lab.PortableWorkerTest --tests com.eignex.lab.ExecutionStoreTest --tests com.eignex.lab.NomadBatchJobTest --tests com.eignex.lab.NomadBackendTest --tests com.eignex.lab.ProfileRunDeadlineTest --tests com.eignex.lab.NomadQueueTest --tests com.eignex.lab.QueueEfficiencyTest --tests com.eignex.lab.CapacityPolicyTest --tests com.eignex.lab.SharedInputCacheTest --tests com.eignex.lab.SharedInputsTest --tests com.eignex.lab.WorkerFailureTest
       - name: Package tested controller
         run: ./gradlew distZip
       - uses: actions/upload-artifact@v7

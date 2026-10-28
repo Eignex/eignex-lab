@@ -1,5 +1,9 @@
 # Eignex Lab
 
-Benchmark runner for Eignex repositories: Klause experiments, Koblas captures, and committed profiles.
+Benchmark runner for Eignex repositories: repository-owned bench adapters, Klause experiments, and committed profiles.
 
-[Setup](deploy/SETUP.md) · [Usage](docs/runs.md)
+[Setup](deploy/SETUP.md) · [Usage](docs/runs.md) · [Bench SDK](lab-bench/README.md)
+
+The build uses [KBuild 1.3.6](https://github.com/Eignex/kbuild/releases/tag/v1.3.6) from public GitHub Release assets,
+including its platform and SDK release-packaging helper. Downloads require no GitHub account or token.
+The service uses JDK 25; the standalone Bench SDK targets Java 17.

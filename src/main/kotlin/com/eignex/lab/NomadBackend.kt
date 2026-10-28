@@ -123,7 +123,14 @@ class NomadBackend(
                 require(manifest.bundles.any { it.commit == bundle.commit && it.os == bundle.os && it.arch == bundle.arch })
                 require(bundle.sha256 in preparation.artifacts.values)
             }
+            require((manifest.experiment.bench != null) == (preparation.benchPlan != null))
+            preparation.benchPlan?.let { plan ->
+                require(preparation.benchDescriptor != null)
+                BenchRuns.resources(plan)
+                require(preparation.selections == listOf(plan.cases.map(BenchRuns::problem)))
+            }
             val selected = store.execution.acceptedPreparationSelection(owner)
+            if (manifest.experiment.bench != null) require(selected == preparation.selections) { "bench plan changed after approval" }
             fun identities(groups: List<List<Problem>>) = groups.map { group -> group.map { Triple(it.suite, it.problem, it.collection) } }
             require(identities(selected) == identities(preparation.selections)) { "prepared files differ from the approved selection" }
             val approvedKeys = selected.flatten().map { it.collection to it.problem }.toSet()

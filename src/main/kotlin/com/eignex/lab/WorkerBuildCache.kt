@@ -78,7 +78,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         Files.copy(source.resolve(file.path), target, COPY_ATTRIBUTES, REPLACE_EXISTING)
                     }
                 } else copy(source, tree, ::checkRun)
-                if (build.tasks.isNotEmpty()) {
+                val tasks = build.benchManifest?.let { BenchRuns.entry(tree, BenchSpec(it)).buildTasks } ?: build.tasks
+                if (tasks.isNotEmpty()) {
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
                     val init = staging.resolve("jvm.init.gradle")
                     Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
@@ -86,7 +87,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
                     dependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs) { dependencyHome ->
                         Files.createDirectories(dependencyHome)
-                        run(listOf("bash", "./gradlew") + build.tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
+                        run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                             "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree,
                             env + ("GRADLE_USER_HOME" to dependencyHome.toString()))
                         Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
@@ -129,7 +130,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     }
 
     private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest(listOf(
-        "build-cache-v4", bundle.repository, bundle.commit, bundle.os, bundle.arch, bundle.toolchain,
+        "build-cache-v5", bundle.repository, bundle.commit, bundle.os, bundle.arch, bundle.toolchain,
+        bundle.build?.benchManifest.orEmpty(),
         Json.encodeToString(bundle.buildOptions), Json.encodeToString(bundle.build?.tasks.orEmpty()),
         // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
         if (bundle.build?.gitBundle == null) bundle.sha256 else "approved-git-commit",

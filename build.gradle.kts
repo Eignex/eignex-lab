@@ -1,7 +1,25 @@
 plugins {
-    id("com.eignex.jvm") version "1.3.5"
+    id("com.eignex.jvm")
+    id("com.eignex.publish.github") apply false
     kotlin("plugin.serialization") version "2.4.21"
     application
+}
+
+// KBuild's platform uses the same anonymous release layout as its plugins.
+allprojects {
+    repositories {
+        ivy {
+            url = uri("https://github.com/Eignex/kbuild/releases/download")
+            patternLayout { artifact("v[revision]/[artifact]-[revision](-[classifier]).[ext]") }
+            metadataSources { gradleMetadata() }
+            content { includeModule("com.eignex", "kbuild-platform") }
+        }
+    }
+}
+
+eignexBuild {
+    jvmToolchain.set(25)
+    jvmTarget.set(25)
 }
 
 repositories {
@@ -11,6 +29,7 @@ repositories {
 val ktor = "3.2.3"
 
 dependencies {
+    implementation(project(":lab-bench"))
     implementation("io.ktor:ktor-server-core:$ktor")
     implementation("io.ktor:ktor-server-netty:$ktor")
     implementation("io.ktor:ktor-server-content-negotiation:$ktor")
@@ -50,4 +69,21 @@ tasks.register("printJavaHome") {
     }
         .map { it.metadata.installationPath.asFile.absolutePath }
     doLast { println(home.get()) }
+}
+
+// Runs real, already-built consumer adapters through preparation, execution and coordinator ingestion.
+tasks.test { useJUnitPlatform { excludeTags("bench-adapters") } }
+val benchAdapterRoot = providers.environmentVariable("LAB_BENCH_ADAPTER_ROOT")
+tasks.register<Test>("verifyBenchAdapters") {
+    onlyIf("LAB_BENCH_ADAPTER_ROOT must name prepared consumer checkouts") { benchAdapterRoot.isPresent }
+    group = "verification"
+    description = "Verify unpublished SDK adapters from LAB_BENCH_ADAPTER_ROOT through the worker/coordinator path."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("bench-adapters") }
+    environment("JAVA_HOME", javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }.get().metadata.installationPath.asFile.absolutePath)
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
 }

@@ -13,6 +13,8 @@ data class PreparationResult(
     val selections: List<List<Problem>>, val bundles: List<WorkerBundle>, val corpus: WorkerBundle? = null,
     val features: List<ProblemFeatures> = emptyList(), val artifacts: Map<String, String> = emptyMap(),
     val sharedInputs: List<SharedInput> = emptyList(),
+    val benchPlan: com.eignex.lab.bench.BenchPlan? = null,
+    val benchDescriptor: com.eignex.lab.bench.BenchDescriptor? = null,
 )
 
 /** Relative roots in the domain plan have the same meaning on every worker. */
@@ -85,10 +87,26 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             return Files.readAllLines(output).filter { it.startsWith("{") }
         }
         val spec = manifest.experiment
+        val benchPlan = spec.bench?.let { bench ->
+            val request = directory.resolve("bench-request.json")
+            Files.writeString(request, com.eignex.lab.bench.BenchProtocol.json.encodeToString(
+                com.eignex.lab.bench.BenchRequest.serializer(), bench.request))
+            val prefix = "export LAB_WORKTREE=${quote(primary.toString())} LAB_CORPUS=${quote(corpus.toString())} && "
+            run(primary, prefix + BenchRuns.invocation(primary, bench, "describe"), directory.resolve("bench-descriptor.jsonl"))
+            run(primary, prefix + BenchRuns.invocation(primary, bench, "plan", request.toString()), directory.resolve("bench-plan.jsonl"))
+            com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchPlan>(
+                Files.readString(directory.resolve("bench-plan.jsonl"))).also { plan ->
+                BenchRuns.resources(plan)
+                plan.cases.forEach { BenchRuns.validateInputs(it, primary, corpus) }
+            }
+        }
+        val benchDescriptor = benchPlan?.let { com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchDescriptor>(
+            Files.readString(directory.resolve("bench-descriptor.jsonl"))) }
         fun problems(selection: Map<String, String>, name: String): List<Problem> = try {
             select(selection, name).map { json.decodeFromString<Problem>(it) }
         } catch (failure: IllegalArgumentException) { throw WorkerBuildFailure("invalid bench selection: ${failure.javaClass.simpleName}") }
         val raw = when {
+            benchPlan != null -> listOf(benchPlan.cases.map(BenchRuns::problem))
             spec.isProfile -> listOf(listOf(Experiments.profileProblem(spec)))
             spec.problemList.isNotEmpty() -> listOf(spec.problemList)
             else -> spec.problems.mapIndexed { index, selection ->
@@ -96,10 +114,10 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 val asked = if (Experiments.refills(mode, selection)) Experiments.uncapped(selection) else selection
                 problems(asked - "files", "selection-$index")
             }
-        }.map { group -> group.map { it.copy(model = null, data = null, includeDirs = emptyList()) } }
+        }.map { group -> group.map { if (benchPlan != null) it else it.copy(model = null, data = null, includeDirs = emptyList()) } }
         val selected = selectProblems(raw)
         require(selected.size == raw.size)
-        val selections = if (spec.isProfile) selected else {
+        val selections = if (spec.isProfile || benchPlan != null) selected else {
             val resolved = selected.flatten().distinctBy { it.suite to it.problem }.groupBy { it.suite }.flatMap { (suite, group) ->
                 require(group.all { it.problem.none { char -> char in "*?[]{}" } }) { "preparation needs exact problem names" }
                 val asked = mapOf("suite" to suite, "name" to group.joinToString(",") { it.problem }, "per-family" to "1000000", "files" to "true")
@@ -111,7 +129,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             } }
         }
         val features = mutableListOf<ProblemFeatures>()
-        if (!spec.isProfile) for ((index, group) in selected.flatten().distinctBy { it.suite to it.problem }.groupBy { it.suite }.values.withIndex()) {
+        if (!spec.isProfile && benchPlan == null) for ((index, group) in selected.flatten().distinctBy { it.suite to it.problem }.groupBy { it.suite }.values.withIndex()) {
             checkActive()
             try {
                 val asked = mapOf("suite" to group.first().suite, "name" to group.joinToString(",") { it.problem }, "per-family" to "1000000", "features" to "true")
@@ -126,7 +144,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip")) }
         }
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
-            .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.distinct()
+            .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.plus(
+                benchPlan?.cases.orEmpty().flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
         val sharedInputs = if (shared != null) shared.publish(inputPaths, ::checkActive) else emptyList()
         val corpusBundle = if (shared == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
             archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), ::checkActive)
@@ -137,7 +156,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             if (Files.isRegularFile(path)) artifacts["preparation/$name"] = upload(path)
         }
         require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
-        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs)
+        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs, benchPlan, benchDescriptor)
     }
 }
 
