@@ -138,6 +138,8 @@ The policy validates the retained compiled frame under MiniZinc lowering authori
 independently certified compiler. Each request has a 24 MiB text limit, one 15-second tool allowance and retained
 inputs, binary identities and bounded process receipts. The SDK result's success means capture completed;
 `details.state` is the validation verdict. Missing original compiler outputs cannot be replaced with another run's.
+Automatic checks use the three files from a single accepted iteration's artifact inventory and verify their hashes
+before passing them to the checker. Historical records without the complete point and compiler outputs stay unsupported.
 
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).

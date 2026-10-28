@@ -41,7 +41,7 @@ class MiniZincChecker : FormatChecker {
         val output = File(work, "checked.fzn")
         fun run(arguments: List<String>, files: List<File>, stdin: File? = null): ToolRun {
             val remaining = TIMEOUT_MS - (System.nanoTime() - started) / 1_000_000
-            check(remaining > 0) { "MiniZinc assignment check exhausted its allowance" }
+            if (remaining <= 0) return ToolRun(null, "", "MiniZinc assignment check exhausted its allowance", true, 0)
             return ToolProcess.run(listOf(identity.binary.path) + arguments, work, remaining, stdin,
                 limits = ToolLimits((remaining + 999) / 1000, remaining),
                 inputFiles = listOf(identity.binary) + files).also { it.resources?.let(receipts::add) }
