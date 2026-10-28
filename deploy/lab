@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Client for the eignex lab server. Defaults to https://lab.eignex.com; LAB_URL overrides the API address.
 # LAB_HOST selects an SSH host for lab corpus and, unless LAB_URL is set, http://<LAB_HOST>:8420 for the API.
+# Auto placement is preferred and is the default for ordinary jobs: omit host and location tags.
+# The lab uses idle local capacity and adds cloud capacity with demand, respecting job priority.
 #   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab koblas [--tags expr --timeout sec] <ref> <description> [capture-report options...]
@@ -67,11 +69,11 @@
 #                                                            With an id, that job alone; --json prints GET /placement
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
-#   lab host <id> local|cloud|auto                          operators only: override where a queued, unplanned job may run
+#   lab host <id> auto|cloud|local                          operators only: override where a queued, unplanned job may run
 #                                                            (the lab places every job itself; agents need not); lab and
 #                                                            aws, the older names of local and cloud, still work
-#                                                            local-only is reserved for sweeps and reference runs; use auto
-#                                                            for ordinary jobs (idle local capacity yields to reserved work)
+#                                                            auto is preferred and is the default for ordinary jobs;
+#                                                            local-only is reserved for sweeps and reference runs
 #   lab machines <id> [n]                                    retired: the cloud node pool sizes itself; the lab ignores it
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun

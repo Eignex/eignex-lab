@@ -25,7 +25,12 @@ deploy/lab fetch 7
 
 Replace `7` with the returned ID. `base` supplies shared arm values; `configs` overrides them and `grid` crosses
 combinations. Timeouts are milliseconds. The lab queues and places work automatically.
-Ordinary jobs use auto placement: idle local capacity can contribute and cloud capacity handles additional pressure.
+
+**Auto placement is preferred and is the default for ordinary experiments, profiles and bench-adapter runs.**
+Omit `host` and location tags such as `local` or `cloud`; the lab chooses placement automatically. Idle local capacity
+can contribute, and the lab adds cloud capacity as demand grows. Local and cloud workers can share the same job.
+Hardware or market selectors can narrow the compatible workers when a measurement needs them.
+
 Priority controls native admission and iteration claims; sweeps and reference runs win equal-priority ties.
 The status sweep has priority 100 and its regression confirmations 101, ahead of ordinary jobs at 0.
 Ordinary reference runs also use priority 0, with their confirmations at 1.
