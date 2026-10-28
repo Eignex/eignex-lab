@@ -1,13 +1,10 @@
 package com.eignex.lab
 
 import java.io.InputStream
-import java.nio.channels.FileChannel
-import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardOpenOption.*
 import java.nio.file.attribute.FileTime
 import java.util.UUID
 
@@ -35,9 +32,8 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
         val pin = guarded(checkActive) {
             Files.createDirectories(pins)
             val path = pins.resolve("$key.${UUID.randomUUID()}")
-            val channel = FileChannel.open(path, CREATE_NEW, WRITE)
-            try { Triple(path, channel, channel.lock()) }
-            catch (failure: Exception) { channel.close(); Files.deleteIfExists(path); throw failure }
+            try { path to checkNotNull(ProcessFilePin.tryLock(path)) }
+            catch (failure: Exception) { Files.deleteIfExists(path); throw failure }
         }
         try {
             val missing = !Files.isDirectory(entries.resolve(key), NOFOLLOW_LINKS)
@@ -57,7 +53,7 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
             return action(directory)
         } finally {
             // Keep pin removal serialized with maintenance's directory snapshot.
-            guarded({}) { pin.third.release(); pin.second.close(); Files.deleteIfExists(pin.first) }
+            guarded({}) { pin.second.close(); Files.deleteIfExists(pin.first) }
         }
     }
 
@@ -65,11 +61,9 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
         val garbage = guarded(checkActive) {
             val active = mutableSetOf<String>()
             if (Files.isDirectory(pins)) Files.list(pins).use { paths -> paths.forEach { pin ->
-                FileChannel.open(pin, WRITE).use { channel ->
-                    val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
-                    if (lock == null) active += pin.fileName.toString().substringBefore('.')
-                    else lock.use { Files.deleteIfExists(pin) }
-                }
+                val lock = ProcessFilePin.tryLock(pin)
+                if (lock == null) active += pin.fileName.toString().substringBefore('.')
+                else lock.use { Files.deleteIfExists(pin) }
             } }
             data class Entry(val key: String, val bytes: Long, val used: Long)
             val inventory = if (!Files.isDirectory(sizes)) emptyList() else Files.list(sizes).use { paths ->
@@ -101,15 +95,10 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
     private fun <T> guarded(checkActive: () -> Unit, action: () -> T): T {
         Files.createDirectories(root)
         val path = root.resolve("maintenance.lock")
-        synchronized(fileLockFor(path)) {
-            FileChannel.open(path, CREATE, WRITE).use { channel ->
-                while (true) {
-                    checkActive()
-                    val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
-                    if (lock != null) return lock.use { action() }
-                    Thread.sleep(10)
-                }
-            }
+        while (true) {
+            checkActive()
+            ProcessFilePin.tryLock(path)?.use { return action() }
+            Thread.sleep(10)
         }
     }
 }
