@@ -1,7 +1,19 @@
 package com.eignex.lab.checker
 
 /** The exact compiler outputs and native stdout retained with a MiniZinc solve record. */
-data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdout: String)
+data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdout: String) {
+    companion object {
+        internal fun read(root: java.nio.file.Path, prefix: String, artifacts: Map<String, String>): MiniZincFrame? {
+            val text = listOf("model.fzn", "model.ozn", "cli.stdout").map { name ->
+                val path = prefix + name
+                val file = root.resolve(path).toFile()
+                if (!file.isFile || file.length() > 8 * 1024 * 1024 || sha256(file) != artifacts[path]) return null
+                file.readBytes().decodeToString(throwOnInvalidSequence = true)
+            }
+            return MiniZincFrame(text[0], text[1], text[2])
+        }
+    }
+}
 
 /** Protocol binding only; MiniZinc evaluates the constraints and renders the output model. */
 internal object MiniZincPoint {
@@ -11,7 +23,7 @@ internal object MiniZincPoint {
     data class Bound(val model: String, val native: String, val point: Map<String, String>)
 
     fun bind(frame: MiniZincFrame, claimedObjective: String?): Bound {
-        require(frame.flatZinc.length <= 8 * 1024 * 1024 && frame.outputModel.length <= 8 * 1024 * 1024)
+        require(listOf(frame.flatZinc, frame.outputModel, frame.stdout).all { it.length <= 8 * 1024 * 1024 })
         val final = frame.stdout.split("----------").dropLast(1).lastOrNull()
             ?: error("native stdout kept no complete solution")
         val lines = final.lines()
