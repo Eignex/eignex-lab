@@ -41,10 +41,11 @@ internal data class MiniZincIdentity(val binary: File, val solver: String, val s
 
         internal fun describe(version: String, compilerHash: String, configuration: JsonObject,
                               hash: (File) -> String = ::sha256): Map<String, String> {
-            fun field(name: String) = (configuration[name] as? JsonPrimitive)?.content.orEmpty()
+            fun field(name: String) = (configuration[name] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
             val id = field("id")
             val solverVersion = field("version")
-            require(version.isNotBlank() && id.isNotBlank() && solverVersion.isNotBlank() && solverVersion != "unknown") {
+            require(version.isNotBlank() && id.isNotBlank() && solverVersion.isNotBlank() &&
+                solverVersion.lowercase() !in setOf("unknown", "null", "unavailable")) {
                 "MiniZinc and selected reference solver must report their versions"
             }
             val extra = configuration["extraInfo"] as? JsonObject
