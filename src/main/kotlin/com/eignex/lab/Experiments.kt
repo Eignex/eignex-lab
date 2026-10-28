@@ -252,6 +252,7 @@ object Experiments {
             host = LAB_HOST,
             auto = false,
             profile = spec.profile?.copy(runTimeoutSec = null),
+            bench = spec.bench?.copy(runTimeoutSec = null),
             capped = emptyList(),
             nodeTags = spec.nodeTags?.let { it.copy(require = it.require.toSortedSet(), exclude = it.exclude.toSortedSet()) }
                 ?.takeIf { it.require.isNotEmpty() || it.exclude.isNotEmpty() },
@@ -597,6 +598,9 @@ object Experiments {
      * for its JVM. At this limit it is sent SIGTERM, and SIGKILL [STOP_GRACE_SEC] later if it is still running.
      */
     fun profileTimeoutSec(arm: Arm): Long = profileLimitMs(arm) / 1000 + CASE_OVERHEAD_SEC
+
+    /** Active-time ceiling shared by worker preparation and execution; queue time is excluded. */
+    fun runTimeoutSec(spec: ExperimentSpec): Long? = spec.bench?.runTimeoutSec ?: spec.profile?.let(::profileRunTimeoutSec)
 
     /** A local profile's whole-run limit ([ProfileMain.runTimeoutSec]), capped as its time limit is; null without one. */
     fun profileRunTimeoutSec(profile: ProfileMain): Long? = profile.runTimeoutSec?.coerceAtMost(PROFILE_MAX_TIMEOUT_MS / 1000)

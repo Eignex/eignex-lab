@@ -81,7 +81,7 @@ class CaseChecks(
     fun afterCase(jobId: Long, index: Int) {
         runCatching {
             val (problem, arm) = store.caseOf(jobId, index) ?: return
-            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(arm.values)) return
+            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(store.job(jobId)?.experiment, arm.values)) return
             if (!checker.covers(problem.format)) return
             val future = pool.submit {
                 runCatching { check(jobId, index, problem) }.onFailure { log(jobId, "case $index: source check failed: ${it.message}") }

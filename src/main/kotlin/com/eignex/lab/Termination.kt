@@ -26,7 +26,7 @@ internal object Termination {
      * A profile job's whole-run limit ran out while its command ran: the lab stops the case gracefully, SIGTERM to its
      * process group and SIGKILL to what is left [graceMs] later, so its shutdown hooks (JFR's dump on exit) can run.
      */
-    fun deadline(graceMs: Long) = "deadline: the profile job's whole-run limit ran out, so the lab sent the case SIGTERM, " +
+    fun deadline(graceMs: Long) = "deadline: the job's whole-run limit ran out, so the lab sent the case SIGTERM, " +
         "and SIGKILL to what is left after ${span(graceMs)}"
 
     /** A case killed outright at its [timeoutSec] limit, as an AWS case is when its SSH session outlives `timeout`. */

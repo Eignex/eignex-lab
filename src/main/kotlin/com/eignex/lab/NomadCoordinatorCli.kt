@@ -69,7 +69,7 @@ object NomadCoordinatorCli {
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
             writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
             val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
-            if (arm.values["backend"] != REFERENCE_BACKEND && !SourceValidation.requested(arm.values)) return@check "not-required"
+            if (arm.values["backend"] != REFERENCE_BACKEND && !SourceValidation.requested(store.job(job)?.experiment, arm.values)) return@check "not-required"
             val key = job to index
             if (pendingChecks.size >= 64 && !pendingChecks.containsKey(key)) return@check null
             val future = pendingChecks.computeIfAbsent(key) {

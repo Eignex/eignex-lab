@@ -20,7 +20,7 @@ class IterationExecutor(
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
             prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingRunMs: () -> Long? = { null },
             remainingLeaseMs: () -> Long): IterationResult {
-        val runLimit = remainingRunMs() ?: manifest.experiment.profile?.let(Experiments::profileRunTimeoutSec)?.times(1000)
+        val runLimit = remainingRunMs() ?: Experiments.runTimeoutSec(manifest.experiment)?.times(1000)
         val runDeadline = runLimit?.let { System.nanoTime() + it.coerceAtLeast(0) * 1_000_000 }
         fun runRemaining() = runDeadline?.let { minOf((it - System.nanoTime()) / 1_000_000, remainingRunMs() ?: Long.MAX_VALUE) }
         fun checkRun() { if (runRemaining()?.let { it <= 0 } == true) throw ProfileRunTimeout() }

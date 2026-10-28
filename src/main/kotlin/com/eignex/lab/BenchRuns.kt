@@ -9,8 +9,16 @@ import java.nio.file.Path
 
 /** A repository-owned suite. The committed manifest owns its build and launch recipe. */
 @Serializable
-data class BenchSpec(val manifest: String, val request: BenchRequest = BenchRequest()) {
-    init { safeRelative(manifest) }
+data class BenchSpec(
+    val manifest: String,
+    val request: BenchRequest = BenchRequest(),
+    val runTimeoutSec: Long? = null,
+    val sourceValidation: Boolean = false,
+) {
+    init {
+        safeRelative(manifest)
+        require(runTimeoutSec == null || runTimeoutSec in 1..7200) { "bench runTimeoutSec must be between 1 and 7200" }
+    }
 }
 
 /** Translation at the coordinator/worker boundary; no repository-specific executable names. */

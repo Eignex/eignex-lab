@@ -54,6 +54,32 @@ class BenchRunsTest {
         assertEquals(BenchStatus.FAILED, BenchRuns.result(contradiction.json)!!.status)
     }
 
+    @Test fun `bench schedules retain their explicit check policy without legacy runtime options`() {
+        val unchecked = ExperimentSpec("bench", bench = BenchSpec("bench.json"))
+        val checked = unchecked.copy(bench = unchecked.bench!!.copy(sourceValidation = true))
+        for (spec in listOf(unchecked, checked)) {
+            val scheduled = SourceValidation.scheduled(spec)
+            assertEquals(spec, scheduled)
+            Experiments.validate(scheduled, 4)
+            assertEquals(spec.bench!!.sourceValidation, SourceValidation.requested(scheduled))
+            assertEquals(spec.bench.sourceValidation, SourceValidation.requested(scheduled, emptyMap()))
+        }
+        assertNotEquals(Experiments.fingerprint(unchecked), Experiments.fingerprint(checked))
+        assertEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(checked))
+    }
+
+    @Test fun `bench run deadline is explicit bounded and persists without changing the adapter request`() {
+        val bench = BenchSpec("bench.json", BenchRequest(mapOf("timeout-ms" to "500")), runTimeoutSec = 30, sourceValidation = true)
+        val spec = ExperimentSpec("bench", bench = bench)
+        Experiments.validate(spec, 4)
+        assertEquals(30L, Experiments.runTimeoutSec(spec))
+        assertEquals(spec, storedExperiment(Json.encodeToString(spec)))
+        val unlimited = spec.copy(bench = bench.copy(runTimeoutSec = null))
+        assertNull(Experiments.runTimeoutSec(unlimited))
+        assertEquals(Experiments.fingerprint(unlimited), Experiments.fingerprint(spec))
+        for (limit in listOf(0L, -1L, 7201L)) assertFailsWith<IllegalArgumentException> { bench.copy(runTimeoutSec = limit) }
+    }
+
     @Test fun `resolved corpus inputs stay pinned after relocation`() {
         val root = Files.createTempDirectory("bench-inputs")
         try {

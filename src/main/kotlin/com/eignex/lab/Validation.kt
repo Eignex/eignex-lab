@@ -50,10 +50,11 @@ object SourceValidation {
      * saved with. A reference run, a profile and an analysis are left as they are. The request is part of the
      * [Experiments.fingerprint], so a checked run is never confirmed against an unchecked one; the trend leaves it out
      * ([Experiments.trendFingerprint]), since the check changes nothing the solver does, and marks each run instead.
-     * Applying it twice changes nothing.
+     * Repository-owned bench schedules preserve their explicit [BenchSpec.sourceValidation] policy instead of
+     * adding solver runtime options to the lab-owned base. Applying it twice changes nothing.
      */
     fun scheduled(spec: ExperimentSpec): ExperimentSpec {
-        if (spec.isProfile || spec.isAnalysis || spec.isScript) return spec
+        if (spec.bench != null || spec.isProfile || spec.isAnalysis || spec.isScript) return spec
         if (Experiments.arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) return spec
         val keys = SCHEDULED.keys
         return spec.copy(base = spec.base + SCHEDULED, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
@@ -62,14 +63,19 @@ object SourceValidation {
     /** [spec] without the validation request, wherever it was set: what the solver itself was asked to do. */
     fun unrequested(spec: ExperimentSpec): ExperimentSpec {
         val keys = SCHEDULED.keys
-        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
+        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys,
+            bench = spec.bench?.copy(sourceValidation = false))
     }
 
     /** Whether an arm's [values] ask for source validation. */
     fun requested(values: Map<String, String>): Boolean = values[PARAM]?.toBooleanStrictOrNull() == true
 
     /** Whether [spec]'s first arm, the one a trend reads, asks for source validation. */
-    fun requested(spec: ExperimentSpec): Boolean = Experiments.arms(spec).firstOrNull()?.let { requested(it.values) } == true
+    fun requested(spec: ExperimentSpec): Boolean = spec.bench?.sourceValidation
+        ?: (Experiments.arms(spec).firstOrNull()?.let { requested(it.values) } == true)
+
+    /** The coordinator's check policy for a stored case, including repository-owned bench results. */
+    fun requested(spec: ExperimentSpec?, values: Map<String, String>): Boolean = spec?.bench?.sourceValidation ?: requested(values)
 
     /**
      * An arm's [values] as a case passes them to the bench: without the validation request, which the lab consumes
