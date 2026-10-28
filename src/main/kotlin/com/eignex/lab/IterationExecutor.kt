@@ -23,7 +23,10 @@ class IterationExecutor(
         val runLimit = remainingRunMs() ?: manifest.experiment.profile?.let(Experiments::profileRunTimeoutSec)?.times(1000)
         val runDeadline = runLimit?.let { System.nanoTime() + it.coerceAtLeast(0) * 1_000_000 }
         fun runRemaining() = runDeadline?.let { minOf((it - System.nanoTime()) / 1_000_000, remainingRunMs() ?: Long.MAX_VALUE) }
-        fun checkRun() { if (runRemaining()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
+        fun checkRun() {
+            if (runRemaining()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            if (remainingLeaseMs() <= 0) throw ExecutionFenced("lease expired during staging")
+        }
         checkRun()
         require(indices.isNotEmpty() && indices.distinct().size == indices.size)
         val selected = indices.map { index -> manifest.cases.single { it.index == index } }
@@ -31,6 +34,7 @@ class IterationExecutor(
         val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) == Triple(selected.first().problem, selected.first().seed, selected.first().repeat) }
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
+        val stagingStart = System.nanoTime()
         val inputs = if (manifest.sharedInputs.isNotEmpty()) {
             requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }
                 .acquire(manifest.sharedInputs, ::checkRun, required = iterationInputPaths(selected))
@@ -40,6 +44,7 @@ class IterationExecutor(
         if (manifest.inputCorpus != null) {
             withInput(manifest.inputCorpus, ::checkRun) { input -> copyTree(input, corpus, ::checkRun) }
         } else Files.createDirectories(corpus)
+        val inputsReady = System.nanoTime()
         val fresh = mutableSetOf<String>()
         val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
@@ -47,15 +52,23 @@ class IterationExecutor(
             privateWorkspaces?.reuse(key, ::checkRun)?.let { return@associateWith it }
             fresh += sha
             fun copy(cached: Path): Path {
+                val profile = manifest.experiment.profile
+                val runtimeOnly = manifest.experiment.repository == "Eignex/klause" && manifest.experiment.bench == null &&
+                    manifest.experiment.script == null && manifest.experiment.scriptFile == null &&
+                    profile?.script == null && profile?.buildTasks.orEmpty().isEmpty() && profile?.classpath.orEmpty().isEmpty()
+                fun stage(destination: Path) {
+                    if (runtimeOnly) WorkerTrees.copyRuntime(cached, destination, ::checkRun) else copyTree(cached, destination, ::checkRun)
+                }
                 // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                return privateWorkspaces?.create(key, ::checkRun) { copyTree(cached, it, ::checkRun) }
-                    ?: directory.resolve("worktrees").resolve(sha).also { copyTree(cached, it, ::checkRun) }
+                return privateWorkspaces?.create(key, ::checkRun, ::stage)
+                    ?: directory.resolve("worktrees").resolve(sha).also(::stage)
             }
             withInput(bundle, ::checkRun) { source ->
                 if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                     .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
             }
         }
+        val workspacesReady = System.nanoTime()
         if (manifest.experiment.measuresCli) for ((sha, worktree) in worktrees) {
             if (sha !in fresh) continue
             val exit = supervisor.run(listOf("bash", "-c", CliMeasurements.install(worktree.toString(), os == "mac")), worktree,
@@ -73,11 +86,14 @@ class IterationExecutor(
                 runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
             if (exit != 0) throw WorkerBuildFailure("execution provenance capture failed (exit $exit)")
         }
+        val setupReady = System.nanoTime()
         if (privateWorkspaces != null) for (sha in fresh) {
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             privateWorkspaces.seal(ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle)), worktrees.getValue(sha), ::checkRun)
         }
+        val sealed = System.nanoTime()
         prepared()
+        println("worker staging timing: inputsMs=${(inputsReady-stagingStart)/1_000_000} workspaceMs=${(workspacesReady-inputsReady)/1_000_000} setupMs=${(setupReady-workspacesReady)/1_000_000} sealMs=${(sealed-setupReady)/1_000_000} notifyMs=${(System.nanoTime()-sealed)/1_000_000} fresh=${fresh.size}")
         val timedOut = java.util.concurrent.atomic.AtomicBoolean()
         val cpu = Semaphore(manifest.budget.cpuMillis)
         val threads = Executors.newFixedThreadPool(minOf(manifest.budget.parallel, selected.size))

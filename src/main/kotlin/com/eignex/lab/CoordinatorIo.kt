@@ -8,5 +8,6 @@ internal object CoordinatorIo {
     val artifacts = Dispatchers.IO.limitedParallelism(4)
     // Bounded small commits must not wait behind multi-megabyte input streams.
     val results = Dispatchers.IO.limitedParallelism(4)
+    val packedResults = Dispatchers.IO.limitedParallelism(2)
     val capacity = Dispatchers.IO.limitedParallelism(2)
 }

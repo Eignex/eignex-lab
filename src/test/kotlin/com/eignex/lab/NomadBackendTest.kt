@@ -25,6 +25,39 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `packed results enforce ownership and checksums before durable acceptance and replay`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val journal = ResultJournal(root.resolve("packed-journal"), artifacts, start = false)
+        val durableBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
+        application { workerApi(store, durableBackend, journal) { true } }
+        val bytes = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
+        val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to sha))
+        suspend fun send(owner: AttemptOwner, content: ByteArray): HttpResponse {
+            val header = Json.encodeToString(WorkerPackedCommit(owner, result, listOf(ResultBlob(sha, bytes.size.toLong())))).toByteArray()
+            val body = java.nio.ByteBuffer.allocate(4 + header.size + content.size).putInt(header.size).put(header).put(content).array()
+            return client.post("/worker/v1/sessions/${session.id}/commit-packed") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(body)
+            }
+        }
+        try {
+            assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(generation = claim.owner.generation + 1), bytes).status)
+            assertEquals(HttpStatusCode.BadRequest, send(claim.owner, ByteArray(bytes.size)).status)
+            assertEquals(0, journal.status().batches); assertTrue(store.execution.accepted(id).isEmpty())
+            assertEquals(HttpStatusCode.NoContent, send(claim.owner, bytes).status)
+            assertEquals(HttpStatusCode.NoContent, send(claim.owner, bytes).status)
+            assertEquals(1, journal.status().batches); assertEquals(1, store.execution.accepted(id).size)
+            durableBackend.reconcile()
+            assertEquals(Status.DONE, store.job(id)!!.status)
+            assertEquals(sha, hashFile(root.resolve("jobs/$id/0.out")))
+            assertFailsWith<IllegalArgumentException> { artifacts.file(id, sha) }
+            assertTrue(journal.drainOne()); assertEquals(sha, hashFile(artifacts.file(id, sha)))
+        } finally { journal.close() }
+    }
+
     @Test fun `journaled acceptance survives coordinator restart and projects while the external store is unavailable`() = testApplication {
         val id = setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!

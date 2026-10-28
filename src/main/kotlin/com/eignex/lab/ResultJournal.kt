@@ -24,18 +24,22 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     private val maxBytes: Long = 128L * 1024 * 1024,
                     private val writable: () -> Boolean = { true }, start: Boolean = true,
                     private val syncDirectory: (Path) -> Unit = { FileChannel.open(it, READ).use { channel -> channel.force(true) } }) : ArtifactStore, AutoCloseable {
-    @Serializable private data class Blob(val sha: String, val bytes: Long)
-    @Serializable private data class Manifest(val job: Long, val blobs: List<Blob>)
+    @Serializable private data class Manifest(val job: Long, val blobs: List<ResultBlob>)
     private data class Batch(val path: Path, val manifest: Manifest, val charge: Long,
                              var readers: Int = 0, var busy: Boolean = false, var flushed: Boolean = false, var retryAt: Long = 0,
-                             var durable: Boolean = true)
-    data class Status(val batches: Int, val bytes: Long, val limit: Long, val lastError: String?)
+                             var durable: Boolean = true, val createdAt: Long = now(), var error: String? = null)
+    @Serializable data class Status(val batches: Int, val bytes: Long, val limit: Long, val lastError: String?,
+                                   val oldestAgeMs: Long = 0, val drainErrors: Long = 0, val lastDrainAt: Long? = null)
     private val monitor = Any()
     private val batches = linkedMapOf<Path, Batch>()
     private val index = mutableMapOf<Pair<Long, String>, Batch>()
     private var used = 8192L // Directory and owner-lock allowance, plus rounded blocks charged for each pack.
+    private var receiving = 0
     @Volatile private var closed = false
     @Volatile private var lastError: String? = null
+    @Volatile private var loggedError: String? = null
+    private var drainErrors = 0L
+    private var lastDrainAt: Long? = null
     private val channel: FileChannel
     private val ownership: java.nio.channels.FileLock
     private val workers = Executors.newScheduledThreadPool(2) { action -> Thread(action, "result-journal-drain").apply { isDaemon = true } }
@@ -58,7 +62,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                         require(Files.isRegularFile(path, NOFOLLOW_LINKS))
                         val manifest = manifest(path)
                         require(name.startsWith("${manifest.job}-"))
-                        val batch = Batch(path, manifest, charge(Files.size(path), manifest.blobs.size))
+                        val batch = Batch(path, manifest, charge(Files.size(path), manifest.blobs.size), createdAt = Files.getLastModifiedTime(path).toMillis())
                         for (blob in manifest.blobs) read(batch, blob.sha)
                         add(batch)
                     }
@@ -70,18 +74,22 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         } catch (failure: Exception) { ownership.release(); channel.close(); workers.shutdownNow(); throw failure }
         if (start) repeat(2) {
             workers.scheduleWithFixedDelay({
-                try { if (drainOne()) lastError = null }
+                try { drainOne() }
                 catch (failure: Exception) {
                     val detail = failure.javaClass.simpleName
-                    if (lastError != detail) System.err.println("result journal drain: $detail; pending data retained")
-                    lastError = detail
+                    if (loggedError != detail) System.err.println("result journal drain: $detail; pending data retained")
+                    loggedError = detail; lastError = detail
                 }
             }, 0, 250, TimeUnit.MILLISECONDS)
         }
     }
 
-    fun status(): Status = synchronized(monitor) { Status(batches.size, used, maxBytes, lastError) }
+    fun status(): Status = synchronized(monitor) {
+        Status(batches.size, used, maxBytes, lastError,
+            batches.values.minOfOrNull { it.createdAt }?.let { (now() - it).coerceAtLeast(0) } ?: 0, drainErrors, lastDrainAt)
+    }
     private fun charge(bytes: Long, blobs: Int): Long = ((bytes + 4095) / 4096 + 1) * 4096 + blobs * 512L
+    private fun reservation(bytes: Long, blobs: Int): Long = charge(bytes + bytes / 16384 * 8 + blobs * 512L + 4096, blobs)
     private fun add(batch: Batch) {
         batches[batch.path] = batch; used += batch.charge
         for (blob in batch.manifest.blobs) index.putIfAbsent(batch.manifest.job to blob.sha, batch)
@@ -103,13 +111,13 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             val pending = blobs.filterKeys { (job to it) !in index }
             if (pending.isEmpty()) return
             // Reserve the worst-case stored ZIP/manifest size before creating even a temporary file.
-            val reservation = charge(pending.values.sumOf { it.size.toLong() } + pending.size * 512L + 4096, pending.size)
+            val reservation = reservation(pending.values.sumOf { it.size.toLong() }, pending.size)
             check(reservation <= maxBytes - used) { "result journal full; pending data retained" }
             val temporary = Files.createTempFile(root, ".pending-", ".tmp")
             val destination = root.resolve("$job-${UUID.randomUUID()}.zip")
             var published = false
             try {
-                val manifest = Manifest(job, pending.map { Blob(it.key, it.value.size.toLong()) })
+                val manifest = Manifest(job, pending.map { ResultBlob(it.key, it.value.size.toLong()) })
                 ZipOutputStream(Files.newOutputStream(temporary)).use { zip ->
                     zip.setLevel(0)
                     zip.putNextEntry(ZipEntry("manifest.json").apply { time = 0 })
@@ -133,6 +141,74 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                 throw failure
             } finally { Files.deleteIfExists(temporary) }
         }
+    }
+
+    /** Reserve before receiving bytes; external I/O and slow senders never own the small-commit monitor. */
+    fun putPacked(job: Long, blobs: List<ResultBlob>, input: InputStream) {
+        require(job > 0); validateResultBlobs(blobs)
+        val reservation = reservation(blobs.sumOf { it.bytes }, blobs.size)
+        var duplicate = false
+        synchronized(monitor) {
+            check(!closed); check(writable()) { "result journal storage unavailable" }
+            duplicate = blobs.all { index[job to it.sha] != null }
+            if (duplicate) {
+                if (blobs.any { index.getValue(job to it.sha).durable.not() }) {
+                    syncDirectory(root); batches.values.forEach { it.durable = true }
+                }
+            } else {
+                check(reservation <= maxBytes - used) { "result journal full; pending data retained" }
+                used += reservation; receiving++
+            }
+        }
+        if (duplicate) {
+            for (blob in blobs) copyBlob(blob, input, java.io.OutputStream.nullOutputStream())
+            require(input.read() == -1) { "trailing result data" }; return
+        }
+        var temporary: Path? = null
+        var accounted = false
+        try {
+            temporary = Files.createTempFile(root, ".pending-", ".tmp")
+            val manifest = Manifest(job, blobs)
+            ZipOutputStream(Files.newOutputStream(temporary)).use { zip ->
+                zip.setLevel(0)
+                zip.putNextEntry(ZipEntry("manifest.json").apply { time = 0 })
+                zip.write(Json.encodeToString(manifest).toByteArray()); zip.closeEntry()
+                for (blob in blobs) {
+                    zip.putNextEntry(ZipEntry(blob.sha).apply { time = 0 })
+                    copyBlob(blob, input, zip); zip.closeEntry()
+                }
+                require(input.read() == -1) { "trailing result data" }
+            }
+            val actual = charge(Files.size(temporary), blobs.size); check(actual <= reservation)
+            FileChannel.open(temporary, WRITE).use { it.force(true) }
+            synchronized(monitor) {
+                check(!closed)
+                val destination = root.resolve("$job-${UUID.randomUUID()}.zip")
+                Files.move(temporary, destination, ATOMIC_MOVE)
+                // Account even a failed publication barrier so retry/restart cannot lose the candidate.
+                val batch = Batch(destination, manifest, actual, durable = false)
+                used -= reservation; add(batch); accounted = true
+                syncDirectory(root); batches.values.forEach { it.durable = true }
+            }
+        } finally {
+            // On cleanup failure keep the reservation charged until startup removes the unacknowledged temp.
+            try {
+                if (temporary == null || Files.deleteIfExists(temporary) || !Files.exists(temporary)) {
+                    if (!accounted) synchronized(monitor) { used -= reservation }
+                }
+            } finally { synchronized(monitor) { receiving-- } }
+        }
+    }
+
+    private fun copyBlob(blob: ResultBlob, input: InputStream, output: java.io.OutputStream) {
+        val digest = MessageDigest.getInstance("SHA-256"); var remaining = blob.bytes
+        val buffer = ByteArray(64 * 1024)
+        while (remaining > 0) {
+            val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            require(count > 0) { "truncated result blob" }
+            output.write(buffer, 0, count); digest.update(buffer, 0, count); remaining -= count
+        }
+        require(digest.digest().hex() == blob.sha) { "artifact checksum mismatch" }
     }
 
     override fun open(job: Long, sha: String, verify: Boolean): InputStream {
@@ -186,28 +262,43 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             batch.busy = true; batch.readers++
         }
         try {
-            val blobs = batch.manifest.blobs.associate { it.sha to read(batch, it.sha) }
-            external.putAll(batch.manifest.job, blobs)
+            if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES) {
+                external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
+            } else ZipFile(batch.path.toFile()).use { zip ->
+                for (blob in batch.manifest.blobs) zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
+                    external.put(batch.manifest.job, blob.sha, blob.bytes, 0, input)
+                }
+            }
             synchronized(monitor) {
-                batch.flushed = true
+                batch.flushed = true; batch.error = null; lastDrainAt = now()
+                if (batches.values.none { it.error != null }) { lastError = null; loggedError = null }
                 for (blob in batch.manifest.blobs) index.remove(batch.manifest.job to blob.sha, batch)
             }
             return true
         } catch (failure: Exception) {
-            synchronized(monitor) { batch.retryAt = now() + 5000 }
+            synchronized(monitor) {
+                batch.retryAt = now() + 5000; batch.error = failure.javaClass.simpleName
+                lastError = batch.error; drainErrors++
+            }
             throw failure
         } finally { synchronized(monitor) { batch.busy = false; batch.readers--; cleanup(batch) } }
     }
     private fun cleanup(batch: Batch) {
         if (!batch.flushed || batch.readers != 0 || batch.path !in batches) return
-        Files.deleteIfExists(batch.path)
-        syncDirectory(root)
+        try {
+            Files.deleteIfExists(batch.path)
+            syncDirectory(root)
+        } catch (failure: Exception) {
+            batch.error = failure.javaClass.simpleName; lastError = batch.error; drainErrors++
+            throw failure
+        }
         batches.remove(batch.path); used -= batch.charge
+        if (batches.values.none { it.error != null }) { lastError = null; loggedError = null }
     }
     private fun read(batch: Batch, sha: String): ByteArray = ZipFile(batch.path.toFile()).use { zip ->
         val blob = batch.manifest.blobs.single { it.sha == sha }
         val entry = requireNotNull(zip.getEntry(sha)); require(entry.size == blob.bytes)
-        val bytes = zip.getInputStream(entry).use { it.readNBytes(INLINE_BYTES + 1) }
+        val bytes = zip.getInputStream(entry).use { it.readNBytes(PACKED_BYTES + 1) }
         check(bytes.size.toLong() == blob.bytes && MessageDigest.getInstance("SHA-256").digest(bytes).hex() == sha) { "result journal checksum mismatch" }
         bytes
     }
@@ -217,15 +308,14 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         Json.decodeFromString<Manifest>(String(body)).also { manifest ->
             require(manifest.job > 0 && manifest.blobs.isNotEmpty() && manifest.blobs.size <= INLINE_FILES)
             require(manifest.blobs.map { it.sha }.distinct().size == manifest.blobs.size)
-            require(manifest.blobs.all { SHA256.matches(it.sha) && it.bytes in 0..INLINE_BYTES.toLong() })
-            require(manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES)
+            validateResultBlobs(manifest.blobs)
             require(zip.entries().toList().map { it.name }.sorted() == (manifest.blobs.map { it.sha } + "manifest.json").sorted())
         }
     }
     override fun close() {
         closed = true; workers.shutdownNow()
         // Retain ownership if an uninterruptible external write is still active; pending data stays on disk.
-        if (workers.awaitTermination(5, TimeUnit.SECONDS) && synchronized(monitor) { batches.values.none { it.busy || it.readers != 0 } }) {
+        if (workers.awaitTermination(5, TimeUnit.SECONDS) && synchronized(monitor) { receiving == 0 && batches.values.none { it.busy || it.readers != 0 } }) {
             ownership.release(); channel.close()
         }
     }

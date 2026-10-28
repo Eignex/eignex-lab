@@ -23,35 +23,39 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     private val client: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build()) {
     init { require(api.scheme == "https" || (api.scheme == "http" && (privateTransport || api.host in setOf("127.0.0.1", "localhost", "::1")))); require(api.userInfo == null && api.rawQuery == null) }
     private val runDeadline = AtomicLong(Long.MAX_VALUE)
+    private val retryLeaseDeadline = AtomicLong(Long.MAX_VALUE)
+    private val retries = WorkerRetry()
+    private fun leaseRemainingMs(): Long = retryLeaseDeadline.get().takeIf { it != Long.MAX_VALUE }
+        ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
     private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
     private fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
         val started = System.nanoTime()
-        val timeout = if (path == "run-timeout") 30_000L else { checkRun(); minOf(30_000, runRemainingMs() ?: 30_000).coerceAtLeast(1) }
+        val timeout = if (path == "run-timeout") 30_000L else {
+            checkRun(); val lease = leaseRemainingMs()
+            if (lease <= 0) throw ExecutionFenced("worker lease expired")
+            minOf(30_000, runRemainingMs() ?: 30_000, lease).coerceAtLeast(1)
+        }
         val builder = HttpRequest.newBuilder(URI.create(api.toString().trimEnd('/') + "/worker/v1/sessions/${NomadClient.encode(id)}/$path"))
             .timeout(Duration.ofMillis(timeout)).header("Authorization", "Bearer $token").header("X-Lab-Allocation", allocation)
-            .header("X-Lab-Identity", Files.readString(identityFile).trim()).header("Content-Type", "application/json")
+            .header("X-Lab-Identity", Files.readString(identityFile).trim())
+            .header("Content-Type", if (path == "commit-packed") "application/octet-stream" else "application/json")
         if (owner != null) builder.header("X-Lab-Attempt", Json.encodeToString(owner))
         if (range > 0) builder.header("Range", "bytes=$range-")
         val response = client.send(builder.method(method, body).build(), HttpResponse.BodyHandlers.ofByteArray())
         val elapsed = (System.nanoTime()-started)/1_000_000
         if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
-        if (path == "commit-inline" && response.statusCode() in setOf(404, 405)) return response
+        if (path in setOf("commit-inline", "commit-packed") && response.statusCode() in setOf(404, 405)) return response
+        if (response.statusCode() in setOf(429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
         return response
     }
     private fun json(path: String, body: String, owner: AttemptOwner? = null) = request(path, "POST", HttpRequest.BodyPublishers.ofString(body), owner)
-    private fun <T> retry(operation: () -> T): T {
-        var failure: Exception? = null
-        repeat(3) { attempt ->
-            try { return operation() } catch (fenced: ExecutionFenced) { throw fenced } catch (timeout: ProfileRunTimeout) { throw timeout } catch (e: Exception) {
-                if (e is InterruptedException) throw e
-                failure = e; if (attempt < 2) Thread.sleep((attempt + 1L) * 250)
-            }
-        }
-        throw failure!!
-    }
+    private fun <T> retry(ignoreRunDeadline: Boolean = false, operation: () -> T): T = retries.run({
+        minOf(leaseRemainingMs(),
+            if (ignoreRunDeadline) Long.MAX_VALUE else runRemainingMs() ?: Long.MAX_VALUE)
+    }, operation)
     fun run() {
         Files.createDirectories(root)
         val manifest = retry { Json.decodeFromString<WorkManifest>(String(json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
@@ -82,8 +86,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 }
                 // The lease starts no earlier than request dispatch. Network latency consumes our local allowance.
                 deadline.set(start + (lease.leaseMs - 10_000) * 1_000_000)
+                retryLeaseDeadline.set(deadline.get())
             }
-            renew()
+            retry { renew() }
             val heartbeat = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-lease").apply { isDaemon = true } }
             heartbeat.scheduleWithFixedDelay({
                 try { renew() } catch (_: ExecutionFenced) { deadline.set(0) } catch (_: Exception) { /* Existing monotonic deadline remains authoritative. */ }
@@ -134,12 +139,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 deleteTree(directory)
                 if (result.runTimedOut) return
             } catch (_: ProfileRunTimeout) {
-                retry { json("run-timeout", Json.encodeToString(claim.owner)) }
+                retry(ignoreRunDeadline = true) { json("run-timeout", Json.encodeToString(claim.owner)) }
                 return
             } catch (failure: WorkerBuildFailure) {
                 retry { json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return
-            } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow() }
+            } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow(); retryLeaseDeadline.set(Long.MAX_VALUE) }
         }
         } finally { nativeOwnership?.close() }
     }
@@ -199,6 +204,19 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             }
             val reply = retry { json("commit-inline", Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))) }
             if (reply.statusCode() in 200..299) return "inline"
+        }
+        if (result.preparation == null && files.size in 1..INLINE_FILES && files.values.sumOf(Files::size) <= PACKED_BYTES) {
+            val outputs = result.artifacts.toMutableMap()
+            val sources = linkedMapOf<String, Path>()
+            for ((name, file) in files) { val sha = hashFile(file); outputs[name] = sha; sources.putIfAbsent(sha, file) }
+            val manifest = WorkerPackedCommit(owner, result.copy(artifacts = outputs), sources.map { ResultBlob(it.key, Files.size(it.value)) })
+            manifest.validate()
+            val header = Json.encodeToString(manifest).toByteArray(); require(header.size <= PACKED_HEADER_BYTES)
+            val prefix = java.nio.ByteBuffer.allocate(4 + header.size).putInt(header.size).put(header).array()
+            val body = HttpRequest.BodyPublishers.concat(HttpRequest.BodyPublishers.ofByteArray(prefix),
+                *sources.values.map { HttpRequest.BodyPublishers.ofFile(it) }.toTypedArray())
+            val reply = retry { request("commit-packed", "POST", body) }
+            if (reply.statusCode() in 200..299) return "packed"
         }
         val outputs = result.artifacts.toMutableMap()
         for ((name, file) in files) outputs[name] = upload(file, owner)

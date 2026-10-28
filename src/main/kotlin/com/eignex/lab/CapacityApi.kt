@@ -9,7 +9,7 @@ import io.ktor.server.routing.*
 import kotlinx.coroutines.withContext
 
 /** Private capacity endpoints use their own secret; a worker credential grants no capacity access. */
-fun Application.capacityApi(collector: CapacityCollector) {
+fun Application.capacityApi(collector: CapacityCollector, journal: (() -> ResultJournal.Status)? = null) {
     routing {
         route("/capacity") {
             intercept(io.ktor.server.application.ApplicationCallPipeline.Call) {
@@ -38,7 +38,11 @@ fun Application.capacityApi(collector: CapacityCollector) {
             post("/api/v1/query") { call.query(call.receiveParameters()["query"]) }
             get("/grant/{pool}") { call.respond(collector.grant(requireNotNull(call.parameters["pool"]))) }
             get("/snapshot") { call.respond(collector.snapshot()) }
-            get("/metrics") { call.respondText(collector.metrics(), ContentType.Text.Plain) }
+            get("/journal") {
+                val status = journal?.invoke()
+                if (status == null) call.respond(HttpStatusCode.ServiceUnavailable) else call.respond(ResultJournalReport(now(), status))
+            }
+            get("/metrics") { call.respondText(collector.metrics() + journal?.invoke()?.metrics().orEmpty(), ContentType.Text.Plain) }
         }
     }
 }

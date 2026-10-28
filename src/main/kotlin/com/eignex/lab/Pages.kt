@@ -1988,7 +1988,7 @@ if (document.body.hasAttribute('data-refresh')) timer = setInterval(refresh, 100
 </script>"""
 
 /** Node inventory and temporary capacity controls for configured, provider-neutral pools. */
-internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>, settings: CapacitySettings?): String = buildString {
+internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>, settings: CapacitySettings?, journal: ResultJournalReport? = null): String = buildString {
     append(head("Nodes · eignex lab", live = true, tab = Tab.NODES))
     append("<header><h1>Nodes</h1><p class=\"muted\">Native execution and cloud workers</p></header>")
     append("<section id=\"local-node\"><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
@@ -1996,6 +1996,14 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     append("<p>${esc(NodeTags.hardwareProfile(config.localNodeTags))}</p>")
     append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
     append("</section>")
+    if (journal != null) {
+        val s = journal.status
+        append("<section id=\"result-journal\" data-live><h2>Result journal</h2><p>${s.batches} pending batches · ${s.bytes / 1024} KiB reserved of ${s.limit / 1024 / 1024} MiB · oldest ${s.oldestAgeMs / 1000}s · ${s.drainErrors} drain errors</p>")
+        if (journal.stale) append("<p class=\"warn\">Journal report is stale (${journal.ageMs / 1000}s old).</p>")
+        if (s.lastError != null) append("<p class=\"warn\">Drain error: ${esc(s.lastError)}. Pending results are retained.</p>")
+        if (s.bytes >= s.limit * 9 / 10) append("<p class=\"warn\">Journal is near capacity; uploads may wait for the external drain.</p>")
+        append("</section>")
+    }
     val pools = settings?.pools ?: snapshot?.pools.orEmpty()
     val configured = settings != null
     append("<section><h2>Start nodes</h2>")

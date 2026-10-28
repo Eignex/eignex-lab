@@ -131,6 +131,7 @@ data class Health(
     /** Why the runner holds its queue ([Volumes.hold]), a low disk or a missing volume; null when it does not. */
     val held: String? = null,
     val volumes: List<VolumeReport> = emptyList(),
+    val resultJournal: ResultJournalReport? = null,
 )
 
 fun serveApi(config: Config, store: Store, host: HostReport) {
@@ -208,7 +209,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val queued = jobs.count { it.status == Status.QUEUED }
             val running = jobs.count { it.status == Status.RUNNING }
             val (held, volumes) = withContext(Dispatchers.IO) { runCatching { Volumes.hold(config) }.getOrNull() to Volumes.report(config) }
-            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags), held, volumes))
+            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags), held, volumes, readResultJournalReport(config)))
         }
         get("/jobs") {
             // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds. ?active=true lists

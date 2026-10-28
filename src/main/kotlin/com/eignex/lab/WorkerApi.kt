@@ -141,6 +141,20 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                     call.respond(HttpStatusCode.NoContent)
                 }
             }
+            post("/commit-packed") {
+                if (artifacts !is ResultJournal) { call.respond(HttpStatusCode.NotFound); return@post }
+                withContext(CoordinatorIo.packedResults) {
+                    check(workAllowed()); val session = call.auth()
+                    call.receiveChannel().toInputStream().use { input ->
+                        val body = WorkerPackedCommit.read(input)
+                        require(body.owner.session == session.id && body.owner.allocation == session.allocation)
+                        store.execution.authorizeCommit(body.owner, body.result)
+                        artifacts.putPacked(session.jobId, body.blobs, input)
+                        backend.commit(body.owner, body.result)
+                    }
+                    call.respond(HttpStatusCode.NoContent)
+                }
+            }
             get("/inputs/{sha}") {
                 withContext(CoordinatorIo.artifacts) {
                     check(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
