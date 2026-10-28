@@ -7,7 +7,8 @@ later in this runbook.
 
 The coordinator refreshes capacity independently every five seconds, so source checks and worker reconciliation
 cannot delay the 30-second freshness gate. Node details are cached by Nomad's `ModifyIndex`; node changes invalidate
-the cache. AWS renewal failures identify the pool and error code without logging signed grants or response bodies.
+the cache. The AWS adapter also publishes inventory independently of pool renewals. Renewal failures identify the
+pool and error code without logging signed grants or response bodies.
 
 Every five minutes, the coordinator asks Nomad to garbage collect this lab's native allocations that have been
 `complete` or `failed` for at least one hour. This removes disposable allocation workspaces and task logs, while

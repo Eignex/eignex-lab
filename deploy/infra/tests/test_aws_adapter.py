@@ -104,3 +104,28 @@ class AwsAdapterTest(unittest.TestCase):
             adapter.once(self.config, Mock(), self.functions)
         self.assertIn("avx2=TooManyRequestsException", str(raised.exception))
         self.assertNotIn("secret", str(raised.exception))
+
+    @patch.object(adapter.urllib.request, "urlopen")
+    @patch.object(adapter, "inventory")
+    def test_inventory_can_refresh_while_a_pool_renewal_is_blocked(self, inventory, urlopen):
+        inventory.side_effect = self.observation
+        urlopen.side_effect = lambda *args, **kwargs: io.BytesIO(b'{}')
+        started = threading.Event()
+        release = threading.Event()
+        def invoke(**kwargs):
+            started.set()
+            if not release.wait(2):
+                raise AssertionError("inventory waited for renewal")
+            return {"Payload": Mock()}
+        self.functions.invoke.side_effect = invoke
+        adapter.publish_inventory(self.config, Mock())
+        with adapter.ThreadPoolExecutor(max_workers=1) as worker:
+            renewal = worker.submit(adapter.renew_capacity, self.config, self.functions)
+            try:
+                self.assertTrue(started.wait(2))
+                inventory.side_effect = lambda *args: self.observation(*args) | {"observedAt": 456}
+                adapter.publish_inventory(self.config, Mock())
+                self.assertEqual(456, json.loads((self.root / "inventory.json").read_text())["observedAt"])
+            finally:
+                release.set()
+            renewal.result(timeout=2)
