@@ -469,3 +469,30 @@ use the current pinned worker image/launcher and record its new release ID. The
 consumer experiment, resolved commits, arguments, budgets, corpus bundles and
 accepted results remain unchanged; original manifests and submissions remain
 immutable. Releases not listed retain their existing worker runtime.
+
+### Warm worker I/O
+
+Preparation runs only the requested runtime build tasks. The worker init script excludes every Gradle
+`AbstractTestTask` before dependency graph resolution, including custom and subproject test tasks, so their
+test compilation and fixture dependencies are omitted too. JVM CLI preparations also disable native release packaging.
+
+Workers reuse verified input distributions across allocations under `LAB_WORKER_CACHE_ROOT/inputs`. The node-local
+cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect readers during staging and compilation.
+Cold preparation seeds its published distribution into this cache so a solve on that node can reuse it immediately.
+Each attempt receives a private copy, using filesystem clones where supported, and cannot modify the cached distribution.
+
+Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,
+filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger captures retain
+resumable uploads; successful chunk acknowledgements supply the next offset, while ambiguous responses re-query progress.
+Workers fall back to the original protocol when a coordinator does not support inline acceptance. Storage is freshly
+validated before each bounded batch, and accepted-manifest retries retain the same fencing and idempotency rules.
+
+Signing keys are cached for at most thirty seconds; token signatures, expiry and allocation ownership are checked on every
+request. Unknown key ids trigger a bounded refresh for rotation, and expired key sets cannot authenticate during a failed
+refresh. Background completion wakes admission and reconciliation immediately instead of waiting for the polling interval.
+Worker output records `worker timing:` lines with staging, execution, output and byte counts for measuring warm overhead.
+
+A native target may set `LAB_WORKER_API` in its trusted template environment to the coordinator's loopback URL. The same
+setting follows explicitly approved worker-runtime replacements. An optional coordinator `privateBindAddress` adds a
+second listener while keeping loopback control access; it requires `privateNetwork: true` and an authenticated private
+interface. This allows a private network proxy to reach workers without multiplexing bulk traffic through an SSH tunnel.

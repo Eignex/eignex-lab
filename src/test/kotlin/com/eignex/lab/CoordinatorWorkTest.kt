@@ -6,6 +6,23 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
 
 class CoordinatorWorkTest {
+    @Test fun `completion wakeup can hand off another operation before its callback returns`() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        CoordinatorWork<String, Int>("handoff-test", 1, completed = { entered.countDown(); release.await() }).use { work ->
+            try {
+                work.poll("first") { 1 }
+                assertTrue(entered.await(2, SECONDS))
+                assertEquals(1, work.poll("first") { error("duplicate") })
+                assertNull(work.poll("second") { 2 })
+                release.countDown()
+                val deadline = System.nanoTime() + SECONDS.toNanos(2)
+                var value: Int? = null
+                while (value == null && System.nanoTime() < deadline) { value = work.poll("second") { error("dropped handoff") }; Thread.yield() }
+                assertEquals(2, value)
+            } finally { release.countDown() }
+        }
+    }
+
     @Test fun `blocked work is coalesced and saturation returns immediately without queuing more work`() {
         CoordinatorWork<String, Int>("work-test", 1).use { work ->
             val entered = CountDownLatch(1); val release = CountDownLatch(1)

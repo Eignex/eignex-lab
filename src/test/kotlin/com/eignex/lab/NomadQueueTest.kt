@@ -43,6 +43,19 @@ class NomadQueueTest {
         assertEquals(frozen, store.execution.manifest(session.id))
     }
 
+    @Test fun `trusted native target uses loopback worker API without changing the cloud endpoint`() {
+        val policy = settings.copy(targets = settings.targets.map { target ->
+            if (target.os != "mac") target else target.copy(template = target.template.copy(environment = target.template.environment +
+                ("LAB_WORKER_API" to "http://127.0.0.1:8091")))
+        })
+        val id = job(ExperimentSpec("loopback", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue(policy = policy).reconcile()
+        val payload = Json.parseToJsonElement(store.execution.submission(store.execution.sessions(id).single().id)).jsonObject
+        val env = payload.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject
+        assertEquals("http://127.0.0.1:8091", env.getValue("LAB_WORKER_API").jsonPrimitive.content)
+        assertEquals(settings.workerApi, policy.workerApi)
+    }
+
     @Test fun `slow source publication does not block admission of a prepared experiment`() {
         val ready = job()
         queue().reconcile(); prepare(ready); backend.reconcile()

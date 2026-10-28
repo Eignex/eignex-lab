@@ -3,7 +3,6 @@ package com.eignex.lab
 import com.eignex.lab.bench.BenchInputRoot
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
 import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -15,6 +14,7 @@ class IterationExecutor(
     private val bundleInput: (WorkerBundle) -> java.io.InputStream,
     private val launcher: String, private val os: String, private val arch: String,
     private val buildCache: WorkerBuildCache? = null,
+    private val inputCache: WorkerInputCache? = null,
 ) {
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
             prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingRunMs: () -> Long? = { null },
@@ -37,20 +37,20 @@ class IterationExecutor(
         try {
         val corpus = inputs?.directory ?: directory.resolve("corpus")
         if (manifest.inputCorpus != null) {
-            val input = cache.stage(manifest.inputCorpus, ::checkRun) { bundleInput(manifest.inputCorpus) }
-            copyTree(input, corpus, ::checkRun)
+            withInput(manifest.inputCorpus, ::checkRun) { input -> copyTree(input, corpus, ::checkRun) }
         } else Files.createDirectories(corpus)
         val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            val source = cache.stage(bundle, ::checkRun) { bundleInput(bundle) }
             val destination = directory.resolve("worktrees").resolve(sha)
             fun copy(cached: Path): Path {
                 // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
                 copyTree(cached, destination, ::checkRun)
                 return destination
             }
-            if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
-                .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
+            withInput(bundle, ::checkRun) { source ->
+                if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
+                    .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
+            }
         }
         if (manifest.experiment.measuresCli) for (worktree in worktrees.values) {
             val exit = supervisor.run(listOf("bash", "-c", CliMeasurements.install(worktree.toString(), os == "mac")), worktree,
@@ -142,13 +142,11 @@ class IterationExecutor(
     }
 
     private fun environment(): Map<String, String> = workerEnvironment(os == "mac")
+    private fun <T> withInput(bundle: WorkerBundle, check: () -> Unit, use: (Path) -> T): T =
+        if (inputCache != null) inputCache.use(bundle, check, { bundleInput(bundle) }, use)
+        else use(cache.stage(bundle, check) { bundleInput(bundle) })
     private fun copyTree(source: Path, destination: Path, checkActive: () -> Unit) {
-        require(!Files.exists(destination)) { "attempt worktree already exists" }
-        Files.walk(source).use { paths -> paths.forEach { path ->
-            checkActive()
-            val target = destination.resolve(source.relativize(path))
-            if (Files.isDirectory(path)) Files.createDirectories(target) else Files.copy(path, target, COPY_ATTRIBUTES)
-        } }
+        WorkerTrees.copy(source, destination, checkActive)
     }
 }
 

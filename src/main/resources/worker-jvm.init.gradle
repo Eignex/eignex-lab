@@ -5,3 +5,13 @@ gradle.beforeProject { project ->
         project.extensions.getByName('eignexCli').releaseAssetsEnabled.set(false)
     }
 }
+
+// Preparation only builds runtime artifacts. Exclude test tasks before Gradle
+// resolves the graph so their test compilation and fixture dependencies are
+// omitted too; enabled=false would still build those dependencies.
+gradle.projectsEvaluated {
+    def tests = gradle.rootProject.allprojects.collectMany { project ->
+        project.tasks.withType(org.gradle.api.tasks.testing.AbstractTestTask).collect { it.path }
+    }
+    gradle.startParameter.excludedTaskNames += tests
+}

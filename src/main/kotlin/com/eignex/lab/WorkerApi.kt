@@ -124,6 +124,17 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                     backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
                 }
             }
+            post("/commit-inline") {
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val session = call.auth()
+                    val body = Json.decodeFromString<WorkerInlineCommit>(call.bodyText())
+                    require(body.owner.session == session.id && body.owner.allocation == session.allocation)
+                    store.execution.authorizeCommit(body.owner, body.result)
+                    artifacts.putAll(session.jobId, body.decoded())
+                    backend.commit(body.owner, body.result)
+                    call.respond(HttpStatusCode.NoContent)
+                }
+            }
             get("/inputs/{sha}") {
                 withContext(CoordinatorIo.artifacts) {
                     check(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!

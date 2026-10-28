@@ -25,6 +25,62 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `cached signing keys preserve token expiry notice rotation and fail closed on expired refresh`() {
+        setup()
+        var clock = 0L
+        val identity = NomadIdentity(control::jwks, monotonicMs = { clock })
+        repeat(8) { identity.verify(jwt(), session, "allocation") }
+        assertEquals(1, control.keyReads)
+        assertFailsWith<IllegalArgumentException> { identity.verify(jwt(expires = now()/1000 - 1), session, "allocation") }
+        control.keyId = "rotated"; clock = 1001
+        identity.verify(jwt(kid = "rotated"), session, "allocation")
+        assertEquals(2, control.keyReads)
+        clock = 31_002; control.keyFailure = true
+        assertFailsWith<IllegalStateException> { identity.verify(jwt(kid = "rotated"), session, "allocation") }
+        control.keyFailure = false
+        identity.verify(jwt(kid = "rotated"), session, "allocation")
+    }
+
+    @Test fun `small outputs commit durably in one request and lost acknowledgements remain idempotent`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val bytes = "inline capture".toByteArray(); val hash = ExecutionStore.digest(String(bytes))
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to hash))
+        val body = WorkerInlineCommit(claim.owner, result, mapOf(hash to Base64.getEncoder().encodeToString(bytes)))
+        application { workerApi(store, backend(), artifacts) { true } }
+        suspend fun send(value: WorkerInlineCommit) = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
+            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(value))
+        }
+        repeat(2) { assertEquals(HttpStatusCode.NoContent, send(body).status) }
+        assertEquals(String(bytes), Files.readString(artifacts.file(id, hash)))
+        assertEquals(1, store.execution.accepted(id).size)
+        assertEquals(HttpStatusCode.Conflict, send(body.copy(result = result.copy(cases = result.cases.map { it.copy(exitCode = 1) }))).status)
+        backend().reconcile()
+        assertEquals(String(bytes), Files.readString(root.resolve("jobs/$id/0.out")))
+        assertEquals(Status.DONE, store.job(id)!!.status)
+    }
+
+    @Test fun `inline outputs reject corrupt bytes and cancelled ownership before acceptance`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val hash = ExecutionStore.digest("expected")
+        val body = WorkerInlineCommit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to hash)),
+            mapOf(hash to Base64.getEncoder().encodeToString("corrupt".toByteArray())))
+        application { workerApi(store, backend(), artifacts) { true } }
+        suspend fun send() = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
+            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(body))
+        }
+        assertEquals(HttpStatusCode.ServiceUnavailable, send().status)
+        assertTrue(store.execution.accepted(id).isEmpty())
+        store.requestCancel(id)
+        assertEquals(HttpStatusCode.Conflict, send().status)
+        assertFailsWith<IllegalArgumentException> { artifacts.file(id, hash) }
+    }
+
     @Test fun `saturated log workers retry the final status after the job leaves the active set`() {
         val id = setup(); register()
         var available = false
@@ -283,9 +339,11 @@ class NomadBackendTest {
         override fun stop(id: String) { jobs.remove(id) }
         override fun allocations(job: String) = allocations.values.filter { it.job == job }
         override fun allocation(id: String) = allocations[id]
+        var keyReads = 0; var keyId = "test"; var keyFailure = false
         override fun jwks(): JsonObject {
+            keyReads++; check(!keyFailure) { "issuer unavailable" }
             val key = pair.public as RSAPublicKey
-            return buildJsonObject { putJsonArray("keys") { add(buildJsonObject { put("kid", "test"); put("kty", "RSA"); put("n", b64(key.modulus.toByteArray().dropWhile { it == 0.toByte() }.toByteArray())); put("e", b64(key.publicExponent.toByteArray())) }) } }
+            return buildJsonObject { putJsonArray("keys") { add(buildJsonObject { put("kid", keyId); put("kty", "RSA"); put("n", b64(key.modulus.toByteArray().dropWhile { it == 0.toByte() }.toByteArray())); put("e", b64(key.publicExponent.toByteArray())) }) } }
         }
     }
     private fun backend(s: Store = store) = NomadBackend(s, control, artifacts, { root.resolve("jobs/$it") })
@@ -307,8 +365,8 @@ class NomadBackendTest {
         control.allocations["allocation"] = NomadAllocation("allocation", session.nomadJobId, "node", "running", "run")
         return id
     }
-    private fun jwt(allocation: String = "allocation", expires: Long = now()/1000 + 60, singleAudience: Boolean = false, namespace: String = control.namespace): String {
-        val header = b64("""{"alg":"RS256","kid":"test"}""".toByteArray())
+    private fun jwt(allocation: String = "allocation", expires: Long = now()/1000 + 60, singleAudience: Boolean = false, namespace: String = control.namespace, kid: String = "test"): String {
+        val header = b64("""{"alg":"RS256","kid":"$kid"}""".toByteArray())
         val claims = buildJsonObject { put("exp", expires); if (singleAudience) put("aud", "eignex-lab-worker") else putJsonArray("aud") { add("eignex-lab-worker") }; put("nomad_namespace", namespace); put("nomad_job_id", session.nomadJobId); put("nomad_task", "worker"); put("nomad_allocation_id", allocation) }
         val payload = "$header.${b64(claims.toString().toByteArray())}"
         val signature = Signature.getInstance("SHA256withRSA").apply { initSign(pair.private); update(payload.toByteArray()) }.sign()

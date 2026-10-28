@@ -318,6 +318,13 @@ class ExecutionStore internal constructor(private val store: Store) {
         s
     }
     fun authorize(owner: AttemptOwner, at: Long = now()): Long = store.executionTransaction { db -> db.attempt(owner, at).jobId }
+    internal fun authorizeCommit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Long = store.executionTransaction { db ->
+        val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
+        if (attempt.state == "committed") {
+            if (attempt.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
+        } else db.attempt(owner, at)
+        attempt.jobId
+    }
     fun manifest(id: String): WorkManifest = store.executionTransaction { db ->
         Json.decodeFromString(db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single())
     }

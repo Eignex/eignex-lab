@@ -19,6 +19,7 @@ class NomadBackend(
     private val workerRuntime: (JsonObject, WorkManifest) -> Pair<JsonObject, WorkManifest> = { job, manifest -> job to manifest },
     private val projectResult: (Long, String, () -> Unit) -> Boolean = { _, _, work -> work(); true },
     private val writeLog: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
+    private val changed: () -> Unit = {},
 ) {
     private val pendingLogs = mutableSetOf<Long>()
     val logs = WorkerLogs(store, jobDirectory)
@@ -57,12 +58,13 @@ class NomadBackend(
         val executionClass = if (manifest.preparationTimeoutSec == null) "solve" else "prepare"
         val nomadId = "lab-$jobId-$executionClass-$id-1"
         val original = template.copy(id = nomadId, environment = template.environment + mapOf(
-            "LAB_WORKER_EXPERIMENT" to jobId.toString(), "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token, "LAB_WORKER_API" to api,
+            "LAB_WORKER_EXPERIMENT" to jobId.toString(), "LAB_WORKER_SESSION" to id, "LAB_WORKER_TOKEN" to token,
+            "LAB_WORKER_API" to (template.environment["LAB_WORKER_API"] ?: api),
             "LAB_WORKER_RELEASE" to manifest.release, "LAB_WORKER_IDENTITY_FILE" to "${'$'}{NOMAD_TASK_DIR}/lab-worker.jwt",
         )).render()
         val calibrated = cpuPlacement.calibrate(placementPolicy(original), manifest.budget)
         val payload = authenticatedJob(JsonObject(calibrated + ("Namespace" to JsonPrimitive(nomad.namespace))), id, manifest.release)
-        return store.execution.createSession(id, jobId, executionClass, manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest))
+        return store.execution.createSession(id, jobId, executionClass, manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest)).also { changed() }
     }
 
     fun register(id: String, token: String, allocation: String, jwt: String, release: String): WorkManifest {
@@ -154,7 +156,7 @@ class NomadBackend(
             require(allowed || result.preparation?.artifacts?.get(name) == sha && name.startsWith("preparation/")) { "artifact does not belong to this iteration" }
             artifacts.file(session.jobId, sha)
         }
-        return store.execution.commit(owner, accepted)
+        return store.execution.commit(owner, accepted).also { changed() }
     }
 
     fun reconcile() {

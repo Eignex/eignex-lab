@@ -43,7 +43,8 @@ internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = 
 internal class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
                           private val os: String, private val arch: String,
-                          private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null) {
+                          private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
+                          private val inputCache: WorkerInputCache? = null) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -65,16 +66,15 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         }
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            val input = cache.stage(bundle, ::checkActive) { download(bundle) }
             fun copy(built: Path): Path {
                 val tree = directory.resolve("worktrees/$sha")
-                Files.walk(built).use { paths -> paths.forEach { file ->
-                    checkActive(); val target = tree.resolve(built.relativize(file))
-                    if (Files.isDirectory(file, NOFOLLOW_LINKS)) Files.createDirectories(target) else Files.copy(file, target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
-                } }
+                WorkerTrees.copy(built, tree, ::checkActive)
                 return tree
             }
-            if (bundle.build == null) copy(input) else builds.withPrepared(bundle, input, manifest.budget, env, remainingRunMs, ::remaining, ::copy)
+            fun prepare(input: Path): Path = if (bundle.build == null) copy(input)
+                else builds.withPrepared(bundle, input, manifest.budget, env, remainingRunMs, ::remaining, ::copy)
+            inputCache?.use(bundle, ::checkActive, { download(bundle) }, ::prepare)
+                ?: prepare(cache.stage(bundle, ::checkActive) { download(bundle) })
         }
         val primary = prepared.getValue(manifest.arms.first().sha)
         val json = Json { ignoreUnknownKeys = true }
@@ -141,7 +141,11 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val artifacts = mutableMapOf<String, String>()
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip")) }
+            archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { built ->
+                // The first solve on this node should reuse the distribution just built here, without a round trip.
+                inputCache?.use(built, ::checkActive, { Files.newInputStream(directory.resolve("$sha.zip")) }) { }
+                artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip"))
+            }
         }
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
             .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.plus(

@@ -9,7 +9,23 @@ import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
 
 /** Validates against the configured cluster's keys; never follows token-supplied key URLs. */
-class NomadIdentity(private val keys: () -> JsonObject, private val namespace: String = "default") {
+class NomadIdentity(private val keys: () -> JsonObject, private val namespace: String = "default",
+                    private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 }) {
+    private data class KeySet(val at: Long, val keys: List<JsonObject>)
+    @Volatile private var cached: KeySet? = null
+
+    @Synchronized
+    private fun signingKey(kid: JsonElement): JsonObject {
+        val at = monotonicMs()
+        var sample = cached
+        // Unknown key ids refresh once per second to notice rotation without allowing arbitrary requests to flood Nomad.
+        if (sample == null || at - sample.at !in 0..30_000 ||
+            sample.keys.none { it["kid"] == kid } && at - sample.at >= 1_000) {
+            sample = KeySet(at, keys().getValue("keys").jsonArray.map { it.jsonObject })
+            cached = sample
+        }
+        return requireNotNull(sample.keys.singleOrNull { it["kid"] == kid }) { "unknown workload signing key" }
+    }
     fun verify(jwt: String, session: ExecutionSession, allocation: String, at: Long = now()) {
         require(jwt.length <= 16384)
         val parts = jwt.split('.'); require(parts.size == 3)
@@ -18,7 +34,7 @@ class NomadIdentity(private val keys: () -> JsonObject, private val namespace: S
         val claims = Json.parseToJsonElement(String(bytes(parts[1]))).jsonObject
         val algorithm = header.getValue("alg").jsonPrimitive.content
         require(algorithm in setOf("RS256", "EdDSA"))
-        val key = keys().getValue("keys").jsonArray.map { it.jsonObject }.single { it["kid"] == header["kid"] && header["kid"] != null }
+        val key = signingKey(requireNotNull(header["kid"]))
         val publicKey = when (algorithm) {
             "RS256" -> {
                 require(key["kty"]?.jsonPrimitive?.content == "RSA")
