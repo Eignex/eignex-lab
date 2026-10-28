@@ -70,14 +70,12 @@ class Dolmen(
  * undecided. Only a satisfiable claim without an objective has a model to check: an optimisation claim is unsupported,
  * and an unsat claim has no witness at all; UNSAT claims are compared with stored reference verdicts instead.
  *
- * Dolmen cannot read algebraic numbers, Z3's `(root-obj p i)`, and leaves such a model undecided (`E:unbound-id`). Only
- * then, when the model has one, [algebraic] decides it in Dolmen's place ([Z3AlgebraicCheck]), under its own policy; a
- * Z3 that cannot be found keeps Dolmen's verdict, saying so.
+ * Dolmen cannot read algebraic numbers, Z3's `(root-obj p i)`, and leaves such a model undecided (`E:unbound-id`).
+ * There is no solver fallback: a checker may evaluate an assignment, but must never solve the source again.
  */
 class SmtChecker(
     private val dolmen: () -> File,
     private val timeoutMs: Long = TIMEOUT_MS,
-    private val algebraic: Z3AlgebraicCheck? = null,
 ) : FormatChecker {
     override val format = "SMTLIB"
     override val policy = Policies.SMTLIB
@@ -88,15 +86,7 @@ class SmtChecker(
             return Verdict(LabCheck.UNSUPPORTED, "Dolmen checks a satisfiable claim's model, not an objective; " +
                 "UNSAT claims are compared with stored reference verdicts")
         }
-        val dolmen = dolmen(case, work)
-        if (dolmen.state != LabCheck.UNKNOWN || algebraic == null || !Z3AlgebraicCheck.algebraic(case.witness)) return dolmen
-        return try {
-            algebraic.check(case, work, dolmen)
-        } catch (e: InterruptedException) {
-            throw e
-        } catch (e: Exception) {
-            dolmen.copy(reason = "${dolmen.reason}; the model has algebraic numbers and Z3 could not run: ${e.message}")
-        }
+        return dolmen(case, work)
     }
 
     private fun dolmen(case: CheckCase, work: File): Verdict {

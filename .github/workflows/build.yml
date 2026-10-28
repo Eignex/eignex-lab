@@ -43,19 +43,7 @@ jobs:
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
       # rather than skipping when a tool cannot be had): GMP for building the MIPLIB solchecker.
-      - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd libegl1 libgl1
-      # MiniZinc with Gecode, the bundle a cloud node installs.
-      - run: |
-          sudo mkdir -p /opt/minizinc
-          curl -fsSL https://github.com/MiniZinc/MiniZincIDE/releases/download/2.9.7/MiniZincIDE-2.9.7-bundle-linux-x86_64.tgz |
-            sudo tar -xz -C /opt/minizinc --strip-components=1
-          echo /opt/minizinc/bin >> "$GITHUB_PATH"
-      # Z3, the checker for algebraic SMT-LIB models Dolmen cannot read: the release build, checked against its SHA-256.
-      - run: |
-          curl -fsSL -o /tmp/z3.zip https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3-4.16.0-x64-glibc-2.39.zip
-          echo "7288c49a5bd6dbafd7b0b0d1f65956b91672da24b08f09242919af159be3418e  /tmp/z3.zip" | sha256sum -c -
-          sudo unzip -q /tmp/z3.zip -d /opt
-          echo /opt/z3-4.16.0-x64-glibc-2.39/bin >> "$GITHUB_PATH"
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
