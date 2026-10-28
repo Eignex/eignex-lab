@@ -45,6 +45,7 @@ dependencies {
     implementation(project(":xcsp3-tools"))
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation("io.ktor:ktor-server-test-host:$ktor")
+    testImplementation(gradleTestKit())
 }
 
 eignexPublish { publish.set(false) }

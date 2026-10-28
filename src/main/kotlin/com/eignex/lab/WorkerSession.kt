@@ -11,6 +11,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption.APPEND
 import java.nio.file.StandardOpenOption.CREATE
 import java.time.Duration
+import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -33,6 +34,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         if (range > 0) builder.header("Range", "bytes=$range-")
         val response = client.send(builder.method(method, body).build(), HttpResponse.BodyHandlers.ofByteArray())
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
+        if (path == "commit-inline" && response.statusCode() in setOf(404, 405)) return response
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
         return response
     }
@@ -52,10 +54,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val manifest = retry { Json.decodeFromString<WorkManifest>(String(json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
-        val builds = WorkerBuildCache(System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of)?.resolve("builds") ?: root.resolve("builds"), ProcessSupervisor(supervisorSocket))
+        val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
+        val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket))
+        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-            builds)
+            builds, inputCache)
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
         try {
         while (true) {
@@ -86,6 +90,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
             val logs = streamLogs(claim, directory)
             try {
+                val preparationStarted = System.nanoTime()
+                var executionStarted = preparationStarted
                 phase("preparing")
                 val result = if (manifest.preparationTimeoutSec != null) {
                     fun signature(input: InputSignature): SignedInput = retry {
@@ -95,29 +101,31 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     val preparation = InputSigningRelay(::signature).use { relay ->
                         PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                             builds, ::download, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-                            SharedInputs.environment(publishSignature = ::signature), relay.address)
+                            SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache)
                             .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                 retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                             }) { file -> upload(file, claim.owner) }
                     }
                     IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
-                } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing") }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
+                } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing"); executionStarted = System.nanoTime() }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
+                val outputStarted = System.nanoTime()
                 phase("uploading")
-                val outputs = result.artifacts.toMutableMap()
+                val outputs = linkedMapOf<String, Path>()
                 for (case in result.cases) {
                     for (suffix in listOf("out", "err", "exit", "termination")) {
                         val name = "${case.index}.$suffix"; val file = directory.resolve(name)
-                        if (Files.isRegularFile(file)) outputs[name] = upload(file, claim.owner)
+                        if (Files.isRegularFile(file)) outputs[name] = file
                     }
                     val cases = directory.resolve("cases/${case.index}")
                     if (Files.isDirectory(cases)) Files.walk(cases).use { files -> files.filter(Files::isRegularFile).forEach { file ->
-                        val name = directory.relativize(file).toString().replace('\\', '/'); outputs[name] = upload(file, claim.owner)
+                        val name = directory.relativize(file).toString().replace('\\', '/'); outputs[name] = file
                     } }
                 }
                 val resourceFile = directory.resolve("resource-observation.json")
                 Files.writeString(resourceFile, Json.encodeToString(observation.copy(counters = ResourceObservation.counters())))
-                outputs["nomad/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}-resources.json"] = upload(resourceFile, claim.owner)
-                retry { json("commit", Json.encodeToString(WorkerCommit(claim.owner, result.copy(artifacts = outputs)))) }
+                outputs["nomad/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}-resources.json"] = resourceFile
+                val mode = commitResult(claim.owner, result, outputs)
+                println("worker timing: session=$id iteration=${claim.owner.iteration} preparation=${manifest.preparationTimeoutSec != null} stagingMs=${(executionStarted - preparationStarted) / 1_000_000} executionMs=${(outputStarted - executionStarted) / 1_000_000} outputMs=${(System.nanoTime() - outputStarted) / 1_000_000} outputBytes=${outputs.values.sumOf(Files::size)} mode=$mode")
                 // Only the durable acceptance acknowledgement permits removing the private worktree and captures.
                 logs.close()
                 deleteTree(directory)
@@ -177,22 +185,47 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         }
         return Files.newInputStream(file)
     }
+    internal fun commitResult(owner: AttemptOwner, result: IterationResult, files: Map<String, Path>): String {
+        if (result.preparation == null && files.size <= INLINE_FILES && files.values.sumOf(Files::size) <= INLINE_BYTES) {
+            val blobs = linkedMapOf<String, String>()
+            val outputs = result.artifacts.toMutableMap()
+            for ((name, file) in files) {
+                val bytes = Files.readAllBytes(file)
+                val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+                outputs[name] = sha; blobs[sha] = Base64.getEncoder().encodeToString(bytes)
+            }
+            val reply = retry { json("commit-inline", Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))) }
+            if (reply.statusCode() in 200..299) return "inline"
+        }
+        val outputs = result.artifacts.toMutableMap()
+        for ((name, file) in files) outputs[name] = upload(file, owner)
+        retry { json("commit", Json.encodeToString(WorkerCommit(owner, result.copy(artifacts = outputs)))) }
+        return "resumable"
+    }
+
     internal fun upload(file: Path, owner: AttemptOwner): String {
         val sha = hashFile(file); val size = Files.size(file)
+        var offset: Long? = null
         while (true) {
             val complete = retry {
-                // Re-read durable progress after every ambiguous PUT, including a partially received chunk.
-                val offset = Json.decodeFromString<UploadReply>(String(request("uploads/$sha", owner = owner).body())).offset
-                require(offset in 0..size)
-                if (offset == size && size > 0) return@retry true
-                val count = minOf(size - offset, 8L * 1024 * 1024).toInt()
-                val bytes = Files.newInputStream(file).use { input -> input.skipNBytes(offset); input.readNBytes(count) }
-                request("uploads/$sha?bytes=$size&offset=$offset", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), owner)
-                size == 0L
+                try {
+                    // Query progress only initially or after an ambiguous response; successful PUTs carry the next offset.
+                    val from = offset ?: Json.decodeFromString<UploadReply>(String(request("uploads/$sha", owner = owner).body())).offset
+                    require(from in 0..size)
+                    if (from == size && size > 0) return@retry true
+                    val count = minOf(size - from, 8L * 1024 * 1024).toInt()
+                    val bytes = Files.newInputStream(file).use { input -> input.skipNBytes(from); input.readNBytes(count) }
+                    val reply = request("uploads/$sha?bytes=$size&offset=$from", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), owner)
+                    val next = Json.decodeFromString<UploadReply>(String(reply.body())).offset
+                    require(next in from..size && (next > from || size == 0L))
+                    offset = next
+                    next == size
+                } catch (failure: Exception) { offset = null; throw failure }
             }
             if (complete) return sha
         }
     }
+
     companion object {
         fun main(args: List<String>): Int = runCatching {
             require(args.isEmpty()) { "worker uses allocation environment only" }

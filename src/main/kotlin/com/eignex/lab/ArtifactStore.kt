@@ -12,6 +12,9 @@ interface ArtifactStore {
     fun offset(job: Long, sha: String): Long
     fun file(job: Long, sha: String): Path
     fun readFile(job: Long, sha: String): Path = file(job, sha)
+    fun putAll(job: Long, blobs: Map<String, ByteArray>) {
+        for ((sha, bytes) in blobs) put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
+    }
 }
 
 /** Job-scoped CAS. Interrupted uploads resume at a confirmed offset; corrupt content is never published. */
@@ -27,8 +30,17 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
         if (Files.isRegularFile(full)) Files.size(full) else full.resolveSibling("$sha.partial").let { if (Files.exists(it)) Files.size(it) else 0 }
     }
     override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
-        require(bytes in 0..maxBytes && offset in 0..bytes) { "artifact size or offset limit exceeded" }
         check(writable()) { "artifact storage temporarily unavailable" }
+        return write(job, sha, bytes, offset, input)
+    }
+    override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
+        // One fresh mount/space check covers this bounded small-output operation, as with a single upload chunk.
+        require(blobs.size <= INLINE_FILES && blobs.values.sumOf { it.size.toLong() } <= INLINE_BYTES)
+        check(writable()) { "artifact storage temporarily unavailable" }
+        for ((sha, bytes) in blobs) write(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
+    }
+    private fun write(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
+        require(bytes in 0..maxBytes && offset in 0..bytes) { "artifact size or offset limit exceeded" }
         val full = path(job, sha); Files.createDirectories(full.parent)
         synchronized(fileLockFor(full)) {
         FileChannel.open(full.resolveSibling("$sha.lock"), CREATE, WRITE).use { channel -> channel.lock().use {

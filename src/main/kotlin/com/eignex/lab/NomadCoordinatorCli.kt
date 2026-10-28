@@ -16,10 +16,12 @@ data class NomadCoordinatorSettings(
     val workerPort: Int = 8091, val bindAddress: String = "127.0.0.1", val namespace: String = "default",
     val privateNetwork: Boolean = false,
     val capacity: CapacityIntegration? = null,
+    val privateBindAddress: String? = null,
 ) {
     init {
         require(workerPort in 1..65535)
         require(privateNetwork || bindAddress in setOf("127.0.0.1", "localhost", "::1")) { "non-loopback worker listener requires an authenticated private transport" }
+        require(privateBindAddress == null || privateNetwork && privateBindAddress != bindAddress) { "additional listener requires a distinct authenticated private interface" }
         require(URI.create(address).scheme == "https") { "coordinator requires Nomad mTLS" }
     }
 }
@@ -48,7 +50,9 @@ object NomadCoordinatorCli {
         }
         // Actual writes retain synchronous mount/free-space validation, on the background/IO workers only.
         val artifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null })
-        val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files")
+        val admissionSignal = CoordinatorSignal()
+        val reconcileSignal = CoordinatorSignal()
+        val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
         val checks = com.eignex.lab.checker.CaseChecks(store, { com.eignex.lab.checker.Checkers.of(config) }) { job, line ->
@@ -58,6 +62,7 @@ object NomadCoordinatorCli {
         val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
         val capacitySettings = settings.capacity?.let { Json.decodeFromString<CapacitySettings>(Files.readString(Path.of(it.settingsFile))) }
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
+            changed = { admissionSignal.wake(); reconcileSignal.wake() },
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
             writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
             val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
@@ -65,7 +70,7 @@ object NomadCoordinatorCli {
             val key = job to index
             if (pendingChecks.size >= 64 && !pendingChecks.containsKey(key)) return@check null
             val future = pendingChecks.computeIfAbsent(key) {
-                checkPool.submit<String> {
+                val task = object : java.util.concurrent.FutureTask<String>(java.util.concurrent.Callable {
                     if (arm.values["backend"] == REFERENCE_BACKEND) {
                         if (problem.collection.isNotEmpty()) store.caseRecordText(job, index)?.let { text ->
                             References.of(Json.parseToJsonElement(text))?.let { reference ->
@@ -76,7 +81,9 @@ object NomadCoordinatorCli {
                     } else {
                         checks.check(job, index, problem)?.json() ?: "unchecked: no applicable source checker"
                     }
-                }
+                }) { override fun done() { reconcileSignal.wake() } }
+                checkPool.execute(task)
+                task
             }
             if (!future.isDone) null else {
                 try { future.get() }
@@ -99,8 +106,8 @@ object NomadCoordinatorCli {
             }
         })
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.
-        val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1)
-        val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan")
+        val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
+        val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan", completed = admissionSignal::wake)
         val sources = TrustedQueueSources(config, artifacts)
         val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork,
             source = { job, targets, settings -> sourceWork.poll(job.id) { sources.publish(job, targets, settings) } },
@@ -114,7 +121,7 @@ object NomadCoordinatorCli {
                     sourceWork.retain(active.map { it.id }.toSet())
                     planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
                 }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }
-                Thread.sleep(10_000)
+                admissionSignal.await()
             }
         }
         val capacity = settings.capacity?.let { integration ->
@@ -141,11 +148,12 @@ object NomadCoordinatorCli {
                     backend.reconcile()
                     runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${it.javaClass.simpleName}") }
                 }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }
-                Thread.sleep(10_000)
+                reconcileSignal.await()
             }
         }
         embeddedServer(Netty, configure = {
             connectors.add(EngineConnectorBuilder().apply { host = settings.bindAddress; port = settings.workerPort })
+            settings.privateBindAddress?.let { address -> connectors.add(EngineConnectorBuilder().apply { host = address; port = settings.workerPort }) }
             requestReadTimeoutSeconds = 30; responseWriteTimeoutSeconds = 30
         }) { workerApi(store, backend, artifacts, disk::allowsWork); capacity?.let { capacityApi(it) } }.start(wait = true)
         0
