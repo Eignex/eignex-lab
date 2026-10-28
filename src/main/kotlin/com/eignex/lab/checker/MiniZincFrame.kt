@@ -20,7 +20,7 @@ internal object MiniZincPoint {
     private val scalar = Regex("([A-Za-z][A-Za-z0-9_]*|_[A-Za-z0-9_]+)\\s*=\\s*(-?[0-9]+|true|false);")
     private val objective = Regex("\\b(minimize|maximize)\\s+([A-Za-z_][A-Za-z0-9_]*|-?[0-9]+)\\s*;")
 
-    data class Bound(val model: String, val native: String, val point: Map<String, String>)
+    data class Bound(val model: String, val native: String, val optimize: Boolean)
 
     fun bind(frame: MiniZincFrame, claimedObjective: String?): Bound {
         require(listOf(frame.flatZinc, frame.outputModel, frame.stdout).all { it.length <= 8 * 1024 * 1024 })
@@ -71,7 +71,7 @@ internal object MiniZincPoint {
             appendLine("output [];")
             appendLine("solve satisfy;")
         }
-        return Bound(model, native, point)
+        return Bound(model, native, target != null)
     }
 
     /** Split compiler-generated statements without interpreting their constraints. */
