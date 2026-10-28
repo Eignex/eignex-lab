@@ -110,7 +110,7 @@ class NomadQueue(
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
                     val target = ordered(fitting) { settings.preparationBudget }.firstOrNull {
-                        it.os != "mac" || nativeAllowed(job.id) && store.execution.nativeReservation().let { held ->
+                        it.os != "mac" || mayUseNative(job.id) && store.execution.nativeReservation().let { held ->
                             held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
                         }
@@ -163,7 +163,7 @@ class NomadQueue(
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                                     ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
                             val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
-                            nativeAllowed(job.id) && nativeSessions.size < maximum
+                            mayUseNative(job.id) && nativeSessions.size < maximum
                         }
                     }
                     val reserved = store.execution.nativeReservation()
@@ -196,6 +196,8 @@ class NomadQueue(
 
     private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =
         if (target.os == "mac") ResourceBudget(config.cores * 1000, target.template.budget.memoryMiB) else null
+
+    private fun mayUseNative(id: Long): Boolean = nativeAllowed(id) && NativePriority(store).allows(id)
 
     /** Reuse compatible running capacity, then prefer larger nodes so sessions share host and build overhead. */
     private fun ordered(targets: List<NomadQueueTarget>, budget: (NomadQueueTarget) -> ResourceBudget): List<NomadQueueTarget> =

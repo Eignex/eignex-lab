@@ -495,13 +495,16 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // `local` and `cloud` are stored as `lab` and `aws`, the names older jobs and clients use.
             val host = Experiments.storedHost(call.receive<HostSpec>().host)
             val job = store.job(id)
-            val experiment = requireNotNull(job?.experiment) { "no such experiment" }
+            val original = requireNotNull(job?.experiment) { "no such experiment" }
+            val experiment = if (host == Experiments.AUTO_HOST && !Placement.localOnly(original, job.name)) Placement.automatic(original) else original
+            Placement.requireAutomatic(experiment, job.name)
+            require(host != Experiments.LAB_HOST || Placement.localOnly(experiment, job.name)) { Placement.LOCAL_RESERVED }
             requireHost(experiment.copy(host = host), config)
-            val moved = store.place(id, host)
+            val moved = store.execution.sessions(id).isEmpty() && store.place(id, host, experiment)
             call.respond(
                 if (moved) HttpStatusCode.OK else HttpStatusCode.Conflict,
                 if (moved) "operator override: ${placementNote(host)} (the lab places jobs itself; agents need not)"
-                else "only a queued job that has not been planned can change host",
+                else "only a queued job that has not been planned or admitted can change host",
             )
         }
         // Kept so old clients get an answer: the node pool decides how many machines work on a job.

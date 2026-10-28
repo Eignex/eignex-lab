@@ -70,6 +70,8 @@
 #   lab host <id> local|cloud|auto                          operators only: override where a queued, unplanned job may run
 #                                                            (the lab places every job itself; agents need not); lab and
 #                                                            aws, the older names of local and cloud, still work
+#                                                            local-only is reserved for sweeps and reference runs; use auto
+#                                                            for ordinary jobs (idle local capacity yields to reserved work)
 #   lab machines <id> [n]                                    retired: the cloud node pool sizes itself; the lab ignores it
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun

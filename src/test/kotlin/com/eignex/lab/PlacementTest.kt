@@ -6,6 +6,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
+import kotlin.test.assertContains
 
 class PlacementTest {
     private val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d")
@@ -40,7 +42,21 @@ class PlacementTest {
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config))
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST, machines = 3), "e", config))
         assertEquals(Experiments.AUTO_HOST, Placement.host(profile, "p", config))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "e", config(cloud = false)))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "e", config(cloud = false)) }
+    }
+
+    @Test
+    fun `ordinary jobs cannot force local through node selectors or a missing cloud match`() {
+        val config = config()
+        for (selector in listOf(NodeSelector(require = setOf("local")), NodeSelector(exclude = setOf("cloud")),
+            NodeSelector(require = setOf("arch:arm64")))) {
+            val failure = assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = selector), spec.name, config) }
+            assertContains(failure.message!!, Placement.LOCAL_RESERVED)
+        }
+        val pinned = spec.copy(nodeTags = NodeSelector(require = setOf("local")))
+        assertEquals(Experiments.LAB_HOST, Placement.host(pinned, "status-sweep@abc", config))
+        assertEquals(Experiments.LAB_HOST, Placement.host(pinned.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), "reference", config))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(Placement.automatic(pinned), spec.name, config))
     }
 
     @Test
@@ -84,7 +100,7 @@ class PlacementTest {
         assertEquals(Experiments.LAB_HOST, Placement.host(reference, "refs@abc123", config, schedules))
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, Confirm.name("ref", "abc123", 7), config, schedules))
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config(cloud = false), schedules))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "ref@abc123", config(cloud = false), schedules) }
         // A submitted job is placed without the schedules: a name alone does not take it off the local machine.
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config))
     }

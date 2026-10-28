@@ -25,6 +25,12 @@ deploy/lab fetch 7
 
 Replace `7` with the returned ID. `base` supplies shared arm values; `configs` overrides them and `grid` crosses
 combinations. Timeouts are milliseconds. The lab queues and places work automatically.
+Ordinary jobs use auto placement: idle local capacity can contribute and cloud capacity handles additional pressure.
+Priority controls native admission and iteration claims; sweeps and reference runs win equal-priority ties.
+The status sweep has priority 100 and its regression confirmations 101, ahead of ordinary jobs at 0.
+Ordinary reference runs also use priority 0, with their confirmations at 1.
+Lower-priority local workers yield between iterations when higher-priority work arrives; cloud workers continue.
+Local-only placement, including a required `local` tag or excluded `cloud` tag, is reserved for sweeps and references.
 
 ## Koblas and profiles
 

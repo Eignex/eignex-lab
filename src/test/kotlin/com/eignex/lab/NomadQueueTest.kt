@@ -33,6 +33,33 @@ class NomadQueueTest {
         }
     }
 
+    @Test fun `higher priority sweep takes native capacity before an older auto job`() {
+        val ordinary = job()
+        val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST, priority = 100))
+        store.setPriority(sweep, 100)
+        queue().reconcile()
+        assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "hard-quota")
+        assertContains(store.execution.submission(store.execution.sessions(sweep).single().id), "advisory-native")
+    }
+
+    @Test fun `higher priority auto work can use local ahead of a lower priority sweep`() {
+        val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val ordinary = job()
+        store.setPriority(ordinary, 101)
+        queue().reconcile()
+        assertTrue(store.execution.sessions(sweep).isEmpty())
+        assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "advisory-native")
+    }
+
+    @Test fun `paused reserved work lets idle native capacity contribute to auto jobs`() {
+        val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        store.setPaused(sweep, true)
+        val ordinary = job()
+        queue().reconcile()
+        assertTrue(store.execution.sessions(sweep).isEmpty())
+        assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "advisory-native")
+    }
+
     @Test fun `missing source fails once while network failures remain queued for retry`() {
         val missing = job()
         var missingCalls = 0

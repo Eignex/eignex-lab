@@ -10,6 +10,6 @@
   ],
   "base": {"backend": "reference", "solver": "highs", "timeout": "60000"},
   "parallel": 6,
-  "priority": -2,
+  "priority": 0,
   "confirm": true
 }

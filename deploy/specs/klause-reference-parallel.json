@@ -29,6 +29,6 @@
   ],
   "base": {"timeout": "60000", "engine": "mixed", "processors": "4", "param.source-validation": "true", "param.source-validation-gzip": "true"},
   "host": "auto",
-  "priority": -4,
+  "priority": 0,
   "confirm": true
 }

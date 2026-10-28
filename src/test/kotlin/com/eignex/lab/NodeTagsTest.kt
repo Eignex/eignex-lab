@@ -76,7 +76,7 @@ class NodeTagsTest {
 
         assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
         assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("missing-host"))), spec.name, config) }
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("simd:sme"))), spec.name, config))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("simd:sme"))), spec.name, config) }
     }
 
     @Test

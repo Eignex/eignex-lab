@@ -86,7 +86,7 @@ class NomadBackend(
         val session = store.execution.session(id) ?: throw ExecutionFenced("unknown session")
         val spec = Json.parseToJsonElement(store.execution.submission(id)).jsonObject
         if (spec["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
-            (store.localBusy() || !nativeMayClaim(session.jobId))) {
+            (store.localBusy() || !nativeMayClaim(session.jobId) || !NativePriority(store).allows(session.jobId))) {
             store.execution.drain(id)
             return null
         }
@@ -244,7 +244,7 @@ class NomadBackend(
                 // stopped preparation here races plan publication and recreates already accepted preparation.
                 val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: continue
                 val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-                if (native && (store.localBusy() || !nativeMayClaim(job.id))) continue
+                if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id))) continue
                 if (native) {
                     val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
                     val limit = nativeLimits(meta)

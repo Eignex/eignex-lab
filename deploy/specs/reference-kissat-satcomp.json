@@ -6,6 +6,6 @@
   ],
   "base": {"backend": "reference", "solver": "kissat", "timeout": "60000"},
   "parallel": 4,
-  "priority": -2,
+  "priority": 0,
   "confirm": true
 }
