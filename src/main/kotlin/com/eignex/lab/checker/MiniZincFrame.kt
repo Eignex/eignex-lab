@@ -7,8 +7,10 @@ data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdo
             val text = listOf("model.fzn", "model.ozn", "cli.stdout").map { name ->
                 val path = prefix + name
                 val file = root.resolve(path).toFile()
-                if (!file.isFile || file.length() > 8 * 1024 * 1024 || sha256(file) != artifacts[path]) return null
-                file.readBytes().decodeToString(throwOnInvalidSequence = true)
+                if (!file.isFile || file.length() > 8 * 1024 * 1024) return null
+                val bytes = file.inputStream().use { it.readNBytes(8 * 1024 * 1024 + 1) }
+                if (bytes.size > 8 * 1024 * 1024 || sha256(bytes) != artifacts[path]) return null
+                bytes.decodeToString(throwOnInvalidSequence = true)
             }
             return MiniZincFrame(text[0], text[1], text[2])
         }
@@ -18,7 +20,7 @@ data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdo
 /** Protocol binding only; MiniZinc evaluates the constraints and renders the output model. */
 internal object MiniZincPoint {
     private val scalar = Regex("([A-Za-z][A-Za-z0-9_]*|_[A-Za-z0-9_]+)\\s*=\\s*(-?[0-9]+|true|false);")
-    private val objective = Regex("\\b(minimize|maximize)\\s+([A-Za-z_][A-Za-z0-9_]*|-?[0-9]+)\\s*;")
+    private val objective = Regex("\\b(minimize|maximize)\\s+([A-Za-z_][A-Za-z0-9_]*|-?[0-9]+)\\s*;\\s*$")
 
     data class Bound(val model: String, val native: String, val optimize: Boolean)
 
