@@ -52,15 +52,12 @@ class IterationExecutor(
             privateWorkspaces?.reuse(key, ::checkRun)?.let { return@associateWith it }
             fresh += sha
             fun copy(cached: Path): Path {
-                val profile = manifest.experiment.profile
-                val runtimeOnly = manifest.experiment.repository == "Eignex/klause" && manifest.experiment.bench == null &&
-                    manifest.experiment.script == null && manifest.experiment.scriptFile == null &&
-                    profile?.script == null && profile?.buildTasks.orEmpty().isEmpty() && profile?.classpath.orEmpty().isEmpty()
+                val runtimeOnly = WorkerTrees.runtimeOnly(manifest.experiment)
                 fun stage(destination: Path) {
                     if (runtimeOnly) WorkerTrees.copyRuntime(cached, destination, ::checkRun) else copyTree(cached, destination, ::checkRun)
                 }
                 // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                return privateWorkspaces?.create(key, ::checkRun, ::stage)
+                return privateWorkspaces?.copy(key, cached, ::checkRun, runtimeOnly)
                     ?: directory.resolve("worktrees").resolve(sha).also(::stage)
             }
             withInput(bundle, ::checkRun) { source ->

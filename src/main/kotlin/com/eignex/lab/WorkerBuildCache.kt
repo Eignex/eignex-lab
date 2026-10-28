@@ -96,7 +96,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 }
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
-                val files = inventory(tree)
+                val files = TreeVerification().capture(tree, staging.resolve("verified.json"), ::checkRun)
+                require(files.sumOf { it.bytes } <= maxBytes) { "build exceeds cache disk budget" }
                 checkRun()
                 Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files)))
                 Files.move(staging, destination, ATOMIC_MOVE)
@@ -211,14 +212,6 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
 
-    private fun inventory(tree: Path): List<InputFile> {
-        var total = 0L
-        return Files.walk(tree).use { paths -> paths.filter { !Files.isDirectory(it, NOFOLLOW_LINKS) }.sorted().map { file ->
-            require(Files.isRegularFile(file, NOFOLLOW_LINKS)) { "build produced a link or unsupported file" }
-            val bytes = Files.size(file); total += bytes; require(total <= maxBytes) { "build exceeds cache disk budget" }
-            InputFile(tree.relativize(file).toString().replace('\\', '/'), hashFile(file), bytes, Files.isExecutable(file))
-        }.toList() }.also { require(it.isNotEmpty()) }
-    }
     private fun valid(path: Path, identity: String, checkActive: () -> Unit): Boolean {
         val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json"))) }.getOrNull() ?: return false
         if (entry.files.isEmpty() || entry.files.fold(0L) { total, file ->

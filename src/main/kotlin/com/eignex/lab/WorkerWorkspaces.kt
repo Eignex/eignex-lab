@@ -27,6 +27,15 @@ class WorkerWorkspaces(private val root: Path) {
         return tree
     }
 
+    internal fun copy(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean): Path =
+        create(key, checkActive) { destination ->
+            val sourceReceipt = if (Files.isRegularFile(source.parent.resolve("manifest.json"))) source.parent.resolve("verified.json")
+                else source.resolveSibling("${source.fileName}.verified.json")
+            TreeVerification().copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive, { !runtimeOnly || WorkerTrees.runtimePath(it) }) {
+                if (runtimeOnly) WorkerTrees.copyRuntime(source, destination, checkActive) else WorkerTrees.copy(source, destination, checkActive)
+            }
+        }
+
     /** Seal after trusted measurement installation/provenance capture, which bind this stable private path. */
     internal fun seal(key: String, tree: Path, checkActive: () -> Unit) {
         check(tree == root.resolve(key))

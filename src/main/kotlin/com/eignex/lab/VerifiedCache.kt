@@ -8,6 +8,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardOpenOption.*
 import java.security.MessageDigest
+import java.security.DigestInputStream
+import java.io.FilterInputStream
 import java.util.zip.ZipInputStream
 
 /** Bounded, locked, checksum-verified extraction with atomic publication. No archive-supplied links or modes. */
@@ -30,22 +32,24 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             Files.deleteIfExists(receipt)
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
             val staging = Files.createTempDirectory(root, "$key-")
-            val archive = staging.resolve("input.zip")
             val tree = Files.createDirectory(staging.resolve("tree"))
             try {
-                download().use { input -> Files.newOutputStream(archive).use { output ->
-                    val digest = MessageDigest.getInstance("SHA-256")
-                    val buffer = ByteArray(64 * 1024); var bytes = 0L
-                    while (true) {
-                        checkActive()
-                        val n = input.read(buffer); if (n < 0) break
-                        bytes += n; require(bytes <= maxBytes) { "archive exceeds cache limit" }
-                        output.write(buffer, 0, n); digest.update(buffer, 0, n)
+                val expected = bundle.files.associateBy { it.path }; require(expected.size == bundle.files.size)
+                val seen = mutableSetOf<String>()
+                val verifier = TreeVerification(); val written = mutableListOf<TreeVerification.Written>()
+                val digest = MessageDigest.getInstance("SHA-256")
+                download().use { input ->
+                val bounded = object : FilterInputStream(input) {
+                    var bytes = 0L
+                    override fun read(): Int = ByteArray(1).let { if (read(it, 0, 1) < 0) -1 else it[0].toInt() and 255 }
+                    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                        checkActive(); val count = `in`.read(buffer, offset, length)
+                        if (count > 0) { bytes += count; require(bytes <= maxBytes) { "archive exceeds cache limit" } }
+                        return count
                     }
-                    require(digest.digest().hex() == bundle.sha256) { "archive checksum mismatch" }
-                } }
-                val expected = bundle.files.associateBy { it.path }; val seen = mutableSetOf<String>()
-                ZipInputStream(Files.newInputStream(archive)).use { zip ->
+                }
+                val raw = DigestInputStream(bounded, digest)
+                ZipInputStream(raw).use { zip ->
                     while (true) {
                         checkActive()
                         val entry = zip.nextEntry ?: break
@@ -55,17 +59,24 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                         val file = requireNotNull(expected[entry.name]) { "undeclared archive entry" }
                         require(seen.add(entry.name)) { "duplicate archive entry" }
                         Files.createDirectories(target.parent)
+                        val fileDigest = MessageDigest.getInstance("SHA-256")
                         Files.newOutputStream(target, CREATE_NEW).use { output ->
                             var size = 0L; val buffer = ByteArray(64 * 1024)
-                            while (true) { checkActive(); val n = zip.read(buffer); if (n < 0) break; size += n; require(size <= file.bytes) { "expanded file exceeds declared size" }; output.write(buffer, 0, n) }
+                            while (true) { checkActive(); val n = zip.read(buffer); if (n < 0) break; size += n; require(size <= file.bytes) { "expanded file exceeds declared size" }; output.write(buffer, 0, n); fileDigest.update(buffer, 0, n) }
                             require(size == file.bytes)
                         }
-                        require(hashFile(target, checkActive) == file.sha256) { "file checksum mismatch" }
+                        require(fileDigest.digest().hex() == file.sha256) { "file checksum mismatch" }
                         if (file.executable) require(target.toFile().setExecutable(true, true))
+                        written += verifier.written(target, file)
                     }
-                }
+                    // ZipInputStream stops at the central directory. Drain the entire raw archive, including its
+                    // trailer, so its advertised digest remains a whole-object integrity check.
+                    val buffer = ByteArray(64 * 1024)
+                    while (raw.read(buffer) >= 0) checkActive()
+                } }
+                require(digest.digest().hex() == bundle.sha256) { "archive checksum mismatch" }
                 require(seen == expected.keys) { "archive is incomplete" }
-                require(TreeVerification().valid(tree, bundle.files, receipt, checkActive))
+                verifier.record(tree, written, receipt, checkActive)
                 checkActive()
                 Files.move(tree, destination, ATOMIC_MOVE)
                 return destination
@@ -76,7 +87,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
     private fun remove(path: Path) { Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
 }
 
-internal fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
+internal fun ByteArray.hex(): String = java.util.HexFormat.of().formatHex(this)
 internal fun hashFile(path: Path, checkActive: () -> Unit = {}): String = Files.newInputStream(path).use { input ->
     val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024)
     while (true) { checkActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }; digest.digest().hex()
