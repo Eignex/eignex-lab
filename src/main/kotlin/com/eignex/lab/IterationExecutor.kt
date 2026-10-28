@@ -60,7 +60,7 @@ class IterationExecutor(
                 return privateWorkspaces?.copy(key, cached, ::checkRun, runtimeOnly)
                     ?: directory.resolve("worktrees").resolve(sha).also(::stage)
             }
-            withInput(bundle, ::checkRun) { source ->
+            withInput(bundle, ::checkRun, runtimeOnly = bundle.build == null && WorkerTrees.runtimeOnly(manifest.experiment)) { source ->
                 if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                     .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
             }
@@ -165,9 +165,11 @@ class IterationExecutor(
     }
 
     private fun environment(): Map<String, String> = workerEnvironment(os == "mac")
-    private fun <T> withInput(bundle: WorkerBundle, check: () -> Unit, use: (Path) -> T): T =
-        if (inputCache != null) inputCache.use(bundle, check, { bundleInput(bundle) }, use)
-        else use(cache.stage(bundle, check) { bundleInput(bundle) })
+    private fun <T> withInput(bundle: WorkerBundle, check: () -> Unit, runtimeOnly: Boolean = false, use: (Path) -> T): T =
+        if (inputCache != null) {
+            if (runtimeOnly) inputCache.useRuntime(bundle, check, { bundleInput(bundle) }, use)
+            else inputCache.use(bundle, check, { bundleInput(bundle) }, use)
+        } else use(if (runtimeOnly) cache.stageRuntime(bundle, check) { bundleInput(bundle) } else cache.stage(bundle, check) { bundleInput(bundle) })
     private fun copyTree(source: Path, destination: Path, checkActive: () -> Unit) {
         WorkerTrees.copy(source, destination, checkActive)
     }

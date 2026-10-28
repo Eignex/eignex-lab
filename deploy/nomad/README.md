@@ -528,8 +528,10 @@ as bytes pass through; publication checks the complete archive (including its tr
 atomic promotion. No temporary compressed archive or duplicate file checksum pass is needed. Trusted private copies bind
 verified source inode/ctime before and after copying and record the new private inode metadata. Unchanged copied files
 need no checksum reread; trusted setup changes are hashed during sealing. Filesystems without reliable identity/ctime
-retain full checksum verification. Default Klause runtime bundles omit compiler intermediates; custom scripts, build
-recipes, classpaths, SDK benches and other repositories retain their full trees.
+retain full checksum verification. Default Klause runtime bundles omit compiler intermediates. For older bundles,
+a cold runtime cache acquisition hashes discarded entries as they stream past without extracting them; full and reduced
+cache layouts have separate identities, and existing full cache hits remain reusable. Custom scripts, build recipes,
+classpaths, SDK benches and other repositories retain their full trees.
 
 Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,
 filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger captures retain
