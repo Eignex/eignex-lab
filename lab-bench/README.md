@@ -287,6 +287,7 @@ remain separate. Selection caps remain repository-owned and are not refilled aft
 
 Bench schedules preserve their explicit checking policy. A solver regression queues a confirmation
 with the same repository, request, placement, selected workload bytes and both pinned source commits.
+Bench confirmations retain compatible placement instead of inheriting the legacy native-only policy.
 It reuses the original accepted prepared bundles for both revisions instead of resolving build dependencies again.
 Changed requests or missing retained builds are refused.
 It repeats paired blocks three times. Invalid witnesses and exact objective/proof semantics keep the

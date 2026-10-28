@@ -35,6 +35,20 @@ class PlacementTest {
     }
 
     @Test
+    fun `bench confirmations preserve compatible placement rather than forcing native execution`() {
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json"), host = Experiments.AWS_HOST,
+            nodeTags = NodeSelector(require = setOf("platform:linux")))
+        val name = Confirm.name("bench", "a".repeat(40), 1)
+        for (host in listOf(Experiments.AUTO_HOST, Experiments.AWS_HOST)) {
+            assertFalse(Placement.localOnly(spec.copy(host = host), name))
+        }
+        val targets = config().nomadQueue!!.matching(spec, name)
+        assertTrue(targets.isNotEmpty() && targets.all { it.os == "linux" })
+        assertTrue(Placement.localOnly(spec.copy(host = Experiments.LAB_HOST), name))
+        assertTrue(Placement.localOnly(spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "z3")), name))
+    }
+
+    @Test
     fun `a submitted host is not followed, and a profile job goes local first too`() {
         val config = config()
         val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", classpath = listOf("tools/lib/*")))

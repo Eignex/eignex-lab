@@ -189,7 +189,7 @@ class BenchAdapterIntegrationTest {
         val originalJob = job
         val frozen = plan.cases.take(1)
         val selectedValues = arms.first().arm.values - "ref"
-        spec = spec.copy(name = "$name-replay", base = selectedValues, grid = emptyMap(), repeats = 1,
+        spec = spec.copy(name = Confirm.name("$name-replay", revision, originalJob), base = selectedValues, grid = emptyMap(), repeats = 1,
             configs = listOf(mapOf("label" to "before", "ref" to revision), mapOf("label" to "after", "ref" to revision)),
             bench = spec.bench!!.copy(frozenCases = frozen, replayJobs = mapOf("before" to originalJob, "after" to originalJob)))
         Experiments.validate(spec, 4)
