@@ -55,6 +55,13 @@ internal class WorkerWorkspaceStorage(private val root: Path) : AutoCloseable {
         }
     }
     override fun close() {
-        try { deleteTree(directory) } finally { pin.release(); owner.close() }
+        try {
+            // Remove the session from discovery before unlinking its owner lock. Otherwise a reaper could
+            // recreate that lock file between unlink and final directory removal and race normal exit.
+            val trash = guarded {
+                root.resolve(".evict-${java.util.UUID.randomUUID()}").also { Files.move(directory, it, ATOMIC_MOVE) }
+            }
+            try { deleteTree(trash) } catch (_: java.nio.file.NoSuchFileException) { /* A reaper finished it. */ }
+        } finally { pin.release(); owner.close() }
     }
 }
