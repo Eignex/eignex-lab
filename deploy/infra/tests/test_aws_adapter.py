@@ -12,6 +12,21 @@ import adapter
 
 
 class AwsAdapterTest(unittest.TestCase):
+    def test_missing_and_malformed_sdk_error_details_preserve_safe_reporting(self):
+        for response in [None, "unexpected", {"Error": None}, {"Error": {"Code": None}}, {"Error": {"Code": "secret response body"}}]:
+            with self.subTest(response=response):
+                error = RuntimeError("secret message")
+                error.response = response
+                self.assertEqual("RuntimeError", adapter.error_code(error))
+
+    def test_failed_scaling_activity_without_a_message_is_still_published(self):
+        asg = Mock()
+        asg.describe_auto_scaling_groups.return_value = {"AutoScalingGroups": [{"Tags": [
+            {"Key": "lab:deployment", "Value": "lab"}, {"Key": "lab:pool", "Value": "general"}],
+            "Instances": [], "DesiredCapacity": 0}]}
+        asg.describe_scaling_activities.return_value = {"Activities": [{"StatusCode": "Failed", "StatusMessage": None}]}
+        self.assertEqual({"general": "capacity unavailable"}, adapter.inventory(asg, "group", "lab", "general")["failures"])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

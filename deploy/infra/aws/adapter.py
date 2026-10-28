@@ -18,6 +18,15 @@ class RenewalError(RuntimeError):
     """Only pool names and bounded error codes, never grants, credentials or provider response bodies."""
 
 
+def error_code(error):
+    response = getattr(error, "response", None)
+    detail = response.get("Error") if isinstance(response, dict) else None
+    code = detail.get("Code") if isinstance(detail, dict) else None
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,80}", code):
+        code = type(error).__name__
+    return code
+
+
 def inventory(asg, group, deployment, pool, at=None):
     groups = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[group])["AutoScalingGroups"]
     if not groups:
@@ -32,7 +41,7 @@ def inventory(asg, group, deployment, pool, at=None):
     for i in range(max(0, value["DesiredCapacity"] - covered)):
         instances.append({"id": f"booting-{i}", "pool": pool})
     activities = asg.describe_scaling_activities(AutoScalingGroupName=group, MaxRecords=1)["Activities"]
-    failures = {pool: activities[0].get("StatusMessage", "capacity unavailable")[:500]} if activities and activities[0]["StatusCode"] == "Failed" else {}
+    failures = {pool: (activities[0].get("StatusMessage") or "capacity unavailable")[:500]} if activities and activities[0]["StatusCode"] == "Failed" else {}
     return {"observedAt": int((time.time() if at is None else at) * 1000), "pools": [pool], "instances": instances, "failures": failures}
 
 
@@ -85,10 +94,7 @@ def renew_capacity(config, functions):
             return pool["pool"], f"HTTP_{error.code}"
         except Exception as error:
             # SDK exception messages can include request material. Report the exception class only.
-            code = getattr(error, "response", {}).get("Error", {}).get("Code", type(error).__name__)
-            if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,80}", code):
-                code = type(error).__name__
-            return pool["pool"], code
+            return pool["pool"], error_code(error)
         return None
     with ThreadPoolExecutor(max_workers=min(4, len(pools))) as workers:
         failed = [pool for pool in workers.map(renew, pools) if pool is not None]
@@ -115,14 +121,14 @@ def main():
                 operation()
             except Exception as error:
                 detail = f": {error}" if isinstance(error, RenewalError) else ""
-                print(f"AWS capacity adapter held: {type(error).__name__}{detail}", flush=True)
+                print(f"AWS capacity adapter held: {error_code(error)}{detail}", flush=True)
             time.sleep(10)
     if args.once:
         try:
             once(config, asg, functions)
         except Exception as error:
             detail = f": {error}" if isinstance(error, RenewalError) else ""
-            print(f"AWS capacity adapter held: {type(error).__name__}{detail}", flush=True)
+            print(f"AWS capacity adapter held: {error_code(error)}{detail}", flush=True)
             raise SystemExit(1)
         return
     # Publishing inventory must never wait for coordinator HTTP or provider renewal calls across the fleet.
