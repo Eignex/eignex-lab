@@ -92,7 +92,10 @@ class IterationExecutor(
                         includeDirs = case.problem.includeDirs.map { portablePath(it, worktree, corpus).toString() })
                     benchCase?.let { BenchRuns.validateInputs(it, worktree, corpus) }
                     val command = if (reference) Experiments.referenceCommand(launcher, problem, arm, case.seed, case.index)
-                        else manifest.experiment.bench?.let { BenchRuns.command(worktree, it, requireNotNull(benchCase), case.index, corpus, manifest.experiment.repository) }
+                        else manifest.experiment.bench?.let {
+                            BenchRuns.writeCase(directory, case.index, requireNotNull(benchCase))
+                            BenchRuns.command(worktree, it, case.index, corpus, manifest.experiment.repository)
+                        }
                         ?: manifest.experiment.profile?.let { Experiments.profileCommand(worktree.toString(), it, case.index, corpus.toString(), arm.debug, manifest.experiment.repository) }
                         ?: error("execution requires a repository bench manifest or explicit profile")
                     val env = environment() + mapOf("JOB_DIR" to directory.toString())

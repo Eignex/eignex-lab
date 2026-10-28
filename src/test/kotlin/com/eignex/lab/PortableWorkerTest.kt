@@ -100,6 +100,43 @@ class PortableWorkerTest {
         assertEquals(bundle.sha256, result.artifacts["preparation/${bundle.commit}.zip"])
     }
 
+    @Test fun `multi megabyte bench cases launch through files instead of shell arguments`(): Unit = service { socket ->
+        val case = com.eignex.lab.bench.BenchCase("large", mapOf("opaque" to ("literal '$ value'\n" + "x".repeat(4 * 1024 * 1024))),
+            resources = com.eignex.lab.bench.BenchResources(timeoutSeconds = 5))
+        val encoded = com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchCase.serializer(), case) + "\n"
+        val expected = ExecutionStore.digest(encoded)
+        val java = """package fixture;
+            import java.nio.file.*;
+            import java.security.MessageDigest;
+            import java.util.HexFormat;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    byte[] bytes = Files.readAllBytes(Path.of(args[1]));
+                    String sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+                    if (!sha.equals("$expected")) throw new Exception("frozen case changed");
+                    Files.writeString(Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"large\"}");
+                }
+            }
+        """.trimIndent()
+        val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
+        val (source, bytes) = bundle(mapOf("Bench.java" to java,
+            "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val built = source.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("large", bench = BenchSpec("bench.json"))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, source.commit) }
+        val manifest = WorkManifest("large", "release", spec, arms,
+            listOf(WorkCase(0, 0, BenchRuns.problem(case), null, 0, 5, case)), listOf(built), ResourceBudget(1000, 2048))
+        val directory = root.resolve("large-run")
+        val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) },
+            "unused", source.os, source.arch, buildCache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
+            .run(manifest, listOf(0), directory, "fixture", 1, remainingLeaseMs = { 80000 }).cases.single()
+        assertEquals(0, result.exitCode, Files.readString(directory.resolve("0.err")))
+        assertEquals(encoded, Files.readString(directory.resolve("cases/0/bench-case.json")))
+        assertTrue(result.command!!.length < 8192)
+        assertEquals("large", BenchRuns.result(result.record)!!.caseId)
+    }
+
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {
         val (manifest, bytes) = bundle(mapOf("bin/tool" to "hello"))
         val cache = VerifiedCache(root.resolve("cache"), 1024 * 1024)

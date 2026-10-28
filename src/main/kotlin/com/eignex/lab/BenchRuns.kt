@@ -109,12 +109,19 @@ internal object BenchRuns {
             (entry.jvmArgs + listOf("-cp", cp, entry.main) + args).joinToString(" ", transform = ::quote)
     }
 
-    fun command(tree: Path, spec: BenchSpec, case: BenchCase, index: Int, corpus: Path, repository: String): String {
-        val encoded = BenchProtocol.json.encodeToString(case)
+    fun writeCase(directory: Path, index: Int, case: BenchCase): Path {
+        require(index >= 0)
+        val file = directory.resolve("cases/$index/bench-case.json")
+        Files.createDirectories(file.parent)
+        Files.writeString(file, BenchProtocol.json.encodeToString(case) + "\n")
+        return file
+    }
+
+    fun command(tree: Path, spec: BenchSpec, index: Int, corpus: Path, repository: String): String {
         return "cd ${quote(tree.toString())} && " +
             "export OUT=\"\$JOB_DIR/cases/$index/out\" LAB_WORKTREE=${quote(tree.toString())} " +
             "LAB_CORPUS=${quote(corpus.toString())} LAB_REPOSITORY=${quote(repository)} && " +
-            "mkdir -p \"\$OUT\" && printf '%s\\n' ${quote(encoded)} > \"\$OUT/../bench-case.json\" && " +
+            "mkdir -p \"\$OUT\" && " +
             invocation(tree, spec, "run") + " \"\$OUT/../bench-case.json\""
     }
 
