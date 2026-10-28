@@ -145,7 +145,11 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive).also { built ->
                 // The first solve on this node should reuse the distribution just built here, without a round trip.
-                inputCache?.use(built, ::checkActive, { Files.newInputStream(directory.resolve("$sha.zip")) }) { }
+                if (inputCache != null) {
+                    val input = { Files.newInputStream(directory.resolve("$sha.zip")) }
+                    if (WorkerTrees.runtimeOnly(spec)) inputCache.useRuntime(built, ::checkActive, input) { }
+                    else inputCache.use(built, ::checkActive, input) { }
+                }
                 artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip"))
             }
         }

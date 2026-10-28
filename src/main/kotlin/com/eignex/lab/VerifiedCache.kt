@@ -39,7 +39,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             val staging = Files.createTempDirectory(root, "$key-")
             val tree = staging.resolve("tree")
             try {
-                if (materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
+                if (runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
                     require(TreeVerification().valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
                     checkActive(); Files.move(tree, destination, ATOMIC_MOVE)
                     println("worker input cache: materialized verified local build files=${included.size}")

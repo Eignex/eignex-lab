@@ -526,7 +526,7 @@ abandoned sessions after crashes. Cached distributions remain immutable and boun
 Cold input downloads stream bounded HTTP ranges directly into extraction. The archive and each declared file are hashed
 as bytes pass through; publication checks the complete archive (including its trailer), file sizes and metadata before
 atomic promotion. No temporary compressed archive or duplicate file checksum pass is needed. Before downloading,
-a cache miss searches the node's pinned build cache for an identical approved file inventory. A verified matching
+a default runtime cache miss searches the node's pinned build cache for an identical approved file inventory. A verified matching
 build can be cloned directly, avoiding archive download and extraction entirely; changed or unmatched builds fall back
 to the verified stream. The cache limit still accounts for every materialized distribution. Trusted private copies bind
 verified source inode/ctime before and after copying and record the new private inode metadata. Unchanged copied files
