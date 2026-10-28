@@ -340,7 +340,7 @@ class ReferencesTest {
     }
 
     @Test
-    fun `a proven optimum on another model is no disagreement, shortfall or coverage, and an unbound one still meets any run`() {
+    fun `a known source requires a bound reference for coverage and disagreements`() {
         val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, sourceIdentity = identity("bacp-9"))
         val unbound = bacp9.copy(sourceIdentity = null)
 
@@ -349,10 +349,8 @@ class ReferencesTest {
         val same = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-9")), mapOf(("c" to "bacp") to bacp9))
         val neither = References.compare(listOf("a"), listOf(sourced("bacp", 30, null)), mapOf(("c" to "bacp") to unbound))
 
-        // An unbound row is from before sources were kept: it counts until a row bound to other files shows the name
-        // has changed meaning, which the lab learns by binding its own runs' rows (Store.bindLabReferenceSources).
-        assertEquals(listOf(0, 1, 1, 1), listOf(other, legacy, same, neither).map { it.summaries.single().covered })
-        assertEquals(listOf(0, 1, 1, 1), listOf(other, legacy, same, neither).map { it.disagreements.size })
+        assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.summaries.single().covered })
+        assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.disagreements.size })
     }
 
     @Test
@@ -397,13 +395,13 @@ class ReferencesTest {
     }
 
     @Test
-    fun `an unbound row speaks for a run unless a row bound to other files shows the name changed meaning`() {
+    fun `an unbound row cannot establish the reference for a known source`() {
         val unbound = ref(true, 5.0, proven = true)
         val nine = unbound.copy(solver = "chuffed", sourceIdentity = "bacp-9")
         val twentyFour = unbound.copy(solver = "chuffed", sourceIdentity = "bacp-24")
 
-        assertEquals(listOf(unbound), References.applicable(listOf(unbound), "bacp-24"))
-        assertEquals(listOf(twentyFour, unbound), References.applicable(listOf(twentyFour, unbound), "bacp-24"))
+        assertEquals(emptyList(), References.applicable(listOf(unbound), "bacp-24"))
+        assertEquals(listOf(twentyFour), References.applicable(listOf(twentyFour, unbound), "bacp-24"))
         assertEquals(emptyList(), References.applicable(listOf(nine, unbound), "bacp-24"))
         assertEquals(listOf(unbound), References.applicable(listOf(nine, unbound), null))
         assertEquals(emptyList(), References.applicable(listOf(unbound), References.MIXED_SOURCES))

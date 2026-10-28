@@ -26,6 +26,13 @@ deploy/lab fetch 7
 Replace `7` with the returned ID. `base` supplies shared arm values; `configs` overrides them and `grid` crosses
 combinations. Timeouts are milliseconds. The lab queues and places work automatically.
 
+Reference comparisons on a captured source require the same source identity. Historical rows without source
+hashes stay visible as history but cannot establish coverage, disagreement or objective quality on known bytes.
+MiniZinc reference cases retain the compiler binary hash and version, the selected solver's canonical ID,
+registered version, executable hash and configuration. Missing versions fail preparation. Identity preparation
+spends the case's time allowance; the remaining allowance goes to compilation and solving. Reference completion
+markers are native claims, separate from independent assignment or proof validation.
+
 **Auto placement is preferred and is the default for ordinary experiments, profiles and bench-adapter runs.**
 Omit `tags`, or use `"tags": []`; the lab chooses placement automatically. Idle local capacity
 can contribute, and the lab adds cloud capacity as demand grows. Local and cloud workers can share the same job.
