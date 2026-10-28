@@ -25,6 +25,39 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `journaled acceptance survives coordinator restart and projects while the external store is unavailable`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val offline = object : ArtifactStore by artifacts {
+            override fun putAll(job: Long, blobs: Map<String, ByteArray>) { error("external unavailable") }
+        }
+        val directory = root.resolve("journal")
+        val journal = ResultJournal(directory, offline, start = false)
+        val durableBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
+        val bytes = "journaled capture".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+        val body = WorkerInlineCommit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to sha)),
+            mapOf(sha to Base64.getEncoder().encodeToString(bytes)))
+        application { workerApi(store, durableBackend, journal) { true } }
+        try {
+            val response = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(Json.encodeToString(body))
+            }
+            assertEquals(HttpStatusCode.NoContent, response.status)
+            assertEquals(1, store.execution.accepted(id).size)
+            assertFailsWith<IllegalArgumentException> { artifacts.file(id, sha) }
+        } finally { journal.close() }
+        ResultJournal(directory, artifacts, start = false).use { recovered ->
+            val freshStore = Store(root.resolve("lab.db"))
+            NomadBackend(freshStore, control, recovered, { root.resolve("jobs/$it") }).reconcile()
+            assertEquals(String(bytes), Files.readString(root.resolve("jobs/$id/0.out")))
+            assertEquals(Status.DONE, freshStore.job(id)!!.status)
+            assertTrue(recovered.drainOne()); assertEquals(0, recovered.status().batches)
+            assertEquals(String(bytes), Files.readString(artifacts.file(id, sha)))
+        }
+    }
+
     @Test fun `small durable commits remain responsive when all bulk upload workers are blocked`() {
         setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!

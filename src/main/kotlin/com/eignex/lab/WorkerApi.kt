@@ -14,7 +14,6 @@ import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
-import java.nio.file.Files
 import kotlinx.coroutines.withContext
 
 @Serializable data class WorkerRegistration(val release: String)
@@ -147,11 +146,10 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                     check(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
                     val manifest = store.execution.manifest(s.id)
                     require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
-                    val file = artifacts.readFile(s.jobId, sha)
                     val range = call.request.headers[HttpHeaders.Range] ?: "bytes=0-"
                     val match = requireNotNull(Regex("bytes=([0-9]+)-([0-9]*)").matchEntire(range))
                     val from = match.groupValues[1].toLong()
-                    val total = Files.size(file); require(from in 0 until total)
+                    val total = artifacts.size(s.jobId, sha); require(from in 0 until total)
                     val requestedEnd = match.groupValues[2].toLongOrNull() ?: total - 1
                     val end = minOf(requestedEnd, total - 1, from + 8L * 1024 * 1024 - 1); require(end >= from)
                     call.response.status(HttpStatusCode.PartialContent)
@@ -159,7 +157,7 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                     call.response.header(HttpHeaders.AcceptRanges, "bytes")
                     call.respondOutputStream(ContentType.Application.OctetStream) {
                         withContext(CoordinatorIo.artifacts) {
-                            Files.newInputStream(file).use { input ->
+                            artifacts.open(s.jobId, sha, verify = false).use { input ->
                                 input.skipNBytes(from); var left = end - from + 1; val buffer = ByteArray(64 * 1024)
                                 while (left > 0) { val n = input.read(buffer, 0, minOf(left, buffer.size.toLong()).toInt()); check(n > 0); write(buffer, 0, n); left -= n }
                             }

@@ -12,6 +12,9 @@ interface ArtifactStore {
     fun offset(job: Long, sha: String): Long
     fun file(job: Long, sha: String): Path
     fun readFile(job: Long, sha: String): Path = file(job, sha)
+    fun open(job: Long, sha: String, verify: Boolean = true): InputStream = Files.newInputStream(if (verify) file(job, sha) else readFile(job, sha))
+    fun size(job: Long, sha: String): Long = Files.size(readFile(job, sha))
+    fun verify(job: Long, sha: String) { open(job, sha).use { } }
     fun putAll(job: Long, blobs: Map<String, ByteArray>) {
         for ((sha, bytes) in blobs) put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
     }
