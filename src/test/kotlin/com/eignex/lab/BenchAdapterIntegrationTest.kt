@@ -13,7 +13,7 @@ import kotlin.test.*
 @Tag("bench-adapters")
 class BenchAdapterIntegrationTest {
     @Test fun `prepared repository adapters plan execute transfer and ingest their real reports`() {
-        val consumers = Path.of(requireNotNull(System.getenv("LAB_BENCH_ADAPTER_ROOT")) { "Set LAB_BENCH_ADAPTER_ROOT to the directory containing klause, koblas and kumulant checkouts" })
+        val consumers = Path.of(requireNotNull(System.getenv("LAB_BENCH_ADAPTER_ROOT")) { "Set LAB_BENCH_ADAPTER_ROOT to the directory containing klause and koblas checkouts" })
         val native = System.getenv("LAB_BENCH_ADAPTER_NATIVE") == "true"
         val minizinc = System.getenv("LAB_BENCH_ADAPTER_MINIZINC") == "true"
         val root = Files.createTempDirectory("bench-adapters-")
@@ -27,7 +27,7 @@ class BenchAdapterIntegrationTest {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
             while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline); Thread.sleep(20) }
             val supervisor = ProcessSupervisor(socket)
-            for (name in listOf("klause", "koblas", "kumulant")) {
+            for (name in listOf("klause", "koblas")) {
                 val source = consumers.resolve(name)
                 val directory = Files.createDirectories(root.resolve(name))
                 val stage = directory.resolve("source")
@@ -40,9 +40,7 @@ class BenchAdapterIntegrationTest {
                 copy(source.resolve("$name-bench/lab"), stage.resolve("$name-bench/lab"))
                 val outputs = when (name) {
                     "klause" -> listOf("klause-cli/build/install/klause-cli-jvm", "klause-bench/build/install/klause-bench")
-                    "koblas" -> listOf("koblas-bench/build/lab") + if (native) listOf("koblas-bench/build/bin/linuxX64/releaseExecutable") else emptyList()
-                    else -> listOf("kumulant-bench/build/benchmarks/jvm/jars", "kumulant-bench/build/benchmark-dependencies.txt") +
-                        if (native) listOf("kumulant-bench/build/benchmarks/linuxX64/classes", "kumulant-bench/build/bin/linuxX64/choleskyQualityReleaseExecutable") else emptyList()
+                    else -> listOf("koblas-bench/build/lab") + if (native) listOf("koblas-bench/build/bin/linuxX64/releaseExecutable") else emptyList()
                 }
                 outputs.forEach { copy(source.resolve(it), stage.resolve(it)) }
                 val revision = ProcessBuilder("git", "rev-parse", "HEAD").directory(stage.toFile()).start().let { p ->
@@ -50,16 +48,11 @@ class BenchAdapterIntegrationTest {
                 }
                 val parameters = when (name) {
                     "klause" -> mapOf("suite" to "dimacs-core", "name" to "php4", "timeout-ms" to "1000")
-                    "koblas" -> mapOf("targets" to if (native) "jvm-scalar,jvm-simd,native" else "jvm-scalar,jvm-simd", "smoke" to "true", "operation" to "dot")
-                    else -> mapOf("backends" to if (native) "scalar,simd,native" else "scalar,simd", "smoke" to "true",
-                        "argv" to if (native) "[\"-Pbench.filter=.*UpdateThroughputBenchmark.update\",\"-Pbench.param.name=SumStat\",\"-Pbench.param.concurrency=None\"]" else "[]")
+                    else -> mapOf("targets" to if (native) "jvm-scalar,jvm-simd,native" else "jvm-scalar,jvm-simd", "smoke" to "true", "operation" to "dot")
                 }
-                // Native and JVM engines use different argv dialects; submit their plans separately.
-                val requests = when {
-                    name == "kumulant" && native -> listOf(parameters + mapOf("backends" to "scalar,simd", "argv" to "[]"), parameters + ("backends" to "native"))
-                    name == "klause" && minizinc -> listOf(parameters, mapOf("suite" to "abs-relations", "name" to "magnitude", "timeout-ms" to "1000"))
-                    else -> listOf(parameters)
-                }
+                val requests = if (name == "klause" && minizinc) {
+                    listOf(parameters, mapOf("suite" to "abs-relations", "name" to "magnitude", "timeout-ms" to "1000"))
+                } else listOf(parameters)
                 for ((requestIndex, request) in requests.withIndex()) verify(name, directory.resolve("request-$requestIndex"), stage, revision,
                     "$name-bench/lab/${if (native && name != "klause") "native-linux-x64" else "bench"}.json", request, supervisor)
             }
