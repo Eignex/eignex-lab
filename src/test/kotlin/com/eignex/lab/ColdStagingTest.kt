@@ -8,6 +8,56 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class ColdStagingTest {
+    private fun assertProcessPin(path: java.nio.file.Path, held: Boolean = true) {
+        // A second FileChannel in this JVM would only consult its overlapping-lock table. Probe from
+        // another process so a descriptor close that silently dropped the OS lock cannot pass.
+        val process = ProcessBuilder("python3", "-c", """
+            import fcntl, sys
+            with open(sys.argv[1], 'r+') as pin:
+                try: fcntl.lockf(pin, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError: sys.exit(73)
+        """.trimIndent(), path.toString()).redirectErrorStream(true).start()
+        assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "lock probe timed out")
+        assertEquals(if (held) 73 else 0, process.exitValue(), process.inputStream.bufferedReader().readText())
+    }
+
+    @Test fun `local probes including path aliases preserve the actual process lock`() {
+        val root = Files.createTempDirectory("process-pin")
+        try {
+            val file = root.resolve("owner.lock")
+            val alias = Files.createSymbolicLink(root.resolve("alias"), root).resolve("owner.lock")
+            ProcessFilePin.tryLock(file)!!.use {
+                repeat(3) {
+                    assertNull(ProcessFilePin.tryLock(file))
+                    assertNull(ProcessFilePin.tryLock(alias))
+                    assertProcessPin(file)
+                }
+            }
+            assertProcessPin(file, held = false)
+            ProcessFilePin.tryLock(alias)!!.use { assertProcessPin(file) }
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `input maintenance preserves process pins visible to other allocations`() {
+        val root = Files.createTempDirectory("input-process-pin")
+        try {
+            val tree = Files.createDirectory(root.resolve("source")); Files.writeString(tree.resolve("file"), "hello")
+            val zip = root.resolve("input.zip")
+            val identity = WorkerBundle("a".repeat(64), listOf(InputFile("file", ExecutionStore.digest("hello"), 5)),
+                Repositories.DEFAULT, "b".repeat(40), "linux", "amd64", "fixture")
+            val bundle = archive(tree, zip, identity) {}
+            val cacheRoot = root.resolve("cache"); val cache = WorkerInputCache(cacheRoot, maxBytes = 0)
+            cache.use(bundle, {}, { Files.newInputStream(zip) }) { staged ->
+                repeat(3) { cache.maintain() }
+                val pin = Files.list(cacheRoot.resolve("pins")).use { it.toList().single() }
+                assertProcessPin(pin)
+                assertEquals("hello", Files.readString(staged.resolve("file")))
+            }
+            cache.maintain()
+            assertTrue(Files.list(cacheRoot.resolve("entries")).use { it.toList().isEmpty() })
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `trusted copy seals unchanged bytes without reading them and hashes setup changes`() {
         val root = Files.createTempDirectory("copy-proof")
         try {
@@ -136,7 +186,12 @@ class ColdStagingTest {
                 val active = first.workspaces.create(key, {}) { Files.createDirectories(it); Files.writeString(it.resolve("code"), "hello") }
                 WorkerWorkspaceStorage(root).use { second ->
                     second.reap(); assertFalse(Files.exists(stale)); assertTrue(Files.exists(active))
+                    first.reap()
+                    Files.list(root).use { paths -> paths.filter { Files.isDirectory(it) }.forEach {
+                        assertProcessPin(it.resolve("owner.lock"))
+                    } }
                 }
+                assertProcessPin(active.parent.parent.resolve("owner.lock"))
                 assertEquals("hello", Files.readString(active.resolve("code")))
             }
             assertTrue(Files.list(root).use { paths -> paths.noneMatch { Files.isDirectory(it) } })

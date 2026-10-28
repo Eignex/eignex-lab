@@ -3,12 +3,10 @@ package com.eignex.lab
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.*
-import java.nio.file.StandardOpenOption.*
 
 class WorkerBuildFailure(val detail: String) : IllegalStateException("trusted source build failed: $detail")
 
@@ -126,28 +124,24 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             val head = candidate.resolve("tree/.git/HEAD")
             if (!Files.isRegularFile(head, NOFOLLOW_LINKS) || runCatching { Files.readString(head).trim() }.getOrNull() != commit) continue
             val key = candidate.fileName.toString()
-            FileChannel.open(root.resolve("$key.pin"), CREATE, WRITE).use { channel ->
-                val pin = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
-                if (pin == null) return@use
-                pin.use candidatePin@ {
-                    val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(candidate.resolve("manifest.json"))) }.getOrNull() ?: return@candidatePin
-                    val runtime = entry.files.filter { WorkerTrees.runtimePath(Path.of(it.path)) }.toSet()
-                    val runtimeOnly = entry.files.toSet() != wanted
-                    if (runtimeOnly && runtime != wanted || !runtimeOnly && entry.files.size != files.size) return@candidatePin
-                    val sourceReceipt = candidate.resolve(if (runtimeOnly) "runtime-verified.json" else "verified.json")
-                    if (runtimeOnly && !Files.exists(sourceReceipt) && Files.isRegularFile(candidate.resolve("verified.json"))) {
-                        Files.copy(candidate.resolve("verified.json"), sourceReceipt)
-                    }
-                    if (!TreeVerification().valid(candidate.resolve("tree"), files, sourceReceipt, checkActive,
-                            exactExecutables = true, allowUndeclared = runtimeOnly)) return@candidatePin
-                    TreeVerification().copy(candidate.resolve("tree"), sourceReceipt, destination, receipt,
-                        checkActive, { !runtimeOnly || WorkerTrees.runtimePath(it) }) {
-                        if (runtimeOnly) WorkerTrees.copyRuntime(candidate.resolve("tree"), destination, checkActive)
-                        else WorkerTrees.copy(candidate.resolve("tree"), destination, checkActive)
-                    }
-                    Files.setLastModifiedTime(candidate.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
-                    return true
+            ProcessFilePin.tryLock(root.resolve("$key.pin"))?.use candidatePin@ {
+                val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(candidate.resolve("manifest.json"))) }.getOrNull() ?: return@candidatePin
+                val runtime = entry.files.filter { WorkerTrees.runtimePath(Path.of(it.path)) }.toSet()
+                val runtimeOnly = entry.files.toSet() != wanted
+                if (runtimeOnly && runtime != wanted || !runtimeOnly && entry.files.size != files.size) return@candidatePin
+                val sourceReceipt = candidate.resolve(if (runtimeOnly) "runtime-verified.json" else "verified.json")
+                if (runtimeOnly && !Files.exists(sourceReceipt) && Files.isRegularFile(candidate.resolve("verified.json"))) {
+                    Files.copy(candidate.resolve("verified.json"), sourceReceipt)
                 }
+                if (!TreeVerification().valid(candidate.resolve("tree"), files, sourceReceipt, checkActive,
+                        exactExecutables = true, allowUndeclared = runtimeOnly)) return@candidatePin
+                TreeVerification().copy(candidate.resolve("tree"), sourceReceipt, destination, receipt,
+                    checkActive, { !runtimeOnly || WorkerTrees.runtimePath(it) }) {
+                    if (runtimeOnly) WorkerTrees.copyRuntime(candidate.resolve("tree"), destination, checkActive)
+                    else WorkerTrees.copy(candidate.resolve("tree"), destination, checkActive)
+                }
+                Files.setLastModifiedTime(candidate.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
+                return true
             }
         }
         return false
@@ -161,10 +155,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
             check(lease() > 0) { "build lease expired while waiting for compiler" }
             for (slot in 0 until slots) {
-                FileChannel.open(root.resolve("compile-$slot.lock"), CREATE, READ, WRITE).use { channel ->
-                    val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
-                    if (lock != null) return lock.use { use() }
-                }
+                ProcessFilePin.tryLock(root.resolve("compile-$slot.lock"))?.use { return use() }
             }
             Thread.sleep(50)
         }
@@ -193,59 +184,47 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             require(lease() > 0) { "build lease expired while acquiring dependency cache" }
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
             val name = if (slot == 0) key else "$key-$slot"
-            FileChannel.open(root.resolve("dependencies-$name.lock"), CREATE, READ, WRITE).use { channel ->
-                val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
-                if (lock != null) return lock.use { use(root.resolve("dependencies/$name")) }
-            }
+            ProcessFilePin.tryLock(root.resolve("dependencies-$name.lock"))?.use { return use(root.resolve("dependencies/$name")) }
             slot++
         }
     }
 
     private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, use: () -> T): T {
-        FileChannel.open(path, CREATE, READ, WRITE).use { channel ->
-            while (true) {
-                if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
-                require(lease() > 0) { "build lease expired while waiting for cache" }
-                if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
-                val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
-                if (lock != null) return lock.use { use() }
-                Thread.sleep(50)
-            }
+        while (true) {
+            if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            require(lease() > 0) { "build lease expired while waiting for cache" }
+            if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
+            ProcessFilePin.tryLock(path)?.use { return use() }
+            Thread.sleep(50)
         }
     }
 
     /** One maintenance pass per node per minute, using manifests instead of rescanning all build trees. */
     internal fun maintain(at: Long = now()) {
-        FileChannel.open(root.resolve("maintenance.lock"), CREATE, WRITE).use { channel ->
-            val lock = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
-            if (lock == null) return
-            lock.use {
-                val stamp = root.resolve("maintenance.timestamp")
-                if (Files.exists(stamp) && at - Files.getLastModifiedTime(stamp).toMillis() < 60_000) return
-                Files.writeString(stamp, ""); Files.setLastModifiedTime(stamp, java.nio.file.attribute.FileTime.fromMillis(at))
-                data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long)
-                val candidates = mutableListOf<Candidate>()
-                Files.list(root).use { paths -> paths.filter { it.fileName.toString().matches(SHA256) && Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
-                    val manifest = path.resolve("manifest.json")
-                    val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(manifest)) }.getOrNull()
-                    if (entry != null) candidates += Candidate(path, root.resolve("${path.fileName}.pin"), entry.files.sumOf { it.bytes }, Files.getLastModifiedTime(manifest).toMillis())
-                } }
-                val dependencies = root.resolve("dependencies")
-                if (Files.isDirectory(dependencies)) Files.list(dependencies).use { paths -> paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
-                    val bytes = runCatching { Files.walk(path).use { files -> files.filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0) }.sum() } }.getOrDefault(0)
-                    candidates += Candidate(path, root.resolve("dependencies-${path.fileName}.lock"), bytes, Files.getLastModifiedTime(path).toMillis())
-                } }
-                var size = candidates.sumOf { it.bytes }
-                for (candidate in candidates.sortedBy { it.used }) {
-                    if (size <= maxBytes) break
-                    FileChannel.open(candidate.lock, CREATE, WRITE).use { pin ->
-                        val free = try { pin.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
-                        free?.use {
-                            val trash = root.resolve(".evict-${java.util.UUID.randomUUID()}")
-                            if (Files.exists(candidate.path, NOFOLLOW_LINKS)) {
-                                Files.move(candidate.path, trash, ATOMIC_MOVE); delete(trash); size -= candidate.bytes
-                            }
-                        }
+        val maintenance = ProcessFilePin.tryLock(root.resolve("maintenance.lock")) ?: return
+        maintenance.use {
+            val stamp = root.resolve("maintenance.timestamp")
+            if (Files.exists(stamp) && at - Files.getLastModifiedTime(stamp).toMillis() < 60_000) return
+            Files.writeString(stamp, ""); Files.setLastModifiedTime(stamp, java.nio.file.attribute.FileTime.fromMillis(at))
+            data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long)
+            val candidates = mutableListOf<Candidate>()
+            Files.list(root).use { paths -> paths.filter { it.fileName.toString().matches(SHA256) && Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
+                val manifest = path.resolve("manifest.json")
+                val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(manifest)) }.getOrNull()
+                if (entry != null) candidates += Candidate(path, root.resolve("${path.fileName}.pin"), entry.files.sumOf { it.bytes }, Files.getLastModifiedTime(manifest).toMillis())
+            } }
+            val dependencies = root.resolve("dependencies")
+            if (Files.isDirectory(dependencies)) Files.list(dependencies).use { paths -> paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
+                val bytes = runCatching { Files.walk(path).use { files -> files.filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0) }.sum() } }.getOrDefault(0)
+                candidates += Candidate(path, root.resolve("dependencies-${path.fileName}.lock"), bytes, Files.getLastModifiedTime(path).toMillis())
+            } }
+            var size = candidates.sumOf { it.bytes }
+            for (candidate in candidates.sortedBy { it.used }) {
+                if (size <= maxBytes) break
+                ProcessFilePin.tryLock(candidate.lock)?.use {
+                    val trash = root.resolve(".evict-${java.util.UUID.randomUUID()}")
+                    if (Files.exists(candidate.path, NOFOLLOW_LINKS)) {
+                        Files.move(candidate.path, trash, ATOMIC_MOVE); delete(trash); size -= candidate.bytes
                     }
                 }
             }
