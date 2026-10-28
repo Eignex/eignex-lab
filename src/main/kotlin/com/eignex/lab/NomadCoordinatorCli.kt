@@ -96,12 +96,25 @@ object NomadCoordinatorCli {
             CapacityCollector(checkNotNull(capacitySettings), integration.inventoryFiles.map(Path::of),
                 Path.of(integration.healthTokenFile), config.dataDir.resolve("nomad/capacity-state.json"), store, client, disk::allowsWork, config.localNodeTags)
         }
+        // Capacity freshness must not depend on worker reconciliation, source checks or cache maintenance.
+        if (capacity != null) thread(isDaemon = true, name = "nomad-capacity") {
+            while (!Thread.currentThread().isInterrupted) {
+                runCatching { capacity.collect() }.onFailure { System.err.println("nomad capacity: ${it.javaClass.simpleName}: ${it.message?.take(256)}") }
+                Thread.sleep(5_000)
+            }
+        }
+        val cleanup = NomadAllocationCleanup(client, store, queueSettings)
+        thread(isDaemon = true, name = "nomad-allocation-cleanup") {
+            while (!Thread.currentThread().isInterrupted) {
+                runCatching { cleanup.reconcile() }.onFailure { System.err.println("nomad allocation cleanup: ${it.javaClass.simpleName}") }
+                Thread.sleep(300_000)
+            }
+        }
         thread(isDaemon = true, name = "nomad-reconcile") {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching {
                     backend.reconcile()
                     runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${it.javaClass.simpleName}") }
-                    capacity?.collect()
                 }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }
                 Thread.sleep(10_000)
             }

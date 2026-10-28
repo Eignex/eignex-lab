@@ -32,6 +32,8 @@ class CapacityCollector(
     private val latest = AtomicReference<Sample?>()
     private var state = if (Files.isRegularFile(stateFile)) Json.decodeFromString<CapacityState>(Files.readString(stateFile)) else CapacityState()
     private val pools = settings.pools.associateBy { it.id }
+    private data class CachedNode(val index: Long, val node: JsonObject)
+    private val nodeCache = mutableMapOf<String, CachedNode>()
     fun authorized(token: String): Boolean = java.security.MessageDigest.isEqual(Files.readString(tokenFile).trim().toByteArray(), token.toByteArray()) && token.length >= 32
 
     @Synchronized
@@ -46,7 +48,18 @@ class CapacityCollector(
         require(instances.all { it.pool in pools } && instances.map { it.pool to it.id }.distinct().size == instances.size)
         val sessions = store.execution.sessions()
         val byJob = sessions.associateBy { it.nomadJobId }
-        val nodes = nomad.nodes().mapNotNull { brief -> nomad.node(brief.getValue("ID").jsonPrimitive.content) }
+        val classes = instances.map { pools.getValue(it.pool).nodeClass }.toSet()
+        val briefs = if (classes.isEmpty()) emptyList() else nomad.nodes().filter {
+            it["NodeClass"]?.jsonPrimitive?.content.let { nodeClass -> nodeClass == null || nodeClass in classes }
+        }
+        nodeCache.keys.retainAll(briefs.map { it.getValue("ID").jsonPrimitive.content }.toSet())
+        val nodes = briefs.mapNotNull { brief ->
+            val id = brief.getValue("ID").jsonPrimitive.content
+            val index = brief["ModifyIndex"]?.jsonPrimitive?.longOrNull
+            nodeCache[id]?.takeIf { index != null && it.index == index }?.node ?: nomad.node(id)?.also {
+                if (index != null) nodeCache[id] = CachedNode(index, it)
+            }
+        }
         val byInstance = nodes.filter { (it["Meta"] as? JsonObject)?.get("lab_capacity_id") != null }.associateBy {
             it.getValue("NodeClass").jsonPrimitive.content to it.getValue("Meta").jsonObject.getValue("lab_capacity_id").jsonPrimitive.content
         }

@@ -5,10 +5,17 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import time
+import re
+import urllib.error
 import urllib.request
 import sys
+import threading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 from capacity_files import write_atomic
+
+
+class RenewalError(RuntimeError):
+    """Only pool names and bounded error codes, never grants, credentials or provider response bodies."""
 
 
 def inventory(asg, group, deployment, pool, at=None):
@@ -30,22 +37,31 @@ def inventory(asg, group, deployment, pool, at=None):
 
 
 
-def once(config, asg, functions):
-    started = time.monotonic()
-    definitions = [config | pool for pool in config["pools"]] if "pools" in config else [config]
-    if not definitions or len({pool["pool"] for pool in definitions}) != len(definitions) or len({pool["group"] for pool in definitions}) != len(definitions):
+def definitions(config):
+    pools = [config | pool for pool in config["pools"]] if "pools" in config else [config]
+    if not pools or len({pool["pool"] for pool in pools}) != len(pools) or len({pool["group"] for pool in pools}) != len(pools):
         raise ValueError("configure distinct pools and groups")
+    return pools
+
+
+def publish_inventory(config, asg):
+    started = time.monotonic()
+    pools = definitions(config)
     # Each pool is independent; serial SDK calls can age a larger fleet past the
     # collector's freshness bound before its next inventory can be published.
-    with ThreadPoolExecutor(max_workers=min(4, len(definitions))) as workers:
-        observations = list(workers.map(lambda pool: inventory(asg, pool["group"], pool["deployment"], pool["pool"]), definitions))
+    with ThreadPoolExecutor(max_workers=min(4, len(pools))) as workers:
+        observations = list(workers.map(lambda pool: inventory(asg, pool["group"], pool["deployment"], pool["pool"]), pools))
     value = {"observedAt": min(item["observedAt"] for item in observations),
-             "pools": [pool["pool"] for pool in definitions],
+             "pools": [pool["pool"] for pool in pools],
              "instances": [instance for item in observations for instance in item["instances"]],
              "failures": {pool: reason for item in observations for pool, reason in item["failures"].items()}}
     if time.monotonic() - started > 20:
         raise ValueError("inventory request exceeded freshness bound")
     write_atomic(config["inventoryFile"], value)
+
+
+def renew_capacity(config, functions):
+    pools = definitions(config)
     key = Path(config["capacityTokenFile"]).read_text().strip()
     def renew(pool):
         try:
@@ -53,16 +69,36 @@ def once(config, asg, functions):
             with urllib.request.urlopen(request, timeout=10) as response:
                 grant = json.load(response)
             result = functions.invoke(FunctionName=pool["renewFunction"], InvocationType="RequestResponse", Payload=json.dumps(grant).encode())
-            result["Payload"].close()
-            if result.get("FunctionError"):
-                raise RuntimeError("provider rejected capacity renewal")
-        except Exception:
-            return pool["pool"]
+            try:
+                if result.get("FunctionError"):
+                    try:
+                        kind = json.load(result["Payload"]).get("errorType", "provider_error")
+                    except (ValueError, TypeError):
+                        kind = "provider_error"
+                    if not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,80}", kind):
+                        kind = "provider_error"
+                    return pool["pool"], kind
+            finally:
+                result["Payload"].close()
+        except urllib.error.HTTPError as error:
+            error.close()
+            return pool["pool"], f"HTTP_{error.code}"
+        except Exception as error:
+            # SDK exception messages can include request material. Report the exception class only.
+            code = getattr(error, "response", {}).get("Error", {}).get("Code", type(error).__name__)
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,80}", code):
+                code = type(error).__name__
+            return pool["pool"], code
         return None
-    with ThreadPoolExecutor(max_workers=min(4, len(definitions))) as workers:
-        failed = [pool for pool in workers.map(renew, definitions) if pool is not None]
+    with ThreadPoolExecutor(max_workers=min(4, len(pools))) as workers:
+        failed = [pool for pool in workers.map(renew, pools) if pool is not None]
     if failed:
-        raise RuntimeError("capacity renewal held for " + ", ".join(failed))
+        raise RenewalError("capacity renewal held for " + ", ".join(f"{pool}={reason}" for pool, reason in failed))
+
+
+def once(config, asg, functions):
+    publish_inventory(config, asg)
+    renew_capacity(config, functions)
 
 
 def main():
@@ -73,16 +109,25 @@ def main():
     sdk = Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2})
     session = boto3.Session(profile_name=config.get("profile"), region_name=config["region"])
     asg = session.client("autoscaling", config=sdk); functions = session.client("lambda", config=sdk)
-    while True:
+    def run(operation):
+        while True:
+            try:
+                operation()
+            except Exception as error:
+                detail = f": {error}" if isinstance(error, RenewalError) else ""
+                print(f"AWS capacity adapter held: {type(error).__name__}{detail}", flush=True)
+            time.sleep(10)
+    if args.once:
         try:
             once(config, asg, functions)
         except Exception as error:
-            print(f"AWS capacity adapter held: {type(error).__name__}", flush=True)
-            if args.once:
-                raise SystemExit(1)
-        if args.once:
-            break
-        time.sleep(10)
+            detail = f": {error}" if isinstance(error, RenewalError) else ""
+            print(f"AWS capacity adapter held: {type(error).__name__}{detail}", flush=True)
+            raise SystemExit(1)
+        return
+    # Publishing inventory must never wait for coordinator HTTP or provider renewal calls across the fleet.
+    threading.Thread(target=run, args=(lambda: publish_inventory(config, asg),), name="aws-inventory", daemon=True).start()
+    run(lambda: renew_capacity(config, functions))
 
 
 if __name__ == "__main__":

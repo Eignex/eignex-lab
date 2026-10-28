@@ -5,6 +5,18 @@ Spot workers. See [the migration status](../NOMAD-MIGRATION.md) for verified can
 The sandbox commands below create an isolated cluster; managed services and automatic admission are documented
 later in this runbook.
 
+The coordinator refreshes capacity independently every five seconds, so source checks and worker reconciliation
+cannot delay the 30-second freshness gate. Node details are cached by Nomad's `ModifyIndex`; node changes invalidate
+the cache. The AWS adapter also publishes inventory independently of pool renewals. Renewal failures identify the
+pool and error code without logging signed grants or response bodies.
+
+Every five minutes, the coordinator asks Nomad to garbage collect this lab's native allocations that have been
+`complete` or `failed` for at least one hour. This removes disposable allocation workspaces and task logs, while
+accepted results, job files, shared corpus and build caches remain in their own stores. Active, unknown, recent,
+unrelated and unreachable allocations are skipped. Cleanup uses Nomad's client allocation GC API, which also
+refuses active allocations, and does not restart the native agent or its workers. Nomad's normal disk-pressure
+cleanup remains enabled; its default thresholds alone can retain several large finished workspaces.
+
 The reusable Kotlin pieces are `ResourceBudget`, `NomadCpuCapacity`, and `NomadBatchJob`. The operator-only command
 `eignex-lab nomad-spec <session.json>` validates a session and prints native Nomad Job JSON. It does not submit it.
 Linux uses Docker with hard CPU/memory limits; Mac uses native `raw_exec`, explicitly marked as advisory scheduling.
