@@ -341,7 +341,7 @@ class ReferencesTest {
 
     @Test
     fun `a known source requires a bound reference for coverage and disagreements`() {
-        val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, sourceIdentity = identity("bacp-9"))
+        val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, version = "chuffed-fixture", sourceIdentity = identity("bacp-9"))
         val unbound = bacp9.copy(sourceIdentity = null)
 
         val other = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(("c" to "bacp") to bacp9))
@@ -368,7 +368,7 @@ class ReferencesTest {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val key = "c" to "bacp"
         val legacy = Reference("chuffed", false, 38.0, true, true, 5, 1000)
-        val bound = Reference("cp-sat", false, 30.0, true, true, 5, 1000, sourceIdentity = identity("bacp-24"))
+        val bound = Reference("cp-sat", false, 30.0, true, true, 5, 1000, version = "cp-sat-fixture", sourceIdentity = identity("bacp-24"))
         store.putReferences(listOf(key to legacy, key to bound), "test")
 
         assertEquals(bound, store.references(listOf(key)).getValue(key))
@@ -398,13 +398,22 @@ class ReferencesTest {
     fun `an unbound row cannot establish the reference for a known source`() {
         val unbound = ref(true, 5.0, proven = true)
         val nine = unbound.copy(solver = "chuffed", sourceIdentity = "bacp-9")
-        val twentyFour = unbound.copy(solver = "chuffed", sourceIdentity = "bacp-24")
+        val twentyFour = unbound.copy(solver = "chuffed", version = "chuffed-fixture", sourceIdentity = "bacp-24")
 
         assertEquals(emptyList(), References.applicable(listOf(unbound), "bacp-24"))
         assertEquals(listOf(twentyFour), References.applicable(listOf(twentyFour, unbound), "bacp-24"))
         assertEquals(emptyList(), References.applicable(listOf(nine, unbound), "bacp-24"))
         assertEquals(listOf(unbound), References.applicable(listOf(nine, unbound), null))
         assertEquals(emptyList(), References.applicable(listOf(unbound), References.MIXED_SOURCES))
+    }
+
+    @Test
+    fun `a source bound row without a reference version cannot cover a known source`() {
+        val row = ref(true, 5.0, proven = true).copy(sourceIdentity = "bacp-24")
+
+        for (version in listOf("", " ", "unknown", "null", "unavailable")) {
+            assertEquals(emptyList(), References.applicable(listOf(row.copy(version = version)), "bacp-24"))
+        }
     }
 
     @Test
