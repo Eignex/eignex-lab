@@ -127,5 +127,17 @@ Repository-specific recipes and named workload sets live with their consumers. B
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.
 
+MiniZinc integer/Boolean points can be replayed through `checker/minizinc.json` using the bench protocol.
+The request contains `record`, `model`, `fzn`, `ozn` and `stdout` as frozen UTF-8 text from one retained solve.
+The source must match the record's digest. Native stdout and the model witness must retain the same complete
+`flatzinc-integer-v1` comment frame. The adapter adds equality constraints to the original FlatZinc declarations,
+including their aliases and domains, and checks the claimed objective in the original solve variable's units.
+MiniZinc runs with `--compile` only: acceptance requires an empty residual model, then official `--ozn-file`
+rendering must reproduce the recorded model witness. Residual work stays unknown; no solver completes a point.
+The policy validates the retained compiled frame under MiniZinc lowering authority, not optimality or an
+independently certified compiler. Each request has a 24 MiB text limit, one 15-second tool allowance and retained
+inputs, binary identities and bounded process receipts. The SDK result's success means capture completed;
+`details.state` is the validation verdict. Missing original compiler outputs cannot be replaced with another run's.
+
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).
