@@ -28,6 +28,9 @@ class MiniZincChecker : FormatChecker {
         } catch (failure: IllegalStateException) {
             return Verdict(LabCheck.UNSUPPORTED, failure.message ?: "incomplete point capture")
         }
+        if (case.optimize != bound.optimize) {
+            return Verdict(LabCheck.UNSUPPORTED, "record objective kind disagrees with the retained solve item")
+        }
         fun capture(text: String) = text.lineSequence().filter { it.startsWith("% klause-assignment") }.joinToString("\n")
         if (capture(frame.stdout.split("----------").dropLast(1).last()) != capture(case.witness)) {
             return Verdict(LabCheck.UNSUPPORTED, "record and native stdout kept different complete-point frames")
