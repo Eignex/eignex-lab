@@ -7,7 +7,8 @@ import java.io.File
 import java.nio.file.Files
 
 /** One case as an adapter checks it: its full record, its original source files, and the final witness it kept. */
-data class CheckCase(val record: JsonObject, val sources: SourceFiles, val witness: String) {
+data class CheckCase(val record: JsonObject, val sources: SourceFiles, val witness: String,
+                     val miniZincFrame: MiniZincFrame? = null) {
     fun field(name: String): String? = (record[name] as? JsonPrimitive)?.takeUnless { it.content == "null" }?.content
     val optimize: Boolean get() = field("kind") == "optimize"
 
@@ -67,7 +68,8 @@ class SourceChecker(
 
     /** The lab's verdict on [record], a case of [problem] run at klause [revision]; null when there is no Klause
      *  solution claim to check or no checker for its format. */
-    fun check(problem: Problem, record: JsonObject, revision: Revision? = null): LabCheck? {
+    fun check(problem: Problem, record: JsonObject, revision: Revision? = null,
+              miniZincFrame: MiniZincFrame? = null): LabCheck? {
         val adapter = adapters.firstOrNull { it.format.equals(problem.format, ignoreCase = true) } ?: return null
         if ((record["solver"] as? JsonPrimitive)?.content != KLAUSE) return null
         val stats = record["stats"] as? JsonObject
@@ -87,7 +89,7 @@ class SourceChecker(
             inputs = verdict.inputs,
         )
         return try {
-            run(adapter, problem, record, witness, hashes, revision)
+            run(adapter, problem, record, witness, hashes, revision, miniZincFrame)
         } catch (e: InterruptedException) {
             throw e
         } catch (e: Throwable) {
@@ -99,7 +101,7 @@ class SourceChecker(
     /** [adapter]'s verdict on [record]'s [witness], in a scratch directory deleted afterwards with any source read
      *  into it. */
     private fun run(adapter: FormatChecker, problem: Problem, record: JsonObject, witness: String?, hashes: Map<String, String>,
-                    revision: Revision?): Verdict {
+                    revision: Revision?, miniZincFrame: MiniZincFrame?): Verdict {
         if (witness.isNullOrBlank()) {
             return Verdict(LabCheck.NOT_RUN, "the record kept no final witness (the bench keeps one of at most 8 MiB)")
         }
@@ -109,7 +111,7 @@ class SourceChecker(
             val sources = locator.locate(problem, hashes, revision, work).getOrElse {
                 return Verdict(LabCheck.NOT_RUN, "original source not found on the lab: ${it.message}")
             }
-            adapter.check(CheckCase(record, sources, witness), work)
+            adapter.check(CheckCase(record, sources, witness, miniZincFrame), work)
         } finally {
             work.deleteRecursively()
         }
