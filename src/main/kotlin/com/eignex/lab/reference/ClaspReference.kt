@@ -4,8 +4,6 @@ import java.io.BufferedReader
 import java.io.StringWriter
 import java.io.Writer
 import java.math.BigInteger
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 /**
@@ -19,38 +17,13 @@ internal object ClaspReference {
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
     const val CONTAINER_LABEL = "klause-clasp-ref"
 
-    /** Hard per-container memory ceiling, so no single clasp run (a huge SAT instance's clause DB can
-     *  balloon) can exhaust the host; docker OOM-kills it and the instance is scored undecided. */
-    private const val MEMORY_LIMIT = "6g"
-    private const val DOCKER_INSPECT_WAIT_MS = 5_000L
+    private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "clasp")
 
-    /** Unique suffix per container `--name`, so the watchdog can `docker kill` the exact container. */
-    private val seq = AtomicLong()
-
-    /** Kill any leftover reference containers (from an earlier interrupted run). Best-effort, by label. */
-    fun reapStragglers() {
-        runCatching {
-            val list = ProcessBuilder("docker", "ps", "-q", "--filter", "label=$CONTAINER_LABEL").start()
-            val ids = list.inputStream.bufferedReader().readText().trim()
-            list.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-            if (ids.isNotEmpty()) {
-                ProcessBuilder(listOf("docker", "kill") + ids.lines())
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
-                    .start()
-                    .waitFor(DOCKER_INSPECT_WAIT_MS * 2, TimeUnit.MILLISECONDS)
-            }
-        }
-    }
+    /** Kill any leftover reference containers from an earlier interrupted run. */
+    fun reapStragglers() = docker.reapStragglers()
 
     /** Whether the clasp image is built (`docker image inspect`). */
-    fun imageAvailable(): Boolean = runCatching {
-        val p = ProcessBuilder("docker", "image", "inspect", IMAGE)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-        p.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS) && p.exitValue() == 0
-    }.getOrElse { false }
+    fun imageAvailable(): Boolean = docker.imageAvailable()
 
     /** Solve [instance] (DIMACS, OPB or WCNF) with clasp under [budget], single-threaded. The instance is streamed
      *  on stdin (OPB and WCNF get their problem line synthesized first). Objective sense is always minimise for
@@ -60,69 +33,16 @@ internal object ClaspReference {
         // Streamed, never held: a MaxSAT instance can be gigabytes of text, and several run at once.
         val input = ClaspInput.of(instance.format) { CorpusFiles.open(file).bufferedReader() }
         val timeoutSec = (budget.timeoutMillis / 1000).coerceAtLeast(1)
-        // The process id keeps names apart across bench processes run side by side, one instance each, as a lab runs
-        // them: each counts from 1, and docker refuses a name already in use.
-        val name = "$CONTAINER_LABEL-${ProcessHandle.current().pid()}-${seq.incrementAndGet()}"
-        val cmd = listOf(
-            "docker",
-            "run",
-            "--rm",
-            // The output streams to this process; a container log would also keep it on the VM's disk.
-            "--log-driver", "none",
-            "-i",
-            "--name", name,
-            // Hard resource ceilings so no single container can starve the host: memory (see
-            // [MEMORY_LIMIT]) and one CPU, with clasp itself pinned to a single thread — the sweep's
-            // parallelism is its concurrent jobs, not per-solve threads, so the host load stays bounded.
-            "--memory", MEMORY_LIMIT,
-            "--memory-swap", MEMORY_LIMIT,
-            "--cpus", "1",
-            "--label", CONTAINER_LABEL,
-            IMAGE,
+        val name = docker.containerName()
+        val cmd = docker.command(name, arguments = listOf(
             "--time-limit=$timeoutSec",
             "--parallel-mode=1",
             // No models: on a large MaxSAT instance every improving model is gigabytes of `v` lines, and the
             // reference reads only the status and `o` lines.
             "--quiet=2,0",
-        )
-        val startNanos = System.nanoTime()
-        val proc = ProcessBuilder(cmd).redirectErrorStream(false).start()
-        // Feed stdin on its own thread: clasp streams progress lines to stdout while parsing a large
-        // instance, so writing all of stdin before reading stdout would deadlock on the pipe buffers.
-        val writer = Thread {
-            runCatching { proc.outputStream.bufferedWriter().use(input::writeTo) }
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        // Watchdog: `docker kill` the container (not just the client) past the deadline, so a solve that
-        // ignores `--time-limit` can't hang the sweep; killing it closes stdout so the read can't block.
-        val watchdog = Thread {
-            runCatching {
-                if (!proc.waitFor(budget.timeoutMillis * 2 + 20_000, TimeUnit.MILLISECONDS)) {
-                    ProcessBuilder("docker", "kill", name)
-                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                        .redirectError(ProcessBuilder.Redirect.DISCARD)
-                        .start()
-                        .waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-                    proc.destroyForcibly()
-                }
-            }
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        val stdout = proc.inputStream.bufferedReader().readText()
-        proc.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-        watchdog.interrupt()
-        writer.interrupt()
-        val exit = runCatching { proc.exitValue() }.getOrNull()
-        // docker itself failed and the container never ran: an error to retry, not a result to cache.
-        check(exit !in DOCKER_RUN_FAILED) {
-            "clasp: docker run exited $exit: ${proc.errorStream.bufferedReader().readText().takeLast(ERROR_TAIL_CHARS)}"
-        }
-        val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
-        return parse(stdout, elapsedMs, cmd)
+        ), interactive = true)
+        val run = docker.exec(cmd, name, budget.timeoutMillis, input::writeTo)
+        return parse(run.stdout, run.elapsedMs, cmd)
     }
 
     /** clasp's status is a `s <STATUS>` line; a PB optimisation streams incumbents as `o <cost>` lines

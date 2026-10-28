@@ -2,7 +2,6 @@ package com.eignex.lab.reference
 
 import com.eignex.klause.formats.mps.Mps
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import com.eignex.klause.ir.ObjectiveSense as ObjectiveDirection
 
@@ -17,44 +16,20 @@ internal object ScipReference {
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
     const val CONTAINER_LABEL = "klause-scip-ref"
 
-    /** Hard per-container memory ceiling — mirrors the clasp/cp-sat oracles so no single SCIP run can
-     *  exhaust the host; docker OOM-kills it and the instance is scored undecided. */
-    private const val MEMORY_LIMIT = "6g"
-
-    /** MB form of [MEMORY_LIMIT] for SCIP's own `set limits memory` (belt-and-braces with docker). */
+    /** SCIP's own memory limit in MB, in addition to the shared Docker ceiling. */
     private const val MEMORY_LIMIT_MB = "6000"
     private const val DOCKER_INSPECT_WAIT_MS = 5_000L
 
     /** Threshold below SCIP's `infinity` (1e20); a reported bound at or beyond it means SCIP has none. */
     private const val SCIP_INFINITY = 1e19
 
-    /** Unique suffix per container `--name`, so the watchdog can `docker kill` the exact container. */
-    private val seq = AtomicLong()
+    private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "scip")
 
-    /** Kill any leftover reference containers (from an earlier interrupted run). Best-effort, by label. */
-    fun reapStragglers() {
-        runCatching {
-            val list = ProcessBuilder("docker", "ps", "-q", "--filter", "label=$CONTAINER_LABEL").start()
-            val ids = list.inputStream.bufferedReader().readText().trim()
-            list.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-            if (ids.isNotEmpty()) {
-                ProcessBuilder(listOf("docker", "kill") + ids.lines())
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
-                    .start()
-                    .waitFor(DOCKER_INSPECT_WAIT_MS * 2, TimeUnit.MILLISECONDS)
-            }
-        }
-    }
+    /** Kill any leftover reference containers from an earlier interrupted run. */
+    fun reapStragglers() = docker.reapStragglers()
 
     /** Whether the SCIP image is built (`docker image inspect`). */
-    fun imageAvailable(): Boolean = runCatching {
-        val p = ProcessBuilder("docker", "image", "inspect", IMAGE)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-        p.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS) && p.exitValue() == 0
-    }.getOrElse { false }
+    fun imageAvailable(): Boolean = docker.imageAvailable()
 
     /** SCIP's tolerances and gap limit, its defaults: recorded with every row and part of its cache identity. */
     internal const val OPTIONS = "numerics/feastol=1e-06,numerics/epsilon=1e-09,limits/gap=0"
@@ -90,74 +65,22 @@ internal object ScipReference {
         // orientation, so record it for the entry (and virtual-best comparison).
         val maximize = model?.sense == ObjectiveDirection.MAXIMIZE
         val timeoutSec = (budget.timeoutMillis / 1000).coerceAtLeast(1)
-        // The process id keeps names apart across bench processes run side by side, one instance each, as a lab runs
-        // them: each counts from 1, and docker refuses a name already in use.
-        val name = "$CONTAINER_LABEL-${ProcessHandle.current().pid()}-${seq.incrementAndGet()}"
-        val cmd = listOf(
-            "docker",
-            "run",
-            "--rm",
-            // The output streams to this process; a container log would also keep it on the VM's disk.
-            "--log-driver", "none",
-            "-i",
-            "--name", name,
-            // Hard resource ceilings so no single container can starve the host: memory (see
-            // [MEMORY_LIMIT]) and one CPU, with SCIP itself pinned single-threaded — the sweep's
-            // parallelism is its concurrent jobs, not per-solve threads, so the host load stays bounded.
-            "--memory", MEMORY_LIMIT,
-            "--memory-swap", MEMORY_LIMIT,
-            "--cpus", "1",
-            "--label", CONTAINER_LABEL,
-            IMAGE,
+        val name = docker.containerName()
+        val cmd = docker.command(name, arguments = listOf(
             "-c", "set limits time $timeoutSec",
             "-c", "set limits memory $MEMORY_LIMIT_MB",
             "-c", "read /dev/stdin mps",
             "-c", "optimize",
             "-c", "display solution",
             "-c", "quit",
-        )
-        val startNanos = System.nanoTime()
-        val proc = ProcessBuilder(cmd).redirectErrorStream(false).start()
-        // Feed stdin on its own thread: SCIP streams progress while parsing, so writing all of stdin
-        // before reading stdout could deadlock on the pipe buffers.
-        val writer = Thread {
-            runCatching { proc.outputStream.use { it.write(text.toByteArray()) } }
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        // Watchdog: `docker kill` the container past the deadline, so a solve that ignores its time limit
-        // can't hang the sweep; killing it closes stdout so the read can't block.
-        val watchdog = Thread {
-            runCatching {
-                if (!proc.waitFor(budget.timeoutMillis * 2 + 20_000, TimeUnit.MILLISECONDS)) {
-                    ProcessBuilder("docker", "kill", name)
-                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                        .redirectError(ProcessBuilder.Redirect.DISCARD)
-                        .start()
-                        .waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-                    proc.destroyForcibly()
-                }
-            }
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        val stdout = proc.inputStream.bufferedReader().readText()
-        proc.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-        watchdog.interrupt()
-        writer.interrupt()
-        val exit = runCatching { proc.exitValue() }.getOrNull()
-        // docker itself failed and the container never ran: an error to retry, not a result to cache.
-        check(exit !in DOCKER_RUN_FAILED) {
-            "scip: docker run exited $exit: ${proc.errorStream.bufferedReader().readText().takeLast(ERROR_TAIL_CHARS)}"
-        }
-        val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
+        ), interactive = true)
+        val run = docker.exec(cmd, name, budget.timeoutMillis) { it.write(text) }
+        val stdout = run.stdout
         val claim = parseClaim(stdout)
         val attempt = MpsAttempt(
             label = "default",
             stdout = stdout,
-            elapsedMs = elapsedMs,
+            elapsedMs = run.elapsedMs,
             command = cmd.joinToString(" "),
             claim = claim,
             verdict = MpsReference.judge(model, claim, HighsReference.repair.takeIf { HighsReference.available() }),
