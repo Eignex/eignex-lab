@@ -4,6 +4,9 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.engine.EngineConnectorBuilder
+import io.ktor.server.netty.Netty
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.io.ByteArrayInputStream
@@ -12,9 +15,92 @@ import java.security.KeyPairGenerator
 import java.security.Signature
 import java.security.interfaces.RSAPublicKey
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit.SECONDS
+import java.time.Duration
+import java.net.URI
+import java.net.http.HttpClient as JavaHttpClient
+import java.net.http.HttpRequest as JavaHttpRequest
+import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `saturated log workers retry the final status after the job leaves the active set`() {
+        val id = setup(); register()
+        var available = false
+        val delayed = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") },
+            writeLog = { _, write -> if (available) { write(); true } else false })
+        delayed.reconcile(); store.requestCancel(id); delayed.reconcile()
+        assertFalse(Files.exists(root.resolve("jobs/$id/job.log")))
+        available = true; delayed.reconcile()
+        assertContains(Files.readString(root.resolve("jobs/$id/job.log")), "CANCELLED")
+    }
+
+    @Test fun `blocked artifact upload leaves single call thread available for renewals and capacity`() {
+        setup(1); backend().reconcile(); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val blocked = object : ArtifactStore by artifacts {
+            override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: java.io.InputStream): Long {
+                entered.countDown(); check(release.await(10, SECONDS))
+                return artifacts.put(job, sha, bytes, offset, input)
+            }
+        }
+        val secret = "capacity-secret-".repeat(4)
+        val key = root.resolve("capacity-token").also { Files.writeString(it, secret) }
+        val inventory = root.resolve("inventory.json").also {
+            Files.writeString(it, Json.encodeToString(CapacityInventory(now(), setOf("fixture"), emptyList())))
+        }
+        val pool = CapacityPool("fixture", "fixture", 4, 8192, 1, setOf("arch:x86_64"))
+        val collector = CapacityCollector(CapacitySettings(listOf(pool), 16), listOf(inventory), key,
+            root.resolve("capacity-state.json"), store, control, { true }, emptySet())
+        collector.collect()
+        val server = embeddedServer(Netty, configure = {
+            connectors.add(EngineConnectorBuilder().apply { host = "127.0.0.1"; port = 0 })
+            callGroupSize = 1; workerGroupSize = 1; connectionGroupSize = 1
+        }) { workerApi(store, backend(), blocked) { true }; capacityApi(collector) }.start()
+        try {
+            val port = kotlinx.coroutines.runBlocking { server.engine.resolvedConnectors().single().port }
+            JavaHttpClient.newHttpClient().use { http ->
+                fun request(path: String) = JavaHttpRequest.newBuilder(URI("http://127.0.0.1:$port$path")).timeout(Duration.ofSeconds(3))
+                fun worker(path: String) = request("/worker/v1/sessions/${session.id}/$path")
+                    .header("Authorization", "Bearer $token").header("X-Lab-Allocation", "allocation").header("X-Lab-Identity", jwt())
+                val bytes = "blocked upload".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+                val upload = http.sendAsync(worker("uploads/$sha?bytes=${bytes.size}&offset=0")
+                    .header("X-Lab-Attempt", Json.encodeToString(claim.owner))
+                    .PUT(JavaHttpRequest.BodyPublishers.ofByteArray(bytes)).build(), JavaHttpResponse.BodyHandlers.ofString())
+                assertTrue(entered.await(2, SECONDS))
+                val capacity = http.send(request("/capacity/snapshot").header("Authorization", "Bearer $secret").GET().build(), JavaHttpResponse.BodyHandlers.ofString())
+                assertEquals(200, capacity.statusCode())
+                val renew = http.send(worker("renew").POST(JavaHttpRequest.BodyPublishers.ofString(Json.encodeToString(claim.owner))).build(), JavaHttpResponse.BodyHandlers.ofString())
+                assertEquals(200, renew.statusCode())
+                assertFalse(upload.isDone)
+                release.countDown()
+                assertEquals(200, upload.get(3, SECONDS).statusCode())
+            }
+        } finally { release.countDown(); server.stop(0, 1000) }
+    }
+
+    @Test fun `pending result copy never completes early and restart recovers the durable projection`() {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val bytes = "accepted result".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now()-1, now(), "{}") }, mapOf("0.out" to sha)))
+        val delayed = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, projectResult = { _, _, _ -> false })
+        delayed.reconcile()
+        assertTrue(store.execution.ingested(id).isEmpty())
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertFalse(Files.exists(root.resolve("jobs/$id/0.out")))
+        // Even pre-existing case checks cannot complete a job whose accepted files are still pending.
+        claim.indices.forEach { store.execution.checkComplete(id, it, "valid") }
+        assertFalse(store.execution.finishIfComplete(id))
+        backend(Store(file)).reconcile()
+        assertEquals(String(bytes), Files.readString(root.resolve("jobs/$id/0.out")))
+        assertEquals(Status.DONE, store.job(id)!!.status)
+    }
+
     @Test fun `sharing policy retires a bound worker only after its current accepted iteration`() {
         val id = setup()
         backend().reconcile(); register()

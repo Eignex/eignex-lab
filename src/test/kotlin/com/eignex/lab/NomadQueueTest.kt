@@ -14,6 +14,25 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `slow source publication does not block admission of a prepared experiment`() {
+        val ready = job()
+        queue().reconcile(); prepare(ready); backend.reconcile()
+        val slow = job(); store.setPriority(slow, 100)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("source-test", 1).use { work ->
+            try {
+                val asynchronous = NomadQueue(config, store, backend, artifacts, settings, { true }, nativeAllowed = { true },
+                    source = { job, _, _ -> work.poll(job.id) { entered.countDown(); release.await(); error("unfinished source") } })
+                asynchronous.reconcile()
+                assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                assertTrue(store.execution.sessions(slow).isEmpty())
+                assertTrue(store.execution.sessions(ready).any { it.executionClass == "solve" })
+                assertTrue(store.job(ready)!!.setupDone)
+            } finally { release.countDown() }
+        }
+    }
+
     @Test fun `missing source fails once while network failures remain queued for retry`() {
         val missing = job()
         var missingCalls = 0

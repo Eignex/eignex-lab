@@ -6,14 +6,18 @@ import io.ktor.server.response.*
 import io.ktor.server.request.*
 import kotlinx.serialization.json.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.withContext
 
 /** Private capacity endpoints use their own secret; a worker credential grants no capacity access. */
 fun Application.capacityApi(collector: CapacityCollector) {
     routing {
         route("/capacity") {
             intercept(io.ktor.server.application.ApplicationCallPipeline.Call) {
-                val token = call.request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ").orEmpty()
-                if (!collector.authorized(token)) { call.respond(HttpStatusCode.Unauthorized); finish() }
+                withContext(CoordinatorIo.capacity) {
+                    val token = call.request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ").orEmpty()
+                    if (!collector.authorized(token)) { call.respond(HttpStatusCode.Unauthorized); finish() }
+                    else proceed()
+                }
             }
             suspend fun ApplicationCall.query(value: String?) {
                 val pool = requireNotNull(Regex("lab_capacity_desired_nodes\\{pool=\"([a-z][a-z0-9-]{0,47})\"\\}").matchEntire(value.orEmpty())) { "unsupported capacity query" }.groupValues[1]

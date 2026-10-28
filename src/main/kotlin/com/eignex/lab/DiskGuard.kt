@@ -19,9 +19,11 @@ class DiskGuard(private val reason: () -> String?) {
     /** Whether a job may start now. Logs once when the queue is held and once when it resumes. */
     fun allowsWork(): Boolean {
         val now = runCatching { reason() }.getOrElse { "the lab's volumes could not be read: ${it.message}" }
-        if (now != null && held == null) println("holding the queue: $now")
-        if (now == null && held != null) println("the queue's hold is over ($held); resuming the queue")
-        held = now
+        synchronized(this) {
+            if (now != null && held == null) println("holding the queue: $now")
+            if (now == null && held != null) println("the queue's hold is over ($held); resuming the queue")
+            held = now
+        }
         return now == null
     }
 }

@@ -365,7 +365,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.event(job, null, "failed:${error.take(1024)}", at)
     }
     fun finishIfComplete(job: Long): Boolean = store.executionTransaction { db ->
-        db.sqlUpdate("UPDATE jobs SET status = 'DONE', finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0 AND EXISTS (SELECT 1 FROM commands WHERE job_id = ?) AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.job_id = ? AND (c.status NOT IN ('DONE', 'FAILED') OR NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx)))", now(), now(), job, job, job) == 1
+        db.sqlUpdate("UPDATE jobs SET status = 'DONE', finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0 AND EXISTS (SELECT 1 FROM commands WHERE job_id = ?) AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.job_id = ? AND (c.status NOT IN ('DONE', 'FAILED') OR NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx))) AND NOT EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = ? AND a.state = 'committed' AND NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id))", now(), now(), job, job, job, job) == 1
     }
     fun preparationSelection(owner: AttemptOwner, requestHash: String? = null): List<List<Problem>>? = store.executionTransaction { db ->
         val attempt = db.attempt(owner, now())
