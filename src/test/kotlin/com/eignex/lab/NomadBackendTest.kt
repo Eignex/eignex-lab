@@ -52,7 +52,7 @@ class NomadBackendTest {
                 }
                 assertTrue(entered.await(2, SECONDS))
                 val bytes = "small result".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
-                val body = WorkerInlineCommit(claim.owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2)), mapOf("0.out" to sha)),
+                val body = WorkerInlineCommit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to sha)),
                     mapOf(sha to Base64.getEncoder().encodeToString(bytes)))
                 val response = http.send(request("commit-inline").POST(JavaHttpRequest.BodyPublishers.ofString(Json.encodeToString(body))).build(), JavaHttpResponse.BodyHandlers.ofString())
                 assertEquals(204, response.statusCode()); assertTrue(uploads.none { it.isDone })
