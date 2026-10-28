@@ -4,15 +4,11 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import kotlinx.serialization.json.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 /** Enabled only by connected_probe.py against its isolated TLS/ACL sandbox and local pinned registry. */
@@ -129,12 +125,8 @@ class ConnectedNomadTest {
         val root = Files.createTempDirectory(state, "lab-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
-        val spec = ExperimentSpec("nomad-http", profile = ProfileMain(script = "build/bin/profile", buildTasks = listOf("installDist")),
+        val spec = ExperimentSpec("nomad-http", profile = ProfileMain(script = "profile", buildTasks = listOf("installDist")),
             grid = mapOf("x" to listOf("a", "b")), host = "auto")
-        val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
-        val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
-        val job = store.create(spec.name, "main", emptyList(), experiment = spec)
-        store.plan(job, arms, problems, cases, cases.map { "fixture" to 5L })
         val script = """#!/usr/bin/env bash
             set -eu
             [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }
@@ -145,22 +137,27 @@ class ConnectedNomadTest {
             echo '{"stats":{"fixture":true}}' > "${'$'}out/record.json"
             echo portable-worker-output
         """.trimIndent()
-        val path = "build/bin/profile"
-        val buildScript = """#!/usr/bin/env bash
+        val repository = Files.createDirectory(root.resolve("source"))
+        Files.writeString(repository.resolve("profile"), script)
+        Files.setPosixFilePermissions(repository.resolve("profile"), PosixFilePermissions.fromString("rwxr-xr-x"))
+        Files.writeString(repository.resolve("gradlew"), """#!/usr/bin/env bash
             set -eu
-            mkdir -p '${path.substringBeforeLast('/')}'
-            cp bench-source '$path'
-            chmod u+x '$path'
             python3 -c 'import time; end=time.monotonic()+0.25; x=1; exec("while time.monotonic()<end: x=(x+1)%1234567")'
-        """.trimIndent()
-        val sources = mapOf("bench-source" to script, "gradlew" to buildScript)
-        val zip = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
-            for ((name, value) in sources) { zip.putNextEntry(ZipEntry(name)); zip.write(value.toByteArray()); zip.closeEntry() }
-        } }.toByteArray()
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(zip).hex()
-        val bundle = WorkerBundle(hash, sources.map { (name, value) -> InputFile(name, ExecutionStore.digest(value), value.toByteArray().size.toLong()) },
-            Repositories.DEFAULT, sha, "linux", workerArch(), "fixture", build = WorkerBuild(listOf("installDist")))
-        artifacts.put(job, hash, zip.size.toLong(), 0, ByteArrayInputStream(zip))
+        """.trimIndent())
+        fun git(vararg args: String): String {
+            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText(); check(process.waitFor() == 0) { output }; return output.trim()
+        }
+        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
+        git("add", "."); git("commit", "-m", "test: fixture")
+        val sha = git("rev-parse", "HEAD"); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
+        val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
+        val job = store.create(spec.name, "main", emptyList(), experiment = spec)
+        store.plan(job, arms, problems, cases, cases.map { "fixture" to 5L })
+        val archive = root.resolve("source.zip")
+        val bundle = SourceInputs({ _, commit -> check(commit == sha) }).publish(repository, spec.repository, sha,
+            "linux", workerArch(), "fixture", WorkerBuild(listOf("installDist")), archive)
+        Files.newInputStream(archive).use { artifacts.put(job, bundle.sha256, Files.size(archive), 0, it) }
         val sessionId = UUID.randomUUID().toString()
         val budget = ResourceBudget(1000, 1024, 1)
         val manifest = WorkManifest(sessionId, "connected-probe", spec, arms, cases.mapIndexed { i, c -> WorkCase(i, c.arm, problems[c.problem], c.seed, c.repeat, 5) }, listOf(bundle), budget)
@@ -199,6 +196,7 @@ class ConnectedNomadTest {
                 Thread.sleep(250)
             }
             assertEquals(Status.DONE, store.job(job)!!.status, "allocations: ${client.allocations(session.nomadJobId)}")
+            assertTrue(store.job(job)!!.commands.all { it.exitCode == 0 }, "every committed profile process succeeded")
             assertTrue(sawLive, "case output was visible before paired acceptance")
             assertTrue(Files.readString(root.resolve("jobs/$job/job.log")).contains("status: DONE"))
             assertTrue(restarted && lost, "both coordinator restart and forced allocation loss ran")

@@ -103,7 +103,7 @@ class PagesTest {
 
     @Test
     fun `a browser gets pages and an api client gets json`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, repoUrl = "https://github.com/Eignex/eignex-lab.git")
         val store = Store(config.database)
         val done = store.create("sweep", "main", listOf("true" to 10L, "false" to 10L))
         store.startForTest()

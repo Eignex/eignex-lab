@@ -1741,7 +1741,10 @@ private fun refText(config: Config, job: Job): String {
     val sha = job.sha ?: job.ref.takeIf { isSha }
     val commit = sha?.let { full ->
         val short = full.take(9)
-        commitUrl(Repositories.url(job.experiment?.repository ?: Repositories.DEFAULT), full)?.let { "<a href=\"$it\" title=\"$full\">$short</a>" } ?: short
+        val spec = job.experiment
+        val repository = if (job.backend == "legacy" || spec == null || spec.bench == null && !spec.isProfile) config.repoUrl
+            else Repositories.url(spec.repository)
+        commitUrl(repository, full)?.let { "<a href=\"$it\" title=\"$full\">$short</a>" } ?: short
     }
     return "<code>" + listOfNotNull(esc(job.ref).takeUnless { isSha }, commit).joinToString(" ") + "</code>"
 }

@@ -8,6 +8,23 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class CaseChecksTest {
+    @Test fun `historical source checks retain the original mirror after repository defaults change`() {
+        val root = Files.createTempDirectory("checker-history")
+        try {
+            val config = Config(dataDir = root)
+            val historical = Json.decodeFromString<ExperimentSpec>("""{"name":"old","problems":[{"suite":"s"}]}""")
+            assertNull(checkerRepository(historical))
+            assertEquals(config.mirror, checkerMirror(config, checkerRepository(historical)))
+            assertEquals(config.mirror, checkerMirror(config, "Eignex/klause"))
+            val bench = ExperimentSpec("new", repository = "Eignex/example", bench = BenchSpec("bench.json"))
+            assertEquals(bench.repository, checkerRepository(bench))
+            assertEquals(Repositories.mirror(config, bench.repository), checkerMirror(config, bench.repository))
+            val current = Repositories.mirror(config, "Eignex/klause")
+            Files.createDirectories(current)
+            assertEquals(current, checkerMirror(config, "Eignex/klause"))
+        } finally { root.toFile().deleteRecursively() }
+    }
+
     @Test fun `bench source check requests dispatch the preserved solver record and keep its envelope`() {
         val root = Files.createTempDirectory("bench-checks-")
         try {

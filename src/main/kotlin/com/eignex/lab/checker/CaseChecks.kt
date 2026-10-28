@@ -40,7 +40,7 @@ object Checkers {
      *  A planned path under the lab's or a cloud node's worktrees is a repository path. */
     fun fixtures(config: Config): RepositoryFixtures = RepositoryFixtures(
         mirror = config.mirror.toFile(),
-        mirrorFor = { revision -> revision.repository?.let { com.eignex.lab.Repositories.mirror(config, it).toFile() } ?: config.mirror.toFile() },
+        mirrorFor = { revision -> checkerMirror(config, revision.repository).toFile() },
         worktrees = { (job, sha) ->
             val own = config.worktree(job).toFile()
             listOf(config.jobDir(job).resolve("nomad/prepared-source/$sha").toFile(), own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
@@ -54,6 +54,18 @@ object Checkers {
 
     /** How much of a commit names a job's worktree of it beside its own (`<job>@<sha>`), as the runner builds it. */
     private const val SHA_DIR = 12
+}
+
+/** Missing repository fields in pre-adapter records used the original checker mirror. */
+internal fun checkerRepository(spec: com.eignex.lab.ExperimentSpec?): String? = spec?.let {
+    it.repository.takeUnless { repository -> it.bench == null && repository == com.eignex.lab.Repositories.DEFAULT }
+}
+
+internal fun checkerMirror(config: Config, repository: String?): java.nio.file.Path {
+    if (repository == null) return config.mirror
+    val mirror = com.eignex.lab.Repositories.mirror(config, repository)
+    // Old Klause checks used repo.git, including records that explicitly named the repository.
+    return if (repository == "Eignex/klause" && !java.nio.file.Files.exists(mirror)) config.mirror else mirror
 }
 
 /** What a recheck job ([CaseChecks.recheck]) did, written as `recheck.json` in its directory. */
@@ -106,7 +118,7 @@ class CaseChecks(
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
         val text = store.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
-        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it, store.job(jobId)?.experiment?.repository) }
+        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
         val inputs = store.execution.accepted(jobId).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
