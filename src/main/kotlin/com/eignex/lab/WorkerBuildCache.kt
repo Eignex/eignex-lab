@@ -96,7 +96,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 }
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
-                val files = inventory(tree)
+                val files = TreeVerification().capture(tree, staging.resolve("verified.json"), ::checkRun)
+                require(files.sumOf { it.bytes } <= maxBytes) { "build exceeds cache disk budget" }
                 checkRun()
                 Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files)))
                 Files.move(staging, destination, ATOMIC_MOVE)
@@ -110,6 +111,46 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         return locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs) {
             use(prepare(bundle, source, budget, environment, remainingRunMs, remainingLeaseMs))
         }
+    }
+
+    /** A prepared distribution can be reconstructed from an identical verified build on this node. The
+     * approved per-file manifest, not commit identity alone, proves equivalence; a pin prevents eviction. */
+    internal fun materialize(commit: String, files: List<InputFile>, destination: Path, receipt: Path, checkActive: () -> Unit): Boolean {
+        if (!Files.isDirectory(root)) return false
+        val wanted = files.toSet()
+        val candidates = Files.list(root).use { paths -> paths.filter {
+            SHA256.matches(it.fileName.toString()) && Files.isDirectory(it, NOFOLLOW_LINKS)
+        }.toList() }
+        for (candidate in candidates) {
+            checkActive()
+            val head = candidate.resolve("tree/.git/HEAD")
+            if (!Files.isRegularFile(head, NOFOLLOW_LINKS) || runCatching { Files.readString(head).trim() }.getOrNull() != commit) continue
+            val key = candidate.fileName.toString()
+            FileChannel.open(root.resolve("$key.pin"), CREATE, WRITE).use { channel ->
+                val pin = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                if (pin == null) return@use
+                pin.use candidatePin@ {
+                    val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(candidate.resolve("manifest.json"))) }.getOrNull() ?: return@candidatePin
+                    val runtime = entry.files.filter { WorkerTrees.runtimePath(Path.of(it.path)) }.toSet()
+                    val runtimeOnly = entry.files.toSet() != wanted
+                    if (runtimeOnly && runtime != wanted || !runtimeOnly && entry.files.size != files.size) return@candidatePin
+                    val sourceReceipt = candidate.resolve(if (runtimeOnly) "runtime-verified.json" else "verified.json")
+                    if (runtimeOnly && !Files.exists(sourceReceipt) && Files.isRegularFile(candidate.resolve("verified.json"))) {
+                        Files.copy(candidate.resolve("verified.json"), sourceReceipt)
+                    }
+                    if (!TreeVerification().valid(candidate.resolve("tree"), files, sourceReceipt, checkActive,
+                            exactExecutables = true, allowUndeclared = runtimeOnly)) return@candidatePin
+                    TreeVerification().copy(candidate.resolve("tree"), sourceReceipt, destination, receipt,
+                        checkActive, { !runtimeOnly || WorkerTrees.runtimePath(it) }) {
+                        if (runtimeOnly) WorkerTrees.copyRuntime(candidate.resolve("tree"), destination, checkActive)
+                        else WorkerTrees.copy(candidate.resolve("tree"), destination, checkActive)
+                    }
+                    Files.setLastModifiedTime(candidate.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     /** Node-local slots bound cold compilers across allocations; warm cache hits bypass this gate. */
@@ -211,14 +252,6 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
 
-    private fun inventory(tree: Path): List<InputFile> {
-        var total = 0L
-        return Files.walk(tree).use { paths -> paths.filter { !Files.isDirectory(it, NOFOLLOW_LINKS) }.sorted().map { file ->
-            require(Files.isRegularFile(file, NOFOLLOW_LINKS)) { "build produced a link or unsupported file" }
-            val bytes = Files.size(file); total += bytes; require(total <= maxBytes) { "build exceeds cache disk budget" }
-            InputFile(tree.relativize(file).toString().replace('\\', '/'), hashFile(file), bytes, Files.isExecutable(file))
-        }.toList() }.also { require(it.isNotEmpty()) }
-    }
     private fun valid(path: Path, identity: String, checkActive: () -> Unit): Boolean {
         val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json"))) }.getOrNull() ?: return false
         if (entry.files.isEmpty() || entry.files.fold(0L) { total, file ->

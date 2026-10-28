@@ -1,7 +1,5 @@
 package com.eignex.lab
 
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.nio.channels.FileChannel
 import java.nio.channels.OverlappingFileLockException
@@ -14,15 +12,26 @@ import java.nio.file.attribute.FileTime
 import java.util.UUID
 
 /** Node-local verified distributions. Process-owned pins protect readers; eviction accounts declared expanded bytes. */
-class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L * 1024 * 1024 * 1024) {
+class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L * 1024 * 1024 * 1024,
+    private val builds: WorkerBuildCache? = null) {
     init { require(maxBytes >= 0) }
     private val entries = root.resolve("entries")
     private val sizes = root.resolve("sizes")
     private val pins = root.resolve("pins")
-    private val verified = VerifiedCache(entries)
+    private val verified = VerifiedCache(entries, materialize = { bundle, files, tree, receipt, check ->
+        bundle.build == null && builds?.materialize(bundle.commit, files, tree, receipt, check) == true
+    })
 
-    fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, action: (Path) -> T): T {
-        val key = ExecutionStore.digest(Json.encodeToString(bundle))
+    fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, action: (Path) -> T): T =
+        use(bundle, checkActive, false, download, action)
+
+    internal fun <T> useRuntime(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, action: (Path) -> T): T =
+        // Existing verified full distributions remain useful. A miss avoids unpacking compiler intermediates even
+        // for bundles published by older preparations; custom consumers still acquire their separate complete tree.
+        use(bundle, checkActive, !Files.isDirectory(entries.resolve(inputCacheKey(bundle)), NOFOLLOW_LINKS), download, action)
+
+    private fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream, action: (Path) -> T): T {
+        val key = inputCacheKey(bundle, runtimeOnly)
         val pin = guarded(checkActive) {
             Files.createDirectories(pins)
             val path = pins.resolve("$key.${UUID.randomUUID()}")
@@ -32,13 +41,13 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
         }
         try {
             val missing = !Files.isDirectory(entries.resolve(key), NOFOLLOW_LINKS)
-            val directory = verified.stage(bundle, checkActive, download)
+            val directory = if (runtimeOnly) verified.stageRuntime(bundle, checkActive, download) else verified.stage(bundle, checkActive, download)
             Files.createDirectories(sizes)
             val size = sizes.resolve(key)
             if (!Files.exists(size)) {
                 val temporary = Files.createTempFile(sizes, ".size-", ".tmp")
                 try {
-                    Files.writeString(temporary, bundle.files.sumOf { it.bytes }.toString())
+                    Files.writeString(temporary, bundle.files.filter { !runtimeOnly || WorkerTrees.runtimePath(Path.of(it.path)) }.sumOf { it.bytes }.toString())
                     Files.move(temporary, size, ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
                 } finally { Files.deleteIfExists(temporary) }
             }

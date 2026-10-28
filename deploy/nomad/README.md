@@ -517,7 +517,24 @@ Each worker session receives a private copy, using filesystem clones where suppo
 Within one serial worker session, unchanged private workspaces are reused between iterations. Each reuse verifies a sealed
 inventory including installed measurement launchers and provenance captured for that stable private path. Generated outputs
 are removed; changed or missing sealed files discard the workspace and repeat trusted setup. No mutable workspace is shared between sessions. This avoids
-copying thousands of files and starting provenance JVMs for every case. Allocation garbage collection reclaims these trees.
+copying thousands of files and starting provenance JVMs for every case. Session workspaces live under
+`LAB_WORKER_CACHE_ROOT/workspaces` on the cache volume, enabling private filesystem clones without cross-volume byte copies. On APFS, an atomic directory clone avoids
+a separate copy transaction for every source file; unsupported filesystems retain the portable copy path.
+Normal worker exit removes its workspace; process-owned locks protect active sessions while background cleanup reaps
+abandoned sessions after crashes. Cached distributions remain immutable and bounded separately.
+
+Cold input downloads stream bounded HTTP ranges directly into extraction. The archive and each declared file are hashed
+as bytes pass through; publication checks the complete archive (including its trailer), file sizes and metadata before
+atomic promotion. No temporary compressed archive or duplicate file checksum pass is needed. Before downloading,
+a default runtime cache miss searches the node's pinned build cache for an identical approved file inventory. A verified matching
+build can be cloned directly, avoiding archive download and extraction entirely; changed or unmatched builds fall back
+to the verified stream. The cache limit still accounts for every materialized distribution. Trusted private copies bind
+verified source inode/ctime before and after copying and record the new private inode metadata. Unchanged copied files
+need no checksum reread; trusted setup changes are hashed during sealing. Filesystems without reliable identity/ctime
+retain full checksum verification. Default Klause runtime bundles omit compiler intermediates. For older bundles,
+a cold runtime cache acquisition hashes discarded entries as they stream past without extracting them; full and reduced
+cache layouts have separate identities, and existing full cache hits remain reusable. Custom scripts, build recipes,
+classpaths, SDK benches and other repositories retain their full trees.
 
 Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,
 filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger captures retain

@@ -7,6 +7,17 @@ import java.util.concurrent.TimeUnit
 
 /** Private mutable worktrees keep the shared verified distribution immutable. Prefer filesystem clones where supported. */
 internal object WorkerTrees {
+    fun runtimeOnly(spec: ExperimentSpec): Boolean = spec.repository == "Eignex/klause" && spec.bench == null &&
+        spec.script == null && spec.scriptFile == null && spec.profile?.script == null &&
+        spec.profile?.buildTasks.orEmpty().isEmpty() && spec.profile?.classpath.orEmpty().isEmpty()
+
+    fun runtimePath(path: Path): Boolean {
+        val parts = path.map { it.toString() }
+        return !((parts.size >= 2 && parts[0] == "build" && parts[1] in compilerScratch) ||
+            (parts.size >= 3 && parts[1] == "build" && parts[2] in compilerScratch))
+    }
+    private val compilerScratch = setOf("classes", "kotlin", "tmp", "generated")
+
     /** Default JVM distributions run their installed jars. Keep source/Git and distributions, omit compiler scratch. */
     fun copyRuntime(source: Path, destination: Path, checkActive: () -> Unit) {
         checkActive(); require(!Files.exists(destination)); Files.createDirectories(destination)
@@ -14,38 +25,37 @@ internal object WorkerTrees {
             val entries = Files.list(source).use { it.toList() }
             val projects = entries.filter { it.fileName.toString() != "build" && Files.isDirectory(it.resolve("build")) }
             val build = entries.singleOrNull { it.fileName.toString() == "build" && Files.isDirectory(it) }
-            copyEntries(entries - projects.toSet() - listOfNotNull(build).toSet(), destination, checkActive)
+            val copies = mutableListOf<Pair<List<Path>, Path>>()
+            copies += (entries - projects.toSet() - listOfNotNull(build).toSet()) to destination
             fun buildOutputs(from: Path, to: Path) {
                 Files.createDirectories(to)
-                copyEntries(Files.list(from).use { paths -> paths.filter { it.fileName.toString() !in setOf("classes", "kotlin", "tmp", "generated") }.toList() }, to, checkActive)
+                copies += Files.list(from).use { paths -> paths.filter { it.fileName.toString() !in compilerScratch }.toList() } to to
             }
             if (build != null) buildOutputs(build, destination.resolve("build"))
             for (project in projects) {
                 checkActive(); val to = Files.createDirectory(destination.resolve(project.fileName))
-                copyEntries(Files.list(project).use { paths -> paths.filter { it.fileName.toString() != "build" }.toList() }, to, checkActive)
+                copies += Files.list(project).use { paths -> paths.filter { it.fileName.toString() != "build" }.toList() } to to
                 buildOutputs(project.resolve("build"), to.resolve("build"))
             }
+            for ((files, to) in copies) copyEntries(files, to, checkActive)
             checkActive(); return
         } catch (_: java.io.IOException) {
             deleteTree(destination); Files.createDirectory(destination)
         }
-        // Portable fallback for environments whose native copy cannot preserve these entries.
-        val exclude = listOf("classes", "kotlin", "tmp", "generated").flatMap {
-            listOf("--exclude=build/$it", "--exclude=*/build/$it")
-        }
-        val pack = ProcessBuilder(listOf("/usr/bin/tar") + exclude + listOf("-cf", "-", "-C", source.toString(), "."))
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-        val unpack = ProcessBuilder("/usr/bin/tar", "-xf", "-", "-C", destination.toString())
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
-        val processes = ProcessBuilder.startPipeline(listOf(pack, unpack))
-        try {
-            while (processes.any { it.isAlive }) { checkActive(); Thread.sleep(20) }
-            if (processes.all { it.exitValue() == 0 }) { checkActive(); return }
-        } finally {
-            for (process in processes) if (process.isAlive) process.destroyForcibly()
-            for (process in processes) process.waitFor(5, TimeUnit.SECONDS)
-        }
-        deleteTree(destination); copy(source, destination, checkActive)
+        // Portable fallback keeps the same inventory without relying on archive-tool glob semantics.
+        Files.walkFileTree(source, object : java.nio.file.SimpleFileVisitor<Path>() {
+            override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                checkActive()
+                val relative = source.relativize(dir)
+                if (!runtimePath(relative)) return java.nio.file.FileVisitResult.SKIP_SUBTREE
+                Files.createDirectories(destination.resolve(relative)); return java.nio.file.FileVisitResult.CONTINUE
+            }
+            override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                checkActive(); require(attrs.isRegularFile) { "runtime contains unsupported links" }
+                if (runtimePath(source.relativize(file))) Files.copy(file, destination.resolve(source.relativize(file)), COPY_ATTRIBUTES)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+        })
     }
 
     private fun copyEntries(entries: List<Path>, destination: Path, checkActive: () -> Unit) {
@@ -53,12 +63,17 @@ internal object WorkerTrees {
         for (batch in entries.chunked(64)) {
             checkActive()
             val clone = mac && Files.getFileStore(batch.first()) == Files.getFileStore(destination)
-            val command = (if (mac) listOf("/bin/cp", if (clone) "-cRp" else "-Rp")
-                else listOf("/bin/cp", "--reflink=auto", "-Rp")) + batch.map(Path::toString) + destination.toString()
+            val remaining = if (clone) batch.filterNot { MacClones.copy(it, destination.resolve(it.fileName), checkActive) } else batch
+            if (remaining.isEmpty()) continue
+            val command = (if (mac) listOf("/bin/cp", if (clone) "-cR" else "-Rp")
+                else listOf("/bin/cp", "--reflink=auto", "-Rp")) + remaining.map(Path::toString) + destination.toString()
+            val started = System.nanoTime()
             val process = ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()
             try {
                 while (!process.waitFor(20, TimeUnit.MILLISECONDS)) checkActive()
                 if (process.exitValue() != 0) throw java.io.IOException("private runtime copy failed")
+                val elapsed = (System.nanoTime()-started)/1_000_000
+                if (elapsed > 250) println("worker tree copy timing: group=${destination.fileName} entries=${batch.size} clone=$clone elapsedMs=$elapsed")
             } finally {
                 if (process.isAlive) { process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS) }
             }
@@ -68,10 +83,12 @@ internal object WorkerTrees {
     fun copy(source: Path, destination: Path, checkActive: () -> Unit) {
         checkActive()
         require(!Files.exists(destination)) { "attempt worktree already exists" }
-        Files.createDirectories(destination)
+        Files.createDirectories(destination.parent)
+        if (MacClones.copy(source, destination, checkActive)) return
+        Files.createDirectory(destination)
         val mac = System.getProperty("os.name").lowercase().contains("mac")
         val clone = mac && Files.getFileStore(source) == Files.getFileStore(destination)
-        val command = if (mac) listOf("/bin/cp", if (clone) "-cRp" else "-Rp", "$source/.", destination.toString())
+        val command = if (mac) listOf("/bin/cp", if (clone) "-cR" else "-Rp", "$source/.", destination.toString())
             else listOf("/bin/cp", "--reflink=auto", "-Rp", "$source/.", destination.toString())
         val process = ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()
         try {

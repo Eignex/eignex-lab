@@ -44,7 +44,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
                           private val os: String, private val arch: String,
                           private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
-                          private val inputCache: WorkerInputCache? = null) {
+                          private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -67,8 +67,10 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             fun copy(built: Path): Path {
+                val runtimeOnly = WorkerTrees.runtimeOnly(manifest.experiment)
+                privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, runtimeOnly)?.let { return it }
                 val tree = directory.resolve("worktrees/$sha")
-                WorkerTrees.copy(built, tree, ::checkActive)
+                if (runtimeOnly) WorkerTrees.copyRuntime(built, tree, ::checkActive) else WorkerTrees.copy(built, tree, ::checkActive)
                 return tree
             }
             fun prepare(input: Path): Path = if (bundle.build == null) copy(input)
@@ -141,9 +143,13 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val artifacts = mutableMapOf<String, String>()
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), ::checkActive).also { built ->
+            archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive).also { built ->
                 // The first solve on this node should reuse the distribution just built here, without a round trip.
-                inputCache?.use(built, ::checkActive, { Files.newInputStream(directory.resolve("$sha.zip")) }) { }
+                if (inputCache != null) {
+                    val input = { Files.newInputStream(directory.resolve("$sha.zip")) }
+                    if (WorkerTrees.runtimeOnly(spec)) inputCache.useRuntime(built, ::checkActive, input) { }
+                    else inputCache.use(built, ::checkActive, input) { }
+                }
                 artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip"))
             }
         }
@@ -152,7 +158,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 benchPlan?.cases.orEmpty().flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
         val sharedInputs = if (shared != null) shared.publish(inputPaths, ::checkActive) else emptyList()
         val corpusBundle = if (shared == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
-            archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), ::checkActive)
+            archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), checkActive = ::checkActive)
                 .also { artifacts["preparation/corpus.zip"] = upload(directory.resolve("corpus.zip")) }
         } else null
         for (name in Files.list(directory).use { paths -> paths.map { it.fileName.toString() }.filter { it in setOf("setup.log", "setup.err") || it.endsWith(".jsonl") }.toList() }) {
@@ -165,11 +171,12 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
 }
 
 /** Archive inventory and stream are bounded independently; links and special files never leave a worker. */
-internal fun archive(tree: Path, output: Path, identity: WorkerBundle, checkActive: () -> Unit): WorkerBundle {
+internal fun archive(tree: Path, output: Path, identity: WorkerBundle, runtimeOnly: Boolean = false, checkActive: () -> Unit): WorkerBundle {
     var total = 0L
     val directories = mutableListOf<String>()
-    val files = Files.walk(tree).use { paths -> paths.sorted().filter { path ->
+    val paths = Files.walk(tree).use { paths -> paths.sorted().filter { path ->
         checkActive()
+        if (runtimeOnly && !WorkerTrees.runtimePath(tree.relativize(path))) return@filter false
         if (Files.isDirectory(path, NOFOLLOW_LINKS)) {
             if (path != tree) directories += tree.relativize(path).toString().replace('\\', '/') + "/"
             false
@@ -177,21 +184,29 @@ internal fun archive(tree: Path, output: Path, identity: WorkerBundle, checkActi
     }.map { path ->
         require(Files.isRegularFile(path, NOFOLLOW_LINKS))
         val bytes = Files.size(path); require(bytes <= 32L * 1024 * 1024 * 1024 - total); total += bytes
-        InputFile(tree.relativize(path).toString().replace('\\', '/'), hashFile(path), bytes, Files.isExecutable(path))
+        path
     }.toList() }
-    require(files.isNotEmpty())
-    ZipOutputStream(Files.newOutputStream(output)).use { zip ->
+    require(paths.isNotEmpty())
+    val files = mutableListOf<InputFile>(); var streamedBytes = 0L
+    val archiveDigest = java.security.MessageDigest.getInstance("SHA-256")
+    ZipOutputStream(java.security.DigestOutputStream(Files.newOutputStream(output), archiveDigest)).use { zip ->
         // Empty directories carry runtime meaning too, including a detached checkout's .git/refs.
         for (directory in directories) {
             checkActive(); zip.putNextEntry(ZipEntry(directory).apply { time = 0 }); zip.closeEntry()
         }
-        for (file in files) {
-            checkActive(); zip.putNextEntry(ZipEntry(file.path).apply { time = 0 })
-            Files.newInputStream(tree.resolve(file.path)).use { input ->
+        for (path in paths) {
+            val name = tree.relativize(path).toString().replace('\\', '/')
+            val before = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            val digest = java.security.MessageDigest.getInstance("SHA-256"); var bytes = 0L
+            checkActive(); zip.putNextEntry(ZipEntry(name).apply { time = 0 })
+            Files.newInputStream(path).use { input ->
                 val buffer = ByteArray(64 * 1024)
-                while (true) { checkActive(); val count = input.read(buffer); if (count < 0) break; zip.write(buffer, 0, count) }
+                while (true) { checkActive(); val count = input.read(buffer); if (count < 0) break; bytes += count; streamedBytes += count; require(bytes <= before.size() && streamedBytes <= 32L * 1024 * 1024 * 1024); zip.write(buffer, 0, count); digest.update(buffer, 0, count) }
             }; zip.closeEntry()
+            val after = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            require(bytes == before.size() && after.size() == bytes && before.lastModifiedTime() == after.lastModifiedTime() && before.fileKey() == after.fileKey()) { "archive input changed" }
+            files += InputFile(name, digest.digest().hex(), bytes, Files.isExecutable(path))
         }
     }
-    return identity.copy(sha256 = hashFile(output), files = files, build = null)
+    return identity.copy(sha256 = archiveDigest.digest().hex(), files = files, build = null)
 }

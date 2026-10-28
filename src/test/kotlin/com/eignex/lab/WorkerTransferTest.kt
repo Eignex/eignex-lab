@@ -10,6 +10,36 @@ import kotlinx.serialization.json.Json
 import kotlin.test.*
 
 class WorkerTransferTest {
+    @Test fun `cold input streams retry only the failed range and retain no download file`() {
+        val root = Files.createTempDirectory("worker-input-stream")
+        val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val offsets = mutableListOf<Int>(); var failed = false
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/inputs/$hash") { exchange ->
+            try {
+                val offset = exchange.requestHeaders.getFirst("Range")?.removePrefix("bytes=")?.removeSuffix("-")?.toInt() ?: 0
+                offsets += offset
+                if (offset > 0 && !failed) { failed = true; exchange.sendResponseHeaders(503, -1) }
+                else {
+                    val end = (offset + 32768).coerceAtMost(bytes.size)
+                    exchange.responseHeaders.add("Content-Range", "bytes $offset-${end-1}/${bytes.size}")
+                    exchange.sendResponseHeaders(206, (end-offset).toLong()); exchange.responseBody.write(bytes, offset, end-offset)
+                }
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            val bundle = WorkerBundle(hash, listOf(InputFile("code", hash, bytes.size.toLong())), "Eignex/klause", "a".repeat(40), "linux", "amd64", "fixture")
+            worker.download(bundle).use { input -> assertContentEquals(bytes, input.readAllBytes()); assertEquals(-1, input.read()) }
+            assertEquals(listOf(0, 32768, 32768, 65536, 98304), offsets)
+            assertFalse(Files.exists(root.resolve("downloads")))
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
     @Test fun `large results use one raw streaming request and survive a brief coordinator outage`() {
         val root = Files.createTempDirectory("worker-packed")
         val bytes = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }

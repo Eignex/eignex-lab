@@ -63,10 +63,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
         val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket))
-        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"))
+        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"), builds = builds)
+        val workspaceStorage = WorkerWorkspaceStorage(cacheRoot.resolve("workspaces"))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-            builds, inputCache, WorkerWorkspaces(root.resolve("workspaces")))
+            builds, inputCache, workspaceStorage.workspaces)
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
         try {
         while (true) {
@@ -109,7 +110,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     val preparation = InputSigningRelay(::signature).use { relay ->
                         PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                             builds, ::download, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-                            SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache)
+                            SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces)
                             .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                 retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                             }) { file -> upload(file, claim.owner) }
@@ -146,7 +147,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 return
             } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow(); retryLeaseDeadline.set(Long.MAX_VALUE) }
         }
-        } finally { nativeOwnership?.close() }
+        } finally { try { nativeOwnership?.close() } finally { workspaceStorage.close() } }
     }
 
     private fun streamLogs(claim: IterationClaim, directory: Path): AutoCloseable {
@@ -174,24 +175,32 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         return AutoCloseable { service.shutdownNow() }
     }
 
-    private fun download(bundle: WorkerBundle): java.io.InputStream {
-        val directory = Files.createDirectories(root.resolve("downloads")); val file = directory.resolve("${bundle.sha256}.zip")
-        if (Files.exists(file) && hashFile(file) == bundle.sha256) return Files.newInputStream(file)
-        retry {
-            while (true) {
-                checkRun()
-                val offset = if (Files.exists(file)) Files.size(file) else 0
+    /** Range retries retain only one response chunk. Extraction verifies the entire object and every file as it writes. */
+    internal fun download(bundle: WorkerBundle): java.io.InputStream = object : java.io.InputStream() {
+        private var chunk = java.io.ByteArrayInputStream(byteArrayOf())
+        private var offset = 0L
+        private var total: Long? = null
+        private var closed = false
+        override fun read(): Int = ByteArray(1).let { if (read(it, 0, 1) < 0) -1 else it[0].toInt() and 255 }
+        override fun read(buffer: ByteArray, start: Int, length: Int): Int {
+            java.util.Objects.checkFromIndexSize(start, length, buffer.size)
+            check(!closed) { "input stream closed" }; checkRun()
+            if (length == 0) return 0
+            if (chunk.available() == 0) {
+                if (total == offset) return -1
                 val response = retry { request("inputs/${bundle.sha256}", range = offset) }
                 val range = requireNotNull(response.headers().firstValue("Content-Range").orElse(null))
                 val match = requireNotNull(Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matchEntire(range))
-                val from = match.groupValues[1].toLong(); val end = match.groupValues[2].toLong(); val total = match.groupValues[3].toLong()
-                require(from == offset && total in 1..32L*1024*1024*1024 && end < total && end - from + 1 == response.body().size.toLong())
-                Files.write(file, response.body(), CREATE, APPEND)
-                if (end + 1 == total) break
+                val from = match.groupValues[1].toLong(); val end = match.groupValues[2].toLong(); val size = match.groupValues[3].toLong()
+                require(from == offset && size in 1..32L*1024*1024*1024 && end < size &&
+                    end - from + 1 == response.body().size.toLong() && response.body().size in 1..8*1024*1024)
+                require(total == null || total == size) { "input size changed between ranges" }
+                total = size; offset = end + 1
+                chunk = java.io.ByteArrayInputStream(response.body())
             }
-            if (hashFile(file) != bundle.sha256) { Files.delete(file); error("input checksum mismatch") }
+            return chunk.read(buffer, start, length)
         }
-        return Files.newInputStream(file)
+        override fun close() { closed = true; chunk = java.io.ByteArrayInputStream(byteArrayOf()) }
     }
     internal fun commitResult(owner: AttemptOwner, result: IterationResult, files: Map<String, Path>): String {
         if (result.preparation == null && files.size <= INLINE_FILES && files.values.sumOf(Files::size) <= INLINE_BYTES) {

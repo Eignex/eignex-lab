@@ -19,6 +19,29 @@ class WorkerTreesTest {
             for (name in omitted) assertFalse(Files.exists(private.resolve(name)), name)
             Files.writeString(private.resolve(kept.first()), "changed privately")
             assertEquals(kept.first(), Files.readString(source.resolve(kept.first())))
+            val output = root.resolve("runtime.zip")
+            val identity = WorkerBundle("a".repeat(64), listOf(InputFile("placeholder", "b".repeat(64), 0)), "Eignex/klause", "a".repeat(40), "linux", "amd64", "fixture")
+            val bundle = archive(source, output, identity, runtimeOnly = true) {}
+            assertEquals(kept.toSet(), bundle.files.map { it.path }.toSet())
+            assertEquals(hashFile(output), bundle.sha256)
+            val restored = VerifiedCache(root.resolve("verified")).stage(bundle) { Files.newInputStream(output) }
+            for (name in kept) assertEquals(name, Files.readString(restored.resolve(name)))
+            val oldOutput = root.resolve("full.zip")
+            val oldBundle = archive(source, oldOutput, identity) {}
+            val inputCache = WorkerInputCache(root.resolve("inputs")); var downloads = 0
+            inputCache.useRuntime(oldBundle, {}, { downloads++; Files.newInputStream(oldOutput) }) { runtime ->
+                for (name in kept) assertTrue(Files.exists(runtime.resolve(name)))
+                for (name in omitted) assertFalse(Files.exists(runtime.resolve(name)))
+                assertEquals(runtime, inputCache.useRuntime(oldBundle, {}, { error("warm runtime") }) { it })
+            }
+            inputCache.use(oldBundle, {}, { downloads++; Files.newInputStream(oldOutput) }) { full ->
+                for (name in omitted) assertTrue(Files.exists(full.resolve(name)))
+            }
+            assertEquals(2, downloads)
+            val corruptSkipped = oldBundle.copy(files = oldBundle.files.map { if (it.path == omitted.first()) it.copy(sha256 = "0".repeat(64)) else it })
+            assertFailsWith<IllegalArgumentException> {
+                inputCache.useRuntime(corruptSkipped, {}, { Files.newInputStream(oldOutput) }) { error("corrupt discarded input accepted") }
+            }
             val complete = root.resolve("complete")
             WorkerTrees.copy(source, complete) {}
             for (name in omitted) assertEquals(name, Files.readString(complete.resolve(name)))
