@@ -35,8 +35,6 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation:$ktor")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktor")
     implementation("io.ktor:ktor-server-status-pages:$ktor")
-    // Same pin as klause, so the startup check sees the backend the solves bind.
-    implementation("com.eignex:koblas:0.1.1-20260918.215912-232")
     // The MPS reader the SCIP and HiGHS references judge their claims against: the parse klause itself solves.
     implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
@@ -53,15 +51,15 @@ eignexPublish { publish.set(false) }
 // Keep the existing verification gate until the lab has a baseline for KBuild's lint rules.
 eignexLint { enabled.set(false) }
 
-// koblas binds host BLAS through foreign downcalls and runs its own kernels on the Vector API.
-val koblasJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
+// The in-process Klause MPS parser still uses foreign downcalls and the Vector API.
+val parserJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
 
 application {
     mainClass.set("com.eignex.lab.MainKt")
-    applicationDefaultJvmArgs = koblasJvmArgs
+    applicationDefaultJvmArgs = parserJvmArgs
 }
 
-tasks.withType<Test>().configureEach { jvmArgs(koblasJvmArgs) }
+tasks.withType<Test>().configureEach { jvmArgs(parserJvmArgs) }
 
 // install.sh runs the services on the toolchain JDK, so the host needs no JDK 25 of its own.
 tasks.register("printJavaHome") {

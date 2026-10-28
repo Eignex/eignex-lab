@@ -1477,10 +1477,9 @@ private fun summary(config: Config, host: HostReport, active: List<Job>, nodes: 
     val held = runCatching { Volumes.hold(config) }.getOrNull()
     val disk = (free?.let { "${size(it)} free" } ?: "free space unknown") +
         (held?.let { " · <span class=\"FAILED\">queue held: ${esc(it)}</span>" } ?: "") + " (<a href=\"/disk\">what uses it</a>)"
-    val accel = listOfNotNull(host.vendor, "simd".takeIf { host.simd }).joinToString(", ")
     return "$running running · $queued queued" + (if (waiting > 0) " · $waiting waiting for capacity" else "") +
-        (if (checking > 0) " · $checking checking results" else "") + " · $disk · ${esc(host.host)}, ${host.cores} cores" +
-        (if (accel.isEmpty()) "" else ", ${esc(accel)}")
+        (if (checking > 0) " · $checking checking results" else "") + " · $disk · ${esc(host.host)}, ${host.cores} cores · " +
+        esc(NodeTags.hardwareProfile(host.cpu.tags))
 }
 
 /** Where a job's remaining work may run, as the work summary splits it. */

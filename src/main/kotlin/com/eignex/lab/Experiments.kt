@@ -121,7 +121,7 @@ data class ProfileMain(
     val classpath: List<String> = emptyList(),
     /** JVM options for a main; a script controls its own runtimes and recordings. */
     val jvmArgs: List<String> = emptyList(),
-    /** Pass this option followed by $OUT/report to a script that publishes a report directory, such as Koblas. */
+    /** Pass this option followed by $OUT/report to a script that publishes a report directory. */
     val outputArgument: String? = null,
 )
 

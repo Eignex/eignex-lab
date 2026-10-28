@@ -1,6 +1,7 @@
 # Setup
 
-Use macOS or Linux with Git and JDK 17+. Gradle provisions JDK 25; startup requires Koblas's Vector API engine.
+Use macOS or Linux with Git and JDK 17+. Gradle provisions JDK 25. Benchmark runtimes and backend checks
+belong to each repository adapter.
 
 ```sh
 git clone https://github.com/Eignex/eignex-lab.git
@@ -19,6 +20,10 @@ Requires Bash, curl, and jq. Obtain the lab password from the operator and save 
 ```sh
 deploy/lab health
 ```
+
+`/health` reports coordinator OS/JVM, CPU capabilities and node tags. Benchmark engine, vendor library and
+thread evidence comes from the repository adapter's job artifacts; the health response no longer includes the
+old `koblasEngine`, `simd`, `candidates` or vendor fields.
 
 The client defaults to `https://lab.eignex.com`. Set `LAB_URL` for another API endpoint.
 For a direct connection, `LAB_HOST` retains the `http://<LAB_HOST>:8420` shorthand when `LAB_URL` is unset.

@@ -5,8 +5,6 @@
 # The lab uses idle local capacity and adds cloud capacity with demand, respecting job priority.
 #   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
-#   lab koblas [--tags expr --timeout sec] <ref> <description> [capture-report options...]
-#                                                            queue the committed Koblas capture harness and keep its report
 #   lab profile [--tags expr --timeout sec --repo Eignex/name --build task --classpath path] <main> <ref> <description> -- [arg...]
 #                                                            queue a committed JVM main from an Eignex repository
 #                                                            run once with [arg...] in a build of <ref>, under JFR, locally
@@ -118,7 +116,7 @@ remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
 node_tags='[]'
 timeout='' measurement=''
-# Shared submission options, kept separate from arguments passed to a committed main or capture harness.
+# Shared submission options, kept separate from arguments passed to a committed main.
 submission_option() {
   local expression parsed
   case "$1" in
@@ -155,19 +153,6 @@ run)
   done
   [[ $# -eq 1 ]] || { echo 'usage: lab run [--tags expr --measurement mode] <experiment.json>' >&2; exit 2; }
   submission_payload < "$1" | curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
-koblas)
-  while [[ $# -gt 0 ]]; do
-    if submission_option "$@"; then shift 2; else
-      [[ "$1" != -* ]] || { echo "unknown submission option: $1" >&2; exit 2; }
-      break
-    fi
-  done
-  [[ $# -ge 2 ]] || { echo "usage: lab koblas <ref> <description> [capture-report options...]" >&2; exit 2; }
-  ref="$1" description="$2"; shift 2
-  jq -n --arg ref "$ref" --arg description "$description" --args \
-    '{name: "koblas-bench", repository: "Eignex/koblas", description: $description, base: {ref: $ref},
-      profile: {script: "koblas-bench/capture-report.sh", outputArgument: "--output", args: $ARGS.positional}}' -- "$@" | submission_payload |
-    curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 profile)
   repository=Eignex/klause
   build_tasks='[]' classpath='[]'

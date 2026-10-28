@@ -10,7 +10,7 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class JobNodesTest {
-    private val host = HostReport("Mac/Arm64", 10, "java", "engine", true, emptyList())
+    private val host = HostReport("Mac/Arm64", 10, "java")
     private val budget = ResourceBudget(2000, 2048, 2)
     private val pool = CapacityPool("avx2", "linux-avx2-spot", 16, 32768, 8, setOf("arch:x86_64", "simd:avx2"))
     private val config = Config(dataDir = Files.createTempDirectory("job-nodes"), passwordHash = null)

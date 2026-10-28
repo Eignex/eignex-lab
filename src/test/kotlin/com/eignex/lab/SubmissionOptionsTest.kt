@@ -52,7 +52,7 @@ class SubmissionOptionsTest {
         val original = ExperimentSpec("status-sweep", problems = listOf(mapOf("suite" to "s")), description = "regression sweep", priority = 100)
         val id = store.createSchedule(original.name, "main", original, 120)
         store.scheduleRan(id, "abc", 1)
-        application { api(config, store, HostReport("test", 4, "java", "vector", true, emptyList())) }
+        application { api(config, store, HostReport("test", 4, "java")) }
         val response = client.get("/schedules")
         val experiment = Json.parseToJsonElement(response.bodyAsText()).jsonArray.single().jsonObject.getValue("experiment").jsonObject
         assertEquals(listOf("local"), experiment.getValue("tags").jsonArray.map { it.jsonPrimitive.content })
@@ -125,7 +125,7 @@ class SubmissionOptionsTest {
         val config = Config(dataDir = root, passwordHash = null, nomadQueueSettings = queue)
         val store = Store(config.database)
         val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", problems = listOf(mapOf("suite" to "s"))), 3600)
-        application { api(config, store, HostReport("test", 4, "java", "vector", true, emptyList())) }
+        application { api(config, store, HostReport("test", 4, "java")) }
         val created = client.post("/experiments") {
             contentType(ContentType.Application.Json)
             setBody("""{"name":"e","description":"record resources","problems":{"suite":"s"},"base":{"ref":"0123456789abcdef"},"measurement":"resources"}""")
@@ -156,7 +156,7 @@ class SubmissionOptionsTest {
     }
 
     @Test
-    fun `client accepts only consolidated options and passes harness and main arguments literally`() {
+    fun `client accepts only consolidated options and passes main arguments literally`() {
         val root = Files.createTempDirectory("submission client")
         try {
             root.resolve("curl").apply { writeText("#!/bin/sh\ncat\n"); toFile().setExecutable(true) }
@@ -174,18 +174,17 @@ class SubmissionOptionsTest {
                 assertEquals(0, exit, output)
                 return Json.parseToJsonElement(output).jsonObject
             }
-            val capture = payload("koblas", "--tags", "arch:arm64, simd:sme,!spot", "--tags", "dedicated", "--timeout", "900",
-                "main", "SME run", "--smoke", "--operation", "dot")
+            val capture = payload("profile", "--tags", "arch:arm64, simd:sme,!spot", "--tags", "dedicated", "--timeout", "900",
+                "com.eignex.Main", "main", "SME run", "--", "--mode=small", "literal value")
             assertEquals(listOf("!spot", "arch:arm64", "dedicated", "simd:sme"), capture["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals("900000", capture["base"]!!.jsonObject["timeout"]!!.jsonPrimitive.content)
-            assertEquals(listOf("--smoke", "--operation", "dot"), capture["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(listOf("--mode=small", "literal value"), capture["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
 
             val modern = payload("profile", "--timeout", "600", "com.eignex.Main", "main", "JFR run", "--", "--mode=small", "literal value")
             assertEquals("600000", modern["base"]!!.jsonObject["timeout"]!!.jsonPrimitive.content)
             assertEquals(listOf("--mode=small", "literal value"), modern["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(2, command("profile", "com.eignex.Main", "main", "JFR run", "local", "600", "--mode=small").first)
             for (flag in listOf("--require-tag", "--exclude-tag")) {
-                assertEquals(2, command("koblas", flag, "spot", "main", "bad").first)
                 assertEquals(2, command("profile", flag, "spot", "com.eignex.Main", "main", "bad").first)
             }
             val defaults = payload("profile", "com.eignex.Main", "main", "JFR run", "--", "--mode=small")
@@ -199,9 +198,10 @@ class SubmissionOptionsTest {
             assertEquals(listOf("!spot", "fast-ssd", "simd:avx2"), run["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(listOf("!spot", "arch:x86_64"), payload("tags", "7", "arch:x86_64,!spot")["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(0, payload("tags", "7")["tags"]!!.jsonArray.size)
+            assertEquals(2, command("koblas", "main", "retired capture").first)
             assertEquals(2, command("host", "7", "auto").first)
             assertEquals(2, command("machines", "7", "2").first)
-            assertEquals(2, command("koblas", "--tags", "simd:avx2,,!spot", "main", "bad").first)
+            assertEquals(2, command("profile", "--tags", "simd:avx2,,!spot", "com.eignex.Main", "main", "bad").first)
         } finally { root.toFile().deleteRecursively() }
     }
 }

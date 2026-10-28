@@ -22,7 +22,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PagesTest {
-    private val host = HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")
+    private val host = HostReport("Test/Arm64", 4, "java")
 
     @Test
     fun `a profile stopped at its time limit says so and still lists what it left in OUT`() {
