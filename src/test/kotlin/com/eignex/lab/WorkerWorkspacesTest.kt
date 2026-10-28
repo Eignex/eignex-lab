@@ -4,7 +4,7 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class WorkerWorkspacesTest {
-    @Test fun `sealed private workspaces retain setup and reject changed or additional files`() {
+    @Test fun `sealed private workspaces retain setup reject changed files and remove generated outputs`() {
         val root = Files.createTempDirectory("private-workspaces")
         try {
             val cache = WorkerWorkspaces(root); val key = "a".repeat(64)
@@ -20,7 +20,12 @@ class WorkerWorkspacesTest {
             assertFalse(Files.exists(restored.resolve("provenance.json")))
             cache.seal(key, restored) {}
             Files.writeString(restored.resolve("extra"), "output")
-            assertNull(cache.reuse(key) {})
+            val outside = root.resolve("outside").also { Files.writeString(it, "outside") }
+            Files.createSymbolicLink(restored.resolve("extra-link"), outside)
+            assertEquals(restored, cache.reuse(key) {})
+            assertFalse(Files.exists(restored.resolve("extra")))
+            assertFalse(Files.exists(restored.resolve("extra-link"), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+            assertEquals("outside", Files.readString(outside))
         } finally { deleteTree(root) }
     }
 

@@ -11,6 +11,17 @@ class WorkerWorkspaces(private val root: Path) {
 
     internal fun reuse(key: String, checkActive: () -> Unit): Path? {
         val entry = ready[key] ?: return null
+        // Consumers may generate caches (for example compiled MiniZinc files). Remove
+        // undeclared outputs before reuse, including links, without following them.
+        // Changes to sealed runtime/setup files still require a fresh private copy.
+        val expected = entry.files.map { it.path }.toSet()
+        try { Files.walkFileTree(entry.tree, object : java.nio.file.SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                checkActive()
+                if (entry.tree.relativize(file).toString().replace('\\', '/') !in expected) Files.delete(file)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+        }) } catch (_: java.io.IOException) { ready.remove(key); return null }
         if (TreeVerification().valid(entry.tree, entry.files, entry.receipt, checkActive, exactExecutables = true)) return entry.tree
         ready.remove(key)
         return null

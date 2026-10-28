@@ -487,8 +487,8 @@ cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect
 Cold preparation seeds its published distribution into this cache so a solve on that node can reuse it immediately.
 Each worker session receives a private copy, using filesystem clones where supported, and cannot modify the cached distribution.
 Within one serial worker session, unchanged private workspaces are reused between iterations. Each reuse verifies a sealed
-inventory including installed measurement launchers and provenance captured for that stable private path. Changed or extra
-files discard the workspace and repeat trusted setup; no mutable workspace is shared between worker sessions. This avoids
+inventory including installed measurement launchers and provenance captured for that stable private path. Generated outputs
+are removed; changed or missing sealed files discard the workspace and repeat trusted setup. No mutable workspace is shared between sessions. This avoids
 copying thousands of files and starting provenance JVMs for every case. Allocation garbage collection reclaims these trees.
 
 Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,

@@ -191,7 +191,8 @@ class PortableWorkerTest {
               solve-one)
                 [[ "$(cat build/provenance.json)" == "${'$'}PWD" ]]
                 for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
-                mkdir -p "${'$'}out"; echo '{"feasible":true}' > "${'$'}out/result.json";;
+                mkdir -p "${'$'}out"; echo '{"feasible":true}' > "${'$'}out/result.json"
+                touch build/generated-consumer-cache;;
             esac
         """.trimIndent()
         val name = "klause-bench/build/install/klause-bench/bin/klause-bench"
