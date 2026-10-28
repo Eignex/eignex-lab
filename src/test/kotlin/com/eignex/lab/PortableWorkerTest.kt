@@ -79,6 +79,27 @@ class PortableWorkerTest {
         assertEquals(1, archivesCreated)
     }
 
+    @Test fun `replay preserves accepted archive bytes without invoking the current archive writer`(): Unit = service { socket ->
+        val (bundle, bytes) = bundle(mapOf("bin/tool" to "accepted build"))
+        val spec = ExperimentSpec("replay", bench = BenchSpec("bench.json"))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }
+        val case = BenchRuns.pinned(com.eignex.lab.bench.BenchCase("p"), root, root)
+        val replay = BenchReplay(mapOf(arms.single().arm.label to com.eignex.lab.bench.BenchPlan(listOf(case))),
+            com.eignex.lab.bench.BenchDescriptor("fixture", "accepted build replay"))
+        val manifest = WorkManifest("replay", "release", spec, arms, emptyList(), listOf(bundle), ResourceBudget(1000, 2048),
+            preparationTimeoutSec = 60, benchReplay = replay)
+        val archiveCache = WorkerArchiveCache(root.resolve("archives")) { _, _, _, _, _ -> error("must reuse accepted archive") }
+        val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) },
+            bundle.os, bundle.arch, shared = null, archives = archiveCache)
+        val result = executor.run(manifest, root.resolve("replay"), { null }, { 80000 }) { file ->
+            assertFalse(file.fileName.toString().endsWith(".zip"), "accepted source archive needs no upload")
+            hashFile(file)
+        }
+        assertEquals(bundle, result.bundles.single())
+        assertEquals(bundle.sha256, result.artifacts["preparation/${bundle.commit}.zip"])
+    }
+
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {
         val (manifest, bytes) = bundle(mapOf("bin/tool" to "hello"))
         val cache = VerifiedCache(root.resolve("cache"), 1024 * 1024)

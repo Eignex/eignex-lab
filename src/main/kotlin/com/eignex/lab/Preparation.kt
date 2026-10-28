@@ -154,7 +154,12 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 artifacts["preparation/$sha.zip"] = transfer(zip)
                 return built
             }
-            if (archives != null) trace.step("archive") { archives.use(tree, original.copy(build = null), false, ::checkActive, trace, ::publish) }
+            if (replay != null) {
+                // TrustedQueueSources already copied this accepted input blob into the new job namespace.
+                // Preserve its exact archive identity across changes to compression or archive inventory code.
+                artifacts["preparation/$sha.zip"] = original.sha256
+                original
+            } else if (archives != null) trace.step("archive") { archives.use(tree, original.copy(build = null), false, ::checkActive, trace, ::publish) }
             else {
                 val zip = directory.resolve("$sha.zip")
                 publish(zip, trace.step("archive") { archive(tree, zip, original.copy(build = null), runtimeOnly = false, checkActive = ::checkActive) })

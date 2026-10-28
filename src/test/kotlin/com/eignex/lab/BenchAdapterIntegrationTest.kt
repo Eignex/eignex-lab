@@ -203,7 +203,8 @@ class BenchAdapterIntegrationTest {
         val replayClaim = claim(replayManifest)
         store.execution.phase(replayClaim.owner, "preparing")
         val replayPreparation = PreparationExecutor(supervisor, cache, WorkerBuildCache(root.resolve("replay-builds"), supervisor),
-            { Files.newInputStream(artifacts.file(job, it.sha256)) }, "linux", "amd64", shared = null).run(
+            { Files.newInputStream(artifacts.file(job, it.sha256)) }, "linux", "amd64", shared = null,
+            archives = WorkerArchiveCache(root.resolve("replay-archives")) { _, _, _, _, _ -> error("replay must retain accepted archive bytes") }).run(
                 replayManifest, root.resolve("replay-prepare"), { null }, lease(replayClaim.owner), { backend.selectPreparation(replayClaim.owner, it) }, ::upload)
         assertEquals(preparation.bundles.map { it.sha256 }, replayPreparation.bundles.map { it.sha256 })
         assertFalse(replayPreparation.artifacts.keys.any { it.contains("bench-plan-") })
