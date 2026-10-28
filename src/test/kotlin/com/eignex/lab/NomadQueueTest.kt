@@ -93,6 +93,30 @@ class NomadQueueTest {
         assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "advisory-native")
     }
 
+    @Test fun `lower priority pinned work cannot reserve spare native capacity ahead of automatic work`() {
+        val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val ordinary = job()
+        store.setPriority(ordinary, 101)
+        queue().reconcile()
+        assertTrue(store.execution.sessions(sweep).isEmpty())
+        assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "advisory-native")
+    }
+
+    @Test fun `a priority edit transfers pending native capacity without replacing the lower priority session`() {
+        val ordinary = job()
+        queue().reconcile()
+        val pending = store.execution.sessions(ordinary).single()
+        assertContains(store.execution.submission(pending.id), "advisory-native")
+        val urgent = job()
+        store.setPriority(urgent, 10)
+        backend.reconcile()
+        queue().reconcile()
+        assertEquals("stop", store.execution.session(pending.id)!!.desired)
+        assertContains(store.execution.submission(store.execution.sessions(urgent).single().id), "advisory-native")
+        assertTrue(store.execution.sessions(ordinary).all { it.desired == "stop" })
+        assertEquals(0, store.execution.failureCount(ordinary))
+    }
+
     @Test fun `paused reserved work lets idle native capacity contribute to auto jobs`() {
         val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
         store.setPaused(sweep, true)

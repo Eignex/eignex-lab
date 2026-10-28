@@ -34,7 +34,9 @@ Hardware or market selectors can narrow the compatible workers when a measuremen
 Priority controls native admission and iteration claims; sweeps and reference runs win equal-priority ties.
 The status sweep has priority 100 and its regression confirmations 101, ahead of ordinary jobs at 0.
 Ordinary reference runs also use priority 0, with their confirmations at 1.
-Lower-priority local workers yield between iterations when higher-priority work arrives; cloud workers continue.
+Lower-priority local workers yield between iterations when compatible higher-priority work arrives or is
+reprioritized, whether either job is automatic or local-only. Running paired iterations finish and accepted results
+are kept when the job resumes; cloud workers continue.
 Local-only placement, including a required `local` tag or excluded `cloud` tag, is reserved for sweeps and references.
 
 ## Koblas and profiles

@@ -104,7 +104,7 @@ object NomadCoordinatorCli {
                 require(NodeTags.matches(manifest.experiment.nodeTags, pool.capabilities))
                 require(pool.market == if (NodeTags.onDemand(false, manifest.experiment.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
             }
-        })
+        }, nativeNodeTags = config.localNodeTags)
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.
         val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
         val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan", completed = admissionSignal::wake)

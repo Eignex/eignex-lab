@@ -81,6 +81,65 @@ class NomadBackendTest {
         assertFailsWith<IllegalArgumentException> { artifacts.file(id, hash) }
     }
 
+    @Test fun `automatic native work yields between iterations after another automatic job is reprioritized`() {
+        nativePreemption("ordinary", "urgent")
+    }
+
+    @Test fun `local only native work yields between iterations to higher priority automatic work`() {
+        nativePreemption("sweep@abc", "urgent")
+    }
+
+    @Test fun `local only native work yields between iterations to higher priority local only work`() {
+        nativePreemption("sweep@abc", "other-sweep@abc")
+    }
+
+    private fun nativePreemption(name: String, waitingName: String) {
+        val spec = ExperimentSpec(name, problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")),
+            seeds = listOf(1), host = if ('@' in name) Experiments.LAB_HOST else Experiments.AUTO_HOST)
+        val id = setup(spec = spec, platform = NomadPlatform.MAC)
+        store.setup(id, "a".repeat(40))
+        register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val waiting = store.create(waitingName, "main", emptyList(), priority = -1, experiment = spec.copy(
+            name = waitingName, host = if ('@' in waitingName) Experiments.LAB_HOST else Experiments.AUTO_HOST))
+        store.setPriority(waiting, 10)
+
+        // Priority edits cannot revoke a running pair or turn a retried claim into new ownership.
+        assertEquals(claim, backend().claim(session.id, token, "allocation"))
+        store.execution.renew(claim.owner)
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
+        assertNull(backend().claim(session.id, token, "allocation"))
+        assertEquals("drain", store.execution.session(session.id)!!.desired)
+        assertEquals(claim.indices.toSet(), store.job(id)!!.commands.filter { it.status == Status.DONE }.map { it.index }.toSet())
+        assertTrue(store.job(id)!!.commands.filter { it.index !in claim.indices }.all { it.status == Status.QUEUED })
+
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        backend().reconcile()
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" }, "lower-priority work must not immediately replace itself")
+        store.setPaused(waiting, true)
+        backend().reconcile()
+        val replacement = store.execution.sessions(id).single { it.desired == "run" }
+        val replacementToken = Json.parseToJsonElement(store.execution.submission(replacement.id)).jsonObject
+            .getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject
+            .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+        store.execution.bind(replacement.id, replacementToken, "resume", "node", "release")
+        val resumed = backend().claim(replacement.id, replacementToken, "resume")!!
+        assertTrue(resumed.indices.none { it in claim.indices }, "accepted results survive yielding and resumption")
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
+    @Test fun `reprioritization releases an unbound native reservation`() {
+        val id = setup(platform = NomadPlatform.MAC)
+        val waiting = store.create("urgent", "main", emptyList(), priority = 10,
+            experiment = ExperimentSpec("urgent", problems = listOf(mapOf("suite" to "s"))))
+        backend().reconcile()
+        assertEquals("stop", store.execution.session(session.id)!!.desired)
+        assertEquals(0L to 0L, store.execution.nativeReservation())
+        assertTrue(store.execution.sessions(waiting).isEmpty())
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
     @Test fun `saturated log workers retry the final status after the job leaves the active set`() {
         val id = setup(); register()
         var available = false
