@@ -62,7 +62,7 @@ class ScoreboardTest {
         val cases = listOf(case("p1", record), case("p2", solved(20.0, 1_000)))
         val references = mapOf(
             ("c" to "p1") to listOf(ref("chuffed", 38.0, 500, proven = true).copy(sourceIdentity = "bacp-9"),
-                ref("cp-sat", 30.0, 1_000).copy(sourceIdentity = identity)),
+                ref("cp-sat", 30.0, 1_000).copy(version = "cp-sat-fixture", sourceIdentity = identity)),
             ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500).copy(sourceIdentity = identity)),
         )
 

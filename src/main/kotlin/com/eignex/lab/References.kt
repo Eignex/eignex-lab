@@ -213,14 +213,16 @@ object References {
 
     /**
      * The rows of one problem that speak for a run on [source]. A known source requires the identical source binding;
-     * a problem name cannot bind a historical verdict to model bytes. A run on [MIXED_SOURCES] matches nothing.
+     * a problem name cannot bind a historical verdict to model bytes. The reference must also identify its version.
+     * A run on [MIXED_SOURCES] matches nothing.
      * Runs without source evidence retain the historical unbound view, else the bound view.
      */
     fun applicable(rows: List<Reference>, source: String?): List<Reference> {
         if (source == MIXED_SOURCES) return emptyList()
         val (bound, unbound) = rows.partition { it.sourceIdentity != null }
         if (source == null) return unbound.ifEmpty { bound }
-        return bound.filter { it.sourceIdentity == source }
+        return bound.filter { it.sourceIdentity == source && it.version.isNotBlank() &&
+            it.version.trim().lowercase() !in setOf("unknown", "null", "unavailable") }
     }
 
     /** The solvers whose rows from before [Reference.version] was kept are stale: MPS references, whose solutions
