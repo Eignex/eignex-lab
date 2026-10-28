@@ -25,7 +25,7 @@ interface NomadControl {
     fun nodes(): List<JsonObject> = emptyList()
     fun node(id: String): JsonObject? = null
     fun nodeAllocations(id: String): List<JsonObject> = emptyList()
-    fun collectAllocation(id: String) { error("allocation garbage collection is unavailable") }
+    fun collectAllocation(id: String): Boolean { error("allocation garbage collection is unavailable") }
     fun hostVolumes(): List<JsonObject> = emptyList()
     fun createHostVolume(volume: JsonObject) { error("dynamic host volumes are unavailable") }
 }
@@ -46,7 +46,14 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
     override fun nodes() = request("GET", "/v1/nodes")!!.jsonArray.map { it.jsonObject }
     override fun node(id: String) = request("GET", "/v1/node/${encode(id)}", missing = true)?.jsonObject
     override fun nodeAllocations(id: String) = request("GET", "/v1/node/${encode(id)}/allocations")!!.jsonArray.map { it.jsonObject }
-    override fun collectAllocation(id: String) { request("GET", "/v1/client/allocation/${encode(id)}/gc") }
+    override fun collectAllocation(id: String): Boolean = try {
+        request("GET", "/v1/client/allocation/${encode(id)}/gc")
+        true
+    } catch (failure: NomadHttpFailure) {
+        // Server records outlive client workspaces. Nomad also uses this response for a GC eligibility race.
+        if (failure.status == 500 && failure.response.trim() == "No such allocation on client, or allocation not eligible for GC") false
+        else throw failure
+    }
     override fun hostVolumes() = request("GET", "/v1/volumes", query = "type=host")!!.jsonArray.map { it.jsonObject }
     override fun createHostVolume(volume: JsonObject) { request("PUT", "/v1/volume/host/create", buildJsonObject { put("Volume", volume) }) }
     override fun jwks() = request("GET", "/.well-known/jwks.json")!!.jsonObject
@@ -56,9 +63,11 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
             .header("Content-Type", "application/json").method(method, body?.let { HttpRequest.BodyPublishers.ofString(it.toString()) } ?: HttpRequest.BodyPublishers.noBody()).build()
         val response = client.send(request, HttpResponse.BodyHandlers.ofString())
         if (missing && response.statusCode() == 404) return null
-        check(response.statusCode() in 200..299) { "Nomad $method failed with HTTP ${response.statusCode()}" }
+        if (response.statusCode() !in 200..299) throw NomadHttpFailure(response.statusCode(), response.body(), method)
         return response.body().takeIf { it.isNotBlank() }?.let(Json::parseToJsonElement)
     }
+    private class NomadHttpFailure(val status: Int, val response: String, method: String) :
+        IllegalStateException("Nomad $method failed with HTTP $status")
     companion object {
         internal fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
         private fun allocationRow(j: JsonObject) = NomadAllocation(j.getValue("ID").jsonPrimitive.content, j.getValue("JobID").jsonPrimitive.content,

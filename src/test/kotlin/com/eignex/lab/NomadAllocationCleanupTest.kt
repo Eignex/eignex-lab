@@ -16,6 +16,7 @@ class NomadAllocationCleanupTest {
     private val control = object : NomadControl {
         var rows = emptyList<JsonObject>()
         var fail: String? = null
+        var eligible = true
         val attempts = mutableListOf<String>()
         override fun job(id: String): JsonObject? = null
         override fun submit(job: JsonObject) { error("cleanup cannot submit") }
@@ -29,10 +30,11 @@ class NomadAllocationCleanupTest {
             buildJsonObject { put("ID", "down"); put("NodeClass", "native"); put("Status", "down") },
         )
         override fun nodeAllocations(id: String): List<JsonObject> { assertEquals("native", id); return rows }
-        override fun collectAllocation(id: String) { attempts += id; if (id == fail) error("client unavailable") }
+        override fun collectAllocation(id: String): Boolean { attempts += id; if (id == fail) error("client unavailable"); return eligible }
     }
     private fun row(id: String, status: String, modified: Long = at - 3_600_000, known: Boolean = true) = buildJsonObject {
         put("ID", id); put("JobID", if (known) session.nomadJobId else "unrelated"); put("ClientStatus", status)
+        put("Namespace", "default")
         put("ModifyTime", modified * 1_000_000)
     }
 
@@ -40,7 +42,8 @@ class NomadAllocationCleanupTest {
         control.rows = listOf(row("done", "complete"), row("failed", "failed"), row("live", "running"),
             row("pending", "pending"), row("unknown", "unknown"), row("lost", "lost"),
             row("recent", "complete", at - 1000), row("future", "complete", at + 1000),
-            row("missing-time", "complete", 0), row("other", "complete", known = false))
+            row("missing-time", "complete", 0), row("other", "complete", known = false),
+            JsonObject(row("foreign", "complete") + ("Namespace" to JsonPrimitive("other"))))
         val cleanup = NomadAllocationCleanup(control, store, settings) { at }
         repeat(2) { cleanup.reconcile() }
         assertEquals(listOf("done", "failed"), control.attempts)
@@ -54,5 +57,15 @@ class NomadAllocationCleanupTest {
         control.fail = null
         cleanup.reconcile()
         assertEquals(listOf("unavailable", "done", "unavailable"), control.attempts)
+    }
+
+    @Test fun `a client eligibility race is retried without treating it as collected`() {
+        control.rows = listOf(row("done", "complete"))
+        control.eligible = false
+        val cleanup = NomadAllocationCleanup(control, store, settings) { at }
+        cleanup.reconcile()
+        control.eligible = true
+        cleanup.reconcile(); cleanup.reconcile()
+        assertEquals(listOf("done", "done"), control.attempts)
     }
 }

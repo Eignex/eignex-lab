@@ -75,7 +75,10 @@ def once(config, asg, functions):
             return pool["pool"], f"HTTP_{error.code}"
         except Exception as error:
             # SDK exception messages can include request material. Report the exception class only.
-            return pool["pool"], type(error).__name__
+            code = getattr(error, "response", {}).get("Error", {}).get("Code", type(error).__name__)
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,80}", code):
+                code = type(error).__name__
+            return pool["pool"], code
         return None
     with ThreadPoolExecutor(max_workers=min(4, len(definitions))) as workers:
         failed = [pool for pool in workers.map(renew, definitions) if pool is not None]

@@ -21,11 +21,12 @@ internal class NomadAllocationCleanup(
                 val id = allocation.getValue("ID").jsonPrimitive.content
                 seen += id
                 if (id in collected || allocation["JobID"]?.jsonPrimitive?.content !in jobs) continue
+                if (allocation["Namespace"]?.jsonPrimitive?.content != nomad.namespace) continue
                 if (allocation["ClientStatus"]?.jsonPrimitive?.content !in setOf("complete", "failed")) continue
                 val modified = allocation["ModifyTime"]?.jsonPrimitive?.longOrNull?.div(1_000_000) ?: continue
                 if (modified <= 0 || clock() - modified < 3_600_000) continue
                 // Nomad itself refuses to collect active allocations, including a race after this status check.
-                runCatching { nomad.collectAllocation(id) }.onSuccess { collected += id }.onFailure {
+                runCatching { nomad.collectAllocation(id) }.onSuccess { if (it) collected += id }.onFailure {
                     System.err.println("nomad allocation cleanup $id: ${it.javaClass.simpleName}")
                 }
             }

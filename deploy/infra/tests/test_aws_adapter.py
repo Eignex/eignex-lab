@@ -91,3 +91,16 @@ class AwsAdapterTest(unittest.TestCase):
         self.assertIn("neon=ValueError", str(raised.exception))
         self.assertNotIn("secret", str(raised.exception))
         self.assertTrue(payload.closed)
+
+    @patch.object(adapter.urllib.request, "urlopen")
+    @patch.object(adapter, "inventory")
+    def test_sdk_error_code_survives_without_logging_its_message(self, inventory, urlopen):
+        inventory.side_effect = self.observation
+        urlopen.side_effect = lambda *args, **kwargs: io.BytesIO(b'{}')
+        error = RuntimeError("secret-request")
+        error.response = {"Error": {"Code": "TooManyRequestsException", "Message": "secret-request"}}
+        self.functions.invoke.side_effect = error
+        with self.assertRaises(adapter.RenewalError) as raised:
+            adapter.once(self.config, Mock(), self.functions)
+        self.assertIn("avx2=TooManyRequestsException", str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception))
