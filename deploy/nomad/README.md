@@ -156,6 +156,13 @@ Workers renew every ten seconds and stop owned processes ten seconds before thei
 using monotonic local time. A volume hold blocks registration, new claims and acceptance; existing workers can still
 renew leases and report progress, and stop intents remain available. Pause drains at the iteration boundary.
 Cancellation fences ownership before stop delivery.
+The coordinator probes volume health on a dedicated five-second monitor. Control requests read its cached sample;
+an unavailable or more than fifteen-second-old sample holds growth without blocking lease renewals. Artifact and job
+file writes still validate the mounted volumes and free space on their I/O workers. Separate bounded I/O dispatchers
+keep uploads, checksum verification and filesystem sync off Netty call threads and away from capacity and heartbeat work.
+Source publication remains serial to protect Git mirrors, but admission polls it in the background. Preparation plan
+publication, accepted result copies and diagnostic log writes also run on bounded workers, so one slow disk operation
+does not stop other prepared experiments from being admitted or worker sessions from being reconciled.
 Deletion waits until every session's durable stop has been acknowledged. An explicit `lab retry` preserves previous
 loss events; infrastructure recovery requires no manual retry and has no experiment retry allowance. The coordinator's
 configured namespace scopes both job submission and signed allocation identity verification. Admission enforces stored host placement

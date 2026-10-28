@@ -17,7 +17,10 @@ class NomadBackend(
     private val admit: (WorkManifest, NomadBatchJob) -> Unit = { _, _ -> },
     private val placementPolicy: (JsonObject) -> JsonObject = { it },
     private val workerRuntime: (JsonObject, WorkManifest) -> Pair<JsonObject, WorkManifest> = { job, manifest -> job to manifest },
+    private val projectResult: (Long, String, () -> Unit) -> Boolean = { _, _, work -> work(); true },
+    private val writeLog: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
 ) {
+    private val pendingLogs = mutableSetOf<Long>()
     val logs = WorkerLogs(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
     private val cpuPlacement = NomadCpuPlacement(nomad)
@@ -183,7 +186,10 @@ class NomadBackend(
             val checked = store.execution.checksComplete(job.id)
             val ingested = store.execution.ingested(job.id)
             for ((iteration, result) in accepted) {
-                if (iteration !in ingested) { project(job.id, result); store.execution.markIngested(job.id, iteration) }
+                if (iteration !in ingested) {
+                    if (!projectResult(job.id, iteration) { project(job.id, result) }) continue
+                    store.execution.markIngested(job.id, iteration)
+                }
                 for (case in result.cases) if (case.index !in checked) {
                     val detail = checkCase(job.id, case.index) ?: continue
                     store.execution.checkComplete(job.id, case.index, detail)
@@ -194,8 +200,9 @@ class NomadBackend(
             if (current.commands.isNotEmpty() && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
                 current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
                 // finishIfComplete rechecks cancellation and projections under the store's write lock.
-                store.execution.finishIfComplete(job.id)
-                for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) store.execution.loseSession(s.id, "completed")
+                if (store.execution.finishIfComplete(job.id)) {
+                    for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) store.execution.loseSession(s.id, "completed")
+                }
                 continue
             }
             for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) {
@@ -253,16 +260,19 @@ class NomadBackend(
                 replace(previous)
             }
         }
-        for (job in logJobs) {
-            val current = store.job(job) ?: continue
-            val events = store.execution.events(job)
-            val text = events.joinToString("\n", postfix = "\n") { event ->
-                "${java.time.Instant.ofEpochMilli(event.at)} ${event.session ?: "experiment"} ${event.detail}"
-            } + "status: ${current.status}\n" + (current.error?.let { "error: $it\n" } ?: "")
-            val path = jobDirectory(job).resolve("job.log")
-            Files.createDirectories(path.parent)
-            if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
-        }
+        pendingLogs += logJobs
+        pendingLogs.removeAll { job -> writeLog(job) { projectLog(job) } }
+    }
+
+    private fun projectLog(job: Long) {
+        val current = store.job(job) ?: return
+        val events = store.execution.events(job)
+        val text = events.joinToString("\n", postfix = "\n") { event ->
+            "${java.time.Instant.ofEpochMilli(event.at)} ${event.session ?: "experiment"} ${event.detail}"
+        } + "status: ${current.status}\n" + (current.error?.let { "error: $it\n" } ?: "")
+        val path = jobDirectory(job).resolve("job.log")
+        Files.createDirectories(path.parent)
+        if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
     }
 
     private fun nativeLimits(meta: JsonObject?): Pair<Long, Long>? {

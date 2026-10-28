@@ -33,11 +33,23 @@ object NomadCoordinatorCli {
         val queueSettings = requireNotNull(config.nomadQueue) { "Nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
         val nativeCapacity = queueSettings.targets.filter { it.os == "mac" }.minOfOrNull { it.template.budget.memoryMiB }
             ?.let { ResourceBudget(config.cores * 1000, it) }
-        require(Volumes.hold(config) == null) { "coordinator volumes unavailable" }
+        val volumeHealth = VolumeHealth(reason = { Volumes.hold(config) })
+        volumeHealth.refresh()
+        require(volumeHealth.problem() == null) { "coordinator volumes unavailable" }
         Files.createDirectories(config.dataDir)
         val store = Store(config.database)
-        val disk = DiskGuard { Volumes.hold(config) }
-        val artifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = disk::allowsWork)
+        val disk = DiskGuard(volumeHealth::problem)
+        thread(isDaemon = true, name = "nomad-volume-health") {
+            while (!Thread.currentThread().isInterrupted) {
+                volumeHealth.refresh()
+                disk.allowsWork()
+                Thread.sleep(5_000)
+            }
+        }
+        // Actual writes retain synchronous mount/free-space validation, on the background/IO workers only.
+        val artifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null })
+        val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files")
+        val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
         val checks = com.eignex.lab.checker.CaseChecks(store, { com.eignex.lab.checker.Checkers.of(config) }) { job, line ->
             config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
@@ -45,7 +57,9 @@ object NomadCoordinatorCli {
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
         val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
         val capacitySettings = settings.capacity?.let { Json.decodeFromString<CapacitySettings>(Files.readString(Path.of(it.settingsFile))) }
-        val backend = NomadBackend(store, client, artifacts, config::jobDir, disk::allowsWork, checkCase = check@{ job, index ->
+        val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
+            projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
+            writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
             val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
             if (arm.values["backend"] != REFERENCE_BACKEND && !SourceValidation.requested(arm.values)) return@check "not-required"
             val key = job to index
@@ -84,11 +98,22 @@ object NomadCoordinatorCli {
                 require(pool.market == if (NodeTags.onDemand(false, manifest.experiment.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
             }
         })
-        val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork)
+        // Git mirror publication stays serial; it must not block admission of already prepared experiments.
+        val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1)
+        val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan")
+        val sources = TrustedQueueSources(config, artifacts)
+        val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork,
+            source = { job, targets, settings -> sourceWork.poll(job.id) { sources.publish(job, targets, settings) } },
+            preparationPlan = { job, work -> planWork.poll(job, work) != null })
         val buildVolumes = NomadBuildVolumes(client, queueSettings)
         thread(isDaemon = true, name = "nomad-admission") {
             while (!Thread.currentThread().isInterrupted) {
-                runCatching { queue.reconcile() }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }
+                runCatching {
+                    queue.reconcile()
+                    val active = store.active(withCommands = false)
+                    sourceWork.retain(active.map { it.id }.toSet())
+                    planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
+                }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }
                 Thread.sleep(10_000)
             }
         }

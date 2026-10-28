@@ -81,8 +81,9 @@ class NomadQueue(
     private val allowed: () -> Boolean,
     private val completed: (Job) -> Unit = Runner(config, store)::queueConfirmation,
     private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
-    private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>> =
+    private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>>? =
         TrustedQueueSources(config, artifacts)::publish,
+    private val preparationPlan: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
 ) {
     fun reconcile() {
         if (!allowed()) return
@@ -114,7 +115,7 @@ class NomadQueue(
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
                         }
                     } ?: continue
-                    val (arms, bundles) = source(job, targets, settings)
+                    val (arms, bundles) = source(job, targets, settings) ?: continue
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec)
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
@@ -123,7 +124,7 @@ class NomadQueue(
                 val accepted = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null } ?: continue
                 val preparation = checkNotNull(accepted.second.preparation)
                 val recipe = store.execution.manifest(sessions.first { it.executionClass == "prepare" }.id)
-                if (!job.setupDone) plan(job, recipe, preparation)
+                if (!job.setupDone && !preparationPlan(job.id) { plan(job, recipe, preparation) }) continue
                 val current = store.job(job.id) ?: continue
                 if (current.cancelRequested || current.paused || current.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
                 if (store.unclaimed(job.id) == 0) continue
@@ -202,6 +203,7 @@ class NomadQueue(
             .thenByDescending { it.template.cpuCapacity.logicalCpus }.thenByDescending { it.template.budget.memoryMiB }.thenBy { it.template.nodeClass })
 
     private fun plan(job: Job, recipe: WorkManifest, preparation: PreparationResult) {
+        config.createJobDir(job.id)
         val spec = recipe.experiment
         // The selection was filtered and approved before the worker resolved/downloaded its files.
         val selections = preparation.selections
@@ -246,7 +248,7 @@ class NomadQueue(
 }
 
 /** Resolves and verifies source on the coordinator; all builds and selection run in preparation allocations. */
-private class TrustedQueueSources(private val config: Config, private val artifacts: ArtifactStore) {
+internal class TrustedQueueSources(private val config: Config, private val artifacts: ArtifactStore) {
     fun publish(job: Job, targets: List<NomadQueueTarget>, settings: NomadQueueSettings): Pair<List<PlannedArm>, List<WorkerBundle>> {
         val spec = checkNotNull(job.experiment); val mirror = Repositories.mirror(config, spec.repository)
         val directory = config.createJobDir(job.id).resolve("nomad/source"); Files.createDirectories(directory)

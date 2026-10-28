@@ -15,6 +15,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import java.nio.file.Files
+import kotlinx.coroutines.withContext
 
 @Serializable data class WorkerRegistration(val release: String)
 @Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
@@ -44,6 +45,9 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
     fun ApplicationCall.auth(): ExecutionSession { val c = credentials(); return backend.authenticate(c[0], c[1], c[2], c[3]) }
     routing {
         route("/worker/v1/sessions/{id}") {
+            intercept(ApplicationCallPipeline.Call) {
+                withContext(CoordinatorIo.control) { proceed() }
+            }
             post("/register") {
                 val c = call.credentials(); val body = Json.decodeFromString<WorkerRegistration>(call.bodyText())
                 call.respond(backend.register(c[0], c[1], c[2], c[3], body.release))
@@ -70,14 +74,16 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 store.execution.caseStarted(body.owner, body.index); call.respond(HttpStatusCode.NoContent)
             }
             put("/logs/{index}/{stream}") {
-                check(workAllowed()); val s = call.auth()
-                val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
-                require(owner.session == s.id && owner.allocation == s.allocation)
-                val bytes = call.receiveChannel().readRemaining((WorkerLogs.CHUNK_BYTES + 1).toLong()).readByteArray()
-                require(bytes.size <= WorkerLogs.CHUNK_BYTES)
-                val offset = backend.logs.append(owner, call.parameters["index"]!!.toInt(), call.parameters["stream"]!!,
-                    call.request.queryParameters["offset"]!!.toLong(), bytes)
-                call.respond(UploadReply(offset))
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val s = call.auth()
+                    val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                    require(owner.session == s.id && owner.allocation == s.allocation)
+                    val bytes = call.receiveChannel().readRemaining((WorkerLogs.CHUNK_BYTES + 1).toLong()).readByteArray()
+                    require(bytes.size <= WorkerLogs.CHUNK_BYTES)
+                    val offset = backend.logs.append(owner, call.parameters["index"]!!.toInt(), call.parameters["stream"]!!,
+                        call.request.queryParameters["offset"]!!.toLong(), bytes)
+                    call.respond(UploadReply(offset))
+                }
             }
             post("/build-failed") {
                 // Lease and status updates must survive admission holds.
@@ -92,58 +98,72 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 store.execution.runTimedOut(owner); call.respond(HttpStatusCode.NoContent)
             }
             post("/selection") {
-                check(workAllowed()); val session = call.auth()
-                val body = Json.decodeFromString<WorkerSelection>(call.bodyText(64 * 1024 * 1024))
-                require(body.owner.session == session.id && body.owner.allocation == session.allocation)
-                call.respond(backend.selectPreparation(body.owner, body.selections))
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val session = call.auth()
+                    val body = Json.decodeFromString<WorkerSelection>(call.bodyText(64 * 1024 * 1024))
+                    require(body.owner.session == session.id && body.owner.allocation == session.allocation)
+                    call.respond(backend.selectPreparation(body.owner, body.selections))
+                }
             }
             post("/input-signature") {
-                check(workAllowed()); val session = call.auth()
-                require(session.executionClass == "prepare")
-                val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
-                require(owner.session == session.id && owner.allocation == session.allocation); store.execution.authorize(owner)
-                val signature = Json.decodeFromString<InputSignature>(call.bodyText(8192))
-                require(signature.method == "PUT" && signature.sha256?.matches(SHA256) == true)
-                require(signature.key == "input-blobs/${signature.sha256}" || signature.key.matches(Regex("corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\\.tar")))
-                val signer = java.net.URI(requireNotNull(System.getenv("LAB_SHARED_INPUT_SIGNER")))
-                call.respond(signInput(signer, signature))
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val session = call.auth()
+                    require(session.executionClass == "prepare")
+                    val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                    require(owner.session == session.id && owner.allocation == session.allocation); store.execution.authorize(owner)
+                    val signature = Json.decodeFromString<InputSignature>(call.bodyText(8192))
+                    require(signature.method == "PUT" && signature.sha256?.matches(SHA256) == true)
+                    require(signature.key == "input-blobs/${signature.sha256}" || signature.key.matches(Regex("corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\\.tar")))
+                    val signer = java.net.URI(requireNotNull(System.getenv("LAB_SHARED_INPUT_SIGNER")))
+                    call.respond(signInput(signer, signature))
+                }
             }
             post("/commit") {
-                val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText(if (s.executionClass == "prepare") 64 * 1024 * 1024 else 4 * 1024 * 1024)); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
-                backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
+                withContext(CoordinatorIo.artifacts) {
+                    val s = call.auth(); val body = Json.decodeFromString<WorkerCommit>(call.bodyText(if (s.executionClass == "prepare") 64 * 1024 * 1024 else 4 * 1024 * 1024)); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
+                    backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
+                }
             }
             get("/inputs/{sha}") {
-                check(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
-                val manifest = store.execution.manifest(s.id)
-                require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
-                val file = artifacts.readFile(s.jobId, sha)
-                val range = call.request.headers[HttpHeaders.Range] ?: "bytes=0-"
-                val match = requireNotNull(Regex("bytes=([0-9]+)-([0-9]*)").matchEntire(range))
-                val from = match.groupValues[1].toLong()
-                val total = Files.size(file); require(from in 0 until total)
-                val requestedEnd = match.groupValues[2].toLongOrNull() ?: total - 1
-                val end = minOf(requestedEnd, total - 1, from + 8L * 1024 * 1024 - 1); require(end >= from)
-                call.response.status(HttpStatusCode.PartialContent)
-                call.response.header(HttpHeaders.ContentRange, "bytes $from-$end/$total")
-                call.response.header(HttpHeaders.AcceptRanges, "bytes")
-                call.respondOutputStream(ContentType.Application.OctetStream) {
-                    Files.newInputStream(file).use { input ->
-                        input.skipNBytes(from); var left = end - from + 1; val buffer = ByteArray(64 * 1024)
-                        while (left > 0) { val n = input.read(buffer, 0, minOf(left, buffer.size.toLong()).toInt()); check(n > 0); write(buffer, 0, n); left -= n }
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val s = call.auth(); val sha = call.parameters["sha"]!!
+                    val manifest = store.execution.manifest(s.id)
+                    require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
+                    val file = artifacts.readFile(s.jobId, sha)
+                    val range = call.request.headers[HttpHeaders.Range] ?: "bytes=0-"
+                    val match = requireNotNull(Regex("bytes=([0-9]+)-([0-9]*)").matchEntire(range))
+                    val from = match.groupValues[1].toLong()
+                    val total = Files.size(file); require(from in 0 until total)
+                    val requestedEnd = match.groupValues[2].toLongOrNull() ?: total - 1
+                    val end = minOf(requestedEnd, total - 1, from + 8L * 1024 * 1024 - 1); require(end >= from)
+                    call.response.status(HttpStatusCode.PartialContent)
+                    call.response.header(HttpHeaders.ContentRange, "bytes $from-$end/$total")
+                    call.response.header(HttpHeaders.AcceptRanges, "bytes")
+                    call.respondOutputStream(ContentType.Application.OctetStream) {
+                        withContext(CoordinatorIo.artifacts) {
+                            Files.newInputStream(file).use { input ->
+                                input.skipNBytes(from); var left = end - from + 1; val buffer = ByteArray(64 * 1024)
+                                while (left > 0) { val n = input.read(buffer, 0, minOf(left, buffer.size.toLong()).toInt()); check(n > 0); write(buffer, 0, n); left -= n }
+                            }
+                        }
                     }
                 }
             }
             get("/uploads/{sha}") {
-                check(workAllowed()); val s = call.auth(); val owner = call.request.headers["X-Lab-Attempt"]?.let { Json.decodeFromString<AttemptOwner>(it) } ?: throw ExecutionFenced("attempt required")
-                require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
-                call.respond(UploadReply(artifacts.offset(s.jobId, call.parameters["sha"]!!)))
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val s = call.auth(); val owner = call.request.headers["X-Lab-Attempt"]?.let { Json.decodeFromString<AttemptOwner>(it) } ?: throw ExecutionFenced("attempt required")
+                    require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
+                    call.respond(UploadReply(artifacts.offset(s.jobId, call.parameters["sha"]!!)))
+                }
             }
             put("/uploads/{sha}") {
-                check(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
-                require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
-                val bytes = call.request.queryParameters["bytes"]!!.toLong(); val offset = call.request.queryParameters["offset"]!!.toLong()
-                val result = call.receiveChannel().toInputStream().use { artifacts.put(s.jobId, call.parameters["sha"]!!, bytes, offset, it) }
-                call.respond(UploadReply(result))
+                withContext(CoordinatorIo.artifacts) {
+                    check(workAllowed()); val s = call.auth(); val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
+                    require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
+                    val bytes = call.request.queryParameters["bytes"]!!.toLong(); val offset = call.request.queryParameters["offset"]!!.toLong()
+                    val result = call.receiveChannel().toInputStream().use { artifacts.put(s.jobId, call.parameters["sha"]!!, bytes, offset, it) }
+                    call.respond(UploadReply(result))
+                }
             }
         }
     }
