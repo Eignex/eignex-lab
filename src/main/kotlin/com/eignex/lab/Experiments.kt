@@ -42,15 +42,15 @@ data class ExperimentSpec(
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
     /**
-     * Where the cases may run, as the lab placed the job ([Placement]); a submitted value is ignored. Auto placement
-     * is preferred and is the default for ordinary submissions: omit host and location tags. `auto` lets local and
+     * Recorded placement, resolved by [Placement]; this is not a submission field. Auto placement
+     * is preferred and is the default for ordinary submissions: omit tags. `auto` lets local and
      * cloud workers share the job, respecting priority; `aws` is cloud-only and `lab` is local-only. The serialized
      * default below preserves historical specs and local schedules; submission placement is decided by [Placement].
      */
     val host: String = Experiments.LAB_HOST,
     /** Legacy placement bookkeeping, retained for historical specs; new submissions store the decision in [host]. */
     val auto: Boolean = false,
-    /** Retired: the cloud node pool decides how many nodes work on a job. Read so older specs still parse; ignored. */
+    /** Historical worker count, read from stored recipes only. The cloud pool sizes new work automatically. */
     val machines: Int? = null,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),
@@ -77,7 +77,7 @@ data class ExperimentSpec(
     val capped: List<String> = emptyList(),
     /** The GitHub repository to build. Only repositories owned by Eignex are accepted. */
     val repository: String = Repositories.DEFAULT,
-    /** Optional required and excluded node tags. Omitted on ordinary jobs. */
+    /** Internal selector in stored recipes. Public submissions use a flat tags array, decoded by [experimentInput]. */
     val nodeTags: NodeSelector? = null,
     /** Repository-owned benchmark plan and execution. */
     val bench: BenchSpec? = null,

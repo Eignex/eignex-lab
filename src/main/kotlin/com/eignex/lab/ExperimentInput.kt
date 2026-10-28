@@ -7,8 +7,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 
-/** Decode pre-measurement database records without accepting retired keys in new submissions. */
+/** Read historical recording and placement fields without accepting those fields in new submissions. */
 internal fun storedExperiment(text: String): ExperimentSpec {
     val body = Json.parseToJsonElement(text).jsonObject
     val retired = setOf("profileCli", "measureCliResources", "profileCompilation")
@@ -33,11 +35,26 @@ internal fun storedExperiment(text: String): ExperimentSpec {
     return Json.decodeFromJsonElement(ExperimentSpec.serializer(), JsonObject(canonical))
 }
 
-/** Recording modes run one case at a time unless the caller explicitly supplies a parallel limit to validate. */
+private val RETIRED_PLACEMENT = setOf("nodeTags", "host", "auto", "machines")
+
+internal fun inputTags(value: JsonElement?): NodeSelector {
+    if (value == null) return NodeSelector()
+    require(value is JsonArray && value.all { it is JsonPrimitive && it.isString }) { "tags must be an array of strings; prefix exclusions with !" }
+    return NodeTags.selector(value.map { it.jsonPrimitive.content })
+}
+
+/** New submissions have one selector field; the internal recipe format remains compatible with pinned workers. */
 internal fun experimentInput(body: JsonObject): JsonObject {
-    val input = body["measurement"] ?: return body
+    val retired = body.keys.intersect(RETIRED_PLACEMENT)
+    require(retired.isEmpty()) { "unsupported placement fields: ${retired.sorted().joinToString()}; use tags: [\"arch:x86_64\", \"!spot\"], or omit tags for auto placement" }
+    val selector = inputTags(body["tags"])
+    var canonical = JsonObject((body - "tags") + if (NodeTags.labels(selector).isEmpty()) emptyMap() else
+        mapOf("nodeTags" to Json.encodeToJsonElement(NodeSelector.serializer(), selector)))
+    // Recording modes default to one case at a time.
+    val input = canonical["measurement"] ?: return canonical
     val mode = Json.decodeFromJsonElement(Measurement.serializer(), input)
-    return if (mode != Measurement.NONE && "parallel" !in body) JsonObject(body + ("parallel" to JsonPrimitive(1))) else body
+    if (mode != Measurement.NONE && "parallel" !in canonical) canonical = JsonObject(canonical + ("parallel" to JsonPrimitive(1)))
+    return canonical
 }
 
 /** Schedules use exactly the same input vocabulary as immediate runs. */
@@ -45,5 +62,23 @@ internal fun scheduleInput(body: JsonObject): JsonObject {
     val experiment = body["experiment"] ?: return body
     if (experiment == JsonNull) return body
     require(experiment is JsonObject) { "experiment must be an object" }
-    return JsonObject(body + ("experiment" to experimentInput(experiment)))
+    val canonical = experimentInput(experiment)
+    val selector = canonical["nodeTags"]?.let { Json.decodeFromJsonElement(NodeSelector.serializer(), it) }
+    val local = "local" in selector?.require.orEmpty() || "cloud" in selector?.exclude.orEmpty()
+    // Preserve the existing local-schedule recipe and fingerprint when converting its public location tag.
+    val retained = if (local) selector?.copy(require = selector.require - "local", exclude = selector.exclude - "cloud") else selector
+    val fields = (canonical - "nodeTags") + if (NodeTags.labels(retained).isEmpty()) emptyMap() else
+        mapOf("nodeTags" to Json.encodeToJsonElement(NodeSelector.serializer(), checkNotNull(retained)))
+    return JsonObject(body + ("experiment" to JsonObject(fields +
+        ("host" to JsonPrimitive(if (local) Experiments.LAB_HOST else Experiments.AUTO_HOST)))))
+}
+
+/** Schedule responses can be edited and submitted again using the same public vocabulary. */
+internal fun scheduleExperiment(spec: ExperimentSpec): JsonObject {
+    val selector = if (Experiments.storedHost(spec.host) == Experiments.LAB_HOST)
+        (spec.nodeTags ?: NodeSelector()).let { it.copy(require = it.require + "local") } else spec.nodeTags
+    val labels = NodeTags.labels(selector)
+    val body = Json.encodeToJsonElement(ExperimentSpec.serializer(), spec).jsonObject - RETIRED_PLACEMENT
+    return JsonObject(body + if (labels.isEmpty()) emptyMap() else
+        mapOf("tags" to JsonArray(labels.map(::JsonPrimitive))))
 }

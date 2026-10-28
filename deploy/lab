@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Client for the eignex lab server. Defaults to https://lab.eignex.com; LAB_URL overrides the API address.
 # LAB_HOST selects an SSH host for lab corpus and, unless LAB_URL is set, http://<LAB_HOST>:8420 for the API.
-# Auto placement is preferred and is the default for ordinary jobs: omit host and location tags.
+# Auto placement is preferred and is the default for ordinary jobs: omit tags.
 # The lab uses idle local capacity and adds cloud capacity with demand, respecting job priority.
 #   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
@@ -69,12 +69,9 @@
 #                                                            With an id, that job alone; --json prints GET /placement
 #   lab update                                              update the lab now: between the running job's cases, not during one
 #   lab docker-cleanup                                      prune old reference images and build cache now: between jobs
-#   lab host <id> auto|cloud|local                          operators only: override where a queued, unplanned job may run
-#                                                            (the lab places every job itself; agents need not); lab and
-#                                                            aws, the older names of local and cloud, still work
-#                                                            auto is preferred and is the default for ordinary jobs;
-#                                                            local-only is reserved for sweeps and reference runs
-#   lab machines <id> [n]                                    retired: the cloud node pool sizes itself; the lab ignores it
+#   lab tags <id> [expr]                                    replace a queued, unadmitted job's tags; omit expr to clear them
+#                                                            tags are comma-separated; ! excludes a capability
+#                                                            empty tags restore auto; local-only is reserved for sweeps/references
 #   lab describe <id> <text>                                 set or change what an experiment is for
 #   lab retry <id>...                                       queue a failed or cancelled job again: its unfinished cases rerun
 #   lab rm <id>...                                          delete ended jobs: their records, files and leftover worktrees
@@ -118,7 +115,7 @@ data="${LAB_REMOTE_DATA:-eignex-lab-data}"
 remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
 remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
 corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
-node_require='[]' node_exclude='[]'
+node_tags='[]'
 timeout='' measurement=''
 # Shared submission options, kept separate from arguments passed to a committed main or capture harness.
 submission_option() {
@@ -128,10 +125,8 @@ submission_option() {
       expression="${2:?--tags needs comma-separated tags, with ! before exclusions}"
       parsed="$(jq -cn --arg value "$expression" '
         $value | split(",") | map(gsub("^\\s+|\\s+$"; "")) |
-        if any(.[]; test("^!?[a-z0-9][a-z0-9:._/-]*$") | not) then error("invalid node tag") else
-          {require: map(select(startswith("!") | not)), exclude: map(select(startswith("!")) | ltrimstr("!"))} end')" || exit 2
-      node_require="$(jq -c --argjson added "$parsed" '. + $added.require | unique' <<< "$node_require")"
-      node_exclude="$(jq -c --argjson added "$parsed" '. + $added.exclude | unique' <<< "$node_exclude")" ;;
+        if any(.[]; test("^!?[a-z0-9][a-z0-9:._/-]*$") | not) then error("invalid node tag") else unique end')" || exit 2
+      node_tags="$(jq -c --argjson added "$parsed" '. + $added | unique' <<< "$node_tags")" ;;
     --timeout)
       timeout="${2:?--timeout needs seconds}"
       [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || { echo '--timeout must be a positive number of seconds' >&2; exit 2; } ;;
@@ -139,9 +134,8 @@ submission_option() {
   esac
 }
 submission_payload() {
-  jq --argjson required "$node_require" --argjson excluded "$node_exclude" --arg measurement "$measurement" --arg timeout "$timeout" '
-    . + (if ($required + $excluded | length) == 0 then {} else
-      {nodeTags: {require: (((.nodeTags.require // []) + $required) | unique), exclude: (((.nodeTags.exclude // []) + $excluded) | unique)}} end) +
+  jq --argjson tags "$node_tags" --arg measurement "$measurement" --arg timeout "$timeout" '
+    . + (if ($tags | length) == 0 then {} else {tags: (((.tags // []) + $tags) | unique)} end) +
       (if $measurement == "" then {} else {measurement: $measurement} end) |
     if $timeout == "" then . else .base = ((.base // {}) + {timeout: (($timeout | tonumber) * 1000 | tostring)}) end'
 }
@@ -339,10 +333,12 @@ check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
 launch) curl -sS -X POST "$url/schedules/$1/launch"; echo ;;
 update) curl -sS -X POST "$url/update"; echo ;;
 docker-cleanup) curl -sS -X POST "$url/docker-cleanup"; echo ;;
-host) jq -n --arg host "$2" '{host: $host}' |
-  curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/host"; echo ;;
-machines) jq -n --argjson machines "${2:-null}" '{machines: $machines}' |
-  curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/machines"; echo ;;
+tags)
+  [[ $# -ge 1 && $# -le 2 ]] || { echo 'usage: lab tags <id> [comma-separated tags]' >&2; exit 2; }
+  [[ -z "${2:-}" ]] || submission_option --tags "$2"
+  jq -n --argjson tags "$node_tags" '{tags: $tags}' |
+    curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/tags"; echo ;;
+host|machines) echo "lab $cmd is retired: use lab tags <id> [comma-separated tags]; omit tags for auto placement" >&2; exit 2 ;;
 describe) jq -n --arg description "${*:2}" '{description: $description}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/description"; echo ;;
 retry) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/retry"; echo; done ;;

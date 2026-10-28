@@ -17,10 +17,6 @@ object Placement {
         require("local" !in spec.nodeTags?.require.orEmpty() && "cloud" !in spec.nodeTags?.exclude.orEmpty()) { LOCAL_RESERVED }
     }
 
-    /** An explicit move to auto also removes the old local-only location selectors. */
-    fun automatic(spec: ExperimentSpec): ExperimentSpec = spec.copy(host = Experiments.AUTO_HOST,
-        nodeTags = spec.nodeTags?.let { it.copy(require = it.require - "local", exclude = it.exclude - "cloud") })
-
     /**
      * The jobs that stay on the local machine whatever is free: scheduled runs (`<schedule>@<sha>`) and their
      * confirmations, which the sweeps and the trend compare against each other on one machine; reference runs, which

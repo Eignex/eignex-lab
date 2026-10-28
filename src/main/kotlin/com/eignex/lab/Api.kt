@@ -31,6 +31,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.RandomAccessFile
@@ -54,13 +56,6 @@ data class RetireSpec(val collection: String, val solver: String, val budgetMs: 
 
 @Serializable
 data class RetireResult(val retired: Int)
-
-@Serializable
-data class HostSpec(val host: String, val machines: Int? = null)
-
-/** Read and ignored: kept so an old client's call still parses. */
-@Serializable
-data class MachinesSpec(val machines: Int? = null)
 
 /** An experiment rerun on every new commit of [ref]: each run is [experiment] with every arm at that commit. */
 @Serializable
@@ -240,7 +235,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         // An experiment is queued as a job with no commands; the runner plans its cases when it first sets it up.
         post("/experiments") {
-            // The lab places every job itself ([Placement]): a submitted host or machine count is read but not followed.
+            // Public placement input is tags only; the lab records its resolved host in the stored recipe.
             val body = analysisDefaults(experimentInput(call.receive<JsonObject>()))
             // Jobs eligible for the local machine are capped to it; cloud-only tag requests use compatible cloud capacity.
             val submitted = Json.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList())
@@ -284,9 +279,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
                     Experiments.profileCaps(spec).map { "capped: $it" }
             } else emptyList()).plus(spec.capped.map { "capped: $it" }).ifEmpty { null }
-            val ignored = listOf("host", "machines").filter { it in body }
-            call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host) +
-                if (ignored.isEmpty()) "" else "; ${ignored.joinToString(" and ")} ignored: the lab places jobs", Experiments.hostWord(spec.host)))
+            call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host), Experiments.hostWord(spec.host)))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
@@ -489,28 +482,28 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val found = store.setParallel(call.parameters["id"]!!.toLong(), spec.parallel)
             call.respond(if (found) HttpStatusCode.OK else HttpStatusCode.NotFound, if (found) "parallel ${spec.parallel}" else "no such job")
         }
-        // An operator's override of where a queued, unplanned job may run; the lab places jobs itself ([Placement]).
-        post("/jobs/{id}/host") {
+        post("/jobs/{id}/tags") {
             val id = call.parameters["id"]!!.toLong()
-            // `local` and `cloud` are stored as `lab` and `aws`, the names older jobs and clients use.
-            val host = Experiments.storedHost(call.receive<HostSpec>().host)
+            val body = call.receive<JsonObject>()
+            require(body.keys == setOf("tags")) { "provide only tags: an array of strings; [] restores auto placement" }
+            val selector = inputTags(body["tags"])
             val job = store.job(id)
             val original = requireNotNull(job?.experiment) { "no such experiment" }
-            val experiment = if (host == Experiments.AUTO_HOST && !Placement.localOnly(original, job.name)) Placement.automatic(original) else original
-            Placement.requireAutomatic(experiment, job.name)
-            require(host != Experiments.LAB_HOST || Placement.localOnly(experiment, job.name)) { Placement.LOCAL_RESERVED }
+            val experiment = original.copy(nodeTags = selector.takeIf { NodeTags.labels(it).isNotEmpty() })
+            val host = Placement.host(experiment, job.name, config, store.schedules())
             requireHost(experiment.copy(host = host), config)
-            val moved = store.execution.sessions(id).isEmpty() && store.place(id, host, experiment)
+            val moved = store.place(id, host, experiment)
             call.respond(
                 if (moved) HttpStatusCode.OK else HttpStatusCode.Conflict,
-                if (moved) "operator override: ${placementNote(host)} (the lab places jobs itself; agents need not)"
-                else "only a queued job that has not been planned or admitted can change host",
+                if (moved) "tags updated: ${placementNote(host)}"
+                else "only a queued job that has not been planned or admitted can change tags",
             )
         }
-        // Kept so old clients get an answer: the node pool decides how many machines work on a job.
+        post("/jobs/{id}/host") {
+            call.respond(HttpStatusCode.Gone, "host overrides are retired; use /jobs/{id}/tags with {\"tags\": []} for auto placement")
+        }
         post("/jobs/{id}/machines") {
-            call.receive<MachinesSpec>()
-            call.respond(HttpStatusCode.OK, "ignored: the lab places jobs, and the cloud node pool sizes itself to the queue (see maxInstances)")
+            call.respond(HttpStatusCode.Gone, "machine overrides are retired; use tags for capabilities; the cloud pool scales automatically")
         }
         post("/jobs/{id}/description") {
             val spec = call.receive<DescriptionSpec>()
@@ -541,7 +534,12 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val id = store.createSchedule(spec.name, spec.ref, spec.experiment, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
-        get("/schedules") { call.respond(store.schedules()) }
+        get("/schedules") {
+            call.respond(JsonArray(store.schedules().map { schedule ->
+                JsonObject(Json.encodeToJsonElement(Schedule.serializer(), schedule).jsonObject +
+                    ("experiment" to scheduleExperiment(schedule.experiment)))
+            }))
+        }
         post("/schedules/{id}") {
             val spec = Json.decodeFromJsonElement(ScheduleUpdate.serializer(), scheduleInput(call.receive<JsonObject>()))
             require(spec.intervalSec == null || spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
@@ -695,14 +693,11 @@ private fun nodeCoreLimit(spec: ExperimentSpec, config: Config): Int =
 
 private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     requireDescription(experiment)
-    // A schedule's host says only whether its runs may go to the cloud ([Placement.cloudOptIn]); the lab places them.
-    require(Experiments.storedHost(experiment.host) in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
-        "host must be local, cloud or auto (or lab or aws, their older names)"
-    }
-    require(NodeTags.matches(experiment.nodeTags, config.localNodeTags) || Placement.cloudOptIn(experiment) && Placement.cloudCoreLimit(experiment, config) >= Experiments.arms(experiment).maxOf { arm -> arm.cores }) {
-        "the schedule's node tags match no allowed host; opt in to cloud execution if a matching cloud type is configured"
-    }
     val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
+    val pinned = !Placement.cloudOptIn(experiment) || Placement.localOnly(experiment, experiment.name)
+    require(if (pinned) local else Placement.cloudCoreLimit(experiment, config, cloudSchedule = true) >= Experiments.arms(experiment).maxOf { it.cores }) {
+        "the schedule's tags match no allowed worker; omit tags for auto placement or select configured capabilities"
+    }
     Experiments.validate(experiment, if (local) config.maxParallel else nodeCoreLimit(experiment, config), nodeCoreLimit(experiment, config))
     require(Experiments.arms(experiment).none { "ref" in it.values }) {
         "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"

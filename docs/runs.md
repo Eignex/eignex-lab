@@ -27,7 +27,7 @@ Replace `7` with the returned ID. `base` supplies shared arm values; `configs` o
 combinations. Timeouts are milliseconds. The lab queues and places work automatically.
 
 **Auto placement is preferred and is the default for ordinary experiments, profiles and bench-adapter runs.**
-Omit `host` and location tags such as `local` or `cloud`; the lab chooses placement automatically. Idle local capacity
+Omit `tags`, or use `"tags": []`; the lab chooses placement automatically. Idle local capacity
 can contribute, and the lab adds cloud capacity as demand grows. Local and cloud workers can share the same job.
 Hardware or market selectors can narrow the compatible workers when a measurement needs them.
 
@@ -60,6 +60,25 @@ deploy/lab run --tags 'arch:x86_64,simd:avx2,!spot' --measurement jfr experiment
 
 `--tags` requires comma-separated labels; `!` excludes one. Detected architecture/SIMD tags and custom node labels
 are supported. Capability tags do not prove which instructions a benchmark executed.
+
+The API and experiment JSON files use the same flat array:
+
+```json
+{"tags": ["arch:x86_64", "simd:avx2", "!spot"]}
+```
+
+`tags` is the only placement input for experiments and schedules. The old `nodeTags`, `host`, `auto` and `machines`
+submission fields are rejected. Historical jobs and execution recipes remain readable in their stored format;
+recorded host information describes where a job may run or did run.
+
+To replace a job's tags before admission, use `deploy/lab tags 7 'arch:x86_64,!spot'`, or POST
+`{"tags": ["arch:x86_64", "!spot"]}` to `/jobs/7/tags`. `deploy/lab tags 7` clears the selector and restores auto
+placement. Once source preparation or session admission starts, the recipe is frozen and tag edits are refused.
+The old `lab host` and `lab machines` commands and their API overrides are retired.
+
+Schedules use auto by default. The status sweep's committed schedule uses `"tags": ["local"]`; reference runs and
+regression confirmations retain their local-only execution policy. Schedule responses expose the same editable tags
+format, including the local tag for historical local schedules.
 
 The **Nodes** tab shows the local machine, cloud pools, active nodes, and their allocations. To start a specific
 kind of cloud node, select its configured pool by CPU, memory, architecture/SIMD tags, and Spot or on-demand market.
