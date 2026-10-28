@@ -140,6 +140,11 @@ inputs, binary identities and bounded process receipts. The SDK result's success
 `details.state` is the validation verdict. Missing original compiler outputs cannot be replaced with another run's.
 Automatic checks use the three files from a single accepted iteration's artifact inventory and verify their hashes
 before passing them to the checker. Historical records without the complete point and compiler outputs stay unsupported.
+For shell-backed transports, pass the JSON parameter map compressed with Zstandard and Base64-encoded as the single
+`capture-zstd-base64` parameter. The frozen case keeps this packed representation until execution. Its 120 KiB limit
+keeps the command below the per-argument limit; decoded input is capped at 24 MiB. A replay may select the last complete
+native solution and omit unrelated record statistics when it retains the original record/stdout hashes and selection
+description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
 
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).
