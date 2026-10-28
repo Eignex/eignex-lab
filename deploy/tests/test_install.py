@@ -18,7 +18,7 @@ class InstallTest(unittest.TestCase):
             project = root / "checkout"
             deploy = project / "deploy"
             deploy.mkdir(parents=True)
-            for name in ("install.sh", "release.sh", "lab.env.example"):
+            for name in ("install.sh", "release.sh", "lab.env.example", "gradle_maintenance.py"):
                 shutil.copy2(ROOT / "deploy" / name, deploy / name)
             home = root / "home"
             config = home / ".config/eignex-lab"
@@ -56,6 +56,15 @@ class InstallTest(unittest.TestCase):
                         self.assertEqual(1, unit.count('Environment="LAB_DATA='))
                         self.assertIn(f"WorkingDirectory={expected}", unit)
                         self.assertIn(f"ExecStart={launcher} {role}", unit)
+                if os.uname().sysname == "Darwin":
+                    service = plistlib.loads((units / "com.eignex.lab.gradle-maintenance.plist").read_bytes())
+                    self.assertEqual(300, service["StartInterval"])
+                    self.assertFalse(service["KeepAlive"])
+                    self.assertTrue(service["RunAtLoad"])
+                    self.assertTrue(Path(service["ProgramArguments"][1]).is_file())
+                    self.assertEqual(["/usr/bin/python3", str(deploy / "gradle_maintenance.py"),
+                                      "--data", str(expected), "--quiet", "--cache-gib", "2", "--log-mib", "20"],
+                                     service["ProgramArguments"])
             finally:
                 shutil.rmtree(units)
 

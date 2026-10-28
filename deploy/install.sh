@@ -134,6 +134,7 @@ PLIST
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>$keepalive
   <key>ThrottleInterval</key><integer>30</integer>
+$(if [[ "$label" == com.eignex.lab.gradle-maintenance ]]; then echo '  <key>StartInterval</key><integer>300</integer>'; fi)
   <key>StandardOutPath</key><string>$log</string>
   <key>StandardErrorPath</key><string>$log</string>
   <key>EnvironmentVariables</key><dict>
@@ -151,7 +152,15 @@ PLIST
 case "$os" in
 Darwin)
   stage="$(mktemp -d)"
-  roles=(api runner)
+  maintenance="$here/deploy/gradle_maintenance.py"
+  if [[ -z "$dry" ]]; then
+    mkdir -p "$LAB_DATA/maintenance"
+    cp "$maintenance" "$LAB_DATA/maintenance/gradle_maintenance.py.new"
+    chmod 700 "$LAB_DATA/maintenance/gradle_maintenance.py.new"
+    mv "$LAB_DATA/maintenance/gradle_maintenance.py.new" "$LAB_DATA/maintenance/gradle_maintenance.py"
+    maintenance="$LAB_DATA/maintenance/gradle_maintenance.py"
+  fi
+  roles=(api runner gradle-maintenance)
   for role in "${roles[@]}"; do
     label="com.eignex.lab.$role"
     case "$role" in
@@ -159,6 +168,9 @@ Darwin)
     runner) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/runner.log" \
       /usr/bin/caffeinate -i "$bin" runner ;;
     api) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/api.log" "$bin" api ;;
+    gradle-maintenance) plist "$label" '<false/>' "$LAB_DATA" "$LAB_DATA/logs/gradle-maintenance.log" \
+      /usr/bin/python3 "$maintenance" --data "$LAB_DATA" --quiet \
+      --cache-gib "${LAB_GRADLE_CACHE_GIB:-2}" --log-mib "${LAB_GRADLE_LOG_MIB:-20}" ;;
     esac > "$stage/$label.plist"
     plutil -lint -s "$stage/$label.plist"
   done
