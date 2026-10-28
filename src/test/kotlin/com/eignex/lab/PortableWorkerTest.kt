@@ -313,7 +313,7 @@ class PortableWorkerTest {
         """.trimIndent()
         val (input, bytes) = bundle(mapOf("gradlew" to script))
         val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
-        val built = input.copy(build = WorkerBuild(listOf("installDist")))
+        val built = input.copy(build = WorkerBuild(listOf("installDist")), toolchain = "jdk25:" + "1".repeat(40))
         val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
         try {
             val jobs = (1..2).map { executor.submit<Path> {
@@ -322,10 +322,19 @@ class PortableWorkerTest {
             } }
             assertEquals(jobs[0].get(), jobs[1].get())
             assertEquals(1, Files.readAllLines(count).size)
+            val updated = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                .prepare(built.copy(toolchain = "jdk25:" + "2".repeat(40)), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertEquals(jobs[0].get(), updated)
+            assertEquals(1, Files.readAllLines(count).size)
             val next = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
-                .prepare(built.copy(commit = "b".repeat(40)), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+                .prepare(built.copy(commit = "b".repeat(40), toolchain = "jdk25"), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
             assertEquals("warm", Files.readString(next.resolve("build/dependencies")).trim())
             assertEquals(2, Files.readAllLines(count).size)
+            val custom = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                .prepare(built.copy(toolchain = "different-toolchain"), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertNotEquals(updated, custom)
+            assertEquals("cold", Files.readString(custom.resolve("build/dependencies")).trim())
+            assertEquals(3, Files.readAllLines(count).size)
         } finally { executor.shutdownNow() }
     }
 

@@ -223,6 +223,9 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         return synchronized(monitor) { index[job to sha]?.manifest?.blobs?.single { it.sha == sha }?.bytes }
             ?: external.size(job, sha)
     }
+    // Only large preparation archives opt in; the bounded result journal remains unchanged.
+    override fun reuse(job: Long, sha: String): Long? { check(job, sha); return external.reuse(job, sha) }
+    override fun remember(job: Long, sha: String) { check(job, sha); external.remember(job, sha) }
     override fun offset(job: Long, sha: String): Long {
         check(job, sha)
         return synchronized(monitor) { index[job to sha]?.manifest?.blobs?.single { it.sha == sha }?.bytes }

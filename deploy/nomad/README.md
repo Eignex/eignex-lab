@@ -523,10 +523,18 @@ immutable. Releases not listed retain their existing worker runtime.
 Preparation runs only the requested runtime build tasks. The worker init script excludes every Gradle
 `AbstractTestTask` before dependency graph resolution, including custom and subproject test tasks, so their
 test compilation and fixture dependencies are omitted too. JVM CLI preparations also disable native release packaging.
+Build and Gradle dependency cache identities use the actual toolchain, recipe, platform and JVM rather than the worker
+release. Historical `jdk25:<release SHA>` bundles normalize to `jdk25`; explicit custom toolchains remain distinct.
+This switches historical cache keys once; later worker patches preserve the new warm entries.
 
 Workers reuse verified input distributions across allocations under `LAB_WORKER_CACHE_ROOT/inputs`. The node-local
 cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect readers during staging and compilation.
 Cold preparation seeds its published distribution into this cache so a solve on that node can reuse it immediately.
+Prepared ZIPs use buffered output and fast compression. Uploads opt into cross-job reuse: the coordinator checks an
+existing archive's SHA-256, then durably links the immutable artifact into the requesting job without transferring it again.
+A disposable index has a 4096-hint soft limit with seven-day expiry (pruned on publication, at most once per minute);
+it retains no archive data itself. Missing, expired, deleted or corrupt sources fall back to resumable uploads. Old
+coordinators ignore this optional request flag and retain the original upload protocol.
 Each worker session receives a private copy, using filesystem clones where supported, and cannot modify the cached distribution.
 Within one serial worker session, unchanged private workspaces are reused between iterations. Each reuse verifies a sealed
 inventory including installed measurement launchers and provenance captured for that stable private path. Generated outputs

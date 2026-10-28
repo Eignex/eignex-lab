@@ -24,6 +24,9 @@ class WorkerTreesTest {
             val bundle = archive(source, output, identity, runtimeOnly = true) {}
             assertEquals(kept.toSet(), bundle.files.map { it.path }.toSet())
             assertEquals(hashFile(output), bundle.sha256)
+            val repeated = root.resolve("repeated.zip")
+            assertEquals(bundle, archive(source, repeated, identity, runtimeOnly = true) {})
+            assertContentEquals(Files.readAllBytes(output), Files.readAllBytes(repeated))
             val restored = VerifiedCache(root.resolve("verified")).stage(bundle) { Files.newInputStream(output) }
             for (name in kept) assertEquals(name, Files.readString(restored.resolve(name)))
             val oldOutput = root.resolve("full.zip")

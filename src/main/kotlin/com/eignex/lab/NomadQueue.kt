@@ -294,7 +294,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
             try {
                 val first = platforms.first()
-                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25:${settings.release}", build, output)
+                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output)
                 val offset = artifacts.offset(job.id, bundle.sha256)
                 Files.newInputStream(output).use { stream -> stream.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, Files.size(output), offset, stream) }
                 platforms.map { bundle.copy(os = it.os, arch = it.arch) }

@@ -198,7 +198,9 @@ internal fun archive(tree: Path, output: Path, identity: WorkerBundle, runtimeOn
     require(paths.isNotEmpty())
     val files = mutableListOf<InputFile>(); var streamedBytes = 0L
     val archiveDigest = java.security.MessageDigest.getInstance("SHA-256")
-    ZipOutputStream(java.security.DigestOutputStream(Files.newOutputStream(output), archiveDigest)).use { zip ->
+    ZipOutputStream(java.security.DigestOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(output), 256 * 1024), archiveDigest)).use { zip ->
+        // Runtime distributions contain already-compressed jars; avoid recompressing them at the default level.
+        zip.setLevel(java.util.zip.Deflater.BEST_SPEED)
         // Empty directories carry runtime meaning too, including a detached checkout's .git/refs.
         for (directory in directories) {
             checkActive(); zip.putNextEntry(ZipEntry(directory).apply { time = 0 }); zip.closeEntry()

@@ -189,7 +189,9 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 withContext(CoordinatorIo.artifacts) {
                     check(workAllowed()); val s = call.auth(); val owner = call.request.headers["X-Lab-Attempt"]?.let { Json.decodeFromString<AttemptOwner>(it) } ?: throw ExecutionFenced("attempt required")
                     require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
-                    call.respond(UploadReply(artifacts.offset(s.jobId, call.parameters["sha"]!!)))
+                    val sha = call.parameters["sha"]!!
+                    val reused = if (call.request.queryParameters["reuse"] == "true") artifacts.reuse(s.jobId, sha) else null
+                    call.respond(UploadReply(reused ?: artifacts.offset(s.jobId, sha)))
                 }
             }
             put("/uploads/{sha}") {
@@ -198,6 +200,7 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                     require(owner.session == s.id && owner.allocation == s.allocation); store.execution.authorize(owner)
                     val bytes = call.request.queryParameters["bytes"]!!.toLong(); val offset = call.request.queryParameters["offset"]!!.toLong()
                     val result = call.receiveChannel().toInputStream().use { artifacts.put(s.jobId, call.parameters["sha"]!!, bytes, offset, it) }
+                    if (result == bytes && call.request.queryParameters["reuse"] == "true") artifacts.remember(s.jobId, call.parameters["sha"]!!)
                     call.respond(UploadReply(result))
                 }
             }

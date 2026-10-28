@@ -51,7 +51,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     return minOf(remainingLeaseMs(), (deadline - at) / 1_000_000)
                 }
                 val heap = (budget.memoryMiB / 3).coerceAtLeast(16)
-                val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, bundle.toolchain, bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
+                val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, buildToolchain(bundle.toolchain), bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
                 val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                     "LAB_SOURCE_COMMIT" to bundle.commit)
                 fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env) {
@@ -174,7 +174,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest((listOf(
         // Existing recipes keep their warm trees; only manifest-driven builds need the SDK identity extension.
         if (bundle.build?.benchManifest == null) "build-cache-v4" else "build-cache-v5",
-        bundle.repository, bundle.commit, bundle.os, bundle.arch, bundle.toolchain,
+        bundle.repository, bundle.commit, bundle.os, bundle.arch, buildToolchain(bundle.toolchain),
     ) + listOfNotNull(bundle.build?.benchManifest) + listOf(
         Json.encodeToString(bundle.buildOptions), Json.encodeToString(bundle.build?.tasks.orEmpty()),
         // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
@@ -269,3 +269,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         Files.walk(path).use { it.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     }
 }
+
+/** Historical source bundles included the worker release, which is unrelated to compiler outputs.
+ * Preserve explicit custom toolchains; the running JDK and build recipe are independently keyed above. */
+internal fun buildToolchain(toolchain: String): String =
+    if (Regex("jdk25:[a-f0-9]{40}").matches(toolchain)) "jdk25" else toolchain
