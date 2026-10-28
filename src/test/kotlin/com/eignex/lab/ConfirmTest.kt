@@ -194,5 +194,7 @@ class ConfirmTest {
     fun `a confirmation runs one priority above its schedule`() {
         val flips = Confirm.flips(listOf(optimization("3", proven = true)), listOf(optimization("3")))
         assertEquals(-1, Confirm.spec("s", ExperimentSpec("s", emptyList(), priority = -2), "a", "b", flips, 1).priority)
+        assertEquals(1, Confirm.spec("s", ExperimentSpec("s", emptyList(), priority = 0), "a", "b", flips, 1).priority)
+        assertEquals(101, Confirm.spec("s", ExperimentSpec("s", emptyList(), priority = 100), "a", "b", flips, 1).priority)
     }
 }

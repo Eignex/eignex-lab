@@ -106,7 +106,8 @@ class Runner(
         val spec = job.experiment ?: return
         if (spec.bench != null) return
         val series = job.name.substringBefore('@', "")
-        if (series.isEmpty() || series.endsWith(Confirm.SUFFIX) || store.schedules().none { it.name == series }) return
+        if (series.isEmpty() || series.endsWith(Confirm.SUFFIX)) return
+        val schedule = store.schedules().singleOrNull { it.name == series } ?: return
         val fingerprint = Experiments.fingerprint(spec)
         val previous = store.jobs(limit = PREVIOUS_RUNS, name = series)
             .filter { it.id < job.id && it.status == Status.DONE && it.experiment?.let(Experiments::fingerprint) == fingerprint }
@@ -116,7 +117,7 @@ class Runner(
         if (before == after) return
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
         if (flips.confirmable.isEmpty()) return
-        val confirmation = Confirm.spec(series, spec, before, after, flips, job.id)
+        val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id)
         if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
         log(job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +

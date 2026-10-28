@@ -11,6 +11,6 @@
   ],
   "base": {"backend": "reference", "solver": "cvc5", "timeout": "60000"},
   "parallel": 6,
-  "priority": -2,
+  "priority": 0,
   "confirm": true
 }

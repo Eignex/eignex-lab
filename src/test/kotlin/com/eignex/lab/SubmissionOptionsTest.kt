@@ -75,7 +75,9 @@ class SubmissionOptionsTest {
 
     @Test
     fun `measurement is stored directly for immediate submissions and schedule edits`() = testApplication {
-        val config = Config(dataDir = Files.createTempDirectory("measurement api"), passwordHash = null)
+        val root = Files.createTempDirectory("measurement api")
+        val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
+        val config = Config(dataDir = root, passwordHash = null, nomadQueueSettings = queue)
         val store = Store(config.database)
         val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", problems = listOf(mapOf("suite" to "s"))), 3600)
         application { api(config, store, HostReport("test", 4, "java", "vector", true, emptyList())) }

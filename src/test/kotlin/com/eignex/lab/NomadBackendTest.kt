@@ -101,6 +101,28 @@ class NomadBackendTest {
         assertEquals(Status.DONE, store.job(id)!!.status)
     }
 
+    @Test fun `auto native worker finishes its iteration then yields to a sweep without an infrastructure failure`() {
+        val id = setup(platform = NomadPlatform.MAC)
+        register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.create("status-sweep@abc", "main", emptyList(), experiment = ExperimentSpec("status-sweep@abc",
+            problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        assertTrue(store.execution.hasActiveAttempt(session.id))
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
+        assertNull(backend().claim(session.id, token, "allocation"))
+        assertEquals("drain", store.execution.session(session.id)!!.desired)
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
+    @Test fun `cloud workers continue claiming while a local reference waits`() {
+        setup(); register()
+        store.create("reference", "main", emptyList(), experiment = ExperimentSpec("reference",
+            problems = listOf(mapOf("suite" to "s")), base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")))
+        assertNotNull(backend().claim(session.id, token, "allocation"))
+        assertEquals("run", store.execution.session(session.id)!!.desired)
+    }
+
     @Test fun `sharing policy retires a bound worker only after its current accepted iteration`() {
         val id = setup()
         backend().reconcile(); register()

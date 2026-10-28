@@ -30,6 +30,6 @@
   ],
   "base": {"timeout": "60000", "param.source-validation": "true", "param.source-validation-gzip": "true"},
   "host": "auto",
-  "priority": -3,
+  "priority": 0,
   "confirm": true
 }

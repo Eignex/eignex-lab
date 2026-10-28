@@ -387,7 +387,7 @@ class PagesTest {
     }
 
     @Test
-    fun `an operator's host override takes local and cloud, stored as lab and aws, and the older names still`() {
+    fun `ordinary host overrides accept auto and cloud but cannot pin local`() {
         val config = lab(cores = 8, aws = "vcpuQuota=32\n")
         val store = Store(config.database)
         val id = store.create("e", "0123456789abcdef", emptyList(), 1, 0,
@@ -403,8 +403,14 @@ class PagesTest {
             assertEquals(HttpStatusCode.OK, cloud.status)
             assertContains(cloud.bodyAsText(), "placed on the cloud: a cloud node runs it")
             assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
-            assertContains(place("local").bodyAsText(), "placed locally")
-            assertEquals(Experiments.LAB_HOST, store.job(id)!!.experiment!!.host)
+            for (local in listOf("local", "lab")) {
+                val refused = place(local)
+                assertEquals(HttpStatusCode.BadRequest, refused.status)
+                assertContains(refused.bodyAsText(), Placement.LOCAL_RESERVED)
+                assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
+            }
+            assertEquals(HttpStatusCode.OK, place("auto").status)
+            assertEquals(Experiments.AUTO_HOST, store.job(id)!!.experiment!!.host)
             assertEquals(HttpStatusCode.OK, place("aws").status)
             assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
             assertContains(place("mac").bodyAsText(), "host must be local, cloud or auto")
@@ -415,8 +421,33 @@ class PagesTest {
     }
 
     @Test
+    fun `ordinary submissions reject local selectors and auto repairs an unadmitted legacy pin`() = testApplication {
+        val config = lab()
+        val store = Store(config.database)
+        val old = ExperimentSpec("old-profile", profile = ProfileMain("com.eignex.Main"),
+            base = mapOf("ref" to "a".repeat(40)), description = "legacy local profile",
+            nodeTags = NodeSelector(require = setOf("local"), exclude = setOf("cloud")))
+        val id = store.create(old.name, "a".repeat(40), emptyList(), experiment = old)
+        application { api(config, store, host) }
+        for (selector in listOf("""{"require":["local"]}""", """{"exclude":["cloud"]}""")) {
+            val refused = client.post("/experiments") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"profile","description":"test placement","base":{"ref":"${"a".repeat(40)}"},"profile":{"main":"com.eignex.Main"},"nodeTags":$selector}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, refused.status)
+            assertContains(refused.bodyAsText(), Placement.LOCAL_RESERVED)
+        }
+        val moved = client.post("/jobs/$id/host") {
+            contentType(ContentType.Application.Json); setBody("""{"host":"auto"}""")
+        }
+        assertEquals(HttpStatusCode.OK, moved.status)
+        assertEquals(Experiments.AUTO_HOST, store.job(id)!!.experiment!!.host)
+        assertEquals(NodeSelector(), store.job(id)!!.experiment!!.nodeTags)
+    }
+
+    @Test
     fun `a batch of an active experiment is refused, and a cancelled one no longer counts`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = lab()
         val store = Store(config.database)
         fun spec(name: String, suite: String) = """{"name": "$name", "description": "d", "problems": {"suite": "$suite"},
             "grid": {"ref": ["0123456789abcdef", "fedcba9876543210"]}, "seeds": [1, 2], "repeats": 3}"""

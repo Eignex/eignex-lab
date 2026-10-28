@@ -9,6 +9,18 @@ package com.eignex.lab
  * Nomad replacements retain the frozen recipe and render case commands for their own worker platform.
  */
 object Placement {
+    const val LOCAL_RESERVED = "local-only placement is reserved for sweeps and reference runs; use auto placement"
+
+    /** Ordinary jobs may borrow idle native capacity, but cannot pin themselves to it. */
+    fun requireAutomatic(spec: ExperimentSpec, name: String) {
+        if (localOnly(spec, name)) return
+        require("local" !in spec.nodeTags?.require.orEmpty() && "cloud" !in spec.nodeTags?.exclude.orEmpty()) { LOCAL_RESERVED }
+    }
+
+    /** An explicit move to auto also removes the old local-only location selectors. */
+    fun automatic(spec: ExperimentSpec): ExperimentSpec = spec.copy(host = Experiments.AUTO_HOST,
+        nodeTags = spec.nodeTags?.let { it.copy(require = it.require - "local", exclude = it.exclude - "cloud") })
+
     /**
      * The jobs that stay on the local machine whatever is free: scheduled runs (`<schedule>@<sha>`) and their
      * confirmations, which the sweeps and the trend compare against each other on one machine; reference runs, which
@@ -60,6 +72,7 @@ object Placement {
      *  placed without them, so its name alone never takes it off the local machine. */
     fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): String {
         NodeTags.validate(spec.nodeTags)
+        requireAutomatic(spec, name)
         val local = NodeTags.matches(spec.nodeTags, config.localNodeTags)
         val cores = runCatching { Experiments.arms(spec).maxOf { it.cores } }.getOrDefault(Int.MAX_VALUE)
         val cloud = cloudCoreLimit(spec, config, cloudSchedule(name, schedules)) >= cores
@@ -68,8 +81,8 @@ object Placement {
             require(local) { "this job stays local, but its node tags do not match the local node" }
             return Experiments.LAB_HOST
         }
-        require(local || cloud) { "no configured node matches the required and excluded tags" }
-        return if (!local) Experiments.AWS_HOST else if (cloud) Experiments.AUTO_HOST else Experiments.LAB_HOST
+        require(cloud) { "$LOCAL_RESERVED; no compatible cloud worker is configured for these node tags and resources" }
+        return if (local) Experiments.AUTO_HOST else Experiments.AWS_HOST
     }
 
     /** Largest compatible provider-neutral cloud budget. */
