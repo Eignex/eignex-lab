@@ -126,6 +126,12 @@ Record the resulting registry digest in pool configuration. The pinned multi-arc
 providers; no cloud CLI, provider credential or database is included. The image entrypoint starts its allocation's
 supervisor before invoking the requested worker command.
 
+The worker includes MiniZinc 2.10.1 and its bundled reference solvers from a pinned multi-architecture distribution.
+MiniZinc is on `PATH` for compilation and explicit reference runs. Checkers may only validate supplied assignments or
+proofs; they must never invoke a full solver, search for a missing assignment, or rerun an optimization problem.
+MiniZinc claims remain `unsupported` until an independent assignment checker is available. SMT-LIB model checking
+uses Dolmen; models it cannot evaluate stay undecided without a solver fallback.
+
 ## Connected coordinator and worker protocol
 
 Run `eignex-lab nomad-coordinator /private/path/coordinator.json` with the ordinary `LAB_DATA`, `LAB_JOBS` and

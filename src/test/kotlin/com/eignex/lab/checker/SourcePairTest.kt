@@ -4,7 +4,6 @@ import com.eignex.lab.Problem
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -144,27 +143,6 @@ class SourcePairTest {
         assertEquals(LabCheck.NOT_RUN, partial.state)
         assertContains(partial.reason, "original source not found on the lab")
         assertEquals(1, seen.size, "no check runs on half a pair")
-    }
-
-    @Test
-    fun `MiniZinc with Gecode checks the witness against the pair it solved, not the earlier data's model`() {
-        val install = MiniZincInstall()
-        val got = runCatching { install.tool() }
-        if (System.getenv("LAB_REQUIRE_CHECKERS") == "1") got.getOrThrow()
-        assumeTrue(got.isSuccess, "MiniZinc is not available here")
-        ghoulomb()
-        val checker = SourceChecker(listOf(MiniZincChecker(install::tool)), SourceLocator(corpus, hash = ::sha256), Files.createTempDirectory("checks").toFile())
-        fun record(witness: String) = buildJsonObject {
-            put("solver", "klause")
-            put("kind", "satisfy")
-            put("feasible", true)
-            put("finalWitness", witness)
-            put("sourceHashes", buildJsonObject { hashes(later).forEach { (k, v) -> put(k, v) } })
-        }
-        // x = 3 satisfies the 2013 model (x = n) and violates the 2010 one (x = 1) beside the first copy of the data.
-        val valid = checker.check(problem, record("x = 3;"))!!
-        assertEquals(LabCheck.VALID, valid.state, valid.reason)
-        assertEquals(LabCheck.INVALID, checker.check(problem, record("x = 1;"))!!.state)
     }
 
     // Repository fixtures: the pair at the case's pinned commit.

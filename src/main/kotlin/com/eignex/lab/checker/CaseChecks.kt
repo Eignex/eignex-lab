@@ -22,12 +22,9 @@ import java.util.concurrent.Future
 object Checkers {
     fun of(config: Config): SourceChecker {
         val solchecker = Solchecker(dir(config))
-        val minizinc = MiniZincInstall()
         val dolmen = Dolmen(dir(config))
-        val z3 = Z3Install()
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(minizinc::tool),
-            SmtChecker(dolmen::binary, algebraic = Z3AlgebraicCheck(z3::tool))),
+        adapters = listOf(Xcsp3Checker(), MpsChecker(solchecker::binary), MiniZincChecker(), SmtChecker(dolmen::binary)),
         locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))

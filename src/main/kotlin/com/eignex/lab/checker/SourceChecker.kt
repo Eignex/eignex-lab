@@ -19,7 +19,7 @@ data class CheckCase(val record: JsonObject, val sources: SourceFiles, val witne
 
 /**
  * An adapter's verdict, with the checker version and binary it ran. A verdict another checker reached in the adapter's
- * place, as Z3 does for an SMT-LIB model Dolmen cannot read, names that checker's [policy] and [checker]. [diagnostic]
+ * place names that checker's [policy] and [checker]. [diagnostic]
  * is what the checker was asked and said, kept short.
  */
 data class Verdict(
@@ -34,7 +34,7 @@ data class Verdict(
     val inputs: List<CheckedInput> = emptyList(),
 )
 
-/** One external checker for one source format ([format], as `klause-bench select` names it). */
+/** One assignment or proof checker for a source format. Full solvers must never be used as checkers. */
 interface FormatChecker {
     val format: String
     val policy: String
