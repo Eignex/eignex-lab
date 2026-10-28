@@ -35,6 +35,17 @@ class MiniZincPointTest {
     }
 
     @Test
+    fun `parser constants do not replace or add original variable obligations`() {
+        val captured = stdout.replace("% klause-assignment-end",
+            "% klause-assignment: __const_int_-10039_1826 = -10039;\n% klause-assignment-end")
+
+        val bound = MiniZincPoint.bind(MiniZincFrame(fzn, "", captured), "14")
+
+        assertFalse("__const_int_" in bound.model)
+        kotlin.test.assertEquals(1, bound.diagnosticCoordinates)
+    }
+
+    @Test
     fun `missing hidden coordinates cannot be completed by the compiler`() {
         assertFailsWith<IllegalArgumentException> {
             MiniZincPoint.bind(MiniZincFrame(fzn, "", stdout.replace("% klause-assignment: hidden = 14;\n", "")), "14")

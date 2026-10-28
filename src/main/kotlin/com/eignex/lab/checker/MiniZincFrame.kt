@@ -19,10 +19,10 @@ data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdo
 
 /** Protocol binding only; MiniZinc evaluates the constraints and renders the output model. */
 internal object MiniZincPoint {
-    private val scalar = Regex("([A-Za-z][A-Za-z0-9_]*|_[A-Za-z0-9_]+)\\s*=\\s*(-?[0-9]+|true|false);")
+    private val scalar = Regex("([^\\s=]+)\\s*=\\s*(-?[0-9]+|true|false);")
     private val objective = Regex("\\b(minimize|maximize)\\s+([A-Za-z_][A-Za-z0-9_]*|-?[0-9]+)\\s*;\\s*$")
 
-    data class Bound(val model: String, val native: String, val optimize: Boolean)
+    data class Bound(val model: String, val native: String, val optimize: Boolean, val diagnosticCoordinates: Int)
 
     fun bind(frame: MiniZincFrame, claimedObjective: String?): Bound {
         require(listOf(frame.flatZinc, frame.outputModel, frame.stdout).all { it.length <= 8 * 1024 * 1024 })
@@ -47,7 +47,7 @@ internal object MiniZincPoint {
             Regex("var\\s+[^:]+:\\s*([A-Za-z_][A-Za-z0-9_]*)\\b").find(it)?.groupValues?.get(1)
                 ?: error("unsupported scalar declaration")
         }.toSet()
-        require(point.keys - "_objective" == variables) { "point does not cover exactly the original scalar variables" }
+        require(point.keys.containsAll(variables)) { "point does not cover all original scalar variables" }
         require(items.none { it.startsWith("array ") && "var " in it && '=' !in it }) {
             "unnamed array variables are unsupported"
         }
@@ -64,7 +64,7 @@ internal object MiniZincPoint {
         require(assignments.all { it.matches(Regex("[A-Za-z_][A-Za-z0-9_]*\\s*=.+;", RegexOption.DOT_MATCHES_ALL)) })
         val model = buildString {
             items.filterNot { it == solve || it.startsWith("output ") }.forEach { appendLine(it) }
-            for ((name, value) in point) if (name != "_objective") appendLine("constraint $name = $value;")
+            for ((name, value) in point) if (name in variables) appendLine("constraint $name = $value;")
             for (assignment in assignments) {
                 val name = assignment.substringBefore('=').trim()
                 if (name != "_objective") appendLine("constraint $name = ${assignment.substringAfter('=').trim()}")
@@ -73,7 +73,7 @@ internal object MiniZincPoint {
             appendLine("output [];")
             appendLine("solve satisfy;")
         }
-        return Bound(model, native, target != null)
+        return Bound(model, native, target != null, (point.keys - variables - "_objective").size)
     }
 
     /** Split compiler-generated statements without interpreting their constraints. */
