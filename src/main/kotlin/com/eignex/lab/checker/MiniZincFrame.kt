@@ -91,7 +91,7 @@ internal object MiniZincPoint {
         return result
     }
 
-    fun discharged(text: String): Boolean = items(text) == listOf("solve satisfy;")
+    fun discharged(text: String): Boolean = items(text).singleOrNull()?.matches(Regex("solve\\s+satisfy\\s*;")) == true
 
     fun inconsistent(text: String): Boolean = items(text).map { it.replace(Regex("\\s+"), "") } ==
         listOf("constraintbool_eq(false,true);", "solvesatisfy;")
