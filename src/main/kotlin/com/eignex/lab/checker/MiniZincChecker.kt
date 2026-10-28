@@ -88,7 +88,8 @@ class MiniZincChecker : FormatChecker {
             return verdict(LabCheck.INVALID, "the retained output model disagrees with the recorded model witness", rendered)
         }
         return verdict(LabCheck.VALID,
-            "MiniZinc discharged the pinned integer/Boolean FlatZinc frame and reproduced its model witness; no optimality claim", rendered)
+            "MiniZinc discharged the pinned integer/Boolean FlatZinc frame and reproduced its model witness; " +
+                "${bound.diagnosticCoordinates} extra diagnostic coordinates excluded; no optimality claim", rendered)
     }
 
     companion object {

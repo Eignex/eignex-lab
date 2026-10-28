@@ -145,6 +145,8 @@ For shell-backed transports, pass the JSON parameter map compressed with Zstanda
 keeps the command below the per-argument limit; decoded input is capped at 24 MiB. A replay may select the last complete
 native solution and omit unrelated record statistics when it retains the original record/stdout hashes and selection
 description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
+The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
+extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
 
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).
