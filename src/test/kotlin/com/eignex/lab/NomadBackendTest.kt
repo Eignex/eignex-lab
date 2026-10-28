@@ -25,6 +25,42 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `small durable commits remain responsive when all bulk upload workers are blocked`() {
+        setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val entered = CountDownLatch(4); val release = CountDownLatch(1)
+        val blocked = object : ArtifactStore by artifacts {
+            override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: java.io.InputStream): Long {
+                entered.countDown(); check(release.await(10, SECONDS))
+                return artifacts.put(job, sha, bytes, offset, input)
+            }
+        }
+        val server = embeddedServer(Netty, configure = {
+            connectors.add(EngineConnectorBuilder().apply { host = "127.0.0.1"; port = 0 })
+        }) { workerApi(store, backend(), blocked) { true } }.start()
+        try {
+            val port = kotlinx.coroutines.runBlocking { server.engine.resolvedConnectors().single().port }
+            JavaHttpClient.newHttpClient().use { http ->
+                fun request(path: String) = JavaHttpRequest.newBuilder(URI("http://127.0.0.1:$port/worker/v1/sessions/${session.id}/$path"))
+                    .timeout(Duration.ofSeconds(3)).header("Authorization", "Bearer $token")
+                    .header("X-Lab-Allocation", "allocation").header("X-Lab-Identity", jwt())
+                val uploads = (0..3).map { index ->
+                    val bytes = "bulk-$index".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+                    http.sendAsync(request("uploads/$sha?bytes=${bytes.size}&offset=0").header("X-Lab-Attempt", Json.encodeToString(claim.owner))
+                        .PUT(JavaHttpRequest.BodyPublishers.ofByteArray(bytes)).build(), JavaHttpResponse.BodyHandlers.ofString())
+                }
+                assertTrue(entered.await(2, SECONDS))
+                val bytes = "small result".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
+                val body = WorkerInlineCommit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.out" to sha)),
+                    mapOf(sha to Base64.getEncoder().encodeToString(bytes)))
+                val response = http.send(request("commit-inline").POST(JavaHttpRequest.BodyPublishers.ofString(Json.encodeToString(body))).build(), JavaHttpResponse.BodyHandlers.ofString())
+                assertEquals(204, response.statusCode()); assertTrue(uploads.none { it.isDone })
+                release.countDown(); uploads.forEach { assertEquals(200, it.get(3, SECONDS).statusCode()) }
+            }
+        } finally { release.countDown(); server.stop(0, 1000) }
+    }
+
     @Test fun `cached signing keys preserve token expiry notice rotation and fail closed on expired refresh`() {
         setup()
         var clock = 0L

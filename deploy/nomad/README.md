@@ -485,13 +485,18 @@ test compilation and fixture dependencies are omitted too. JVM CLI preparations 
 Workers reuse verified input distributions across allocations under `LAB_WORKER_CACHE_ROOT/inputs`. The node-local
 cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect readers during staging and compilation.
 Cold preparation seeds its published distribution into this cache so a solve on that node can reuse it immediately.
-Each attempt receives a private copy, using filesystem clones where supported, and cannot modify the cached distribution.
+Each worker session receives a private copy, using filesystem clones where supported, and cannot modify the cached distribution.
+Within one serial worker session, unchanged private workspaces are reused between iterations. Each reuse verifies a sealed
+inventory including installed measurement launchers and provenance captured for that stable private path. Generated outputs
+are removed; changed or missing sealed files discard the workspace and repeat trusted setup. No mutable workspace is shared between sessions. This avoids
+copying thousands of files and starting provenance JVMs for every case. Allocation garbage collection reclaims these trees.
 
 Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,
 filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger captures retain
 resumable uploads; successful chunk acknowledgements supply the next offset, while ambiguous responses re-query progress.
 Workers fall back to the original protocol when a coordinator does not support inline acceptance. Storage is freshly
 validated before each bounded batch, and accepted-manifest retries retain the same fencing and idempotency rules.
+Small commits use a separate bounded I/O dispatcher so bulk input/output streams cannot occupy all their execution slots.
 
 Signing keys are cached for at most thirty seconds; token signatures, expiry and allocation ownership are checked on every
 request. Unknown key ids trigger a bounded refresh for rotation, and expired key sets cannot authenticate during a failed

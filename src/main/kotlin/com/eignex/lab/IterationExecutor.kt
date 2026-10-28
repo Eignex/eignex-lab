@@ -15,6 +15,7 @@ class IterationExecutor(
     private val launcher: String, private val os: String, private val arch: String,
     private val buildCache: WorkerBuildCache? = null,
     private val inputCache: WorkerInputCache? = null,
+    private val privateWorkspaces: WorkerWorkspaces? = null,
 ) {
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
             prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingRunMs: () -> Long? = { null },
@@ -39,20 +40,24 @@ class IterationExecutor(
         if (manifest.inputCorpus != null) {
             withInput(manifest.inputCorpus, ::checkRun) { input -> copyTree(input, corpus, ::checkRun) }
         } else Files.createDirectories(corpus)
+        val fresh = mutableSetOf<String>()
         val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            val destination = directory.resolve("worktrees").resolve(sha)
+            val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
+            privateWorkspaces?.reuse(key, ::checkRun)?.let { return@associateWith it }
+            fresh += sha
             fun copy(cached: Path): Path {
                 // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                copyTree(cached, destination, ::checkRun)
-                return destination
+                return privateWorkspaces?.create(key, ::checkRun) { copyTree(cached, it, ::checkRun) }
+                    ?: directory.resolve("worktrees").resolve(sha).also { copyTree(cached, it, ::checkRun) }
             }
             withInput(bundle, ::checkRun) { source ->
                 if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                     .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
             }
         }
-        if (manifest.experiment.measuresCli) for (worktree in worktrees.values) {
+        if (manifest.experiment.measuresCli) for ((sha, worktree) in worktrees) {
+            if (sha !in fresh) continue
             val exit = supervisor.run(listOf("bash", "-c", CliMeasurements.install(worktree.toString(), os == "mac")), worktree,
                 environment(), directory.resolve("measurement-setup.out"), directory.resolve("measurement-setup.err"), 60,
                 runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
@@ -61,11 +66,16 @@ class IterationExecutor(
         // Provenance binds absolute distribution/runtime paths and launcher metadata. Capture only after
         // relocation and measurement installation, on the host and in the tree that actually runs the cases.
         if (!manifest.experiment.isProfile && manifest.experiment.bench == null) for ((sha, worktree) in worktrees) {
+            if (sha !in fresh) continue
             if (manifest.arms.none { it.sha == sha && it.arm.values["backend"] != REFERENCE_BACKEND }) continue
             val exit = supervisor.run(listOf("bash", "-c", Experiments.captureProvenance(worktree.toString())), worktree,
                 environment(), directory.resolve("provenance-$sha.out"), directory.resolve("provenance-$sha.err"), 60,
                 runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
             if (exit != 0) throw WorkerBuildFailure("execution provenance capture failed (exit $exit)")
+        }
+        if (privateWorkspaces != null) for (sha in fresh) {
+            val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
+            privateWorkspaces.seal(ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle)), worktrees.getValue(sha), ::checkRun)
         }
         prepared()
         val timedOut = java.util.concurrent.atomic.AtomicBoolean()

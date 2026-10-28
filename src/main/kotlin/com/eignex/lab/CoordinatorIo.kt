@@ -6,5 +6,7 @@ import kotlinx.coroutines.Dispatchers
 internal object CoordinatorIo {
     val control = Dispatchers.IO.limitedParallelism(8)
     val artifacts = Dispatchers.IO.limitedParallelism(4)
+    // Bounded small commits must not wait behind multi-megabyte input streams.
+    val results = Dispatchers.IO.limitedParallelism(4)
     val capacity = Dispatchers.IO.limitedParallelism(2)
 }
