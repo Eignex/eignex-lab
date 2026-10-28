@@ -50,7 +50,7 @@ class MiniZincPointTest {
 
     @Test
     fun `only a discharged compiler output is accepted without backend completion`() {
-        assertTrue(MiniZincPoint.discharged("% compiler\nsolve satisfy;\n"))
+        assertTrue(MiniZincPoint.discharged("% compiler\nsolve  satisfy;\n"))
         assertFalse(MiniZincPoint.discharged("var 0..1: x; solve satisfy;"))
         assertFalse(MiniZincPoint.discharged("constraint int_eq(1,2); solve satisfy;"))
         assertTrue(MiniZincPoint.inconsistent("constraint bool_eq(false, true); solve satisfy;"))
