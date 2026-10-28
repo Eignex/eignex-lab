@@ -74,7 +74,11 @@ class ValidationTest {
     private fun case(arm: String, problem: String, record: String) =
         CaseResult(0, Status.DONE, Problem("s", problem, "s", format = "MINIZINC"), arm, null, Json.parseToJsonElement(record))
 
-    private fun committed(file: String) = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
+    private fun committed(file: String): ExperimentSpec {
+        val body = Json.parseToJsonElement(java.io.File("deploy/specs/$file").readText())
+        val input = scheduleInput(kotlinx.serialization.json.JsonObject(mapOf("experiment" to body)))
+        return Json.decodeFromJsonElement(ExperimentSpec.serializer(), input.getValue("experiment"))
+    }
 
     private val scheduled = listOf("status-sweep.json", "klause-reference.json", "klause-reference-ls.json",
         "klause-reference-bt.json", "klause-reference-parallel.json")
