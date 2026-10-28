@@ -23,7 +23,7 @@ object Placement {
      * need the local machine's reference solvers; and an analysis job, which reads
      * captures kept on the local machine. [cloudSchedule] says [name] is a run of a schedule that opts in to the cloud
      * ([Placement.cloudSchedule]): such a run may go to either unless another of these reasons holds, and its
-     * confirmations still stay.
+     * legacy confirmations still stay. Repository bench confirmations retain their original placement and platform.
      */
     fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean = localOnlyReason(spec, name, cloudSchedule) != null
 

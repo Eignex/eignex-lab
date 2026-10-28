@@ -103,7 +103,8 @@ placement. Once source preparation or session admission starts, the recipe is fr
 The old `lab host` and `lab machines` commands and their API overrides are retired.
 
 Schedules use auto by default. Repository recipes can request `"tags": ["local"]`; reference runs and
-regression confirmations retain their local-only execution policy. Schedule responses expose the same editable tags
+legacy confirmations retain their local-only execution policy. Repository bench confirmations preserve the original
+run's placement and pinned build platform instead of being forced onto a native worker. Schedule responses expose the same editable tags
 format, including the local tag for historical local schedules.
 
 The **Nodes** tab shows the local machine, cloud pools, active nodes, and their allocations. To start a specific
