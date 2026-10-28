@@ -49,6 +49,16 @@ class BenchWorkflowTest {
         assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(base = mapOf("engine" to "solver-specific")), 4) }
     }
 
+    @Test fun `trend fingerprints preserve opaque parameters that share legacy checker names`() {
+        val spec = ExperimentSpec("opaque", bench = BenchSpec("bench.json"),
+            base = mapOf("param.source-validation" to "suite-policy"))
+        assertEquals(Experiments.trendFingerprint(spec),
+            Experiments.trendFingerprint(spec.copy(bench = spec.bench!!.copy(sourceValidation = true))))
+        assertNotEquals(Experiments.trendFingerprint(spec),
+            Experiments.trendFingerprint(spec.copy(base = mapOf("param.source-validation" to "different-policy"))))
+        assertEquals(spec.base, SourceValidation.unrequested(spec).base)
+    }
+
     @Test fun `confirmations preserve repository request placement and exact pinned workloads`() {
         val frozen = BenchRuns.problem(workload())
         val spec = ExperimentSpec("sweep", repository = "Eignex/example", host = "aws", nodeTags = NodeSelector(require = setOf("arch:x86_64")),

@@ -62,6 +62,7 @@ object SourceValidation {
 
     /** [spec] without the validation request, wherever it was set: what the solver itself was asked to do. */
     fun unrequested(spec: ExperimentSpec): ExperimentSpec {
+        spec.bench?.let { return spec.copy(bench = it.copy(sourceValidation = false)) }
         val keys = SCHEDULED.keys
         return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys,
             bench = spec.bench?.copy(sourceValidation = false))
