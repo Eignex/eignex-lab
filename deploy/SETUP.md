@@ -33,6 +33,13 @@ Fetch raw artifacts promptly: ended jobs trim after seven days or sooner on low 
 
 Use `deploy/lab update` for code updates between cases. Check `logs/update.log` if an update fails.
 
+On macOS, installation registers Gradle maintenance every five minutes for `$LAB_DATA/gradle` and `~/.gradle`.
+Each local build cache has a 2 GiB target; eviction waits for Gradle's cache lock and removes older outputs first.
+Stopped daemons' logs rotate above 20 MiB, retaining three compressed tails and expiring logs after seven days.
+Active logs stay intact until the daemon exits. These are periodic limits; active logs and busy caches may temporarily
+exceed them. Configure `LAB_GRADLE_CACHE_GIB` and `LAB_GRADLE_LOG_MIB` in `lab.env` and rerun installation.
+The latest report is `$LAB_DATA/maintenance/gradle-maintenance.json`. Other caches, dependencies and JDKs are preserved.
+
 ## Native and cloud execution with Nomad
 
 Use the [Nomad runbook](nomad/README.md) for the native Mac client, process supervisor, queue admission and capacity
@@ -72,3 +79,16 @@ coordinator runs, stop only the coordinator for a final synchronization and dire
 verify existing artifact reads before deleting the original copy. Keep all historical bundles; the runtime pruner
 does not remove them. The results volume must pass the same mount, disk access and free-space checks as `LAB_JOBS`.
 Admission holds pause new work; existing worker lease and progress updates remain available.
+
+The checker input cache at `$LAB_DATA/nomad/check-inputs` can also live on the results volume, with a symlink
+at its original path. Saved jobs may refer to that path through `nomad/prepared-corpus`; preserve it when moving
+the cache. Copy and verify the files while the coordinator runs, then stop only the coordinator for the final
+consistency check and directory switch. Restart it promptly to preserve worker leases, verify existing input
+reads and checking progress, and only then remove the internal copy.
+
+Use the same canonical external corpus directory for `LAB_CORPUS` and `LAB_SHARED_INPUT_ROOT`, including the
+coordinator service environment, native queue target and native-service configuration. Updating `LAB_CORPUS`
+alone leaves native workers and source checking on their separate shared-input root. Merge and verify existing
+inputs before changing roots; drain native sessions and stop the coordinator for the switch so active input pins
+are not copied across filesystems. Keep a symlink at the old shared-input path for frozen worker recipes and saved
+job references, then restore scheduling and resume jobs after checking reads through both paths.
