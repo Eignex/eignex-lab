@@ -54,8 +54,12 @@ internal object MiniZincReference {
     }
 
     fun run(instance: Instance, solver: String, budget: Budget, processors: Int, free: Boolean): ReferenceResult {
-        val cmd = command(instance, solver, budget, processors, free)
         val startNanos = System.nanoTime()
+        val identity = MiniZincIdentity.capture(solver, budget.timeoutMillis)
+        val remaining = budget.timeoutMillis - (System.nanoTime() - startNanos) / 1_000_000
+        check(remaining > 0) { "MiniZinc identity exhausted the reference case budget" }
+        val cmd = command(instance, identity.solver, Budget(remaining), processors, free)
+            .let { listOf(identity.binary.path) + it.drop(1) }
         val process = ProcessBuilder(cmd).start()
         process.outputStream.close()
         // A solve that ignores its time limit must not hang the case; the lab's own case timeout is the backstop.
@@ -84,7 +88,7 @@ internal object MiniZincReference {
         }
         drain.join(GRACE_MS)
         val exit = process.exitValue()
-        val stats = LinkedHashMap(parsed.stats)
+        val stats = LinkedHashMap(parsed.stats + identity.stats)
         if (exit != 0 && parsed.feasible == null) {
             check(killed.get()) { "minizinc failed (exit $exit): ${stderr.toString().take(STDERR_CAP)}" }
             stats["killed"] = "hard-timeout"

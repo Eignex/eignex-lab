@@ -212,17 +212,15 @@ object References {
     }
 
     /**
-     * The rows of one problem that speak for a run on [source]. A row bound to that source does. An unbound row, from
-     * before sources were kept, does too unless a row bound to another source shows the name has meant other files,
-     * when it could be from either and is left out. A run on [MIXED_SOURCES] matches nothing, and a run that recorded
-     * no source takes the unbound rows, else the bound ones.
+     * The rows of one problem that speak for a run on [source]. A known source requires the identical source binding;
+     * a problem name cannot bind a historical verdict to model bytes. A run on [MIXED_SOURCES] matches nothing.
+     * Runs without source evidence retain the historical unbound view, else the bound view.
      */
     fun applicable(rows: List<Reference>, source: String?): List<Reference> {
         if (source == MIXED_SOURCES) return emptyList()
         val (bound, unbound) = rows.partition { it.sourceIdentity != null }
         if (source == null) return unbound.ifEmpty { bound }
-        val (same, other) = bound.partition { it.sourceIdentity == source }
-        return if (other.isEmpty()) same + unbound else same
+        return bound.filter { it.sourceIdentity == source }
     }
 
     /** The solvers whose rows from before [Reference.version] was kept are stale: MPS references, whose solutions
