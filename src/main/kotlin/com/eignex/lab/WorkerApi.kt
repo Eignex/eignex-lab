@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 @Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
 @Serializable data class WorkerPhase(val owner: AttemptOwner, val phase: String)
+@Serializable data class WorkerPreparationProgress(val owner: AttemptOwner, val progress: PreparationProgress)
 @Serializable data class WorkerBuildError(val owner: AttemptOwner, val detail: String)
 @Serializable data class WorkerProgress(val owner: AttemptOwner, val index: Int)
 @Serializable data class LeaseReply(val leaseMs: Long, val runRemainingMs: Long? = null)
@@ -65,6 +66,11 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 // Lease and status updates must survive admission holds.
                 val s = call.auth(); val body = Json.decodeFromString<WorkerPhase>(call.bodyText()); require(body.owner.session == s.id && body.owner.allocation == s.allocation)
                 store.execution.phase(body.owner, body.phase); call.respond(HttpStatusCode.NoContent)
+            }
+            post("/preparation-progress") {
+                val s = call.auth(); val body = Json.decodeFromString<WorkerPreparationProgress>(call.bodyText(16 * 1024))
+                require(body.owner.session == s.id && body.owner.allocation == s.allocation)
+                store.execution.preparationProgress(body.owner, body.progress); call.respond(HttpStatusCode.NoContent)
             }
             post("/progress") {
                 // Lease and status updates must survive admission holds.

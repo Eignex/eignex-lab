@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -44,7 +45,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
                           private val os: String, private val arch: String,
                           private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
-                          private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null) {
+                          private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null,
+                          private val trace: PreparationTrace = PreparationTrace()) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -60,23 +62,23 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
         fun run(tree: Path, command: String, output: Path = log) {
             checkActive()
-            val exit = supervisor.run(listOf("bash", "-c", command), tree, env, output, errors, timeout,
-                graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining)
+            val exit = trace.step(if (output.fileName.toString().startsWith("features-")) "classification" else "selection") { supervisor.run(listOf("bash", "-c", command), tree, env, output, errors, timeout,
+                graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining) }
             checkPreparationExit(exit) { "preparation command failed (exit $exit): " + Files.readString(errors).takeLast(8192) }
         }
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            fun copy(built: Path): Path {
+            fun copy(built: Path): Path = trace.step("workspace") {
                 val runtimeOnly = WorkerTrees.runtimeOnly(manifest.experiment)
-                privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, runtimeOnly)?.let { return it }
+                privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, runtimeOnly)?.let { return@step it }
                 val tree = directory.resolve("worktrees/$sha")
                 if (runtimeOnly) WorkerTrees.copyRuntime(built, tree, ::checkActive) else WorkerTrees.copy(built, tree, ::checkActive)
-                return tree
+                tree
             }
             fun prepare(input: Path): Path = if (bundle.build == null) copy(input)
-                else builds.withPrepared(bundle, input, manifest.budget, env, remainingRunMs, ::remaining, ::copy)
-            inputCache?.use(bundle, ::checkActive, { download(bundle) }, ::prepare)
-                ?: prepare(cache.stage(bundle, ::checkActive) { download(bundle) })
+                else builds.withPrepared(bundle, input, manifest.budget, env, remainingRunMs, ::remaining, trace, ::copy)
+            trace.step("inputs") { inputCache?.use(bundle, ::checkActive, { download(bundle) }, ::prepare)
+                ?: prepare(cache.stage(bundle, ::checkActive) { download(bundle) }) }
         }
         val primary = prepared.getValue(manifest.arms.first().sha)
         val json = Json { ignoreUnknownKeys = true }
@@ -117,7 +119,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 problems(asked - "files", "selection-$index")
             }
         }.map { group -> group.map { if (benchPlan != null) it else it.copy(model = null, data = null, includeDirs = emptyList()) } }
-        val selected = selectProblems(raw)
+        val selected = trace.step("selection") { selectProblems(raw) }
         require(selected.size == raw.size)
         val selections = if (spec.isProfile || benchPlan != null) selected else {
             val resolved = selected.flatten().distinctBy { it.suite to it.problem }.groupBy { it.suite }.flatMap { (suite, group) ->
@@ -141,31 +143,38 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             checkActive()
         }
         val artifacts = mutableMapOf<String, String>()
+        fun transfer(file: Path): String = trace.step("upload") { upload(file) }
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive).also { built ->
+            trace.step("archive") { archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive) }.also { built ->
                 // The first solve on this node should reuse the distribution just built here, without a round trip.
-                if (inputCache != null) {
+                trace.step("cache-publication") { if (inputCache != null) {
                     val input = { Files.newInputStream(directory.resolve("$sha.zip")) }
                     if (WorkerTrees.runtimeOnly(spec)) inputCache.useRuntime(built, ::checkActive, input) { }
                     else inputCache.use(built, ::checkActive, input) { }
-                }
-                artifacts["preparation/$sha.zip"] = upload(directory.resolve("$sha.zip"))
+                } }
+                artifacts["preparation/$sha.zip"] = transfer(directory.resolve("$sha.zip"))
             }
         }
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
             .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.plus(
                 benchPlan?.cases.orEmpty().flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
-        val sharedInputs = if (shared != null) shared.publish(inputPaths, ::checkActive) else emptyList()
+        val sharedInputs = trace.step("shared-inputs") { if (shared != null) shared.publish(inputPaths, ::checkActive) else emptyList() }
         val corpusBundle = if (shared == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
-            archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), checkActive = ::checkActive)
-                .also { artifacts["preparation/corpus.zip"] = upload(directory.resolve("corpus.zip")) }
+            trace.step("archive") { archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), checkActive = ::checkActive) }
+                .also { artifacts["preparation/corpus.zip"] = transfer(directory.resolve("corpus.zip")) }
         } else null
         for (name in Files.list(directory).use { paths -> paths.map { it.fileName.toString() }.filter { it in setOf("setup.log", "setup.err") || it.endsWith(".jsonl") }.toList() }) {
             val path = directory.resolve(name)
-            if (Files.isRegularFile(path)) artifacts["preparation/$name"] = upload(path)
+            if (Files.isRegularFile(path)) artifacts["preparation/$name"] = transfer(path)
         }
         require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
+        val timingFile = directory.resolve("preparation-timings.json")
+        Files.writeString(timingFile, Json.encodeToString(trace.snapshot().timings))
+        artifacts["preparation/timings.json"] = transfer(timingFile)
+        trace.ready()
+        val timings = trace.snapshot().timings
+        println("worker preparation timing: " + timings.entries.joinToString(" ") { "${it.key}Ms=${it.value}" })
         return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs, benchPlan, benchDescriptor)
     }
 }

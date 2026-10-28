@@ -79,6 +79,7 @@ internal fun jobPage(
     /** Each host's part of the job ([Store.hostProgress]). */
     hosts: List<HostProgress> = emptyList(),
     nodes: List<JobNode> = emptyList(),
+    preparation: List<ExecutionSessionReport> = emptyList(),
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
     val active = job.status in ACTIVE
@@ -90,6 +91,9 @@ internal fun jobPage(
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null, nodes)}</dd>")
     if (job.backend == "nomad") append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
+    for (report in preparation.filter { it.preparation != null }) {
+        append("<dt>preparation</dt><dd>${preparationDetails(report)}</dd>")
+    }
     append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
@@ -2111,6 +2115,23 @@ document.addEventListener('click', async function (event) {
 });
 </script>"""
 
+internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()): String {
+    val status = report.preparation ?: return ""
+    val snapshot = status.progress
+    val age = (at - status.updatedAt).coerceAtLeast(0)
+    val live = report.phase == "preparing" && report.session.desired != "stop" && age <= 5000
+    fun seconds(ms: Long) = String.format(Locale.ROOT, "%.2f s", ms / 1000.0)
+    return buildString {
+        append("<strong>${esc(PreparationTrace.labels.getValue(snapshot.stage))}</strong>")
+        append(" · ${seconds(snapshot.stageElapsedMs + if (live) age else 0)} in phase")
+        if (report.phase == "preparing" && age > 5000) append(" · last update ${seconds(age)} ago")
+        append("<br>")
+        append(snapshot.timings.filterValues { it > 0 }.entries.joinToString(" · ") {
+            "${esc(PreparationTrace.labels.getValue(it.key))}: ${seconds(it.value)}"
+        })
+    }
+}
+
 internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): String = buildString {
     append(head("Execution · job $job", live = true))
     append("<header><h1>Execution · job $job</h1></header><div id=\"execution\" data-live>")
@@ -2120,6 +2141,7 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): St
         val session = report.session
         append("<tr><td>${esc(session.id)}<br>${esc(session.allocation ?: "pending")}</td><td>${esc(session.node ?: "pending")}</td>")
         append("<td>${esc(report.phase ?: session.desired)} / ${report.generation ?: 0}</td><td>${session.budget.cpuMillis / 1000.0} vCPU / ${session.budget.memoryMiB} MiB</td><td>${report.committed}</td></tr>")
+        report.preparation?.let { append("<tr><td colspan=\"5\">${preparationDetails(report)}</td></tr>") }
         report.observation?.let { append("<tr><td colspan=\"5\">${esc(it)}</td></tr>") }
     }
     append("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>")

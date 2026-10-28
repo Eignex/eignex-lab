@@ -62,10 +62,14 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionTransaction { db ->
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)
-            val active = db.sqlRows("SELECT state, generation FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { it.getString(1) to it.getInt(2) }.singleOrNull()
+            val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
+                Triple(attempt.getString(1), attempt.getInt(2), attempt.getString(3)?.let {
+                    PreparationStatus(Json.decodeFromString<PreparationProgress>(it), attempt.getLong(4))
+                })
+            }.singleOrNull()
             val done = db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE session_id = ? AND state = 'committed'", s.id) { it.getInt(1) }.single()
             val observed = row.getObject("observed_at")?.let { row.getLong("observed_at") }
-            ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed)
+            ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed, active?.third)
         }
     }
     fun sessions(jobId: Long? = null): List<ExecutionSession> = store.executionTransaction { db ->
@@ -226,6 +230,18 @@ class ExecutionStore internal constructor(private val store: Store) {
         require(states.indexOf(phase) >= states.indexOf(a.state)) { "phase cannot go backwards" }
         db.sqlUpdate("UPDATE iteration_attempts SET state = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", phase, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "phase:$phase:${owner.iteration}:${owner.generation}", at)
+    }
+
+    fun preparationProgress(owner: AttemptOwner, progress: PreparationProgress, at: Long = now()) = store.executionTransaction { db ->
+        val attempt = db.attempt(owner, at)
+        require(attempt.iteration == "preparation" && attempt.state == "preparing") { "preparation progress outside preparation" }
+        val prior = db.sqlRows("SELECT preparation_progress FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            attempt.jobId, owner.iteration, owner.generation) { it.getString(1)?.let { value -> Json.decodeFromString<PreparationProgress>(value) } }.single()
+        // A final snapshot can race the background reporter. Never replace it with an older observation.
+        if (prior != null && prior.elapsedMs > progress.elapsedMs) return@executionTransaction
+        db.sqlUpdate("UPDATE iteration_attempts SET preparation_progress = ?, preparation_updated_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            Json.encodeToString(progress), at, attempt.jobId, owner.iteration, owner.generation)
+        if (prior?.stage != progress.stage) db.event(attempt.jobId, owner.session, "preparation:${progress.stage}:${owner.generation}", at)
     }
 
     /** A source/build error is permanent work failure, not another infrastructure revocation. */
@@ -515,6 +531,8 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("""CREATE TABLE IF NOT EXISTS execution_sessions (id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, generation INTEGER NOT NULL, execution_class TEXT NOT NULL, release TEXT NOT NULL, budget TEXT NOT NULL, nomad_job_id TEXT NOT NULL UNIQUE, desired TEXT NOT NULL, token_hash TEXT NOT NULL, allocation_id TEXT, node_id TEXT, created_at INTEGER NOT NULL, observed_at INTEGER, observation TEXT)""")
                 s.execute("""CREATE TABLE IF NOT EXISTS iteration_attempts (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, generation INTEGER NOT NULL, session_id TEXT NOT NULL, allocation_id TEXT NOT NULL, token_hash TEXT NOT NULL, lease_until INTEGER NOT NULL, state TEXT NOT NULL, indices TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, result TEXT, PRIMARY KEY (job_id, iteration_id, generation))""")
                 val attemptColumns = s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
+                if ("preparation_progress" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_progress TEXT")
+                if ("preparation_updated_at" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_updated_at INTEGER")
                 if ("parallel_limit" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN parallel_limit INTEGER NOT NULL DEFAULT 1")
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_session_iteration ON iteration_attempts (session_id) WHERE state IN $ACTIVE_ATTEMPTS")
