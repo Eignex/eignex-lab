@@ -20,6 +20,7 @@ class NomadBackend(
     private val projectResult: (Long, String, () -> Unit) -> Boolean = { _, _, work -> work(); true },
     private val writeLog: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
     private val changed: () -> Unit = {},
+    private val nativeNodeTags: Set<String>? = null,
 ) {
     private val pendingLogs = mutableSetOf<Long>()
     val logs = WorkerLogs(store, jobDirectory)
@@ -87,8 +88,10 @@ class NomadBackend(
     fun claim(id: String, token: String, allocation: String): IterationClaim? {
         val session = store.execution.session(id) ?: throw ExecutionFenced("unknown session")
         val spec = Json.parseToJsonElement(store.execution.submission(id)).jsonObject
-        if (spec["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
-            (store.localBusy() || !nativeMayClaim(session.jobId) || !NativePriority(store).allows(session.jobId))) {
+        // A retried claim must retain its current iteration even if priorities changed meanwhile.
+        if (!store.execution.hasActiveAttempt(id) &&
+            spec["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
+            (store.localBusy() || !nativeMayClaim(session.jobId) || !NativePriority(store).allows(session.jobId, nativeNodeTags))) {
             store.execution.drain(id)
             return null
         }
@@ -216,6 +219,13 @@ class NomadBackend(
                     store.execution.loseSession(s.id, "no-unclaimed-work")
                     continue
                 }
+                // Pending allocations cannot reach the claim boundary themselves. Release their reservation
+                // so higher-priority native work can be admitted; bound workers yield on their next claim.
+                if (s.allocation == null &&
+                    Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject["Meta"]?.jsonObject
+                        ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
+                    !NativePriority(store).allows(job.id, nativeNodeTags) &&
+                    store.execution.loseUnallocatedSession(s.id, "priority")) continue
                 if (current.paused) store.execution.drain(s.id)
                 if (!current.paused && s.desired == "run" && s.allocation != null) {
                     val submitted = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
@@ -246,7 +256,7 @@ class NomadBackend(
                 // stopped preparation here races plan publication and recreates already accepted preparation.
                 val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: continue
                 val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-                if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id))) continue
+                if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id, nativeNodeTags))) continue
                 if (native) {
                     val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
                     val limit = nativeLimits(meta)
