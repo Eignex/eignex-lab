@@ -126,8 +126,10 @@ class CaseChecks(
                 .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
             requireNotNull(com.eignex.lab.SharedInputs.environment()).acquire(inputs, required = required)
         } catch (failure: Exception) { throw com.eignex.lab.SharedCheckInputUnavailable(failure) } else null
-        val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
-        val check = lease.use { checker.check(problem, record, revision, frame) } ?: return null
+        val check = lease.use {
+            val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
+            checker.check(problem, record, revision, frame)
+        } ?: return null
         store.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check
