@@ -104,7 +104,7 @@ class ConnectedNomadTest {
             assertTrue(restarted)
             assertEquals(1, publications)
             assertEquals(4, store.job(job)!!.done)
-            assertTrue(store.job(job)!!.commands.all { it.cmd.contains("worktrees/") })
+            assertTrue(store.job(job)!!.commands.all { it.cmd.contains("workspaces/") })
             assertEquals(1, store.execution.accepted(job).count { it.second.preparation != null })
             assertEquals(2, store.execution.accepted(job).count { it.second.preparation == null })
             assertTrue(store.execution.sessions(job).filter { it.executionClass == "solve" }.none {
