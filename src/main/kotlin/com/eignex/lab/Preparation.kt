@@ -183,18 +183,25 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
 internal fun archive(tree: Path, output: Path, identity: WorkerBundle, runtimeOnly: Boolean = false, checkActive: () -> Unit): WorkerBundle {
     var total = 0L
     val directories = mutableListOf<String>()
-    val paths = Files.walk(tree).use { paths -> paths.sorted().filter { path ->
-        checkActive()
-        if (runtimeOnly && !WorkerTrees.runtimePath(tree.relativize(path))) return@filter false
-        if (Files.isDirectory(path, NOFOLLOW_LINKS)) {
-            if (path != tree) directories += tree.relativize(path).toString().replace('\\', '/') + "/"
-            false
-        } else true
-    }.map { path ->
-        require(Files.isRegularFile(path, NOFOLLOW_LINKS))
-        val bytes = Files.size(path); require(bytes <= 32L * 1024 * 1024 * 1024 - total); total += bytes
-        path
-    }.toList() }
+    val paths = mutableListOf<Path>()
+    Files.walkFileTree(tree, object : java.nio.file.SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            checkActive()
+            val relative = tree.relativize(dir)
+            if (runtimeOnly && !WorkerTrees.runtimePath(relative)) return java.nio.file.FileVisitResult.SKIP_SUBTREE
+            if (dir != tree) directories += relative.toString().replace('\\', '/') + "/"
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            checkActive()
+            if (runtimeOnly && !WorkerTrees.runtimePath(tree.relativize(file))) return java.nio.file.FileVisitResult.CONTINUE
+            require(attrs.isRegularFile)
+            require(attrs.size() <= 32L * 1024 * 1024 * 1024 - total); total += attrs.size()
+            paths.add(file)
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+    })
+    paths.sort(); directories.sort()
     require(paths.isNotEmpty())
     val files = mutableListOf<InputFile>(); var streamedBytes = 0L
     val archiveDigest = java.security.MessageDigest.getInstance("SHA-256")

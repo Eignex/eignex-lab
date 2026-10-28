@@ -530,7 +530,7 @@ This switches historical cache keys once; later worker patches preserve the new 
 Workers reuse verified input distributions across allocations under `LAB_WORKER_CACHE_ROOT/inputs`. The node-local
 cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect readers during staging and compilation.
 Cold preparation seeds its published distribution into this cache so a solve on that node can reuse it immediately.
-Prepared ZIPs use buffered output and fast compression. Uploads opt into cross-job reuse: the coordinator checks an
+Prepared ZIPs use buffered output and fast compression, and prune discarded compiler directories before traversal. Uploads opt into cross-job reuse: the coordinator checks an
 existing archive's SHA-256, then durably links the immutable artifact into the requesting job without transferring it again.
 A disposable index has a 4096-hint soft limit with seven-day expiry (pruned on publication, at most once per minute);
 it retains no archive data itself. Missing, expired, deleted or corrupt sources fall back to resumable uploads. Old
