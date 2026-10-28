@@ -33,6 +33,9 @@ MiniZinc reference cases retain the compiler binary hash and version, the select
 registered version, executable hash and configuration. Missing versions fail preparation. Identity preparation
 spends the case's time allowance; the remaining allowance goes to compilation and solving. Reference completion
 markers are native claims, separate from independent assignment or proof validation.
+For a focused reference receipt, the committed `com.eignex.lab.MainKt reference` entry point accepts `OUT` from
+the lab when `out=` is omitted. `src/test/resources/reference/affine-objective.mzn` is its deterministic source
+control; an instrumented capture establishes adapter consumption, not throughput or independent checking.
 
 **Auto placement is preferred and is the default for ordinary experiments, profiles and bench-adapter runs.**
 Omit `tags`, or use `"tags": []`; the lab chooses placement automatically. Idle local capacity

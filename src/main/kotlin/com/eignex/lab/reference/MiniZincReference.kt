@@ -58,7 +58,7 @@ internal object MiniZincReference {
         val identity = MiniZincIdentity.capture(solver, budget.timeoutMillis)
         val remaining = budget.timeoutMillis - (System.nanoTime() - startNanos) / 1_000_000
         check(remaining > 0) { "MiniZinc identity exhausted the reference case budget" }
-        val cmd = command(instance, identity.solver, Budget(remaining), processors, free)
+        val cmd = command(instance, solver, Budget(remaining), processors, free)
             .let { listOf(identity.binary.path) + it.drop(1) }
         val process = ProcessBuilder(cmd).start()
         process.outputStream.close()

@@ -7,7 +7,8 @@ import java.io.File
  * as `klause-bench select files=true` printed it: `problem=`, `format=`, `model=`, and optionally `data=` and one
  * `include=` per MiniZinc include directory. `solver=` picks one of the format's reference solvers (its default when
  * absent), `timeout=` is the budget in ms, `processors=` the solver's workers, `solver-seed=` its seed, `fixed=true`
- * keeps a MiniZinc solver to the model's search annotations, and `out=` is where the record goes.
+ * keeps a MiniZinc solver to the model's search annotations, and `out=` is where the record goes. Committed-main
+ * captures can use the lab's `OUT` directory when `out=` is absent.
  */
 object ReferenceCli {
     private const val DEFAULT_TIMEOUT_MS = 60_000L
@@ -30,7 +31,7 @@ object ReferenceCli {
             processors = f["processors"]?.toInt()?.coerceAtLeast(1) ?: 1,
             seed = f["solver-seed"]?.toLong() ?: ReferenceSolve.DEFAULT_SEED,
             free = f["fixed"] != "true",
-            out = File(required("out")),
+            out = File(requireNotNull(f["out"] ?: System.getenv("OUT")) { "missing out= or OUT" }),
         ).run()
         println(record)
         return 0
