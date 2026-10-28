@@ -50,6 +50,10 @@ Set `LAB_NOMAD_QUEUE_SETTINGS` and `LAB_NOMAD_CAPACITY_SETTINGS` in the service
 environment after configuring the coordinator. Normal submissions, schedules and confirmations use Nomad; analysis
 and maintenance remain local. The queue links to `/capacity/view` for live reservations and pool state.
 
+Auto placement is preferred and is the default for ordinary jobs. Submissions should omit `host` and location tags;
+the lab uses idle local capacity and scales cloud capacity with demand, respecting priority. Local-only placement is
+reserved for sweeps and reference runs. See [placement and priorities](../docs/runs.md#experiments).
+
 Use shared vCPU and memory budgets, finite pool/global vCPU limits and Spot pools. Profiles and measurements share
 capacity within those budgets. On-demand requires an explicit selector. Local labels use `LAB_NODE_TAGS`; target
 architecture/SIMD capabilities must match worker hardware. Keep native Mac limits explicitly advisory.

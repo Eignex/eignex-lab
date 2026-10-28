@@ -42,13 +42,13 @@ data class ExperimentSpec(
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,
     /**
-     * Where the cases may run, as the lab placed the job ([Placement]); a submitted value is ignored. `lab`, the local
-     * machine alone; `aws`, a cloud node alone (Nomad workers); `auto`, whichever of the local machine and a node is free
-     * first. Once taken it is where the job went.
+     * Where the cases may run, as the lab placed the job ([Placement]); a submitted value is ignored. Auto placement
+     * is preferred and is the default for ordinary submissions: omit host and location tags. `auto` lets local and
+     * cloud workers share the job, respecting priority; `aws` is cloud-only and `lab` is local-only. The serialized
+     * default below preserves historical specs and local schedules; submission placement is decided by [Placement].
      */
     val host: String = Experiments.LAB_HOST,
-    /** Set when an `auto` job is taken: its [host] is then where it went. On the local machine it gives way to any job
-     *  placed on the local machine alone. */
+    /** Legacy placement bookkeeping, retained for historical specs; new submissions store the decision in [host]. */
     val auto: Boolean = false,
     /** Retired: the cloud node pool decides how many nodes work on a job. Read so older specs still parse; ignored. */
     val machines: Int? = null,
