@@ -1,6 +1,7 @@
 package com.eignex.lab.checker
 
 import com.eignex.lab.reference.MiniZincIdentity
+import com.github.luben.zstd.ZstdInputStreamNoFinalizer
 import java.io.File
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -18,7 +19,8 @@ class MiniZincChecker : FormatChecker {
             "no retained FlatZinc/OZN/native point; solver-based witness completion is disabled", checker = "none")
         val sourceHashes = case.record["sourceHashes"] as? JsonObject
         val modelHash = (sourceHashes?.get("model") as? JsonPrimitive)?.content
-        if (modelHash == null || modelHash != sha256(case.sources.model)) {
+        val source = source(case.sources.model)
+        if (modelHash == null || modelHash != sha256(source.toByteArray())) {
             return Verdict(LabCheck.UNSUPPORTED, "compiled-point checking requires the matching original source digest")
         }
         val bound = try {
@@ -45,8 +47,8 @@ class MiniZincChecker : FormatChecker {
             inputs += CheckedInput(canonicalPath, sha256(this), text)
         }
         val flatZinc = input("original.fzn", frame.flatZinc)
-        input("source.mzn", case.sources.model.readText())
-        case.sources.data?.let { input("source.dzn", it.readText()) }
+        input("source.mzn", source)
+        case.sources.data?.let { input("source.dzn", source(it)) }
         val ozn = input("original.ozn", frame.outputModel)
         val native = input("point.dzn", bound.native)
         val model = input("pinned.mzn", bound.model)
@@ -89,5 +91,16 @@ class MiniZincChecker : FormatChecker {
             "MiniZinc discharged the pinned integer/Boolean FlatZinc frame and reproduced its model witness; no optimality claim", rendered)
     }
 
-    companion object { private const val TIMEOUT_MS = 15_000L }
+    companion object {
+        private const val TIMEOUT_MS = 15_000L
+
+        internal fun source(file: File): String = file.inputStream().use { raw ->
+            val input = if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(raw) else raw
+            input.use {
+                val bytes = it.readNBytes(8 * 1024 * 1024 + 1)
+                require(bytes.size <= 8 * 1024 * 1024) { "MiniZinc source exceeds the 8 MiB capture limit" }
+                bytes.decodeToString(throwOnInvalidSequence = true)
+            }
+        }
+    }
 }

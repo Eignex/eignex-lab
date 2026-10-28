@@ -1,10 +1,25 @@
 package com.eignex.lab.checker
 
 import java.nio.file.Files
+import com.github.luben.zstd.Zstd
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class MiniZincFrameTest {
+    @Test
+    fun `packed MiniZinc sources retain their plain source identity`() {
+        val root = Files.createTempDirectory("minizinc-source")
+        try {
+            val text = "var 1..5: x; solve satisfy;\n"
+            val packed = root.resolve("source.mzn.zst").toFile().apply { writeBytes(Zstd.compress(text.toByteArray())) }
+
+            assertEquals(text, MiniZincChecker.source(packed))
+        } finally {
+            root.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun `changed compiler output cannot replace an accepted captured frame`() {
         val root = Files.createTempDirectory("minizinc-capture")
