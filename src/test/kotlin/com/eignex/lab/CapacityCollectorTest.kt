@@ -23,20 +23,41 @@ class CapacityCollectorTest {
     private val control = object : NomadControl {
         var full: JsonObject? = null
         var allocations = emptyList<JsonObject>()
+        var nodeReads = 0
         override fun job(id: String): JsonObject? = null
         override fun submit(job: JsonObject) { error("collector cannot submit") }
         override fun stop(id: String) { error("collector cannot stop") }
         override fun allocations(job: String) = emptyList<NomadAllocation>()
         override fun allocation(id: String): NomadAllocation? = null
         override fun jwks() = buildJsonObject { }
-        override fun nodes() = full?.let { listOf(buildJsonObject { put("ID", "node") }) } ?: emptyList()
-        override fun node(id: String) = full
+        override fun nodes() = full?.let { listOf(JsonObject(it - "Meta")) } ?: emptyList()
+        override fun node(id: String): JsonObject? { nodeReads++; return full }
         override fun nodeAllocations(id: String) = allocations
     }
     private fun sample(instances: List<CapacityInstance> = emptyList()) {
         Files.writeString(inventory, Json.encodeToString(CapacityInventory(at, setOf(pool.id), instances)))
     }
     private fun collector() = CapacityCollector(settings, listOf(inventory), tokenFile, state, store, control, { writable }, setOf("local"), { at }, { nanos })
+
+    @Test fun `unchanged historical nodes do not require full reads on every refresh`() {
+        sample(listOf(CapacityInstance("vm", pool.id)))
+        control.full = buildJsonObject {
+            put("ID", "node"); put("NodeClass", pool.nodeClass); put("ModifyIndex", 1); put("Status", "ready")
+            putJsonObject("Meta") { put("lab_capacity_id", "vm") }
+        }
+        val c = collector()
+        repeat(3) { c.collect() }
+        assertEquals(1, control.nodeReads)
+        control.full = JsonObject(control.full!! + mapOf("ModifyIndex" to JsonPrimitive(2), "Status" to JsonPrimitive("down")))
+        c.collect()
+        assertEquals(2, control.nodeReads)
+        assertEquals(CapacityNodeState.UNAVAILABLE, c.snapshot().nodes.single().state)
+        sample(); c.collect()
+        assertTrue(c.snapshot().nodes.isEmpty())
+        assertEquals(2, control.nodeReads)
+        sample(listOf(CapacityInstance("vm", pool.id))); c.collect()
+        assertEquals(3, control.nodeReads, "removed nodes must not leave a stale identity cache")
+    }
 
     @Test fun `provider freshness volume health and monotonic sample expiry gate all growth metrics`() {
         sample(); val c = collector(); c.collect()

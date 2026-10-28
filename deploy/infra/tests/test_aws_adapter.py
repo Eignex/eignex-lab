@@ -73,3 +73,21 @@ class AwsAdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "avx2"):
             adapter.once(self.config, Mock(), self.functions)
         self.assertEqual(2, self.functions.invoke.call_count)
+
+    @patch.object(adapter.urllib.request, "urlopen")
+    @patch.object(adapter, "inventory")
+    def test_renewal_reports_actionable_codes_without_exposing_response_secrets(self, inventory, urlopen):
+        inventory.side_effect = self.observation
+        def grant(request, timeout):
+            if request.full_url.endswith("avx2"):
+                raise adapter.urllib.error.HTTPError(request.full_url, 503, "secret-grant", {}, None)
+            return io.BytesIO(b'{}')
+        urlopen.side_effect = grant
+        payload = io.BytesIO(b'{"errorType":"ValueError","errorMessage":"secret-signature"}')
+        self.functions.invoke.return_value = {"FunctionError": "Unhandled", "Payload": payload}
+        with self.assertRaises(adapter.RenewalError) as raised:
+            adapter.once(self.config, Mock(), self.functions)
+        self.assertIn("avx2=HTTP_503", str(raised.exception))
+        self.assertIn("neon=ValueError", str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception))
+        self.assertTrue(payload.closed)

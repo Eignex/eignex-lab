@@ -5,10 +5,16 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import time
+import re
+import urllib.error
 import urllib.request
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 from capacity_files import write_atomic
+
+
+class RenewalError(RuntimeError):
+    """Only pool names and bounded error codes, never grants, credentials or provider response bodies."""
 
 
 def inventory(asg, group, deployment, pool, at=None):
@@ -53,16 +59,28 @@ def once(config, asg, functions):
             with urllib.request.urlopen(request, timeout=10) as response:
                 grant = json.load(response)
             result = functions.invoke(FunctionName=pool["renewFunction"], InvocationType="RequestResponse", Payload=json.dumps(grant).encode())
-            result["Payload"].close()
-            if result.get("FunctionError"):
-                raise RuntimeError("provider rejected capacity renewal")
-        except Exception:
-            return pool["pool"]
+            try:
+                if result.get("FunctionError"):
+                    try:
+                        kind = json.load(result["Payload"]).get("errorType", "provider_error")
+                    except (ValueError, TypeError):
+                        kind = "provider_error"
+                    if not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,80}", kind):
+                        kind = "provider_error"
+                    return pool["pool"], kind
+            finally:
+                result["Payload"].close()
+        except urllib.error.HTTPError as error:
+            error.close()
+            return pool["pool"], f"HTTP_{error.code}"
+        except Exception as error:
+            # SDK exception messages can include request material. Report the exception class only.
+            return pool["pool"], type(error).__name__
         return None
     with ThreadPoolExecutor(max_workers=min(4, len(definitions))) as workers:
         failed = [pool for pool in workers.map(renew, definitions) if pool is not None]
     if failed:
-        raise RuntimeError("capacity renewal held for " + ", ".join(failed))
+        raise RenewalError("capacity renewal held for " + ", ".join(f"{pool}={reason}" for pool, reason in failed))
 
 
 def main():
@@ -77,7 +95,8 @@ def main():
         try:
             once(config, asg, functions)
         except Exception as error:
-            print(f"AWS capacity adapter held: {type(error).__name__}", flush=True)
+            detail = f": {error}" if isinstance(error, RenewalError) else ""
+            print(f"AWS capacity adapter held: {type(error).__name__}{detail}", flush=True)
             if args.once:
                 raise SystemExit(1)
         if args.once:
