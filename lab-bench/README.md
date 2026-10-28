@@ -234,14 +234,14 @@ Stage the unpublished SDK using the same metadata and URL layout as a public rel
 ./gradlew :lab-bench:stageAdapterRepository -PbenchVersion=0.1.0
 ```
 
-The three consumer bench modules accept
+The consumer bench modules accept
 `-PlabBenchRepository=file:///absolute/eignex-lab/lab-bench/build/adapter-repository`
 and `-PlabBenchVersion=0.1.0`. Build the tasks declared in each consumer's committed manifest with those properties.
 Their default repository URL resolves public GitHub Release assets anonymously after publication. When restaging
 the same unpublished version, refresh consumer dependencies with `--refresh-dependencies` or select a fresh
 development version so Gradle cannot reuse an earlier SDK artifact.
 
-Arrange the consumer checkouts as `<root>/klause`, `<root>/koblas` and `<root>/kumulant`, then run:
+Arrange the remaining compatibility fixtures as `<root>/klause` and `<root>/koblas`, then run:
 
 ```sh
 LAB_BENCH_ADAPTER_ROOT=/absolute/consumer-checkouts \
@@ -250,12 +250,17 @@ LAB_BENCH_ADAPTER_NATIVE=true LAB_BENCH_ADAPTER_MINIZINC=true ./gradlew verifyBe
 
 This opt-in test stages the real prepared outputs, calls each manifest's planner through `PreparationExecutor`,
 relocates bundles, executes frozen cases under the process supervisor, transfers artifacts and ingests accepted
-records through `NomadBackend`. It checks Klause solve provenance, Koblas CSV/report retention and Kumulant JMH/
-Native reports. The Native option requires Linux x86_64 binaries built by the Native manifests. Without that
+records through `NomadBackend`. It checks Klause solve provenance and Koblas CSV/report retention.
+The Native option requires Linux x86_64 binaries built by the Native manifest. Without that
 option it covers the JVM adapters. The ordinary test task excludes this integration gate, so unit tests do not
 build consumer repos or run performance captures. The smoke timings establish wiring, not performance evidence.
 The MiniZinc option also exercises a file-backed Klause MiniZinc case with a locally installed compiler.
 A local run does not validate live Nomad scheduling, remote transport or other hardware platforms.
+
+Kumulant owns its adapter workflow validation, workload selections and report checks in
+[`kumulant-bench`](https://github.com/Eignex/kumulant/tree/main/kumulant-bench). Its JVM/Native build layouts,
+Cholesky diagnostics and benchmark arguments are not fixtures in this lab gate. Kumulant jobs use the same generic
+`bench.manifest` submission and SDK result protocol described above.
 
 ## Build and release
 
