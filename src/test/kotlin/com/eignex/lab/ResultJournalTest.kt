@@ -17,6 +17,48 @@ class ResultJournalTest {
     private fun blobs(text: String) = mapOf(ExecutionStore.digest(text) to text.toByteArray())
     private fun read(store: ArtifactStore, job: Long, text: String) = store.open(job, ExecutionStore.digest(text)).use { String(it.readAllBytes()) }
 
+    @Test fun `small complete preparation uploads acknowledge durable journal data without external writes`() {
+        val blocked = object : ArtifactStore by external {
+            override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: java.io.InputStream): Long = error("external write on acknowledgement path")
+        }
+        val value = "preparation timings"; val sha = ExecutionStore.digest(value)
+        ResultJournal(journal, blocked, start = false).use { store ->
+            assertEquals(value.length.toLong(), store.put(1, sha, value.length.toLong(), 0, value.byteInputStream()))
+            assertEquals(value, read(store, 1, value)); assertEquals(1, store.status().batches)
+            assertEquals(0, external.offset(1, sha))
+            assertFailsWith<IllegalArgumentException> { store.put(2, "0".repeat(64), 3, 0, "bad".byteInputStream()) }
+            assertFailsWith<IllegalArgumentException> { store.put(2, sha, 1, 0, value.byteInputStream()) }
+        }
+        ResultJournal(journal, external, start = false).use { recovered ->
+            assertEquals(value, read(recovered, 1, value)); assertTrue(recovered.drainOne())
+            assertEquals(value, read(external, 1, value))
+        }
+    }
+
+    @Test fun `partial metadata uploads keep resumable offsets and completed retries drain over partial external files`() {
+        val value = "timings"; val sha = ExecutionStore.digest(value)
+        ResultJournal(journal, external, start = false).use { store ->
+            assertEquals(3, store.put(1, sha, 7, 0, "tim".byteInputStream()))
+            assertEquals(0, store.status().batches)
+            assertEquals(7, store.put(1, sha, 7, 3, "ings".byteInputStream()))
+            assertEquals(value, read(store, 1, value))
+            store.put(2, sha, 7, 0, value.byteInputStream())
+            // An ambiguous earlier external transfer can leave a partial prefix beside the journal.
+            assertEquals(3, external.put(2, sha, 7, 0, "tim".byteInputStream()))
+        }
+        ResultJournal(journal, external, start = false).use { recovered ->
+            assertTrue(recovered.drainOne()); assertEquals(value, read(external, 2, value))
+        }
+    }
+
+    @Test fun `small preparation uploads respect the journal cap instead of spilling onto the acknowledgement path`() {
+        ResultJournal(journal, external, maxBytes = 8192, start = false).use { store ->
+            assertFailsWith<IllegalStateException> { store.put(1, ExecutionStore.digest("data"), 4, 0, "data".byteInputStream()) }
+            assertEquals(0, external.offset(1, ExecutionStore.digest("data")))
+            assertTrue(store.status().bytes <= 8192)
+        }
+    }
+
     @Test fun `a failed publication sync cannot acknowledge a deduplicated retry without another durability barrier`() {
         var fail = false; var barriers = 0
         ResultJournal(journal, external, start = false, syncDirectory = {
