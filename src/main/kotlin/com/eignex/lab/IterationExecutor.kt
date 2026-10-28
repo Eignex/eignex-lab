@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import com.eignex.lab.bench.BenchInputRoot
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.COPY_ATTRIBUTES
@@ -30,7 +31,8 @@ class IterationExecutor(
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
         val inputs = if (manifest.sharedInputs.isNotEmpty()) {
-            requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }.acquire(manifest.sharedInputs, ::checkRun)
+            requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }
+                .acquire(manifest.sharedInputs, ::checkRun, required = iterationInputPaths(selected))
         } else null
         try {
         val corpus = inputs?.directory ?: directory.resolve("corpus")
@@ -149,6 +151,13 @@ class IterationExecutor(
         } }
     }
 }
+
+/** Resolve and verify this iteration's model/data/include trees, rather than the experiment's entire corpus. */
+internal fun iterationInputPaths(cases: List<WorkCase>): List<String> = cases.flatMap { case ->
+    listOfNotNull(case.problem.model, case.problem.data) + case.problem.includeDirs +
+        case.problem.benchCase?.inputs.orEmpty().filter { it.root == BenchInputRoot.CORPUS }.map { "lab-corpus/${it.path}" }
+}.filter { it == "lab-corpus" || it.startsWith("lab-corpus/") }
+    .map { it.removePrefix("lab-corpus").removePrefix("/") }.distinct()
 
 /** Resolve only known portable roots; old manifests keep their worktree-relative interpretation. */
 internal fun portablePath(value: String, source: Path, corpus: Path): Path {
