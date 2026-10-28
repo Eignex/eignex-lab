@@ -49,7 +49,7 @@ can contribute, and the lab adds cloud capacity as demand grows. Local and cloud
 Hardware or market selectors can narrow the compatible workers when a measurement needs them.
 
 Priority controls native admission and iteration claims; sweeps and reference runs win equal-priority ties.
-The status sweep has priority 100 and its regression confirmations 101, ahead of ordinary jobs at 0.
+A repository recipe can set priority 100 and its regression confirmations then use 101, ahead of ordinary jobs at 0.
 Ordinary reference runs also use priority 0, with their confirmations at 1.
 Lower-priority local workers yield between iterations when compatible higher-priority work arrives or is
 reprioritized, whether either job is automatic or local-only. Running paired iterations finish and accepted results
@@ -102,7 +102,7 @@ To replace a job's tags before admission, use `deploy/lab tags 7 'arch:x86_64,!s
 placement. Once source preparation or session admission starts, the recipe is frozen and tag edits are refused.
 The old `lab host` and `lab machines` commands and their API overrides are retired.
 
-Schedules use auto by default. The status sweep's committed schedule uses `"tags": ["local"]`; reference runs and
+Schedules use auto by default. Repository recipes can request `"tags": ["local"]`; reference runs and
 regression confirmations retain their local-only execution policy. Schedule responses expose the same editable tags
 format, including the local tag for historical local schedules.
 

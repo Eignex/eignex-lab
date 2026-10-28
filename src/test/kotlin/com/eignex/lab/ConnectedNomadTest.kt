@@ -140,7 +140,7 @@ class ConnectedNomadTest {
             [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }
             out="${'$'}OUT"
             echo portable-worker-start
-            sleep 2
+            sleep 3
             mkdir -p "${'$'}out"
             echo '{"stats":{"fixture":true}}' > "${'$'}out/record.json"
             echo portable-worker-output
@@ -182,13 +182,13 @@ class ConnectedNomadTest {
                         if (Files.readString(file).contains("portable-worker-start")) sawLive = true
                     }
                 }
-                if (!restarted && current.commands.first().status == Status.RUNNING) {
+                if (!restarted && sawLive && current.commands.first().status == Status.RUNNING) {
                     server.stop(0, 1000)
                     backend = NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") })
                     server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(Store(root.resolve("lab.db")), backend, artifacts) { true } }.start()
                     restarted = true
                 }
-                if (!lost && current.commands[1].status == Status.RUNNING) {
+                if (restarted && !lost && current.commands[1].status == Status.RUNNING) {
                     val allocation = store.execution.session(session.id)!!.allocation!!
                     val docker = ProcessBuilder("docker", "ps", "-q", "--filter", "label=com.hashicorp.nomad.alloc_id=$allocation").start()
                     val container = docker.inputStream.bufferedReader().readText().trim(); check(docker.waitFor() == 0 && container.isNotEmpty())

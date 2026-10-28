@@ -49,7 +49,7 @@ class BenchAdapterIntegrationTest {
     @kotlinx.serialization.Serializable
     data class Scenario(val name: String, val repository: String, val source: String, val manifest: String,
                         val outputs: List<String>, val parameters: Map<String, String> = emptyMap(),
-                        val configs: List<Map<String, String>> = listOf(emptyMap()), val repeats: Int = 1, val sourceValidation: Boolean = false)
+                        val configs: List<Map<String, String>> = listOf(emptyMap()), val base: Map<String, String> = emptyMap(), val repeats: Int = 1, val sourceValidation: Boolean = false)
 
     private fun verify(scenario: Scenario, root: Path, stage: Path, revision: String, supervisor: ProcessSupervisor) {
         val name = scenario.name
@@ -72,7 +72,7 @@ class BenchAdapterIntegrationTest {
             if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"
             else "not-required"
         })
-        var spec = ExperimentSpec("$name-adapter", repository = scenario.repository, bench = BenchSpec(scenario.manifest, BenchRequest(scenario.parameters), sourceValidation = scenario.sourceValidation), configs = scenario.configs, repeats = scenario.repeats, confirm = true, host = "auto")
+        var spec = ExperimentSpec("$name-adapter", repository = scenario.repository, bench = BenchSpec(scenario.manifest, BenchRequest(scenario.parameters), sourceValidation = scenario.sourceValidation), configs = scenario.configs, base = scenario.base, repeats = scenario.repeats, confirm = true, host = "auto")
         Experiments.validate(spec, 4)
         var job = store.create(spec.name, revision, emptyList(), experiment = spec)
         fun upload(file: Path): String = hashFile(file).also { sha -> Files.newInputStream(file).use { artifacts.put(job, sha, Files.size(file), 0, it) } }
@@ -97,8 +97,13 @@ class BenchAdapterIntegrationTest {
         fun manifest(id: String, cases: List<WorkCase>, bundles: List<WorkerBundle>, budget: ResourceBudget, corpus: WorkerBundle? = null) =
             WorkManifest(id, "integration", spec, arms, cases, bundles, budget, preparationTimeoutSec = if (cases.isEmpty()) 600 else null, inputCorpus = corpus)
         fun claim(manifest: WorkManifest): IterationClaim {
-            val session = backend.enqueue(job, manifest, NomadBatchJob("template", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(8000, 8),
-                manifest.budget, listOf("worker"), "registry/worker@sha256:" + "d".repeat(64)), "http://localhost:8091")
+            val reference = manifest.arms.any { it.arm.values["backend"] == REFERENCE_BACKEND }
+            // Admission is emulated; processes execute on this host, including the real reference launcher.
+            val template = if (reference) NomadBatchJob("template", NomadPlatform.MAC, "fixture", NomadCpuCapacity(8000, 8),
+                manifest.budget, listOf("/fixture/release/bin/lab", "worker"))
+                else NomadBatchJob("template", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(8000, 8),
+                    manifest.budget, listOf("worker"), "registry/worker@sha256:" + "d".repeat(64))
+            val session = backend.enqueue(job, manifest, template, "http://localhost:8091")
             val task = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject
             val token = task.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
             store.execution.bind(session.id, token, "allocation-${session.id}", "integration-host", "integration")
@@ -125,7 +130,9 @@ class BenchAdapterIntegrationTest {
         val plan = requireNotNull(preparation.benchPlan)
         assertNotNull(preparation.benchDescriptor)
         val problems = plan.cases.map(BenchRuns::problem)
-        val cases = Experiments.cases(problems.size, arms.size, emptyList(), spec.repeats)
+        val cases = Experiments.cases(problems.size, arms.size, emptyList(), spec.repeats).map { case ->
+            case.copy(seed = problems[case.problem].benchCase!!.attributes["seed"]?.toLongOrNull())
+        }
         fun execution(case: Case) = preparation.armPlans.getValue(arms[case.arm].arm.label).cases[case.problem]
         store.prepareNomad(job, arms, problems, cases, cases.map { case ->
             val record = execution(case)
@@ -141,7 +148,7 @@ class BenchAdapterIntegrationTest {
             assertEquals(arms.size, claim.indices.size)
             store.execution.phase(claim.owner, "executing")
             val attempt = root.resolve("solve-${claim.indices.first()}")
-            val result = IterationExecutor(supervisor, cache, { Files.newInputStream(artifacts.file(job, it.sha256)) }, "unused", "linux", "amd64")
+            val result = IterationExecutor(supervisor, cache, { Files.newInputStream(artifacts.file(job, it.sha256)) }, System.getenv("LAB_BENCH_REFERENCE_LAUNCHER") ?: "unused", "linux", "amd64")
                 .run(execution, claim.indices, attempt, "integration-host", claim.owner.generation, remainingLeaseMs = lease(claim.owner))
             val outputs = Files.walk(attempt).use { files -> files.filter(Files::isRegularFile).filter {
                 val relative = attempt.relativize(it).toString()
@@ -152,13 +159,20 @@ class BenchAdapterIntegrationTest {
             for (actual in result.cases) {
             val index = actual.index
             assertEquals(0, actual.exitCode, "${actual.record}\n${Files.readString(attempt.resolve("$index.err"))}")
-            val record = requireNotNull(BenchRuns.result(actual.record))
-            assertEquals(BenchStatus.SUCCESS, record.status)
-            assertTrue(record.artifacts.isNotEmpty())
-            record.artifacts.forEach { artifact -> assertTrue(outputs.containsKey("cases/$index/out/${artifact.path}")) }
-            if (work.single { it.index == index }.executionCase?.attributes?.get("recordSchema") == "solver-v1") {
-                val domain = Json.parseToJsonElement(actual.record!!).jsonObject
-                assertTrue("sourceHashes" in domain && "buildProvenance" in domain && "labBench" in domain)
+            if (execution.arms[work.single { it.index == index }.arm].arm.values["backend"] == REFERENCE_BACKEND) {
+                val domain = Json.parseToJsonElement(requireNotNull(actual.record)).jsonObject
+                assertNotNull(domain["feasible"]?.jsonPrimitive?.booleanOrNull)
+                assertEquals(execution.arms[work.single { it.index == index }.arm].arm.values["solver"],
+                    domain["solver"]?.jsonPrimitive?.content)
+            } else {
+                val record = requireNotNull(BenchRuns.result(actual.record))
+                assertEquals(BenchStatus.SUCCESS, record.status)
+                assertTrue(record.artifacts.isNotEmpty())
+                record.artifacts.forEach { artifact -> assertTrue(outputs.containsKey("cases/$index/out/${artifact.path}")) }
+                if (work.single { it.index == index }.executionCase?.attributes?.get("recordSchema") == "solver-v1") {
+                    val domain = Json.parseToJsonElement(actual.record!!).jsonObject
+                    assertTrue("sourceHashes" in domain && "buildProvenance" in domain && "labBench" in domain)
+                }
             }
             }
         }
@@ -167,8 +181,9 @@ class BenchAdapterIntegrationTest {
         val stored = store.cases(job)
         assertEquals(cases.size, stored.size)
         if (scenario.sourceValidation) assertTrue(stored.all { it.record!!.jsonObject["labCheck"]?.jsonObject?.get("state")?.jsonPrimitive?.content == "valid" })
-        assertTrue(stored.all { BenchRuns.result(it.record?.toString())?.status == BenchStatus.SUCCESS })
-        for (case in stored) BenchRuns.result(case.record?.toString())!!.artifacts.forEach { artifact ->
+        assertTrue(stored.filter { result -> arms.single { it.arm.label == result.arm }.arm.values["backend"] != REFERENCE_BACKEND }
+            .all { BenchRuns.result(it.record?.toString())?.status == BenchStatus.SUCCESS })
+        for (case in stored) BenchRuns.result(case.record?.toString())?.artifacts.orEmpty().forEach { artifact ->
             assertTrue(Files.isRegularFile(root.resolve("jobs/$job/cases/${case.index}/out/${artifact.path}")))
         }
         val originalJob = job
@@ -196,10 +211,12 @@ class BenchAdapterIntegrationTest {
         assertTrue(backend.commit(replayClaim.owner, IterationResult(emptyList(), replayPreparation.artifacts, preparation = replayPreparation)))
         checkingInputs(replayPreparation)
         val replayProblems = replayPreparation.selections.single()
-        val replayCases = Experiments.cases(replayProblems.size, arms.size, emptyList())
+        val replayCases = Experiments.cases(replayProblems.size, arms.size, emptyList()).map { case ->
+            case.copy(seed = replayProblems[case.problem].benchCase!!.attributes["seed"]?.toLongOrNull())
+        }
         val replayWork = replayCases.mapIndexed { index, case ->
             val execution = replayPreparation.armPlans.getValue(arms[case.arm].arm.label).cases[case.problem]
-            WorkCase(index, case.arm, replayProblems[case.problem], null, case.repeat, execution.resources.timeoutSeconds, execution)
+            WorkCase(index, case.arm, replayProblems[case.problem], case.seed, case.repeat, execution.resources.timeoutSeconds, execution)
         }
         store.prepareNomad(job, arms, replayProblems, replayCases, replayWork.map { CaseCommand("replay", it.timeoutSec, it.executionCase!!.resources.cpus) })
         val replayExecution = manifest("replay-solve", replayWork, replayPreparation.bundles,
@@ -208,7 +225,7 @@ class BenchAdapterIntegrationTest {
         assertEquals(2, paired.indices.size)
         store.execution.phase(paired.owner, "executing")
         val replayDirectory = root.resolve("replay-solve")
-        val replayResult = IterationExecutor(supervisor, cache, { Files.newInputStream(artifacts.file(job, it.sha256)) }, "unused", "linux", "amd64")
+        val replayResult = IterationExecutor(supervisor, cache, { Files.newInputStream(artifacts.file(job, it.sha256)) }, System.getenv("LAB_BENCH_REFERENCE_LAUNCHER") ?: "unused", "linux", "amd64")
             .run(replayExecution, paired.indices, replayDirectory, "integration-host", paired.owner.generation, remainingLeaseMs = lease(paired.owner))
         val replayArtifacts = Files.walk(replayDirectory).use { files -> files.filter(Files::isRegularFile).filter { file ->
             val relative = replayDirectory.relativize(file).toString()
@@ -223,7 +240,7 @@ class BenchAdapterIntegrationTest {
         if (scenario.sourceValidation) assertTrue(store.cases(job).all { it.record!!.jsonObject["labCheck"]?.jsonObject?.get("state")?.jsonPrimitive?.content == "valid" })
         println("Verified $name replay: retained build hashes, no planner or build invocation, complete paired receipt")
         Files.writeString(root.resolve("metrics.csv"), BenchRuns.metricsCsv(stored))
-        println("Verified $name: ${plan.cases.size} cases, ${stored.sumOf { BenchRuns.result(it.record?.toString())!!.artifacts.size }} ingested artifacts")
+        println("Verified $name: ${plan.cases.size} cases, ${stored.sumOf { BenchRuns.result(it.record?.toString())?.artifacts?.size ?: 0 }} ingested artifacts")
     }
 
     private fun command(argv: List<String>, directory: Path) {

@@ -1609,7 +1609,7 @@ private fun jobTable(
 /**
  * What kind of job [job] is, in a word, which a queue row shows instead of its commands: `profile` for a profile job,
  * `custom` for one of the retired script jobs,
- * `a/b` for an experiment of several arms, `sweep` and `reference` for those schedules' runs, `confirm` for a
+ * `a/b` for an experiment of several arms, `schedule` for a scheduled run, `confirm` for a
  * confirmation, `reference solve` for a run of the reference solvers, `run` for any other experiment.
  */
 internal fun kindOf(job: Job): String {
@@ -1618,12 +1618,10 @@ internal fun kindOf(job: Job): String {
     if (spec.isScript) return "custom"
     if (Confirm.SUFFIX in job.name) return "confirm"
     val arms = runCatching { Experiments.arms(spec) }.getOrDefault(emptyList())
-    val base = job.name.substringBefore('@')
     return when {
         arms.any { it.values["backend"] == REFERENCE_BACKEND } -> "reference solve"
-        base.startsWith("status-sweep") -> "sweep"
-        base.startsWith("solver-reference") -> "reference"
         arms.size > 1 -> "a/b"
+        '@' in job.name -> "schedule"
         else -> "run"
     }
 }
