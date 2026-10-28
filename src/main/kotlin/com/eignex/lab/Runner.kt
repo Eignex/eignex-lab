@@ -29,7 +29,7 @@ class Runner(
     private val selfUpdater: SelfUpdater? = null,
     private val sourceUrl: (String) -> String = { Repositories.source(config, it) },
 ) {
-    internal val checks = CaseChecks(store, sourceChecker, ::log)
+    internal val checks = CaseChecks(store, sourceChecker, config::jobDir, ::log)
     private val running: MutableSet<Process> = ConcurrentHashMap.newKeySet()
     @Volatile private var stopping = false
     private val mirrorLock = Any()

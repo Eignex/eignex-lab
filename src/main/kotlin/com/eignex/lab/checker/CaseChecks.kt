@@ -80,6 +80,7 @@ data class RecheckResult(val job: Long, val cases: Int, val checked: Int, val st
 class CaseChecks(
     private val store: Store,
     checker: () -> SourceChecker,
+    private val jobDirectory: ((Long) -> java.nio.file.Path)? = null,
     private val log: (Long, String) -> Unit,
 ) {
     private val checker by lazy(checker)
@@ -125,10 +126,21 @@ class CaseChecks(
                 .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
             requireNotNull(com.eignex.lab.SharedInputs.environment()).acquire(inputs, required = required)
         } catch (failure: Exception) { throw com.eignex.lab.SharedCheckInputUnavailable(failure) } else null
-        val check = lease.use { checker.check(problem, record, revision) } ?: return null
+        val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
+        val check = lease.use { checker.check(problem, record, revision, frame) } ?: return null
         store.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check
+    }
+
+    private fun frame(jobId: Long, index: Int): MiniZincFrame? {
+        val root = jobDirectory?.invoke(jobId) ?: return null
+        val prefix = "cases/$index/out/report/"
+        val names = listOf("model.fzn", "model.ozn", "cli.stdout").map { prefix + it }
+        val accepted = store.execution.accepted(jobId).firstOrNull { (_, result) ->
+            names.all { it in result.artifacts }
+        }?.second ?: return null
+        return MiniZincFrame.read(root, prefix, accepted.artifacts)
     }
 
     /**
