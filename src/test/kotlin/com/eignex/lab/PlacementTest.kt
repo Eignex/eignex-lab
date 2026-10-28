@@ -56,7 +56,7 @@ class PlacementTest {
         val pinned = spec.copy(nodeTags = NodeSelector(require = setOf("local")))
         assertEquals(Experiments.LAB_HOST, Placement.host(pinned, "status-sweep@abc", config))
         assertEquals(Experiments.LAB_HOST, Placement.host(pinned.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), "reference", config))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(Placement.automatic(pinned), spec.name, config))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(pinned.copy(nodeTags = null), spec.name, config))
     }
 
     @Test
@@ -78,7 +78,11 @@ class PlacementTest {
         assertEquals(Experiments.fingerprint(capped), Experiments.fingerprint(capped.copy(capped = emptyList())))
     }
 
-    private fun committed(file: String) = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
+    private fun committed(file: String): ExperimentSpec {
+        val body = Json.parseToJsonElement(java.io.File("deploy/specs/$file").readText())
+        val input = scheduleInput(kotlinx.serialization.json.JsonObject(mapOf("experiment" to body)))
+        return Json.decodeFromJsonElement(ExperimentSpec.serializer(), input.getValue("experiment"))
+    }
 
     @Test
     fun `a schedule that opts in to the cloud places its runs local or cloud, and its confirmations local`() {
@@ -110,7 +114,7 @@ class PlacementTest {
         val klause = listOf("klause-reference.json", "klause-reference-ls.json", "klause-reference-bt.json", "klause-reference-parallel.json")
         for (file in klause) assertTrue(Placement.cloudOptIn(committed(file)), file)
         assertFalse(Placement.cloudOptIn(committed("status-sweep.json")))
-        assertFalse(Placement.cloudOptIn(committed("reference.json")))
+        assertTrue(Placement.localOnly(committed("reference.json"), "reference"))
     }
 
     @Test

@@ -93,10 +93,14 @@ class NomadQueue(
             store.execution.domainCompleted(id)
         }
         val schedules = store.schedules()
-        for (job in store.active().filter { it.backend == "nomad" && it.experiment?.isAnalysis != true && !it.paused && !it.cancelRequested }
+        for (listed in store.active().filter { it.backend == "nomad" && it.experiment?.isAnalysis != true && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
+            var job = listed
             try {
                 val settings = NomadWorkerRuntime(this.settings).queue(store.execution.queueRecipe(job.id, this.settings))
+                // A tags edit may have won before the admission transaction; read the frozen input afterwards.
+                job = store.job(job.id) ?: continue
+                if (job.paused || job.cancelRequested || job.status !in ACTIVE) continue
                 val spec = checkNotNull(job.experiment)
                 val preparedBench = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null }?.second?.preparation?.benchPlan
                 val targets = settings.matching(spec, job.name, Placement.cloudSchedule(job.name, schedules))

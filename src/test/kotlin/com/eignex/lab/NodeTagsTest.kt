@@ -87,7 +87,7 @@ class NodeTagsTest {
         application { api(config, store, HostReport("test", 2, "java", "vector", true, emptyList())) }
         suspend fun submit(tag: String) = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"cloud","description":"hardware run","problems":{"suite":"s"},"base":{"ref":"0123456789abcdef","processors":"4"},"nodeTags":{"require":["$tag"]}}""")
+            setBody("""{"name":"cloud","description":"hardware run","problems":{"suite":"s"},"base":{"ref":"0123456789abcdef","processors":"4"},"tags":["$tag"]}""")
         }
         assertEquals(HttpStatusCode.Created, submit("simd:avx512").status)
         val job = store.active().single()

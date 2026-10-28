@@ -24,6 +24,15 @@ data class CpuCapabilities(val arch: String = "unknown", val features: Set<Strin
 
 object NodeTags {
     private val TAG = Regex("[a-z0-9][a-z0-9:._/-]*")
+    /** The public selector syntax: ordinary labels are required; !label excludes a node capability. */
+    fun selector(tags: List<String>): NodeSelector = NodeSelector(
+        tags.filterNot { it.startsWith('!') }.toSet(),
+        tags.filter { it.startsWith('!') }.map { it.drop(1) }.toSet(),
+    ).also(::validate)
+
+    fun labels(selector: NodeSelector?): List<String> =
+        (selector?.require.orEmpty() + selector?.exclude.orEmpty().map { "!$it" }).sorted()
+
     val probeScript: String = requireNotNull(NodeTags::class.java.getResource("/node-capabilities.sh")).readText()
     /** One CPU architecture and its primary SIMD profile; compatibility tags retain the detected capabilities. */
     fun hardwareProfile(tags: Set<String>): String {

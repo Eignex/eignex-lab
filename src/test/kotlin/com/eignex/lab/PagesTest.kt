@@ -361,88 +361,83 @@ class PagesTest {
     }
 
     @Test
-    fun `a submitted host and machine count are not followed, and the lab says it placed the job`() {
+    fun `legacy placement fields and overrides are rejected with a tags migration message`() = testApplication {
+        val config = lab()
+        val store = Store(config.database)
+        application { api(config, store, host) }
+        for (field in listOf("\"host\":\"auto\"", "\"auto\":false", "\"machines\":3", "\"nodeTags\":{}")) {
+            val response = client.post("/experiments") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"name":"e","description":"d","problems":{"suite":"s"},$field}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertContains(response.bodyAsText(), "use tags")
+        }
+        for (route in listOf("host", "machines")) {
+            val response = client.post("/jobs/1/$route") {
+                contentType(ContentType.Application.Json); setBody("{}")
+            }
+            assertEquals(HttpStatusCode.Gone, response.status)
+            assertContains(response.bodyAsText(), "tags")
+        }
+        assertTrue(store.active().isEmpty())
+    }
+
+    @Test
+    fun `tags updates replace selectors and choose cloud or auto without local pins`() = testApplication {
         val config = lab(cores = 8)
         val store = Store(config.database)
-        testApplication {
-            application { api(config, store, host) }
-
-            val created = client.post("/experiments") {
-                header(HttpHeaders.ContentType, "application/json")
-                setBody("""{"name": "e", "description": "d", "problems": {"suite": "s"}, "base": {"ref": "0123456789abcdef"},
-                    "host": "lab", "machines": 3}""")
-            }
-            val body = Json.parseToJsonElement(created.bodyAsText()).jsonObject
-            val spec = store.job(body["id"]!!.jsonPrimitive.content.toLong())!!.experiment!!
-
-            assertEquals(HttpStatusCode.Created, created.status)
-            assertEquals(listOf(Experiments.AUTO_HOST, null), listOf(spec.host, spec.machines))
-            assertContains(body["placement"]!!.jsonPrimitive.content, "host and machines ignored: the lab places jobs")
-            assertEquals("auto", body["host"]!!.jsonPrimitive.content)
-            assertContains(client.post("/jobs/1/machines") {
-                header(HttpHeaders.ContentType, "application/json")
-                setBody("""{"machines": 2}""")
-            }.bodyAsText(), "ignored")
+        val id = store.create("e", "0123456789abcdef", emptyList(), experiment =
+            ExperimentSpec("e", listOf(mapOf("suite" to "s")), description = "d"))
+        application { api(config, store, host) }
+        suspend fun tags(json: String) = client.post("/jobs/$id/tags") {
+            contentType(ContentType.Application.Json); setBody("""{"tags":$json}""")
         }
+        assertEquals(HttpStatusCode.OK, tags("""["cloud"]""").status)
+        assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
+        for (labels in listOf("""["local"]""", """["!cloud"]""")) {
+            val response = tags(labels)
+            assertEquals(HttpStatusCode.BadRequest, response.status)
+            assertContains(response.bodyAsText(), Placement.LOCAL_RESERVED)
+            assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
+        }
+        assertEquals(HttpStatusCode.OK, tags("[]").status)
+        assertEquals(Experiments.AUTO_HOST, store.job(id)!!.experiment!!.host)
+        assertEquals(null, store.job(id)!!.experiment!!.nodeTags)
+        for (invalid in listOf("null", "[1]", "[true]", "\"cloud\"", "{}", "[\"spot\",\"!spot\"]")) {
+            assertEquals(HttpStatusCode.BadRequest, tags(invalid).status)
+        }
+        store.plan(id, Experiments.arms(store.job(id)!!.experiment!!).map { PlannedArm(it, "abc") },
+            listOf(Problem("s", "p")), Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+        assertEquals(HttpStatusCode.Conflict, tags("""["cloud"]""").status)
+        assertEquals(Experiments.AUTO_HOST, store.job(id)!!.experiment!!.host)
     }
 
     @Test
-    fun `ordinary host overrides accept auto and cloud but cannot pin local`() {
-        val config = lab(cores = 8, aws = "vcpuQuota=32\n")
-        val store = Store(config.database)
-        val id = store.create("e", "0123456789abcdef", emptyList(), 1, 0,
-            ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("ref" to "0123456789abcdef"), description = "d"))
-        testApplication {
-            application { api(config, store, host) }
-            suspend fun place(to: String) = client.post("/jobs/$id/host") {
-                header(HttpHeaders.ContentType, "application/json")
-                setBody("""{"host": "$to"}""")
-            }
-
-            val cloud = place("cloud")
-            assertEquals(HttpStatusCode.OK, cloud.status)
-            assertContains(cloud.bodyAsText(), "placed on the cloud: a cloud node runs it")
-            assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
-            for (local in listOf("local", "lab")) {
-                val refused = place(local)
-                assertEquals(HttpStatusCode.BadRequest, refused.status)
-                assertContains(refused.bodyAsText(), Placement.LOCAL_RESERVED)
-                assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
-            }
-            assertEquals(HttpStatusCode.OK, place("auto").status)
-            assertEquals(Experiments.AUTO_HOST, store.job(id)!!.experiment!!.host)
-            assertEquals(HttpStatusCode.OK, place("aws").status)
-            assertEquals(Experiments.AWS_HOST, store.job(id)!!.experiment!!.host)
-            assertContains(place("mac").bodyAsText(), "host must be local, cloud or auto")
-        }
-        assertEquals(listOf("lab", "aws", "auto", "lab", "aws"),
-            listOf("local", "cloud", "auto", "lab", "aws").map(Experiments::storedHost))
-        assertEquals(listOf("local", "cloud", "auto"), listOf("lab", "aws", "auto").map(Experiments::hostWord))
-    }
-
-    @Test
-    fun `ordinary submissions reject local selectors and auto repairs an unadmitted legacy pin`() = testApplication {
+    fun `local selectors are refused and empty tags repair a paused unadmitted legacy pin`() = testApplication {
         val config = lab()
         val store = Store(config.database)
         val old = ExperimentSpec("old-profile", profile = ProfileMain("com.eignex.Main"),
             base = mapOf("ref" to "a".repeat(40)), description = "legacy local profile",
             nodeTags = NodeSelector(require = setOf("local"), exclude = setOf("cloud")))
         val id = store.create(old.name, "a".repeat(40), emptyList(), experiment = old)
+        store.setPaused(id, true)
         application { api(config, store, host) }
-        for (selector in listOf("""{"require":["local"]}""", """{"exclude":["cloud"]}""")) {
+        for (labels in listOf("""["local"]""", """["!cloud"]""")) {
             val refused = client.post("/experiments") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"profile","description":"test placement","base":{"ref":"${"a".repeat(40)}"},"profile":{"main":"com.eignex.Main"},"nodeTags":$selector}""")
+                setBody("""{"name":"profile","description":"test placement","base":{"ref":"${"a".repeat(40)}"},"profile":{"main":"com.eignex.Main"},"tags":$labels}""")
             }
             assertEquals(HttpStatusCode.BadRequest, refused.status)
             assertContains(refused.bodyAsText(), Placement.LOCAL_RESERVED)
         }
-        val moved = client.post("/jobs/$id/host") {
-            contentType(ContentType.Application.Json); setBody("""{"host":"auto"}""")
+        val moved = client.post("/jobs/$id/tags") {
+            contentType(ContentType.Application.Json); setBody("""{"tags":[]}""")
         }
         assertEquals(HttpStatusCode.OK, moved.status)
         assertEquals(Experiments.AUTO_HOST, store.job(id)!!.experiment!!.host)
-        assertEquals(NodeSelector(), store.job(id)!!.experiment!!.nodeTags)
+        assertEquals(null, store.job(id)!!.experiment!!.nodeTags)
+        assertTrue(store.job(id)!!.paused)
     }
 
     @Test

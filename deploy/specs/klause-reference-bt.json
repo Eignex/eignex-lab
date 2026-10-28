@@ -28,7 +28,6 @@
     {"suite": "satcomp-compact-v1", "per-family": "3", "max": "60", "seed": "1", "reference": "any"}
   ],
   "base": {"timeout": "60000", "engine": "cp", "param.source-validation": "true", "param.source-validation-gzip": "true"},
-  "host": "auto",
   "priority": 0,
   "confirm": true
 }

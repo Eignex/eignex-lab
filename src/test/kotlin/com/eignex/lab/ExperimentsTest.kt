@@ -60,7 +60,8 @@ class ExperimentsTest {
             "reference-qfnra-extensions.json" to "qfnra-extensions-v1",
             "reference-qfnra-source-canonical.json" to "qfnra-source-canonical-v1",
         )) {
-            val spec = Json.decodeFromString<ExperimentSpec>(java.io.File("deploy/specs/$file").readText())
+            val spec = Json.decodeFromJsonElement(ExperimentSpec.serializer(), experimentInput(
+                Json.parseToJsonElement(java.io.File("deploy/specs/$file").readText()).jsonObject))
 
             Experiments.validate(spec, maxParallel = 4)
 

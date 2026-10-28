@@ -66,9 +66,8 @@ class RepositoryRunsTest {
                 "tools/build/install/tools/lib/*", "--timeout", "600", "com.eignex.skema.profile.MainKt", "main", "profile tool", "--", "--mode=small")
 
             assertEquals("Eignex/koblas", capture["repository"]?.jsonPrimitive?.content)
-            assertEquals("arch:arm64", capture["nodeTags"]?.jsonObject?.get("require")?.jsonArray?.single()?.jsonPrimitive?.content)
-            assertEquals("spot", capture["nodeTags"]?.jsonObject?.get("exclude")?.jsonArray?.single()?.jsonPrimitive?.content)
-            assertFalse("nodeTags" in ordinary)
+            assertEquals(listOf("!spot", "arch:arm64"), capture["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertFalse("tags" in ordinary)
             assertEquals(listOf("--smoke", "--operation", "dot"), capture["profile"]?.jsonObject?.get("args")?.jsonArray?.map { it.jsonPrimitive.content })
             assertEquals("Eignex/skema", generic["repository"]?.jsonPrimitive?.content)
             assertEquals(":tools:installDist", generic["profile"]?.jsonObject?.get("buildTasks")?.jsonArray?.single()?.jsonPrimitive?.content)

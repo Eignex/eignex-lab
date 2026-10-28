@@ -1593,8 +1593,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /**
      * Place a queued experiment that has not been planned on [host] (`lab`, `aws` or `auto`): what [Placement] decides,
-     * or an operator overrides. [placed], when given, is the spec it then has: its own cut down to fit the local
-     * machine. False otherwise; a planned job a node gave back is placed with [release].
+     * or an operator updates its tags. [placed], when given, is the replacement spec. Admission freezes the recipe
+     * before source publication, so the SQL guard also fences a concurrent coordinator in another process.
      */
     @Synchronized
     fun place(jobId: Long, host: String, placed: ExperimentSpec? = null): Boolean {
@@ -1602,7 +1602,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         val spec = placed ?: job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
         val moved = spec.copy(host = host, auto = false, machines = null)
-        return update("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(moved), jobId) == 1
+        return update("UPDATE jobs SET experiment = ? WHERE id = ? AND status = 'QUEUED' " +
+            "AND NOT EXISTS (SELECT 1 FROM commands WHERE job_id = ?) " +
+            "AND NOT EXISTS (SELECT 1 FROM execution_queue_recipes WHERE job_id = ?) " +
+            "AND NOT EXISTS (SELECT 1 FROM execution_sessions WHERE job_id = ?)",
+            Json.encodeToString(moved), jobId, jobId, jobId, jobId) == 1
     }
 
     @Synchronized

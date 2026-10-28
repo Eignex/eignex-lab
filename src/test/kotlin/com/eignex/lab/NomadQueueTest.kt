@@ -14,6 +14,35 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `tags cannot change while source publication is pending before the first session`() = testApplication {
+        val id = job()
+        val frozen = store.job(id)!!.experiment
+        NomadQueue(config, store, backend, artifacts, settings, { true }, source = { _, _, _ -> null }).reconcile()
+        assertTrue(store.execution.sessions(id).isEmpty())
+        val apiStore = Store(config.database)
+        application { api(config.copy(passwordHash = null), apiStore, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        val response = client.post("/jobs/$id/tags") {
+            contentType(ContentType.Application.Json); setBody("""{"tags":["cloud"]}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, response.status)
+        assertEquals(frozen, store.job(id)!!.experiment)
+    }
+
+    @Test fun `an admitted preparation rejects tags edits and retains its frozen recipe`() = testApplication {
+        val id = job()
+        queue().reconcile()
+        val session = store.execution.sessions(id).single()
+        val frozen = store.execution.manifest(session.id)
+        assertTrue(store.job(id)!!.commands.isEmpty())
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        val response = client.post("/jobs/$id/tags") {
+            contentType(ContentType.Application.Json); setBody("""{"tags":["cloud"]}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, response.status)
+        assertEquals(frozen.experiment, store.job(id)!!.experiment)
+        assertEquals(frozen, store.execution.manifest(session.id))
+    }
+
     @Test fun `slow source publication does not block admission of a prepared experiment`() {
         val ready = job()
         queue().reconcile(); prepare(ready); backend.reconcile()
@@ -238,7 +267,7 @@ class NomadQueueTest {
         application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"api-nomad","description":"exercise automatic admission","problems":{"suite":"s"},"base":{"ref":"${"a".repeat(40)}"},"nodeTags":{"require":["cloud"]}}""")
+            setBody("""{"name":"api-nomad","description":"exercise automatic admission","problems":{"suite":"s"},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud"]}""")
         }
         assertEquals(HttpStatusCode.Created, response.status)
         val job = store.active().single()
@@ -260,7 +289,7 @@ class NomadQueueTest {
         application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"nodeTags":{"require":["cloud","spot"]}}""")
+            setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud","spot"]}""")
         }
         assertEquals(HttpStatusCode.Created, response.status)
         val job = store.active().single()
