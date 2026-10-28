@@ -183,4 +183,4 @@ internal class ProfileRunDeadline(
     }
 }
 
-internal class ProfileRunTimeout : IllegalStateException("Profile whole-run deadline exhausted")
+internal class ProfileRunTimeout : IllegalStateException("Whole-run deadline exhausted")

@@ -202,6 +202,20 @@ A bench request names one source revision. Cases, backends, seeds, repetitions, 
 belong to the adapter; the lab does not add JFR or Vector API flags. Use legacy Klause experiments for reference arms
 and paired multi-revision comparisons. Generic bench jobs do not trigger solver regression confirmations.
 
+Optional `bench.runTimeoutSec` limits the job's total active preparation/execution time to 1–7200 seconds;
+queue time is excluded. The allowance persists across worker replacements. Workers reserve shutdown/transfer
+time, retain partial files and report a permanent deadline failure. Without it, the adapter's per-case resource
+ceilings apply without a separate whole-job limit. Worker and coordinator releases must support these fields.
+
+Set `bench.sourceValidation` to `true` to request the lab's independent source-witness checks for solver-domain
+records. The coordinator uses the preserved solve record, final witness and source hashes; the SDK request and
+runtime parameters do not receive this lab policy. An unsupported checker or missing input leaves the claim
+unchecked and records why; only an invalid witness withdraws the claim. The SDK envelope remains intact alongside
+the lab verdict. This does not add proof checking for infeasibility or optimality.
+
+Bench schedules preserve these explicit controls without injecting legacy solver options. For a checked solver
+schedule, include `bench.sourceValidation: true` in its experiment. Timing suites can leave it false.
+
 The coordinator retains the SDK envelope as the case record, displays metrics/artifacts on the job page and exports
 `/experiments/<id>/metrics.csv`. `/experiments/<id>/cases` exposes full records. An adapter marking its case
 `recordSchema=solver-v1` supplies its complete solve record in `details`; the coordinator preserves those fields

@@ -44,6 +44,43 @@ class ExecutionStoreTest {
         return id
     }
 
+    private fun bench(timeout: Long? = 1): Long {
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json", runTimeoutSec = timeout))
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        val cases = Experiments.cases(1, 1, emptyList())
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Problem("bench", "p")), cases, cases.map { "true" to 720L })
+        return id
+    }
+
+    @Test fun `bench deadline receipt retains partial output and survives acknowledgement retry`() {
+        val id = bench(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1100)!!
+        assertEquals(900L, store.execution.remainingRunMs("s", 1100))
+        store.execution.phase(claim.owner, "uploading", 1700)
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 124, 1100, 1700, "{}") },
+            artifacts = mapOf("cases/0/out/solve.log" to "a".repeat(64)), runTimedOut = true)
+        assertTrue(store.execution.commit(claim.owner, result, 1800))
+        val restarted = Store(file)
+        assertTrue(restarted.execution.commit(claim.owner, result, 1801))
+        assertEquals(Status.FAILED, restarted.job(id)!!.status)
+        assertEquals(result, restarted.execution.accepted(id).single().second)
+        assertTrue(restarted.execution.sessions(id).all { it.desired == "stop" })
+    }
+
+    @Test fun `bench deadline survives replacement and cannot be reported without an allowance`() {
+        val id = bench(); bind(id)
+        store.execution.claim("s", token, "alloc-s", 1100)!!
+        store.execution.loseSession("s", "infrastructure:lost", 1300)
+        bind(id, "replacement")
+        assertEquals(200L, Store(file).execution.remainingRunMs("replacement", 1800))
+        store.execution.expireRunDeadlines(2000)
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        val unlimited = bench(null); bind(unlimited, "unlimited")
+        val claim = store.execution.claim("unlimited", token, "alloc-unlimited", 1100)!!
+        store.execution.phase(claim.owner, "uploading", 1700)
+        assertFailsWith<IllegalArgumentException> { store.execution.commit(claim.owner, result(claim).copy(runTimedOut = true), 1800) }
+    }
+
     @Test fun `preparation has fenced ownership before a plan and survives coordinator restart`() {
         val spec = ExperimentSpec("prepare")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)

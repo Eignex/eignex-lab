@@ -83,7 +83,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 val start = System.nanoTime()
                 val lease = Json.decodeFromString<LeaseReply>(String(json("renew", Json.encodeToString(claim.owner)).body()))
                 require(lease.leaseMs in 10_001..ExecutionStore.LEASE_MS)
-                require((lease.runRemainingMs != null) == (manifest.experiment.profile?.runTimeoutSec != null)) { "profile deadline missing from lease" }
+                require((lease.runRemainingMs != null) == (Experiments.runTimeoutSec(manifest.experiment) != null)) { "run deadline missing from lease" }
                 lease.runRemainingMs?.let { allowance ->
                     val candidate = start + allowance.coerceAtLeast(0) * 1_000_000
                     runDeadline.updateAndGet { minOf(it, candidate) }
