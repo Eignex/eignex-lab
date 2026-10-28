@@ -35,11 +35,11 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation:$ktor")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktor")
     implementation("io.ktor:ktor-server-status-pages:$ktor")
-    // The MPS reader the SCIP and HiGHS references judge their claims against: the parse klause itself solves.
+    // Retained MPS source-checker parser; consumer execution uses only repository manifests.
     implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
     implementation("com.github.luben:zstd-jni:1.5.7-24")
-    // The official XCSP3 solution checker (MIT), which the lab runs over Klause's XCSP3 witnesses ([com.eignex.lab.checker]).
+    // The official XCSP3 solution checker (MIT), which the lab runs over solver XCSP3 witnesses ([com.eignex.lab.checker]).
     implementation(project(":xcsp3-tools"))
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation("io.ktor:ktor-server-test-host:$ktor")
@@ -59,7 +59,12 @@ application {
     applicationDefaultJvmArgs = parserJvmArgs
 }
 
-tasks.withType<Test>().configureEach { jvmArgs(parserJvmArgs) }
+tasks.withType<Test>().configureEach {
+    jvmArgs(parserJvmArgs)
+    val testHome = layout.buildDirectory.dir("test-home")
+    systemProperty("user.home", testHome.get().asFile.absolutePath)
+    doFirst { testHome.get().asFile.mkdirs() }
+}
 
 // install.sh runs the services on the toolchain JDK, so the host needs no JDK 25 of its own.
 tasks.register("printJavaHome") {
@@ -72,11 +77,11 @@ tasks.register("printJavaHome") {
 
 // Runs real, already-built consumer adapters through preparation, execution and coordinator ingestion.
 tasks.test { useJUnitPlatform { excludeTags("bench-adapters") } }
-val benchAdapterRoot = providers.environmentVariable("LAB_BENCH_ADAPTER_ROOT")
+val benchAdapterMatrix = providers.environmentVariable("LAB_BENCH_ADAPTER_MATRIX")
 tasks.register<Test>("verifyBenchAdapters") {
-    onlyIf("LAB_BENCH_ADAPTER_ROOT must name prepared consumer checkouts") { benchAdapterRoot.isPresent }
+    onlyIf("LAB_BENCH_ADAPTER_MATRIX must name prepared scenarios") { benchAdapterMatrix.isPresent }
     group = "verification"
-    description = "Verify unpublished SDK adapters from LAB_BENCH_ADAPTER_ROOT through the worker/coordinator path."
+    description = "Verify prepared repository adapters from LAB_BENCH_ADAPTER_MATRIX through the worker/coordinator path."
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform { includeTags("bench-adapters") }

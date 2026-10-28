@@ -63,7 +63,7 @@ data class TrendRun(
     val par2: Estimate,
     val suites: Map<String, SuiteShare>,
     /**
-     * Solved shares by theme, as the classifier names what a problem asks of klause ([Dimension.THEME]): the themes the
+     * Solved shares by theme, as the classifier names what a problem asks of solver ([Dimension.THEME]): the themes the
      * sweep set was drawn by, so each holds a fair share of it. A problem of several themes counts in each.
      */
     val themes: Map<String, SuiteShare> = emptyMap(),
@@ -131,7 +131,7 @@ object Trend {
                 val arms = store.arms(job.id)
                 val cases = store.scoringCases(job.id)
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
-                val keys = cases.map { it.problem.collection to it.problem.problem }
+                val keys = cases.map { it.problem.referenceKey }
                 val trend = run(job, arms, cases, store.references(keys, sources = References.sources(cases)), store.features(keys.distinct()))
                 if (trend == null) {
                     if (finished) cache?.put(job.id, version, stamp, null, emptySet())
@@ -190,7 +190,7 @@ object Trend {
         arms: List<PlannedArm>,
         cases: List<CaseResult>,
         references: Map<Pair<String, String>, Reference> = emptyMap(),
-        /** The classifier's features of the run's problems, which place a problem klause did not profile in a class. */
+        /** The classifier's features of the run's problems, which place a problem solver did not profile in a class. */
         features: Map<Pair<String, String>, ProblemFeatures> = emptyMap(),
     ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
@@ -206,7 +206,7 @@ object Trend {
                 SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average())
             }.toSortedMap()
         val themesOf = outcomes.keys.associate { p ->
-            (p.collection to p.problem) to Scoreboard.values(Dimension.THEME, p, features[p.collection to p.problem], emptyList())
+            (p.referenceKey) to Scoreboard.values(Dimension.THEME, p, features[p.referenceKey], emptyList())
         }
         val suites = shares { listOf(it.suite.ifEmpty { "(none)" }) }
         val themes = shares { themesOf.getValue(it.collection to it.problem) }
@@ -227,7 +227,7 @@ object Trend {
             errors = summary.errors,
             disagreements = comparison.disagreements.size,
             disagreementsBySuite = comparison.disagreements.groupingBy { it.problem.suite.ifEmpty { "(none)" } }.eachCount(),
-            disagreementsByTheme = comparison.disagreements.flatMap { themesOf[it.problem.collection to it.problem.problem].orEmpty() }
+            disagreementsByTheme = comparison.disagreements.flatMap { themesOf[it.problem.referenceKey].orEmpty() }
                 .groupingBy { it }.eachCount(),
             worse = comparison.shortfalls.size,
             par2 = stats.par2,

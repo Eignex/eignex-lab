@@ -30,7 +30,7 @@ class RepositoriesTest {
         val koblas = ExperimentSpec("p", repository = "Eignex/koblas", profile = profile)
         val skema = koblas.copy(repository = "Eignex/skema")
 
-        assertEquals(config.mirror, Repositories.mirror(config, Repositories.DEFAULT))
+        assertEquals(config.dataDir.resolve("repos/eignex-lab.git"), Repositories.mirror(config, Repositories.DEFAULT))
         assertNotEquals(Repositories.mirror(config, koblas.repository), Repositories.mirror(config, skema.repository))
         assertNotEquals(Experiments.fingerprint(koblas), Experiments.fingerprint(skema))
         assertTrue(Repositories.mirror(config, koblas.repository).startsWith(config.dataDir))
@@ -39,7 +39,7 @@ class RepositoriesTest {
     @Test
     fun `a configured URL cannot override the Eignex source restriction`() {
         for (url in listOf("/tmp/repo", "https://github.com/other/klause.git", "https://github.com.evil/Eignex/klause.git")) {
-            assertFailsWith<IllegalArgumentException> { Repositories.source(Config(repoUrl = url), Repositories.DEFAULT) }
+            assertEquals(Repositories.url(Repositories.DEFAULT), Repositories.source(Config(repoUrl = url), Repositories.DEFAULT))
         }
     }
 

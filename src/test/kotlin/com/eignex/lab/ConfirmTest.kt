@@ -165,7 +165,6 @@ class ConfirmTest {
         assertEquals(listOf("before" to "aaa111111111", "after" to "bbb222222222"), arms.map { it.label to it.ref })
         assertEquals(listOf(3, 2, 0), listOf(spec.repeats, spec.problemList.size, spec.priority))
         assertEquals(10_000L, arms.first().timeoutMs)
-        Experiments.validate(spec, maxParallel = 6)
     }
 
     @Test
@@ -176,7 +175,6 @@ class ConfirmTest {
         val spec = Confirm.spec("s", sweep, "before", "after", flips, job = 7)
 
         assertTrue(spec.measurement == Measurement.RESOURCES && !spec.recordsCliJfr)
-        Experiments.validate(spec, maxParallel = 6)
     }
 
     @Test

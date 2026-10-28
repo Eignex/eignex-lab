@@ -37,7 +37,7 @@ class ExecutionStoreTest {
     }
 
     private fun profile(): Long {
-        val spec = ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1))
+        val spec = ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1, classpath = listOf("tools/lib/*")))
         val id = store.create("profile", "main", emptyList(), experiment = spec)
         val cases = Experiments.cases(1, 1, emptyList())
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Experiments.profileProblem(spec)), cases, cases.map { "true" to 720L })

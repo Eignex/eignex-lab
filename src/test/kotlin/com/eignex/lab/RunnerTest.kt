@@ -18,12 +18,12 @@ class RunnerTest {
         for (priority in listOf(0, 100)) {
             val config = Config(dataDir = Files.createTempDirectory("confirmation-priority"))
             val store = Store(config.database)
-            val original = ExperimentSpec("status-sweep", listOf(mapOf("suite" to "s")), priority = -2)
+            val original = ExperimentSpec("status-sweep", bench = BenchSpec("bench.json"), priority = -2)
             val schedule = store.createSchedule("status-sweep", "main", original, 120)
             fun run(sha: String, solved: Boolean): Long {
                 val spec = original.copy(name = "status-sweep@$sha", base = mapOf("ref" to sha))
                 val id = store.create(spec.name, sha, emptyList(), experiment = spec)
-                store.plan(id, Experiments.arms(spec).map { PlannedArm(it, sha) }, listOf(Problem("s", "p")),
+                store.plan(id, Experiments.arms(spec).map { PlannedArm(it, sha) }, listOf(BenchRuns.problem(com.eignex.lab.bench.BenchCase("p"))),
                     Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
                 store.setup(id, sha)
                 store.caseRecord(id, 0, if (solved) """{"kind":"satisfy","feasible":true,"budgetMs":1000}"""

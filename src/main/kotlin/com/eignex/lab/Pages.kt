@@ -171,7 +171,9 @@ internal fun jobPage(
     if (spec != null && spec.isAnalysis) {
         append(analysisSection(config, job, spec))
     } else if (spec?.bench != null) {
-        append(benchSection(job, cases))
+        if (cases.any { it.problem.benchCase?.attributes?.get("recordSchema") == "solver-v1" })
+            append(experimentSection(config, job.id, arms, cases, references))
+        append(benchSection(job, cases, arms))
     } else if (spec != null && (spec.isProfile || spec.isScript)) {
         append(singleCaseSection(config, job, spec))
     } else if (spec != null) {
@@ -433,7 +435,7 @@ private fun problemGrid(
             })
             append("</td>")
         }
-        if (references.isNotEmpty()) append("<td class=\"ref\">${referenceVerdict(references[problem.collection to problem.problem])}</td>")
+        if (references.isNotEmpty()) append("<td class=\"ref\">${referenceVerdict(references[problem.referenceKey])}</td>")
         append("</tr>")
     }
     append("</table></div>")
@@ -453,7 +455,7 @@ private fun referenceVerdict(r: Reference?): String {
 }
 
 /** One outcome in a word: the objective (starred when proven), sat, infeasible, unknown, unsupported, a load error, or
- *  the case's status when it left no record; a reason shows on hover. A Klause solution claim carries how far its
+ *  the case's status when it left no record; a reason shows on hover. A Solver solution claim carries how far its
  *  witness was checked ([witnessMark]). */
 internal fun verdict(outcome: Outcome?, status: Status): String = outcomeWord(outcome, status) + witnessMark(outcome)
 
@@ -476,7 +478,7 @@ private fun outcomeWord(outcome: Outcome?, status: Status): String = when {
 }
 
 /**
- * How far a Klause solution claim was checked against its original source, as a small word beside its verdict:
+ * How far a Solver solution claim was checked against its original source, as a small word beside its verdict:
  * `checked` for a witness the source accepted, `unchecked` for the solver's own report (with the reason when a check
  * was asked for and its checker could not run), `check indeterminate` for a check that could not decide, the reason and
  * policy on hover. An accepted witness is a valid solution; a proof of
@@ -516,7 +518,7 @@ private fun witnessLabel(summary: ArmSummary): String {
     val counts = summary.witnesses
     if (counts.isEmpty()) return ""
     val title = esc(WitnessCheck.entries.filter { (counts[it] ?: 0) > 0 }.joinToString(", ") { "${counts[it]} ${it.word}" } +
-        " Klause solutions; a checked witness is a valid solution, not a checked proof")
+        " Solver solutions; a checked witness is a valid solution, not a checked proof")
     return when {
         (counts[WitnessCheck.ACCEPTED] ?: 0) > 0 || (counts[WitnessCheck.INDETERMINATE] ?: 0) > 0 ->
             " <span class=\"DONE\" title=\"$title\">source-checked</span>"
@@ -933,12 +935,10 @@ internal fun referencesPage(
     total: Int,
     /** Problems two reference solvers contradict each other on. */
     conflicts: List<Disagreement> = emptyList(),
-    /** A klause run against the references, which the tab leads with. */
+    /** A candidate run against the references, which the tab leads with. */
     scoreboard: ScoreboardView? = null,
 ): String = buildString {
-    val visible = coverage.filter { c ->
-        QFNRA_BENCHMARKS.any { c.collection.startsWith(it) } || HIDDEN_COLLECTIONS.none { c.collection.startsWith(it) }
-    }
+    val visible = coverage
     append(head("reference · eignex lab", live = false, tab = Tab.REFERENCE))
     append("<header><h1>Reference</h1><p class=\"muted\">${visible.sumOf { it.rows }} results from ")
     append("${visible.map { it.solver }.distinct().size} solvers over ${visible.map { it.collection }.distinct().size} collections")
@@ -1046,7 +1046,7 @@ private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): Str
     val analyze = spec.analyze ?: return@buildString
     if (analyze.kind == AnalyzeSpec.CHECK) {
         append("<h2>Recheck</h2><p>The lab's source checkers, run again over the stored records of job ")
-        append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>: each Klause solution claim in a format the lab checks gets a ")
+        append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>: each Solver solution claim in a format the lab checks gets a ")
         append("fresh verdict, which its pages, trend and comparisons then read. Nothing was built and no solver ran.</p>")
         val result = config.jobDir(job.id).resolve(com.eignex.lab.checker.CaseChecks.RESULT).toFile().takeIf { it.isFile }
             ?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(com.eignex.lab.checker.RecheckResult.serializer(), it.readText()) }.getOrNull() }
@@ -1095,7 +1095,7 @@ private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): Str
     append("</table></div>")
 }
 
-/** A klause run against every reference solver: a row per group, a cell per solver, each cell klause's Borda share. */
+/** A candidate run against every reference solver: a row per group, a cell per solver, each cell candidate's Borda share. */
 private fun scoreboardSection(view: ScoreboardView): String = buildString {
     append("<h2>Against the references <small>pairwise Borda by the MiniZinc Challenge rule: ")
     append(if (view.scoring == Scoring.INCOMPLETE) "local-search class, proofs ignored and equal results split evenly"
@@ -1135,7 +1135,7 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
     }
     if (view.witnesses.isNotEmpty()) {
         val counts = WitnessCheck.entries.filter { (view.witnesses[it] ?: 0) > 0 }.joinToString(", ") { "${view.witnesses[it]} ${it.word}" }
-        append("<p class=\"muted\">Klause's solutions in this run: $counts. ")
+        append("<p class=\"muted\">Solver's solutions in this run: $counts. ")
         if ((view.witnesses[WitnessCheck.UNCHECKED] ?: 0) > 0) {
             append("An unchecked solution is the solver's own report and scores as a source-checked one does. ")
         }
@@ -1150,27 +1150,27 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
         append("</tr>")
     }
     append("</table></div>")
-    append("<p class=\"muted\">Each cell is klause's share of the points against that solver over the problems both have a ")
+    append("<p class=\"muted\">Each cell is candidate's share of the points against that solver over the problems both have a ")
     append("result for; green above one half, red below. <i>best</i> takes the strongest trusted reference verdict on each problem. ")
-    if (view.by == Dimension.CLASS) append("The class is klause's own profile of the model; a run that reported none takes one from the source's logic or the pipeline that solved it. ")
-    append("Open a cell for its problems, klause's losses first.</p>")
-    append("<p class=\"muted\">A cell reads klause's budget against the reference's. The score measures quality against stored ")
-    append("reference verdicts: time splits an equal result only where the budgets are equal and klause ran on one core, and a cell ")
+    if (view.by == Dimension.CLASS) append("The class is candidate's own profile of the model; a run that reported none takes one from the source's logic or the pipeline that solved it. ")
+    append("Open a cell for its problems, candidate's losses first.</p>")
+    append("<p class=\"muted\">A cell reads candidate's budget against the reference's. The score measures quality against stored ")
+    append("reference verdicts: time splits an equal result only where the budgets are equal and candidate ran on one core, and a cell ")
     append("marked <span class=\"PARTIAL\">quality only</span> has problems whose reference had another budget, which it does not ")
     append("correct for. For relative speed, run a lab a/b experiment with both solvers as arms at the same budget.</p>")
     val (group, against) = view.cell ?: return@buildString
     append("<h3>${esc(group)} against ${esc(against)} <small>${view.problems.size} problems · ")
     append("<a href=\"${link("group" to null, "against" to null)}\">close</a></small></h3>")
-    append("<div class=\"scroll\"><table><tr><th>problem</th><th class=\"num\">klause</th><th class=\"num\">${esc(against)}</th>")
+    append("<div class=\"scroll\"><table><tr><th>problem</th><th class=\"num\">candidate</th><th class=\"num\">${esc(against)}</th>")
     append("<th class=\"num\">budgets</th><th>timed</th></tr>")
     for (p in view.problems) {
         val cls = when {
-            p.klause > p.reference -> "DONE"
-            p.klause < p.reference -> "FAILED"
+            p.candidate > p.reference -> "DONE"
+            p.candidate < p.reference -> "FAILED"
             else -> "muted"
         }
         append("<tr><td><a class=\"plain\" href=\"${problemLink(p.problem.collection, p.problem.problem)}\"><code>${esc(p.problem.collection)}/")
-        append("${esc(p.problem.problem)}</code></a></td><td class=\"num $cls\">${"%.2f".format(p.klause)}</td>")
+        append("${esc(p.problem.problem)}</code></a></td><td class=\"num $cls\">${"%.2f".format(p.candidate)}</td>")
         append("<td class=\"num\">${"%.2f".format(p.reference)}</td>")
         append("<td class=\"num\">${Scoreboard.seconds(p.budgetMs)} vs ${Scoreboard.seconds(p.referenceBudgetMs)}</td>")
         val differ = p.budgetMs != p.referenceBudgetMs
@@ -1180,8 +1180,8 @@ private fun scoreboardSection(view: ScoreboardView): String = buildString {
 }
 
 /**
- * One scoreboard cell: klause's share, tinted green above one half and red below, the stronger the further off, then
- * klause's budget against the reference's (a range when its problems had several) and a quality-only mark when they differ.
+ * One scoreboard cell: candidate's share, tinted green above one half and red below, the stronger the further off, then
+ * candidate's budget against the reference's (a range when its problems had several) and a quality-only mark when they differ.
  */
 private fun scoreCell(cell: ScoreCell?, href: String): String {
     val share = cell?.share ?: return "<td class=\"num muted\">${if (cell == null || cell.problems == 0) "" else "–"}</td>"
@@ -1189,7 +1189,7 @@ private fun scoreCell(cell: ScoreCell?, href: String): String {
     val tint = "background:color-mix(in srgb, var(--${if (share >= HALF_SHARE) "ok" else "bad"}) $strength%, transparent)"
     val perBudget = cell.referenceBudgets.entries.joinToString(", ") { (ms, n) -> "${Scoreboard.seconds(ms)} on $n" }
     return buildString {
-        append("<td class=\"num\" style=\"$tint\"><a class=\"plain\" href=\"$href\" title=\"klause ${"%.1f".format(cell.klause)} ")
+        append("<td class=\"num\" style=\"$tint\"><a class=\"plain\" href=\"$href\" title=\"candidate ${"%.1f".format(cell.candidate)} ")
         append("against ${"%.1f".format(cell.reference)} over ${cell.problems} problems")
         if (cell.referenceBudgets.size > 1) append("; reference budgets: $perBudget")
         append("\">${"%.2f".format(share)} <small class=\"muted\">${cell.problems}</small>")
@@ -1200,7 +1200,7 @@ private fun scoreCell(cell: ScoreCell?, href: String): String {
     }
 }
 
-/** A cell's budgets: klause's against the reference's, or the range of the reference's when they vary. */
+/** A cell's budgets: candidate's against the reference's, or the range of the reference's when they vary. */
 internal fun budgets(cell: ScoreCell): String? {
     val mine = cell.budgetMs ?: return null
     val theirs = cell.referenceBudgets.keys.takeIf { it.isNotEmpty() } ?: return null
@@ -1215,11 +1215,11 @@ private fun qualityOnly(cell: ScoreCell): String {
     val other = cell.referenceBudgets.filterKeys { it != mine }
     val lean = when {
         other.keys.all { it > mine } -> "the reference had a longer budget, so its proofs and objectives had more time"
-        other.keys.all { it < mine } -> "the reference had a shorter budget, so klause's proofs and objectives had more time"
+        other.keys.all { it < mine } -> "the reference had a shorter budget, so candidate's proofs and objectives had more time"
         else -> "the reference had longer budgets on some and shorter on others"
     }
     return "Time splits no equal result on the ${other.values.sum()} of ${cell.problems} problems whose reference verdict had " +
-        "another budget than klause's ${Scoreboard.seconds(mine)}, and $lean. The score compares quality, not speed."
+        "another budget than candidate's ${Scoreboard.seconds(mine)}, and $lean. The score compares quality, not speed."
 }
 
 private const val HALF_SHARE = 0.5
@@ -1227,17 +1227,13 @@ private const val MAX_TINT = 45
 
 internal const val SEARCH_LIMIT = 200
 
-private val QFNRA_BENCHMARKS = listOf(
-    "klause-bench/smoke-corpus/qfnra-v1/",
-    "klause-bench/smoke-corpus/qfnra-source-canonical-v1/",
-)
 /** Test fixtures, not benchmarks: kept in the store, left out of the coverage view. */
-private val HIDDEN_COLLECTIONS = listOf("klause-bench/smoke-corpus/", "klause-mzn-lib/")
+private val HIDDEN_COLLECTIONS = emptyList<String>()
 
 /** Families of collections that coverage folds into one expandable row: a name and which collections it holds. */
 private val FAMILIES: List<Pair<String, (String) -> Boolean>> = listOf(
     "satlib" to { it.startsWith("satlib-") },
-    "qfnra" to { collection -> QFNRA_BENCHMARKS.any { collection.startsWith(it) } || collection == "smtlib-qf_nra" },
+    "qfnra" to { collection -> collection == "smtlib-qf_nra" },
     "smtlib" to { it.startsWith("smtlib-") },
     "pb" to { it.startsWith("pb-") || it.startsWith("pb07-") },
     "orlib" to { it.startsWith("orlib-") },
@@ -1626,7 +1622,7 @@ internal fun kindOf(job: Job): String {
     return when {
         arms.any { it.values["backend"] == REFERENCE_BACKEND } -> "reference solve"
         base.startsWith("status-sweep") -> "sweep"
-        base.startsWith("klause-reference") -> "reference"
+        base.startsWith("solver-reference") -> "reference"
         arms.size > 1 -> "a/b"
         else -> "run"
     }
@@ -2146,13 +2142,16 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): St
     append("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>")
 }
 
-private fun benchSection(job: Job, cases: List<CaseResult>): String = buildString {
+private fun benchSection(job: Job, cases: List<CaseResult>, arms: List<PlannedArm>): String = buildString {
     append("<h2>Bench results</h2><p>Repository <code>${esc(job.experiment!!.repository)}</code> · ")
     append("<a href=\"/experiments/${job.id}/metrics.csv\">metrics CSV</a> · ")
     append("<a href=\"/experiments/${job.id}/cases\">case records</a> · <a href=\"/jobs/${job.id}/files\">all files</a></p>")
     for (case in cases) {
         val result = BenchRuns.result(case.record?.toString())
-        append("<h3>${esc(case.problem.problem)}</h3><p>${esc(result?.status?.name ?: case.status.name)}</p>")
+        append("<h3>${esc(case.problem.problem)} · ${esc(case.arm)}</h3><p>${esc(result?.status?.name ?: case.status.name)}")
+        arms.firstOrNull { it.arm.label == case.arm }?.let { append(" · commit <code>${esc(it.sha.take(12))}</code>") }
+        case.seed?.let { append(" · seed $it") }
+        append(" · repeat ${case.repeat + 1}</p>")
         result?.message?.let { append("<p>${esc(it)}</p>") }
         if (result != null && result.metrics.isNotEmpty()) {
             append("<table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Direction</th></tr>")

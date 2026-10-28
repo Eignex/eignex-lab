@@ -390,11 +390,13 @@ active inputs can temporarily exceed the quota. Old interrupted transfers are re
 is free. Consumer-owned collections, remote input objects and historical job artifacts are outside this cleanup.
 Evicted views can be reconstructed from the job's saved input inventory.
 
-Linux roots normally use `/lab-cache/consumer/klause-bench/corpus`, with
-`KLAUSE_BENCH_CORPUS_MIRROR` pointing at the store's `corpus-packs/` prefix. The consumer restores whole collections
-only on a preparation cache miss and owns its corpus formats and source downloads. Native roots should point at
-the populated corpus cache and leave the mirror unset. The optional loopback `LAB_SHARED_INPUT_SIGNER` supplies
-short-lived HTTP capabilities to native workers; no provider credentials enter manifests or consumer processes.
+Consumer adapters own their corpus formats, collection downloads and cache configuration.
+The lab supplies `LAB_WORKTREE`, `LAB_CORPUS`, `LAB_REPOSITORY` and the output directory.
+Optional generic corpus transport settings are `LAB_CORPUS_MIRROR`, `LAB_CORPUS_MIRROR_WRITE`,
+`LAB_CORPUS_KEEP_PACKED` and the preparation-only `LAB_INPUT_SIGNER`;
+repository manifests can declare runtime tools, tags and consumer-specific environment settings.
+The optional loopback `LAB_SHARED_INPUT_SIGNER` supplies short-lived HTTP capabilities to native workers;
+no provider credentials enter manifests or consumer processes.
 The portable input transport only uses HTTPS, metadata probes and conditional PUT. See the provider setup in
 `deploy/infra/README.md`. Saved recipes and accepted preparations retain their original inputs and worker release.
 

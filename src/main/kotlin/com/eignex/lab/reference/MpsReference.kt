@@ -1,6 +1,6 @@
 package com.eignex.lab.reference
 
-import com.eignex.klause.formats.mps.MpsModel
+import com.eignex.lab.checker.MpsModel
 import kotlin.math.abs
 import kotlin.math.max
 

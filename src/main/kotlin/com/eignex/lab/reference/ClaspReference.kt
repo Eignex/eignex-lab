@@ -12,10 +12,10 @@ import kotlin.math.abs
  * memory limits, a deadline watchdog and label-based cleanup.
  */
 internal object ClaspReference {
-    const val IMAGE = "klause-clasp:latest"
+    const val IMAGE = "eignex-lab-clasp:latest"
 
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
-    const val CONTAINER_LABEL = "klause-clasp-ref"
+    const val CONTAINER_LABEL = "eignex-lab-clasp-ref"
 
     private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "clasp")
 

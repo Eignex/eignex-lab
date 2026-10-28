@@ -4,7 +4,7 @@ import java.io.File
 
 /**
  * `eignex-lab reference key=value...`: one reference case, as a lab case command runs it. The instance comes resolved,
- * as `klause-bench select files=true` printed it: `problem=`, `format=`, `model=`, and optionally `data=` and one
+ * as the repository planner resolved it: `problem=`, `format=`, `model=`, and optionally `data=` and one
  * `include=` per MiniZinc include directory. `solver=` picks one of the format's reference solvers (its default when
  * absent), `timeout=` is the budget in ms, `processors=` the solver's workers, `solver-seed=` its seed, `fixed=true`
  * keeps a MiniZinc solver to the model's search annotations, and `out=` is where the record goes. Committed-main

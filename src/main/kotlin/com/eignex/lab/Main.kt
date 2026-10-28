@@ -8,7 +8,7 @@ import kotlin.system.exitProcess
  * `api` serves the queue over HTTP, `runner` works it, `check` only reports the host. The two services are
  * separate processes on purpose: a solve that takes the runner down leaves the queue inspectable, and the service
  * manager restarts the runner, which resumes where the store says it was. `campaign-evidence` ([CampaignEvidence]) and
- * `make-sets` ([MakeSets]) are tools run by hand from a checkout, on any host, and `docker-cleanup` ([DockerCleanup])
+ * `docker-cleanup` ([DockerCleanup]) is a tool run by hand from a checkout, on any host, and
  * prunes the lab machine's Docker now instead of at the runner's next cleanup. `reference` ([ReferenceCli]) runs one
  * reference-solver case, as a reference arm's case command calls it. `nomad-spec` renders an operator's experimental
  * batch session without starting either service or opening the lab database.
@@ -17,7 +17,6 @@ fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
     when (mode) {
         "campaign-evidence" -> exitProcess(CampaignEvidence.main(args.drop(1)))
-        "make-sets" -> exitProcess(MakeSets.main(args.drop(1)))
         "docker-cleanup" -> exitProcess(dockerCleanupNow())
         "reference" -> exitProcess(ReferenceCli.main(args.drop(1)))
         "nomad-coordinator" -> exitProcess(NomadCoordinatorCli.main(args.drop(1)))
@@ -33,7 +32,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|make-sets|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator")
         exitProcess(2)
     }
     val host = runCatching { hostReport() }.getOrElse { e ->

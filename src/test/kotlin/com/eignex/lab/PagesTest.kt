@@ -29,7 +29,7 @@ class PagesTest {
         val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("p", base = mapOf("timeout" to "36000000"),
-            profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+            profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
         val id = store.create("p", "main", listOf("true" to 60L), experiment = spec)
         val dir = config.jobDir(id)
         dir.resolve("cases/0/out").toFile().mkdirs()
@@ -78,9 +78,9 @@ class PagesTest {
 
             val page = referencesPage(coverage, ReferenceFilter(), emptyList(), 0)
 
-            assertContains(page, "5 results from")
+            assertContains(page, "6 results from")
             assertContains(page, "value=\"$collection\"")
-            assertFalse(page.contains("value=\"klause-bench/smoke-corpus/smtlib\""))
+            assertTrue(page.contains("value=\"klause-bench/smoke-corpus/smtlib\""))
         }
     }
 
@@ -124,7 +124,7 @@ class PagesTest {
 
             assertContains(index, "#1 in the queue")
             assertContains(index, "/jobs/$done?failed\">1 failed</a>")
-            assertContains(index, "https://github.com/Eignex/klause/commit/0123456789abcdef")
+            assertContains(index, "https://github.com/Eignex/eignex-lab/commit/0123456789abcdef")
             assertContains(job.bodyAsText(), "<code>false</code>")
             assertFalse(failed.contains("<code>true</code>"))
             assertTrue(json.contentType()?.match(ContentType.Application.Json) == true)
@@ -417,7 +417,7 @@ class PagesTest {
     fun `local selectors are refused and empty tags repair a paused unadmitted legacy pin`() = testApplication {
         val config = lab()
         val store = Store(config.database)
-        val old = ExperimentSpec("old-profile", profile = ProfileMain("com.eignex.Main"),
+        val old = ExperimentSpec("old-profile", profile = ProfileMain("com.eignex.Main", classpath = listOf("tools/lib/*")),
             base = mapOf("ref" to "a".repeat(40)), description = "legacy local profile",
             nodeTags = NodeSelector(require = setOf("local"), exclude = setOf("cloud")))
         val id = store.create(old.name, "a".repeat(40), emptyList(), experiment = old)
@@ -426,7 +426,7 @@ class PagesTest {
         for (labels in listOf("""["local"]""", """["!cloud"]""")) {
             val refused = client.post("/experiments") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"name":"profile","description":"test placement","base":{"ref":"${"a".repeat(40)}"},"profile":{"main":"com.eignex.Main"},"tags":$labels}""")
+                setBody("""{"name":"profile","description":"test placement","base":{"ref":"${"a".repeat(40)}"},"profile":{"main":"com.eignex.Main","classpath":["tools/lib/*"]},"tags":$labels}""")
             }
             assertEquals(HttpStatusCode.BadRequest, refused.status)
             assertContains(refused.bodyAsText(), Placement.LOCAL_RESERVED)
@@ -441,37 +441,24 @@ class PagesTest {
     }
 
     @Test
-    fun `a batch of an active experiment is refused, and a cancelled one no longer counts`() {
+    fun `repository selections can be queued independently without solver specific batching rules`() {
         val config = lab()
         val store = Store(config.database)
-        fun spec(name: String, suite: String) = """{"name": "$name", "description": "d", "problems": {"suite": "$suite"},
-            "grid": {"ref": ["0123456789abcdef", "fedcba9876543210"]}, "seeds": [1, 2], "repeats": 3}"""
         testApplication {
             application { api(config, store, host) }
-            suspend fun submit(body: String) = client.post("/experiments") {
-                header(HttpHeaders.ContentType, "application/json")
-                setBody(body)
+            for (selection in listOf("a", "b")) {
+                val response = client.post("/experiments") {
+                    header(HttpHeaders.ContentType, "application/json")
+                    setBody("""{"name":"bench-$selection","description":"d","bench":{"manifest":"bench.json","request":{"parameters":{"selection":"$selection"}}}}""")
+                }
+                assertEquals(HttpStatusCode.Created, response.status)
             }
-
-            assertEquals(HttpStatusCode.Created, submit(spec("ab-batch1", "a")).status)
-            val batch = submit(spec("ab-batch2", "b"))
-            val other = submit(spec("ab-other", "b").replace("\"repeats\": 3", "\"repeats\": 5"))
-            assertEquals(HttpStatusCode.Created, other.status)
-            store.requestCancel(1)
-            val after = submit(spec("ab-all", "a,b"))
-
-            assertEquals(HttpStatusCode.Conflict, batch.status)
-            val message = batch.bodyAsText()
-            assertContains(message, "job 1 (ab-batch1)")
-            assertContains(message, "submit one experiment that covers all the problems")
-            assertContains(message, "lab cases 1")
-            assertEquals(HttpStatusCode.Created, after.status)
-            assertEquals(listOf("ab-other", "ab-all"), store.active(withCommands = false).map { it.name })
+            assertEquals(2, store.active().size)
         }
     }
 
     @Test
-    fun `a job asking for more than the local machine has is cut down to it, and the response and the job page say so`() {
+    fun `parallelism is capped without rewriting opaque repository CPU settings`() {
         val config = lab(cores = 8).copy(maxParallel = 6)
         val store = Store(config.database)
         testApplication {
@@ -479,17 +466,17 @@ class PagesTest {
 
             val created = client.post("/experiments") {
                 header(HttpHeaders.ContentType, "application/json")
-                setBody("""{"name": "e", "description": "d", "problems": {"suite": "s"},
-                    "base": {"ref": "0123456789abcdef", "processors": "12"}, "parallel": 8}""")
+                setBody("""{"name": "e", "description": "d", "bench":{"manifest":"bench.json"},
+                    "base": {"ref": "0123456789abcdef", "param.cpus": "12"}, "parallel": 8}""")
             }
             val body = Json.parseToJsonElement(created.bodyAsText()).jsonObject
             val job = store.job(body["id"]!!.jsonPrimitive.content.toLong())!!
             val notes = body["notes"]!!.jsonArray.map { it.jsonPrimitive.content }
 
             assertEquals(HttpStatusCode.Created, created.status)
-            assertEquals(listOf(Experiments.AUTO_HOST, "8", "6"), listOf(job.experiment!!.host, job.experiment!!.base["processors"], "${job.parallel}"))
-            assertEquals(listOf("capped: parallel=8 was asked, capped at the local machine's 6", "capped: processors=12 was asked, capped at the local machine's 8 cores"), notes)
-            assertContains(jobPage(config, job, failedOnly = false), "processors=12 was asked, capped at the local machine's 8 cores")
+            assertEquals(listOf(Experiments.AUTO_HOST, "12", "6"), listOf(job.experiment!!.host, job.experiment!!.base["param.cpus"], "${job.parallel}"))
+            assertEquals(listOf("capped: parallel=8 was asked, capped at the local machine's 6"), notes)
+            assertContains(jobPage(config, job, failedOnly = false), "parallel=8 was asked")
         }
     }
 

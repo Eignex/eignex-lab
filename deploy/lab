@@ -20,7 +20,7 @@
 # --measurement none|resources|jfr|compilation|compilation+log selects an experiment's CLI recording.
 #   lab analyze <id>                                        queue an analysis job: the lab's compilation analyser rerun over the
 #                                                            retained captures of an ended JFR-recorded job <id>, writing each case's
-#                                                            compilation-report.json afresh; no build, no solver, no klause code.
+#                                                            compilation-report.json afresh; no build, no solver, no consumer code.
 #                                                            Refused once the job was trimmed (LAB_TRIM_AGE_DAYS after it ended)
 #   lab analyze --archive <name> --sha256 <hex> [--manifest <name>] [--manifest-sha256 <hex>]
 #                                                            the same over a pinned saved-capture archive (a campaign-evidence
@@ -34,7 +34,7 @@
 #   lab journal                                             pending result bytes, age, capacity and drain errors
 #   lab cases <id> --json                                   every case whole as JSON Lines, one per line: index, arm, seed,
 #                                                            repeat, problem, status, host (local, or the cloud node's
-#                                                            instance), labDebug (the KLAUSE_DEBUG it ran with, from the
+#                                                            instance), labDebug (its historical debug setting, from the
 #                                                            arm's debug) and the full record, its finalWitness and the
 #                                                            lab's verdict (record.labCheck) included
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's results as CSV
@@ -87,7 +87,7 @@
 #                                                            listed file it cannot download fails it: it fetches the rest,
 #                                                            writes lab-fetch-missing.json naming each one, and exits 1
 #   lab corpus                                               rsync the local bench corpus to the server's LAB_REMOTE_CORPUS
-#                                                            (default .cache/klause-bench/corpus; set it to the server's
+#                                                            (default .cache/eignex-lab/corpus; set it to the server's
 #                                                            LAB_CORPUS when that is elsewhere, an external drive say)
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/eignex-lab/password.
 #                                                            running cloud job (an AWS instance), through the server with the
@@ -112,8 +112,8 @@ curl() {
 data="${LAB_REMOTE_DATA:-eignex-lab-data}"
 # The server's LAB_JOBS and LAB_CORPUS, relative to its home unless absolute, for lab corpus.
 remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
-remote_corpus="${LAB_REMOTE_CORPUS:-.cache/klause-bench/corpus}"
-corpus="${LAB_CORPUS:-$HOME/.cache/klause-bench/corpus}"
+remote_corpus="${LAB_REMOTE_CORPUS:-.cache/eignex-lab/corpus}"
+corpus="${LAB_CORPUS:-$HOME/.cache/eignex-lab/corpus}"
 node_tags='[]'
 timeout='' measurement=''
 # Shared submission options, kept separate from arguments passed to a committed main.
@@ -154,7 +154,7 @@ run)
   [[ $# -eq 1 ]] || { echo 'usage: lab run [--tags expr --measurement mode] <experiment.json>' >&2; exit 2; }
   submission_payload < "$1" | curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/experiments"; echo ;;
 profile)
-  repository=Eignex/klause
+  repository=""
   build_tasks='[]' classpath='[]'
   while [[ $# -gt 0 ]]; do
     if submission_option "$@"; then shift 2; continue; fi
@@ -167,6 +167,7 @@ profile)
     esac
   done
   [[ $# -ge 3 ]] || { echo 'usage: lab profile [--timeout sec] <main> <ref> <description> -- [arg...]' >&2; exit 2; }
+  [[ -n "$repository" ]] || { echo "profile requires --repo Eignex/name and an explicit --classpath for JVM mains" >&2; exit 2; }
   main="$1" ref="$2" description="$3"
   shift 3
   [[ $# -eq 0 || "$1" == -- ]] || { echo 'profile arguments must follow --; set the limit with --timeout seconds' >&2; exit 2; }

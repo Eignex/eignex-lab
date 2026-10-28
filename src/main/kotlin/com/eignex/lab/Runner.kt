@@ -104,9 +104,8 @@ class Runner(
 
     internal fun queueConfirmation(job: Job) {
         val spec = job.experiment ?: return
-        if (spec.bench != null) return
         val series = job.name.substringBefore('@', "")
-        if (series.isEmpty() || series.endsWith(Confirm.SUFFIX)) return
+        if (series.isEmpty() || series.endsWith(Confirm.SUFFIX) || spec.bench == null) return
         val schedule = store.schedules().singleOrNull { it.name == series } ?: return
         val fingerprint = Experiments.fingerprint(spec)
         val previous = store.jobs(limit = PREVIOUS_RUNS, name = series)
@@ -117,7 +116,7 @@ class Runner(
         if (before == after) return
         val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
         if (flips.confirmable.isEmpty()) return
-        val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id)
+        val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id, previous.id)
         if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation)
         log(job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
@@ -169,10 +168,11 @@ class Runner(
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
-            // Every scheduled Klause run asks for source validation ([SourceValidation.scheduled]), whatever spec the
+            // Every scheduled solver run asks for source validation ([SourceValidation.scheduled]), whatever spec the
             // schedule was saved with.
             val experiment = SourceValidation.scheduled(schedule.experiment)
-            val run = experiment.copy(name = name, base = experiment.base + ("ref" to sha))
+            val run = experiment.copy(name = name, base = experiment.base + ("ref" to sha),
+                configs = experiment.configs.map { it - "ref" }, grid = experiment.grid - "ref")
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
             val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)), auto = false, machines = null)
@@ -214,7 +214,7 @@ class Runner(
     /**
      * Run analysis job [job]: the lab's analyser over the retained captures of the ended job it names, writing each
      * case's report afresh beside them, and a brief of them all in its own directory ([CompilationReports.ANALYSIS]).
-     * Nothing is built and no klause code runs. It fails, saying why, when the captures were trimmed or are missing.
+     * Nothing is built and no consumer code runs. It fails, saying why, when the captures were trimmed or are missing.
      */
     internal fun analyze(job: Job) {
         val spec = checkNotNull(job.experiment?.analyze)
@@ -283,7 +283,7 @@ class Runner(
      * Run analysis job [job] over the pinned archive [spec] names ([CaptureArchives]), a file under the lab's archive
      * directory: check it against its SHA-256, verify every member against its manifest, extract the profile
      * directories' captures under [CaptureArchives.ROOT], and write each one's report and task records there, with the
-     * archive in their provenance. No original job is needed, nothing is built and no klause code runs; a refused archive fails the job,
+     * archive in their provenance. No original job is needed, nothing is built and no consumer code runs; a refused archive fails the job,
      * saying why.
      */
     private fun analyzeArchive(job: Job, spec: AnalyzeSpec, dir: Path) {
@@ -364,14 +364,6 @@ class Runner(
         val SHA = Regex("[0-9a-f]{40}")
     }
 }
-
-/**
- * The Gradle tasks that build a Klause commit for an experiment: the CLI and the bench. A reference experiment runs
- * the lab's own launcher and builds the bench only to select and resolve its problems, so it needs no CLI. No checker
- * is packaged into the bench: the lab checks witnesses itself ([com.eignex.lab.checker]).
- */
-internal fun klauseBuildTasks(referenceOnly: Boolean): String =
-    if (referenceOnly) ":klause-bench:installDist" else ":klause-cli:installJvmDist :klause-bench:installDist"
 
 /**
  * [command] wrapped so that it leads a new session, and so its own process group. perl is the portable way to

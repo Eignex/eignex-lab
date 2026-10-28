@@ -1,9 +1,9 @@
 package com.eignex.lab.reference
 
-import com.eignex.klause.formats.mps.Mps
+import com.eignex.lab.checker.Mps
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
-import com.eignex.klause.ir.ObjectiveSense as ObjectiveDirection
+import com.eignex.lab.checker.ObjectiveSense as ObjectiveDirection
 
 /**
  * MPS reference adapter for SCIP in the [IMAGE] container. Streams the model through
@@ -11,10 +11,10 @@ import com.eignex.klause.ir.ObjectiveSense as ObjectiveDirection
  * memory limits, a deadline watchdog and label-based cleanup. Rows use `reference/scip.csv`.
  */
 internal object ScipReference {
-    const val IMAGE = "klause-scip:latest"
+    const val IMAGE = "eignex-lab-scip:latest"
 
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
-    const val CONTAINER_LABEL = "klause-scip-ref"
+    const val CONTAINER_LABEL = "eignex-lab-scip-ref"
 
     /** SCIP's own memory limit in MB, in addition to the shared Docker ceiling. */
     private const val MEMORY_LIMIT_MB = "6000"

@@ -23,7 +23,7 @@ enum class Scoring { COMPLETE, INCOMPLETE }
 
 /** A way to split problems into groups on the scoreboard, and to filter them. */
 enum class Dimension(val label: String) {
-    /** klause's own profile of the model it built ([profile]): its problem class. */
+    /** candidate's own profile of the model it built ([profile]): its problem class. */
     CLASS("class"),
     /** The profile's cross-cutting traits: resource or placement constraints, values past 32 bits. */
     TRAIT("trait"),
@@ -41,14 +41,14 @@ enum class Dimension(val label: String) {
  */
 @Serializable
 data class ScoreCell(
-    val klause: Double,
+    val candidate: Double,
     val reference: Double,
     val problems: Int,
     val budgetMs: Long? = null,
     val referenceBudgets: Map<Long, Int> = emptyMap(),
 ) {
-    /** klause's share of the points awarded; null when neither side scored. */
-    val share: Double? get() = (klause + reference).takeIf { it > 0 }?.let { klause / it }
+    /** candidate's share of the points awarded; null when neither side scored. */
+    val share: Double? get() = (candidate + reference).takeIf { it > 0 }?.let { candidate / it }
 
     /**
      * Whether any of the reference's verdicts had another budget than the arm. Time splits none of those problems'
@@ -67,7 +67,7 @@ data class ScoreRow(val group: String, val problems: Int, val cells: Map<String,
 data class ScoreProblem(
     val problem: Problem,
     val solver: String,
-    val klause: Double,
+    val candidate: Double,
     val reference: Double,
     /** Whether time split an equal result: the run had the reference's budget on one core. */
     val timed: Boolean,
@@ -93,9 +93,9 @@ object Scoreboard {
     const val BEST = "best"
 
     /**
-     * klause's profile of a model, as its `profile` statistic reports it: `<class> optimizing=… wide=… scheduling=…`,
+     * candidate's profile of a model, as its `profile` statistic reports it: `<class> optimizing=… wide=… scheduling=…`,
      * the class one of Sat, PseudoBoolean, FiniteCp, MixedInteger, Continuous and Open. A [derived] profile is the lab's
-     * guess for a run that reported none, from how klause solved it or the source's logic; its traits are unknown.
+     * guess for a run that reported none, from how candidate solved it or the source's logic; its traits are unknown.
      */
     data class Profile(val problemClass: String, val wide: Boolean, val scheduling: Boolean, val derived: Boolean = false) {
         companion object {
@@ -108,7 +108,7 @@ object Scoreboard {
     }
 
     /**
-     * Each problem's profile, from the first of its runs that reports one. klause profiles the model only on its main
+     * Each problem's profile, from the first of its runs that reports one. candidate profiles the model only on its main
      * pipelines: a run on another (the polynomial theory solver for nonlinear reals, an early refutation) or one that
      * failed to load reports none, and gets a [Profile.derived] class from its pipeline or [features]' logic instead.
      */
@@ -117,14 +117,14 @@ object Scoreboard {
             val stats = runs.map { ((it.record as? JsonObject)?.get("stats") as? JsonObject).orEmpty() }
             fun stat(name: String) = stats.firstNotNullOfOrNull { (it[name] as? JsonPrimitive)?.content }
             val profile = stat("profile")?.let(Profile::of)
-                ?: derivedClass(stat("solvePipeline"), features[problem.collection to problem.problem]?.logic, stat("loadError") != null)
+                ?: derivedClass(stat("solvePipeline"), features[problem.referenceKey]?.logic, stat("loadError") != null)
                     ?.let { Profile(it, wide = false, scheduling = false, derived = true) }
             profile?.let { problem to it }
         }.toMap()
 
-    /** The class of a run klause did not profile: by its logic, else by its pipeline, else that it did not load. */
+    /** The class of a run candidate did not profile: by its logic, else by its pipeline, else that it did not load. */
     private fun derivedClass(pipeline: String?, logic: String?, loadFailed: Boolean): String? =
-        LOGIC_CLASSES[logic?.uppercase()] ?: PIPELINE_CLASSES[pipeline] ?: LOAD_FAILED.takeIf { loadFailed }
+        LOGIC_CLASSES[logic?.uppercase()] ?: LOAD_FAILED.takeIf { loadFailed }
 
     /** Each problem of [cases] with its runs' outcomes. */
     private fun outcomes(cases: List<CaseResult>): Map<Problem, List<Outcome>> =
@@ -178,12 +178,12 @@ object Scoreboard {
             members.size,
             solvers.associateWith { solver ->
                 val points = members.mapNotNull { it.second[solver] }
-                ScoreCell(points.sumOf { it.klause }, points.sumOf { it.reference }, points.size, arm.timeoutMs,
+                ScoreCell(points.sumOf { it.candidate }, points.sumOf { it.reference }, points.size, points.map { it.budgetMs }.distinct().singleOrNull(),
                     points.groupingBy { it.referenceBudgetMs }.eachCount().toSortedMap())
             },
         )
         val groups = scored.flatMap { entry ->
-            val key = entry.first.collection to entry.first.problem
+            val key = entry.first.referenceKey
             values(groupBy, entry.first, features[key], matched[key].orEmpty(), profiles[entry.first]).map { it to entry }
         }.groupBy({ it.first }, { it.second })
         return Board(
@@ -193,7 +193,7 @@ object Scoreboard {
         )
     }
 
-    /** The problems of a cell: [solver] against the arm over the problems in [group] of [groupBy], worst for klause first. */
+    /** The problems of a cell: [solver] against the arm over the problems in [group] of [groupBy], worst for candidate first. */
     fun problems(
         cases: List<CaseResult>,
         arm: Arm,
@@ -209,11 +209,11 @@ object Scoreboard {
         val matched = References.matching(references, cases)
         return scoredProblems(cases, arm, matched, features, filters, scoring)
             .filter { (problem, _) ->
-                val key = problem.collection to problem.problem
+                val key = problem.referenceKey
                 group == null || group == "all" || group in values(groupBy, problem, features[key], matched[key].orEmpty(), profiles[problem])
             }
             .mapNotNull { it.second[solver] }
-            .sortedBy { it.klause - it.reference }
+            .sortedBy { it.candidate - it.reference }
     }
 
     /** Each problem that passes [filters] and has a reference, with its points against each solver and the best. */
@@ -227,7 +227,7 @@ object Scoreboard {
     ): List<Pair<Problem, Map<String, ScoreProblem>>> {
         val profiles = profiles(cases, features)
         return outcomes(cases).mapNotNull { (problem, runs) ->
-            val key = problem.collection to problem.problem
+            val key = problem.referenceKey
             val rows = References.trusted(references[key].orEmpty())
             if (rows.isEmpty()) return@mapNotNull null
             val passes = filters.all { (dimension, value) ->
@@ -242,10 +242,13 @@ object Scoreboard {
 
     /** The arm's [runs] of [problem] against [reference]: each side's points averaged over the runs. */
     private fun score(problem: Problem, solver: String, runs: List<Outcome>, reference: Reference, arm: Arm, scoring: Scoring): ScoreProblem {
+        val budgets = runs.map { it.budgetMs }.distinct()
+        val budget = budgets.singleOrNull() ?: 0L
+        val cores = runs.map { it.processors ?: arm.cores }.distinct().singleOrNull() ?: 0
         val untimed = when {
-            arm.timeoutMs != reference.budgetMs -> "budgets differ: ${seconds(arm.timeoutMs)} vs ${seconds(reference.budgetMs)}"
+            budget != reference.budgetMs -> "budgets differ: ${seconds(budget)} vs ${seconds(reference.budgetMs)}"
             scoring == Scoring.INCOMPLETE -> "local-search scoring"
-            arm.cores != 1 -> "run on ${arm.cores} cores"
+            cores != 1 -> "run on $cores cores"
             else -> null
         }
         val timed = untimed == null
@@ -265,10 +268,10 @@ object Scoreboard {
         return ScoreProblem(
             problem = problem,
             solver = solver,
-            klause = pairs.map { (mine, ref) -> points(mine, ref, timed, scoring) }.average(),
+            candidate = pairs.map { (mine, ref) -> points(mine, ref, timed, scoring) }.average(),
             reference = pairs.map { (mine, ref) -> points(ref, mine, timed, scoring) }.average(),
             timed = timed,
-            budgetMs = arm.timeoutMs,
+            budgetMs = budget,
             referenceBudgetMs = reference.budgetMs,
             untimed = untimed,
         )
@@ -304,18 +307,16 @@ object Scoreboard {
     private const val UNPROFILED = "unknown class"
     private const val UNKNOWN = "unknown"
     private const val LOAD_FAILED = "did not load"
-    /** klause's class names as the scoreboard shows them. */
+    /** candidate's class names as the scoreboard shows them. */
     private val CLASS_LABELS = mapOf(
         "Sat" to "SAT", "PseudoBoolean" to "pseudo-Boolean", "FiniteCp" to "finite-domain CP", "MixedInteger" to "mixed integer",
         "Continuous" to "continuous", "Open" to "open-domain integer", "Nonlinear" to "nonlinear real",
     )
-    /** The class an SMT logic's problems take when klause did not profile them. */
+    /** The class an SMT logic's problems take when candidate did not profile them. */
     private val LOGIC_CLASSES = mapOf(
         "QF_NRA" to "Nonlinear", "QF_LRA" to "Continuous", "QF_RDL" to "Continuous",
         "QF_LIA" to "Open", "QF_IDL" to "Open", "QF_LIRA" to "Open",
     )
-    /** The class klause's solve pipeline implies, for a run it did not profile. */
-    private val PIPELINE_CLASSES = mapOf("polynomial-theory" to "Nonlinear", "open-theory" to "Open", "finite-cp" to "FiniteCp")
     /** Groups that hold what could not be placed: listed after the real ones. */
     private val CATCH_ALL = setOf(UNPROFILED, UNCLASSIFIED, UNKNOWN, LOAD_FAILED, "no reference", "undecided by reference")
     private const val SECOND = 1_000L

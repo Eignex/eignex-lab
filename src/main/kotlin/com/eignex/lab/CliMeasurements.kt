@@ -11,7 +11,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 internal object CliMeasurements {
-    const val CLI = "klause-cli/build/install/klause-cli-jvm/bin/klause-cli"
+    const val CLI = "bin/consumer"
     const val JFR = "cli.jfr"
     const val RESOURCES = "resources.txt"
     const val MANIFEST = "measurement.json"
@@ -65,8 +65,9 @@ internal object CliMeasurements {
      * [time] is the timer, `/usr/bin/time` but in tests.
      */
     // Only generated launch scripts change. The installed solver jars, and the cached builds, stay byte-identical.
-    fun install(worktree: String, macOs: Boolean = false, time: String = "/usr/bin/time"): String {
-        val cli = "$worktree/$CLI"
+    fun install(worktree: String, macOs: Boolean = false, time: String = "/usr/bin/time", executable: String = CLI): String {
+        safeRelative(executable)
+        val cli = "$worktree/$executable"
         return """
             set -euo pipefail
             test -x ${quote(time)}

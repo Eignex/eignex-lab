@@ -5,7 +5,7 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /** The klause commit a case ran, [sha], as its arm pinned it in job [job]: what a repository fixture is read at. */
-data class Revision(val job: Long, val sha: String)
+data class Revision(val job: Long, val sha: String, val repository: String? = null)
 
 /**
  * Finds the source of a case whose problem is a file of the klause repository itself, such as the bench's
@@ -22,6 +22,7 @@ class RepositoryFixtures(
     /** The directories worktrees live in, on the lab and on a cloud node: a planned path under one is a repository path. */
     private val worktreeRoots: List<String>,
     private val hash: (File) -> String = ::sha256,
+    private val mirrorFor: (Revision) -> File = { mirror },
 ) {
     /** Whether [problem]'s source is a file of the klause repository rather than of the corpus. */
     fun owns(problem: Problem): Boolean = problem.collection.startsWith(REPOSITORY_PREFIX) || problem.model?.let(::relative) != null
@@ -79,7 +80,7 @@ class RepositoryFixtures(
         check(collection.startsWith(REPOSITORY_PREFIX)) { "collection $collection is not a klause repository path" }
         val listed = worktree(revision, collection)?.let { dir ->
             dir.walkTopDown().filter { it.isFile }.map { "$collection/${it.relativeTo(dir).invariantSeparatorsPath}" }.toList()
-        } ?: git("ls-tree", "-r", "--name-only", revision.sha, "--", "$collection/").let { (exit, out) ->
+        } ?: git(revision, "ls-tree", "-r", "--name-only", revision.sha, "--", "$collection/").let { (exit, out) ->
             check(exit == 0) { "klause ${revision.sha.take(SHORT)} is not in the lab's mirror: ${out.trim().take(200)}" }
             out.lines().filter { it.isNotBlank() }
         }
@@ -99,7 +100,7 @@ class RepositoryFixtures(
     private fun fromMirror(path: String, revision: Revision, expected: String, dir: File): File? {
         dir.mkdirs()
         val file = File(dir, path.substringAfterLast('/'))
-        val (exit, err) = git("cat-file", "blob", "${revision.sha}:$path", output = file)
+        val (exit, err) = git(revision, "cat-file", "blob", "${revision.sha}:$path", output = file)
         if (exit != 0) {
             file.delete()
             error("$path is not in klause at ${revision.sha.take(SHORT)}: ${err.trim().take(200)}")
@@ -110,8 +111,8 @@ class RepositoryFixtures(
     }
 
     /** `git` on the mirror: its exit, and its output, or only its errors when [output] takes the output. */
-    private fun git(vararg args: String, output: File? = null): Pair<Int, String> {
-        val builder = ProcessBuilder(listOf("git", "--git-dir", mirror.path) + args)
+    private fun git(revision: Revision, vararg args: String, output: File? = null): Pair<Int, String> {
+        val builder = ProcessBuilder(listOf("git", "--git-dir", mirrorFor(revision).path) + args)
             .redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
         if (output != null) builder.redirectOutput(output) else builder.redirectErrorStream(true)
         val process = builder.start()

@@ -9,7 +9,7 @@ import kotlin.test.*
 class QueueEfficiencyTest {
     @Test fun `racing native admissions cannot exceed the shared CPU budget`() {
         val store = Store(Files.createTempDirectory("native-budgets").resolve("lab.db"))
-        val spec = ExperimentSpec("native", profile = ProfileMain(main = "com.eignex.Main"))
+        val spec = ExperimentSpec("native", profile = ProfileMain(main = "com.eignex.Main", classpath = listOf("tools/lib/*")))
         val jobs = (1..3).map { store.create("native-$it", "main", emptyList(), experiment = spec) }
         val limit = ResourceBudget(4000, 4096)
         val budget = ResourceBudget(2000, 1024)
@@ -32,7 +32,7 @@ class QueueEfficiencyTest {
 
     @Test fun `native memory budget is enforced even when CPU is available`() {
         val store = Store(Files.createTempDirectory("native-memory").resolve("lab.db"))
-        val spec = ExperimentSpec("native", profile = ProfileMain(main = "com.eignex.Main"))
+        val spec = ExperimentSpec("native", profile = ProfileMain(main = "com.eignex.Main", classpath = listOf("tools/lib/*")))
         val jobs = (1..2).map { store.create("native-$it", "main", emptyList(), experiment = spec) }
         val budget = ResourceBudget(1000, 3072)
         val payload = NomadBatchJob("fixture", NomadPlatform.MAC, "native", NomadCpuCapacity(28000, 10), budget,

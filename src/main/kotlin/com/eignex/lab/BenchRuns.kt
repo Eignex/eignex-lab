@@ -4,6 +4,7 @@ import com.eignex.lab.bench.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -14,6 +15,11 @@ data class BenchSpec(
     val request: BenchRequest = BenchRequest(),
     val runTimeoutSec: Long? = null,
     val sourceValidation: Boolean = false,
+    /** Exact workloads retained by a confirmation; runtime parameters still come from each approved revision. */
+    val frozenCases: List<BenchCase> = emptyList(),
+    val referenceFilter: ReferenceFilterMode = ReferenceFilterMode.ANY,
+    val referenceFilters: Map<String, ReferenceFilterMode> = emptyMap(),
+    val replayJobs: Map<String, Long> = emptyMap(),
 ) {
     init {
         safeRelative(manifest)
@@ -29,13 +35,77 @@ internal object BenchRuns {
         val entry = BenchProtocol.json.decodeFromString<BenchEntryPoint>(Files.readString(file))
         ProfileRuns.validate("Eignex/bench", ProfileMain(entry.main, buildTasks = entry.buildTasks,
             classpath = entry.classpath, jvmArgs = entry.jvmArgs))
+        runtime(tree, spec).validate()
         return entry
     }
+
+    /** Additive manifest metadata, enforced by the lab without changing SDK 0.1.0. */
+    @Serializable
+    data class Runtime(val java: Int? = null, val requiredTags: Set<String> = emptySet(), val tools: List<String> = emptyList(),
+                       val environment: Map<String, String> = emptyMap()) {
+        fun validate() {
+            require(java == null || java in 8..100)
+            NodeTags.validate(NodeSelector(require = requiredTags))
+            require(tools.all { it.matches(Regex("[A-Za-z0-9_.+-]+")) })
+            require(environment.keys.all { it.matches(Regex("[A-Z][A-Z0-9_]*")) && !it.startsWith("LAB_") && it !in setOf("PATH", "HOME", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS") })
+            require(environment.values.none { value -> value.any(Char::isISOControl) })
+        }
+    }
+
+    fun runtime(tree: Path, spec: BenchSpec): Runtime {
+        val manifest = BenchProtocol.json.parseToJsonElement(Files.readString(tree.resolve(safeRelative(spec.manifest)))).jsonObject
+        return manifest["runtime"]?.let { BenchProtocol.json.decodeFromJsonElement(Runtime.serializer(), it) } ?: Runtime()
+    }
+
+    /** The lab passes opaque parameter overrides to the repository planner. */
+    fun request(spec: BenchSpec, arm: Arm): BenchRequest = spec.request.copy(parameters = spec.request.parameters +
+        arm.values.filterKeys { it.startsWith("param.") }.mapKeys { it.key.removePrefix("param.") })
+
+    /** Suites may declare a stable comparison identity when runtime settings change their case id. */
+    fun key(case: BenchCase): String = case.attributes["comparisonKey"] ?: case.id
+
+    fun align(canonical: List<BenchCase>, planned: BenchPlan): BenchPlan {
+        val byKey = planned.cases.groupBy(::key)
+        require(byKey.values.all { it.size == 1 }) { "ambiguous bench comparison identities" }
+        return BenchPlan(canonical.map { frozen ->
+            val candidate = requireNotNull(byKey[key(frozen)]?.singleOrNull()) { "bench revision omitted workload ${key(frozen)}" }
+            require(candidate.inputs == frozen.inputs && candidate.attributes["labInputDigest"] == frozen.attributes["labInputDigest"]) {
+                "bench arms resolved different input bytes for ${key(frozen)}"
+            }
+            candidate
+        })
+    }
+
+    fun pinned(case: BenchCase, source: Path, corpus: Path, runtime: Runtime = Runtime()): BenchCase {
+        validateInputs(case, source, corpus)
+        val inventory = case.inputs.flatMap { input ->
+            val root = (if (input.root == BenchInputRoot.SOURCE) source else corpus).resolve(input.path)
+            val files = if (Files.isDirectory(root)) Files.walk(root).use { it.sorted().toList() } else listOf(root)
+            files.map { file ->
+                require(!Files.isSymbolicLink(file)) { "bench input contains a link" }
+                "${input.root}/${input.path}/${root.relativize(file)}:" + if (Files.isDirectory(file)) "directory" else hashFile(file)
+            }
+        }
+        return case.copy(resources = case.resources.copy(requiredTags = case.resources.requiredTags + runtime.requiredTags),
+            attributes = case.attributes + ("labInputDigest" to ExecutionStore.digest(inventory.joinToString("\n"))))
+    }
+
+    fun referencePlan(plan: BenchPlan, arm: Arm): BenchPlan = BenchPlan(plan.cases.map { case ->
+        require(case.attributes["recordSchema"] == "solver-v1" && problem(case).model != null) {
+            "reference arms require file-backed solver-v1 workloads"
+        }
+        case.copy(resources = case.resources.copy(cpus = arm.cores,
+            timeoutSeconds = Experiments.caseTimeoutSec(arm)))
+    })
 
     fun invocation(tree: Path, spec: BenchSpec, vararg args: String): String {
         val entry = entry(tree, spec)
         val cp = entry.classpath.joinToString(":") { tree.resolve(it).toString() }
-        return "exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
+        val runtime = runtime(tree, spec)
+        val preflight = runtime.tools.joinToString("") { "test -x \"$(type -P -- ${quote(it)})\" || exit 69; " } +
+            (runtime.java?.let { "actual=\"$(\"${'$'}{JAVA_HOME:+${'$'}JAVA_HOME/bin/}java\" -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p')\"; test \"${'$'}actual\" = ${quote(it.toString())} || { echo 'bench requires Java $it' >&2; exit 69; }; " } ?: "") +
+            if (runtime.environment.isEmpty()) "" else "export " + runtime.environment.entries.joinToString(" ") { "${it.key}=${quote(it.value)}" } + " && "
+        return preflight + "exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
             (entry.jvmArgs + listOf("-cp", cp, entry.main) + args).joinToString(" ", transform = ::quote)
     }
 
@@ -50,7 +120,7 @@ internal object BenchRuns {
 
     fun problem(case: BenchCase): Problem {
         fun input(role: String) = case.inputs.firstOrNull { it.role == role }?.let(::portableInput)
-        return Problem(case.attributes["suite"] ?: "bench", case.id,
+        return Problem(case.attributes["suite"] ?: "bench", key(case),
             collection = case.attributes["collection"].orEmpty(), family = case.attributes["family"].orEmpty(),
             format = case.attributes["format"].orEmpty(), category = case.attributes["category"].orEmpty(),
             model = input("model"), data = input("data"),
@@ -100,9 +170,9 @@ internal object BenchRuns {
 
     fun metricsCsv(cases: List<CaseResult>): String = buildString {
         fun cell(value: String) = "\"" + value.replace("\"", "\"\"") + "\""
-        appendLine("index,caseId,status,metric,value,unit,direction,host")
+        appendLine("index,arm,seed,repeat,caseId,status,metric,value,unit,direction,host")
         cases.forEach { case -> result(case.record?.toString())?.let { result ->
-            result.metrics.forEach { metric -> appendLine(listOf(case.index.toString(), result.caseId,
+            result.metrics.forEach { metric -> appendLine(listOf(case.index.toString(), case.arm, case.seed?.toString().orEmpty(), case.repeat.toString(), result.caseId,
                 result.status.name.lowercase(), metric.name, metric.value.toString(), metric.unit,
                 metric.direction.name.lowercase(), case.host.orEmpty()).joinToString(",", transform = ::cell)) }
         } }

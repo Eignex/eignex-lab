@@ -11,18 +11,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonTransformingSerializer
 
-/**
- * An experiment: one selection of problems, solved by every configuration it expands to, once per seed. Each
- * (problem, configuration, seed) is a case, and a case is one command the lab writes itself: a `klause-bench
- * solve-one` in the worktree of that configuration's commit.
- *
- * [problems] are bench selection filters (`suite`, `kind`, `per-family`, …), or a list of such selections whose
- * problems are pooled, each selection capped on its own. Each entry of [configs] is merged over
- * [base], and each result is crossed with every combination of [grid]'s values, so an A/B is a grid of one axis
- * with two values. A configuration's keys are bench solve arguments plus `ref` (the commit to build, default
- * `main`), `label` (its name in results) and `debug` (the CLI's `KLAUSE_DEBUG`, default `true`, [Arm.debug]);
- * `param.<name>` becomes `param=<name>=<value>`.
- */
+/** A repository-owned benchmark or explicit committed profile, expanded into paired configuration arms. */
 @Serializable
 data class ExperimentSpec(
     val name: String,
@@ -60,7 +49,7 @@ data class ExperimentSpec(
     val measurement: Measurement = Measurement.NONE,
     /**
      * An analysis job: the lab's own analyser run again over an ended job's retained captures, writing fresh reports.
-     * Nothing is built and no solver or klause code runs. Its spec names nothing else.
+     * Nothing is built and no consumer code runs. Its spec names nothing else.
      */
     val analyze: AnalyzeSpec? = null,
     /**
@@ -115,9 +104,9 @@ data class ProfileMain(
     val runTimeoutSec: Long? = null,
     /** An executable committed in the selected repository, instead of a JVM main. */
     val script: String? = null,
-    /** Gradle tasks that prepare this entry point; an empty list retains the legacy Klause build for a JVM main. */
+    /** Explicit Gradle tasks that prepare this entry point. */
     val buildTasks: List<String> = emptyList(),
-    /** Repository-relative runtime entries, optionally naming a directory of jars. Required for JVM mains outside Klause. */
+    /** Repository-relative runtime entries, optionally naming a directory of jars. Required for every JVM main. */
     val classpath: List<String> = emptyList(),
     /** JVM options for a main; a script controls its own runtimes and recordings. */
     val jvmArgs: List<String> = emptyList(),
@@ -177,15 +166,11 @@ data class Arm(val label: String, val values: Map<String, String>) {
     /** Cores each of the arm's solves keeps busy: its portfolio's `processors`, one without. */
     val cores: Int get() = values["processors"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
 
-    /**
-     * Whether the arm's CLI runs with `KLAUSE_DEBUG=true`, its lightweight runtime statistics on: the arm's `debug`,
-     * true unless it says `false`. Whole-CLI recording ([ExperimentSpec.measurement]) does not depend on it.
-     */
+    /** Historical recording flag retained when reading old case metadata. */
     val debug: Boolean get() = values[Experiments.DEBUG_KEY]?.toBooleanStrictOrNull() ?: true
 }
 
-/** One problem as `klause-bench select` names it, with the [model] and [data] files and MiniZinc [includeDirs] that
- *  `select files=true` resolves, which a reference arm's cases solve without the bench. */
+/** A portable workload and optional source files for independent reference solving and checking. */
 @Serializable
 data class Problem(
     val suite: String,
@@ -198,7 +183,10 @@ data class Problem(
     val data: String? = null,
     val includeDirs: List<String> = emptyList(),
     val benchCase: com.eignex.lab.bench.BenchCase? = null,
-)
+) {
+    /** Source identity shared across runtime configurations, seeds and repeats. */
+    val referenceKey: Pair<String, String> get() = collection to (benchCase?.attributes?.get("problem") ?: problem)
+}
 
 /** The case at one index of an experiment's commands. */
 data class Case(val problem: Int, val arm: Int, val seed: Long?, val repeat: Int = 0)
@@ -371,15 +359,38 @@ object Experiments {
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
         NodeTags.validate(spec.nodeTags)
-        Repositories.requireAllowed(spec.repository)
-        require(spec.repository == Repositories.DEFAULT || spec.isProfile || spec.bench != null) { "other Eignex repositories require a profile or bench entry point" }
-        spec.bench?.let {
+        if (!spec.isAnalysis) Repositories.requireAllowed(spec.repository)
+        require(spec.isAnalysis || spec.isProfile || spec.bench != null) { "execution requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated" }
+        spec.bench?.let { bench ->
             require(spec.profile == null && spec.analyze == null && !spec.isScript && !spec.measuresCli)
-            require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty() && spec.grid.isEmpty() &&
-                spec.configs == listOf(emptyMap<String, String>()) && spec.repeats == 1) {
-                "bench owns its cases and repetitions; submit its parameters in bench.request"
+            require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty()) {
+                "bench owns selection and seed expansion; submit opaque parameters in bench.request"
             }
-            require(spec.base.keys.all { key -> key == "ref" || key == "label" }) { "bench owns runtime settings and resources" }
+            require(spec.repeats in 1..MAX_REPEATS)
+            require(spec.configs.isNotEmpty() && spec.grid.values.none { it.isEmpty() })
+            spec.grid.values.fold(spec.configs.size.toLong()) { count, values ->
+                require(count <= 256 && values.size <= 256 && count * values.size <= 256) { "bench grid expands beyond 256 arms" }
+                count * values.size
+            }
+            val arms = arms(spec)
+            require(bench.replayJobs.values.all { it > 0 })
+            require(bench.replayJobs.isEmpty() || bench.frozenCases.isNotEmpty() && bench.replayJobs.keys == arms.map { it.label }.toSet())
+            require(arms.size in 1..256 && arms.map { it.label }.distinct().size == arms.size) { "bench arm labels must be unique and bounded" }
+            require(bench.frozenCases.map(BenchRuns::key).distinct().size == bench.frozenCases.size)
+            for (arm in arms) {
+                require(arm.ref.isNotBlank() && !arm.ref.startsWith('-') && arm.ref.none(Char::isISOControl))
+                val reference = arm.values["backend"] == REFERENCE_BACKEND
+                val keys = if (reference) setOf("ref", "backend", "solver", "timeout", "processors", "fixed") else setOf("ref")
+                require(arm.values.keys.all { key -> key in keys || !reference && key.startsWith("param.") && key.length > 6 }) {
+                    "bench arms take ref and param.<opaque request key>; reference arms take backend, solver, timeout, processors and fixed"
+                }
+                require(arm.values.values.none { value -> value.any(Char::isISOControl) })
+                if (reference) {
+                    require(!arm.values["solver"].isNullOrBlank()) { "reference arms need a solver" }
+                    require(arm.timeoutMs in 1..300_000_000 && (arm.values["processors"] == null || arm.values["processors"]?.toIntOrNull() in 1..1024))
+                    require(arm.values["fixed"] == null || arm.values["fixed"]?.toBooleanStrictOrNull() != null)
+                }
+            }
             require(spec.parallel == null || spec.parallel in 1..maxParallel)
             return
         }
@@ -429,129 +440,11 @@ object Experiments {
             arms(spec).single().let { require(it.cores <= cores) { "the profile asks for ${it.cores} processors; the lab has $cores cores" } }
             return
         }
-        require(spec.measurement != Measurement.RESOURCES || arms(spec).none { it.values["backend"] == REFERENCE_BACKEND }) {
-            "measurement=resources measures the Klause CLI, not reference-backend arms"
-        }
-        require(spec.parallel == null || spec.parallel in 1..maxParallel) { "parallel must be between 1 and $maxParallel" }
-        arms(spec).firstOrNull { it.cores > cores }?.let { require(false) { "arm '${it.label}' asks for ${it.cores} processors; the lab has $cores cores" } }
-        require(spec.repeats in 1..MAX_REPEATS) { "repeats must be between 1 and $MAX_REPEATS" }
-        require(spec.configs.isNotEmpty()) { "configs must not be empty" }
-        require(spec.grid.values.none { it.isEmpty() }) { "every grid axis needs at least one value" }
-        require(spec.problems.isNotEmpty() || spec.problemList.isNotEmpty()) { "problems must name at least one selection" }
-        for (selection in spec.problems) {
-            require(selection["suite"]?.isNotBlank() == true || selection["set"]?.isNotBlank() == true) {
-                "every problems selection needs a suite or a set"
-            }
-            for ((key, value) in selection) {
-                require(key in PROBLEM_KEYS) { "unknown problems key '$key' (have ${PROBLEM_KEYS.sorted()})" }
-                requireValue(key, value)
-                if (key == REFERENCE_KEY) {
-                    require(ReferenceFilterMode.entries.any { it.name.equals(value, ignoreCase = true) }) {
-                        "reference must be one of ${ReferenceFilterMode.entries.map { it.name.lowercase() }}"
-                    }
-                }
-            }
-        }
-        for (arm in arms(spec)) {
-            for ((key, value) in arm.values) {
-                require(key in ARM_KEYS || key.startsWith(PARAM)) { "unknown config key '$key' (have ${ARM_KEYS.sorted()} and param.<name>)" }
-                if (key.startsWith(PARAM)) require(NAME.matches(key.removePrefix(PARAM))) { "bad param name in '$key'" }
-                requireValue(key, value)
-            }
-            require(!arm.ref.startsWith("-")) { "ref must not start with '-'" }
-            require(arm.values["timeout"]?.toLongOrNull()?.let { it > 0 } ?: true) { "timeout must be a positive number of ms" }
-            require(arm.values["exact"]?.toBooleanStrictOrNull() != null || "exact" !in arm.values) {
-                "exact must be true or false"
-            }
-            val backend = arm.values["backend"]
-            require(backend == null || backend == KLAUSE_BACKEND || backend == REFERENCE_BACKEND) {
-                "backend must be $KLAUSE_BACKEND (the default) or $REFERENCE_BACKEND, not '$backend'"
-            }
-            for (key in REFERENCE_ONLY_KEYS) {
-                require(key !in arm.values || backend == REFERENCE_BACKEND) { "'$key' is for reference arms; it needs backend=$REFERENCE_BACKEND" }
-            }
-            require(arm.values["fixed"]?.toBooleanStrictOrNull() != null || "fixed" !in arm.values) { "fixed must be true or false" }
-            require(arm.values[DEBUG_KEY]?.toBooleanStrictOrNull() != null || DEBUG_KEY !in arm.values) { "debug must be true or false" }
-        }
-        require(arms(spec).map { it.label }.distinct().size == arms(spec).size) { "config labels must be unique" }
+        error("execution requires a bench manifest or explicit profile")
     }
-
-    /** The bench arguments of one problems [selection]. */
-    fun selectArgs(selection: Map<String, String>): String =
-        selection.filterKeys { it != REFERENCE_KEY }.entries.joinToString(" ") { (key, value) -> quote("$key=$value") }
-
-    /**
-     * A warning when [selected] looks capped by its suite's own default rather than by [selection]: no `per-family`
-     * was asked for, yet every family gave exactly one problem, which is what a suite that defaults to one per family
-     * returns. Null otherwise.
-     */
-    fun defaultCapped(selection: Map<String, String>, selected: List<Problem>): String? {
-        if ("per-family" in selection || "name" in selection || "set" in selection) return null
-        val families = selected.groupingBy { it.family }.eachCount()
-        if (families.size < 2 || families.values.any { it != 1 }) return null
-        return "every one of ${families.size} families gave one problem, likely the suite's default of one per family; " +
-            "set \"per-family\" to take more"
-    }
-
-    /** Whether a selection's caps are applied by the lab, after [mode] filters, rather than by the bench before it. A
-     *  format-balanced selection keeps the bench's caps: the balance is the bench's to strike. */
-    fun refills(mode: ReferenceFilterMode, selection: Map<String, String>): Boolean =
-        mode != ReferenceFilterMode.ANY && ("per-family" in selection || "max" in selection) && "balance" !in selection
-
-    /** [selection] with its caps lifted: no `max`, and a `per-family` too large to bind. A `seed` stays, so the bench
-     *  still orders each family by its seeded shuffle, and the lab's cap takes the head of that order. */
-    fun uncapped(selection: Map<String, String>): Map<String, String> =
-        selection - "max" + if ("per-family" in selection) mapOf("per-family" to UNCAPPED.toString()) else emptyMap()
-
-    /** The bench's caps over [problems] in the bench's order: at most [perFamily] per family, families round-robin, then
-     *  at most [max] in all. */
-    fun cap(problems: List<Problem>, perFamily: Int?, max: Int?): List<Problem> {
-        val families = problems.groupBy { it.suite to it.family }.values.map { if (perFamily == null) it else it.take(perFamily) }
-        val merged = interleave(families)
-        return if (max == null) merged else merged.take(max)
-    }
-
-    /** What a selection's `reference` filter keeps, by default `decided`, or `any` when the experiment itself runs the
-     *  reference solver, whose own verdicts are what it is there to produce, or the selection names a set, which was
-     *  drawn with the reference and is meant to stay as it is. */
-    fun referenceFilter(spec: ExperimentSpec, selection: Map<String, String>): ReferenceFilterMode =
-        selection[REFERENCE_KEY]?.let { v -> ReferenceFilterMode.entries.first { it.name.equals(v, ignoreCase = true) } }
-            ?: if ("set" in selection || arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) ReferenceFilterMode.ANY
-            else ReferenceFilterMode.DECIDED
-
-    /** The command that runs one case: `solve-one` from the bench built at [worktree], writing its record under
-     *  `$JOB_DIR/cases/<index>`. Only Klause's own options ([BENCH_KEYS] and `param.*`) go to the bench: the solver
-     *  choice (`backend`, `solver`, `fixed`), `ref` and `debug` are the lab's, and the source-validation request stays
-     *  with the lab, which checks the case itself ([SourceValidation.forBench]). An arm with `debug=false` runs with
-     *  `KLAUSE_DEBUG=false` ([debugEnv]), over the `true` every host sets for a case. */
-    fun command(worktree: String, problem: Problem, arm: Arm, seed: Long?, index: Int, corpus: String): String {
-        val args = buildList {
-            add("suite=${problem.suite}")
-            add("problem=${problem.problem}")
-            for ((key, value) in SourceValidation.forBench(arm.values).toSortedMap()) {
-                when {
-                    key.startsWith(PARAM) -> add("param=${key.removePrefix(PARAM)}=$value")
-                    key in BENCH_KEYS -> add("$key=$value")
-                }
-            }
-            if (seed != null) add("solver-seed=$seed")
-        }.joinToString(" ") { quote(it) }
-        // An older bench keeps a result cache that would replay an earlier run's timings: a case always solves, and a
-        // bench without the cache ignores the property. The corpus cap stays off so no case evicts a collection another
-        // case is reading.
-        val opts = "-Dklause.bench.cache=false -Dklause.bench.corpusCache=$corpus -Dklause.workspace.root=$worktree"
-        return "cd ${quote("$worktree/klause-bench")} && " +
-            "if [ -f build/provenance.json ]; then export KLAUSE_BENCH_PROVENANCE=\"\$PWD/build/provenance.json\"; " +
-            "else unset KLAUSE_BENCH_PROVENANCE; fi && JAVA_OPTS=${quote(opts)} KLAUSE_BENCH_CORPUS_MAX_GB=off " +
-            debugEnv(arm) + "exec ./build/install/klause-bench/bin/klause-bench solve-one $args out=\"\$JOB_DIR/cases/$index\""
-    }
-
-    /** The environment assignment a case of [arm] adds to its command: `KLAUSE_DEBUG=false` when the arm turned the
-     *  CLI's debug statistics off, nothing otherwise, leaving the host's `KLAUSE_DEBUG=true`. */
-    private fun debugEnv(arm: Arm): String = if (arm.debug) "" else "KLAUSE_DEBUG=false "
 
     /** The arm values a reference case takes: the solver, its budget, workers and whether it keeps to the model's
-     *  search. Klause's own options mean nothing to a reference solver. */
+     *  search. Repository options mean nothing to a reference solver. */
     private val REFERENCE_KEYS = listOf("solver", "timeout", "processors", "fixed")
 
     /** The command that runs one reference case with the lab's own [launcher] ([com.eignex.lab.reference.ReferenceCli]),
@@ -559,7 +452,7 @@ object Experiments {
     fun referenceCommand(launcher: String, problem: Problem, arm: Arm, seed: Long?, index: Int): String {
         val model = requireNotNull(problem.model) { "no resolved files for ${problem.suite}/${problem.problem}" }
         val args = buildList {
-            add("problem=${problem.problem}")
+            add("problem=${problem.referenceKey.second}")
             add("format=${problem.format}")
             add("model=$model")
             problem.data?.let { add("data=$it") }
@@ -568,19 +461,6 @@ object Experiments {
             if (seed != null) add("solver-seed=$seed")
         }.joinToString(" ") { quote(it) }
         return "exec ${quote(launcher)} reference $args out=\"\$JOB_DIR/cases/$index\""
-    }
-
-    /**
-     * A shell step writing the build's provenance manifest, for a bench that can: one that cannot leaves none, and a
-     * failing capture fails the build. A bench's `--help` exits non-zero on many revisions, so only its text counts.
-     */
-    internal fun captureProvenance(worktree: String): String {
-        val bench = quote("$worktree/klause-bench/build/install/klause-bench/bin/klause-bench")
-        val manifest = quote("$worktree/klause-bench/build/provenance.json")
-        return "(cd ${quote("$worktree/klause-bench")} && test -x $bench && rm -f $manifest && " +
-            "help=\$($bench --help 2>&1 || true) && case \"\$help\" in " +
-            "*'bench provenance out=<file>'*) $bench provenance ${quote("out=$worktree/klause-bench/build/provenance.json")} && test -s $manifest;; " +
-            "*) echo 'bench revision has no provenance manifest support';; esac)"
     }
 
     /** How long a case may run: the solver's own budget, the bench's hard kill at twice it, and room for the JVMs. */
@@ -639,7 +519,7 @@ object Experiments {
     /**
      * The command of a profile job's case: [profile]'s main on the classpath of the bench built at [worktree], its
      * arguments quoted one by one, recording JFR to `$OUT/profile.jfr`. `$OUT` (whose files come back with the job's),
-     * `$KLAUSE_CORPUS`, `$KLAUSE_CLI` and `$KLAUSE_BENCH` are set for it to read.
+     * `$LAB_CORPUS` and `$LAB_WORKTREE` are set for it to read.
      */
     fun profileCommand(worktree: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean = true,
         repository: String = Repositories.DEFAULT): String =
@@ -653,27 +533,13 @@ object Experiments {
         return maxOf(byCount, byCores) / MS_PER_HOUR
     }
 
-    private fun requireValue(key: String, value: String) =
-        require(value.isNotBlank() && value.none { it.isWhitespace() || it.isISOControl() }) { "'$key' has an empty value or whitespace in it" }
-
     /** What [ExperimentSpec.compilationRecording] may be: JFR alone, or JFR and HotSpot's compilation log. */
     const val COMPILATION_JFR = "jfr"
     const val COMPILATION_JFR_LOG = "jfr+log"
 
-    private const val PARAM = "param."
-    private val NAME = Regex("[A-Za-z0-9._-]+")
-    private const val REFERENCE_KEY = "reference"
-    private const val UNCAPPED = 1_000_000
-    private val PROBLEM_KEYS = setOf("suite", "set", "kind", "category", "tag", "name", "per-family", "max", "seed", "balance", REFERENCE_KEY)
-    /** The arm key that turns the CLI's `KLAUSE_DEBUG` off ([Arm.debug]); the lab's, never the bench's. */
+    /** Historical debug flag, read from retained case metadata. */
     const val DEBUG_KEY = "debug"
-    private val ARM_KEYS = setOf("ref", "label", "timeout", "backend", "solver", "engine", "processors", "lp", "presolve", "fixed", "exact", DEBUG_KEY)
-    /** The arm keys `klause-bench solve-one` takes, besides `param.*`. */
-    private val BENCH_KEYS = setOf("timeout", "engine", "processors", "lp", "presolve", "exact")
     /** The arm keys only a reference arm (`backend=reference`) takes: its solver and whether it keeps to the model's search. */
-    private val REFERENCE_ONLY_KEYS = listOf("solver", "fixed")
-    /** The `backend` a Klause arm may name; leaving it out means the same. */
-    private const val KLAUSE_BACKEND = "klause"
     private const val CASE_OVERHEAD_SEC = 120L
     /** A profile job's time limit when it gives no `timeout`. */
     const val PROFILE_TIMEOUT_MS = 600_000L
@@ -725,22 +591,23 @@ object SelectionsSerializer : JsonTransformingSerializer<List<Map<String, String
  * Which problems a selection keeps by their reference verdict. A problem the reference never ran is kept by [DECIDED]:
  * there is nothing to judge it by, and dropping it would empty a collection no reference has reached yet.
  */
+@Serializable
 enum class ReferenceFilterMode {
     /**
      * Leave out the problems the reference left undecided, or took over [REFERENCE_SLOW_MS] to decide: too hard to
-     * measure klause on.
+     * measure a solver on.
      */
-    DECIDED,
+    @SerialName("decided") DECIDED,
     /** Keep only the problems the reference proved within [REFERENCE_SLOW_MS]: an optimum, infeasibility, or a satisfied decision problem. */
-    PROVEN,
+    @SerialName("proven") PROVEN,
     /** Keep only the problems with no reference verdict at all: what a reference run backfills. */
-    MISSING,
+    @SerialName("missing") MISSING,
     /**
      * Keep the problems with no reference verdict, or an unproven one from a smaller budget than this run's: what a
      * scheduled reference run reruns, so it upgrades short-budget verdicts once and leaves hopeless problems alone.
      */
-    UNSETTLED,
-    ANY;
+    @SerialName("unsettled") UNSETTLED,
+    @SerialName("any") ANY;
 
     /** Whether a run with [budgetMs] per case keeps a problem whose reference verdict is [reference], null when it has none. */
     fun keeps(reference: Reference?, budgetMs: Long): Boolean = when (this) {

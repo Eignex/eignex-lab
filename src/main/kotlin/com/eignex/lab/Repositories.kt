@@ -4,7 +4,7 @@ import java.nio.file.Path
 
 /** Source repositories the lab may build. Repository input is a GitHub slug, never a URL or a local path. */
 object Repositories {
-    const val DEFAULT = "Eignex/klause"
+    const val DEFAULT = "Eignex/eignex-lab"
     private val SLUG = Regex("Eignex/[A-Za-z0-9_.-]+")
 
     fun requireAllowed(repository: String) {
@@ -19,15 +19,11 @@ object Repositories {
     }
 
     fun source(config: Config, repository: String): String {
-        val url = url(repository)
-        if (repository == DEFAULT) require(config.repoUrl in setOf(url, url.removeSuffix(".git"))) {
-            "LAB_REPO must be https://github.com/$DEFAULT.git; select another Eignex repository in the job's repository field"
-        }
-        return url
+        return url(repository)
     }
 
     fun mirror(config: Config, repository: String): Path {
         requireAllowed(repository)
-        return if (repository == DEFAULT) config.mirror else config.dataDir.resolve("repos").resolve(repository.substringAfter('/').lowercase() + ".git")
+        return config.dataDir.resolve("repos").resolve(repository.substringAfter('/').lowercase() + ".git")
     }
 }

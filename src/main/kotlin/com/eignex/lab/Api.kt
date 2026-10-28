@@ -87,7 +87,7 @@ internal class TrendView(
 )
 
 internal fun trendView(store: Store, cache: TrendCache, requested: String?, allRequested: Boolean): TrendView {
-    // A schedule of reference runs regenerates the reference; its trend says nothing about klause.
+    // A schedule of reference runs regenerates the reference; its trend says nothing about the candidate solver.
     val schedules = store.schedules()
         .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
     val name = requested?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
@@ -339,7 +339,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/experiments/{id}/reference") {
             val id = call.parameters["id"]!!.toLong()
             val cases = store.cases(id)
-            val references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases))
+            val references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
             call.respond(References.compare(store.arms(id).map { it.arm.label }, cases, references))
         }
         get("/compare") {
@@ -349,7 +349,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // Arms are named by their job, so the same arm of two runs stays two columns.
             val arms = jobs.flatMap { job -> store.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
             val cases = jobs.flatMap { job -> store.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
-            val references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases))
+            val references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/metrics.csv") {
@@ -397,7 +397,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         arms = if (experiment) store.arms(job.id) else emptyList(),
                         cases = cases,
                         preparation = if (job.backend == "nomad") store.execution.reports(job.id).filter { it.session.executionClass == "prepare" }.takeLast(1) else emptyList(),
-                        references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases)),
+                        references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases)),
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
@@ -633,7 +633,7 @@ private fun holdMs(ttlSec: String?): Long {
 private fun worktrees(config: Config, id: Long): List<File> =
     config.worktree(id).toFile().parentFile.listFiles { f -> f.name == "$id" || f.name.startsWith("$id@") }.orEmpty().toList()
 
-/** A job that may run on a cloud node needs the lab's cloud settings, runs klause only, and fits a node. */
+/** A job that may run on a cloud node needs the lab's cloud settings, runs repository-owned work, and fits a node. */
 private fun requireHost(spec: ExperimentSpec, config: Config) {
     require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) { "host must be local, cloud or auto (or lab or aws, their older names)" }
     if (spec.host == Experiments.LAB_HOST) return
@@ -931,11 +931,11 @@ internal class ScoreboardView(
     /** A cell's problems, when one was opened: its group and reference solver, and the problems worst first. */
     val cell: Pair<String, String>?,
     val problems: List<ScoreProblem>,
-    /** The arm's Klause solution claims by how far each was checked against its source ([WitnessCheck]). */
+    /** The arm's solver solution claims by how far each was checked against its source ([WitnessCheck]). */
     val witnesses: Map<WitnessCheck, Int> = emptyMap(),
 )
 
-/** The scoreboard for [params]: `job` (default the latest klause-reference run), `arm`, `by`, a filter per dimension
+/** The scoreboard for [params]: `job` (default the latest solver run), `arm`, `by`, a filter per dimension
  *  named by it, and `group` with `against` to open a cell. */
 /** What a scoreboard of one arm of a run reads: its cases, and their problems' reference rows and features. */
 internal class ScoreInputs(
@@ -946,7 +946,7 @@ internal class ScoreInputs(
 
 internal fun scoreInputs(store: Store, job: Long, label: String?): ScoreInputs {
     val cases = store.scoringCases(job).filter { it.arm == label }
-    val keys = cases.map { it.problem.collection to it.problem.problem }.distinct()
+    val keys = cases.map { it.problem.referenceKey }.distinct()
     return ScoreInputs(cases, References.matching(store.currentReferenceRows(keys), cases), store.features(keys))
 }
 
@@ -960,7 +960,7 @@ internal fun scoreboardView(
         store.jobs(limit = 20, name = schedule.name, withCommands = false).firstOrNull { it.name.startsWith("${schedule.name}@") && it.status == Status.DONE }
     }
     val job = params["job"]?.toLongOrNull()?.let(store::job)
-        ?: runs.firstOrNull { it.name.startsWith("klause-reference@") } ?: runs.firstOrNull()
+        ?: runs.firstOrNull()
     val by = params["by"]?.let { v -> Dimension.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } } ?: Dimension.CLASS
     val filters = Dimension.entries.mapNotNull { d -> params[d.name.lowercase()]?.takeIf { it.isNotBlank() }?.let { d to it } }.toMap()
     val scoring = if (params["scoring"].equals("incomplete", ignoreCase = true)) Scoring.INCOMPLETE else Scoring.COMPLETE
@@ -973,7 +973,7 @@ internal fun scoreboardView(
     val problems = cases.map { it.problem }.distinct()
     val profiles = Scoreboard.profiles(cases, features)
     val options = Dimension.entries.associateWith { d ->
-        problems.flatMap { p -> Scoreboard.values(d, p, features[p.collection to p.problem], references[p.collection to p.problem].orEmpty(), profiles[p]) }
+        problems.flatMap { p -> Scoreboard.values(d, p, features[p.referenceKey], references[p.referenceKey].orEmpty(), profiles[p]) }
             .distinct().sorted()
     }
     val board = Scoreboard.board(cases, arm, references, features, by, filters, scoring)

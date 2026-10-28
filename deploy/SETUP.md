@@ -32,7 +32,7 @@ For a direct connection, `LAB_HOST` retains the `http://<LAB_HOST>:8420` shortha
 ## Storage and updates
 
 Data defaults to `~/eignex-lab-data`; logs are under `logs/`, artifacts under `jobs/` (`LAB_JOBS`).
-Corpora use `~/.cache/klause-bench/corpus` (`LAB_CORPUS`). On macOS, external volumes must mount at boot and
+Corpora use `~/.cache/eignex-lab/corpus` (`LAB_CORPUS`). On macOS, external volumes must mount at boot and
 allow the services' Java binary Full Disk Access. The configuration example includes the mount setting.
 Fetch raw artifacts promptly: ended jobs trim after seven days or sooner on low disk. Results remain stored.
 

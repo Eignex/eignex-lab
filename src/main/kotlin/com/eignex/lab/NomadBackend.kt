@@ -134,6 +134,11 @@ class NomadBackend(
             require((manifest.experiment.bench != null) == (preparation.benchPlan != null))
             preparation.benchPlan?.let { plan ->
                 require(preparation.benchDescriptor != null)
+                require(preparation.armPlans.isEmpty() && manifest.arms.size == 1 || preparation.armPlans.keys == manifest.arms.map { it.arm.label }.toSet())
+                for (armPlan in preparation.armPlans.values) {
+                    BenchRuns.resources(armPlan)
+                    require(BenchRuns.align(plan.cases, armPlan) == armPlan) { "arm plans changed the frozen workloads" }
+                }
                 BenchRuns.resources(plan)
                 require(preparation.selections == listOf(plan.cases.map(BenchRuns::problem)))
             }

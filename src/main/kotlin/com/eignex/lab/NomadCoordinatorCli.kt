@@ -86,7 +86,7 @@ object NomadCoordinatorCli {
                     if (arm.values["backend"] == REFERENCE_BACKEND) {
                         if (problem.collection.isNotEmpty()) store.caseRecordText(job, index)?.let { text ->
                             References.of(Json.parseToJsonElement(text))?.let { reference ->
-                                store.putReferences(listOf((problem.collection to problem.problem) to reference), "lab:$job")
+                                store.putReferences(listOf((problem.referenceKey) to reference), "lab:$job")
                             }
                         }
                         "not-required"
@@ -120,7 +120,7 @@ object NomadCoordinatorCli {
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.
         val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
         val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan", completed = admissionSignal::wake)
-        val sources = TrustedQueueSources(config, artifacts)
+        val sources = TrustedQueueSources(config, artifacts, store)
         val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork,
             source = { job, targets, settings -> sourceWork.poll(job.id) { sources.publish(job, targets, settings) } },
             preparationPlan = { job, work -> planWork.poll(job, work) != null })

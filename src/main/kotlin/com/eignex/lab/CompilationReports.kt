@@ -386,7 +386,7 @@ data class AnalysisEntry(
 
 /**
  * The lab's compilation analyser: it reads a profiled case's captures with the JDK's own JFR consumer and an XML
- * stream reader, runs no klause code, and writes [REPORT] and [TASKS] beside them. The runner runs it after each case
+ * stream reader, runs no solver code, and writes [REPORT] and [TASKS] beside them. The runner runs it after each case
  * of a compilation-recorded job, and an analysis job ([AnalyzeSpec]) reruns it over an ended job's retained captures,
  * or over a pinned archive's ([CaptureArchives]).
  */

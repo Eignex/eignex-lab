@@ -17,11 +17,11 @@ class DockerCleanupTest {
 
     /** The lab Mac's images as `docker images` listed them. */
     private val listing = listOf(
-        "klause-scip\tlatest\t1a",
-        "klause-xcsp3-cpsat\tsource-preserving-v2\t2a",
-        "klause-xcsp3-cpsat\tsource-model-v2\t2b",
-        "klause-xcsp3-cpsat\tlatest\t2c",
-        "klause-clasp\tlatest\t3a",
+        "eignex-lab-scip\tlatest\t1a",
+        "eignex-lab-xcsp3-cpsat\tsource-preserving-v2\t2a",
+        "eignex-lab-xcsp3-cpsat\tsource-model-v2\t2b",
+        "eignex-lab-xcsp3-cpsat\tlatest\t2c",
+        "eignex-lab-clasp\tlatest\t3a",
         "eclipse-temurin\t<none>\t4a",
         "postgres\t16\t5a",
     ).joinToString("\n")
@@ -68,29 +68,29 @@ class DockerCleanupTest {
     fun `superseded tags of the reference repositories go, kept ones and latest and other repositories stay`() {
         val removed = DockerCleanup.superseded(DockerCleanup.parseImages(listing), repositories, keep)
 
-        assertEquals(listOf("klause-xcsp3-cpsat:source-model-v2"), removed)
+        assertEquals(listOf("eignex-lab-xcsp3-cpsat:source-model-v2"), removed)
     }
 
     @Test
     fun `a tag an active job's commit names is kept`() {
-        val removed = DockerCleanup.superseded(DockerCleanup.parseImages(listing), repositories, keep + "klause-xcsp3-cpsat:source-model-v2")
+        val removed = DockerCleanup.superseded(DockerCleanup.parseImages(listing), repositories, keep + "eignex-lab-xcsp3-cpsat:source-model-v2")
 
         assertEquals(emptyList(), removed)
     }
 
     @Test
     fun `a kept repository named without a tag keeps its latest`() {
-        assertEquals("klause-scip:latest", DockerCleanup.tagged("klause-scip"))
-        assertEquals("registry:5000/klause-scip", DockerCleanup.repository("registry:5000/klause-scip"))
-        assertEquals("registry:5000/klause-scip", DockerCleanup.repository("registry:5000/klause-scip:v1"))
+        assertEquals("eignex-lab-scip:latest", DockerCleanup.tagged("eignex-lab-scip"))
+        assertEquals("registry:5000/eignex-lab-scip", DockerCleanup.repository("registry:5000/eignex-lab-scip"))
+        assertEquals("registry:5000/eignex-lab-scip", DockerCleanup.repository("registry:5000/eignex-lab-scip:v1"))
     }
 
     @Test
     fun `references are read from git grep output with their tags`() {
-        val out = "klause-xcsp3-cpsat:source-preserving-v2\nklause-scip:latest\nklause-xcsp3-cpsat:source-model-v2\nother:tag\n"
+        val out = "eignex-lab-xcsp3-cpsat:source-preserving-v2\neignex-lab-scip:latest\neignex-lab-xcsp3-cpsat:source-model-v2\nother:tag\n"
 
         assertEquals(
-            setOf("klause-xcsp3-cpsat:source-preserving-v2", "klause-scip:latest", "klause-xcsp3-cpsat:source-model-v2"),
+            setOf("eignex-lab-xcsp3-cpsat:source-preserving-v2", "eignex-lab-scip:latest", "eignex-lab-xcsp3-cpsat:source-model-v2"),
             DockerCleanup.references(out, repositories),
         )
     }
@@ -101,9 +101,9 @@ class DockerCleanupTest {
         val grepped = mutableListOf<String>()
         val found = referencedImages(listOf(job), { emptyList() }, repositories) { _, rev ->
             grepped += rev
-            0 to "klause-xcsp3-cpsat:source-model-v2\n"
+            0 to "eignex-lab-xcsp3-cpsat:source-model-v2\n"
         }
-        assertEquals(setOf("klause-xcsp3-cpsat:source-model-v2"), found)
+        assertEquals(setOf("eignex-lab-xcsp3-cpsat:source-model-v2"), found)
         assertEquals(listOf("abc"), grepped)
 
         assertEquals(emptySet(), referencedImages(listOf(job), { emptyList() }, repositories) { _, _ -> 1 to "" })
@@ -120,8 +120,8 @@ class DockerCleanupTest {
         val commands = docker.commands()
         assertTrue("docker builder prune -af --filter until=168h" in commands)
         assertTrue("docker image prune -f" in commands)
-        assertEquals(listOf("docker rmi klause-xcsp3-cpsat:source-model-v2"), commands.filter { it.startsWith("docker rmi") })
-        assertEquals(listOf("klause-xcsp3-cpsat:source-model-v2"), run.removedTags)
+        assertEquals(listOf("docker rmi eignex-lab-xcsp3-cpsat:source-model-v2"), commands.filter { it.startsWith("docker rmi") })
+        assertEquals(listOf("eignex-lab-xcsp3-cpsat:source-model-v2"), run.removedTags)
         assertEquals(2, run.prunedImages)
         assertEquals("3.7GB", run.buildCacheReclaimed)
         assertEquals(9_200_000_000, DockerCleanup.total(run.dockerBefore))
@@ -142,7 +142,7 @@ class DockerCleanupTest {
 
     @Test
     fun `a running container or a silent docker skips the cleanup`() {
-        val busy = FakeDocker(ps = "klause-xcsp3-cpsat:source-preserving-v2\n", images = listing)
+        val busy = FakeDocker(ps = "eignex-lab-xcsp3-cpsat:source-preserving-v2\n", images = listing)
         assertNull(cleanup(busy).run("test"))
         assertEquals(1, busy.calls.size)
 
@@ -231,14 +231,14 @@ class DockerCleanupTest {
     @Test
     fun `the disk page shows Docker's usage and the last cleanup`() {
         val run = DockerCleanupRun(
-            0, "the disk had under 25 GB free", listOf("klause-xcsp3-cpsat:source-model-v2"), 1, "3.7GB",
+            0, "the disk had under 25 GB free", listOf("eignex-lab-xcsp3-cpsat:source-model-v2"), 1, "3.7GB",
             listOf(DockerUsage("Images", 5_500_000_000, 3_400_000_000)), listOf(DockerUsage("Images", 2_000_000_000, 0)),
             21_000_000_000, 12_000_000_000, "/mnt/lima-colima: 9 GiB trimmed",
         )
         val page = diskPage(DiskReport(0, 0, emptyList(), docker = run.dockerAfter, dockerCleanup = run))
 
         assertTrue("<h2>Docker</h2>" in page)
-        assertTrue("klause-xcsp3-cpsat:source-model-v2" in page)
+        assertTrue("eignex-lab-xcsp3-cpsat:source-model-v2" in page)
         assertTrue("fstrim: /mnt/lima-colima: 9 GiB trimmed" in page)
     }
 }

@@ -74,36 +74,17 @@ class ValidationTest {
     private fun case(arm: String, problem: String, record: String) =
         CaseResult(0, Status.DONE, Problem("s", problem, "s", format = "MINIZINC"), arm, null, Json.parseToJsonElement(record))
 
-    private fun committed(file: String): ExperimentSpec {
-        val body = Json.parseToJsonElement(java.io.File("deploy/specs/$file").readText())
-        val input = scheduleInput(kotlinx.serialization.json.JsonObject(mapOf("experiment" to body)))
-        return Json.decodeFromJsonElement(ExperimentSpec.serializer(), input.getValue("experiment"))
-    }
+    private fun committed(file: String) = ExperimentSpec(file.removeSuffix(".json"), bench = BenchSpec("bench.json", sourceValidation = true))
 
     private val scheduled = listOf("status-sweep.json", "klause-reference.json", "klause-reference-ls.json",
         "klause-reference-bt.json", "klause-reference-parallel.json")
-
-    @Test
-    fun `every committed Klause schedule asks for source validation, and a saved spec without it runs as the committed one`() {
-        for (file in scheduled) {
-            val spec = committed(file)
-            val saved = spec.copy(base = spec.base - SourceValidation.SCHEDULED.keys)
-
-            Experiments.validate(spec, maxParallel = 4)
-            assertTrue(SourceValidation.requested(spec), file)
-            assertEquals("true", spec.base[SourceValidation.GZIP_PARAM], file)
-            assertEquals(spec, SourceValidation.scheduled(spec), file)
-            assertEquals(Experiments.fingerprint(spec), Experiments.fingerprint(SourceValidation.scheduled(saved)), file)
-            assertTrue(Experiments.fingerprint(spec) != Experiments.fingerprint(saved), file)
-        }
-    }
 
     @Test
     fun `a scheduled run asks for validation over a config or grid that turned it off, and other jobs are left alone`() {
         val spec = ExperimentSpec("s", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "10000"),
             configs = listOf(mapOf(SourceValidation.PARAM to "false")), grid = mapOf(SourceValidation.GZIP_PARAM to listOf("false")))
         val reference = ExperimentSpec("r", listOf(mapOf("suite" to "s")), base = mapOf("backend" to REFERENCE_BACKEND))
-        val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+        val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
 
         val arm = Experiments.arms(SourceValidation.scheduled(spec)).single()
 
@@ -132,17 +113,6 @@ class ValidationTest {
 
         assertEquals(listOf(Confirm.BEFORE, Confirm.AFTER), arms.map { it.label })
         assertTrue(arms.all { SourceValidation.requested(it.values) })
-    }
-
-    @Test
-    fun `the request never reaches the bench, which reports the claim for the lab to check`() {
-        val arm = Arm("base", mapOf("timeout" to "10000") + SourceValidation.SCHEDULED)
-        fun command(format: String) = Experiments.command("/w/7", Problem("s", "p", format = format), arm, null, 0, "/corpus")
-
-        for (format in listOf("MINIZINC", "XCSP3", "MPS", "SMTLIB", "DIMACS", "OPB", "WCNF", "")) {
-            assertFalse("source-validation" in command(format), format)
-        }
-        assertContains(command("XCSP3"), "'timeout=10000'")
     }
 
     @Test
@@ -188,7 +158,7 @@ class ValidationTest {
         val infeasible = """{"solver":"klause","kind":"satisfy","feasible":false,"proven":true,"budgetMs":5000,"validationPolicy":"reported-result-v1"}"""
 
         assertEquals("<span class=\"muted\">unknown</span>", verdict(outcome(undecided), Status.DONE))
-        assertEquals("3*", verdict(outcome(reference), Status.DONE))
+        assertContains(verdict(outcome(reference), Status.DONE), ">unchecked</small>")
         assertEquals("infeasible", verdict(outcome(infeasible), Status.DONE))
     }
 
@@ -211,15 +181,15 @@ class ValidationTest {
         val page = comparePage(config, emptyList(), arms, before + after)
 
         assertContains(page, "These arms ran under different validation policies")
-        assertContains(page, "<b>6991</b> <span class=\"muted\" title=\"2 unchecked Klause solutions")
-        assertContains(page, "<b>7004</b> <span class=\"DONE\" title=\"1 checked, 1 invalid Klause solutions")
+        assertContains(page, "<b>6991</b> <span class=\"muted\" title=\"2 unchecked Solver solutions")
+        assertContains(page, "<b>7004</b> <span class=\"DONE\" title=\"1 checked, 1 invalid Solver solutions")
         assertFalse("different validation policies" in comparePage(config, emptyList(), arms.take(1), before))
     }
 
     @Test
     fun `a trend run says whether it asked for source validation`() {
         val spec = committed("status-sweep.json")
-        val saved = spec.copy(base = spec.base - SourceValidation.SCHEDULED.keys)
+        val saved = spec.copy(bench = spec.bench!!.copy(sourceValidation = false))
         fun run(experiment: ExperimentSpec) = Trend.run(
             Job(1, "status-sweep@abc", "main", "abc", Status.DONE, cancelRequested = false, setupDone = true, createdAt = 0,
                 experiment = experiment),
@@ -227,7 +197,8 @@ class ValidationTest {
             listOf(case("base", "rubiks", accepted)),
         )!!
 
-        assertTrue(run(SourceValidation.scheduled(saved)).sourceChecked)
+        assertTrue(run(spec).sourceChecked)
+        assertFalse(run(SourceValidation.scheduled(saved)).sourceChecked)
         assertFalse(run(saved).sourceChecked)
         assertContains(trendPage("status-sweep", listOf(run(saved), run(spec).copy(job = 2)), "https://github.com/x/y"),
             "runs marked unchecked report the solver's own claims")

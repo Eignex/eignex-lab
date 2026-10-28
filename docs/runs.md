@@ -8,11 +8,16 @@ Submit one experiment per question. Save this as `experiment.json`:
 
 ```json
 {
-  "name": "restarts-ab",
-  "description": "Compare restart policies",
-  "problems": {"suite": "xcsp3-cop", "max": "20"},
-  "base": {"ref": "main", "engine": "cp", "timeout": "30000"},
-  "grid": {"param.restarts": ["luby", "geometric"]}
+  "name": "policy-ab",
+  "description": "Compare two repository-owned policies",
+  "repository": "Eignex/example",
+  "bench": {
+    "manifest": "bench/lab.json",
+    "request": {"parameters": {"selection": "small"}}
+  },
+  "configs": [{"ref":"main","label":"before"}, {"ref":"candidate","label":"after"}],
+  "grid": {"param.policy": ["baseline", "new"]},
+  "repeats": 3
 }
 ```
 
@@ -24,7 +29,8 @@ deploy/lab fetch 7
 ```
 
 Replace `7` with the returned ID. `base` supplies shared arm values; `configs` overrides them and `grid` crosses
-combinations. Timeouts are milliseconds. The lab queues and places work automatically.
+combinations. `param.<key>` overrides an opaque repository request parameter. The repository manifest and
+planner own runtime controls and resource ceilings. The lab queues complete paired iterations automatically.
 
 Reference comparisons on a captured source require the same source identity and a recorded reference version.
 Historical rows without either stay visible as history but cannot establish coverage, disagreement or objective
@@ -58,12 +64,9 @@ and the planner, and its plan owns the commands, runtime checks, metrics and art
 capture command or backend probe. See the [bench SDK contract](../lab-bench/README.md) and the selected repository's
 bench documentation for manifests and request parameters.
 
-The old `deploy/lab koblas` shortcut and `deploy/specs/koblas-smoke.json` are removed. For Koblas, use its
-[`koblas-bench` adapter](https://github.com/Eignex/koblas/tree/main/koblas-bench#bench-sdk-adapter) through the same
-`lab run` path. Existing profile jobs and their saved reports remain readable.
-
 ## Profiles
 
+Profiles require an explicit repository, build tasks and JVM classpath (or a committed script in JSON).
 Only committed code in Eignex repositories runs, from `main` or trusted branches. Profiles default to ten minutes,
 capped at two hours; `--timeout` uses seconds. Scripts own their instrumentation; JVM mains record JFR.
 
@@ -78,7 +81,7 @@ deploy/lab profile --repo Eignex/eignex-lab --build installDist \
 Most jobs omit hardware and recording options:
 
 ```sh
-deploy/lab run --tags 'arch:x86_64,simd:avx2,!spot' --measurement jfr experiment.json
+deploy/lab run --tags 'arch:x86_64,simd:avx2,!spot' experiment.json
 ```
 
 `--tags` requires comma-separated labels; `!` excludes one. Detected architecture/SIMD tags and custom node labels
@@ -112,12 +115,16 @@ Each node shows one CPU architecture and primary SIMD profile, such as `x86_64 /
 Detected lower instruction sets remain compatibility capabilities. For AVX2-only placement, require `simd:avx2`
 and exclude `simd:avx512`; for NEON-only placement, exclude `simd:sve` and `simd:sme` as well.
 
-`measurement` modes are `none` (default), `resources`, `jfr`, `compilation`, and `compilation+log`.
-Recording modes default to serial execution. Set `parallel` to run measured cases concurrently within the normal
-CPU and memory budgets; shared-host contention can affect timings.
+Recording settings belong in the suite request; consult the repository bench documentation.
+Top-level `measurement` is retained only for historical records and is refused on new bench submissions.
 
-Set `param.source-validation=true` in `base` for external witness checking. A checked witness does not certify
-optimality. Only an invalid verdict withdraws the solver's claim; unsupported or failed checks leave it unchecked.
+Set `bench.sourceValidation=true` for independent witness checking. A checked witness does not certify
+optimality. Only an invalid verdict withdraws the solver claim; unsupported or failed checks leave it unchecked.
+`bench.runTimeoutSec` optionally bounds active preparation and execution time; queue time is excluded.
+
+Repository-specific recipes and named workload sets live with their consumers. Before removing a legacy
+schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
+has no implicit solver executable, build layout, corpus selections or JVM profile classpath.
 
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).

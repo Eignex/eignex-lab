@@ -22,7 +22,7 @@ class PlacementTest {
     @Test
     fun `schedules confirmations and reference runs stay local while Nomad handles exact lists and deadlines`() {
         val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
-        val bounded = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.T", runTimeoutSec = 60))
+        val bounded = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", runTimeoutSec = 60, classpath = listOf("tools/lib/*")))
 
         assertEquals(listOf(true, true, true, false, false, false), listOf(
             Placement.localOnly(spec, "status-sweep@abc123"),
@@ -37,7 +37,7 @@ class PlacementTest {
     @Test
     fun `a submitted host is not followed, and a profile job goes local first too`() {
         val config = config()
-        val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.klause.bench.profile.T"))
+        val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", classpath = listOf("tools/lib/*")))
 
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config))
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST, machines = 3), "e", config))
@@ -78,11 +78,9 @@ class PlacementTest {
         assertEquals(Experiments.fingerprint(capped), Experiments.fingerprint(capped.copy(capped = emptyList())))
     }
 
-    private fun committed(file: String): ExperimentSpec {
-        val body = Json.parseToJsonElement(java.io.File("deploy/specs/$file").readText())
-        val input = scheduleInput(kotlinx.serialization.json.JsonObject(mapOf("experiment" to body)))
-        return Json.decodeFromJsonElement(ExperimentSpec.serializer(), input.getValue("experiment"))
-    }
+    private fun committed(file: String) = ExperimentSpec(file.removeSuffix(".json"), host = Experiments.AUTO_HOST, bench = BenchSpec("bench.json"))
+
+
 
     @Test
     fun `a schedule that opts in to the cloud places its runs local or cloud, and its confirmations local`() {
@@ -107,14 +105,6 @@ class PlacementTest {
         assertFailsWith<IllegalArgumentException> { Placement.host(spec, "ref@abc123", config(cloud = false), schedules) }
         // A submitted job is placed without the schedules: a name alone does not take it off the local machine.
         assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config))
-    }
-
-    @Test
-    fun `the committed klause-reference schedules opt in to the cloud, and the status sweep does not`() {
-        val klause = listOf("klause-reference.json", "klause-reference-ls.json", "klause-reference-bt.json", "klause-reference-parallel.json")
-        for (file in klause) assertTrue(Placement.cloudOptIn(committed(file)), file)
-        assertFalse(Placement.cloudOptIn(committed("status-sweep.json")))
-        assertTrue(Placement.localOnly(committed("reference.json"), "reference"))
     }
 
     @Test

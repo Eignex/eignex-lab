@@ -100,7 +100,7 @@ class BenchRunsTest {
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("fixture", "c".repeat(64), 0)), spec.repository, arm.sha, "linux", "amd64", "test")
         val manifest = WorkManifest("prepare", "release", spec, listOf(arm), emptyList(), listOf(bundle), ResourceBudget(1000, 1024), preparationTimeoutSec = 60)
         val encoded = Json.encodeToString(manifest)
-        assertEquals(2, Json.parseToJsonElement(encoded).jsonObject.getValue("schemaVersion").jsonPrimitive.int)
+        assertEquals(3, Json.parseToJsonElement(encoded).jsonObject.getValue("schemaVersion").jsonPrimitive.int)
         assertFailsWith<IllegalArgumentException> { manifest.copy(schemaVersion = 1) }
     }
 

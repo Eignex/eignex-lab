@@ -28,7 +28,7 @@ object Checkers {
         locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))
-                    com.eignex.lab.portablePath(value, config.worktree(revision.job), config.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
+                    com.eignex.lab.portablePath(value, config.jobDir(revision.job).resolve("nomad/prepared-source/${revision.sha}").takeIf(java.nio.file.Files::exists) ?: config.worktree(revision.job), config.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
                 problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
             }
         }),
@@ -40,9 +40,10 @@ object Checkers {
      *  A planned path under the lab's or a cloud node's worktrees is a repository path. */
     fun fixtures(config: Config): RepositoryFixtures = RepositoryFixtures(
         mirror = config.mirror.toFile(),
+        mirrorFor = { revision -> revision.repository?.let { com.eignex.lab.Repositories.mirror(config, it).toFile() } ?: config.mirror.toFile() },
         worktrees = { (job, sha) ->
             val own = config.worktree(job).toFile()
-            listOf(own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
+            listOf(config.jobDir(job).resolve("nomad/prepared-source/$sha").toFile(), own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
         },
         worktreeRoots = listOf(config.worktree(0).parent.toString(), "/home/ubuntu/work"),
     )
@@ -105,7 +106,7 @@ class CaseChecks(
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
         val text = store.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
-        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it) }
+        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it, store.job(jobId)?.experiment?.repository) }
         val inputs = store.execution.accepted(jobId).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)

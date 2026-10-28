@@ -512,6 +512,8 @@ class NomadBackendTest {
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
     private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session"): Long {
+        val spec = if (preparation && !spec.isProfile && spec.bench == null) spec.copy(problems = emptyList(), bench = BenchSpec("bench.json",
+            referenceFilter = spec.problems.firstOrNull()?.get("reference")?.let { ReferenceFilterMode.valueOf(it.uppercase()) } ?: ReferenceFilterMode.ANY)) else spec
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
         val plannedProblems = List(problems) { Problem("s", "p$it") }
@@ -589,6 +591,49 @@ class NomadBackendTest {
         assertEquals(8, store.execution.failureCount(id))
     }
 
+    private fun benchProblem(name: String, collection: String = "") = BenchRuns.problem(com.eignex.lab.bench.BenchCase(name,
+        attributes = mapOf("suite" to "s", "collection" to collection)))
+
+    private fun benchPreparation(selections: List<List<Problem>>, bundles: List<WorkerBundle>, features: List<ProblemFeatures> = emptyList(),
+                                 artifacts: Map<String, String>) = PreparationResult(selections, bundles, features = features, artifacts = artifacts,
+        benchPlan = com.eignex.lab.bench.BenchPlan(selections.flatten().map { it.benchCase!! }),
+        benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "protocol fixture"),
+        armPlans = manifest.arms.associate { it.arm.label to com.eignex.lab.bench.BenchPlan(selections.flatten().map { it.benchCase!! }) })
+
+    @Test fun `confirmation replay pins accepted builds and refuses changed revisions requests and inputs`() {
+        val originalSpec = ExperimentSpec("original", bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("mode" to "original"))), host = "auto")
+        val id = setup(1, originalSpec, preparation = true)
+        register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val bytes = "prepared build".toByteArray()
+        val sha = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        val prepared = manifest.bundles.single().copy(sha256 = sha)
+        val problem = benchProblem("p").let { p -> p.copy(benchCase = p.benchCase!!.copy(attributes = p.benchCase.attributes + ("labInputDigest" to ExecutionStore.digest("")))) }
+            .let { BenchRuns.problem(it.benchCase!!) }
+        val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
+        store.execution.phase(claim.owner, "preparing")
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(problem)))
+        val preparation = benchPreparation(selected, listOf(prepared), artifacts = outputs)
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = preparation))
+        store.plan(id, manifest.arms, listOf(problem), Experiments.cases(1, 1, emptyList()), listOf("true" to 5L))
+        store.finish(id, Status.DONE)
+        val spec = originalSpec.copy(configs = listOf(mapOf("label" to "before", "ref" to prepared.commit), mapOf("label" to "after", "ref" to prepared.commit)),
+            bench = originalSpec.bench!!.copy(frozenCases = listOf(problem.benchCase!!), replayJobs = mapOf("before" to id, "after" to id)))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, prepared.commit) }
+
+        val replay = replaySources(store, spec, arms)
+
+        assertEquals(setOf("before", "after"), replay.keys)
+        assertTrue(replay.values.all { it.preparation.bundles.single().sha256 == sha })
+        assertEquals(setOf("before", "after"), benchReplay(replay, spec.bench!!)!!.plans.keys)
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.bench.copy(request = com.eignex.lab.bench.BenchRequest(mapOf("mode" to "changed")))), arms) }
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec, arms.map { it.copy(sha = "f".repeat(40)) }) }
+        val missing = problem.benchCase.copy(attributes = mapOf("comparisonKey" to "missing"))
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.bench.copy(frozenCases = listOf(missing))), arms) }
+    }
+
     @Test fun `accepted preparation is retained without completing the experiment or preparing twice`() {
         val id = setup(preparation = true); backend().reconcile(); register()
         val claim = backend().claim(session.id, token, "allocation")!!
@@ -597,8 +642,8 @@ class NomadBackendTest {
         val prepared = manifest.bundles.single().copy(sha256 = sha)
         val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
         store.execution.phase(claim.owner, "preparing")
-        val selected = backend().selectPreparation(claim.owner, listOf(listOf(Problem("s", "p"))))
-        val preparation = PreparationResult(selected, listOf(prepared), artifacts = outputs)
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(benchProblem("p"))))
+        val preparation = benchPreparation(selected, listOf(prepared), artifacts = outputs)
         store.execution.phase(claim.owner, "uploading")
         backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = preparation))
         backend(Store(file)).reconcile()
@@ -621,7 +666,7 @@ class NomadBackendTest {
         val claim = backend().claim(session.id, token, "allocation")!!
         store.execution.phase(claim.owner, "preparing")
         store.putReferences(listOf(("" to "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
-        val requested = listOf(listOf(Problem("s", "p0"), Problem("s", "p1")))
+        val requested = listOf(listOf(benchProblem("p0"), benchProblem("p1")))
         val selected = backend().selectPreparation(claim.owner, requested)
         assertEquals(listOf("p1"), selected.single().map { it.problem })
         store.retireReferenceRows("", "gecode")
@@ -630,7 +675,7 @@ class NomadBackendTest {
         val bytes = "source".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
         artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
         val outputs = mapOf("preparation/${manifest.bundles.single().commit}.zip" to sha)
-        val forged = PreparationResult(listOf(listOf(Problem("s", "p0"))), listOf(manifest.bundles.single().copy(sha256 = sha)), artifacts = outputs)
+        val forged = benchPreparation(listOf(listOf(benchProblem("p0"))), listOf(manifest.bundles.single().copy(sha256 = sha)), artifacts = outputs)
         store.execution.phase(claim.owner, "uploading")
         assertFailsWith<IllegalArgumentException> { backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = forged)) }
         assertTrue(store.execution.accepted(id).isEmpty())
@@ -645,9 +690,9 @@ class NomadBackendTest {
         val prepared = manifest.bundles.single().copy(sha256 = sha)
         val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
         store.execution.phase(claim.owner, "preparing")
-        val selected = backend().selectPreparation(claim.owner, listOf(listOf(Problem("s", "ej", collection = "miplib"))))
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(benchProblem("ej", "miplib"))))
         val feature = ProblemFeatures("miplib", "ej", listOf("mip"))
-        val preparation = PreparationResult(selected, listOf(prepared), features = listOf(feature, feature.copy(problem = "sutlej")), artifacts = outputs)
+        val preparation = benchPreparation(selected, listOf(prepared), features = listOf(feature, feature.copy(problem = "sutlej")), artifacts = outputs)
         val result = IterationResult(emptyList(), outputs, preparation = preparation)
         store.execution.phase(claim.owner, "uploading")
         assertTrue(backend().commit(claim.owner, result))
@@ -663,7 +708,7 @@ class NomadBackendTest {
         val id = setup(1, spec, preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!
         store.execution.phase(claim.owner, "preparing")
-        assertFailsWith<ExecutionFenced> { backend().selectPreparation(claim.owner, listOf(listOf(Problem("s", "p0")))) }
+        assertFailsWith<ExecutionFenced> { backend().selectPreparation(claim.owner, listOf(listOf(benchProblem("p0")))) }
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertTrue(store.job(id)!!.error!!.contains("reference filter"))
         assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
@@ -703,7 +748,7 @@ class NomadBackendTest {
     }
 
     @Test fun `profile timeout fails permanently and projects accepted capture output after restart`() {
-        val id = setup(1, ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 30)), platform = NomadPlatform.MAC)
+        val id = setup(1, ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 30, classpath = listOf("tools/lib/*"))), platform = NomadPlatform.MAC)
         register()
         val claim = store.execution.claim(session.id, token, "allocation")!!
         val bytes = "capture flushed during grace".toByteArray(); val hash = ExecutionStore.digest(String(bytes))
@@ -778,7 +823,7 @@ class NomadBackendTest {
     }
 
     @Test fun `cloud workers enforce the whole run profile deadline`() {
-        val spec = ExperimentSpec("bounded", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1), host = "auto")
+        val spec = ExperimentSpec("bounded", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1, classpath = listOf("tools/lib/*")), host = "auto")
         val id = setup(1, spec)
         assertEquals(id, session.jobId)
     }

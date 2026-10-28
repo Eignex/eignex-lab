@@ -1,10 +1,10 @@
 package com.eignex.lab.reference
 
-import com.eignex.klause.formats.mps.Mps
-import com.eignex.klause.formats.mps.MpsModel
+import com.eignex.lab.checker.Mps
+import com.eignex.lab.checker.MpsModel
 import java.io.File
 import java.nio.file.Files
-import com.eignex.klause.ir.ObjectiveSense as ObjectiveDirection
+import com.eignex.lab.checker.ObjectiveSense as ObjectiveDirection
 
 /**
  * MPS reference adapter for the native HiGHS binary, with explicit [OPTIONS], single-threaded
@@ -67,7 +67,7 @@ internal object HighsReference {
     }
 
     private fun attempt(file: File, model: MpsModel?, timeoutMs: Long, presolve: String?): MpsAttempt {
-        val dir = Files.createTempDirectory("klause-highs").toFile()
+        val dir = Files.createTempDirectory("eignex-lab-highs").toFile()
         try {
             val solution = File(dir, "solution.sol")
             val options = File(dir, "options.txt")
@@ -110,7 +110,7 @@ internal object HighsReference {
     }
 
     private fun solveFixed(lp: String, tolerance: Double): MpsWitness.RepairResult {
-        val dir = Files.createTempDirectory("klause-highs-repair").toFile()
+        val dir = Files.createTempDirectory("eignex-lab-highs-repair").toFile()
         try {
             val model = File(dir, "fixed.mps").apply { writeText(lp) }
             val solution = File(dir, "solution.sol")

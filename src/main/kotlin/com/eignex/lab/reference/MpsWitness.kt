@@ -1,8 +1,8 @@
 package com.eignex.lab.reference
 
-import com.eignex.klause.formats.mps.MpsConstraint
-import com.eignex.klause.formats.mps.MpsModel
-import com.eignex.klause.ir.ObjectiveSense
+import com.eignex.lab.checker.MpsConstraint
+import com.eignex.lab.checker.MpsModel
+import com.eignex.lab.checker.ObjectiveSense
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.round
