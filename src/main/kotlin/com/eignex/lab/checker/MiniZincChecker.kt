@@ -4,6 +4,8 @@ import com.eignex.lab.reference.MiniZincIdentity
 import java.io.File
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** Compile a fully pinned retained FlatZinc frame, then apply its official output model. No backend is invoked. */
 class MiniZincChecker : FormatChecker {
@@ -14,6 +16,11 @@ class MiniZincChecker : FormatChecker {
     override fun check(case: CheckCase, work: File): Verdict {
         val frame = case.miniZincFrame ?: return Verdict(LabCheck.UNSUPPORTED,
             "no retained FlatZinc/OZN/native point; solver-based witness completion is disabled", checker = "none")
+        val sourceHashes = case.record["sourceHashes"] as? JsonObject
+        val modelHash = (sourceHashes?.get("model") as? JsonPrimitive)?.content
+        if (modelHash == null || modelHash != sha256(case.sources.model)) {
+            return Verdict(LabCheck.UNSUPPORTED, "compiled-point checking requires the matching original source digest")
+        }
         val bound = try {
             MiniZincPoint.bind(frame, case.claimedObjective)
         } catch (failure: IllegalArgumentException) {
@@ -35,6 +42,8 @@ class MiniZincChecker : FormatChecker {
             inputs += CheckedInput(canonicalPath, sha256(this), text)
         }
         val flatZinc = input("original.fzn", frame.flatZinc)
+        input("source.mzn", case.sources.model.readText())
+        case.sources.data?.let { input("source.dzn", it.readText()) }
         val ozn = input("original.ozn", frame.outputModel)
         val native = input("point.dzn", bound.native)
         val model = input("pinned.mzn", bound.model)

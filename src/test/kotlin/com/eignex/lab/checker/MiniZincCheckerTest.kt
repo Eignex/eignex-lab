@@ -13,6 +13,23 @@ import kotlin.test.assertTrue
 
 class MiniZincCheckerTest {
     @Test
+    fun `captured compiler output cannot validate a source without its recorded digest`() {
+        val work = Files.createTempDirectory("checks").toFile()
+        try {
+            val model = File(work, "source.mzn").apply { writeText("var 1..5: x; solve satisfy;") }
+
+            val check = MiniZincChecker().check(CheckCase(buildJsonObject { }, SourceFiles(model), "x=3;",
+                MiniZincFrame("var 1..5: x; solve satisfy;", "", "")), work)
+
+            assertEquals(LabCheck.UNSUPPORTED, check.state)
+            assertContains(check.reason, "matching original source digest")
+            assertTrue(check.resourceReceipts.isEmpty())
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `complete and partial MiniZinc assignments stay unsupported without solver completion`() {
         val corpus = Files.createTempDirectory("corpus").toFile()
         val work = Files.createTempDirectory("checks").toFile()
