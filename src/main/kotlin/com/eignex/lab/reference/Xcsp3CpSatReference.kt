@@ -5,8 +5,6 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * XCSP3 reference adapter for CPMpy and OR-Tools cp-sat in the [IMAGE] container.
@@ -19,14 +17,11 @@ internal object Xcsp3CpSatReference {
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
     const val CONTAINER_LABEL = "klause-xcsp3-ref"
 
-    /** Hard container memory ceiling. Oversized CPMpy builds are OOM-killed and scored as undecided. */
-    private const val MEMORY_LIMIT = "6g"
     private const val DOCKER_INSPECT_WAIT_MS = 5_000L
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Unique suffix per container `--name`, so the watchdog can `docker kill` the exact container. */
-    private val seq = AtomicLong()
+    private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "xcsp3 cp-sat")
 
     /** The container's one-line JSON verdict (`images/xcsp3-cpsat/solve.py` in eignex-lab). */
     @Serializable
@@ -43,32 +38,11 @@ internal object Xcsp3CpSatReference {
         val cpModelPresolve: Boolean? = null,
     )
 
-    /** Kill any leftover reference containers (from an earlier interrupted run). Best-effort: a
-     *  container outlives the JVM that spawned it, so a graceful stop and each run's start reap by
-     *  label. Combined with [MEMORY_LIMIT], a hard-killed run's orphans stay bounded and short-lived. */
-    fun reapStragglers() {
-        runCatching {
-            val list = ProcessBuilder("docker", "ps", "-q", "--filter", "label=$CONTAINER_LABEL").start()
-            val ids = list.inputStream.bufferedReader().readText().trim()
-            list.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-            if (ids.isNotEmpty()) {
-                ProcessBuilder(listOf("docker", "kill") + ids.lines())
-                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                    .redirectError(ProcessBuilder.Redirect.DISCARD)
-                    .start()
-                    .waitFor(DOCKER_INSPECT_WAIT_MS * 2, TimeUnit.MILLISECONDS)
-            }
-        }
-    }
+    /** Kill any leftover reference containers from an earlier interrupted run. */
+    fun reapStragglers() = docker.reapStragglers()
 
     /** Whether the converter image is built (`docker image inspect`). */
-    fun imageAvailable(): Boolean = runCatching {
-        val p = ProcessBuilder("docker", "image", "inspect", IMAGE)
-            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .redirectError(ProcessBuilder.Redirect.DISCARD)
-            .start()
-        p.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS) && p.exitValue() == 0
-    }.getOrElse { false }
+    fun imageAvailable(): Boolean = docker.imageAvailable()
 
     private val image: String by lazy {
         val p = ProcessBuilder("docker", "image", "inspect", "--format", "{{.Id}}", IMAGE)
@@ -92,75 +66,15 @@ internal object Xcsp3CpSatReference {
 
     private fun run(xml: File, budget: Budget, workers: Int, seed: Long): ReferenceResult {
         val timeoutSec = (budget.timeoutMillis / 1000).coerceAtLeast(1)
-        // The process id keeps names apart across bench processes run side by side, one instance each, as a lab runs
-        // them: each counts from 1, and docker refuses a name already in use.
-        val name = "$CONTAINER_LABEL-${ProcessHandle.current().pid()}-${seq.incrementAndGet()}"
-        val cmd = listOf(
-            "docker",
-            "run",
-            "--rm",
-            // The output streams to this process; a container log would also keep it on the VM's disk.
-            "--log-driver", "none",
-            "--name", name,
-            // Hard resource ceilings so no single container can starve the host: memory (OOM-kill a
-            // pathological CPMpy model build), swap (= memory, so it can't spill to disk), and CPU
-            // (matched to the pinned worker count). Labelled so stragglers can be reaped.
-            "--memory", MEMORY_LIMIT,
-            "--memory-swap", MEMORY_LIMIT,
-            "--cpus", workers.toString(),
-            "--label", CONTAINER_LABEL,
-            "-v",
-            "${xml.parentFile.absolutePath}:/in:ro",
-            IMAGE,
+        val name = docker.containerName()
+        val cmd = docker.command(name, arguments = listOf(
             "/in/${xml.name}",
             timeoutSec.toString(),
             workers.toString(),
             seed.toString(),
-        )
-        // CPMpy's parser chatter goes to stderr. A pipe nobody drains fills and blocks the container until the
-        // watchdog kills it, so it goes to a file, whose tail also explains a missing verdict.
-        val stderr = File.createTempFile("$CONTAINER_LABEL-", ".err")
-        try {
-            return solve(cmd, name, budget, stderr)
-        } finally {
-            stderr.delete()
-        }
-    }
-
-    private fun solve(cmd: List<String>, name: String, budget: Budget, stderr: File): ReferenceResult {
-        val startNanos = System.nanoTime()
-        val proc = ProcessBuilder(cmd).redirectError(stderr).start()
-        val timedOut = AtomicBoolean()
-        // Watchdog: `docker kill` the CONTAINER (not just the client) if it blows the deadline — CPMpy's
-        // parse phase is not time-bounded and can hang/balloon, and killing only the client leaves the
-        // container running. Killing the container closes stdout, so the read below can't block forever.
-        val watchdog = Thread {
-            runCatching {
-                if (!proc.waitFor(budget.timeoutMillis * 2 + 20_000, TimeUnit.MILLISECONDS)) {
-                    timedOut.set(true)
-                    ProcessBuilder("docker", "kill", name)
-                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                        .redirectError(ProcessBuilder.Redirect.DISCARD)
-                        .start()
-                        .waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-                    proc.destroyForcibly()
-                }
-            }
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        val stdout = proc.inputStream.bufferedReader().readText()
-        proc.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-        watchdog.interrupt()
-        val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
-        val exit = runCatching { proc.exitValue() }.getOrNull()
-        // docker itself failed and the container never ran: an error to retry, not a result to cache.
-        check(exit !in DOCKER_RUN_FAILED) {
-            "xcsp3 cp-sat: docker run exited $exit: ${stderr.readText().takeLast(ERROR_TAIL_CHARS)}"
-        }
-        return parse(cmd, stdout, identity(), stderr.readText().takeLast(ERROR_TAIL_CHARS), exit, timedOut.get())
-            .copy(elapsedMs = elapsedMs)
+        ), cpus = workers, mounts = listOf("${xml.parentFile.absolutePath}:/in:ro"))
+        val run = docker.exec(cmd, name, budget.timeoutMillis)
+        return parse(cmd, run.stdout, identity(), run.stderr, run.exit, run.timedOut).copy(elapsedMs = run.elapsedMs)
     }
 
     internal fun parse(
@@ -227,8 +141,3 @@ internal object Xcsp3CpSatReference {
         command = cmd.joinToString(" "),
     )
 }
-
-internal const val ERROR_TAIL_CHARS = 200
-
-// `docker run` exit codes for a failure of docker itself or of starting the container.
-internal val DOCKER_RUN_FAILED = 125..127
