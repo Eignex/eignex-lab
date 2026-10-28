@@ -25,30 +25,33 @@ class ConnectedNomadTest {
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"),
             NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
         val repository = Files.createDirectory(root.resolve("source"))
-        val script = """#!/usr/bin/env bash
-            set -eu
-            [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }
-            corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"
-            corpus="${'$'}{corpus%% *}"
-            if [[ "${'$'}{1:-}" == select ]]; then
-                mkdir -p "${'$'}corpus"
-                echo prepared-model > "${'$'}corpus/model.mps"
-                printf '{"suite":"s","problem":"p","model":"%s/model.mps","format":"mps"}\n' "${'$'}corpus"
-                exit 0
-            fi
-            test -f "${'$'}corpus/model.mps"
-            for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
-            mkdir -p "${'$'}out"
-            sleep 1
-            echo '{"stats":{"preparedCorpus":true}}' > "${'$'}out/record.json"
+        val fixture = """package fixture;
+            import java.nio.file.*;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    Path corpus = Path.of(System.getenv("LAB_CORPUS"));
+                    if (args[0].equals("describe")) {
+                        System.out.println("{\"id\":\"fixture\",\"description\":\"Connected queue fixture\"}");
+                    } else if (args[0].equals("plan")) {
+                        Files.createDirectories(corpus);
+                        Files.writeString(corpus.resolve("model.mps"), "prepared-model");
+                        System.out.println("{\"cases\":[{\"id\":\"p\",\"resources\":{\"cpus\":1,\"memoryMiB\":512,\"timeoutSeconds\":10},\"inputs\":[{\"path\":\"model.mps\",\"root\":\"CORPUS\",\"role\":\"model\"}]}]}");
+                    } else {
+                        if (!Files.readString(corpus.resolve("model.mps")).equals("prepared-model")) throw new Exception("corpus changed");
+                        Thread.sleep(1000);
+                        Files.writeString(Path.of(System.getenv("OUT"), "result.json"),
+                            "{\"caseId\":\"p\",\"details\":{\"stats\":{\"preparedCorpus\":true}}}");
+                    }
+                }
+            }
         """.trimIndent()
-        Files.writeString(repository.resolve("bench-source"), script)
+        Files.writeString(repository.resolve("Bench.java"), fixture)
+        Files.writeString(repository.resolve("bench.json"),
+            """{"main":"fixture.Bench","classpath":["build/classes"],"buildTasks":["installDist"]}""")
         Files.writeString(repository.resolve("gradlew"), """#!/usr/bin/env bash
             set -eu
-            target=klause-bench/build/install/klause-bench/bin
-            mkdir -p "${'$'}target"
-            cp bench-source "${'$'}target/klause-bench"
-            chmod u+x "${'$'}target/klause-bench"
+            mkdir -p build/classes
+            javac -d build/classes Bench.java
         """.trimIndent())
         fun git(vararg args: String): String {
             val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
@@ -57,8 +60,8 @@ class ConnectedNomadTest {
         git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
         git("add", "."); git("commit", "-m", "test: fixture")
         val sha = git("rev-parse", "HEAD")
-        val spec = ExperimentSpec("automatic-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")),
-            seeds = listOf(1, 2), host = Experiments.AWS_HOST)
+        val spec = ExperimentSpec("automatic-http", bench = BenchSpec("bench.json"), grid = mapOf("param.x" to listOf("a", "b")),
+            repeats = 2, host = Experiments.AWS_HOST)
         val job = store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec)
         val budget = ResourceBudget(2000, 2048, 2)
         val template = NomadBatchJob("template", NomadPlatform.LINUX, "lab-prototype-linux",
@@ -126,7 +129,8 @@ class ConnectedNomadTest {
         val root = Files.createTempDirectory(state, "lab-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
-        val spec = ExperimentSpec("nomad-http", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), host = "auto")
+        val spec = ExperimentSpec("nomad-http", profile = ProfileMain(script = "build/bin/profile", buildTasks = listOf("installDist")),
+            grid = mapOf("x" to listOf("a", "b")), host = "auto")
         val sha = "a".repeat(40); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
         val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
         val job = store.create(spec.name, "main", emptyList(), experiment = spec)
@@ -134,14 +138,14 @@ class ConnectedNomadTest {
         val script = """#!/usr/bin/env bash
             set -eu
             [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }
-            for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
+            out="${'$'}OUT"
             echo portable-worker-start
             sleep 2
             mkdir -p "${'$'}out"
             echo '{"stats":{"fixture":true}}' > "${'$'}out/record.json"
             echo portable-worker-output
         """.trimIndent()
-        val path = "klause-bench/build/install/klause-bench/bin/klause-bench"
+        val path = "build/bin/profile"
         val buildScript = """#!/usr/bin/env bash
             set -eu
             mkdir -p '${path.substringBeforeLast('/')}'

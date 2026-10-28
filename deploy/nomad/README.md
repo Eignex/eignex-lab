@@ -205,9 +205,7 @@ Workers retry connection failures and transient 429/500/502/503/504 responses fo
 remaining monotonic claim lease and whole-run allowance. Fencing, cancellation and run expiry stop immediately. This
 allows a short coordinator restart without discarding completed work. Private workspace sealing hashes each file once
 and records its inode/ctime receipt in the same pass. Warm reuse prunes generated files during that verification walk;
-changed sealed files still force a fresh private copy. Default Klause JVM workspaces retain source, Git and installed
-distributions but omit compiler classes, Kotlin scratch, temporary and generated build intermediates. Custom scripts,
-classpath/build overrides and other repositories retain complete trees. `worker staging timing` separates inputs, workspace, setup,
+changed sealed files still force a fresh private copy. Repository manifests own build outputs; workers retain the complete approved inventory for every repository. `worker staging timing` separates inputs, workspace, setup,
 sealing and the executing-phase notification so cold compilation is distinguishable from filesystem overhead.
 Input downloads use bounded ranges and resume without rerunning captured cases. Accepted artifacts are projected into
 existing job paths before completion and source checks are recorded durably. A coordinator restart replays ingestion
@@ -560,10 +558,8 @@ build can be cloned directly, avoiding archive download and extraction entirely;
 to the verified stream. The cache limit still accounts for every materialized distribution. Trusted private copies bind
 verified source inode/ctime before and after copying and record the new private inode metadata. Unchanged copied files
 need no checksum reread; trusted setup changes are hashed during sealing. Filesystems without reliable identity/ctime
-retain full checksum verification. Default Klause runtime bundles omit compiler intermediates. For older bundles,
-a cold runtime cache acquisition hashes discarded entries as they stream past without extracting them; full and reduced
-cache layouts have separate identities, and existing full cache hits remain reusable. Custom scripts, build recipes,
-classpaths, SDK benches and other repositories retain their full trees.
+retain full checksum verification. Runtime bundles retain the complete approved inventory. Cache layouts have separate identities,
+and existing full cache hits remain reusable.
 
 Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,
 filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger captures retain

@@ -198,9 +198,10 @@ Submit an experiment file with `lab run experiment.json`:
 }
 ```
 
-A bench request names one source revision. Cases, backends, seeds, repetitions, runtime flags and instrumentation
-belong to the adapter; the lab does not add JFR or Vector API flags. Use legacy Klause experiments for reference arms
-and paired multi-revision comparisons. Generic bench jobs do not trigger solver regression confirmations.
+Cases, runtime flags and instrumentation belong to the adapter; the lab does not add JFR or Vector API flags.
+Top-level `configs`/`grid` pair revisions and opaque `param.<key>` request overrides; `repeats` repeats whole paired
+iterations. Reference arms use declared solver-domain input files. Solver records support regression confirmations
+that replay accepted prepared bundles and frozen workloads. These controls require manifest schema 3 workers.
 
 Optional `bench.runTimeoutSec` limits the job's total active preparation/execution time to 1–7200 seconds;
 queue time is excluded. The allowance persists across worker replacements. Workers reserve shutdown/transfer

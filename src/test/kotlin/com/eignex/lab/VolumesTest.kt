@@ -26,7 +26,7 @@ class VolumesTest {
     private fun external(root: Path = Path("/Volumes")) = Config(
         dataDir = Path("/Users/lab/eignex-lab-data"),
         jobsDir = root.resolve("Ros/eignex-lab/jobs"),
-        corpusDir = root.resolve("Ros/klause-bench/corpus"),
+        corpusDir = root.resolve("Ros/eignex-lab/corpus"),
         passwordHash = null,
         volumesRoot = root,
         volumeAccess = answers,

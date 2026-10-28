@@ -20,7 +20,7 @@ class WorkerTreesTest {
             Files.writeString(private.resolve(kept.first()), "changed privately")
             assertEquals(kept.first(), Files.readString(source.resolve(kept.first())))
             val output = root.resolve("runtime.zip")
-            val identity = WorkerBundle("a".repeat(64), listOf(InputFile("placeholder", "b".repeat(64), 0)), "Eignex/klause", "a".repeat(40), "linux", "amd64", "fixture")
+            val identity = WorkerBundle("a".repeat(64), listOf(InputFile("placeholder", "b".repeat(64), 0)), "Eignex/example", "a".repeat(40), "linux", "amd64", "fixture")
             val bundle = archive(source, output, identity, runtimeOnly = true) {}
             assertEquals(kept.toSet(), bundle.files.map { it.path }.toSet())
             assertEquals(hashFile(output), bundle.sha256)

@@ -33,7 +33,7 @@ class WorkerTransferTest {
             val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
             val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
                 "release", root, root.resolve("unused.sock"), "unused")
-            val bundle = WorkerBundle(hash, listOf(InputFile("code", hash, bytes.size.toLong())), "Eignex/klause", "a".repeat(40), "linux", "amd64", "fixture")
+            val bundle = WorkerBundle(hash, listOf(InputFile("code", hash, bytes.size.toLong())), "Eignex/example", "a".repeat(40), "linux", "amd64", "fixture")
             worker.download(bundle).use { input -> assertContentEquals(bytes, input.readAllBytes()); assertEquals(-1, input.read()) }
             assertEquals(listOf(0, 32768, 32768, 65536, 98304), offsets)
             assertFalse(Files.exists(root.resolve("downloads")))

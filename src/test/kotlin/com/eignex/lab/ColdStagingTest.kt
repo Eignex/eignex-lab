@@ -123,7 +123,7 @@ class ColdStagingTest {
             val bytes = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
                 zip.putNextEntry(ZipEntry("code")); zip.write(payload.toByteArray()); zip.closeEntry()
             } }.toByteArray()
-            val manifest = WorkerBundle("b".repeat(64), listOf(InputFile("code", ExecutionStore.digest(payload), payload.length.toLong())), "Eignex/klause", "a".repeat(40), "linux", "amd64", "fixture")
+            val manifest = WorkerBundle("b".repeat(64), listOf(InputFile("code", ExecutionStore.digest(payload), payload.length.toLong())), "Eignex/example", "a".repeat(40), "linux", "amd64", "fixture")
                 .copy(sha256 = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex())
             val cacheRoot = root.resolve("cache"); val cache = VerifiedCache(cacheRoot)
             val tree = cache.stage(manifest) { ByteArrayInputStream(bytes) }
@@ -152,7 +152,7 @@ class ColdStagingTest {
                 put("files", kotlinx.serialization.json.Json.encodeToJsonElement(kotlinx.serialization.builtins.ListSerializer(InputFile.serializer()), inventory))
             }
             Files.writeString(candidate.resolve("manifest.json"), entry.toString())
-            val identity = WorkerBundle("c".repeat(64), inventory, "Eignex/klause", "b".repeat(40), "linux", "amd64", "fixture")
+            val identity = WorkerBundle("c".repeat(64), inventory, "Eignex/example", "b".repeat(40), "linux", "amd64", "fixture")
             val output = root.resolve("input.zip"); val bundle = archive(tree, output, identity) {}
             val builds = WorkerBuildCache(buildRoot, ProcessSupervisor(root.resolve("unused.sock")))
             val inputs = WorkerInputCache(root.resolve("inputs"), builds = builds)
