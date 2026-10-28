@@ -63,6 +63,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
         val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket))
+        Thread({
+            try { builds.maintain() } catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
+        }, "worker-build-cleanup").apply { isDaemon = true; start() }
         val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"), builds = builds)
         val workspaceStorage = WorkerWorkspaceStorage(cacheRoot.resolve("workspaces"))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
@@ -103,19 +106,26 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 var executionStarted = preparationStarted
                 phase("preparing")
                 val result = if (manifest.preparationTimeoutSec != null) {
-                    fun signature(input: InputSignature): SignedInput = retry {
-                        val payload = Json.encodeToString(InputSignature.serializer(), input)
-                        Json.decodeFromString<SignedInput>(String(request("input-signature", "POST", HttpRequest.BodyPublishers.ofString(payload), owner = claim.owner).body()))
-                    }
-                    val preparation = InputSigningRelay(::signature).use { relay ->
-                        PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
-                            builds, ::download, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-                            SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces)
-                            .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
-                                retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
-                            }) { file -> upload(file, claim.owner) }
-                    }
-                    IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
+                    val trace = PreparationTrace()
+                    val reporter = Executors.newSingleThreadScheduledExecutor { Thread(it, "preparation-progress").apply { isDaemon = true } }
+                    fun reportPreparation() { runCatching { json("preparation-progress", Json.encodeToString(WorkerPreparationProgress(claim.owner, trace.snapshot()))) } }
+                    reporter.scheduleWithFixedDelay(::reportPreparation, 0, 1, TimeUnit.SECONDS)
+                    try {
+                        fun signature(input: InputSignature): SignedInput = retry {
+                            val payload = Json.encodeToString(InputSignature.serializer(), input)
+                            Json.decodeFromString<SignedInput>(String(request("input-signature", "POST", HttpRequest.BodyPublishers.ofString(payload), owner = claim.owner).body()))
+                        }
+                        val preparation = InputSigningRelay(::signature).use { relay ->
+                            PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
+                                builds, { download(it, trace) }, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
+                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace)
+                                .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
+                                    retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
+                                }) { file -> upload(file, claim.owner) }
+                        }
+                        reportPreparation()
+                        IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
+                    } finally { reporter.shutdownNow() }
                 } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing"); executionStarted = System.nanoTime() }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
                 val outputStarted = System.nanoTime()
                 phase("uploading")
@@ -176,7 +186,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     }
 
     /** Range retries retain only one response chunk. Extraction verifies the entire object and every file as it writes. */
-    internal fun download(bundle: WorkerBundle): java.io.InputStream = object : java.io.InputStream() {
+    internal fun download(bundle: WorkerBundle): java.io.InputStream = download(bundle, null)
+    private fun download(bundle: WorkerBundle, trace: PreparationTrace?): java.io.InputStream = object : java.io.InputStream() {
         private var chunk = java.io.ByteArrayInputStream(byteArrayOf())
         private var offset = 0L
         private var total: Long? = null
@@ -188,7 +199,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             if (length == 0) return 0
             if (chunk.available() == 0) {
                 if (total == offset) return -1
-                val response = retry { request("inputs/${bundle.sha256}", range = offset) }
+                fun transfer() = retry { request("inputs/${bundle.sha256}", range = offset) }
+                val response = trace?.step("download", ::transfer) ?: transfer()
                 val range = requireNotNull(response.headers().firstValue("Content-Range").orElse(null))
                 val match = requireNotNull(Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matchEntire(range))
                 val from = match.groupValues[1].toLong(); val end = match.groupValues[2].toLong(); val size = match.groupValues[3].toLong()

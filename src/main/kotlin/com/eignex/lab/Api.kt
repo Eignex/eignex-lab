@@ -396,6 +396,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         config, job, "failed" in call.parameters,
                         arms = if (experiment) store.arms(job.id) else emptyList(),
                         cases = cases,
+                        preparation = if (job.backend == "nomad") store.execution.reports(job.id).filter { it.session.executionClass == "prepare" }.takeLast(1) else emptyList(),
                         references = store.references(cases.map { it.problem.collection to it.problem.problem }, sources = References.sources(cases)),
                         showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,

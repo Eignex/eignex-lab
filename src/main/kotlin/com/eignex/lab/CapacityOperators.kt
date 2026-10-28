@@ -55,4 +55,4 @@ internal fun readCapacityReport(config: Config): CapacitySnapshot? = runCatching
 }.getOrNull()
 
 @Serializable
-data class ExecutionSessionReport(val session: ExecutionSession, val phase: String?, val generation: Int?, val committed: Int, val observation: String?, val observedAt: Long?)
+data class ExecutionSessionReport(val session: ExecutionSession, val phase: String?, val generation: Int?, val committed: Int, val observation: String?, val observedAt: Long?, val preparation: PreparationStatus? = null)

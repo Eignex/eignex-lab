@@ -110,6 +110,10 @@ class PortableWorkerTest {
         assertEquals(listOf("p1"), result.selections.flatten().map { it.problem })
         assertEquals(listOf("p1.mps"), result.corpus!!.files.map { it.path })
         assertEquals(listOf("mip"), result.features.single().themes)
+        val timings = Json.decodeFromString<Map<String, Long>>(Files.readString(root.resolve("filtered/preparation-timings.json")))
+        assertTrue(timings.keys.containsAll(setOf("workspace", "selection", "classification", "archive", "upload")))
+        assertTrue(timings.values.all { it >= 0 })
+        assertEquals(hashFile(root.resolve("filtered/preparation-timings.json")), result.artifacts["preparation/timings.json"])
     }
 
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {

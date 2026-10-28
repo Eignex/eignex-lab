@@ -330,6 +330,17 @@ persistent daemon, bounded worker count and JVM heap, and in-process Kotlin comp
 holds preparation when a staging build exceeds its budget or the volume has less than 1 GiB free. This is a runtime
 guard, not a filesystem quota; configure host/volume quotas where a hard disk ceiling is required.
 
+Build staging directories hold a process lock from creation through publication. Worker startup and build-cache
+maintenance reclaim abandoned staging five minutes after first observing its owner lock released, protecting live builds even across JVMs.
+Unpinned staging left by older releases gets a 24-hour grace period. Cleanup first renames abandoned directories
+under the maintenance lock, then deletes them outside that lock; interrupted deletions resume on the next pass.
+
+Preparation workers report their current phase and exclusive accumulated timings once per second. The job and
+execution pages show download, verification, checkout, compiler wait, compilation, workspace creation, selection,
+classification, archive, local-cache publication and upload progress. Reporting runs in a background thread;
+stale reports are marked rather than presented as fresh progress. Reports are fenced to the active preparation
+attempt and survive coordinator restart; timings are also uploaded as the accepted `preparation/timings.json` artifact.
+
 `SourceInputs` exports an approved Git tip and its reachable history only after its mandatory source-trust
 callback succeeds. The archive contains Git objects, never the mirror's remotes, hooks, credentials or configuration.
 Source export must itself run in the budgeted preparation/helper allocation so Git packing and compression are

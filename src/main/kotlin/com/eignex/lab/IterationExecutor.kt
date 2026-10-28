@@ -62,7 +62,7 @@ class IterationExecutor(
             }
             withInput(bundle, ::checkRun, runtimeOnly = bundle.build == null && WorkerTrees.runtimeOnly(manifest.experiment)) { source ->
                 if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
-                    .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, ::copy)
+                    .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
             }
         }
         val workspacesReady = System.nanoTime()

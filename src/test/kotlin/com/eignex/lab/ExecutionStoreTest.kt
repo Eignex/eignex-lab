@@ -68,6 +68,27 @@ class ExecutionStoreTest {
         assertFalse(restarted.job(id)!!.setupDone)
     }
 
+    @Test fun `preparation progress survives restart fences stale owners and rejects updates after upload`() {
+        val spec = ExperimentSpec("prepare-progress")
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        store.execution.createSession("prep", id, "prepare", "release", budget, token, "{}", 1000)
+        store.execution.bind("prep", token, "allocation", "node", "release", 1000)
+        val claim = store.execution.claim("prep", token, "allocation", 1100)!!
+        store.execution.phase(claim.owner, "preparing", 1101)
+        val progress = PreparationProgress("compilation", 500, 200, mapOf("checkout" to 300, "compilation" to 200))
+        store.execution.preparationProgress(claim.owner, progress, 1600)
+        store.execution.preparationProgress(claim.owner, progress.copy(elapsedMs = 400), 1601)
+        val report = Store(file).execution.reports(id).single()
+        assertEquals(PreparationStatus(progress, 1600), report.preparation)
+        assertTrue(executionPage(id, listOf(report)).contains("Compiling"))
+        assertTrue(preparationDetails(report, 1700).contains("0.30 s in phase"))
+        assertTrue(preparationDetails(report, 8000).contains("last update"))
+        store.execution.phase(claim.owner, "uploading", 1700)
+        assertFailsWith<IllegalArgumentException> { store.execution.preparationProgress(claim.owner, progress, 1701) }
+        store.execution.loseSession("prep", "infrastructure:lost", 1800)
+        assertFailsWith<ExecutionFenced> { store.execution.preparationProgress(claim.owner, progress, 1801) }
+    }
+
     @Test fun `profile allowance survives replacement and expires without another infrastructure retry`() {
         val id = profile(); bind(id, "first")
         val first = store.execution.claim("first", token, "alloc-first", 1100)!!
