@@ -181,6 +181,16 @@ as a workload timeout. Accepted timeout captures still ingest after failure. Ord
 timeouts retain the existing 30-second shutdown grace for JVM/JFR output.
 
 Uploads resume from the confirmed byte offset and publish only after size/checksum verification and filesystem sync.
+Small inline results (at most 1 MiB and 128 files per request) first sync one packed batch into
+`LAB_DATA/nomad/result-journal` on the coordinator's internal SSD. Acceptance still validates ownership, checksums
+and the durable database commit. Reads and result projection can use pending batches immediately. Two background
+workers copy them to the external artifact store; a batch is reclaimed only after every external blob is durable.
+The journal reserves rounded file blocks and metadata within a fixed 128 MiB budget, also enforces the internal
+free-space guard, and returns retryable backpressure when full. It never evicts pending accepted data. Larger resumable
+uploads continue directly to the external store. Keep `LAB_DATA` on the internal SSD; external artifact and job paths
+can remain symlinks. Startup verifies and replays pending batches under an exclusive ownership lock. Before rolling
+back to a coordinator without journal support, stop acceptance and let all journal `.zip` files drain; preserve the
+journal on a failed rollout rather than hiding acknowledged results behind an older binary.
 Input downloads use bounded ranges and resume without rerunning captured cases. Accepted artifacts are projected into
 existing job paths before completion and source checks are recorded durably. A coordinator restart replays ingestion
 and pending checks rather than resetting claims. Worker or allocation loss fences the old credentials and reruns only

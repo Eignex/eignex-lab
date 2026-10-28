@@ -223,7 +223,7 @@ class NomadQueue(
         } ?: Experiments.estimateHours(cases, recipe.arms.map { it.arm }, job.parallel, config.cores)
         require(spec.confirm || hours <= config.maxExperimentHours) { "${cases.size} cases could take $hours h; resubmit with confirm=true" }
         preparation.corpus?.let { bundle ->
-            val root = VerifiedCache(config.dataDir.resolve("nomad/check-inputs")).stage(bundle) { Files.newInputStream(artifacts.file(job.id, bundle.sha256)) }
+            val root = VerifiedCache(config.dataDir.resolve("nomad/check-inputs")).stage(bundle) { artifacts.open(job.id, bundle.sha256) }
             val link = config.jobDir(job.id).resolve("nomad/prepared-corpus")
             Files.createDirectories(link.parent)
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())

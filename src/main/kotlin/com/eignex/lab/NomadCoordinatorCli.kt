@@ -49,7 +49,10 @@ object NomadCoordinatorCli {
             }
         }
         // Actual writes retain synchronous mount/free-space validation, on the background/IO workers only.
-        val artifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null })
+        val journalRoot = config.dataDir.resolve("nomad/result-journal")
+        val artifacts = ResultJournal(journalRoot,
+            LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null }),
+            writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
         val admissionSignal = CoordinatorSignal()
         val reconcileSignal = CoordinatorSignal()
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)

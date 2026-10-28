@@ -157,7 +157,7 @@ class NomadBackend(
             val allowed = indices.any { index -> name in listOf("$index.out", "$index.err", "$index.exit", "$index.termination") || name.startsWith("cases/$index/") } ||
                 name == "nomad/${owner.iteration.replace(':', '-')}-${owner.generation}-resources.json"
             require(allowed || result.preparation?.artifacts?.get(name) == sha && name.startsWith("preparation/")) { "artifact does not belong to this iteration" }
-            artifacts.file(session.jobId, sha)
+            artifacts.verify(session.jobId, sha)
         }
         return store.execution.commit(owner, accepted).also { changed() }
     }
@@ -324,7 +324,7 @@ class NomadBackend(
             while (parent != directory) { require(!Files.isSymbolicLink(parent)); parent = parent.parent }
             if (Files.isRegularFile(target) && !Files.isSymbolicLink(target) && hashFile(target) == sha) continue
             val staging = Files.createTempFile(target.parent, ".ingest-", ".tmp")
-            try { Files.copy(artifacts.file(job, sha), staging, REPLACE_EXISTING); Files.move(staging, target, ATOMIC_MOVE, REPLACE_EXISTING) }
+            try { artifacts.open(job, sha).use { Files.copy(it, staging, REPLACE_EXISTING) }; Files.move(staging, target, ATOMIC_MOVE, REPLACE_EXISTING) }
             finally { Files.deleteIfExists(staging) }
         }
     }
