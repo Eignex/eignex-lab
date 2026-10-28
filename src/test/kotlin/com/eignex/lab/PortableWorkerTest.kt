@@ -167,15 +167,17 @@ class PortableWorkerTest {
         val arms = Experiments.arms(spec).map { PlannedArm(it, input.commit) }
         val cases = (0..1).map { WorkCase(it, it, Problem("s", "p"), null, 0, 10) }
         val manifest = WorkManifest("provenance", "release", spec, arms, cases, listOf(input), ResourceBudget(2000, 1024, 2))
-        val directory = root.resolve("relocated-attempt")
-        val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            { ByteArrayInputStream(bytes) }, "/unused", input.os, input.arch)
-            .run(manifest, listOf(0, 1), directory, "node", 1) { 80000 }
-        assertEquals(2, result.cases.size)
-        for (case in result.cases) {
-            assertEquals(0, case.exitCode)
-            assertContains(case.record!!, "\"feasible\":true")
-            assertTrue(Files.walk(directory.resolve("cases/${case.index}")).use { paths -> paths.anyMatch { it.fileName.toString() == "resources.txt" } })
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            { ByteArrayInputStream(bytes) }, "/unused", input.os, input.arch, privateWorkspaces = WorkerWorkspaces(root.resolve("private")))
+        repeat(2) { attempt ->
+            val directory = root.resolve("relocated-attempt-$attempt")
+            val result = executor.run(manifest, listOf(0, 1), directory, "node", 1) { 80000 }
+            assertEquals(2, result.cases.size)
+            for (case in result.cases) {
+                assertEquals(0, case.exitCode)
+                assertContains(case.record!!, "\"feasible\":true")
+                assertTrue(Files.walk(directory.resolve("cases/${case.index}")).use { paths -> paths.anyMatch { it.fileName.toString() == "resources.txt" } })
+            }
         }
     }
 
