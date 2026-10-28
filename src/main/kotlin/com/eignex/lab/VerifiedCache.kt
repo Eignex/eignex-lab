@@ -22,10 +22,12 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
         Files.createDirectories(root)
         val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
         val destination = root.resolve(key)
+        val receipt = root.resolve("$key.verified.json")
         synchronized(fileLockFor(root.resolve("$key.lock"))) {
         FileChannel.open(root.resolve("$key.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
             checkActive()
-            if (valid(destination, bundle)) return destination
+            if (TreeVerification().valid(destination, bundle.files, receipt, checkActive)) return destination
+            Files.deleteIfExists(receipt)
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
             val staging = Files.createTempDirectory(root, "$key-")
             val archive = staging.resolve("input.zip")
@@ -58,12 +60,12 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                             while (true) { checkActive(); val n = zip.read(buffer); if (n < 0) break; size += n; require(size <= file.bytes) { "expanded file exceeds declared size" }; output.write(buffer, 0, n) }
                             require(size == file.bytes)
                         }
-                        require(hashFile(target) == file.sha256) { "file checksum mismatch" }
+                        require(hashFile(target, checkActive) == file.sha256) { "file checksum mismatch" }
                         if (file.executable) require(target.toFile().setExecutable(true, true))
                     }
                 }
                 require(seen == expected.keys) { "archive is incomplete" }
-                require(valid(tree, bundle))
+                require(TreeVerification().valid(tree, bundle.files, receipt, checkActive))
                 checkActive()
                 Files.move(tree, destination, ATOMIC_MOVE)
                 return destination
@@ -71,22 +73,13 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
         } }
         }
     }
-    private fun valid(directory: Path, bundle: WorkerBundle): Boolean = runCatching {
-        require(Files.isDirectory(directory, NOFOLLOW_LINKS))
-        val files = Files.walk(directory).use { it.filter { p -> !Files.isDirectory(p, NOFOLLOW_LINKS) }.toList() }
-        require(files.size == bundle.files.size)
-        bundle.files.all { entry ->
-            val file = directory.resolve(safeRelative(entry.path))
-            Files.isRegularFile(file, NOFOLLOW_LINKS) && Files.size(file) == entry.bytes && hashFile(file) == entry.sha256 && (!entry.executable || Files.isExecutable(file))
-        }
-    }.getOrDefault(false)
     private fun remove(path: Path) { Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
 }
 
 internal fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
-internal fun hashFile(path: Path): String = Files.newInputStream(path).use { input ->
+internal fun hashFile(path: Path, checkActive: () -> Unit = {}): String = Files.newInputStream(path).use { input ->
     val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024)
-    while (true) { val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }; digest.digest().hex()
+    while (true) { checkActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }; digest.digest().hex()
 }
 
 private val localFileLocks = Array(256) { Any() }

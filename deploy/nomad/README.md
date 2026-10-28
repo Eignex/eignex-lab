@@ -438,6 +438,12 @@ processor limits, and at most `maxConcurrentBuildsPerNode` compilers per node
 slots. Oversized literal commands remain intact in `cases/<index>/command.sh`
 artifacts without overflowing result metadata.
 
+Warm build and bundle caches walk their inventory and reuse checksums only while file identity, size,
+modification/change timestamps and executable state match a local verification receipt. Changed files are
+hashed again; missing receipts are rebuilt by checksum verification. Filesystems without reliable fine-grained
+change timestamps use full verification. Each solve resolves only its case's shared model, data and include
+directories, rather than rechecking the experiment's entire shared-input inventory.
+
 `workerReplaces` explicitly approves older worker release IDs for a compatible
 infrastructure patch. New solve admissions and infrastructure replacements then
 use the current pinned worker image/launcher and record its new release ID. The

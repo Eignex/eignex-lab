@@ -29,7 +29,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             maintain()
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
-            if (valid(destination, identity)) {
+            if (valid(destination, identity, ::checkRun)) {
                 Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
                 return@locked destination.resolve("tree")
             }
@@ -129,9 +129,11 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
 
-    private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest(listOf(
-        "build-cache-v5", bundle.repository, bundle.commit, bundle.os, bundle.arch, bundle.toolchain,
-        bundle.build?.benchManifest.orEmpty(),
+    private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest((listOf(
+        // Existing recipes keep their warm trees; only manifest-driven builds need the SDK identity extension.
+        if (bundle.build?.benchManifest == null) "build-cache-v4" else "build-cache-v5",
+        bundle.repository, bundle.commit, bundle.os, bundle.arch, bundle.toolchain,
+    ) + listOfNotNull(bundle.build?.benchManifest) + listOf(
         Json.encodeToString(bundle.buildOptions), Json.encodeToString(bundle.build?.tasks.orEmpty()),
         // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
         if (bundle.build?.gitBundle == null) bundle.sha256 else "approved-git-commit",
@@ -139,7 +141,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         Json.encodeToString(budget), System.getProperty("java.vendor"), System.getProperty("java.version"),
         System.getProperty("os.name"), System.getProperty("os.arch"),
         ExecutionStore.digest(requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText()),
-    ).joinToString("\n"))
+    )).joinToString("\n"))
 
     /** Gradle cannot negotiate cache locks across container namespaces. Reuse the first idle home, or give an
      * already-admitted concurrent build another home. Scheduling budgets bound concurrency; cache eviction bounds disk. */
@@ -217,10 +219,15 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             InputFile(tree.relativize(file).toString().replace('\\', '/'), hashFile(file), bytes, Files.isExecutable(file))
         }.toList() }.also { require(it.isNotEmpty()) }
     }
-    private fun valid(path: Path, identity: String): Boolean = runCatching {
-        val entry = Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json")))
-        entry.identity == identity && inventory(path.resolve("tree")) == entry.files
-    }.getOrDefault(false)
+    private fun valid(path: Path, identity: String, checkActive: () -> Unit): Boolean {
+        val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json"))) }.getOrNull() ?: return false
+        if (entry.files.isEmpty() || entry.files.fold(0L) { total, file ->
+                if (file.bytes > maxBytes - total) return false
+                total + file.bytes
+            } > maxBytes) return false
+        return entry.identity == identity && TreeVerification().valid(path.resolve("tree"), entry.files,
+            path.resolve("verified.json"), checkActive, exactExecutables = true)
+    }
     private fun copy(source: Path, destination: Path, checkActive: () -> Unit) {
         Files.walk(source).use { paths -> paths.forEach { path ->
             checkActive()
