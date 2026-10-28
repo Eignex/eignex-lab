@@ -205,7 +205,7 @@ class ConnectedNomadTest {
             assertEquals(1, store.execution.accepted(job).size)
             assertEquals(1, store.cases(job).map { it.host }.distinct().size)
             assertTrue(Files.readString(root.resolve("jobs/$job/0.out")).contains("portable-worker-output"))
-            assertTrue(store.caseRecordText(job, 0)!!.contains("fixture"))
+            assertTrue(Files.readString(root.resolve("jobs/$job/cases/0/out/record.json")).contains("fixture"))
             assertTrue(Files.list(root.resolve("jobs/$job/nomad")).use { files -> files.anyMatch { it.fileName.toString().endsWith("-2-resources.json") } }, "replacement committed generation 2")
             val acceptedAllocation = assertNotNull(store.execution.reports(job).single { it.committed > 0 }.session.allocation)
             val exited = System.nanoTime() + 10_000_000_000
