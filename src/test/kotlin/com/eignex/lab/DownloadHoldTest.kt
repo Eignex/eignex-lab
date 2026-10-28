@@ -36,7 +36,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DownloadHoldTest {
-    private val host = HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")
+    private val host = HostReport("Test/Arm64", 4, "java")
     private val hour = 3_600_000L
 
     private fun hold(text: String): Hold = Json.decodeFromString(Hold.serializer(), text)

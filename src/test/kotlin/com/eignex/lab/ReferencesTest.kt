@@ -493,7 +493,7 @@ class ReferencesTest {
         val auth = "Basic " + Base64.getEncoder().encodeToString(":secret".toByteArray())
         val body = """{"collection":"satcomp","solver":"kissat","budgetMs":300000}"""
         testApplication {
-            application { api(config, store, HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")) }
+            application { api(config, store, HostReport("Test/Arm64", 4, "java")) }
 
             assertEquals(HttpStatusCode.Unauthorized, client.post("/references/retire") {
                 contentType(ContentType.Application.Json)

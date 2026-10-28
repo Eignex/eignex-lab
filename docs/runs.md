@@ -39,14 +39,24 @@ reprioritized, whether either job is automatic or local-only. Running paired ite
 are kept when the job resumes; cloud workers continue.
 Local-only placement, including a required `local` tag or excluded `cloud` tag, is reserved for sweeps and references.
 
-## Koblas and profiles
+## Repository benchmarks
+
+Submit repository-owned benchmarks with `deploy/lab run experiment.json`. The experiment selects the repository
+and its committed `bench.manifest`; `bench.request.parameters` goes to that adapter. Its manifest owns build tasks
+and the planner, and its plan owns the commands, runtime checks, metrics and artifacts. The lab has no per-repository
+capture command or backend probe. See the [bench SDK contract](../lab-bench/README.md) and the selected repository's
+bench documentation for manifests and request parameters.
+
+The old `deploy/lab koblas` shortcut and `deploy/specs/koblas-smoke.json` are removed. For Koblas, use its
+[`koblas-bench` adapter](https://github.com/Eignex/koblas/tree/main/koblas-bench#bench-sdk-adapter) through the same
+`lab run` path. Existing profile jobs and their saved reports remain readable.
+
+## Profiles
 
 Only committed code in Eignex repositories runs, from `main` or trusted branches. Profiles default to ten minutes,
 capped at two hours; `--timeout` uses seconds. Scripts own their instrumentation; JVM mains record JFR.
 
 ```sh
-deploy/lab koblas main "Dot smoke capture" --smoke --operation dot
-
 deploy/lab profile --repo Eignex/eignex-lab --build installDist \
   --classpath 'build/install/eignex-lab/lib/*' --timeout 600 \
   com.eignex.lab.MainKt main "Startup capture" -- check

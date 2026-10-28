@@ -10,7 +10,7 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class NodesPageTest {
-    private val host = HostReport("Mac/Arm64", 10, "java", "engine", true, emptyList())
+    private val host = HostReport("Mac/Arm64", 10, "java")
     private val pool = CapacityPool("avx512", "linux-avx512-spot", 16, 65536, 8, setOf("arch:x86_64", "simd:avx512"))
     private val arm = CapacityPool("arm", "linux-arm-spot", 8, 32768, 8, setOf("arch:arm64", "simd:neon"))
     private val settings = CapacitySettings(listOf(pool, arm), 64)

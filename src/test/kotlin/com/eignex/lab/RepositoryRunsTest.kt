@@ -45,7 +45,7 @@ class RepositoryRunsTest {
     }
 
     @Test
-    fun `the client preserves capture switches and generic profile settings`() {
+    fun `the client preserves repository bench requests and generic profile settings`() {
         val root = Files.createTempDirectory("lab client")
         try {
             root.resolve("curl").apply { writeText("#!/bin/sh\ncat\n"); toFile().setExecutable(true) }
@@ -60,15 +60,19 @@ class RepositoryRunsTest {
                     Json.parseToJsonElement(output).jsonObject
                 }
 
-            val capture = payload("koblas", "--tags", "arch:arm64,!spot", "main", "capture dot", "--smoke", "--operation", "dot")
-            val ordinary = payload("koblas", "main", "capture dot", "--smoke")
+            val experiment = root.resolve("bench.json")
+            experiment.writeText("""{"name":"bench","repository":"Eignex/example","base":{"ref":"main"},"bench":{"manifest":"bench/lab.json","request":{"parameters":{"mode":"small"}}}}""")
+            val capture = payload("run", "--tags", "arch:arm64,!spot", experiment.toString())
+            val ordinary = payload("run", experiment.toString())
             val generic = payload("profile", "--repo", "Eignex/skema", "--build", ":tools:installDist", "--classpath",
                 "tools/build/install/tools/lib/*", "--timeout", "600", "com.eignex.skema.profile.MainKt", "main", "profile tool", "--", "--mode=small")
 
-            assertEquals("Eignex/koblas", capture["repository"]?.jsonPrimitive?.content)
+            assertEquals("Eignex/example", capture["repository"]?.jsonPrimitive?.content)
             assertEquals(listOf("!spot", "arch:arm64"), capture["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertFalse("tags" in ordinary)
-            assertEquals(listOf("--smoke", "--operation", "dot"), capture["profile"]?.jsonObject?.get("args")?.jsonArray?.map { it.jsonPrimitive.content })
+            assertEquals(ordinary["bench"], capture["bench"])
+            assertEquals("bench/lab.json", capture["bench"]!!.jsonObject["manifest"]!!.jsonPrimitive.content)
+            assertEquals("small", capture["bench"]!!.jsonObject["request"]!!.jsonObject["parameters"]!!.jsonObject["mode"]!!.jsonPrimitive.content)
             assertEquals("Eignex/skema", generic["repository"]?.jsonPrimitive?.content)
             assertEquals(":tools:installDist", generic["profile"]?.jsonObject?.get("buildTasks")?.jsonArray?.single()?.jsonPrimitive?.content)
             assertEquals("--mode=small", generic["profile"]?.jsonObject?.get("args")?.jsonArray?.single()?.jsonPrimitive?.content)
@@ -81,7 +85,7 @@ class RepositoryRunsTest {
     fun `submission rejects a non Eignex repository before any source is fetched`() = testApplication {
         val config = Config(dataDir = Files.createTempDirectory("repository api"), passwordHash = null)
         val store = Store(config.database)
-        application { api(config, store, HostReport("test", 4, "java", "vector", true, emptyList())) }
+        application { api(config, store, HostReport("test", 4, "java")) }
 
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)

@@ -24,7 +24,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CaseExportTest {
-    private val host = HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")
+    private val host = HostReport("Test/Arm64", 4, "java")
 
     private val check = LabCheck(
         policy = "lab-smtlib-dolmen-0.10-v1", state = LabCheck.VALID, reason = "accepted", checker = "dolmen",

@@ -20,7 +20,7 @@ class NomadQueueTest {
         NomadQueue(config, store, backend, artifacts, settings, { true }, source = { _, _, _ -> null }).reconcile()
         assertTrue(store.execution.sessions(id).isEmpty())
         val apiStore = Store(config.database)
-        application { api(config.copy(passwordHash = null), apiStore, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), apiStore, HostReport("fixture", 4, "java")) }
         val response = client.post("/jobs/$id/tags") {
             contentType(ContentType.Application.Json); setBody("""{"tags":["cloud"]}""")
         }
@@ -34,7 +34,7 @@ class NomadQueueTest {
         val session = store.execution.sessions(id).single()
         val frozen = store.execution.manifest(session.id)
         assertTrue(store.job(id)!!.commands.isEmpty())
-        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java")) }
         val response = client.post("/jobs/$id/tags") {
             contentType(ContentType.Application.Json); setBody("""{"tags":["cloud"]}""")
         }
@@ -301,7 +301,7 @@ class NomadQueueTest {
     }
 
     @Test fun `normal API submissions choose Nomad and provider neutral cloud placement without AWS settings`() = testApplication {
-        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java")) }
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)
             setBody("""{"name":"api-nomad","description":"exercise automatic admission","problems":{"suite":"s"},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud"]}""")
@@ -323,7 +323,7 @@ class NomadQueueTest {
     }
 
     @Test fun `normal API accepts a bounded cloud profile under Nomad`() = testApplication {
-        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java")) }
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)
             setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud","spot"]}""")

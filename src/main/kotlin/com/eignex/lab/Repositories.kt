@@ -5,7 +5,6 @@ import java.nio.file.Path
 /** Source repositories the lab may build. Repository input is a GitHub slug, never a URL or a local path. */
 object Repositories {
     const val DEFAULT = "Eignex/klause"
-    const val KOBLAS = "Eignex/koblas"
     private val SLUG = Regex("Eignex/[A-Za-z0-9_.-]+")
 
     fun requireAllowed(repository: String) {
