@@ -50,9 +50,18 @@ object NomadCoordinatorCli {
         }
         // Actual writes retain synchronous mount/free-space validation, on the background/IO workers only.
         val journalRoot = config.dataDir.resolve("nomad/result-journal")
+        Files.createDirectories(journalRoot.parent)
+        java.nio.channels.FileChannel.open(config.dataDir, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
         val artifacts = ResultJournal(journalRoot,
             LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null }),
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
+        thread(isDaemon = true, name = "nomad-result-journal-status") {
+            while (!Thread.currentThread().isInterrupted) {
+                runCatching { writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts) }
+                    .onFailure { System.err.println("result journal status: ${it.javaClass.simpleName}") }
+                Thread.sleep(5_000)
+            }
+        }
         val admissionSignal = CoordinatorSignal()
         val reconcileSignal = CoordinatorSignal()
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
@@ -158,7 +167,7 @@ object NomadCoordinatorCli {
             connectors.add(EngineConnectorBuilder().apply { host = settings.bindAddress; port = settings.workerPort })
             settings.privateBindAddress?.let { address -> connectors.add(EngineConnectorBuilder().apply { host = address; port = settings.workerPort }) }
             requestReadTimeoutSeconds = 30; responseWriteTimeoutSeconds = 30
-        }) { workerApi(store, backend, artifacts, disk::allowsWork); capacity?.let { capacityApi(it) } }.start(wait = true)
+        }) { workerApi(store, backend, artifacts, disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
 }

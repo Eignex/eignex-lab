@@ -16,6 +16,23 @@ class TreeVerificationTest {
     private var reads = 0
     private fun verifier() = TreeVerification { path, check -> reads++; hashFile(path, check) }
 
+    @Test fun `fresh sealing hashes once and creates a reusable receipt without weakening tamper checks`() {
+        val captured = verifier().capture(tree, receipt)
+        assertEquals(1, reads)
+        assertTrue(verifier().valid(tree, captured, receipt, exactExecutables = true)); assertEquals(1, reads)
+        Files.writeString(tree.resolve("cache"), "generated")
+        assertTrue(verifier().valid(tree, captured, receipt, removeUndeclared = true)); assertEquals(1, reads)
+        assertFalse(Files.exists(tree.resolve("cache")))
+        val mtime = Files.getLastModifiedTime(file); Files.writeString(file, "wrong"); Files.setLastModifiedTime(file, mtime)
+        assertFalse(verifier().valid(tree, captured, receipt)); assertEquals(2, reads)
+    }
+
+    @Test fun `sealing rejects files changed while their checksum is captured`() {
+        val changing = TreeVerification { path, check -> hashFile(path, check).also { Files.writeString(path, "wrong") } }
+        assertFailsWith<IllegalArgumentException> { changing.capture(tree, receipt) }
+        assertFalse(Files.exists(receipt))
+    }
+
     @Test fun `warm verification reuses checksums across instances and refreshes changed metadata`() {
         assertTrue(verifier().valid(tree, expected, receipt)); assertEquals(1, reads)
         assertTrue(verifier().valid(tree, expected, receipt)); assertEquals(1, reads)

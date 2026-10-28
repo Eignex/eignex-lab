@@ -1,5 +1,7 @@
 package com.eignex.lab
 
+import io.ktor.client.statement.bodyAsText
+
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
@@ -131,7 +133,10 @@ class CapacityCollectorTest {
         sample(); val c = collector(); c.collect()
         val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") })
-        application { workerApi(store, backend, artifacts) { true }; capacityApi(c) }
+        application { workerApi(store, backend, artifacts) { true }; capacityApi(c) { ResultJournal.Status(1, 16384, 134217728, null, 5000) } }
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/capacity/journal") { bearerAuth("worker-secret") }.status)
+        assertEquals(HttpStatusCode.OK, client.get("/capacity/journal") { bearerAuth(token) }.status)
+        assertContains(client.get("/capacity/metrics") { bearerAuth(token) }.bodyAsText(), "lab_result_journal_pending_batches 1")
         assertEquals(HttpStatusCode.Unauthorized, client.get("/capacity/snapshot").status)
         assertEquals(HttpStatusCode.Unauthorized, client.get("/capacity/snapshot") { bearerAuth("worker-secret") }.status)
         assertEquals(HttpStatusCode.OK, client.get("/capacity/snapshot") { bearerAuth(token) }.status)

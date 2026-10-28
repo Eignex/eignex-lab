@@ -7,6 +7,27 @@ import java.util.concurrent.TimeUnit
 
 /** Private mutable worktrees keep the shared verified distribution immutable. Prefer filesystem clones where supported. */
 internal object WorkerTrees {
+    /** Default JVM distributions run their installed jars. Keep source/Git and distributions, omit compiler scratch. */
+    fun copyRuntime(source: Path, destination: Path, checkActive: () -> Unit) {
+        checkActive(); require(!Files.exists(destination)); Files.createDirectories(destination)
+        val exclude = listOf("classes", "kotlin", "tmp", "generated").flatMap {
+            listOf("--exclude=build/$it", "--exclude=*/build/$it")
+        }
+        val pack = ProcessBuilder(listOf("/usr/bin/tar") + exclude + listOf("-cf", "-", "-C", source.toString(), "."))
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+        val unpack = ProcessBuilder("/usr/bin/tar", "-xf", "-", "-C", destination.toString())
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
+        val processes = ProcessBuilder.startPipeline(listOf(pack, unpack))
+        try {
+            while (processes.any { it.isAlive }) { checkActive(); Thread.sleep(20) }
+            if (processes.all { it.exitValue() == 0 }) { checkActive(); return }
+        } finally {
+            for (process in processes) if (process.isAlive) process.destroyForcibly()
+            for (process in processes) process.waitFor(5, TimeUnit.SECONDS)
+        }
+        deleteTree(destination); copy(source, destination, checkActive)
+    }
+
     fun copy(source: Path, destination: Path, checkActive: () -> Unit) {
         checkActive()
         require(!Files.exists(destination)) { "attempt worktree already exists" }

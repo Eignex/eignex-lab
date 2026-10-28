@@ -186,11 +186,29 @@ Small inline results (at most 1 MiB and 128 files per request) first sync one pa
 and the durable database commit. Reads and result projection can use pending batches immediately. Two background
 workers copy them to the external artifact store; a batch is reclaimed only after every external blob is durable.
 The journal reserves rounded file blocks and metadata within a fixed 128 MiB budget, also enforces the internal
-free-space guard, and returns retryable backpressure when full. It never evicts pending accepted data. Larger resumable
-uploads continue directly to the external store. Keep `LAB_DATA` on the internal SSD; external artifact and job paths
+free-space guard, and returns retryable backpressure when full. It never evicts pending accepted data. Captures up to
+64 MiB and 128 files use `/commit-packed`: one length-prefixed JSON manifest followed by raw checksum-addressed blobs.
+The receiver reserves its complete worst-case disk charge before streaming, hashes each blob, and syncs the completed
+pack before acceptance. Slow senders have separate I/O slots and never hold the small-result journal lock. Retries reuse
+pending blobs; older coordinators return 404/405 and workers fall back to resumable uploads. Preparation bundles, larger
+captures and requests with more files continue directly to the external store. Keep `LAB_DATA` on the internal SSD; external artifact and job paths
 can remain symlinks. Startup verifies and replays pending batches under an exclusive ownership lock. Before rolling
-back to a coordinator without journal support, stop acceptance and let all journal `.zip` files drain; preserve the
+back to a coordinator without support for its pending pack sizes, stop acceptance and let all journal `.zip` files drain; preserve the
 journal on a failed rollout rather than hiding acknowledged results behind an older binary.
+`lab journal`, `/health.resultJournal` and the Nodes page expose reserved bytes, the 128 MiB limit, pending batches,
+oldest batch age and drain failures. Reports are written atomically every five seconds and marked stale after fifteen.
+The authenticated private `/capacity/journal` endpoint and `/capacity/metrics` read in-memory journal state without
+touching the external volume. Reserved bytes include incoming streams and file/metadata overhead, even before a pack
+is published. Error counters cover the current coordinator process; a retained failed batch keeps its error visible.
+
+Workers retry connection failures and transient 429/500/502/503/504 responses for up to sixty seconds, bounded by their
+remaining monotonic claim lease and whole-run allowance. Fencing, cancellation and run expiry stop immediately. This
+allows a short coordinator restart without discarding completed work. Private workspace sealing hashes each file once
+and records its inode/ctime receipt in the same pass. Warm reuse prunes generated files during that verification walk;
+changed sealed files still force a fresh private copy. Default Klause JVM workspaces retain source, Git and installed
+distributions but omit compiler classes, Kotlin scratch, temporary and generated build intermediates. Custom scripts,
+classpath/build overrides and other repositories retain complete trees. `worker staging timing` separates inputs, workspace, setup,
+sealing and the executing-phase notification so cold compilation is distinguishable from filesystem overhead.
 Input downloads use bounded ranges and resume without rerunning captured cases. Accepted artifacts are projected into
 existing job paths before completion and source checks are recorded durably. A coordinator restart replays ingestion
 and pending checks rather than resetting claims. Worker or allocation loss fences the old credentials and reruns only

@@ -33,6 +33,7 @@
 #                                                            job <id>'s stored records (the solution claims in the formats the
 #                                                            lab checks), each verdict replacing the case's earlier one; no solver runs
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result, host
+#   lab journal                                             pending result bytes, age, capacity and drain errors
 #   lab cases <id> --json                                   every case whole as JSON Lines, one per line: index, arm, seed,
 #                                                            repeat, problem, status, host (local, or the cloud node's
 #                                                            instance), labDebug (the KLAUSE_DEBUG it ran with, from the
@@ -141,6 +142,7 @@ submission_payload() {
 }
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
+journal) curl -fsS "$url/journal" | jq . ;;
 run)
   while [[ $# -gt 0 ]]; do
     if submission_option "$@"; then shift 2; continue; fi

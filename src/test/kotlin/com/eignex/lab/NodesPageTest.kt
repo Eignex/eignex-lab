@@ -21,6 +21,23 @@ class NodesPageTest {
         return Config(dataDir = root, passwordHash = null, nomadCapacitySettings = path)
     }
 
+    @Test fun `journal status exposes bounded usage retained errors and stale reports without leaking markup`() = testApplication {
+        val config = config(); val store = Store(config.database)
+        val path = config.dataDir.resolve("nomad/result-journal-status.json"); Files.createDirectories(path.parent)
+        val report = ResultJournalReport(now() - 30_000,
+            ResultJournal.Status(2, 125L * 1024 * 1024, 128L * 1024 * 1024, "failure<script>", 90_000, 3))
+        Files.writeString(path, Json.encodeToString(report))
+        application { api(config, store, host) }
+        val page = client.get("/nodes").bodyAsText()
+        assertContains(page, "2 pending batches"); assertContains(page, "oldest 90s")
+        assertContains(page, "3 drain errors"); assertContains(page, "failure&lt;script&gt;")
+        assertContains(page, "report is stale"); assertContains(page, "near capacity")
+        val health = Json.parseToJsonElement(client.get("/health").bodyAsText()).toString()
+        assertContains(health, "resultJournal"); assertContains(health, "oldestAgeMs")
+        val status = Json.decodeFromString<ResultJournalReport>(client.get("/journal").bodyAsText())
+        assertTrue(status.stale); assertEquals(2, status.status.batches)
+    }
+
     @Test fun `nodes tab shows hardware allocations and expiring requests with a fresh report`() = testApplication {
         val config = config()
         val store = Store(config.database)
@@ -90,6 +107,7 @@ class NodesPageTest {
         application { api(config, store, host) }
 
         assertEquals(HttpStatusCode.Unauthorized, client.get("/nodes").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/journal").status)
         assertEquals(HttpStatusCode.Unauthorized, client.post("/capacity/leases") {
             contentType(ContentType.Application.Json); setBody("""{"pool":"arm","nodes":1}""")
         }.status)

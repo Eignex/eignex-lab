@@ -20,7 +20,11 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store, host:
         }
         get("/nodes") {
             val settings = runCatching { config.nomadCapacitySettings?.let { Json.decodeFromString<CapacitySettings>(Files.readString(it)) } }.getOrNull()
-            call.respondText(nodesPage(config, host, readCapacityReport(config), store.execution.capacityLeases(), settings), ContentType.Text.Html)
+            call.respondText(nodesPage(config, host, readCapacityReport(config), store.execution.capacityLeases(), settings, readResultJournalReport(config)), ContentType.Text.Html)
+        }
+        get("/journal") {
+            val report = readResultJournalReport(config)
+            if (report == null) call.respond(HttpStatusCode.ServiceUnavailable, "Result journal has not reported") else call.respond(report)
         }
         get("/capacity/view") { call.respondRedirect("/nodes") }
         get("/capacity/leases") { call.respond(store.execution.capacityLeases()) }

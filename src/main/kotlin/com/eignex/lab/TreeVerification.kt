@@ -26,7 +26,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     private class Invalid : RuntimeException()
 
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},
-              exactExecutables: Boolean = false): Boolean {
+              exactExecutables: Boolean = false, removeUndeclared: Boolean = false): Boolean {
         checkActive()
         if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return false
         // Coarse timestamp filesystems (for example HFS+/FAT) cannot distinguish a quick write/mtime restore.
@@ -48,9 +48,12 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
                 }
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
                     checkActive()
-                    if (!attrs.isRegularFile) throw Invalid()
                     val name = tree.relativize(file).toString().replace('\\', '/')
-                    val entry = wanted[name] ?: throw Invalid()
+                    val entry = wanted[name] ?: run {
+                        if (!removeUndeclared) throw Invalid()
+                        Files.delete(file); return FileVisitResult.CONTINUE
+                    }
+                    if (!attrs.isRegularFile) throw Invalid()
                     val before = stamp(file, attrs)
                     if (before.bytes != entry.bytes || (entry.executable || exactExecutables) && before.executable != entry.executable) throw Invalid()
                     val cached = old[name]
@@ -66,13 +69,40 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         val result = Receipt(1, rootKey, verified.sortedBy { it.file.path })
         if (result != previous) {
             checkActive()
-            val temporary = Files.createTempFile(receipt.parent, ".verification-", ".tmp")
-            try {
-                Files.writeString(temporary, Json.encodeToString(result))
-                Files.move(temporary, receipt, ATOMIC_MOVE, REPLACE_EXISTING)
-            } finally { Files.deleteIfExists(temporary) }
+            writeReceipt(receipt, result)
         }
         return true
+    }
+
+    /** Seal a newly private tree and its metadata receipt with one checksum pass, rather than hashing twice. */
+    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}): List<InputFile> {
+        checkActive(); require(Files.isDirectory(tree, NOFOLLOW_LINKS))
+        val files = mutableListOf<Verified>(); var bytes = 0L
+        val rootKey = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()
+        Files.walkFileTree(tree, object : SimpleFileVisitor<Path>() {
+            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                checkActive(); return FileVisitResult.CONTINUE
+            }
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                checkActive(); require(attrs.isRegularFile) { "workspace contains unsupported links" }
+                val before = stamp(file, attrs)
+                bytes = Math.addExact(bytes, before.bytes); require(bytes <= 32L * 1024 * 1024 * 1024)
+                val sha = hash(file, checkActive)
+                require(stamp(file) == before) { "workspace changed during sealing" }
+                files += Verified(InputFile(tree.relativize(file).toString().replace('\\', '/'), sha, before.bytes, before.executable), before)
+                return FileVisitResult.CONTINUE
+            }
+        })
+        checkActive(); writeReceipt(receipt, Receipt(1, rootKey, files.sortedBy { it.file.path }))
+        return files.map { it.file }
+    }
+
+    private fun writeReceipt(receipt: Path, result: Receipt) {
+        val temporary = Files.createTempFile(receipt.parent, ".verification-", ".tmp")
+        try {
+            Files.writeString(temporary, Json.encodeToString(result))
+            Files.move(temporary, receipt, ATOMIC_MOVE, REPLACE_EXISTING)
+        } finally { Files.deleteIfExists(temporary) }
     }
 
     private fun stamp(file: Path, attrs: BasicFileAttributes = Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)): Stamp =

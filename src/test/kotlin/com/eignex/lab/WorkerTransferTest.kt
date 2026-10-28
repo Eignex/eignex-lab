@@ -10,6 +10,31 @@ import kotlinx.serialization.json.Json
 import kotlin.test.*
 
 class WorkerTransferTest {
+    @Test fun `large results use one raw streaming request and survive a brief coordinator outage`() {
+        val root = Files.createTempDirectory("worker-packed")
+        val bytes = ByteArray(2 * 1024 * 1024) { (it % 251).toByte() }
+        val file = root.resolve("capture").also { Files.write(it, bytes) }
+        val calls = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/commit-packed") { exchange ->
+            try {
+                val packed = WorkerPackedCommit.read(exchange.requestBody)
+                assertEquals(listOf(ResultBlob(hashFile(file), bytes.size.toLong())), packed.blobs)
+                assertContentEquals(bytes, exchange.requestBody.readAllBytes())
+                exchange.sendResponseHeaders(if (calls.incrementAndGet() <= 4) 503 else 204, -1)
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
+            assertEquals("packed", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), mapOf("0.out" to file, "0.err" to file)))
+            assertEquals(5, calls.get())
+        } finally { server.stop(0) }
+    }
+
     @Test fun `small result files use one acceptance request including empty and duplicate blobs`() {
         val root = Files.createTempDirectory("worker-inline")
         val one = root.resolve("one").also { Files.writeString(it, "capture") }
