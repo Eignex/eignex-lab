@@ -46,7 +46,7 @@ class NomadQueueTest {
         val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
         val ordinary = job()
         store.setPriority(ordinary, 101)
-        queue().reconcile()
+        queue(cores = 1).reconcile()
         assertTrue(store.execution.sessions(sweep).isEmpty())
         assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "advisory-native")
     }

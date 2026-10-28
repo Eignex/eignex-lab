@@ -14,6 +14,33 @@ import kotlin.test.assertEquals
 
 class RunnerTest {
     @Test
+    fun `confirmations inherit a changed schedule priority even when the original run used an older priority`() {
+        for (priority in listOf(0, 100)) {
+            val config = Config(dataDir = Files.createTempDirectory("confirmation-priority"))
+            val store = Store(config.database)
+            val original = ExperimentSpec("status-sweep", listOf(mapOf("suite" to "s")), priority = -2)
+            val schedule = store.createSchedule("status-sweep", "main", original, 120)
+            fun run(sha: String, solved: Boolean): Long {
+                val spec = original.copy(name = "status-sweep@$sha", base = mapOf("ref" to sha))
+                val id = store.create(spec.name, sha, emptyList(), experiment = spec)
+                store.plan(id, Experiments.arms(spec).map { PlannedArm(it, sha) }, listOf(Problem("s", "p")),
+                    Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+                store.setup(id, sha)
+                store.caseRecord(id, 0, if (solved) """{"kind":"satisfy","feasible":true,"budgetMs":1000}"""
+                    else """{"kind":"satisfy","budgetMs":1000}""")
+                store.commandFinished(id, 0, 0)
+                store.finish(id, Status.DONE)
+                return id
+            }
+            run("aaa", true)
+            val current = run("bbb", false)
+            store.updateSchedule(schedule, original.copy(priority = priority), null)
+            Runner(config, store).queueConfirmation(store.job(current)!!)
+            assertEquals(priority + 1, store.active().single().priority)
+        }
+    }
+
+    @Test
     fun `a launch asked for while the last run is still queued stays due instead of waiting out the interval`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
