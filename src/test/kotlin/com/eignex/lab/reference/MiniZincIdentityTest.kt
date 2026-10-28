@@ -23,8 +23,17 @@ class MiniZincIdentityTest {
 
     @Test
     fun `missing reference versions cannot qualify a selected solver`() {
-        for (version in listOf("", "unknown")) {
+        for (version in listOf("", "unknown", "Unknown", "null", "unavailable")) {
             val configuration = Json.parseToJsonElement("""{"id":"org.gecode.gecode","version":"$version"}""").jsonObject
+
+            assertFailsWith<IllegalArgumentException> { MiniZincIdentity.describe("MiniZinc", "hash", configuration) }
+        }
+    }
+
+    @Test
+    fun `a nonstring reference version cannot qualify a selected solver`() {
+        for (version in listOf("null", "6")) {
+            val configuration = Json.parseToJsonElement("""{"id":"org.gecode.gecode","version":$version}""").jsonObject
 
             assertFailsWith<IllegalArgumentException> { MiniZincIdentity.describe("MiniZinc", "hash", configuration) }
         }
