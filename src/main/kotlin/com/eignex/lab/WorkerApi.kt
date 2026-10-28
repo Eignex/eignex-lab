@@ -125,13 +125,20 @@ fun Application.workerApi(store: Store, backend: NomadBackend, artifacts: Artifa
                 }
             }
             post("/commit-inline") {
+                val started = System.nanoTime()
                 withContext(CoordinatorIo.results) {
+                    val dispatched = System.nanoTime()
                     check(workAllowed()); val session = call.auth()
                     val body = Json.decodeFromString<WorkerInlineCommit>(call.bodyText())
+                    val received = System.nanoTime()
                     require(body.owner.session == session.id && body.owner.allocation == session.allocation)
                     store.execution.authorizeCommit(body.owner, body.result)
+                    val authorized = System.nanoTime()
                     artifacts.putAll(session.jobId, body.decoded())
+                    val written = System.nanoTime()
                     backend.commit(body.owner, body.result)
+                    val accepted = System.nanoTime()
+                    if (accepted - started > 250_000_000) System.err.println("coordinator commit timing: job=${session.jobId} queueMs=${(dispatched-started)/1_000_000} receiveMs=${(received-dispatched)/1_000_000} authorizeMs=${(authorized-received)/1_000_000} writeMs=${(written-authorized)/1_000_000} acceptMs=${(accepted-written)/1_000_000}")
                     call.respond(HttpStatusCode.NoContent)
                 }
             }

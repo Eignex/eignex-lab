@@ -26,6 +26,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
     private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
     private fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
+        val started = System.nanoTime()
         val timeout = if (path == "run-timeout") 30_000L else { checkRun(); minOf(30_000, runRemainingMs() ?: 30_000).coerceAtLeast(1) }
         val builder = HttpRequest.newBuilder(URI.create(api.toString().trimEnd('/') + "/worker/v1/sessions/${NomadClient.encode(id)}/$path"))
             .timeout(Duration.ofMillis(timeout)).header("Authorization", "Bearer $token").header("X-Lab-Allocation", allocation)
@@ -33,6 +34,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         if (owner != null) builder.header("X-Lab-Attempt", Json.encodeToString(owner))
         if (range > 0) builder.header("Range", "bytes=$range-")
         val response = client.send(builder.method(method, body).build(), HttpResponse.BodyHandlers.ofByteArray())
+        val elapsed = (System.nanoTime()-started)/1_000_000
+        if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
         if (path == "commit-inline" && response.statusCode() in setOf(404, 405)) return response
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
