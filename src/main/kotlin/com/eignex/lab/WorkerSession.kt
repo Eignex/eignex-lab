@@ -118,7 +118,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         val preparation = InputSigningRelay(::signature).use { relay ->
                             PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                                 builds, { download(it, trace) }, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace)
+                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")))
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                                 }) { file -> upload(file, claim.owner, reusable = file.fileName.toString().endsWith(".zip")) }

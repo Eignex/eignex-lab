@@ -46,7 +46,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                           private val os: String, private val arch: String,
                           private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
                           private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null,
-                          private val trace: PreparationTrace = PreparationTrace()) {
+                          private val trace: PreparationTrace = PreparationTrace(), private val archives: WorkerArchiveCache? = null) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -146,14 +146,20 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         fun transfer(file: Path): String = trace.step("upload") { upload(file) }
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            trace.step("archive") { archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive) }.also { built ->
-                // The first solve on this node should reuse the distribution just built here, without a round trip.
+            fun publish(zip: Path, built: WorkerBundle): WorkerBundle {
+                // Seed the solve input cache without a coordinator round trip.
                 trace.step("cache-publication") { if (inputCache != null) {
-                    val input = { Files.newInputStream(directory.resolve("$sha.zip")) }
+                    val input = { Files.newInputStream(zip) }
                     if (WorkerTrees.runtimeOnly(spec)) inputCache.useRuntime(built, ::checkActive, input) { }
                     else inputCache.use(built, ::checkActive, input) { }
                 } }
-                artifacts["preparation/$sha.zip"] = transfer(directory.resolve("$sha.zip"))
+                artifacts["preparation/$sha.zip"] = transfer(zip)
+                return built
+            }
+            if (archives != null) trace.step("archive") { archives.use(tree, original.copy(build = null), WorkerTrees.runtimeOnly(spec), ::checkActive, trace, ::publish) }
+            else {
+                val zip = directory.resolve("$sha.zip")
+                publish(zip, trace.step("archive") { archive(tree, zip, original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive) })
             }
         }
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }

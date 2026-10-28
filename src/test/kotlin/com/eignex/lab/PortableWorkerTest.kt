@@ -61,8 +61,12 @@ class PortableWorkerTest {
         val arms = Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }
         val manifest = WorkManifest("prepare", "release", spec, arms, emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
         val uploads = mutableMapOf<String, Path>()
+        var archivesCreated = 0
+        val archiveCache = WorkerArchiveCache(root.resolve("archives")) { tree, zip, bundle, runtime, active ->
+            archivesCreated++; archive(tree, zip, bundle, runtime, active)
+        }
         val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch)
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch, archives = archiveCache)
         val result = executor.run(manifest, root.resolve("prepare"), { null }, { 80000 }) { file ->
             hashFile(file).also { sha -> uploads[sha] = file }
         }
@@ -73,6 +77,9 @@ class PortableWorkerTest {
         val prepared = result.bundles.single()
         val source = VerifiedCache(root.resolve("verify")).stage(prepared) { Files.newInputStream(uploads.getValue(prepared.sha256)) }
         assertEquals(script, Files.readString(source.resolve(bundle.files.single().path)))
+        val repeated = executor.run(manifest, root.resolve("prepare-again"), { null }, { 80000 }) { hashFile(it) }
+        assertEquals(prepared.sha256, repeated.bundles.single().sha256)
+        assertEquals(1, archivesCreated)
         assertEquals(contents.resolve("model.mps"), portablePath(result.selections.single().single().model!!, source, contents))
         assertEquals(contents, portablePath("lab-corpus/", source, contents))
         assertFailsWith<IllegalStateException> { portableProblem(Problem("s", "p", model = "/outside/model"), source, contents) }

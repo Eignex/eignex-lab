@@ -132,17 +132,18 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     }
 
     /** Seal a newly private tree and its metadata receipt with one checksum pass, rather than hashing twice. */
-    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}): List<InputFile> {
+    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}, include: (Path) -> Boolean = { true }): List<InputFile> {
         checkActive(); require(Files.isDirectory(tree, NOFOLLOW_LINKS))
         val files = mutableListOf<Written>(); var bytes = 0L
         val old = if (reliable(tree)) previous(tree, receipt)?.files?.associateBy { it.file.path }.orEmpty() else emptyMap()
         val rootKey = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()
         Files.walkFileTree(tree, object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); return FileVisitResult.CONTINUE
+                checkActive(); return if (include(tree.relativize(dir))) FileVisitResult.CONTINUE else FileVisitResult.SKIP_SUBTREE
             }
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); require(attrs.isRegularFile) { "workspace contains unsupported links" }
+                checkActive(); if (!include(tree.relativize(file))) return FileVisitResult.CONTINUE
+                require(attrs.isRegularFile) { "workspace contains unsupported links" }
                 val before = stamp(file, attrs)
                 bytes = Math.addExact(bytes, before.bytes); require(bytes <= 32L * 1024 * 1024 * 1024)
                 val name = tree.relativize(file).toString().replace('\\', '/')
