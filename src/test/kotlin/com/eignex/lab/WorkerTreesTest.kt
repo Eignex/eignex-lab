@@ -24,6 +24,9 @@ class WorkerTreesTest {
             val bundle = archive(source, output, identity, runtimeOnly = true) {}
             assertEquals(kept.toSet(), bundle.files.map { it.path }.toSet())
             assertEquals(hashFile(output), bundle.sha256)
+            val repeated = root.resolve("repeated.zip")
+            assertEquals(bundle, archive(source, repeated, identity, runtimeOnly = true) {})
+            assertContentEquals(Files.readAllBytes(output), Files.readAllBytes(repeated))
             val restored = VerifiedCache(root.resolve("verified")).stage(bundle) { Files.newInputStream(output) }
             for (name in kept) assertEquals(name, Files.readString(restored.resolve(name)))
             val oldOutput = root.resolve("full.zip")
@@ -47,4 +50,21 @@ class WorkerTreesTest {
             for (name in omitted) assertEquals(name, Files.readString(complete.resolve(name)))
         } finally { deleteTree(root) }
     }
+    @Test fun `runtime archives do not walk excluded compiler trees`() {
+        val root = Files.createTempDirectory("runtime-archive-inventory")
+        try {
+            val source = Files.createDirectory(root.resolve("source"))
+            val scratch = Files.createDirectories(source.resolve("module/build/classes"))
+            repeat(400) { Files.writeString(scratch.resolve("Class$it.class"), "compiled") }
+            Files.writeString(source.resolve("runtime.jar"), "distribution")
+            val identity = WorkerBundle("a".repeat(64), listOf(InputFile("placeholder", "b".repeat(64), 0)), "Eignex/klause", "a".repeat(40), "linux", "amd64", "fixture")
+            var checks = 0
+            val runtime = archive(source, root.resolve("runtime.zip"), identity, runtimeOnly = true) { checks++ }
+            assertEquals(listOf("runtime.jar"), runtime.files.map { it.path })
+            assertTrue(checks < 30, "runtime archive visited discarded compiler files: $checks")
+            val full = archive(source, root.resolve("full.zip"), identity) {}
+            assertEquals(401, full.files.size)
+        } finally { deleteTree(root) }
+    }
+
 }

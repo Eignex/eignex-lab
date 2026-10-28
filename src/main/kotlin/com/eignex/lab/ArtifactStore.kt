@@ -15,6 +15,9 @@ interface ArtifactStore {
     fun open(job: Long, sha: String, verify: Boolean = true): InputStream = Files.newInputStream(if (verify) file(job, sha) else readFile(job, sha))
     fun size(job: Long, sha: String): Long = Files.size(readFile(job, sha))
     fun verify(job: Long, sha: String) { open(job, sha).use { } }
+    /** Optional reuse of immutable, checksum-verified preparation archives across jobs. */
+    fun reuse(job: Long, sha: String): Long? = null
+    fun remember(job: Long, sha: String) { }
     fun putAll(job: Long, blobs: Map<String, ByteArray>) {
         for ((sha, bytes) in blobs) put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
     }
@@ -23,6 +26,7 @@ interface ArtifactStore {
 /** Job-scoped CAS. Interrupted uploads resume at a confirmed offset; corrupt content is never published. */
 class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
                          private val writable: () -> Boolean = { true }) : ArtifactStore {
+    private val reuseIndex = ArtifactReuseIndex(root)
     private fun directory(job: Long): Path { require(job > 0); return root.resolve(job.toString()) }
     private fun path(job: Long, sha: String): Path { require(SHA256.matches(sha)); return directory(job).resolve(sha) }
     override fun readFile(job: Long, sha: String): Path = path(job, sha).also { require(Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS)) }
@@ -31,6 +35,33 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
     }
     override fun offset(job: Long, sha: String): Long = path(job, sha).let { full ->
         if (Files.isRegularFile(full)) Files.size(full) else full.resolveSibling("$sha.partial").let { if (Files.exists(it)) Files.size(it) else 0 }
+    }
+    override fun reuse(job: Long, sha: String): Long? {
+        val full = path(job, sha)
+        if (Files.isRegularFile(full)) return Files.size(full)
+        check(writable()) { "artifact storage temporarily unavailable" }
+        Files.createDirectories(full.parent)
+        synchronized(fileLockFor(full)) {
+            FileChannel.open(full.resolveSibling("$sha.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
+                if (Files.isRegularFile(full)) return Files.size(full)
+                val source = try { reuseIndex.find(sha) } catch (_: java.io.IOException) { null } ?: return null
+                try {
+                    // Index entries are hints, never proof. Check the immutable bytes before sharing their inode.
+                    if (Files.size(source) > maxBytes) return null
+                    if (hashFile(source) != sha) { reuseIndex.forget(sha); return null }
+                    Files.createLink(full, source)
+                } catch (_: java.io.IOException) { return null } // Deleted source or unsupported hard links: ordinary upload.
+                Files.deleteIfExists(full.resolveSibling("$sha.partial"))
+                FileChannel.open(full.parent, READ).use { it.force(true) }
+                remember(job, sha)
+                return Files.size(full)
+            } }
+        }
+    }
+    override fun remember(job: Long, sha: String) {
+        if (Files.isRegularFile(path(job, sha))) {
+            try { reuseIndex.remember(job, sha) } catch (_: java.io.IOException) { /* A disposable hint must not reject accepted bytes. */ }
+        }
     }
     override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
         check(writable()) { "artifact storage temporarily unavailable" }

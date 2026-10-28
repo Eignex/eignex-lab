@@ -42,7 +42,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         for (entry in files) {
             checkActive()
             require(entry.stamp.bytes == entry.file.bytes && entry.stamp.executable == entry.file.executable &&
-                Files.isRegularFile(tree.resolve(entry.file.path), NOFOLLOW_LINKS) && stamp(tree.resolve(entry.file.path)) == entry.stamp) { "verified output changed before publication" }
+                stamp(tree.resolve(entry.file.path)) == entry.stamp) { "verified output changed before publication" }
         }
         writeReceipt(receipt, Receipt(1, Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString(), files.sortedBy { it.file.path }))
     }
@@ -56,7 +56,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
             for (entry in proof?.files.orEmpty()) {
                 checkActive()
                 val path = source.resolve(entry.file.path)
-                require(Files.isRegularFile(path, NOFOLLOW_LINKS) && stamp(path) == entry.stamp) {
+                require(stamp(path) == entry.stamp) {
                     "verified copy source changed"
                 }
             }
@@ -132,17 +132,18 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     }
 
     /** Seal a newly private tree and its metadata receipt with one checksum pass, rather than hashing twice. */
-    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}): List<InputFile> {
+    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}, include: (Path) -> Boolean = { true }): List<InputFile> {
         checkActive(); require(Files.isDirectory(tree, NOFOLLOW_LINKS))
         val files = mutableListOf<Written>(); var bytes = 0L
         val old = if (reliable(tree)) previous(tree, receipt)?.files?.associateBy { it.file.path }.orEmpty() else emptyMap()
         val rootKey = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()
         Files.walkFileTree(tree, object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); return FileVisitResult.CONTINUE
+                checkActive(); return if (include(tree.relativize(dir))) FileVisitResult.CONTINUE else FileVisitResult.SKIP_SUBTREE
             }
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); require(attrs.isRegularFile) { "workspace contains unsupported links" }
+                checkActive(); if (!include(tree.relativize(file))) return FileVisitResult.CONTINUE
+                require(attrs.isRegularFile) { "workspace contains unsupported links" }
                 val before = stamp(file, attrs)
                 bytes = Math.addExact(bytes, before.bytes); require(bytes <= 32L * 1024 * 1024 * 1024)
                 val name = tree.relativize(file).toString().replace('\\', '/')
@@ -165,8 +166,18 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         } finally { Files.deleteIfExists(temporary) }
     }
 
-    private fun stamp(file: Path, attrs: BasicFileAttributes = Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)): Stamp =
-        Stamp(attrs.size(), attrs.lastModifiedTime().toString(),
-            runCatching { Files.getAttribute(file, "unix:ctime", NOFOLLOW_LINKS).toString() }.getOrNull(),
-            attrs.fileKey()?.toString(), Files.isExecutable(file))
+    private fun stamp(file: Path, attrs: BasicFileAttributes? = null): Stamp {
+        // The Unix view returns inode, ctime, type and basic attributes from one stat call.
+        // Keep access(2) for executable semantics under the worker's effective user/ACLs.
+        val unix = try { Files.readAttributes(file, "unix:size,lastModifiedTime,ctime,fileKey,isRegularFile", NOFOLLOW_LINKS) }
+            catch (_: UnsupportedOperationException) { null }
+        if (unix != null) {
+            if (unix["isRegularFile"] != true) throw IOException("verification requires a regular file")
+            return Stamp(unix["size"] as Long, unix["lastModifiedTime"].toString(), unix["ctime"]?.toString(),
+                unix["fileKey"]?.toString(), Files.isExecutable(file))
+        }
+        val basic = attrs ?: Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        if (!basic.isRegularFile) throw IOException("verification requires a regular file")
+        return Stamp(basic.size(), basic.lastModifiedTime().toString(), null, basic.fileKey()?.toString(), Files.isExecutable(file))
+    }
 }

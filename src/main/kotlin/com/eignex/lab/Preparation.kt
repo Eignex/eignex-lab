@@ -46,7 +46,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                           private val os: String, private val arch: String,
                           private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
                           private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null,
-                          private val trace: PreparationTrace = PreparationTrace()) {
+                          private val trace: PreparationTrace = PreparationTrace(), private val archives: WorkerArchiveCache? = null) {
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
@@ -146,14 +146,20 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         fun transfer(file: Path): String = trace.step("upload") { upload(file) }
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            trace.step("archive") { archive(tree, directory.resolve("$sha.zip"), original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive) }.also { built ->
-                // The first solve on this node should reuse the distribution just built here, without a round trip.
+            fun publish(zip: Path, built: WorkerBundle): WorkerBundle {
+                // Seed the solve input cache without a coordinator round trip.
                 trace.step("cache-publication") { if (inputCache != null) {
-                    val input = { Files.newInputStream(directory.resolve("$sha.zip")) }
+                    val input = { Files.newInputStream(zip) }
                     if (WorkerTrees.runtimeOnly(spec)) inputCache.useRuntime(built, ::checkActive, input) { }
                     else inputCache.use(built, ::checkActive, input) { }
                 } }
-                artifacts["preparation/$sha.zip"] = transfer(directory.resolve("$sha.zip"))
+                artifacts["preparation/$sha.zip"] = transfer(zip)
+                return built
+            }
+            if (archives != null) trace.step("archive") { archives.use(tree, original.copy(build = null), WorkerTrees.runtimeOnly(spec), ::checkActive, trace, ::publish) }
+            else {
+                val zip = directory.resolve("$sha.zip")
+                publish(zip, trace.step("archive") { archive(tree, zip, original.copy(build = null), runtimeOnly = WorkerTrees.runtimeOnly(spec), checkActive = ::checkActive) })
             }
         }
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
@@ -183,22 +189,31 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
 internal fun archive(tree: Path, output: Path, identity: WorkerBundle, runtimeOnly: Boolean = false, checkActive: () -> Unit): WorkerBundle {
     var total = 0L
     val directories = mutableListOf<String>()
-    val paths = Files.walk(tree).use { paths -> paths.sorted().filter { path ->
-        checkActive()
-        if (runtimeOnly && !WorkerTrees.runtimePath(tree.relativize(path))) return@filter false
-        if (Files.isDirectory(path, NOFOLLOW_LINKS)) {
-            if (path != tree) directories += tree.relativize(path).toString().replace('\\', '/') + "/"
-            false
-        } else true
-    }.map { path ->
-        require(Files.isRegularFile(path, NOFOLLOW_LINKS))
-        val bytes = Files.size(path); require(bytes <= 32L * 1024 * 1024 * 1024 - total); total += bytes
-        path
-    }.toList() }
+    val paths = mutableListOf<Path>()
+    Files.walkFileTree(tree, object : java.nio.file.SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            checkActive()
+            val relative = tree.relativize(dir)
+            if (runtimeOnly && !WorkerTrees.runtimePath(relative)) return java.nio.file.FileVisitResult.SKIP_SUBTREE
+            if (dir != tree) directories += relative.toString().replace('\\', '/') + "/"
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            checkActive()
+            if (runtimeOnly && !WorkerTrees.runtimePath(tree.relativize(file))) return java.nio.file.FileVisitResult.CONTINUE
+            require(attrs.isRegularFile)
+            require(attrs.size() <= 32L * 1024 * 1024 * 1024 - total); total += attrs.size()
+            paths.add(file)
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+    })
+    paths.sort(); directories.sort()
     require(paths.isNotEmpty())
     val files = mutableListOf<InputFile>(); var streamedBytes = 0L
     val archiveDigest = java.security.MessageDigest.getInstance("SHA-256")
-    ZipOutputStream(java.security.DigestOutputStream(Files.newOutputStream(output), archiveDigest)).use { zip ->
+    ZipOutputStream(java.security.DigestOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(output), 256 * 1024), archiveDigest)).use { zip ->
+        // Runtime distributions contain already-compressed jars; avoid recompressing them at the default level.
+        zip.setLevel(java.util.zip.Deflater.BEST_SPEED)
         // Empty directories carry runtime meaning too, including a detached checkout's .git/refs.
         for (directory in directories) {
             checkActive(); zip.putNextEntry(ZipEntry(directory).apply { time = 0 }); zip.closeEntry()

@@ -61,8 +61,12 @@ class PortableWorkerTest {
         val arms = Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }
         val manifest = WorkManifest("prepare", "release", spec, arms, emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
         val uploads = mutableMapOf<String, Path>()
+        var archivesCreated = 0
+        val archiveCache = WorkerArchiveCache(root.resolve("archives")) { tree, zip, bundle, runtime, active ->
+            archivesCreated++; archive(tree, zip, bundle, runtime, active)
+        }
         val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch)
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch, archives = archiveCache)
         val result = executor.run(manifest, root.resolve("prepare"), { null }, { 80000 }) { file ->
             hashFile(file).also { sha -> uploads[sha] = file }
         }
@@ -73,6 +77,9 @@ class PortableWorkerTest {
         val prepared = result.bundles.single()
         val source = VerifiedCache(root.resolve("verify")).stage(prepared) { Files.newInputStream(uploads.getValue(prepared.sha256)) }
         assertEquals(script, Files.readString(source.resolve(bundle.files.single().path)))
+        val repeated = executor.run(manifest, root.resolve("prepare-again"), { null }, { 80000 }) { hashFile(it) }
+        assertEquals(prepared.sha256, repeated.bundles.single().sha256)
+        assertEquals(1, archivesCreated)
         assertEquals(contents.resolve("model.mps"), portablePath(result.selections.single().single().model!!, source, contents))
         assertEquals(contents, portablePath("lab-corpus/", source, contents))
         assertFailsWith<IllegalStateException> { portableProblem(Problem("s", "p", model = "/outside/model"), source, contents) }
@@ -313,7 +320,7 @@ class PortableWorkerTest {
         """.trimIndent()
         val (input, bytes) = bundle(mapOf("gradlew" to script))
         val source = VerifiedCache(root.resolve("inputs")).stage(input) { ByteArrayInputStream(bytes) }
-        val built = input.copy(build = WorkerBuild(listOf("installDist")))
+        val built = input.copy(build = WorkerBuild(listOf("installDist")), toolchain = "jdk25:" + "1".repeat(40))
         val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
         try {
             val jobs = (1..2).map { executor.submit<Path> {
@@ -322,10 +329,19 @@ class PortableWorkerTest {
             } }
             assertEquals(jobs[0].get(), jobs[1].get())
             assertEquals(1, Files.readAllLines(count).size)
+            val updated = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                .prepare(built.copy(toolchain = "jdk25:" + "2".repeat(40)), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertEquals(jobs[0].get(), updated)
+            assertEquals(1, Files.readAllLines(count).size)
             val next = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
-                .prepare(built.copy(commit = "b".repeat(40)), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+                .prepare(built.copy(commit = "b".repeat(40), toolchain = "jdk25"), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
             assertEquals("warm", Files.readString(next.resolve("build/dependencies")).trim())
             assertEquals(2, Files.readAllLines(count).size)
+            val custom = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                .prepare(built.copy(toolchain = "different-toolchain"), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertNotEquals(updated, custom)
+            assertEquals("cold", Files.readString(custom.resolve("build/dependencies")).trim())
+            assertEquals(3, Files.readAllLines(count).size)
         } finally { executor.shutdownNow() }
     }
 

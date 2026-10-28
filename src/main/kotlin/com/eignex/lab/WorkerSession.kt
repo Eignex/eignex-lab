@@ -118,10 +118,10 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         val preparation = InputSigningRelay(::signature).use { relay ->
                             PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                                 builds, { download(it, trace) }, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace)
+                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")))
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
-                                }) { file -> upload(file, claim.owner) }
+                                }) { file -> upload(file, claim.owner, reusable = file.fileName.toString().endsWith(".zip")) }
                         }
                         reportPreparation()
                         IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
@@ -245,19 +245,20 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         return "resumable"
     }
 
-    internal fun upload(file: Path, owner: AttemptOwner): String {
+    internal fun upload(file: Path, owner: AttemptOwner, reusable: Boolean = false): String {
         val sha = hashFile(file); val size = Files.size(file)
+        val reuse = if (reusable) "reuse=true&" else ""
         var offset: Long? = null
         while (true) {
             val complete = retry {
                 try {
                     // Query progress only initially or after an ambiguous response; successful PUTs carry the next offset.
-                    val from = offset ?: Json.decodeFromString<UploadReply>(String(request("uploads/$sha", owner = owner).body())).offset
+                    val from = offset ?: Json.decodeFromString<UploadReply>(String(request("uploads/$sha" + if (reusable) "?reuse=true" else "", owner = owner).body())).offset
                     require(from in 0..size)
                     if (from == size && size > 0) return@retry true
                     val count = minOf(size - from, 8L * 1024 * 1024).toInt()
                     val bytes = Files.newInputStream(file).use { input -> input.skipNBytes(from); input.readNBytes(count) }
-                    val reply = request("uploads/$sha?bytes=$size&offset=$from", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), owner)
+                    val reply = request("uploads/$sha?${reuse}bytes=$size&offset=$from", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), owner)
                     val next = Json.decodeFromString<UploadReply>(String(reply.body())).offset
                     require(next in from..size && (next > from || size == 0L))
                     offset = next

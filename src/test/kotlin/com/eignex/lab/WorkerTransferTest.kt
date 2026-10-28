@@ -150,4 +150,40 @@ class WorkerTransferTest {
             assertEquals(hash, hashFile(artifacts.file(1, hash)))
         } finally { server.stop(0) }
     }
+    @Test fun `repeated preparation bundles skip all upload bytes across jobs and coordinator restarts`() {
+        val root = Files.createTempDirectory("worker-reuse")
+        val file = root.resolve("prepared.zip").also { Files.writeString(it, "prepared distribution") }
+        val hash = hashFile(file); var job = 1L
+        val puts = AtomicInteger(); val gets = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/uploads/$hash") { exchange ->
+            try {
+                val store = LocalArtifactStore(root.resolve("artifacts")) // Fresh process state for every request.
+                val query = exchange.requestURI.rawQuery.orEmpty().split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
+                assertEquals("true", query["reuse"])
+                val offset = if (exchange.requestMethod == "GET") {
+                    gets.incrementAndGet(); store.reuse(job, hash) ?: store.offset(job, hash)
+                } else {
+                    puts.incrementAndGet()
+                    store.put(job, hash, query.getValue("bytes").toLong(), query.getValue("offset").toLong(), exchange.requestBody)
+                        .also { store.remember(job, hash) }
+                }
+                val reply = """{"offset":$offset}""".toByteArray()
+                exchange.sendResponseHeaders(200, reply.size.toLong()); exchange.responseBody.write(reply)
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
+            assertEquals(hash, worker.upload(file, owner, reusable = true))
+            job = 2
+            assertEquals(hash, worker.upload(file, owner, reusable = true))
+            assertEquals(2, gets.get()); assertEquals(1, puts.get())
+            assertEquals(hash, hashFile(LocalArtifactStore(root.resolve("artifacts")).file(2, hash)))
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
 }
