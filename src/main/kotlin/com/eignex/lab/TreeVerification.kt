@@ -85,7 +85,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     }
 
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},
-              exactExecutables: Boolean = false, removeUndeclared: Boolean = false): Boolean {
+              exactExecutables: Boolean = false, removeUndeclared: Boolean = false, allowUndeclared: Boolean = false): Boolean {
         checkActive()
         if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return false
         // Coarse timestamp filesystems (for example HFS+/FAT) cannot distinguish a quick write/mtime restore.
@@ -106,6 +106,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
                     checkActive()
                     val name = tree.relativize(file).toString().replace('\\', '/')
                     val entry = wanted[name] ?: run {
+                        if (allowUndeclared) return FileVisitResult.CONTINUE
                         if (!removeUndeclared) throw Invalid()
                         Files.delete(file); return FileVisitResult.CONTINUE
                     }

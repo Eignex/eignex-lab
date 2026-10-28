@@ -12,12 +12,15 @@ import java.nio.file.attribute.FileTime
 import java.util.UUID
 
 /** Node-local verified distributions. Process-owned pins protect readers; eviction accounts declared expanded bytes. */
-class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L * 1024 * 1024 * 1024) {
+class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L * 1024 * 1024 * 1024,
+    private val builds: WorkerBuildCache? = null) {
     init { require(maxBytes >= 0) }
     private val entries = root.resolve("entries")
     private val sizes = root.resolve("sizes")
     private val pins = root.resolve("pins")
-    private val verified = VerifiedCache(entries)
+    private val verified = VerifiedCache(entries, materialize = { bundle, files, tree, receipt, check ->
+        bundle.build == null && builds?.materialize(bundle.commit, files, tree, receipt, check) == true
+    })
 
     fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, action: (Path) -> T): T =
         use(bundle, checkActive, false, download, action)

@@ -63,7 +63,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
         val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket))
-        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"))
+        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"), builds = builds)
         val workspaceStorage = WorkerWorkspaceStorage(cacheRoot.resolve("workspaces"))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),

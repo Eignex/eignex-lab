@@ -113,6 +113,46 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
 
+    /** A prepared distribution can be reconstructed from an identical verified build on this node. The
+     * approved per-file manifest, not commit identity alone, proves equivalence; a pin prevents eviction. */
+    internal fun materialize(commit: String, files: List<InputFile>, destination: Path, receipt: Path, checkActive: () -> Unit): Boolean {
+        if (!Files.isDirectory(root)) return false
+        val wanted = files.toSet()
+        val candidates = Files.list(root).use { paths -> paths.filter {
+            SHA256.matches(it.fileName.toString()) && Files.isDirectory(it, NOFOLLOW_LINKS)
+        }.toList() }
+        for (candidate in candidates) {
+            checkActive()
+            val head = candidate.resolve("tree/.git/HEAD")
+            if (!Files.isRegularFile(head, NOFOLLOW_LINKS) || runCatching { Files.readString(head).trim() }.getOrNull() != commit) continue
+            val key = candidate.fileName.toString()
+            FileChannel.open(root.resolve("$key.pin"), CREATE, WRITE).use { channel ->
+                val pin = try { channel.tryLock() } catch (_: java.nio.channels.OverlappingFileLockException) { null }
+                if (pin == null) return@use
+                pin.use candidatePin@ {
+                    val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(candidate.resolve("manifest.json"))) }.getOrNull() ?: return@candidatePin
+                    val runtime = entry.files.filter { WorkerTrees.runtimePath(Path.of(it.path)) }.toSet()
+                    val runtimeOnly = entry.files.toSet() != wanted
+                    if (runtimeOnly && runtime != wanted || !runtimeOnly && entry.files.size != files.size) return@candidatePin
+                    val sourceReceipt = candidate.resolve(if (runtimeOnly) "runtime-verified.json" else "verified.json")
+                    if (runtimeOnly && !Files.exists(sourceReceipt) && Files.isRegularFile(candidate.resolve("verified.json"))) {
+                        Files.copy(candidate.resolve("verified.json"), sourceReceipt)
+                    }
+                    if (!TreeVerification().valid(candidate.resolve("tree"), files, sourceReceipt, checkActive,
+                            exactExecutables = true, allowUndeclared = runtimeOnly)) return@candidatePin
+                    TreeVerification().copy(candidate.resolve("tree"), sourceReceipt, destination, receipt,
+                        checkActive, { !runtimeOnly || WorkerTrees.runtimePath(it) }) {
+                        if (runtimeOnly) WorkerTrees.copyRuntime(candidate.resolve("tree"), destination, checkActive)
+                        else WorkerTrees.copy(candidate.resolve("tree"), destination, checkActive)
+                    }
+                    Files.setLastModifiedTime(candidate.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     /** Node-local slots bound cold compilers across allocations; warm cache hits bypass this gate. */
     internal fun <T> compilationSlot(run: () -> Long?, lease: () -> Long, slots: Int =
         System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2, use: () -> T): T {

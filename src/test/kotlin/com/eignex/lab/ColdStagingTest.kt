@@ -89,6 +89,43 @@ class ColdStagingTest {
         } finally { deleteTree(root) }
     }
 
+    @Test fun `cold input cache clones only identical verified local builds and falls back after corruption`() {
+        val root = Files.createTempDirectory("local-build-inputs")
+        try {
+            val buildRoot = Files.createDirectory(root.resolve("builds")); val key = "a".repeat(64)
+            val candidate = Files.createDirectory(buildRoot.resolve(key)); val tree = Files.createDirectory(candidate.resolve("tree"))
+            val files = mapOf(".git/HEAD" to "${"b".repeat(40)}\n", "module/build/install/tool/lib/code.jar" to "hello", "module/build/classes/Code.class" to "compiler")
+            for ((name, bytes) in files) { val path = tree.resolve(name); Files.createDirectories(path.parent); Files.writeString(path, bytes) }
+            val inventory = TreeVerification().capture(tree, candidate.resolve("verified.json"))
+            val entry = kotlinx.serialization.json.buildJsonObject {
+                put("identity", kotlinx.serialization.json.JsonPrimitive(key))
+                put("files", kotlinx.serialization.json.Json.encodeToJsonElement(kotlinx.serialization.builtins.ListSerializer(InputFile.serializer()), inventory))
+            }
+            Files.writeString(candidate.resolve("manifest.json"), entry.toString())
+            val identity = WorkerBundle("c".repeat(64), inventory, "Eignex/klause", "b".repeat(40), "linux", "amd64", "fixture")
+            val output = root.resolve("input.zip"); val bundle = archive(tree, output, identity) {}
+            val builds = WorkerBuildCache(buildRoot, ProcessSupervisor(root.resolve("unused.sock")))
+            val inputs = WorkerInputCache(root.resolve("inputs"), builds = builds)
+            inputs.useRuntime(bundle, {}, { error("identical local build must avoid download and extraction") }) { staged ->
+                assertEquals("hello", Files.readString(staged.resolve("module/build/install/tool/lib/code.jar")))
+                assertFalse(Files.exists(staged.resolve("module/build/classes")))
+                Files.writeString(staged.resolve("module/build/install/tool/lib/code.jar"), "private")
+                assertEquals("hello", Files.readString(tree.resolve("module/build/install/tool/lib/code.jar")))
+            }
+            val source = tree.resolve("module/build/install/tool/lib/code.jar"); val mtime = Files.getLastModifiedTime(source)
+            Files.writeString(source, "wrong"); Files.setLastModifiedTime(source, mtime)
+            var downloads = 0
+            WorkerInputCache(root.resolve("other-inputs"), builds = builds).useRuntime(bundle, {}, { downloads++; Files.newInputStream(output) }) { staged ->
+                assertEquals("hello", Files.readString(staged.resolve("module/build/install/tool/lib/code.jar")))
+            }
+            assertEquals(1, downloads)
+            val different = bundle.copy(files = bundle.files.map { if (it.path.endsWith("code.jar")) it.copy(sha256 = "0".repeat(64)) else it })
+            assertFailsWith<IllegalArgumentException> {
+                WorkerInputCache(root.resolve("different-inputs"), builds = builds).useRuntime(different, {}, { Files.newInputStream(output) }) { error("changed approval accepted") }
+            }
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `external workspace lifetime protects active sessions reaps crashes and removes normal exits`() {
         val root = Files.createTempDirectory("workspace-storage")
         try {

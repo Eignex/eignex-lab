@@ -13,7 +13,8 @@ import java.io.FilterInputStream
 import java.util.zip.ZipInputStream
 
 /** Bounded, locked, checksum-verified extraction with atomic publication. No archive-supplied links or modes. */
-class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024) {
+class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
+    private val materialize: ((WorkerBundle, List<InputFile>, Path, Path, () -> Unit) -> Boolean)? = null) {
     fun stage(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, false, download)
     internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, true, download)
 
@@ -36,8 +37,15 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             Files.deleteIfExists(receipt)
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
             val staging = Files.createTempDirectory(root, "$key-")
-            val tree = Files.createDirectory(staging.resolve("tree"))
+            val tree = staging.resolve("tree")
             try {
+                if (materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
+                    require(TreeVerification().valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
+                    checkActive(); Files.move(tree, destination, ATOMIC_MOVE)
+                    println("worker input cache: materialized verified local build files=${included.size}")
+                    return destination
+                }
+                Files.createDirectory(tree)
                 val expected = bundle.files.associateBy { it.path }; require(expected.size == bundle.files.size)
                 val seen = mutableSetOf<String>()
                 val verifier = TreeVerification(); val written = mutableListOf<TreeVerification.Written>()
