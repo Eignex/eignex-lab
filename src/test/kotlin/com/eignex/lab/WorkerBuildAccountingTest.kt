@@ -133,4 +133,25 @@ class WorkerBuildAccountingTest {
         } finally { executor.shutdownNow(); deleteTree(root) }
     }
 
+    @Test fun `active dirty homes do not suspend eviction of known excess or evict warm data within budget`() {
+        for ((knownBytes, retained) in listOf(8 to true, 12 to false)) {
+            val root = Files.createTempDirectory("active-dependency-budget")
+            val activeKey = "1".repeat(64); val inactiveKey = "2".repeat(64)
+            val active = Files.createDirectories(root.resolve("dependencies/$activeKey"))
+            Files.writeString(active.resolve("data"), "active data with unknown size")
+            val inactive = Files.createDirectories(root.resolve("dependencies/$inactiveKey"))
+            Files.writeString(inactive.resolve("data"), "x".repeat(knownBytes))
+            try {
+                val cache = WorkerBuildCache(root, ProcessSupervisor(root.resolve("unused")), maxBytes = 10)
+                ProcessFilePin.tryLock(root.resolve("dependencies-$activeKey.lock"))!!.use {
+                    cache.maintain()
+                    assertTrue(Files.exists(active), "active dirty cache must remain pinned")
+                    assertEquals(retained, Files.exists(inactive),
+                        "known inactive bytes must obey budget independently of unknown active size")
+                    assertNull(ProcessFilePin.tryLock(root.resolve("dependencies-$activeKey.lock")))
+                }
+            } finally { deleteTree(root) }
+        }
+    }
+
 }

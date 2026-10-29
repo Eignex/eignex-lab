@@ -283,7 +283,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             Files.list(root).use { paths -> garbage.addAll(paths.filter { it.fileName.toString().startsWith(".evict-") }.toList()) }
             Snapshot(builds, dependencies, garbage)
         } ?: return
-        data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long, val key: String?, val usage: DependencyUsage? = null)
+        data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long, val key: String?, val usage: DependencyUsage? = null, val accounted: Boolean = true)
         val candidates = mutableListOf<Candidate>()
         val unknown = maxBytes.coerceAtLeast(1)
         fun attributes(path: Path) = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
@@ -305,6 +305,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             if (!Files.isDirectory(path, NOFOLLOW_LINKS)) continue
             val lock = root.resolve("dependencies-${path.fileName}.lock")
             var usage: DependencyUsage? = null
+            var measuredBytes: Long? = null
             val owner = ProcessFilePin.tryLock(lock)
             if (owner == null) {
                 // Older workers do not invalidate usage records themselves. Observing their live pin
@@ -315,6 +316,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 usage = knownDependencyUsage(path) ?: run {
                     val before = attributes(path)
                     val bytes = dependencyBytes(path)
+                    measuredBytes = bytes
                     checkMaintenanceActive()
                     val after = attributes(path)
                     require(bytes >= 0 && before.fileKey() == after.fileKey() && before.lastModifiedTime() == after.lastModifiedTime()) { "dependency cache changed during accounting" }
@@ -324,15 +326,17 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 }
             }
             val attrs = attributes(path)
-            candidates += Candidate(path, lock, usage?.bytes ?: unknown, attrs.lastModifiedTime().toMillis(), attrs.fileKey()?.toString(), usage)
+            candidates += Candidate(path, lock, usage?.bytes ?: measuredBytes ?: 0, attrs.lastModifiedTime().toMillis(),
+                attrs.fileKey()?.toString(), usage, accounted = usage != null || measuredBytes != null)
         }
         fun saturated(a: Long, b: Long) = if (a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
-        var bytes = candidates.fold(0L) { total, candidate -> saturated(total, candidate.bytes) }
+        val accounted = candidates.filter { it.accounted }
+        var bytes = accounted.fold(0L) { total, candidate -> saturated(total, candidate.bytes) }
         val garbage = snapshot.garbage.toMutableList()
-        // A live dirty home has no trustworthy size. Reconcile after its writer releases the pin;
-        // guessing a full budget here would evict every warm build during normal compilation.
+        // Unknown active homes cannot justify eviction of warm data within the known budget.
+        // Still reclaim proven excess among accounted entries; reconcile unknown growth after release.
         if (accountingIncomplete) maintenanceLock { Files.deleteIfExists(root.resolve("maintenance.timestamp")) }
-        for (candidate in if (accountingIncomplete) emptyList() else candidates.sortedBy { it.used }) {
+        for (candidate in accounted.sortedBy { it.used }) {
             checkMaintenanceActive()
             if (bytes <= maxBytes) break
             ProcessFilePin.tryLock(candidate.lock)?.use {
