@@ -51,3 +51,16 @@ source paths/digests and expected verdicts. It freezes those inputs, runs the pr
 and retains original record, source copy, effective control record and full `LabCheck`. A replay validates only those
 retained artifacts; it cannot validate an absent historical capture. Campaign manifests and narratives belong outside
 source; link the tracker/PR and lab receipts for a particular qualification.
+
+## Weighted Boolean points
+
+The independently owned OPB/WBO/WCNF route evaluates the original source, requires complete Boolean coordinates,
+and uses BigInteger objectives and violated soft weights, including WBO's strict top threshold. It supplies point
+and cost evidence only. No Klause parser, acceptance code or reference solver provides checking authority.
+
+Its child owns decompression and checking within a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and the
+existing Linux 4 GiB address-space envelope. Source/witness, policy/version, JAR/classpath identities, complete
+request/input artifacts and existing process receipts bind each check. Incomplete execution stays unchecked.
+The [weighted replay contract and source specifications](runs.md) define supported layouts, additional input limits
+and the distinction between SDK capture success and an actual checking verdict. `checker/weighted.json` owns that
+route; `lab/mps-check.json` owns exact MPS replay.
