@@ -7,10 +7,11 @@ import kotlin.test.*
 
 class CoordinatorWorkTest {
     @Test fun `completion wakeup can hand off another operation before its callback returns`() {
-        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val finishFirst = CountDownLatch(1)
         CoordinatorWork<String, Int>("handoff-test", 1, completed = { entered.countDown(); release.await() }).use { work ->
             try {
-                work.poll("first") { 1 }
+                work.poll("first") { finishFirst.await(); 1 }
+                finishFirst.countDown()
                 assertTrue(entered.await(2, SECONDS))
                 assertEquals(1, work.poll("first") { error("duplicate") })
                 assertNull(work.poll("second") { 2 })

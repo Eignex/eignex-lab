@@ -6,12 +6,14 @@ import kotlin.test.*
 class WarmBuildSourceTest {
     @Test fun `verified warm build bypasses missing source cache and download while corrupt output reacquires pinned source`() {
         val root = Files.createTempDirectory("lazy-build-inputs")
+        val caches = mutableListOf<WorkerBuildCache>()
+        fun cache() = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(root.resolve("unused.sock"))).also { caches += it }
         try {
             val source = Files.createDirectory(root.resolve("source"))
             Files.writeString(source.resolve("code"), "trusted")
             val bundle = WorkerBundle("a".repeat(64), listOf(InputFile("code", ExecutionStore.digest("trusted"), 7)),
                 "Eignex/example", "b".repeat(40), "linux", "amd64", "fixture", build = WorkerBuild())
-            val cache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(root.resolve("unused.sock")))
+            val cache = cache()
             val budget = ResourceBudget(1000, 512)
             var acquisitions = 0; var pinned = false
             fun acquire(consume: (java.nio.file.Path) -> Unit) {
@@ -29,8 +31,7 @@ class WarmBuildSourceTest {
             assertEquals(0L, coldTrace.snapshot().caches.getValue("build").waitingMs)
             Files.delete(source.resolve("code")); Files.delete(source)
             val trace = PreparationTrace()
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(root.resolve("unused.sock")))
-                .withPreparedSource(bundle, budget, emptyMap(), { null }, { 10000 }, trace,
+            cache().withPreparedSource(bundle, budget, emptyMap(), { null }, { 10000 }, trace,
                     source = { error("warm build must never acquire or download absent source inputs") }) {
                     assertEquals(cold, it); assertEquals("trusted", Files.readString(it.resolve("code")))
                 }
@@ -47,6 +48,9 @@ class WarmBuildSourceTest {
                 assertEquals("trusted", Files.readString(it.resolve("code")))
             }
             assertEquals(2, acquisitions)
-        } finally { deleteTree(root) }
+        } finally {
+            caches.forEach { assertTrue(it.awaitMaintenanceIdle(), "cache cleanup did not finish before fixture removal") }
+            deleteTree(root)
+        }
     }
 }
