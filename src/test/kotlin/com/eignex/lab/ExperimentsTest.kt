@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import kotlinx.serialization.json.Json
+import com.eignex.lab.bench.BenchRequest
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.assertFalse
 import kotlin.test.Test
@@ -14,6 +15,21 @@ import kotlin.test.assertNull
 import java.nio.file.Files
 
 class ExperimentsTest {
+    @Test
+    fun `controlled series distinguish aggregate execution capacity`() {
+        val sweep = ExperimentSpec("sweep", bench = BenchSpec("bench.json",
+            BenchRequest(parameters = mapOf("comparison-series" to "sdk-linux-v1"))), parallel = 1)
+
+        assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(parallel = 2)))
+    }
+
+    @Test
+    fun `historical bench capacity changes preserve their existing fingerprint`() {
+        val sweep = ExperimentSpec("sweep", bench = BenchSpec("bench.json"), parallel = 1)
+
+        assertEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(parallel = 2)))
+    }
+
     @Test
     fun `a local profile can opt into a whole run deadline`() {
         val spec = Json.decodeFromString<ExperimentSpec>(

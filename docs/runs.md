@@ -228,5 +228,10 @@ retained baseline in two successive runs; the bounded confirmation compares that
 baseline with the latest run, even when the worse objective plateaus. At most40
 sources are selected; other losses remain unconfirmed. Occasional fixed multi-seed
 baselines are repository-owned recipes, separate from per-commit trend lines.
+Requests with `comparison-series` retain explicit parallelism in their measurement
+fingerprint. Canonical CPU1 controls use `parallel=1`; preparation and solve grants
+are separate, and the actual iteration cgroup receipt controls physical accounting.
+Parallel CLI/JIT/harness processes share the aggregate group grant. Cgroup CPU
+counters can accumulate across iterations; sampled current memory is not a peak.
 Independent witness checks retain their policy and unsupported states. Native
 optimality/UNSAT flags remain distinct from independently checked source proofs.
