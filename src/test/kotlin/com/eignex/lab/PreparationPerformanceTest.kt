@@ -118,6 +118,8 @@ class PreparationPerformanceTest {
                     assertEquals(0, event.hashedFiles, "$cache unexpectedly rehashed file contents")
                     assertEquals(0L, event.hashedBytes, "$cache unexpectedly reread file contents")
                     assertEquals(0, event.misses, "$cache had an earlier miss hidden by a later hit")
+                    if (cache != "input") assertTrue(event.checkedFiles >= 4096,
+                        "$cache must report verification of the representative tree, rather than default zero telemetry")
                 }
                 assertEquals("hit", warm.caches["upload"]?.outcome, "prepared ZIP must already be on coordinator")
                 assertEquals(1, downloads.get(), "warm preparation downloaded inputs")
