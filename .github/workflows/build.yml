@@ -47,6 +47,12 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
+      - name: Preserve exact MPS checker test receipts
+        if: always()
+        run: |
+          mkdir -p build/checker-test-results
+          cp build/test-results/test/TEST-com.eignex.lab.checker.ExactMpsCheckerTest.xml build/checker-test-results/
+          cp build/test-results/test/TEST-com.eignex.lab.checker.MpsReplayTest.xml build/checker-test-results/
       - name: Verify representative warm preparation work
         run: ./gradlew :verifyPreparationPerformance
         env:
@@ -88,6 +94,7 @@ jobs:
           name: test-reports
           path: |
             build/test-results/
+            build/checker-test-results/
             build/reports/tests/
             lab-bench/build/test-results/
             lab-bench/build/reports/tests/
