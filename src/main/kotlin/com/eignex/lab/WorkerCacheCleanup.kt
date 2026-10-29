@@ -38,7 +38,7 @@ internal class WorkerCacheCleanup(private val root: Path, executor: Executor? = 
                     val name = it.fileName.toString()
                     name.startsWith(".evict-") || name.startsWith(".build-trash-")
                 }.toList() }
-                for (path in garbage) deleteTree(path)
+                for (path in garbage) deleteCacheGarbage(path)
                 return
             }
             Thread.sleep(100)
@@ -79,3 +79,30 @@ internal object WorkerCacheIo {
         try { return action() } finally { api.set.invoke(0, 1, previous) }
     }
 }
+
+/** Delete [root] and everything under it without following symbolic links, which are removed as links. */
+internal fun deleteCacheGarbage(root: Path) {
+    fun active() {
+        if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("tree cleanup interrupted")
+    }
+    active()
+    Files.walkFileTree(root, object : java.nio.file.SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            active(); return java.nio.file.FileVisitResult.CONTINUE
+        }
+        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            active(); Files.deleteIfExists(file); return java.nio.file.FileVisitResult.CONTINUE
+        }
+        override fun visitFileFailed(file: Path, failure: java.io.IOException): java.nio.file.FileVisitResult {
+            active()
+            if (failure !is java.nio.file.NoSuchFileException) throw failure
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+        override fun postVisitDirectory(dir: Path, failure: java.io.IOException?): java.nio.file.FileVisitResult {
+            active()
+            if (failure != null && failure !is java.nio.file.NoSuchFileException) throw failure
+            Files.deleteIfExists(dir); return java.nio.file.FileVisitResult.CONTINUE
+        }
+    })
+}
+

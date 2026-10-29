@@ -432,28 +432,11 @@ private const val GROUP_POLL_MS = 100L
 
 /** Delete [root] and everything under it without following symbolic links, which are removed as links. */
 internal fun deleteTree(root: Path) {
-    fun active() {
-        if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("tree cleanup interrupted")
+    if (root.isSymbolicLink() || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+        Files.deleteIfExists(root)
+        return
     }
-    active()
-    Files.walkFileTree(root, object : java.nio.file.SimpleFileVisitor<Path>() {
-        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
-            active(); return java.nio.file.FileVisitResult.CONTINUE
-        }
-        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
-            active(); Files.deleteIfExists(file); return java.nio.file.FileVisitResult.CONTINUE
-        }
-        override fun visitFileFailed(file: Path, failure: java.io.IOException): java.nio.file.FileVisitResult {
-            active()
-            if (failure !is java.nio.file.NoSuchFileException) throw failure
-            return java.nio.file.FileVisitResult.CONTINUE
-        }
-        override fun postVisitDirectory(dir: Path, failure: java.io.IOException?): java.nio.file.FileVisitResult {
-            active()
-            if (failure != null && failure !is java.nio.file.NoSuchFileException) throw failure
-            Files.deleteIfExists(dir); return java.nio.file.FileVisitResult.CONTINUE
-        }
-    })
+    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
 }
 
 /** Run git with [args] in [dir], no shell between: its exit and its output. */

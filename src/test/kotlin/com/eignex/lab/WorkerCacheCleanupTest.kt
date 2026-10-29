@@ -85,7 +85,7 @@ class WorkerCacheCleanupTest {
                 repeat(128) { n -> Files.writeString(Files.createDirectories(root.resolve("d${n / 16}")).resolve("f$n"), "data") }
                 Files.createSymbolicLink(root.resolve("link"), outside)
                 val start = CountDownLatch(1)
-                val jobs = (0..1).map { pool.submit { start.await(); deleteTree(root) } }
+                val jobs = (0..1).map { pool.submit { start.await(); deleteCacheGarbage(root) } }
                 start.countDown(); jobs.forEach { it.get(5, TimeUnit.SECONDS) }
                 assertFalse(Files.exists(root)); assertEquals("keep", Files.readString(outside))
             }
@@ -96,7 +96,7 @@ class WorkerCacheCleanupTest {
         val file = Files.writeString(root.resolve("data"), "keep")
         try {
             Thread.currentThread().interrupt()
-            assertFailsWith<java.util.concurrent.CancellationException> { deleteTree(root) }
+            assertFailsWith<java.util.concurrent.CancellationException> { deleteCacheGarbage(root) }
             assertTrue(Files.exists(file))
         } finally { Thread.interrupted(); deleteTree(root) }
     }
