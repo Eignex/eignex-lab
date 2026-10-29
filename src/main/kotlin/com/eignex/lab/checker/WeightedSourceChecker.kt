@@ -78,7 +78,7 @@ object WeightedSourceCheckMain {
         val result = try {
             val file = File(args[0])
             val bytes = file.inputStream().let { input ->
-                (if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(input) else input).use { WeightedSourceChecker.bounded(it) }
+                (if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(input).setLongMax(26) else input).use { WeightedSourceChecker.bounded(it) }
             }
             if (sha256(bytes) != field("sourceSha256")) WeightedEvaluation(LabCheck.NOT_RUN, "original source snapshot differs from recorded SHA-256")
             else WeightedSourceEvaluation.check(requireNotNull(field("format")), bytes.decodeToString(throwOnInvalidSequence = true),

@@ -110,6 +110,7 @@ class WeightedSourceEvaluationTest {
     @Test fun `resource limits are unsupported rather than mathematical rejection`() {
         assertEquals(LabCheck.UNSUPPORTED, check("OPB", "min: ${"9".repeat(4097)} x1;", "v x1").state)
         assertEquals(LabCheck.UNSUPPORTED, check("WCNF", "p wcnf 2147483647 0 1\n", "v 1").state)
+        assertEquals(LabCheck.UNSUPPORTED, check("WBO", "soft: ; [1] 1 x1 >= 1;", "v -x1", "9".repeat(4097)).state)
         assertContains(check("OPB", "1 x1000001 >= 1;", "v x1").reason, "variable index")
     }
 }
