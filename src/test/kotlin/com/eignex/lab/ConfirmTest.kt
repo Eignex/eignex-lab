@@ -141,12 +141,12 @@ class ConfirmTest {
     }
 
     @Test
-    fun `infeasibility contradictions never earn proof credit and feasibility flips retain their old rule`() {
+    fun `infeasibility contradictions never earn proof credit and matched feasibility losses retain their meaning`() {
         val noSolution = optimization(null, proven = true).copy(record = Json.parseToJsonElement(
             """{"kind":"optimize","feasible":false,"proven":true}"""))
         val solution = optimization("7")
         assertTrue(Confirm.flips(listOf(noSolution), listOf(solution)).problems.isEmpty())
-        assertEquals(1, Confirm.flips(listOf(noSolution), listOf(case("opt", "x", false))).lost.size)
+        assertEquals(1, Confirm.flips(listOf(noSolution), listOf(case("opt", "x", false).copy(seed = 3))).lost.size)
     }
 
     @Test

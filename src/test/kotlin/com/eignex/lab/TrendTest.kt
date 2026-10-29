@@ -31,6 +31,7 @@ class TrendTest {
         store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(problems.size, 1, emptyList()), problems.map { "true" to 1L })
         solvedOf.forEachIndexed { i, solved ->
             store.caseRecord(id, i, if (solved) """{"kind":"satisfy","feasible":true,"timeToBestMs":5,"budgetMs":1000}""" else """{"kind":"satisfy","budgetMs":1000}""")
+            store.commandFinished(id, i, 0)
         }
         if (finish) store.finish(id, Status.DONE)
         return id
