@@ -732,11 +732,11 @@ class NomadBackendTest {
         val id = setup(2, spec, preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!
         store.execution.phase(claim.owner, "preparing")
-        store.putReferences(listOf(ProblemKey("", "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
+        store.references.put(listOf(ProblemKey("", "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
         val requested = listOf(listOf(benchProblem("p0"), benchProblem("p1")))
         val selected = backend().selectPreparation(claim.owner, requested)
         assertEquals(listOf("p1"), selected.single().map { it.problem })
-        store.retireReferenceRows("", "gecode")
+        store.references.retire("", "gecode")
         assertEquals(selected, backend(Store(file)).selectPreparation(claim.owner, requested))
         assertFailsWith<ExecutionFenced> { backend().selectPreparation(claim.owner, requested.map { it.reversed() }) }
         val bytes = "source".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
@@ -987,7 +987,7 @@ class NomadBackendTest {
             spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "scip")) to "test")) {
             assertFailsWith<IllegalArgumentException>(name) { setup(1, candidate, name) }
         }
-        store.createSchedule("schedule", "main", spec, 3600)
+        store.schedules.create("schedule", "main", spec, 3600)
         setup(1, spec, "schedule@sha")
     }
 

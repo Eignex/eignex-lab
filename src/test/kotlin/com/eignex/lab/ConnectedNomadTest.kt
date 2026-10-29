@@ -109,9 +109,9 @@ class ConnectedNomadTest {
             assertTrue(store.execution.sessions(job).filter { it.executionClass == ExecutionClass.SOLVE }.none {
                 store.execution.submission(it.id).contains("node.unique.id")
             }, "workers share the node within their CPU and memory requests")
-            assertTrue(store.caseRecordText(job, 0)!!.contains("preparedCorpus"))
+            assertTrue(store.plans.caseRecordText(job, 0)!!.contains("preparedCorpus"))
             assertEquals("prepared-model", Files.readString(root.resolve("jobs/$job/nomad/prepared-corpus/model.mps")).trim())
-            assertTrue(store.casePlan(job).all { it.problem.model == "lab-corpus/model.mps" })
+            assertTrue(store.plans.casePlan(job).all { it.problem.model == "lab-corpus/model.mps" })
         } finally {
             store.requestCancel(job)
             for (session in store.execution.sessions(job)) client.stop(session.nomadJobId)
@@ -203,7 +203,7 @@ class ConnectedNomadTest {
             assertTrue(store.execution.sessions(job).size >= 2)
             assertEquals(2, store.job(job)!!.done)
             assertEquals(1, store.execution.accepted(job).size)
-            assertEquals(1, store.cases(job).map { it.host }.distinct().size)
+            assertEquals(1, store.plans.cases(job).map { it.host }.distinct().size)
             assertTrue(Files.readString(root.resolve("jobs/$job/0.out")).contains("portable-worker-output"))
             assertTrue(Files.readString(root.resolve("jobs/$job/cases/0/out/record.json")).contains("fixture"))
             assertTrue(Files.list(root.resolve("jobs/$job/nomad")).use { files -> files.anyMatch { it.fileName.toString().endsWith("-2-resources.json") } }, "replacement committed generation 2")

@@ -41,11 +41,15 @@ data class NomadQueueSettings(
             "workers sharing prepared binaries must use the same pinned image for each platform"
         }
     }
-    fun matching(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
+    fun matching(spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
         NodeTags.matches(spec.nodeTags, target.capabilities) &&
-            (target.os == "mac" || Placement.localOnlyReason(spec, name, cloudSchedule) == null &&
+            (target.os == "mac" || Placement.localOnlyReason(spec, origin, cloudSchedule) == null &&
                 target.market == NodeTags.market(spec.nodeTags))
     }
+
+    /** [matching] for a job known only by its [name] ([JobOrigin.of]). */
+    fun matching(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): List<NomadQueueTarget> =
+        matching(spec, JobOrigin.of(name), cloudSchedule)
     fun solveOptions(options: String): String {
         val heap = Regex("(?:^|\\s)-Xmx([1-9][0-9]*)([kKmMgG]?)(?=\\s|$)").findAll(options).lastOrNull()
         if (heap == null) return "$options -Xmx${caseMemoryMiB - 256}m".trim()

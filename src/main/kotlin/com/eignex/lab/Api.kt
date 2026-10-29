@@ -85,7 +85,7 @@ internal class TrendView(
 
 internal fun trendView(store: Store, cache: TrendCache, requested: String?, allRequested: Boolean): TrendView {
     // A schedule of reference runs regenerates the reference; its trend says nothing about the candidate solver.
-    val schedules = store.schedules()
+    val schedules = store.schedules.all()
         .filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
     val name = requested?.takeIf { it.isNotBlank() } ?: schedules.firstOrNull()?.name
     // By default only the runs of the schedule's current experiment, and only those are read: a run of an
@@ -183,15 +183,15 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
             val active = store.active(withCommands = false)
             // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
-            val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
+            val page = indexPage(config, host, active, store.schedules.all(), history, PAGE_SIZE, before, name,
                 store.queue(), estimates::lookup, emptyMap(),
                 store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
                 jobNodes(config, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }))
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
-            val holds = store.holds()
-            val database = withContext(Dispatchers.IO) { runCatching { store.database() }.getOrNull() }
+            val holds = store.holds.active()
+            val database = withContext(Dispatchers.IO) { runCatching { store.maintenance.database() }.getOrNull() }
             val volumes = withContext(Dispatchers.IO) { Volumes.report(config) }
             val held = withContext(Dispatchers.IO) { runCatching { Volumes.hold(config) }.getOrNull() }
             if (call.wantsHtml()) {
@@ -240,7 +240,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             Experiments.requirePlainName(submitted.name)
             val given = if (NodeTags.matches(submitted.nodeTags, config.localNodeTags))
                 Experiments.capToLocal(submitted, config.cores, config.maxParallel) else submitted
-            val spec = given.copy(host = Placement.host(given, given.name, config))
+            val spec = given.copy(host = Placement.host(given, JobOrigin.Submitted(given.name), config))
             requireDescription(spec)
             requireHost(spec, config)
             Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config))
@@ -285,11 +285,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             } else emptyList()).plus(spec.capped.map { "capped: $it" }).ifEmpty { null }
             call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host), spec.host.word))
         }
-        get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
+        get("/experiments/{id}/arms") { call.respond(store.plans.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
             val view = trendView(store, trendCache, call.parameters["name"], call.parameters["all"] != null)
             if (call.wantsHtml()) {
-                val repository = store.schedules().firstOrNull { it.name == view.name }?.experiment?.repository ?: Repositories.DEFAULT
+                val repository = store.schedules.all().firstOrNull { it.name == view.name }?.experiment?.repository ?: Repositories.DEFAULT
                 call.respondText(trendPage(view.name, view.shown, Repositories.url(repository), view.schedules, view.earlier, view.all, view.computing),
                     ContentType.Text.Html)
             } else {
@@ -309,7 +309,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 collection = param("collection"),
                 verdict = param("verdict")?.let { v -> ReferenceVerdict.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } },
             )
-            val (found, total) = if (filter.isEmpty) emptyList<Pair<ProblemKey, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
+            val (found, total) = if (filter.isEmpty) emptyList<Pair<ProblemKey, Reference>>() to 0 else store.references.search(filter, SEARCH_LIMIT)
             if (call.wantsHtml()) {
                 val board = referenceCache.scoreboard(call.parameters)
                 val page = referencesPage(referenceCache.coverage(), filter, found, total, referenceCache.conflicts(), board)
@@ -324,7 +324,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val spec = call.receive<RetireSpec>()
             require(spec.collection.isNotBlank() && spec.solver.isNotBlank()) { "collection and solver are required" }
             require(spec.budgetMs == null || spec.budgetMs > 0) { "budgetMs must be positive" }
-            val retired = store.retireReferenceRows(spec.collection, spec.solver, spec.budgetMs)
+            val retired = store.references.retire(spec.collection, spec.solver, spec.budgetMs)
             println("api: retired $retired reference rows of ${spec.solver} on ${spec.collection}" + (spec.budgetMs?.let { " at $it ms" } ?: ""))
             call.respond(RetireResult(retired))
         }
@@ -336,29 +336,29 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val limit = if (call.parameters["all"] != null) null else PROBLEM_RUNS
             val runs = store.problemRuns(collection, problem, limit)
             val total = if (limit != null && runs.size >= limit) store.problemRunCount(collection, problem) else runs.size
-            val report = ProblemReport(collection, problem, store.referenceRows(collection, problem), runs, total)
+            val report = ProblemReport(collection, problem, store.references.rows(collection, problem), runs, total)
             if (call.wantsHtml()) call.respondText(problemPage(report, config.repoUrl), ContentType.Text.Html) else call.respond(report)
         }
         get("/experiments/{id}/reference") {
             val id = call.parameters["id"]!!.toLong()
-            val cases = store.cases(id)
-            val references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
-            call.respond(References.compare(store.arms(id).map { it.arm.label }, cases, references))
+            val cases = store.plans.cases(id)
+            val references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
+            call.respond(References.compare(store.plans.arms(id).map { it.arm.label }, cases, references))
         }
         get("/compare") {
             val ids = requireNotNull(call.parameters["jobs"]) { "jobs=<id>,<id>… is required" }.split(',').map { it.trim().toLong() }
             require(ids.size in 2..MAX_COMPARED) { "compare 2 to $MAX_COMPARED experiments" }
             val jobs = ids.map { id -> requireNotNull(store.job(id)) { "no job $id" } }
             // Arms are named by their job, so the same arm of two runs stays two columns.
-            val arms = jobs.flatMap { job -> store.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
-            val cases = jobs.flatMap { job -> store.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
-            val references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
+            val arms = jobs.flatMap { job -> store.plans.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
+            val cases = jobs.flatMap { job -> store.plans.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
+            val references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
             call.respondText(comparePage(config, jobs, arms, cases, references), ContentType.Text.Html)
         }
         get("/experiments/{id}/metrics.csv") {
-            call.respondText(BenchRuns.metricsCsv(store.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
+            call.respondText(BenchRuns.metricsCsv(store.plans.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
         }
-        get("/experiments/{id}/cases") { call.respond(store.cases(call.parameters["id"]!!.toLong())) }
+        get("/experiments/{id}/cases") { call.respond(store.plans.cases(call.parameters["id"]!!.toLong())) }
         // Every case whole, as JSON Lines: its record with its final witness, its build provenance and the lab's verdict
         // as `labCheck`, its producer record as the database keeps it, cut to its time to best ([StoredRecords]). It is
         // read and written a page of cases at a time, so a job of thousands of cases with large witnesses streams out
@@ -368,7 +368,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             call.respondTextWriter(ContentType("application", "x-ndjson")) {
                 var from = 0
                 while (true) {
-                    val page = withContext(Dispatchers.IO) { store.cases(id, from, CASES_PAGE) }
+                    val page = withContext(Dispatchers.IO) { store.plans.cases(id, from, CASES_PAGE) }
                     for (case in page) write(DefaultJson.encodeToString(CaseResult.serializer(), case) + "\n")
                     flush()
                     if (page.size < CASES_PAGE) break
@@ -378,31 +378,31 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         }
         get("/experiments/{id}/stats") {
             val id = call.parameters["id"]!!.toLong()
-            call.respond(Stats.of(store.arms(id).map { it.arm.label }, store.cases(id)))
+            call.respond(Stats.of(store.plans.arms(id).map { it.arm.label }, store.plans.cases(id)))
         }
         get("/experiments/{id}/cases.csv") {
-            call.respondText(Results.casesCsv(store.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
+            call.respondText(Results.casesCsv(store.plans.cases(call.parameters["id"]!!.toLong())), ContentType.Text.CSV)
         }
         get("/experiments/{id}/bench.csv") {
             val arm = requireNotNull(call.parameters["arm"]) { "arm is required" }
             val seed = call.parameters["seed"]?.toLong()
-            call.respondText(Results.benchCsv(store.cases(call.parameters["id"]!!.toLong()), arm, seed), ContentType.Text.CSV)
+            call.respondText(Results.benchCsv(store.plans.cases(call.parameters["id"]!!.toLong()), arm, seed), ContentType.Text.CSV)
         }
         get("/jobs/{id}") {
             val job = store.job(call.parameters["id"]!!.toLong())
             when {
                 job == null -> call.respond(HttpStatusCode.NotFound, "no such job")
                 call.wantsHtml() -> {
-                    val cases = store.cases(job.id)
+                    val cases = store.plans.cases(job.id)
                     val page = jobPage(
                         config, job, "failed" in call.parameters,
-                        arms = store.arms(job.id),
+                        arms = store.plans.arms(job.id),
                         cases = cases,
                         preparation = if (job.backend == Backend.NOMAD) store.execution.reports(job.id).filter { it.session.executionClass == ExecutionClass.PREPARE }.takeLast(1) else emptyList(),
-                        references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases)),
+                        references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases)),
                         showCommands = "commands" in call.parameters || "failed" in call.parameters,
-                        previous = if ('@' in job.name) previousRun(store, job) else null,
-                        holds = store.holds().filter { it.job == job.id },
+                        previous = if (job.origin is JobOrigin.Scheduled) previousRun(store, job) else null,
+                        holds = store.holds.active().filter { it.job == job.id },
                         hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
                         nodes = if (job.backend == Backend.NOMAD && job.status.isActive) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
                     )
@@ -467,7 +467,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // It may go anywhere again, wherever it was taken last time: a planned one's commands are rendered for the
             // host that runs each case ([Runner.render]).
             store.job(id)?.takeIf { retried }?.let { job ->
-                if (!job.planned) job.experiment.let { store.place(id, Placement.host(it, job.name, config, store.schedules())) }
+                if (!job.planned) job.experiment.let { store.place(id, Placement.host(it, job.origin, config, store.schedules.all())) }
             }
             call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled Nomad job can be retried; resubmit historical experiments")
         }
@@ -494,7 +494,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val job = store.job(id)
             val original = requireNotNull(job?.experiment) { "no such experiment" }
             val experiment = original.copy(nodeTags = selector.takeIf { NodeTags.labels(it).isNotEmpty() })
-            val host = Placement.host(experiment, job.name, config, store.schedules())
+            val host = Placement.host(experiment, job.origin, config, store.schedules.all())
             requireHost(experiment.copy(host = host), config)
             val moved = store.place(id, host, experiment)
             call.respond(
@@ -536,11 +536,11 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             validateScheduled(spec.experiment, config)
             requireRef(spec.ref, Repositories.source(config, spec.experiment.repository), trust(spec.experiment.repository))
-            val id = store.createSchedule(spec.name, spec.ref, spec.experiment, spec.intervalSec)
+            val id = store.schedules.create(spec.name, spec.ref, spec.experiment, spec.intervalSec)
             call.respond(HttpStatusCode.Created, Created(id))
         }
         get("/schedules") {
-            call.respond(JsonArray(store.schedules().map { schedule ->
+            call.respond(JsonArray(store.schedules.all().map { schedule ->
                 JsonObject(Json.encodeToJsonElement(Schedule.serializer(), schedule).jsonObject +
                     ("experiment" to scheduleExperiment(schedule.experiment)) +
                     schedule.blockedReason()?.let { mapOf("blockedReason" to JsonPrimitive(it)) }.orEmpty())
@@ -552,37 +552,37 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             require(spec.nextCheckInSec == null || spec.nextCheckInSec >= 0) { "nextCheckInSec must not be negative" }
             spec.experiment?.let { validateScheduled(it, config) }
             val nextCheckAt = spec.nextCheckInSec?.let { System.currentTimeMillis() + it * 1000 }
-            val updated = store.updateSchedule(call.parameters["id"]!!.toLong(), spec.experiment, spec.intervalSec, nextCheckAt)
+            val updated = store.schedules.update(call.parameters["id"]!!.toLong(), spec.experiment, spec.intervalSec, nextCheckAt)
             call.respond(if (updated) HttpStatusCode.OK else HttpStatusCode.NotFound, if (updated) "updated" else "no such schedule")
         }
         // The runner's schedule thread finds it due within seconds; a push hook or relay can call this instead of waiting.
         post("/schedules/{id}/check") {
-            val found = store.checkNow(call.parameters["id"]!!.toLong())
+            val found = store.schedules.checkNow(call.parameters["id"]!!.toLong())
             call.respond(if (found) HttpStatusCode.Accepted else HttpStatusCode.NotFound, if (found) "checking" else "no such schedule")
         }
         // A run now, even at a commit the schedule already ran: what a rerun of an unmoved branch needs.
         post("/schedules/{id}/launch") {
-            val found = store.launchNow(call.parameters["id"]!!.toLong())
+            val found = store.schedules.launchNow(call.parameters["id"]!!.toLong())
             call.respond(if (found) HttpStatusCode.Accepted else HttpStatusCode.NotFound, if (found) "launching" else "no such schedule")
         }
         post("/schedules/{id}/delete") {
-            val deleted = store.deleteSchedule(call.parameters["id"]!!.toLong())
+            val deleted = store.schedules.delete(call.parameters["id"]!!.toLong())
             call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, if (deleted) "deleted" else "no such schedule")
         }
         // A download's hold on a job's files: the trim leaves the job alone until it is released or lapses ([Hold]).
         // `?ttlSec=` asks for less than the 2 h a hold lasts, never more; a long download renews it instead.
         post("/jobs/{id}/hold") {
             val id = call.jobId(store) ?: return@post
-            call.respond(HttpStatusCode.Created, store.hold(id, holdMs(call.parameters["ttlSec"])))
+            call.respond(HttpStatusCode.Created, store.holds.take(id, holdMs(call.parameters["ttlSec"])))
         }
         post("/jobs/{id}/hold/{lease}") {
             val id = call.jobId(store) ?: return@post
-            val hold = store.renewHold(id, call.parameters["lease"]!!, holdMs(call.parameters["ttlSec"]))
+            val hold = store.holds.renew(id, call.parameters["lease"]!!, holdMs(call.parameters["ttlSec"]))
             if (hold == null) call.respond(HttpStatusCode.NotFound, "no such hold, or it lapsed") else call.respond(hold)
         }
         delete("/jobs/{id}/hold/{lease}") {
             val id = call.jobId(store) ?: return@delete
-            val released = store.releaseHold(id, call.parameters["lease"]!!)
+            val released = store.holds.release(id, call.parameters["lease"]!!)
             call.respond(if (released) HttpStatusCode.OK else HttpStatusCode.NotFound, if (released) "released" else "no such hold")
         }
         // A job's files live on the job files' volume ([Config.jobsDir]): while it is not mounted, or does not answer, they
@@ -699,7 +699,7 @@ private fun nodeCoreLimit(spec: ExperimentSpec, config: Config): Int =
 private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     requireDescription(experiment)
     val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
-    val pinned = !Placement.cloudOptIn(experiment) || Placement.localOnly(experiment, experiment.name)
+    val pinned = !Placement.cloudOptIn(experiment) || Placement.localOnly(experiment, JobOrigin.Submitted(experiment.name))
     require(if (pinned) local else Placement.cloudCoreLimit(experiment, config, cloudSchedule = true) >= Experiments.arms(experiment).maxOf { it.cores }) {
         "the schedule's tags match no allowed worker; omit tags for auto placement or select configured capabilities"
     }
@@ -709,10 +709,10 @@ private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
     }
 }
 
-/** The latest finished experiment queued by the same schedule before [job], whose name is `<schedule>@<sha>`. */
+/** The latest finished experiment queued by the same schedule before [job]. */
 private fun previousRun(store: Store, job: Job): Long? =
-    store.jobs(limit = PAGE_SIZE, before = job.id, name = job.name.substringBefore('@'), withCommands = false)
-        .firstOrNull { it.status == Status.DONE && '@' in it.name }?.id
+    store.jobs(limit = PAGE_SIZE, before = job.id, name = job.origin.series, withCommands = false)
+        .firstOrNull { it.status == Status.DONE && it.origin is JobOrigin.Scheduled }?.id
 private const val LS_REMOTE_SEC = 15L
 private val TEXT_FILES = setOf("", "out", "err", "log", "txt", "sha", "pid")
 
@@ -821,7 +821,7 @@ internal class ReferenceCache(private val store: Store) {
         Thread(task, "reference-refresh").apply { isDaemon = true }
     }
 
-    private fun version() = "${store.referencesStamp()}/${store.lastFinished()}"
+    private fun version() = "${store.references.stamp()}/${store.lastFinished()}"
 
     private fun later(key: String, work: () -> Unit) {
         if (!refreshing.add(key)) return
@@ -836,7 +836,7 @@ internal class ReferenceCache(private val store: Store) {
         }
     }
 
-    private fun computeTables(version: String) = Kept(version, Tables(store.referenceCoverage(), store.referenceConflicts())).also { tables = it }
+    private fun computeTables(version: String) = Kept(version, Tables(store.references.coverage(), store.references.conflicts())).also { tables = it }
 
     private fun tables(): Tables {
         val version = version()
@@ -869,7 +869,7 @@ internal class ReferenceCache(private val store: Store) {
     private fun inputs(job: Job, label: String?): ScoreInputs {
         if (job.status.isActive) return scoreInputs(store, job.id, label)
         val key = "${job.id}/$label/${job.finishedAt}"
-        val stamp = store.referencesStamp().toString()
+        val stamp = store.references.stamp().toString()
         synchronized(inputs) { inputs[key]?.takeIf { it.version == stamp }?.let { return it.value } }
         return scoreInputs(store, job.id, label).also { synchronized(inputs) { inputs[key] = Kept(stamp, it) } }
     }
@@ -921,9 +921,9 @@ internal class ScoreInputs(
 )
 
 internal fun scoreInputs(store: Store, job: Long, label: String?): ScoreInputs {
-    val cases = store.scoringCases(job).filter { it.arm == label }
+    val cases = store.plans.scoringCases(job).filter { it.arm == label }
     val keys = cases.map { it.problem.referenceKey }.distinct()
-    return ScoreInputs(cases, References.matching(store.currentReferenceRows(keys), cases), store.features(keys))
+    return ScoreInputs(cases, References.matching(store.references.current(keys), cases), store.references.features(keys))
 }
 
 internal fun scoreboardView(
@@ -931,7 +931,7 @@ internal fun scoreboardView(
     params: io.ktor.http.Parameters,
     inputs: (Job, String?) -> ScoreInputs = { job, label -> scoreInputs(store, job.id, label) },
 ): ScoreboardView {
-    val schedules = store.schedules().filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
+    val schedules = store.schedules.all().filter { schedule -> Experiments.arms(schedule.experiment).none { it.values["backend"] == REFERENCE_BACKEND } }
     val runs = schedules.mapNotNull { schedule ->
         store.jobs(limit = 20, name = schedule.name, withCommands = false).firstOrNull { it.name.startsWith("${schedule.name}@") && it.status == Status.DONE }
     }
@@ -941,7 +941,7 @@ internal fun scoreboardView(
     val filters = Dimension.entries.mapNotNull { d -> params[d.name.lowercase()]?.takeIf { it.isNotBlank() }?.let { d to it } }.toMap()
     val scoring = if (params["scoring"].equals("incomplete", ignoreCase = true)) Scoring.INCOMPLETE else Scoring.COMPLETE
     if (job == null) return ScoreboardView(runs, null, emptyList(), null, by, filters, scoring, emptyMap(), null, null, emptyList())
-    val planned = store.arms(job.id)
+    val planned = store.plans.arms(job.id)
     val label = params["arm"]?.takeIf { a -> planned.any { it.arm.label == a } } ?: planned.firstOrNull()?.arm?.label
     val arm = planned.firstOrNull { it.arm.label == label }?.arm
         ?: return ScoreboardView(runs, job, emptyList(), null, by, filters, scoring, emptyMap(), null, null, emptyList())

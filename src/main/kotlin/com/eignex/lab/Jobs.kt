@@ -79,6 +79,8 @@ data class Job(
     /** Whether the local machine works on it now: it took the job, or joined it while cloud nodes ran it. */
     val local: Boolean = false,
     val backend: Backend = Backend.NOMAD,
+    /** Why the job exists ([JobOrigin]); a job built without one, in a test, reads it from its [name]. */
+    val origin: JobOrigin = JobOrigin.of(name),
 ) {
     init { require(counts == null || commands.isEmpty()) { "a job carries its commands or their counts, not both" } }
 

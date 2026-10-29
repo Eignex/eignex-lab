@@ -98,13 +98,13 @@ class PlacementTest {
     fun `a schedule that opts in to the cloud places its runs local or cloud, and its confirmations local`() {
         val config = config()
         val store = Store(config.database)
-        store.createSchedule("ref", "main", spec.copy(name = "ref", host = Experiments.AUTO_HOST), 3600)
-        store.createSchedule("aliased", "main", spec.copy(name = "aliased", host = HostPlacement.CLOUD), 3600)
-        store.createSchedule("status-sweep", "main", spec.copy(name = "status-sweep"), 3600)
-        store.createSchedule("pinned", "main", spec.copy(name = "pinned", host = HostPlacement.LOCAL), 3600)
-        store.createSchedule("refs", "main", spec.copy(name = "refs", host = Experiments.AUTO_HOST,
+        store.schedules.create("ref", "main", spec.copy(name = "ref", host = Experiments.AUTO_HOST), 3600)
+        store.schedules.create("aliased", "main", spec.copy(name = "aliased", host = HostPlacement.CLOUD), 3600)
+        store.schedules.create("status-sweep", "main", spec.copy(name = "status-sweep"), 3600)
+        store.schedules.create("pinned", "main", spec.copy(name = "pinned", host = HostPlacement.LOCAL), 3600)
+        store.schedules.create("refs", "main", spec.copy(name = "refs", host = Experiments.AUTO_HOST,
             base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), 3600)
-        val schedules = store.schedules()
+        val schedules = store.schedules.all()
         val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
 
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "ref@abc123", config, schedules))
@@ -137,12 +137,12 @@ class PlacementTest {
     fun `a reschedule that changes only the host is saved without queueing an extra run`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val local = committed("klause-reference.json").copy(host = Experiments.LAB_HOST)
-        val id = store.createSchedule("klause-reference", "main", local, 86400)
-        store.scheduleRan(id, "abc", 1)
+        val id = store.schedules.create("klause-reference", "main", local, 86400)
+        store.schedules.ran(id, "abc", 1)
 
-        store.updateSchedule(id, committed("klause-reference.json"), intervalSec = null)
+        store.schedules.update(id, committed("klause-reference.json"), intervalSec = null)
 
-        val schedule = store.schedules().single()
+        val schedule = store.schedules.all().single()
         assertEquals("abc", schedule.lastSha)
         assertTrue(Placement.cloudOptIn(schedule.experiment))
     }

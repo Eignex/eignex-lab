@@ -168,9 +168,9 @@ class EstimateHistory(
     fun lookup(job: Job): CaseHistory? {
         val spec = job.experiment.takeUnless { it.isScript } ?: return null
         runCatching { refresh() }.onFailure { println("estimates: history not read: ${it.message}") }
-        val series = job.name.substringBefore('@')
+        val series = job.origin.series
         key(spec)?.let { byKey[it] }?.let { matches -> return (matches.firstOrNull { it.series == series } ?: matches.first()).history }
-        if ('@' !in job.name) return null
+        if (job.origin !is JobOrigin.Scheduled) return null
         return runCatching { seriesRun(series) }.getOrNull()
     }
 
@@ -192,7 +192,7 @@ class EstimateHistory(
         val ids = store.doneExperimentIds(limit)
         val fresh = ids.filter { it !in runs }
         for (job in store.jobsByIds(fresh)) {
-            runs[job.id] = Run(job.experiment.let(::key), job.name.substringBefore('@'), Estimates.history(job, cores))
+            runs[job.id] = Run(job.experiment.let(::key), job.origin.series, Estimates.history(job, cores))
         }
         runs.keys.retainAll(ids.toSet())
         byKey = ids.mapNotNull { id -> runs[id]?.takeIf { it.key != null && it.history != null } }.groupBy { it.key!! }

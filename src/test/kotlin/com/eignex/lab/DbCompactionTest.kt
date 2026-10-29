@@ -86,9 +86,9 @@ class DbCompactionTest {
 
     /** Each case's record as the bench wrote it: case i is arm i % arms; every third has a withdrawn claim. */
     private fun records(store: Store, id: Long, kib: Int = 4): Map<Int, String> {
-        val arms = store.arms(id).size
-        return store.casePlan(id).associate { case ->
-            val arm = store.arms(id).indexOfFirst { it.arm.label == case.arm }
+        val arms = store.plans.arms(id).size
+        return store.plans.casePlan(id).associate { case ->
+            val arm = store.plans.arms(id).indexOfFirst { it.arm.label == case.arm }
             val withdrawn = case.index % 3 == 0
             case.index to record(case.index, arm, withdrawn, if (case.index % 2 == 0) producer(if (withdrawn) 7000L + case.index else 5L, kib) else null, kib)
                 .also { check(arms > 0) }
@@ -135,19 +135,19 @@ class DbCompactionTest {
         val id = experiment(store, problems = 6, arms = 2)
         val records = records(store, id)
         for ((index, record) in records) store.caseRecord(id, index, record)
-        store.caseCheck(id, 1, check)
+        store.plans.caseCheck(id, 1, check)
 
         val stored = storedText(config.database, id, 1)
         assertContains(stored, "\"buildProvenanceRef\":\"")
         assertFalse("\"buildProvenance\"" in stored)
-        assertEquals(2, store.database().provenances)
-        for (case in store.cases(id)) {
+        assertEquals(2, store.maintenance.database().provenances)
+        for (case in store.plans.cases(id)) {
             // Byte for byte as the bench wrote it, once serialized as every reader serializes it.
             val want = withLabCheck(expected(records.getValue(case.index)), if (case.index == 1) check else null)
             assertEquals(json(want), json(case.record), "case ${case.index}")
         }
-        assertEquals(json(Json.parseToJsonElement(records.getValue(1))), json(Json.parseToJsonElement(store.caseRecordText(id, 1)!!)))
-        assertEquals(store.cases(id), store.cases(id, 0, 100))
+        assertEquals(json(Json.parseToJsonElement(records.getValue(1))), json(Json.parseToJsonElement(store.plans.caseRecordText(id, 1)!!)))
+        assertEquals(store.plans.cases(id), store.plans.cases(id, 0, 100))
         testApplication {
             application { api(config, store, host) }
             val array = Json.parseToJsonElement(client.get("/experiments/$id/cases").bodyAsText()).jsonArray
@@ -167,12 +167,12 @@ class DbCompactionTest {
         val id = experiment(store, problems = 1, arms = 1)
         store.caseRecord(id, 0, record(0, 0, withdrawn = true, producer = producer(7000)))
 
-        val stats = store.cases(id).single().record!!.jsonObject.getValue("stats").jsonObject
+        val stats = store.plans.cases(id).single().record!!.jsonObject.getValue("stats").jsonObject
         assertEquals("{\"timeToBestMs\":7000}", stats.getValue("sourceValidationProducerRecordJson").jsonPrimitive.content)
         assertEquals("r".repeat(64), stats.getValue("sourceValidationRecordSha256").jsonPrimitive.content)
-        assertEquals(7000L, Outcome.of(store.cases(id).single().record)!!.timeToBestMs)
-        assertEquals(7000L, Outcome.of(store.scoringCases(id).single().record)!!.timeToBestMs)
-        assertTrue(Outcome.withdrawn(store.cases(id).single().record!!.jsonObject))
+        assertEquals(7000L, Outcome.of(store.plans.cases(id).single().record)!!.timeToBestMs)
+        assertEquals(7000L, Outcome.of(store.plans.scoringCases(id).single().record)!!.timeToBestMs)
+        assertTrue(Outcome.withdrawn(store.plans.cases(id).single().record!!.jsonObject))
     }
 
     @Test
@@ -182,12 +182,12 @@ class DbCompactionTest {
         val id = experiment(store, problems = 10, arms = 3)
         val records = records(store, id)
         storeRaw(file, id, records)
-        store.caseCheck(id, 4, check)
-        val scoring = store.scoringCases(id).map { it.copy(record = it.record) }
-        val outcomes = store.cases(id).map { Outcome.of(it.record) }
+        store.plans.caseCheck(id, 4, check)
+        val scoring = store.plans.scoringCases(id).map { it.copy(record = it.record) }
+        val outcomes = store.plans.cases(id).map { Outcome.of(it.record) }
 
-        store.startCompaction()
-        val partway = store.compactBatch(7)
+        store.maintenance.startCompaction()
+        val partway = store.maintenance.compactBatch(7)
         assertEquals(7, partway.scanned)
         assertNull(partway.migratedAt)
         assertTrue("\"buildProvenance\"" in storedText(file, id, 20))
@@ -198,14 +198,14 @@ class DbCompactionTest {
         assertEquals(30, done.changed)
         assertNotNull(done.migratedAt)
         assertTrue(done.bytesAfter < done.bytesBefore / 2)
-        assertEquals(3, store.database().provenances)
-        for (case in store.cases(id)) {
+        assertEquals(3, store.maintenance.database().provenances)
+        for (case in store.plans.cases(id)) {
             val want = withLabCheck(expected(records.getValue(case.index)), if (case.index == 4) check else null)
             assertEquals(json(want), json(case.record), "case ${case.index}")
         }
         // Scoring reads exactly what it read before.
-        assertEquals(scoring, Store(file).scoringCases(id))
-        assertEquals(outcomes, store.cases(id).map { Outcome.of(it.record) })
+        assertEquals(scoring, Store(file).plans.scoringCases(id))
+        assertEquals(outcomes, store.plans.cases(id).map { Outcome.of(it.record) })
 
         // Done again from the start, it finds nothing to change.
         val stored = (0 until 30).map { storedText(file, id, it) }
@@ -224,11 +224,11 @@ class DbCompactionTest {
         val id = experiment(store, problems = 2, arms = 1)
         val records = records(store, id)
         storeRaw(file, id, records)
-        store.startCompaction()
+        store.maintenance.startCompaction()
         val newer = record(0, 0, kib = 1).replace("\"p0\"", "\"p0-again\"")
         store.caseRecord(id, 0, newer)
-        store.compactBatch(10)
-        assertEquals(json(expected(newer)), json(store.cases(id)[0].record))
+        store.maintenance.compactBatch(10)
+        assertEquals(json(expected(newer)), json(store.plans.cases(id)[0].record))
     }
 
     @Test
@@ -241,7 +241,7 @@ class DbCompactionTest {
         val stored = storedText(file, id, 0)
         assertContains(stored, "buildProvenanceRef")
         assertContains(stored, "{\\\"timeToBestMs\\\":3}")
-        assertEquals(json(expected(record(0, 0, producer = producer(3)))), json(store.cases(id).single().record))
+        assertEquals(json(expected(record(0, 0, producer = producer(3)))), json(store.plans.cases(id).single().record))
     }
 
     @Test
@@ -252,21 +252,21 @@ class DbCompactionTest {
         val records = records(store, id, kib = 40)
         storeRaw(file, id, records)
         DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().execute("PRAGMA wal_checkpoint(TRUNCATE)") }
-        val before = store.database()
+        val before = store.maintenance.database()
         val compaction = DbCompaction(store, { Long.MAX_VALUE }, { false }, log = {}, pauseMs = 0, vacuumMinFreeBytes = 0)
         compaction.migrate()
         assertFalse(DbCompaction(store, { 0 }, { false }, log = {}, vacuumMinFreeBytes = 0).maybeVacuum())
-        assertContains(store.compaction().vacuum!!, "skipped")
+        assertContains(store.maintenance.compaction().vacuum!!, "skipped")
         assertFalse(DbCompaction(store, { Long.MAX_VALUE }, { true }, log = {}, vacuumMinFreeBytes = 0).maybeVacuum())
 
         assertTrue(compaction.maybeVacuum())
-        val after = store.database()
+        val after = store.maintenance.database()
         assertTrue(after.bytes < before.bytes / 5, "${before.bytes} → ${after.bytes}")
         assertTrue(Files.size(file) < before.bytes / 5)
         assertTrue(after.freeBytes < after.bytes / 10)
-        assertFalse(Files.exists(store.vacuumMarker))
-        assertContains(store.compaction().vacuum!!, "MB →")
-        for (case in store.cases(id)) assertEquals(json(expected(records.getValue(case.index))), json(case.record))
+        assertFalse(Files.exists(store.maintenance.vacuumMarker))
+        assertContains(store.maintenance.compaction().vacuum!!, "MB →")
+        for (case in store.plans.cases(id)) assertEquals(json(expected(records.getValue(case.index))), json(case.record))
     }
 
     @Test
@@ -279,11 +279,11 @@ class DbCompactionTest {
             thread { Thread.sleep(ms); c.createStatement().execute("COMMIT"); c.close() }
         }
 
-        Files.writeString(store.vacuumMarker, "now")
+        Files.writeString(store.maintenance.vacuumMarker, "now")
         val holder = holdLock(600)
         assertTrue(store.setPriority(id, 3))
         holder.join()
-        Files.delete(store.vacuumMarker)
+        Files.delete(store.maintenance.vacuumMarker)
 
         val other = holdLock(1500)
         assertFailsWith<SQLException> { store.setPriority(id, 4) }

@@ -12,8 +12,8 @@ object Placement {
     const val LOCAL_RESERVED = "local-only placement is reserved for sweeps and reference runs; use auto placement"
 
     /** Ordinary jobs may borrow idle native capacity, but cannot pin themselves to it. */
-    fun requireAutomatic(spec: ExperimentSpec, name: String) {
-        if (localOnly(spec, name)) return
+    fun requireAutomatic(spec: ExperimentSpec, origin: JobOrigin) {
+        if (localOnly(spec, origin)) return
         require("local" !in spec.nodeTags?.require.orEmpty() && "cloud" !in spec.nodeTags?.exclude.orEmpty()) { LOCAL_RESERVED }
     }
 
@@ -25,17 +25,21 @@ object Placement {
      * ([Placement.cloudSchedule]): such a run may go to either unless another of these reasons holds, and its
      * legacy confirmations still stay. Repository bench confirmations retain their original placement and platform.
      */
-    fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean = localOnlyReason(spec, name, cloudSchedule) != null
+    fun localOnly(spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean = false): Boolean = localOnlyReason(spec, origin, cloudSchedule) != null
+
+    /** [localOnly] for a job known only by its [name] ([JobOrigin.of]). */
+    fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean = localOnly(spec, JobOrigin.of(name), cloudSchedule)
 
     /** Which of [localOnly]'s reasons keeps [spec] named [name] on the local machine, in a few plain words; null when
      *  none does. */
-    fun localOnlyReason(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): String? {
-        val benchConfirmation = spec.bench != null && Confirm.SUFFIX in name
+    fun localOnlyReason(spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean = false): String? {
+        val confirmation = origin is JobOrigin.Confirmation
+        val benchConfirmation = spec.bench != null && confirmation
         val pinnedLocal = spec.host == Experiments.LAB_HOST ||
             "local" in spec.nodeTags?.require.orEmpty() || "cloud" in spec.nodeTags?.exclude.orEmpty()
         return when {
-            Confirm.SUFFIX in name && (!benchConfirmation || pinnedLocal) -> "a confirmation"
-            '@' in name && !cloudSchedule && !benchConfirmation -> "a scheduled run whose schedule stays local"
+            confirmation && (!benchConfirmation || pinnedLocal) -> "a confirmation"
+            origin is JobOrigin.Scheduled && !cloudSchedule -> "a scheduled run whose schedule stays local"
             spec.isAnalysis -> "an analysis of captures kept on the local machine"
             runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND } ->
                 "a reference run, which needs the local machine's reference solvers"
@@ -64,20 +68,19 @@ object Placement {
 
     /** Whether job [name] is a run (`<schedule>@<sha>`, not a confirmation) of one of [schedules] that opts in to the
      *  cloud ([cloudOptIn]), as its schedule's current spec says. */
-    fun cloudSchedule(name: String, schedules: List<Schedule>): Boolean =
-        '@' in name && Confirm.SUFFIX !in name &&
-            schedules.any { it.name == name.substringBefore('@') && cloudOptIn(it.experiment) }
+    fun cloudSchedule(origin: JobOrigin, schedules: List<Schedule>): Boolean =
+        origin is JobOrigin.Scheduled && schedules.any { it.name == origin.schedule && cloudOptIn(it.experiment) }
 
     /** [host] with the lab's own limits: the cloud settings and the sizes within the quota. [schedules], the lab's
      *  schedules, say whether a scheduled run's schedule opts in to the cloud ([cloudSchedule]); a submitted job is
      *  placed without them, so its name alone never takes it off the local machine. */
-    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): HostPlacement {
+    fun host(spec: ExperimentSpec, origin: JobOrigin, config: Config, schedules: List<Schedule> = emptyList()): HostPlacement {
         NodeTags.validate(spec.nodeTags)
-        requireAutomatic(spec, name)
+        requireAutomatic(spec, origin)
         val local = NodeTags.matches(spec.nodeTags, config.localNodeTags)
         val cores = runCatching { Experiments.arms(spec).maxOf { it.cores } }.getOrDefault(Int.MAX_VALUE)
-        val cloud = cloudCoreLimit(spec, config, cloudSchedule(name, schedules)) >= cores
-        val staysLocal = localOnly(spec, name, cloudSchedule(name, schedules))
+        val cloud = cloudCoreLimit(spec, config, cloudSchedule(origin, schedules)) >= cores
+        val staysLocal = localOnly(spec, origin, cloudSchedule(origin, schedules))
         if (staysLocal) {
             require(local) { "this job stays local, but its node tags do not match the local node" }
             return Experiments.LAB_HOST
@@ -86,8 +89,12 @@ object Placement {
         return if (local) Experiments.AUTO_HOST else Experiments.AWS_HOST
     }
 
+    /** [host] for a job known only by its [name] ([JobOrigin.of]). */
+    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): HostPlacement =
+        host(spec, JobOrigin.of(name), config, schedules)
+
     /** Largest compatible provider-neutral cloud budget. */
     fun cloudCoreLimit(spec: ExperimentSpec, config: Config, cloudSchedule: Boolean = false): Int =
-        config.nomadQueue?.matching(spec, spec.name, cloudSchedule)?.filter { it.os == "linux" }
+        config.nomadQueue?.matching(spec, JobOrigin.Submitted(spec.name), cloudSchedule)?.filter { it.os == "linux" }
             ?.maxOfOrNull { it.template.budget.cpuMillis / 1000 } ?: 0
 }

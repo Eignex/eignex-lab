@@ -42,13 +42,13 @@ class NomadBackend(
         if (manifest.preparationTimeoutSec != null) Experiments.requireExecutable(manifest.experiment)
         require(job.backend == Backend.NOMAD && job.experiment == manifest.experiment)
         if (template.platform == NomadPlatform.LINUX) {
-            val reason = Placement.localOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
+            val reason = Placement.localOnlyReason(manifest.experiment, job.origin, Placement.cloudSchedule(job.origin, store.schedules.all()))
             require(reason == null && manifest.experiment.host != Experiments.LAB_HOST) { reason ?: "experiment is placed on the local host" }
         } else require(manifest.experiment.host != Experiments.AWS_HOST) { "experiment is cloud-only" }
-        if (manifest.preparationTimeoutSec == null) require(store.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
+        if (manifest.preparationTimeoutSec == null) require(store.plans.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
         else require(!job.setupDone && !job.planned && manifest.arms.map { it.arm } == Experiments.arms(manifest.experiment))
         require(template.budget == manifest.budget)
-        val planned = store.casePlan(jobId).associateBy { it.index }
+        val planned = store.plans.casePlan(jobId).associateBy { it.index }
         for (case in manifest.cases) {
             val old = planned.getValue(case.index)
             require(old.problem == case.problem && old.seed == case.seed && old.repeat == case.repeat && old.arm == manifest.arms[case.arm].arm.label)

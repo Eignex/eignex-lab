@@ -286,7 +286,7 @@ internal fun dockerCleanup(
     config.dockerCleanupState,
     config.dockerCleanupRequest,
     needed = {
-        referencedImages(store.active(withCommands = false), store::arms, config.dockerKeep.map(DockerCleanup::repository).toSet(), grep)
+        referencedImages(store.active(withCommands = false), store.plans::arms, config.dockerKeep.map(DockerCleanup::repository).toSet(), grep)
     },
     freeBytes = { freeBytes(config.dataDir) },
 )

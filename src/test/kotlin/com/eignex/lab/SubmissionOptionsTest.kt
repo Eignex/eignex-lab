@@ -48,8 +48,8 @@ class SubmissionOptionsTest {
         val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue)
         val store = Store(config.database)
         val original = ExperimentSpec("status-sweep", bench = BenchSpec("bench.json"), description = "regression sweep", priority = 100)
-        val id = store.createSchedule(original.name, "main", original, 120)
-        store.scheduleRan(id, "abc", 1)
+        val id = store.schedules.create(original.name, "main", original, 120)
+        store.schedules.ran(id, "abc", 1)
         application { api(config, store, HostReport("test", 4, "java")) }
         val response = client.get("/schedules")
         val experiment = Json.parseToJsonElement(response.bodyAsText()).jsonArray.single().jsonObject.getValue("experiment").jsonObject
@@ -59,7 +59,7 @@ class SubmissionOptionsTest {
             contentType(ContentType.Application.Json); setBody("""{"experiment":$experiment}""")
         }
         assertEquals(HttpStatusCode.OK, updated.status)
-        val saved = store.schedules().single()
+        val saved = store.schedules.all().single()
         assertEquals(original, saved.experiment)
         assertEquals("abc", saved.lastSha)
         val auto = scheduleInput(Json.parseToJsonElement("""{"experiment":{"name":"nightly"}}""").jsonObject)
@@ -122,7 +122,7 @@ class SubmissionOptionsTest {
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
         val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue)
         val store = Store(config.database)
-        val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", bench = BenchSpec("bench.json")), 3600)
+        val schedule = store.schedules.create("nightly", "main", ExperimentSpec("e", description = "d", bench = BenchSpec("bench.json")), 3600)
         application { api(config, store, HostReport("test", 4, "java")) }
         val created = client.post("/experiments") {
             contentType(ContentType.Application.Json)
@@ -135,8 +135,8 @@ class SubmissionOptionsTest {
             setBody("""{"experiment":{"name":"e","description":"record compilations","bench":{"manifest":"bench.json","request":{"parameters":{"measurement":"compilation+log"}}},"parallel":4}}""")
         }
         assertEquals(HttpStatusCode.OK, updated.status)
-        assertEquals("compilation+log", store.schedules().single().experiment.bench!!.request.parameters["measurement"])
-        assertEquals(4, store.schedules().single().experiment.parallel)
+        assertEquals("compilation+log", store.schedules.all().single().experiment.bench!!.request.parameters["measurement"])
+        assertEquals(4, store.schedules.all().single().experiment.parallel)
         val rejected = client.post("/experiments") {
             contentType(ContentType.Application.Json)
             setBody("""{"name":"bad","description":"d","bench":{"manifest":"bench.json"},"measurement":"jfr"}""")

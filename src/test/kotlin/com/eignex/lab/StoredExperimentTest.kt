@@ -31,7 +31,7 @@ class StoredExperimentTest {
         val store = Store(file)
         val spec = ExperimentSpec("historical")
         val job = store.create(spec.name, "main", emptyList(), experiment = spec)
-        val schedule = store.createSchedule("nightly", "main", spec, 3600)
+        val schedule = store.schedules.create("nightly", "main", spec, 3600)
         val old = """{"name":"historical","measureCliResources":true}"""
         DriverManager.getConnection("jdbc:sqlite:$file").use { connection ->
             for ((table, id) in listOf("jobs" to job, "schedules" to schedule)) {
@@ -42,7 +42,7 @@ class StoredExperimentTest {
         }
         assertEquals(Measurement.RESOURCES, store.job(job)!!.experiment!!.measurement)
         assertEquals(Measurement.RESOURCES, store.active().single().experiment!!.measurement)
-        assertEquals(Measurement.RESOURCES, store.schedules().single().experiment.measurement)
+        assertEquals(Measurement.RESOURCES, store.schedules.all().single().experiment.measurement)
         assertEquals(Measurement.RESOURCES, Store(file).job(job)!!.experiment!!.measurement)
     }
 }

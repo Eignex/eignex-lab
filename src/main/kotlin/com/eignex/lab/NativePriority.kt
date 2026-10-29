@@ -4,8 +4,8 @@ package com.eignex.lab
 internal class NativePriority(private val store: Store) {
     fun allows(id: Long, tags: Set<String>? = null): Boolean {
         val job = store.job(id) ?: return false
-        val schedules = store.schedules()
-        fun reserved(job: Job): Boolean = Placement.localOnly(job.experiment, job.name, Placement.cloudSchedule(job.name, schedules))
+        val schedules = store.schedules.all()
+        fun reserved(job: Job): Boolean = Placement.localOnly(job.experiment, job.origin, Placement.cloudSchedule(job.origin, schedules))
         val pinned = reserved(job)
         return !store.active(withCommands = false).any {
             val spec = it.experiment

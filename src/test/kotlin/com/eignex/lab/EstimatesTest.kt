@@ -110,14 +110,14 @@ class EstimatesTest {
             experiment = scheduled.copy(name = "ref@bbbbbbbbb", base = spec.base + ("ref" to "b".repeat(40)), host = Experiments.LAB_HOST))
         assertEquals(CaseHistory(first, 30, 120_000.0), history.lookup(next))
         // Another name runs the same experiment: the newest of those.
-        assertEquals(CaseHistory(other, 12, 60_000.0), history.lookup(next.copy(name = "mine", experiment = next.experiment!!.copy(name = "mine"))))
+        assertEquals(CaseHistory(other, 12, 60_000.0), history.lookup(next.copy(name = "mine", origin = JobOrigin.Submitted("mine"), experiment = next.experiment.copy(name = "mine"))))
         val estimate = Estimates.estimate(next, history::lookup, 8)!!
         assertEquals(30, estimate.cases)
         assertEquals("from run $first", estimate.note)
         assertEquals(30 * 2 / 60.0, estimate.coreHours, 1e-9)
 
         // Another timeout is another experiment: an ad hoc job then has no history, so the guess from its selection.
-        val different = next.copy(name = "mine", experiment = spec.copy(name = "mine", base = mapOf("timeout" to "1000")))
+        val different = next.copy(name = "mine", origin = JobOrigin.Submitted("mine"), experiment = spec.copy(name = "mine", base = mapOf("timeout" to "1000")))
         assertNull(history.lookup(different))
         val fallback = Estimates.estimate(different, history::lookup, 8)!!
         assertEquals(10, fallback.cases)
@@ -137,7 +137,7 @@ class EstimatesTest {
         assertEquals(CaseHistory(last, 30, 120_000.0, sameExperiment = false), history.lookup(next))
         assertEquals("from run $last, an earlier experiment", Estimates.estimate(next, history::lookup, 8)!!.note)
         // An ad hoc job has no schedule to fall back to.
-        assertNull(history.lookup(next.copy(name = "adhoc", experiment = edited.copy(name = "adhoc"))))
+        assertNull(history.lookup(next.copy(name = "adhoc", origin = JobOrigin.Submitted("adhoc"), experiment = edited.copy(name = "adhoc"))))
     }
 
     @Test

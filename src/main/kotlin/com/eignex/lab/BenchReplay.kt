@@ -12,7 +12,7 @@ internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<Planne
         val original = requireNotNull(store.job(job)) { "replay job is unavailable" }
         require(original.status == Status.DONE && original.experiment.repository == spec.repository) { "replay requires a completed job in the same repository" }
         val originalBench = requireNotNull(original.experiment.bench)
-        val originalArm = requireNotNull(store.arms(job).firstOrNull())
+        val originalArm = requireNotNull(store.plans.arms(job).firstOrNull())
         require(originalArm.sha == arm.sha && originalBench.manifest == bench.manifest &&
             BenchRuns.request(originalBench, originalArm.arm) == BenchRuns.request(bench, arm.arm)) {
             "replay cannot change the original revision, entry point or runtime request"

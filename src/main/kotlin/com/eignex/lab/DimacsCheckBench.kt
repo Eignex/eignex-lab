@@ -50,9 +50,9 @@ object DimacsCheckBench : BenchSuite {
         store.commandStarted(id, 0)
         store.caseRecord(id, 0, effective.toString())
         store.commandFinished(id, 0, 0)
-        val before = store.caseRecordText(id, 0)
+        val before = store.plans.caseRecordText(id, 0)
         val checks = CaseChecks(store, { Checkers.of(config) }) { _, line -> System.err.println(line) }
-        fun receipt(): LabCheck? = store.cases(id).single().record?.jsonObject?.get("labCheck")?.let { LabCheck.parse(it.toString()) }
+        fun receipt(): LabCheck? = store.plans.cases(id).single().record?.jsonObject?.get("labCheck")?.let { LabCheck.parse(it.toString()) }
         checks.afterCase(id, 0)
         checks.await(id)
         val ordinary = requireNotNull(receipt()) { "ordinary runner produced no SAT point check" }
@@ -64,7 +64,7 @@ object DimacsCheckBench : BenchSuite {
         val expected = item.getValue("expected").jsonPrimitive.content
         val accepted = listOf(ordinary, repeated).all { it.state == expected && it.policy == DimacsChecker().policy } &&
             ordinary.sourceSha256 == repeated.sourceSha256 && ordinary.witnessSha256 == repeated.witnessSha256 &&
-            recheck.checked == 1 && store.caseRecordText(id, 0) == before
+            recheck.checked == 1 && store.plans.caseRecordText(id, 0) == before
         return BenchResult(case.id, status = if (accepted) BenchStatus.SUCCESS else BenchStatus.FAILED,
             artifacts = context.artifacts("report"), message = "ordinary=${ordinary.state}; recheck=${repeated.state}; expected=$expected",
             details = buildJsonObject {
