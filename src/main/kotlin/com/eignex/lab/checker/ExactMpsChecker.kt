@@ -144,6 +144,7 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
     private val rows = linkedMapOf<String, Row>()
     private val columns = linkedMapOf<String, Column>()
     private var objectiveRow: String? = null
+    private var senseRead = false
     var sense = "MIN"
         private set
     var objective = MpsQ.ZERO
@@ -176,6 +177,7 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
                 if (next != "NAME" && "NAME" !in seen) syntax("missing NAME")
                 val order = listOf("NAME", "OBJSENSE", "ROWS", "COLUMNS", "RHS", "RANGES", "BOUNDS", "ENDATA")
                 if (section.isNotEmpty() && order.indexOf(next) <= order.indexOf(section)) syntax("section order $next")
+                if (section == "OBJSENSE" && !senseRead) syntax("missing OBJSENSE value")
                 section = next
                 if (section == "NAME") { if (t.size !in 1..2) syntax("NAME fields"); continue }
                 if (section == "OBJSENSE" && t.size == 2) { readSense(t[1]); continue }
@@ -253,6 +255,8 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
     }
 
     private fun readSense(s: String) {
+        if (senseRead) syntax("repeated OBJSENSE value")
+        senseRead = true
         sense = when (s.uppercase()) {
             "MIN", "MINIMIZE" -> "MIN"
             "MAX", "MAXIMIZE" -> "MAX"
@@ -273,6 +277,7 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
             if (name !in columns) invalid("unknown coordinate ${name.take(64)}")
             if (values.putIfAbsent(name, MpsQ.read(token.substring(at + 1))) != null) syntax("duplicate witness coordinate")
         }
+        budget.tick()
         if (values.size != columns.size) throw MpsCheckFailure(LabCheck.UNKNOWN, "incomplete witness: missing source coordinates")
         for ((name, col) in columns) {
             budget.tick()
@@ -300,6 +305,7 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
             }
             if (lower?.let { activity < it } == true || upper?.let { activity > it } == true) invalid("row $name")
         }
+        budget.tick()
         if (objective != MpsQ.read(claimed)) invalid("$sense objective differs: reconstructed $objective")
     }
 }

@@ -40,7 +40,7 @@ a claim. Cancellation propagates instead of publishing a point.
 The evaluator owns its temporary parsed model and discards it after the call. Plain or zstd-decoded source is capped
 at 16 MiB (zstd window capped at 64 MiB), witness at 8 MiB, line at 8,190 characters, numeric token at 4,095 characters,
 decimal scale at +/-4,095, rows and columns at 50,000 each, terms at 200,000, rational operands/intermediates at
-16,384 bits, operations at 2,000,000 and elapsed evaluation at 120 seconds. Deadline/cancellation checks occur while
+16,384 bits (arithmetic temporaries at most 32,769 bits), operations at 2,000,000 and elapsed evaluation at 120 seconds. Deadline/cancellation checks occur while
 reading, parsing, checking each coordinate and evaluating each term; each BigInteger operation has bounded operands.
 Source lookup remains the existing hash-bound `SourceLocator` contract. A resource refusal supplies no verdict on
 feasibility. Receipts record limits, operation count, arithmetic policy and elapsed time without inventing child
