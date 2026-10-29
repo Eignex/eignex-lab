@@ -246,13 +246,13 @@ object Trend {
  * one background thread, so no page load waits on a recompute and a schedule is refreshed once however many loads find it
  * stale. A change to one problem's rows leaves every point that did not run it fresh.
  */
-class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private val clock: () -> Long = System::currentTimeMillis) {
+class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private val clock: () -> Long = System::currentTimeMillis) : AutoCloseable {
     /** A cached point, null for a run known to have none, and whether it is fresh. */
     class Cached(val run: TrendRun?, val fresh: Boolean)
 
     private class Entry(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<ProblemKey>)
 
-    private val entries = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
+    private val entries = Lru<Long, Entry>(MAX_JOBS)
     private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val background = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread(task, "trend-refresh").apply { isDaemon = true }
@@ -272,6 +272,11 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     fun sync(stamp: Long?, changedSince: (Long) -> Map<ProblemKey, Long>): Long? {
         if (synced && stamp != null && stamp != lastStamp) {
             for ((problem, at) in changedSince(lastStamp ?: Long.MIN_VALUE)) changed.merge(problem, at, ::maxOf)
+            // Past this many changed problems, every point is recomputed instead of tracking them all.
+            if (changed.size > MAX_CHANGED) {
+                changed.clear()
+                entries.clear()
+            }
         }
         synced = true
         lastStamp = stamp
@@ -297,7 +302,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         entries[job] = Entry(version, stamp, clock(), run, problems)
     }
 
-    private val live = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
+    private val live = Lru<Long, Entry>(MAX_LIVE)
 
     /** A running [job]'s point, fresh for [LIVE_MS]. */
     fun lookupLive(job: Long): Cached? = live[job]?.let { Cached(it.run, clock() - it.at <= LIVE_MS) }
@@ -306,7 +311,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         live[job] = Entry("", null, clock(), run, emptySet())
     }
 
-    private val confirmations = java.util.concurrent.ConcurrentHashMap<Long, Flips>()
+    private val confirmations = Lru<Long, Flips>(MAX_JOBS)
 
     /** A finished confirmation's flips, which never change once it is done: computed once, by [compute]. */
     fun confirmed(job: Long, compute: () -> Flips): Flips = confirmations.getOrPut(job, compute)
@@ -325,7 +330,19 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         }
     }
 
+    /** Stop the background refreshes; one under way is interrupted. */
+    override fun close() {
+        background.shutdownNow()
+    }
+
     companion object {
+        /** The finished runs whose points are kept, the least recently read leaving first. */
+        private const val MAX_JOBS = 4096
+        /** The running jobs whose points are kept. */
+        private const val MAX_LIVE = 256
+        /** The changed problems tracked before every point is recomputed instead. */
+        private const val MAX_CHANGED = 100_000
+
         /** What a finished job's cached point is valid for: a retry changes its status or when it finished. */
         fun version(job: Job): String = "${job.status}/${job.finishedAt}"
 

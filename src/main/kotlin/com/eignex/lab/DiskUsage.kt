@@ -74,7 +74,7 @@ class DiskUsage internal constructor(
     private val clock: () -> Long,
     /** Waits between two walks. */
     private val pause: () -> Unit = {},
-) {
+) : AutoCloseable {
     constructor(config: Config, active: () -> Set<Long> = { emptySet() }, pauseMs: Long = PAUSE_MS) :
         this(config, active, DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)), SETTLE_MS, System::currentTimeMillis,
             { if (pauseMs > 0) Thread.sleep(pauseMs) })
@@ -230,9 +230,15 @@ class DiskUsage internal constructor(
         DuRunner.reapLeftovers(config.dataDir.resolve(DuRunner.PID_DIR))
         lock.lock()
         try { load() } finally { lock.unlock() }
-        Executors.newSingleThreadScheduledExecutor { Thread(it, "disk-usage").apply { isDaemon = true } }
-            .scheduleWithFixedDelay({ runCatching { measure() }.onFailure { println("disk usage: ${it.message}") } },
-                START_DELAY_MIN, INTERVAL_MIN, TimeUnit.MINUTES)
+        schedule.scheduleWithFixedDelay({ runCatching { measure() }.onFailure { println("disk usage: ${it.message}") } },
+            START_DELAY_MIN, INTERVAL_MIN, TimeUnit.MINUTES)
+    }
+
+    private val schedule = Executors.newSingleThreadScheduledExecutor { Thread(it, "disk-usage").apply { isDaemon = true } }
+
+    /** Stop measuring; a walk under way is interrupted. */
+    override fun close() {
+        schedule.shutdownNow()
     }
 
     internal companion object {

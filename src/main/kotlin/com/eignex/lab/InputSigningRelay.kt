@@ -12,10 +12,16 @@ internal class InputSigningRelay(private val sign: (InputSignature) -> SignedInp
         this.executor = this@InputSigningRelay.executor
         createContext("/") { exchange ->
             exchange.use {
-                try {
+                // A malformed request is the consumer's fault (400); only a failure to sign it is an outage (503).
+                val signature = try {
                     require(it.requestMethod == "POST" && it.requestURI.path == "/")
                     val body = it.requestBody.readNBytes(8193); require(body.size <= 8192)
-                    val signature = Json.decodeFromString<InputSignature>(String(body))
+                    Json.decodeFromString<InputSignature>(String(body))
+                } catch (_: IllegalArgumentException) {
+                    it.sendResponseHeaders(400, -1)
+                    return@use
+                }
+                try {
                     val result = Json.encodeToString(SignedInput.serializer(), sign(signature)).toByteArray()
                     it.responseHeaders.add("Content-Type", "application/json")
                     it.sendResponseHeaders(200, result.size.toLong()); it.responseBody.write(result)

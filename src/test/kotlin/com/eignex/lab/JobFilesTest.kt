@@ -189,7 +189,7 @@ class JobFilesTest {
                     val response = client.get(path)
                     val tookMs = (System.nanoTime() - started) / 1_000_000
                     assertEquals(HttpStatusCode.ServiceUnavailable, response.status, path)
-                    val body = response.bodyAsText()
+                    val body = kotlinx.serialization.json.Json.decodeFromString(ErrorBody.serializer(), response.bodyAsText()).error
                     assertTrue(body.startsWith("job files unavailable: cannot access job files directory $jobs within 300 ms"), body)
                     assertTrue("grant Full Disk Access to $java" in body, body)
                     assertTrue(tookMs < 300, "$path took $tookMs ms")
