@@ -58,7 +58,7 @@ class CaseChecksTest {
                 store.caseRecord(id, 0, BenchRuns.record(BenchProtocol.json.encodeToString(BenchResult.serializer(), result), case, 0))
                 checks.afterCase(id, 0)
                 checks.await(id)
-                val record = store.cases(id).single().record!!.jsonObject
+                val record = store.plans.cases(id).single().record!!.jsonObject
                 assertEquals(requested, "labCheck" in record)
                 assertEquals(result, BenchRuns.result(record.toString()))
             }

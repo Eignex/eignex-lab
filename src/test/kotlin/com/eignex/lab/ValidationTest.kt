@@ -119,12 +119,12 @@ class ValidationTest {
     fun `saving the committed spec over a schedule that already runs it queues no extra run`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = committed("status-sweep.json")
-        val id = store.createSchedule("status-sweep", "main", spec.copy(base = spec.base - SourceValidation.SCHEDULED.keys), 120)
-        store.scheduleRan(id, "abc", 1)
+        val id = store.schedules.create("status-sweep", "main", spec.copy(base = spec.base - SourceValidation.SCHEDULED.keys), 120)
+        store.schedules.ran(id, "abc", 1)
 
-        store.updateSchedule(id, spec, intervalSec = null)
+        store.schedules.update(id, spec, intervalSec = null)
 
-        assertEquals("abc", store.schedules().single().lastSha)
+        assertEquals("abc", store.schedules.all().single().lastSha)
     }
 
     @Test

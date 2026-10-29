@@ -39,9 +39,12 @@ class Runner(
     fun loop() {
         config.dataDir.createDirectories()
         disk.allowsWork()
-        thread(isDaemon = true, name = "bind-references") { runCatching { store.bindLabReferenceSources() } }
+        thread(isDaemon = true, name = "bind-references") {
+            runCatching { store.references.retireStale() }.onFailure { println("references: ${describeFailure(it)}") }
+            runCatching { store.references.bindLabSources(store.plans::scoringCases) }
+        }
         JobTrim(config.jobsDir, store::ended, { freeBytes(config.jobsDir) }, ::log,
-            held = { store.holds().mapTo(HashSet()) { it.job } }, graceMs = config.trimGraceMs,
+            held = { store.holds.active().mapTo(HashSet()) { it.job } }, graceMs = config.trimGraceMs,
             criticalFreeBytes = config.trimCriticalFreeBytes, targetFreeBytes = config.jobsTargetFreeBytes,
             maxAgeMs = config.trimAgeMs).start()
         DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } }).start()

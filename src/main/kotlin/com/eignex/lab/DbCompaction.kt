@@ -136,17 +136,17 @@ class DbCompaction(
 ) {
     /** Compact every record not yet done; returns the state once all are. */
     fun migrate(): Compaction {
-        var state = store.compaction()
+        var state = store.maintenance.compaction()
         if (state.migratedAt != null) return state
         if (state.startedAt == null) {
-            state = store.startCompaction()
+            state = store.maintenance.startCompaction()
             log("compacting ${state.total} case records, $BATCH a transaction")
         } else {
             log("resuming the compaction of the case records after ${state.scanned} of ${state.total}")
         }
         var batches = 0
         while (state.migratedAt == null) {
-            state = store.compactBatch(BATCH)
+            state = store.maintenance.compactBatch(BATCH)
             if (++batches % LOG_EVERY == 0 || state.migratedAt != null) {
                 log("compacted ${state.scanned} of ${state.total} case records: ${state.changed} changed, " +
                     "${(state.bytesBefore - state.bytesAfter) / BYTES_PER_MB} MB smaller")
@@ -162,25 +162,25 @@ class DbCompaction(
      * through the write-ahead log back into the database, each about the size of the result. Returns whether it ran.
      */
     fun maybeVacuum(): Boolean {
-        val database = store.database()
+        val database = store.maintenance.database()
         if (database.freeBytes < vacuumMinFreeBytes) return false
         val needed = database.usedBytes * VACUUM_SPACE_FACTOR
         val free = freeBytes()
         if (free < needed) {
             val why = "skipped: ${free / BYTES_PER_MB} MB free on disk, ${needed / BYTES_PER_MB} MB needed"
-            if (store.compaction().vacuum != why) log("vacuum $why")
-            store.vacuumOutcome(why)
+            if (store.maintenance.compaction().vacuum != why) log("vacuum $why")
+            store.maintenance.vacuumOutcome(why)
             return false
         }
         if (busy()) return false
         log("vacuuming the database: ${database.bytes / BYTES_PER_MB} MB, ${database.freeBytes / BYTES_PER_MB} MB of it free")
         val started = System.currentTimeMillis()
-        val outcome = runCatching { store.vacuum() }.fold(
-            { "${database.bytes / BYTES_PER_MB} MB → ${store.database().bytes / BYTES_PER_MB} MB in ${(System.currentTimeMillis() - started) / MS_PER_S} s" },
+        val outcome = runCatching { store.maintenance.vacuum() }.fold(
+            { "${database.bytes / BYTES_PER_MB} MB → ${store.maintenance.database().bytes / BYTES_PER_MB} MB in ${(System.currentTimeMillis() - started) / MS_PER_S} s" },
             { "failed: ${it.message}" },
         )
         log("vacuum $outcome")
-        store.vacuumOutcome(outcome)
+        store.maintenance.vacuumOutcome(outcome)
         return true
     }
 

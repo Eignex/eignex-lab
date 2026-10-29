@@ -68,7 +68,7 @@ class BenchAdapterIntegrationTest {
         val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), corpusDir = root.resolve("checker-corpus"), auth = Auth.Disabled)
         val checks = com.eignex.lab.CaseChecks(store, { com.eignex.lab.Checkers.of(config) }) { id, line -> println("check $id: $line") }
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { id, index ->
-            val (problem, arm) = requireNotNull(store.caseOf(id, index))
+            val (problem, arm) = requireNotNull(store.plans.caseOf(id, index))
             if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"
             else "not-required"
         })
@@ -178,7 +178,7 @@ class BenchAdapterIntegrationTest {
         }
         // Reconcile accepted records through the coordinator projection used by the API and file browser.
         backend.reconcile()
-        val stored = store.cases(job)
+        val stored = store.plans.cases(job)
         assertEquals(cases.size, stored.size)
         if (scenario.sourceValidation) assertTrue(stored.all { it.record!!.jsonObject["labCheck"]?.jsonObject?.get("state")?.jsonPrimitive?.content == "valid" })
         assertTrue(stored.filter { result -> arms.single { it.arm.label == result.arm }.arm.values["backend"] != REFERENCE_BACKEND }
@@ -237,8 +237,8 @@ class BenchAdapterIntegrationTest {
         assertTrue(replayResult.cases.all { it.exitCode == 0 }, replayResult.cases.joinToString { it.record.orEmpty() })
         backend.reconcile()
         assertEquals(Status.DONE, store.job(job)!!.status)
-        assertEquals(2, store.cases(job).size)
-        if (scenario.sourceValidation) assertTrue(store.cases(job).all { it.record!!.jsonObject["labCheck"]?.jsonObject?.get("state")?.jsonPrimitive?.content == "valid" })
+        assertEquals(2, store.plans.cases(job).size)
+        if (scenario.sourceValidation) assertTrue(store.plans.cases(job).all { it.record!!.jsonObject["labCheck"]?.jsonObject?.get("state")?.jsonPrimitive?.content == "valid" })
         println("Verified $name replay: retained build hashes, no planner or build invocation, complete paired receipt")
         Files.writeString(root.resolve("metrics.csv"), BenchRuns.metricsCsv(stored))
         println("Verified $name: ${plan.cases.size} cases, ${stored.sumOf { BenchRuns.result(it.record?.toString())?.artifacts?.size ?: 0 }} ingested artifacts")

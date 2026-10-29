@@ -19,14 +19,14 @@ class RunnerTest {
         val config = Config(dataDir = Files.createTempDirectory("retired-schedules"), auth = Auth.Disabled)
         val store = Store(config.database)
         val spec = ExperimentSpec("old-reference", problems = listOf(mapOf("set" to "sweep")))
-        val id = store.createSchedule(spec.name, "main", spec, 120)
-        store.launchNow(id)
+        val id = store.schedules.create(spec.name, "main", spec, 120)
+        store.schedules.launchNow(id)
         var fetched = 0
         val runner = Runner(config, store, sourceUrl = { fetched++; error("must not access source") })
         repeat(3) { runner.enqueueScheduled() }
         assertEquals(0, fetched)
         assertTrue(store.jobs().isEmpty())
-        val schedule = store.schedules().single()
+        val schedule = store.schedules.all().single()
         assertTrue(schedule.launchRequested)
         assertTrue(schedule.blockedReason()!!.contains("legacy solver recipes must be migrated"))
         val page = indexPage(config, HostReport("fixture", 4, "java"), emptyList(), listOf(schedule), emptyList(), 50, null, null)
@@ -36,8 +36,8 @@ class RunnerTest {
         val response = client.get("/schedules").bodyAsText()
         assertTrue(response.contains("blockedReason"))
         assertTrue(response.contains("legacy solver recipes must be migrated"))
-        store.updateSchedule(id, spec.copy(problems = emptyList(), bench = BenchSpec("bench.json")), null)
-        assertEquals(null, store.schedules().single().blockedReason(), "repair removes the block without deleting history")
+        store.schedules.update(id, spec.copy(problems = emptyList(), bench = BenchSpec("bench.json")), null)
+        assertEquals(null, store.schedules.all().single().blockedReason(), "repair removes the block without deleting history")
     }
 
     @Test
@@ -46,7 +46,7 @@ class RunnerTest {
             val config = Config(dataDir = Files.createTempDirectory("confirmation-priority"))
             val store = Store(config.database)
             val original = ExperimentSpec("status-sweep", bench = BenchSpec("bench.json"), priority = -2)
-            val schedule = store.createSchedule("status-sweep", "main", original, 120)
+            val schedule = store.schedules.create("status-sweep", "main", original, 120)
             fun run(sha: String, solved: Boolean): Long {
                 val spec = original.copy(name = "status-sweep@$sha", base = mapOf("ref" to sha))
                 val id = store.create(spec.name, sha, emptyList(), experiment = spec)
@@ -61,7 +61,7 @@ class RunnerTest {
             }
             run("aaa", true)
             val current = run("bbb", false)
-            store.updateSchedule(schedule, original.copy(priority = priority), null)
+            store.schedules.update(schedule, original.copy(priority = priority), null)
             Runner(config, store).queueConfirmation(store.job(current)!!)
             assertEquals(priority + 1, store.active().single().priority)
         }
@@ -72,14 +72,14 @@ class RunnerTest {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("ref", listOf(mapOf("suite" to "s")))
-        val id = store.createSchedule("ref", "main", spec, 3 * 86400)
+        val id = store.schedules.create("ref", "main", spec, 3 * 86400)
         val last = store.create("ref@abc", "abc", emptyList(), experiment = spec)
-        store.scheduleRan(id, "abc", last)
-        store.launchNow(id)
+        store.schedules.ran(id, "abc", last)
+        store.schedules.launchNow(id)
 
         Runner(config, store).enqueueScheduled()
 
-        val schedule = store.schedules().single()
+        val schedule = store.schedules.all().single()
         // No second run while the first is queued; the launch is still asked for, and the regular check that ran
         // stamped its time as usual.
         assertEquals(last, schedule.lastJob)
@@ -88,8 +88,8 @@ class RunnerTest {
 
         // Another poll while it waits leaves the regular check's time alone: a launch never moves a schedule's phase.
         Runner(config, store).enqueueScheduled()
-        assertEquals(checked, store.schedules().single().checkedAt)
-        assertTrue(store.schedules().single().launchRequested)
+        assertEquals(checked, store.schedules.all().single().checkedAt)
+        assertTrue(store.schedules.all().single().launchRequested)
     }
 
     private val sampleLog: String = checkNotNull(javaClass.getResource("/compilation/hotspot-compilation.log")).readText()

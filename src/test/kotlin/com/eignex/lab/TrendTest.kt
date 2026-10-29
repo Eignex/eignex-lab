@@ -36,7 +36,7 @@ class TrendTest {
         store.plan(confirmation, listOf(PlannedArm(Arm(Confirm.BEFORE, emptyMap()), "a"),
             PlannedArm(Arm(Confirm.AFTER, emptyMap()), "b")), listOf(problem),
             Experiments.cases(1, 2, emptyList(), 3), (0..5).map { "true" to 1L })
-        store.cases(confirmation).forEach {
+        store.plans.cases(confirmation).forEach {
             store.caseRecord(confirmation, it.index, if (it.arm == Confirm.BEFORE) optimum else incumbent)
             store.commandFinished(confirmation, it.index, 0)
         }
@@ -67,7 +67,7 @@ class TrendTest {
     @Test
     fun `a run that contradicts the reference counts its disagreements`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        store.putReferences(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        store.references.put(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         run(store, "sweep@aaa", listOf(true, false))
 
         val run = Trend.runs(store, "sweep").single()
@@ -112,7 +112,7 @@ class TrendTest {
     @Test
     fun `a reference change on one problem marks stale only the points that ran it`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        store.putReferences(listOf(ProblemKey("", "p9") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        store.references.put(listOf(ProblemKey("", "p9") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         val ranA = run(store, "sweep@aaa", listOf(true, false))
         val other = run(store, "sweep@bbb", listOf(true, false), first = 5)
         var now = 0L
@@ -120,7 +120,7 @@ class TrendTest {
         Trend.runs(store, "sweep", cache)
 
         Thread.sleep(5)
-        store.putReferences(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        store.references.put(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         now = 2000
         val stamp = cache.sync(store)
         val fresh = Trend.scheduled(store, "sweep").associate { it.id to cache.lookup(it.id, TrendCache.version(it), stamp)?.fresh }
@@ -157,17 +157,17 @@ class TrendTest {
     fun `the warm-up computes a schedule's older runs as well as its current ones`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val older = run(store, "sweep@aaa", listOf(true))
-        store.createSchedule("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "b"))), 3600)
+        store.schedules.create("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "b"))), 3600)
         val cache = TrendCache()
 
         Trend.warm(store, cache)
 
         val job = store.job(older)!!
         val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(older, TrendCache.version(job), store.referencesStamp()) == null && System.currentTimeMillis() < deadline) {
+        while (cache.lookup(older, TrendCache.version(job), store.references.stamp()) == null && System.currentTimeMillis() < deadline) {
             Thread.sleep(20)
         }
-        assertEquals(older, cache.lookup(older, TrendCache.version(job), store.referencesStamp())?.run?.job)
+        assertEquals(older, cache.lookup(older, TrendCache.version(job), store.references.stamp())?.run?.job)
     }
 
     @Test
@@ -197,7 +197,7 @@ class TrendTest {
         assertEquals(listOf(going), first.map { it.job })
         assertEquals(listOf(done), missing)
         val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(done, TrendCache.version(store.job(done)!!), store.referencesStamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        while (cache.lookup(done, TrendCache.version(store.job(done)!!), store.references.stamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
         val later = ArrayList<Long>()
         assertEquals(listOf(done, going), Trend.runs(store, "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)
@@ -215,7 +215,7 @@ class TrendTest {
             "validationPolicy":"mps-miplib2017-point-gzip-v1","stats":{"sourceValidation":"valid"}}""")
         store.caseRecord(id, 1, mps("MPS source checking failed: missing packaged MIPLIB solchecker"))
         store.caseRecord(id, 2, mps("MPS source checking failed: lower bounds following upper bounds are unsupported"))
-        store.putFeatures((0..2).map { ProblemFeatures("", "p$it", listOf("linear-real")) })
+        store.references.putFeatures((0..2).map { ProblemFeatures("", "p$it", listOf("linear-real")) })
 
         val run = Trend.runs(store, "sweep").single()
 
@@ -227,7 +227,7 @@ class TrendTest {
     fun `a run's solved problems are counted by theme, a problem of several themes in each`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         run(store, "sweep@aaa", listOf(true, false))
-        store.putFeatures(listOf(ProblemFeatures("", "p0", listOf("sat", "pb")), ProblemFeatures("", "p1", listOf("sat"))))
+        store.references.putFeatures(listOf(ProblemFeatures("", "p0", listOf("sat", "pb")), ProblemFeatures("", "p1", listOf("sat"))))
 
         val themes = Trend.runs(store, "sweep").single().themes
 
@@ -246,8 +246,8 @@ class TrendTest {
         store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), listOf(problem),
             Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
         store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"budgetMs":1000}""")
-        store.putFeatures(listOf(ProblemFeatures("hakank", "model", listOf("sat"))))
-        store.putReferences(listOf(problem.referenceKey to Reference("reference", false, null, false, true, 10, 1000)), "fixture")
+        store.references.putFeatures(listOf(ProblemFeatures("hakank", "model", listOf("sat"))))
+        store.references.put(listOf(problem.referenceKey to Reference("reference", false, null, false, true, 10, 1000)), "fixture")
         store.finish(id, Status.DONE)
 
         val cache = TrendCache()

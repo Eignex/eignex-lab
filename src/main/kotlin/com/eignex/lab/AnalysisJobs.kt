@@ -10,9 +10,9 @@ import kotlinx.serialization.json.Json
 internal class AnalysisJobs(private val config: Config, private val store: Store, private val checks: CaseChecks) {
     fun reportCompilation(jobId: Long, index: Int, dir: Path, analyzeJob: Long? = null): List<Pair<Path, CompilationReport>> =
         runCatching {
-            val source = store.caseOf(jobId, index)?.let { (problem, arm) ->
+            val source = store.plans.caseOf(jobId, index)?.let { (problem, arm) ->
                 SourceProvenance(jobId, index, if (problem.suite.isEmpty()) problem.problem else "${problem.suite}/${problem.problem}",
-                    arm.label, arm.ref, store.arms(jobId).firstOrNull { it.arm.label == arm.label }?.sha)
+                    arm.label, arm.ref, store.plans.arms(jobId).firstOrNull { it.arm.label == arm.label }?.sha)
             } ?: SourceProvenance(jobId, index)
             val worker = CompilationReports.worker(analyzeJob)
             CompilationReports.profileDirs(dir, index)

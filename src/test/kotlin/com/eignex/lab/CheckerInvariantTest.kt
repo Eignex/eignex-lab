@@ -248,7 +248,7 @@ class CheckerInvariantTest {
     }
 
     private fun labCheck(store: Store, id: Long): LabCheck? =
-        ((store.cases(id).single().record as JsonObject)["labCheck"] as? JsonObject)?.let { LabCheck.parse(it.toString()) }
+        ((store.plans.cases(id).single().record as JsonObject)["labCheck"] as? JsonObject)?.let { LabCheck.parse(it.toString()) }
 
     @Test
     fun `a checker that throws, in the dispatcher or an adapter, is not-run and changes neither the case nor its result`() {
@@ -259,18 +259,18 @@ class CheckerInvariantTest {
             { StackOverflowError("deep") })
         for (error in errors) {
             val id = job(store, text)
-            val before = store.cases(id).single()
+            val before = store.plans.cases(id).single()
             val checks = CaseChecks(store, { dispatcher(Throwing(error)) }) { _, line -> logged += line }
 
             checks.afterCase(id, 0)
             checks.await(id)
 
-            val after = store.cases(id).single()
+            val after = store.plans.cases(id).single()
             val check = labCheck(store, id)!!
             assertEquals(LabCheck.NOT_RUN, check.state)
             assertContains(check.reason, "the checker could not run: ${error().message}")
             assertEquals(before.status, after.status)
-            assertEquals(text, store.caseRecordText(id, 0))
+            assertEquals(text, store.plans.caseRecordText(id, 0))
             assertEquals(Outcome.of(before.record)!!.reported(), Outcome.of(after.record)!!.reported())
             assertEquals(WitnessCheck.UNCHECKED, Outcome.of(after.record)!!.witness)
             assertEquals(mapOf(LabCheck.NOT_RUN to 1), checks.recheck(id) { false }.states)
@@ -281,7 +281,7 @@ class CheckerInvariantTest {
         broken.afterCase(id, 0)
         broken.await(id)
         assertEquals(null, labCheck(store, id))
-        assertEquals(Status.DONE, store.cases(id).single().status)
+        assertEquals(Status.DONE, store.plans.cases(id).single().status)
         assertTrue(logged.any { "no checkers here" in it }, logged.joinToString("\n"))
     }
 
@@ -304,8 +304,8 @@ class CheckerInvariantTest {
         val check = labCheck(store, id)!!
         assertEquals(LabCheck.NOT_RUN, check.state)
         assertContains(check.reason, "Dolmen did not finish")
-        assertEquals(text, store.caseRecordText(id, 0))
-        val outcome = Outcome.of(store.cases(id).single().record)!!
+        assertEquals(text, store.plans.caseRecordText(id, 0))
+        val outcome = Outcome.of(store.plans.cases(id).single().record)!!
         assertEquals(Reported(true, false, null, TIME_TO_BEST, 2), outcome.reported())
         assertEquals(WitnessCheck.UNCHECKED, outcome.witness)
     }
@@ -330,8 +330,8 @@ class CheckerInvariantTest {
         assertContains(check.reason, "E:unbound-id")
         assertEquals(1, check.resourceReceipts.size)
         assertTrue(check.inputs.isEmpty())
-        assertEquals(text, store.caseRecordText(id, 0))
-        val outcome = Outcome.of(store.cases(id).single().record)!!
+        assertEquals(text, store.plans.caseRecordText(id, 0))
+        val outcome = Outcome.of(store.plans.cases(id).single().record)!!
         assertEquals(Reported(true, false, null, TIME_TO_BEST, 2), outcome.reported())
         assertEquals(WitnessCheck.INDETERMINATE, outcome.witness)
     }

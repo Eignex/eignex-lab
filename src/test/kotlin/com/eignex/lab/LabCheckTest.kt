@@ -115,20 +115,20 @@ class LabCheckTest {
         store.startForTest()
         store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), problems, Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
         store.caseRecord(id, 0, claim)
-        assertEquals(WitnessCheck.UNCHECKED, Outcome.of(store.scoringCases(id).single().record)!!.witness)
+        assertEquals(WitnessCheck.UNCHECKED, Outcome.of(store.plans.scoringCases(id).single().record)!!.witness)
 
-        store.caseCheck(id, 0, check(LabCheck.VALID))
+        store.plans.caseCheck(id, 0, check(LabCheck.VALID))
 
-        for (case in listOf(store.cases(id).single(), store.scoringCases(id).single())) {
+        for (case in listOf(store.plans.cases(id).single(), store.plans.scoringCases(id).single())) {
             val record = case.record as JsonObject
             assertEquals(LabCheck.VALID, ((record["labCheck"] as JsonObject)["state"] as JsonPrimitive).content)
             assertEquals(Policies.XCSP3, (record["validationPolicy"] as JsonPrimitive).content)
             assertEquals("reported-result-v1", (record["benchValidationPolicy"] as JsonPrimitive).content)
             assertEquals(WitnessCheck.ACCEPTED, Outcome.of(record)!!.witness)
         }
-        assertEquals(listOf(Policies.XCSP3), Compare.compare(listOf("base"), store.cases(id)).arms.single().validationPolicies)
+        assertEquals(listOf(Policies.XCSP3), Compare.compare(listOf("base"), store.plans.cases(id)).arms.single().validationPolicies)
         store.caseRecord(id, 0, claim)
-        assertFalse("labCheck" in store.cases(id).single().record.toString())
+        assertFalse("labCheck" in store.plans.cases(id).single().record.toString())
     }
 
     @Test
@@ -151,8 +151,8 @@ class LabCheckTest {
         store.startForTest()
         store.plan(target, listOf(PlannedArm(Arm("a", emptyMap()), "sha"), PlannedArm(Arm("b", emptyMap()), "sha")), problems,
             Experiments.cases(2, 2, emptyList()), List(4) { "true" to 1L })
-        val cases = store.casePlan(target)
-        assertEquals("sha", store.caseSha(target, cases.first().index), "a case's checks read repository files at its arm's commit")
+        val cases = store.plans.casePlan(target)
+        assertEquals("sha", store.plans.caseSha(target, cases.first().index), "a case's checks read repository files at its arm's commit")
         for (case in cases) {
             store.commandStarted(target, case.index)
             store.commandFinished(target, case.index, 0)
@@ -172,7 +172,7 @@ class LabCheckTest {
         Runner(config, store, sourceChecker = { checker }).analyze(job)
 
         assertEquals(Status.DONE, store.job(id)!!.status)
-        val witnesses = store.cases(target).associate { (it.arm to it.problem.format) to Outcome.of(it.record)!!.witness }
+        val witnesses = store.plans.cases(target).associate { (it.arm to it.problem.format) to Outcome.of(it.record)!!.witness }
         assertEquals(WitnessCheck.ACCEPTED, witnesses["a" to "XCSP3"])
         assertEquals(WitnessCheck.INVALID, witnesses["b" to "XCSP3"])
         assertEquals(WitnessCheck.UNCHECKED, witnesses["a" to "DIMACS"])

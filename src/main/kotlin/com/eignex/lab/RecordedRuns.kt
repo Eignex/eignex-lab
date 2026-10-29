@@ -14,7 +14,7 @@ import kotlinx.serialization.json.Json
  *  command's index. A job with commands is planned. */
 internal fun Store.plan(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) {
     require(cases.size == commands.size) { "a command per case" }
-    executionTransaction { planRows(jobId, arms, problems, cases, commands.map { (cmd, timeout) -> CaseCommand(cmd, timeout) }) }
+    executionTransaction { plans.planRows(jobId, arms, problems, cases, commands.map { (cmd, timeout) -> CaseCommand(cmd, timeout) }) }
 }
 
 /** Mark [jobId] set up at [sha]. */
@@ -40,7 +40,7 @@ internal fun Store.commandFinished(jobId: Long, index: Int, exitCode: Int) = exe
 
 /** Keep the record a case wrote, compacted ([StoredRecords]); a lab check of the record it replaces goes with it. */
 internal fun Store.caseRecord(jobId: Long, index: Int, record: String): Int = executionTransaction {
-    it.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", storedRecord(record), jobId, index)
+    it.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", plans.storedRecord(record), jobId, index)
 }
 
 /** Keep the native solver stdout files case [index] of [jobId] left ([CaseResult.stdout]), replacing any earlier ones. */
@@ -64,26 +64,18 @@ internal fun Store.importExperiment(
     sources: List<String>,
 ): Long = executionTransaction { db ->
     val at = now()
-    val id = db.prepareStatement(
-        "INSERT INTO jobs (name, ref, sha, status, setup_done, created_at, started_at, finished_at, experiment, backend) " +
-            "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'legacy')",
-        java.sql.Statement.RETURN_GENERATED_KEYS,
-    ).use {
-        it.setString(1, name)
-        it.setString(2, ref)
-        it.setString(3, sha)
-        it.setString(4, Status.DONE.name)
-        it.setLong(5, at)
-        it.setLong(6, at)
-        it.setLong(7, at)
-        it.setString(8, Json.encodeToString(spec))
-        it.executeUpdate()
-        it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
-    }
-    planRows(id, arms, problems, records.map { it.first }, sources.map { CaseCommand(it, 0L) })
+    val columns = JobColumns.of(spec)
+    val origin = JobOrigin.of(name)
+    val id = db.sqlInsert(
+        "INSERT INTO jobs (name, ref, sha, status, setup_done, created_at, started_at, finished_at, experiment, backend, host, analysis, bench, measurement, " +
+            "origin, series) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'legacy', ?, ?, ?, ?, ?, ?)",
+        name, ref, sha, Status.DONE.name, at, at, at, Json.encodeToString(spec), columns.host, columns.analysis, columns.bench,
+        columns.measurement, origin.kind, origin.series,
+    )
+    plans.planRows(id, arms, problems, records.map { it.first }, sources.map { CaseCommand(it, 0L) })
     db.sqlUpdate("UPDATE commands SET status = ? WHERE job_id = ?", Status.DONE.name, id)
     records.forEachIndexed { index, (_, record) ->
-        db.sqlUpdate("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", storedRecord(record), id, index)
+        db.sqlUpdate("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", plans.storedRecord(record), id, index)
     }
     id
 }

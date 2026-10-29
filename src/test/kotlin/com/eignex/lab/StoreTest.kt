@@ -29,8 +29,8 @@ class StoreTest {
         }
 
         val node = RecordedHost.Node("i-7")
-        assertEquals(listOf(RecordedHost.Local, node, null), store.cases(local).map { it.host })
-        assertEquals(listOf(RecordedHost.UnknownCloud, node, null), store.cases(cloud).map { it.host })
+        assertEquals(listOf(RecordedHost.Local, node, null), store.plans.cases(local).map { it.host })
+        assertEquals(listOf(RecordedHost.UnknownCloud, node, null), store.plans.cases(cloud).map { it.host })
         assertEquals(listOf(null, node, null), store.job(local)!!.commands.map { it.host })
         assertEquals("echo rendered", store.job(local)!!.commands[1].cmd)
     }
@@ -51,9 +51,9 @@ class StoreTest {
         store.caseStdout(id, 1, CaseFile.stdout(dir, 1))
 
         val expected = CaseFile("cases/0/p_1.out", 4, "d9dbf94b05b8314af9ca7f2034e92685c33447917605a7243b1099c693a12e5e")
-        assertEquals(listOf(listOf(expected), emptyList()), store.cases(id).map { it.stdout })
+        assertEquals(listOf(listOf(expected), emptyList()), store.plans.cases(id).map { it.stdout })
         assertTrue("\"sha256\":\"${expected.sha256}\"" in
-            io.ktor.serialization.kotlinx.json.DefaultJson.encodeToString(CaseResult.serializer(), store.cases(id)[0]))
+            io.ktor.serialization.kotlinx.json.DefaultJson.encodeToString(CaseResult.serializer(), store.plans.cases(id)[0]))
         dir.toFile().deleteRecursively()
     }
 
@@ -66,8 +66,8 @@ class StoreTest {
         store.plan(id, arms.map { PlannedArm(it, "sha") }, listOf(Problem("s", "p")), Experiments.cases(1, 3, emptyList()),
             List(3) { "true" to 1L })
 
-        assertEquals(mapOf("debug=true" to true, "debug=false" to false, "default" to true), store.cases(id).associate { it.arm to it.labDebug })
-        assertTrue("\"labDebug\":false" in io.ktor.serialization.kotlinx.json.DefaultJson.encodeToString(CaseResult.serializer(), store.cases(id).single { it.arm == "debug=false" }))
+        assertEquals(mapOf("debug=true" to true, "debug=false" to false, "default" to true), store.plans.cases(id).associate { it.arm to it.labDebug })
+        assertTrue("\"labDebug\":false" in io.ktor.serialization.kotlinx.json.DefaultJson.encodeToString(CaseResult.serializer(), store.plans.cases(id).single { it.arm == "debug=false" }))
     }
 
     @Test
@@ -79,7 +79,7 @@ class StoreTest {
         store.caseRecord(id, 0, """{"stats":{"labMeasurement":"jfr","labDebug":"false"}}""")
         store.caseRecord(id, 1, """{"stats":{"labMeasurement":"compilation+log","labDebug":"true"}}""")
 
-        for (cases in listOf(store.cases(id), store.scoringCases(id))) {
+        for (cases in listOf(store.plans.cases(id), store.plans.scoringCases(id))) {
             assertEquals(listOf(false, true), cases.map { it.instrumented })
             assertEquals(listOf(false, true), cases.map { it.labDebug })
         }
@@ -134,7 +134,11 @@ class StoreTest {
         val stuck = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
         val waiting = store.create("b", "main", listOf("true" to 10L), experiment = ExperimentSpec("b"))
         // What a runner from before left: requeued after its cancel was requested.
-        DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().executeUpdate("UPDATE jobs SET cancel_requested = 1 WHERE id = $stuck") }
+        // What a runner from before left, in a database from before numbered migrations.
+        DriverManager.getConnection("jdbc:sqlite:$file").use {
+            it.createStatement().executeUpdate("UPDATE jobs SET cancel_requested = 1 WHERE id = $stuck")
+            it.createStatement().execute("PRAGMA user_version = 0")
+        }
 
         val reopened = Store(file)
         assertEquals(listOf(Status.CANCELLED, Status.QUEUED), listOf(stuck, waiting).map { reopened.job(it)!!.status })
@@ -177,13 +181,13 @@ class StoreTest {
     @Test
     fun `a launch asked for lasts until its run is queued and keeps the schedule's check time`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val id = store.createSchedule("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "s")), description = "d"), 3600)
-        store.scheduleChecked(id, 1_000)
+        val id = store.schedules.create("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "s")), description = "d"), 3600)
+        store.schedules.checked(id, 1_000)
 
-        val launched = store.launchNow(id)
-        val asked = store.schedules().single()
-        store.scheduleRan(id, "abc", 7)
-        val ran = store.schedules().single()
+        val launched = store.schedules.launchNow(id)
+        val asked = store.schedules.all().single()
+        store.schedules.ran(id, "abc", 7)
+        val ran = store.schedules.all().single()
 
         assertEquals(listOf(true, true, 1_000L), listOf(launched, asked.launchRequested, asked.checkedAt))
         assertEquals(false, ran.launchRequested)

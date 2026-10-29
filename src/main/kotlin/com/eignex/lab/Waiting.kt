@@ -75,7 +75,7 @@ object Waiting {
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })
         val running = analysis.firstOrNull { it.status == Status.RUNNING }
         return QueueView(analysis.filter { it.status == Status.QUEUED }.map { it.id }, analysis.firstOrNull()?.id,
-            running?.let { localWork(it, null) }, config.cores, store.schedules(),
+            running?.let { localWork(it, null) }, config.cores, store.schedules.all(),
             runCatching { Volumes.hold(config) }.getOrNull(), at)
     }
 

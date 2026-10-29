@@ -158,7 +158,7 @@ internal fun jobPage(
     if (previous != null) {
         append("<p>Previous run of this schedule: <a href=\"/jobs/$previous\">$previous</a> · ")
         append("<a href=\"/compare?jobs=$previous,${job.id}\">compare with it</a> · ")
-        append("<a href=\"/trend${query("name" to job.name.substringBefore('@'))}\">trend</a></p>")
+        append("<a href=\"/trend${query("name" to job.origin.series)}\">trend</a></p>")
     }
     val spec = job.experiment
     if (spec.isAnalysis) {
@@ -1568,7 +1568,7 @@ private fun jobTable(
             append("<tr>")
         }
         append("<td><a href=\"/jobs/${job.id}\">${job.id}</a></td>")
-        val base = job.name.substringBefore('@')
+        val base = job.origin.series
         append("<td><a class=\"plain\" href=\"/${query("name" to base)}\" title=\"all runs of ${esc(base)}\">${esc(job.name)}</a>")
         append(" <span class=\"kind\">${kindOf(job)}</span>")
         job.experiment.description.takeIf { it.isNotBlank() }?.let {
@@ -1593,12 +1593,12 @@ internal fun kindOf(job: Job): String {
     val spec = job.experiment
     if (spec.isProfile) return "profile"
     if (spec.isScript) return "custom"
-    if (Confirm.SUFFIX in job.name) return "confirm"
+    if (job.origin is JobOrigin.Confirmation) return "confirm"
     val arms = runCatching { Experiments.arms(spec) }.getOrDefault(emptyList())
     return when {
         arms.any { it.values["backend"] == REFERENCE_BACKEND } -> "reference solve"
         arms.size > 1 -> "a/b"
-        '@' in job.name -> "schedule"
+        job.origin is JobOrigin.Scheduled -> "schedule"
         else -> "run"
     }
 }

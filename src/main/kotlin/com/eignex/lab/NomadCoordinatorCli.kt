@@ -69,16 +69,16 @@ object NomadCoordinatorCli {
             changed = { admissionSignal.wake(); reconcileSignal.wake() },
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
             writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
-            val (problem, arm) = store.caseOf(job, index) ?: error("case missing")
+            val (problem, arm) = store.plans.caseOf(job, index) ?: error("case missing")
             if (arm.values["backend"] != REFERENCE_BACKEND && !SourceValidation.requested(store.job(job)?.experiment, arm.values)) return@check "not-required"
             val key = job to index
             if (pendingChecks.size >= 64 && !pendingChecks.containsKey(key)) return@check null
             val future = pendingChecks.computeIfAbsent(key) {
                 val task = object : java.util.concurrent.FutureTask<String>(java.util.concurrent.Callable {
                     if (arm.values["backend"] == REFERENCE_BACKEND) {
-                        if (problem.collection.isNotEmpty()) store.caseRecordText(job, index)?.let { text ->
+                        if (problem.collection.isNotEmpty()) store.plans.caseRecordText(job, index)?.let { text ->
                             References.of(Json.parseToJsonElement(text))?.let { reference ->
-                                store.putReferences(listOf((problem.referenceKey) to reference), "lab:$job")
+                                store.references.put(listOf((problem.referenceKey) to reference), "lab:$job")
                             }
                         }
                         "not-required"

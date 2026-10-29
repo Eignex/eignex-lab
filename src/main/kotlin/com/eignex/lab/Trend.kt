@@ -105,8 +105,8 @@ object Trend {
         var previous: Pair<String, Long>? = null
         val ownCases = HashMap<Long, List<CaseResult>>()
         fun own(job: Long): List<CaseResult> = ownCases.getOrPut(job) {
-            val label = store.arms(job).firstOrNull()?.arm?.label
-            store.scoringCases(job).filter { it.arm == label }
+            val label = store.plans.arms(job).firstOrNull()?.arm?.label
+            store.plans.scoringCases(job).filter { it.arm == label }
         }
         var stale = false
         val runs = jobs.mapNotNull { job ->
@@ -128,11 +128,11 @@ object Trend {
                 return@mapNotNull null
             }
             val base = cached?.run ?: run {
-                val arms = store.arms(job.id)
-                val cases = store.scoringCases(job.id)
+                val arms = store.plans.arms(job.id)
+                val cases = store.plans.scoringCases(job.id)
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
                 val keys = cases.map { it.problem.referenceKey }
-                val trend = run(job, arms, cases, store.references(keys, sources = References.sources(cases)), store.features(keys.distinct()))
+                val trend = run(job, arms, cases, store.references.matching(keys, sources = References.sources(cases)), store.references.features(keys.distinct()))
                 if (trend == null) {
                     if (finished) cache?.put(job.id, version, stamp, null, emptySet())
                     pointless?.add(job.id)
@@ -148,7 +148,7 @@ object Trend {
             if (job.status == Status.DONE) previous = base.spec to job.id
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
             val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { done ->
-                cache?.confirmed(done.id) { Confirm.confirmed(store.scoringCases(done.id)) } ?: Confirm.confirmed(store.scoringCases(done.id))
+                cache?.confirmed(done.id) { Confirm.confirmed(store.plans.scoringCases(done.id)) } ?: Confirm.confirmed(store.plans.scoringCases(done.id))
             }
             base.copy(
                 confirmJob = confirmation?.id,
@@ -172,7 +172,7 @@ object Trend {
      * background thread takes them in that order, so the older runs wait behind every current view.
      */
     fun warm(store: Store, cache: TrendCache) {
-        val schedules = store.schedules()
+        val schedules = store.schedules.all()
         for (schedule in schedules) {
             val experiment = Experiments.trendFingerprint(schedule.experiment)
             cache.refreshLater("${schedule.name}/$experiment") { runs(store, schedule.name, cache, experiment = experiment) }
@@ -182,7 +182,7 @@ object Trend {
 
     /** Every run a schedule named [name] queued and did not cancel, oldest first, none of them read. */
     fun scheduled(store: Store, name: String): List<Job> = store.jobs(limit = MAX_RUNS, name = name, withCommands = false)
-        .filter { it.name.startsWith("$name@") && it.status != Status.CANCELLED }
+        .filter { it.origin == JobOrigin.Scheduled(name) && it.status != Status.CANCELLED }
         .sortedBy { it.id }
 
     fun run(
@@ -278,7 +278,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         return stamp
     }
 
-    fun sync(store: Store): Long? = sync(store.referencesStamp(), store::referencesChangedSince)
+    fun sync(store: Store): Long? = sync(store.references.stamp(), store.references::changedSince)
 
     /**
      * [job]'s point as cached for this [version] of the job ([TrendCache.version]), none for another: fresh unless the

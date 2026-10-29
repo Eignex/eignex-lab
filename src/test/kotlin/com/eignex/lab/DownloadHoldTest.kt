@@ -68,7 +68,7 @@ class DownloadHoldTest {
             val first = hold(created.bodyAsText())
             assertEquals(id, first.job)
             assertEquals(JobTrim.HOLD_MS, first.expiresAt - first.createdAt)
-            assertEquals(listOf(first), store.holds())
+            assertEquals(listOf(first), store.holds.active())
 
             val short = hold(client.post("/jobs/$id/hold?ttlSec=60").bodyAsText())
             assertNotEquals(first.id, short.id)
@@ -85,7 +85,7 @@ class DownloadHoldTest {
             assertEquals(HttpStatusCode.OK, client.delete("/jobs/$id/hold/${short.id}").status)
             assertEquals(HttpStatusCode.NotFound, client.delete("/jobs/$id/hold/${short.id}").status)
             assertEquals(HttpStatusCode.NotFound, client.post("/jobs/$id/hold/${short.id}").status)
-            assertEquals(listOf(first.id), store.holds().map { it.id })
+            assertEquals(listOf(first.id), store.holds.active().map { it.id })
 
             // The disk page and its data list the holds there are.
             assertContains(client.get("/disk") { header(HttpHeaders.Accept, "text/html") }.bodyAsText(), "Held for download")
@@ -93,18 +93,18 @@ class DownloadHoldTest {
             assertEquals(first.id, disk.getValue("holds").jsonArray.single().jsonObject.getValue("id").jsonPrimitive.content)
         }
         // Lapsed, a hold neither counts nor renews.
-        assertEquals(emptyList(), store.holds(at = now() + JobTrim.HOLD_MS + 1))
-        val lapsed = store.hold(id, hour, at = 0)
-        assertNull(store.renewHold(id, lapsed.id, hour, at = 2 * hour))
+        assertEquals(emptyList(), store.holds.active(at = now() + JobTrim.HOLD_MS + 1))
+        val lapsed = store.holds.take(id, hour, at = 0)
+        assertNull(store.holds.renew(id, lapsed.id, hour, at = 2 * hour))
     }
 
     @Test
     fun `holds outlive a restart`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val id = endedJob(config, Store(config.database))
-        val taken = Store(config.database).hold(id, JobTrim.HOLD_MS)
+        val taken = Store(config.database).holds.take(id, JobTrim.HOLD_MS)
 
-        assertEquals(listOf(taken), Store(config.database).holds())
+        assertEquals(listOf(taken), Store(config.database).holds.active())
     }
 
     @Test
@@ -121,7 +121,7 @@ class DownloadHoldTest {
                 header(HttpHeaders.Authorization, auth)
                 header("Sec-Fetch-Site", "cross-site")
             }.status)
-            assertEquals(emptyList(), store.holds())
+            assertEquals(emptyList(), store.holds.active())
             // curl sends neither Origin nor Sec-Fetch-Site, as the client's other writes do not.
             val taken = hold(client.post("/jobs/$id/hold") { header(HttpHeaders.Authorization, auth) }.bodyAsText())
             assertEquals(HttpStatusCode.Unauthorized, client.delete("/jobs/$id/hold/${taken.id}").status)
@@ -130,7 +130,7 @@ class DownloadHoldTest {
                 header(HttpHeaders.Origin, "https://evil.example")
             }.status)
             assertEquals(HttpStatusCode.OK, client.delete("/jobs/$id/hold/${taken.id}") { header(HttpHeaders.Authorization, auth) }.status)
-            assertEquals(emptyList(), store.holds())
+            assertEquals(emptyList(), store.holds.active())
         }
     }
 
@@ -142,7 +142,7 @@ class DownloadHoldTest {
         val job = store.job(id)!!
 
         assertFalse("held for download" in jobPage(config, job, failedOnly = false))
-        assertContains(jobPage(config, job, failedOnly = false, holds = listOf(store.hold(id, JobTrim.HOLD_MS))), "held for download until")
+        assertContains(jobPage(config, job, failedOnly = false, holds = listOf(store.holds.take(id, JobTrim.HOLD_MS))), "held for download until")
     }
 
     @Test
@@ -151,13 +151,13 @@ class DownloadHoldTest {
         val store = Store(config.database)
         val id = endedJob(config, store)
         val heldWhileListing = mutableListOf<List<Long>>()
-        withServer(config, store, onListing = { heldWhileListing += store.holds().map { it.job } }) { port ->
+        withServer(config, store, onListing = { heldWhileListing += store.holds.active().map { it.job } }) { port ->
             val dest = Files.createTempDirectory("fetched")
 
             assertEquals(0, lab(port, "fetch", "$id", dest.toString()))
 
             assertEquals(listOf(listOf(id)), heldWhileListing)
-            assertEquals(emptyList(), store.holds())
+            assertEquals(emptyList(), store.holds.active())
             for (path in listOf("job.log", "0.exit", "0.out", "0.err", "cases/0/record.json", "cases/0/out/solution.sol")) {
                 assertEquals(config.jobDir(id).resolve(path).readText(), dest.resolve(path).readText(), path)
             }
@@ -177,7 +177,7 @@ class DownloadHoldTest {
 
             assertEquals(1, lab(port, "fetch", "$id", dest.toString()))
 
-            assertEquals(emptyList(), store.holds())
+            assertEquals(emptyList(), store.holds.active())
             val receipt = Json.parseToJsonElement(dest.resolve("lab-fetch-missing.json").readText()).jsonObject
             assertEquals(id, receipt.getValue("job").jsonPrimitive.long)
             assertEquals(6, receipt.getValue("listed").jsonPrimitive.int)

@@ -41,7 +41,7 @@ class CaseExportTest {
             store.caseRecord(id, index, """{"kind":"satisfy","feasible":true,"validationPolicy":"reported-result-v1",""" +
                 """"finalWitness":"(model (define-fun x () Int $index))","stats":{"solveTime":5}}""")
         }
-        store.caseCheck(id, 0, check.json())
+        store.plans.caseCheck(id, 0, check.json())
         config.jobDir(id).toFile().mkdirs()
         return id
     }

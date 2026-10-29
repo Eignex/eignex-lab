@@ -17,9 +17,9 @@ internal class Schedules(
         fun regular(s: Schedule) = s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true
         // A requested launch is looked at on every poll until it queues, without moving the schedule's regular checks:
         // only a regular check stamps the time, so schedules staggered apart stay apart after a manual launch.
-        for (schedule in store.schedules().filter { it.launchRequested || regular(it) }) {
+        for (schedule in store.schedules.all().filter { it.launchRequested || regular(it) }) {
             val checking = regular(schedule)
-            if (checking) store.scheduleChecked(schedule.id, now())
+            if (checking) store.schedules.checked(schedule.id, now())
             val blocked = schedule.blockedReason()
             if (blocked != null) {
                 if (checking) println("schedule ${schedule.name}: blocked: $blocked; edit the saved experiment to resume")
@@ -48,7 +48,7 @@ internal class Schedules(
             if (fetched.isFailure) {
                 // Left due rather than checked, so the next poll tries again instead of a whole interval later.
                 println("schedule ${schedule.name}: fetch failed, retrying on the next poll: ${fetched.exceptionOrNull()?.message}")
-                if (checking) store.checkNow(schedule.id)
+                if (checking) store.schedules.checkNow(schedule.id)
                 continue
             }
             // A ref origin no longer has is not retried: it waits for the next interval like an unmoved one.
@@ -64,9 +64,10 @@ internal class Schedules(
                 configs = experiment.configs.map { it - "ref" }, grid = experiment.grid - "ref")
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
-            val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)))
-            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
-            store.scheduleRan(schedule.id, sha, id)
+            val origin = JobOrigin.Scheduled(schedule.name)
+            val spec = run.copy(host = Placement.host(run, origin, config, listOf(schedule)))
+            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec, origin)
+            store.schedules.ran(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
     }

@@ -26,7 +26,7 @@ class NomadQueue(
             completed(job)
             store.execution.domainCompleted(id)
         }
-        val schedules = store.schedules()
+        val schedules = store.schedules.all()
         for (listed in store.active().filter { it.runsOnNomad && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
             var job = listed
@@ -43,7 +43,7 @@ class NomadQueue(
                     val plans = preparation.armPlans.values.ifEmpty { listOfNotNull(preparation.benchPlan) }
                     plans.takeIf { it.isNotEmpty() }?.let { com.eignex.lab.bench.BenchPlan(it.flatMap { plan -> plan.cases }.mapIndexed { index, case -> case.copy(id = index.toString()) }) }
                 }
-                val targets = settings.matching(spec, job.name, Placement.cloudSchedule(job.name, schedules))
+                val targets = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
                     .filter { settings.solveBudget(it, job, preparedBench) != null }
                     .filter { if (it.os == "mac") spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
                 require(targets.isNotEmpty()) { "no configured Nomad worker can run this experiment within its resource budget" }
@@ -77,13 +77,13 @@ class NomadQueue(
                 val current = store.job(job.id) ?: continue
                 if (current.cancelRequested || current.paused || current.status.isTerminal) continue
                 if (store.unclaimed(job.id) == 0) continue
-                val cases = store.casePlan(job.id).map { row ->
+                val cases = store.plans.casePlan(job.id).map { row ->
                     val armIndex = recipe.arms.indexOfFirst { it.arm.label == row.arm }
                     val execution = preparation.armPlans[row.arm]?.cases?.single { BenchRuns.key(it) == BenchRuns.key(requireNotNull(row.problem.benchCase)) }
                     WorkCase(row.index, armIndex, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
                         current.commands.single { it.index == row.index }.timeoutSec, execution)
                 }
-                val pending = store.casePlan(job.id).filter { it.status.isActive }
+                val pending = store.plans.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
                 val minimumCpu = targets.minOf { checkNotNull(settings.solveBudget(it, current, preparedBench)).cpuMillis }
                 val requestedCpu = Math.multiplyExact(Math.multiplyExact(current.parallel, preparedBench?.let(BenchRuns::resources)?.cpus ?: recipe.arms.maxOf { it.arm.cores }), 1000)
@@ -205,8 +205,8 @@ class NomadQueue(
         }
         store.prepareNomad(job.id, recipe.arms, problems, cases, commands)
         if (preparation.features.isNotEmpty()) {
-            val known = store.features(preparation.features.map { ProblemKey(it.collection, it.problem) }).keys
-            store.putFeatures(preparation.features.filter { ProblemKey(it.collection, it.problem) !in known })
+            val known = store.references.features(preparation.features.map { ProblemKey(it.collection, it.problem) }).keys
+            store.references.putFeatures(preparation.features.filter { ProblemKey(it.collection, it.problem) !in known })
         }
     }
 }
@@ -308,7 +308,7 @@ internal fun preparationSelection(store: Store, spec: ExperimentSpec, requested:
         val solver = Experiments.arms(spec).map { it.values["solver"] }.distinct().singleOrNull()
         return requested.map { group ->
             val references = group.map { it.referenceKey }.distinct().chunked(256).flatMap { keys ->
-                active(); store.references(keys, solver).entries.map { it.key to it.value }
+                active(); store.references.matching(keys, solver).entries.map { it.key to it.value }
             }.toMap()
             group.filter { problem ->
                 val selectedMode = spec.bench.referenceFilters[problem.suite] ?: mode

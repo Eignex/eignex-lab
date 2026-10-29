@@ -87,7 +87,7 @@ class CaseChecks(
      */
     fun afterCase(jobId: Long, index: Int) {
         runCatching {
-            val (problem, arm) = store.caseOf(jobId, index) ?: return
+            val (problem, arm) = store.plans.caseOf(jobId, index) ?: return
             if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(store.job(jobId)?.experiment, arm.values)) return
             if (!checker.covers(problem.format)) return
             val future = pool.submit {
@@ -110,9 +110,9 @@ class CaseChecks(
 
     /** Check case [index] of [jobId], a case of [problem], from its whole stored record, and keep the verdict. */
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
-        val text = store.caseRecordText(jobId, index) ?: return null
+        val text = store.plans.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
-        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
+        val revision = store.plans.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
         val inputs = store.execution.accepted(jobId).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
@@ -123,7 +123,7 @@ class CaseChecks(
             val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
             checker.check(problem, record, revision, frame)
         } ?: return null
-        store.caseCheck(jobId, index, check.json())
+        store.plans.caseCheck(jobId, index, check.json())
         log(jobId, "case $index: ${check.policy}: ${check.state}: ${check.reason}")
         return check
     }
@@ -143,7 +143,7 @@ class CaseChecks(
      * validation, replacing earlier lab verdicts: a backfill, solving nothing. Stops early when [cancelled].
      */
     fun recheck(target: Long, cancelled: () -> Boolean): RecheckResult {
-        val cases = store.casePlan(target).filter { it.status == Status.DONE && checker.covers(it.problem.format) }
+        val cases = store.plans.casePlan(target).filter { it.status == Status.DONE && checker.covers(it.problem.format) }
         val states = sortedMapOf<String, Int>()
         val policies = sortedSetOf<String>()
         var checked = 0
