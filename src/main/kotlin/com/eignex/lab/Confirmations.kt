@@ -8,21 +8,34 @@ internal class Confirmations(private val config: Config, private val store: Stor
         if (spec.bench == null) return
         val schedule = store.schedules.all().singleOrNull { it.name == series } ?: return
         val fingerprint = Experiments.fingerprint(spec)
-        val previous = store.jobs(limit = PREVIOUS_RUNS, name = series)
+        val history = store.jobs(limit = PREVIOUS_RUNS, name = series)
             .filter { it.id < job.id && it.status == Status.DONE && it.experiment.let(Experiments::fingerprint) == fingerprint }
-            .maxByOrNull { it.id } ?: return
-        val before = previous.sha ?: return
+            .sortedByDescending { it.id }
+        val previous = history.firstOrNull() ?: return
+        val currentCases = firstArmCases(job.id)
+        val previousCases = firstArmCases(previous.id)
+        var reference = previous
+        var flips = Confirm.flips(previousCases, currentCases)
+        history.getOrNull(1)?.let { baseline ->
+            val baselineCases = firstArmCases(baseline.id)
+            val anchored = Confirm.persistent(baselineCases, previousCases, currentCases)
+            if (anchored.persistentObjectiveLost.isNotEmpty()) {
+                reference = baseline
+                flips = anchored
+            }
+        }
+        val before = reference.sha ?: return
         val after = checkNotNull(store.job(job.id)?.sha)
         if (before == after) return
-        val flips = Confirm.flips(firstArmCases(previous.id), firstArmCases(job.id))
         if (flips.confirmable.isEmpty()) return
-        val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id, previous.id)
+        val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id, reference.id,
+            sourceCases = currentCases)
         if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation,
             JobOrigin.Confirmation(series))
         logJob(config, job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
             "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +
-            "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${previous.id}: queued confirmation job $id")
+            "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${reference.id}: queued confirmation job $id")
     }
 
     private fun firstArmCases(jobId: Long): List<CaseResult> {

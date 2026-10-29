@@ -6,6 +6,29 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ConfirmTest {
+    @Test
+    fun `a persistent objective plateau is confirmed against its retained baseline`() {
+        val baseline = listOf(optimization("3"))
+        val previous = listOf(optimization("5"))
+        val current = listOf(optimization("5"))
+
+        val persistent = Confirm.persistent(baseline, previous, current)
+
+        assertEquals(1, persistent.persistentObjectiveLost.size)
+        assertEquals(persistent.objectiveLost, persistent.confirmable)
+        assertTrue(Confirm.persistent(baseline, previous, baseline).confirmable.isEmpty())
+        assertTrue(Confirm.persistent(baseline, baseline, current).confirmable.isEmpty())
+    }
+
+    @Test
+    fun `feasibility flips cannot pair different seeds or failed repetitions`() {
+        val before = listOf(case("p", "before", true).copy(seed = 1))
+        val after = listOf(case("p", "after", false).copy(seed = 3))
+
+        assertTrue(Confirm.flips(before, after).lost.isEmpty())
+        assertTrue(Confirm.flips(before, after.map { it.copy(seed = 1, status = Status.FAILED) }).lost.isEmpty())
+    }
+
     private fun case(problem: String, arm: String, solved: Boolean, repeat: Int = 0) = CaseResult(
         0, Status.DONE, Problem("s", problem), arm,
         record = Json.parseToJsonElement(
