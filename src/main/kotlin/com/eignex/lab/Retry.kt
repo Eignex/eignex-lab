@@ -37,7 +37,7 @@ fun <T> retrying(
             return step()
         } catch (e: Exception) {
             // A refused commit stays refused: no retry changes who pushed it.
-            if (attempt >= backoff.attempts || e is UntrustedCommit || e is ProfileRunTimeout || e is CancellationException) throw e
+            if (attempt >= backoff.attempts || e is UntrustedCommit || e is RunDeadlineExceeded || e is CancellationException) throw e
             val wait = backoff.delayAfter(attempt)
             onRetry(attempt, wait, e)
             sleep(wait)

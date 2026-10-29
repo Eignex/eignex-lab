@@ -55,7 +55,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         fun remaining(): Long = minOf(remainingLeaseMs(), (expires - System.nanoTime()) / 1_000_000)
         fun checkActive() {
             check(remaining() > 0) { "preparation allowance expired" }
-            if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            if (remainingRunMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
         }
         val replay = manifest.benchReplay
         val sharing = if (replay == null) shared else null

@@ -25,7 +25,7 @@ internal fun jobNodes(config: Config, store: Store, jobs: Collection<Long>): Map
     val snapshot = readCapacityReport(config)
     val allocations = snapshot?.nodes.orEmpty().flatMap { node -> node.reservations.map { it.id to node } }.toMap()
     val settings = runCatching {
-        config.nomadCapacitySettings?.let { Json.decodeFromString<CapacitySettings>(Files.readString(it)) }
+        config.nomadCapacitySettings?.let { CapacitySettings.read(it) }
     }.getOrNull()
     val pools = (settings?.pools ?: snapshot?.pools).orEmpty()
     return store.execution.runningNodes(jobs).mapValues { (_, nodes) ->

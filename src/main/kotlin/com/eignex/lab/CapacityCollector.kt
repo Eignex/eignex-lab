@@ -99,7 +99,7 @@ class CapacityCollector(
             val job = store.job(s.jobId)!!; val experiment = job.experiment!!
             val onDemand = NodeTags.onDemand(false, experiment.nodeTags)
             require(pool.market == if (onDemand) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT) { "session purchasing policy differs from pool" }
-            CapacityDemand(s.id, job.id, manifest.budget, 0.0, job.priority, spec["Meta"]?.jsonObject?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull, experiment.nodeTags,
+            CapacityDemand(s.id, job.id, manifest.budget, job.priority, spec["Meta"]?.jsonObject?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull, experiment.nodeTags,
                 pool.market, experiment.host != Experiments.AWS_HOST && NodeTags.matches(experiment.nodeTags, localTags),
                 when { s.executionClass in setOf("build", "prepare") -> CapacityWork.BUILD; experiment.isProfile -> CapacityWork.PROFILE; experiment.measuresCli -> CapacityWork.MEASUREMENT; else -> CapacityWork.SOLVE }, pool.id)
         }

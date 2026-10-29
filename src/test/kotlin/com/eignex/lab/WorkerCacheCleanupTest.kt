@@ -91,6 +91,16 @@ class WorkerCacheCleanupTest {
             }
         } finally { pool.shutdownNow(); deleteTree(parent) }
     }
+    @Test fun `tree deletion honors interruption before changing files`() {
+        val root = Files.createTempDirectory("interrupted-tree-deletion")
+        val file = Files.writeString(root.resolve("data"), "keep")
+        try {
+            Thread.currentThread().interrupt()
+            assertFailsWith<java.util.concurrent.CancellationException> { deleteTree(root) }
+            assertTrue(Files.exists(file))
+        } finally { Thread.interrupted(); deleteTree(root) }
+    }
+
     @Test fun `Mac garbage disk policy is restored after success and failure`() {
         org.junit.jupiter.api.Assumptions.assumeTrue(CliMeasurements.localMacOs)
         val original = assertNotNull(WorkerCacheIo.currentPolicy())

@@ -54,7 +54,7 @@ class PlacementTest {
         val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", classpath = listOf("tools/lib/*")))
 
         assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST, machines = 3), "e", config))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST), "e", config))
         assertEquals(Experiments.AUTO_HOST, Placement.host(profile, "p", config))
         assertFailsWith<IllegalArgumentException> { Placement.host(spec, "e", config(cloud = false)) }
     }
@@ -125,7 +125,7 @@ class PlacementTest {
     fun `where a run goes is not what it measures, so an old local run matches a new one that may go to the cloud`() {
         val stored = Json.decodeFromString<ExperimentSpec>(
             """{"name": "ref@abc", "problems": [{"suite": "s"}], "base": {"ref": "abc"}, "host": "lab", "description": "d"}""")
-        val taken = stored.copy(name = "ref@def", base = mapOf("ref" to "def"), host = Experiments.AWS_HOST, auto = true)
+        val taken = stored.copy(name = "ref@def", base = mapOf("ref" to "def"), host = Experiments.AWS_HOST)
         val opted = committed("klause-reference.json")
 
         assertEquals(Experiments.fingerprint(stored), Experiments.fingerprint(stored.copy(host = Experiments.AUTO_HOST)))

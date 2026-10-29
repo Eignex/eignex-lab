@@ -21,7 +21,7 @@ class WorkerRetryTest {
         assertEquals(60_000, time)
     }
     @Test fun `fencing cancellation and whole run expiry never retry`() {
-        for (failure in listOf(ExecutionFenced("lost"), ProfileRunTimeout(), InterruptedException(), java.util.concurrent.CancellationException())) {
+        for (failure in listOf(ExecutionFenced("lost"), RunDeadlineExceeded(), InterruptedException(), java.util.concurrent.CancellationException())) {
             var calls = 0
             assertSame(failure, assertFails { retry.run({ 80_000 }) { calls++; throw failure } })
             assertEquals(1, calls); assertEquals(0, time)

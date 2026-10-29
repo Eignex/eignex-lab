@@ -25,7 +25,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
 
     private fun prepareFrom(bundle: WorkerBundle, source: ((Path) -> Unit) -> Unit, budget: ResourceBudget, environment: Map<String, String>,
                             remainingRunMs: () -> Long?, trace: PreparationTrace, remainingLeaseMs: () -> Long, pinWaitingMs: Long = 0): Path {
-        fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
+        fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
         checkRun()
         val build = requireNotNull(bundle.build)
         val identity = identity(bundle, budget)
@@ -191,7 +191,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2, use: () -> T): T {
         require(slots in 1..64)
         while (true) {
-            if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
             check(lease() > 0) { "build lease expired while waiting for compiler" }
             for (slot in 0 until slots) {
                 ProcessFilePin.tryLock(root.resolve("compile-$slot.lock"))?.use { return use() }
@@ -219,7 +219,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     internal fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T {
         var slot = 0
         while (true) {
-            if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
             require(lease() > 0) { "build lease expired while acquiring dependency cache" }
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
             val name = if (slot == 0) key else "$key-$slot"
@@ -240,7 +240,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, waited: (Long) -> Unit = {}, use: () -> T): T {
         var waitingNanos = 0L
         while (true) {
-            if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
             require(lease() > 0) { "build lease expired while waiting for cache" }
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
             ProcessFilePin.tryLock(path)?.use { waited(waitingNanos / 1_000_000); return use() }

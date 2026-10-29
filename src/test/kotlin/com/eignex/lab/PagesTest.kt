@@ -35,7 +35,7 @@ class PagesTest {
         dir.resolve("cases/0/out").toFile().mkdirs()
         dir.resolve("cases/0/out/profile.jfr").toFile().writeText("jfr")
         dir.resolve("0.exit").toFile().writeText("timeout\n")
-        Termination.record(Termination.file(dir, 0), Termination.timeoutGraceful(7_320, 30_000))
+        Termination.record(Termination.file(dir, 0), "timeout: still running after its 7320 s limit, so the lab sent the case SIGTERM, and SIGKILL to what is left after 30 s")
 
         val page = jobPage(config, store.job(id)!!, failedOnly = false)
 
@@ -139,7 +139,7 @@ class PagesTest {
         val id = store.create("kills", "main", listOf("sleep 1" to 60L))
         store.commandFinished(id, 0, 137)
         val dir = Files.createDirectories(config.jobDir(id))
-        Termination.record(Termination.file(dir, 0), Termination.SHUTDOWN, at = 1)
+        Termination.record(Termination.file(dir, 0), "shutdown: the runner stopped, so the lab killed the case; it reruns when the runner is back", at = 1)
         Termination.record(Termination.file(dir, 0), Termination.external(137)!!, at = 2)
         testApplication {
             application { api(config, store, host) }
@@ -151,7 +151,7 @@ class PagesTest {
             assertContains(page, "external: exit 137 is a SIGKILL the lab did not send")
             val terminations = Json.parseToJsonElement(json).jsonObject.getValue("commands").jsonArray.single()
                 .jsonObject.getValue("terminations").jsonArray.map { it.jsonPrimitive.content }
-            assertEquals(listOf("1 ${Termination.SHUTDOWN}", "2 ${Termination.external(137)}"), terminations)
+            assertEquals(listOf("1 shutdown: the runner stopped, so the lab killed the case; it reruns when the runner is back", "2 ${Termination.external(137)}"), terminations)
         }
     }
 
@@ -349,15 +349,6 @@ class PagesTest {
         assertContains(current, "No run of this schedule's current experiment has results yet.")
         assertFalse("<body data-refresh" in current)
         assertFalse("/trend/progress" in current)
-    }
-
-    @Test
-    fun `a running AWS case's phase reads as what the lab is doing`() {
-        val backoff = CasePhase(CasePhase.Phase.RETRY_BACKOFF, 0, attempt = 2, attempts = 8, retryAt = 90_000)
-        val transfer = CasePhase(CasePhase.Phase.TRANSFERRING_OUTPUT, 0, elapsedMs = 10_175)
-
-        assertEquals("SSH dropped, waiting to retry for 1m, attempt 2 of 8 failed, next in 30s", phaseText(backoff, 60_000))
-        assertEquals("transferring output for 5s, solve took 10s", phaseText(transfer, 5_000))
     }
 
     @Test

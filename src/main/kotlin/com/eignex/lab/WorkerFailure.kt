@@ -21,3 +21,6 @@ internal fun checkPreparationExit(exit: Int, detail: () -> String) {
         else -> throw WorkerBuildFailure(detail())
     }
 }
+
+/** A run's whole-run deadline ran out. Its message is what a failed job records ([ExecutionStore]), so it is kept. */
+internal class RunDeadlineExceeded : IllegalStateException("Whole-run deadline exhausted")

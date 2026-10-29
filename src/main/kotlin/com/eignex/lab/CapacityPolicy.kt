@@ -2,6 +2,13 @@ package com.eignex.lab
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import java.nio.file.Files
+import java.nio.file.Path
 
 @Serializable
 enum class CapacityMarket(val tag: String) { @SerialName("spot") SPOT("spot"), @SerialName("on-demand") ON_DEMAND("on-demand") }
@@ -15,14 +22,13 @@ enum class CapacityNodeState { READY, BOOTING, DRAINING, UNAVAILABLE }
 data class CapacityPool(
     val id: String, val nodeClass: String, val vcpus: Int, val memoryMiB: Int, val maxNodes: Int,
     val tags: Set<String>, val market: CapacityMarket = CapacityMarket.SPOT,
-    /** Legacy policy reserve; Nomad already incorporates its host reserve in CPU-to-quota conversion. */
-    val reserveCpuMillis: Int = 0, val reserveMemoryMiB: Int = 1024,
+    val reserveMemoryMiB: Int = 1024,
     val minPriority: Int = 0, val sustainedMs: Long = 30_000, val cooldownMs: Long = 60_000, val idleMs: Long = 300_000,
 ) {
     init {
         require(id.matches(Regex("[a-z][a-z0-9-]{0,47}")) && nodeClass.isNotBlank())
         require(vcpus in 1..1024 && memoryMiB > 0 && maxNodes in 1..1000)
-        require(reserveCpuMillis in 0 until vcpus * 1000 && reserveMemoryMiB in 0 until memoryMiB)
+        require(reserveMemoryMiB in 0 until memoryMiB)
         require(sustainedMs >= 0 && cooldownMs >= 0 && idleMs >= 0)
         NodeTags.validate(NodeSelector(require = tags))
         require("hardware:unknown" !in tags && tags.count { it.startsWith("arch:") } == 1)
@@ -41,11 +47,11 @@ data class CapacityReservation(val id: String, val job: Long, val budget: Resour
 data class CapacityNode(val id: String, val pool: String, val state: CapacityNodeState, val reservations: List<CapacityReservation> = emptyList(), val emptySince: Long? = null, val countedInTarget: Boolean = true)
 @Serializable
 data class CapacityDemand(
-    val id: String, val job: Long, val budget: ResourceBudget, val coreHours: Double, val priority: Int,
+    val id: String, val job: Long, val budget: ResourceBudget, val priority: Int,
     val perHostParallel: Int? = null, val selector: NodeSelector? = null, val market: CapacityMarket = CapacityMarket.SPOT,
     val localEligible: Boolean = true, val work: CapacityWork = CapacityWork.SOLVE, val pool: String? = null,
 ) {
-    init { require(id.isNotBlank() && coreHours.isFinite() && coreHours >= 0 && (perHostParallel == null || perHostParallel > 0)); NodeTags.validate(selector) }
+    init { require(id.isNotBlank() && (perHostParallel == null || perHostParallel > 0)); NodeTags.validate(selector) }
     val caseParallel get() = if (work == CapacityWork.BUILD) 0 else budget.parallel
 }
 @Serializable
@@ -59,8 +65,23 @@ data class CapacityWait(val request: String, val reason: String)
 @Serializable
 data class CapacityDecision(val desired: Map<String, Int>, val placements: List<CapacityPlacement>, val waiting: List<CapacityWait>, val history: Map<String, CapacityHistory>)
 @Serializable
-data class CapacitySettings(val pools: List<CapacityPool>, val maxVcpus: Int, val localCores: Int = 1, val localPressureHours: Double = .25) {
-    init { require(pools.isNotEmpty() && pools.map { it.id }.distinct().size == pools.size && pools.map { it.nodeClass }.distinct().size == pools.size); require(maxVcpus > 0 && localCores > 0 && localPressureHours.isFinite() && localPressureHours >= 0) }
+data class CapacitySettings(val pools: List<CapacityPool>, val maxVcpus: Int) {
+    init { require(pools.isNotEmpty() && pools.map { it.id }.distinct().size == pools.size && pools.map { it.nodeClass }.distinct().size == pools.size); require(maxVcpus > 0) }
+
+    companion object {
+        /** Settings an older lab wrote that no longer decide anything; dropped on read, so its files keep loading. */
+        private val RETIRED = setOf("localCores", "localPressureHours")
+        private val RETIRED_POOL = setOf("reserveCpuMillis")
+
+        fun parse(text: String): CapacitySettings {
+            val body = Json.parseToJsonElement(text).jsonObject
+            val pools = body["pools"]?.jsonArray?.map { JsonObject(it.jsonObject - RETIRED_POOL) }
+            val current = JsonObject(body - RETIRED + (pools?.let { mapOf("pools" to JsonArray(it)) } ?: emptyMap()))
+            return Json.decodeFromJsonElement(serializer(), current)
+        }
+
+        fun read(path: Path): CapacitySettings = parse(Files.readString(path))
+    }
 }
 
 /** Pure packing/admission policy. No provider types, credentials, SDKs, instance names or cloud commands. */

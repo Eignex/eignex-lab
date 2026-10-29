@@ -28,7 +28,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     private fun leaseRemainingMs(): Long = retryLeaseDeadline.get().takeIf { it != Long.MAX_VALUE }
         ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
-    private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
+    private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
     private fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
         val started = System.nanoTime()
         val timeout = if (path == "run-timeout") 30_000L else {
@@ -149,7 +149,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 logs.close()
                 deleteTree(directory)
                 if (result.runTimedOut) return
-            } catch (_: ProfileRunTimeout) {
+            } catch (_: RunDeadlineExceeded) {
                 retry(ignoreRunDeadline = true) { json("run-timeout", Json.encodeToString(claim.owner)) }
                 return
             } catch (failure: WorkerBuildFailure) {

@@ -12,10 +12,10 @@ class TerminationTest {
         val dir = Files.createTempDirectory("job")
         assertTrue(Termination.read(dir, 4).isEmpty())
 
-        Termination.record(Termination.file(dir, 4), Termination.SHUTDOWN, at = 1)
+        Termination.record(Termination.file(dir, 4), "shutdown: the runner stopped, so the lab killed the case; it reruns when the runner is back", at = 1)
         Termination.record(Termination.file(dir, 4), Termination.external(137)!!, at = 2)
 
-        assertEquals(listOf("1 ${Termination.SHUTDOWN}", "2 ${Termination.external(137)}"), Termination.read(dir, 4))
+        assertEquals(listOf("1 shutdown: the runner stopped, so the lab killed the case; it reruns when the runner is back", "2 ${Termination.external(137)}"), Termination.read(dir, 4))
     }
 
     @Test

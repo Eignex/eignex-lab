@@ -37,8 +37,6 @@ class SubmissionOptionsTest {
         assertFailsWith<IllegalArgumentException> { spec(legacy) }
         val restored = storedExperiment(legacy)
         assertEquals(Experiments.LAB_HOST, restored.host)
-        assertTrue(restored.auto)
-        assertEquals(3, restored.machines)
         assertEquals(NodeSelector(setOf("local"), setOf("spot")), restored.nodeTags)
         assertEquals(restored, storedExperiment(Json.encodeToString(ExperimentSpec.serializer(), restored)))
     }

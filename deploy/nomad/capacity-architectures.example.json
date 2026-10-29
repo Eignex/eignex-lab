@@ -1,6 +1,5 @@
 {
   "maxVcpus": 128,
-  "localCores": 8,
   "pools": [
     {
       "id": "avx512-spot",

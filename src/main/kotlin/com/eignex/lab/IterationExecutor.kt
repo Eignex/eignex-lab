@@ -24,7 +24,7 @@ class IterationExecutor(
         val runDeadline = runLimit?.let { System.nanoTime() + it.coerceAtLeast(0) * 1_000_000 }
         fun runRemaining() = runDeadline?.let { minOf((it - System.nanoTime()) / 1_000_000, remainingRunMs() ?: Long.MAX_VALUE) }
         fun checkRun() {
-            if (runRemaining()?.let { it <= 0 } == true) throw ProfileRunTimeout()
+            if (runRemaining()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
             if (remainingLeaseMs() <= 0) throw ExecutionFenced("lease expired during staging")
         }
         checkRun()
@@ -105,7 +105,7 @@ class IterationExecutor(
                     var exit = try { supervisor.run(listOf("bash", "-c", command), worktree, env,
                         directory.resolve("${case.index}.out"), directory.resolve("${case.index}.err"), case.timeoutSec,
                         graceMs = graceMs, runRemainingMs = processRunMs, remainingLeaseMs = remainingLeaseMs)
-                    } catch (_: ProfileRunTimeout) {
+                    } catch (_: RunDeadlineExceeded) {
                         timedOut.set(true)
                         Termination.record(directory.resolve("${case.index}.termination"), Termination.deadline(graceMs))
                         124
@@ -123,7 +123,7 @@ class IterationExecutor(
                 } finally { cpu.release(permits) }
             } }).map { future ->
                 try { future.get() } catch (error: java.util.concurrent.ExecutionException) {
-                    if (error.cause is ProfileRunTimeout) throw error.cause!!
+                    if (error.cause is RunDeadlineExceeded) throw error.cause!!
                     throw error
                 }
             }
