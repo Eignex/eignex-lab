@@ -23,11 +23,20 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         val identity = identity(bundle, budget)
         Files.createDirectories(root)
         val destination = root.resolve(identity)
+        val waitingAt = System.nanoTime()
         return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs) {
+            val waitingMs = (System.nanoTime() - waitingAt) / 1_000_000
             trace.step("cache-cleanup") { maintain() }
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
-            if (trace.step("build-cache") { valid(destination, identity, ::checkRun) }) {
+            val verification = TreeVerification()
+            val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
+            val verificationAt = System.nanoTime()
+            val hit = trace.step("build-cache") { valid(destination, identity, ::checkRun, verification) }
+            trace.cache("build", if (hit) "hit" else "miss", if (hit) (if (verification.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
+                verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs, checkedFiles = verification.stats.checkedFiles,
+                hashedFiles = verification.stats.hashedFiles, hashedBytes = verification.stats.hashedBytes)
+            if (hit) {
                 Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
                 return@locked destination.resolve("tree")
             }
@@ -247,13 +256,13 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         if (garbage.isNotEmpty()) println("worker build cache cleanup: trees=${garbage.size}")
     }
 
-    private fun valid(path: Path, identity: String, checkActive: () -> Unit): Boolean {
+    private fun valid(path: Path, identity: String, checkActive: () -> Unit, verification: TreeVerification): Boolean {
         val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json"))) }.getOrNull() ?: return false
         if (entry.files.isEmpty() || entry.files.fold(0L) { total, file ->
                 if (file.bytes > maxBytes - total) return false
                 total + file.bytes
             } > maxBytes) return false
-        return entry.identity == identity && TreeVerification().valid(path.resolve("tree"), entry.files,
+        return entry.identity == identity && verification.valid(path.resolve("tree"), entry.files,
             path.resolve("verified.json"), checkActive, exactExecutables = true)
     }
     private fun copy(source: Path, destination: Path, checkActive: () -> Unit) {

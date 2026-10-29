@@ -20,14 +20,23 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
     })
 
     fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, action: (Path) -> T): T =
-        use(bundle, checkActive, false, download, action)
+        use(bundle, checkActive, false, download, action, PreparationTrace())
+
+    internal fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace, action: (Path) -> T): T =
+        use(bundle, checkActive, false, download, action, trace)
+
+    /** Publish a private verified tree directly: filesystem clones avoid ZIP rereads/decompression and rewrites. */
+    internal fun seed(bundle: WorkerBundle, source: Path, sourceReceipt: Path, checkActive: () -> Unit,
+                      trace: PreparationTrace = PreparationTrace()) {
+        use(bundle, checkActive, false, { error("seed cannot download") }, {}, trace, source to sourceReceipt)
+    }
 
     internal fun <T> useRuntime(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, action: (Path) -> T): T =
         // Existing verified full distributions remain useful. A miss avoids unpacking compiler intermediates even
         // for bundles published by older preparations; custom consumers still acquire their separate complete tree.
-        use(bundle, checkActive, !Files.isDirectory(entries.resolve(inputCacheKey(bundle)), NOFOLLOW_LINKS), download, action)
+        use(bundle, checkActive, !Files.isDirectory(entries.resolve(inputCacheKey(bundle)), NOFOLLOW_LINKS), download, action, PreparationTrace())
 
-    private fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream, action: (Path) -> T): T {
+    private fun <T> use(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream, action: (Path) -> T, trace: PreparationTrace, seed: Pair<Path, Path>? = null): T {
         val key = inputCacheKey(bundle, runtimeOnly)
         val pin = guarded(checkActive) {
             Files.createDirectories(pins)
@@ -37,7 +46,8 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
         }
         try {
             val missing = !Files.isDirectory(entries.resolve(key), NOFOLLOW_LINKS)
-            val directory = if (runtimeOnly) verified.stageRuntime(bundle, checkActive, download) else verified.stage(bundle, checkActive, download)
+            val directory = if (seed != null) verified.seed(bundle, seed.first, seed.second, checkActive, trace)
+                else if (runtimeOnly) verified.stageRuntime(bundle, checkActive, download, trace) else verified.stage(bundle, checkActive, download, trace)
             Files.createDirectories(sizes)
             val size = sizes.resolve(key)
             if (!Files.exists(size)) {

@@ -7,8 +7,6 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.FileVisitResult
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.BasicFileAttributes
@@ -23,6 +21,12 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     }
     @Serializable internal data class Written(val file: InputFile, val stamp: Stamp)
     @Serializable private data class Receipt(val version: Int, val rootKey: String?, val files: List<Written>)
+    internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0)
+    val stats = Stats()
+    private fun checksum(path: Path, checkActive: () -> Unit, bytes: Long): String {
+        stats.hashedFiles++; stats.hashedBytes = Math.addExact(stats.hashedBytes, bytes)
+        return hash(path, checkActive)
+    }
     private class Invalid : RuntimeException()
 
     private fun reliable(tree: Path) = Files.getFileStore(tree).type().lowercase() in
@@ -66,21 +70,18 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         if (proof == null || !reliable(destination)) return // Portable checksum fallback when metadata cannot prove identity.
         val expected = proof.files.associateBy { it.file.path }
         val copied = mutableListOf<Written>()
-        Files.walkFileTree(destination, object : SimpleFileVisitor<Path>() {
-            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); return FileVisitResult.CONTINUE
-            }
-            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); require(attrs.isRegularFile) { "copy contains unsupported links" }
-                val name = destination.relativize(file).toString().replace('\\', '/')
-                val entry = requireNotNull(expected[name]) { "copy contains an unverified file" }.file
-                require(attrs.size() == entry.bytes && Files.isExecutable(file) == entry.executable) { "copy metadata differs" }
-                copied += written(file, entry)
-                return FileVisitResult.CONTINUE
-            }
-        })
+        walk(destination, checkActive) { file, observed ->
+            val name = destination.relativize(file).toString().replace('\\', '/')
+            val entry = requireNotNull(expected[name]) { "copy contains an unverified file" }.file
+            val actual = observed.stamp()
+            require(actual.bytes == entry.bytes && actual.executable == entry.executable) { "copy metadata differs" }
+            copied += Written(entry, actual)
+        }
         require(copied.map { it.file.path }.toSet() == expected.keys) { "private copy is incomplete" }
-        val observed = System.nanoTime(); record(destination, copied, receipt, checkActive)
+        val observed = System.nanoTime()
+        // The new private inodes were observed after copying; later use checks these exact stamps.
+        // Restatting the entire destination here cannot strengthen that later check.
+        writeReceipt(receipt, Receipt(1, rootKey(destination), copied.sortedBy { it.file.path }))
         println("worker copy timing: sourceMs=${(checked-started)/1_000_000} copyMs=${(copiedAt-checked)/1_000_000} confirmMs=${(confirmed-copiedAt)/1_000_000} targetMs=${(observed-confirmed)/1_000_000} receiptMs=${(System.nanoTime()-observed)/1_000_000} files=${copied.size}")
     }
 
@@ -97,30 +98,24 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         if (wanted.size != expected.size) return false
         val verified = mutableListOf<Written>()
         try {
-            Files.walkFileTree(tree, object : SimpleFileVisitor<Path>() {
-                override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    checkActive()
-                    return FileVisitResult.CONTINUE
-                }
-                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    checkActive()
-                    val name = tree.relativize(file).toString().replace('\\', '/')
-                    val entry = wanted[name] ?: run {
-                        if (allowUndeclared) return FileVisitResult.CONTINUE
+            walk(tree, checkActive) { file, observed ->
+                val name = tree.relativize(file).toString().replace('\\', '/')
+                val entry = wanted[name]
+                if (entry == null) {
+                    if (!allowUndeclared) {
                         if (!removeUndeclared) throw Invalid()
-                        Files.delete(file); return FileVisitResult.CONTINUE
+                        Files.delete(file)
                     }
-                    if (!attrs.isRegularFile) throw Invalid()
-                    val before = stamp(file, attrs)
-                    if (before.bytes != entry.bytes || (entry.executable || exactExecutables) && before.executable != entry.executable) throw Invalid()
+                } else {
                     val cached = old[name]
+                    val before = observed.stamp()
+                    if (before.bytes != entry.bytes || (entry.executable || exactExecutables) && before.executable != entry.executable) throw Invalid()
                     if (!reliableMetadata || !before.reusable || cached?.file != entry || cached.stamp != before) {
-                        if (hash(file, checkActive) != entry.sha256 || stamp(file) != before) throw Invalid()
+                        if (checksum(file, checkActive, before.bytes) != entry.sha256 || stamp(file) != before) throw Invalid()
                     }
                     verified += Written(entry, before)
-                    return FileVisitResult.CONTINUE
                 }
-            })
+            }
         } catch (_: Invalid) { return false } catch (_: IOException) { return false }
         if (verified.size != expected.size) return false
         val result = Receipt(1, rootKey, verified.sortedBy { it.file.path })
@@ -132,28 +127,22 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     }
 
     /** Seal a newly private tree and its metadata receipt with one checksum pass, rather than hashing twice. */
-    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}, include: (Path) -> Boolean = { true }): List<InputFile> {
+    fun capture(tree: Path, receipt: Path, checkActive: () -> Unit = {}, directories: MutableList<String>? = null, include: (Path) -> Boolean = { true }): List<InputFile> {
         checkActive(); require(Files.isDirectory(tree, NOFOLLOW_LINKS))
         val files = mutableListOf<Written>(); var bytes = 0L
-        val old = if (reliable(tree)) previous(tree, receipt)?.files?.associateBy { it.file.path }.orEmpty() else emptyMap()
+        val previous = if (reliable(tree)) previous(tree, receipt) else null
+        val old = previous?.files?.associateBy { it.file.path }.orEmpty()
         val rootKey = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()
-        Files.walkFileTree(tree, object : SimpleFileVisitor<Path>() {
-            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); return if (include(tree.relativize(dir))) FileVisitResult.CONTINUE else FileVisitResult.SKIP_SUBTREE
-            }
-            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                checkActive(); if (!include(tree.relativize(file))) return FileVisitResult.CONTINUE
-                require(attrs.isRegularFile) { "workspace contains unsupported links" }
-                val before = stamp(file, attrs)
-                bytes = Math.addExact(bytes, before.bytes); require(bytes <= 32L * 1024 * 1024 * 1024)
-                val name = tree.relativize(file).toString().replace('\\', '/')
-                val cached = old[name]
-                val sha = if (before.reusable && cached?.stamp == before) cached.file.sha256 else hash(file, checkActive)
-                require(stamp(file) == before) { "workspace changed during sealing" }
-                files += Written(InputFile(name, sha, before.bytes, before.executable), before)
-                return FileVisitResult.CONTINUE
-            }
-        })
+        walk(tree, checkActive, include, directories) { file, observed ->
+            val name = tree.relativize(file).toString().replace('\\', '/')
+            val cached = old[name]
+            val before = observed.stamp()
+            bytes = Math.addExact(bytes, before.bytes); require(bytes <= 32L * 1024 * 1024 * 1024)
+            val reusable = before.reusable && cached?.stamp == before
+            val sha = if (reusable) requireNotNull(cached).file.sha256 else checksum(file, checkActive, before.bytes)
+            if (!reusable) require(stamp(file) == before) { "workspace changed during sealing" }
+            files += Written(InputFile(name, sha, before.bytes, before.executable), before)
+        }
         checkActive(); writeReceipt(receipt, Receipt(1, rootKey, files.sortedBy { it.file.path }))
         return files.map { it.file }
     }
@@ -166,18 +155,45 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         } finally { Files.deleteIfExists(temporary) }
     }
 
-    private fun stamp(file: Path, attrs: BasicFileAttributes? = null): Stamp {
-        // The Unix view returns inode, ctime, type and basic attributes from one stat call.
-        // Keep access(2) for executable semantics under the worker's effective user/ACLs.
-        val unix = try { Files.readAttributes(file, "unix:size,lastModifiedTime,ctime,fileKey,isRegularFile", NOFOLLOW_LINKS) }
-            catch (_: UnsupportedOperationException) { null }
-        if (unix != null) {
-            if (unix["isRegularFile"] != true) throw IOException("verification requires a regular file")
-            return Stamp(unix["size"] as Long, unix["lastModifiedTime"].toString(), unix["ctime"]?.toString(),
-                unix["fileKey"]?.toString(), Files.isExecutable(file))
+    private fun rootKey(tree: Path) = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()
+
+    /** One no-follow stat per entry instead of walkFileTree's basic stat followed by another Unix stat.
+     * Keep access(2) for effective-user/ACL executable semantics, even when ctime/inode are unchanged. */
+    private class Observed(val file: Path, val directory: Boolean, val regular: Boolean,
+                           val bytes: Long, val modified: String, val changed: String?, val key: String?) {
+        fun stamp(): Stamp {
+            if (!regular) throw IOException("verification requires a regular file")
+            return Stamp(bytes, modified, changed, key, Files.isExecutable(file))
         }
-        val basic = attrs ?: Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-        if (!basic.isRegularFile) throw IOException("verification requires a regular file")
-        return Stamp(basic.size(), basic.lastModifiedTime().toString(), null, basic.fileKey()?.toString(), Files.isExecutable(file))
+    }
+
+    private fun observe(file: Path): Observed {
+        val unix = try { Files.readAttributes(file, "unix:size,lastModifiedTime,ctime,fileKey,isRegularFile,isDirectory", NOFOLLOW_LINKS) }
+            catch (_: UnsupportedOperationException) { null }
+        if (unix != null) return Observed(file, unix["isDirectory"] == true, unix["isRegularFile"] == true,
+            unix["size"] as Long, unix["lastModifiedTime"].toString(), unix["ctime"]?.toString(), unix["fileKey"]?.toString())
+        val basic = Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        return Observed(file, basic.isDirectory, basic.isRegularFile, basic.size(), basic.lastModifiedTime().toString(), null, basic.fileKey()?.toString())
+    }
+
+    private fun stamp(file: Path): Stamp {
+        stats.checkedFiles++
+        return observe(file).stamp()
+    }
+
+    private fun walk(tree: Path, checkActive: () -> Unit, include: (Path) -> Boolean = { true }, directories: MutableList<String>? = null, visit: (Path, Observed) -> Unit) {
+        fun directory(path: Path) {
+            checkActive()
+            if (path != tree) directories?.add(tree.relativize(path).toString().replace('\\', '/'))
+            Files.newDirectoryStream(path).use { entries ->
+                for (file in entries) {
+                    checkActive()
+                    if (!include(tree.relativize(file))) continue
+                    val observed = observe(file)
+                    if (observed.directory) directory(file) else { stats.checkedFiles++; visit(file, observed) }
+                }
+            }
+        }
+        if (include(tree.relativize(tree))) directory(tree)
     }
 }

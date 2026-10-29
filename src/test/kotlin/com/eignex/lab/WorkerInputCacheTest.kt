@@ -58,4 +58,37 @@ class WorkerInputCacheTest {
         use(cache, value) { assertEquals("fixture", Files.readString(it.resolve("file"))) }
         assertEquals(2, downloads)
     }
+    @Test fun `direct publication seeds a verified private tree without downloading and preserves empty directories`() {
+        val value = bundle("seeded"); val source = root.resolve("seeded")
+        Files.createDirectories(source.resolve("empty/nested"))
+        val receipt = root.resolve("seeded.verified.json")
+        TreeVerification().capture(source, receipt)
+        val cache = WorkerInputCache(root.resolve("shared"))
+        cache.seed(value.first, source, receipt, {})
+        Files.writeString(source.resolve("file"), "change")
+        use(cache, value) { input ->
+            assertEquals("seeded", Files.readString(input.resolve("file")))
+            assertTrue(Files.isDirectory(input.resolve("empty/nested")))
+        }
+        assertEquals(0, downloads)
+        val proof = root.resolve("shared/entries/${inputCacheKey(value.first)}.verified.json")
+        val trace = PreparationTrace()
+        cache.use(value.first, {}, { error("warm seed must not download") }, trace) {}
+        assertEquals("hit", trace.snapshot().caches["input"]?.outcome)
+        assertEquals(0, trace.snapshot().caches["input"]?.hashedFiles)
+        assertTrue(Files.isRegularFile(proof))
+    }
+
+    @Test fun `direct publication checks missing receipts and rejects corrupt source before publication`() {
+        val value = bundle("seeded"); val cache = WorkerInputCache(root.resolve("shared"))
+        val source = root.resolve("seeded"); val receipt = root.resolve("missing.json")
+        Files.writeString(source.resolve("file"), "broken")
+        assertFailsWith<IllegalArgumentException> { cache.seed(value.first, source, receipt, {}) }
+        assertFalse(Files.exists(root.resolve("shared/entries/${inputCacheKey(value.first)}")))
+        Files.writeString(source.resolve("file"), "seeded")
+        cache.seed(value.first, source, receipt, {})
+        use(cache, value) { assertEquals("seeded", Files.readString(it.resolve("file"))) }
+        assertEquals(0, downloads)
+    }
+
 }

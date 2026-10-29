@@ -1,7 +1,6 @@
 package com.eignex.lab
 
 import java.io.InputStream
-import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
@@ -16,9 +15,21 @@ import java.util.zip.ZipInputStream
 class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
     private val materialize: ((WorkerBundle, List<InputFile>, Path, Path, () -> Unit) -> Boolean)? = null) {
     fun stage(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, false, download)
-    internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, true, download)
+    internal fun stage(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace): Path = stage(bundle, checkActive, false, download, trace)
+    internal fun seed(bundle: WorkerBundle, source: Path, sourceReceipt: Path, checkActive: () -> Unit, trace: PreparationTrace) =
+        stage(bundle, checkActive, false, { error("seed cannot download") }, trace) { tree, receipt ->
+            val verifier = TreeVerification()
+            // Missing/corrupt receipts take the checksum path before using filesystem-copy proof.
+            require(verifier.valid(source, bundle.files, sourceReceipt, checkActive, exactExecutables = true)) { "seed source differs from approved files" }
+            verifier.copy(source, sourceReceipt, tree, receipt, checkActive, copy = { WorkerTrees.copy(source, tree, checkActive) })
+            true
+        }
 
-    private fun stage(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream): Path {
+    internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, true, download)
+    internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace): Path = stage(bundle, checkActive, true, download, trace)
+
+    private fun stage(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream,
+                      trace: PreparationTrace = PreparationTrace(), seed: ((Path, Path) -> Boolean)? = null): Path {
         checkActive()
         val included = bundle.files.filter { !runtimeOnly || WorkerTrees.runtimePath(Path.of(it.path)) }
         val declaredBytes = bundle.files.fold(0L) { total, file ->
@@ -30,19 +41,37 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
         val key = inputCacheKey(bundle, runtimeOnly)
         val destination = root.resolve(key)
         val receipt = root.resolve("$key.verified.json")
-        synchronized(fileLockFor(root.resolve("$key.lock"))) {
-        FileChannel.open(root.resolve("$key.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
+        val waitingAt = System.nanoTime()
+        // ProcessFilePin keeps a same-process waiter from opening and then closing another descriptor
+        // for a held POSIX lock (which would release the owner's cross-process lock).
+        while (true) {
             checkActive()
-            if (TreeVerification().valid(destination, included, receipt, checkActive)) return destination
+            val owner = ProcessFilePin.tryLock(root.resolve("$key.lock"))
+            if (owner == null) { Thread.sleep(10); continue }
+            owner.use {
+            val waitingMs = (System.nanoTime() - waitingAt) / 1_000_000
+            val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
+            val verificationAt = System.nanoTime()
+            checkActive()
+            val validation = TreeVerification()
+            val valid = validation.valid(destination, included, receipt, checkActive)
+            trace.cache("input", if (valid) "hit" else "miss", if (valid) (if (validation.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
+                verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs,
+                bytes = included.sumOf { it.bytes }, files = included.size,
+                checkedFiles = validation.stats.checkedFiles, hashedFiles = validation.stats.hashedFiles, hashedBytes = validation.stats.hashedBytes)
+            if (valid) return destination
             Files.deleteIfExists(receipt)
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
             val staging = Files.createTempDirectory(root, "$key-")
             val tree = staging.resolve("tree")
             try {
-                if (runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
+                if (seed?.invoke(tree, receipt) == true || runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
                     require(TreeVerification().valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
                     checkActive(); Files.move(tree, destination, ATOMIC_MOVE)
-                    println("worker input cache: materialized verified local build files=${included.size}")
+                    trace.cache("input", "miss", "verified-local", verificationMs = (System.nanoTime() - verificationAt) / 1_000_000,
+                        waitingMs = waitingMs, bytes = included.sumOf { it.bytes }, files = included.size,
+                checkedFiles = validation.stats.checkedFiles, hashedFiles = validation.stats.hashedFiles, hashedBytes = validation.stats.hashedBytes)
+                    println("worker input cache: materialized verified local files=${included.size}")
                     return destination
                 }
                 Files.createDirectory(tree)
@@ -99,7 +128,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 Files.move(tree, destination, ATOMIC_MOVE)
                 return destination
             } finally { remove(staging) }
-        } }
+        }
         }
     }
     private fun remove(path: Path) { Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
