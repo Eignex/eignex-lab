@@ -38,8 +38,9 @@ object DimacsCheckBench : BenchSuite {
         File(report, "original-record.json").writeText(original.toString())
         File(report, "effective-record.json").writeText(effective.toString())
         File(report, "origin.json").writeText(item.getValue("origin").toString())
-        val config = Config(dataDir = File(report, "flow").toPath())
-        val store = Store(File(report, "flow.db").toPath())
+        val state = context.outputDirectory.resolve("state").toFile().apply { mkdirs() }
+        val config = Config(dataDir = state.toPath())
+        val store = Store(File(state, "flow.db").toPath())
         val spec = ExperimentSpec("dimacs-capture", bench = BenchSpec("checker/dimacs.json", sourceValidation = true))
         val id = store.create(spec.name, "capture", emptyList(), experiment = spec)
         val problem = Problem("capture", "original.cnf", format = "DIMACS", model = model.absolutePath)

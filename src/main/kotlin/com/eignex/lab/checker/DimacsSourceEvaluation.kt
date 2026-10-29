@@ -98,7 +98,7 @@ internal object DimacsSourceEvaluation {
             val token = tokens.next() ?: break
             if (ended) invalid("tokens follow witness terminator")
             if (token.text == "v") {
-                if (token.line == previous.line) invalid("v prefix must start an assignment line")
+                if (token.line == previous.line || previous.text == "v") invalid("v prefix must start a nonempty assignment line")
             } else if (token.text == "0") ended = true
             else {
                 val literal = literal(token.text, source = false)
@@ -114,6 +114,7 @@ internal object DimacsSourceEvaluation {
             }
             previous = token
         }
+        if (previous.text == "v" && variables != 0) invalid("empty final assignment line")
         // A lab final v line may omit the terminator, but it may never omit a declared coordinate.
         if (count != variables) invalid("complete assignment requires every original coordinate 1..$variables exactly once (received $count)")
         return values

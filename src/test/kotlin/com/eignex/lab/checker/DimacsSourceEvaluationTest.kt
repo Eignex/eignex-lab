@@ -30,7 +30,7 @@ class DimacsSourceEvaluationTest {
     @Test fun `malformed contradictory duplicate and incomplete assignments are invalid`() {
         val source = "p cnf 2 1\n1 2 0\n"
         for (witness in listOf("s SATISFIABLE", "v", "v 1", "v 1 1 -2", "v 1 -1 -2", "v 1 -2 0 0", "v 1 0 -2",
-            "v 1 -2 x3", "v 1 -2.0", "v +1 -2", "v 01 -2", "v 1 -0", "v 1 -2147483648", "v 1 v -2", "v 1\ns SATISFIABLE")) {
+            "v 1 -2 x3", "v 1 -2.0", "v +1 -2", "v 01 -2", "v 1 -0", "v 1 -2147483648", "v 1 v -2", "v 1\ns SATISFIABLE", "v 1 -2\nv", "v\nv 1 -2")) {
             assertEquals(LabCheck.INVALID, check(source, witness).state, witness)
         }
         assertContains(check(source, "v 1 -1 -2").reason, "contradictory")
