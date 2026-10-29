@@ -16,13 +16,15 @@ data class PreparationProgress(val stage: String, val elapsedMs: Long, val stage
  * An absent entry may be new, evicted, changed or on another node: it deliberately makes no stronger claim. */
 @Serializable
 data class PreparationCacheEvent(val outcome: String, val reason: String, val verificationMs: Long = 0,
-                                 val waitingMs: Long = 0, val bytes: Long? = null, val files: Int? = null) {
+                                 val waitingMs: Long = 0, val bytes: Long? = null, val files: Int? = null,
+                                 val checkedFiles: Int = 0, val hashedFiles: Int = 0, val hashedBytes: Long = 0) {
     init {
         require(outcome in setOf("hit", "miss", "bypass"))
         require(reason in PreparationTrace.cacheReasons)
         require(verificationMs in 0..86_400_000 && waitingMs in 0..86_400_000)
         require(bytes == null || bytes in 0..(64L * 1024 * 1024 * 1024))
         require(files == null || files in 0..1_000_000)
+        require(checkedFiles in 0..1_000_000 && hashedFiles in 0..1_000_000 && hashedBytes in 0..(64L * 1024 * 1024 * 1024))
     }
 }
 
@@ -37,9 +39,10 @@ class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {
     private val totals = linkedMapOf<String, Long>()
     private val caches = linkedMapOf<String, PreparationCacheEvent>()
     @Synchronized fun cache(name: String, outcome: String, reason: String, verificationMs: Long = 0,
-                            waitingMs: Long = 0, bytes: Long? = null, files: Int? = null) {
+                            waitingMs: Long = 0, bytes: Long? = null, files: Int? = null,
+                            checkedFiles: Int = 0, hashedFiles: Int = 0, hashedBytes: Long = 0) {
         require(name in cacheLabels)
-        caches[name] = PreparationCacheEvent(outcome, reason, verificationMs, waitingMs, bytes, files)
+        caches[name] = PreparationCacheEvent(outcome, reason, verificationMs, waitingMs, bytes, files, checkedFiles, hashedFiles, hashedBytes)
     }
     @Synchronized fun snapshot(): PreparationProgress {
         val at = nanoTime()

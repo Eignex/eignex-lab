@@ -2132,6 +2132,8 @@ internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()
                     append("${esc(PreparationTrace.cacheLabels.getValue(name))}: ${event.outcome} (${esc(PreparationTrace.cacheReasons.getValue(event.reason))})")
                     if (event.verificationMs > 0) append(", verification ${seconds(event.verificationMs)}")
                     if (event.waitingMs > 0) append(", waiting ${seconds(event.waitingMs)}")
+                    if (event.checkedFiles > 0) append(", checked ${event.checkedFiles} files")
+                    if (event.hashedFiles > 0) append(", rehashed ${event.hashedFiles} files / ${event.hashedBytes} bytes")
                 }
             })
         }
