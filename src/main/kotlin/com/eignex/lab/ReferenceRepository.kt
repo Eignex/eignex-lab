@@ -2,49 +2,25 @@ package com.eignex.lab
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.sql.Connection
 import java.sql.ResultSet
 
 /** The reference solvers' rows (`reference_rows`) and the classifier's problem features (`problem_features`). */
 class ReferenceRepository internal constructor(db: Database, lock: Any) : Repository(db, lock) {
     /** Mark stale the rows whose solver version the lab no longer trusts ([References.stale]). The runner does this
      *  when it starts; opening a store writes nothing. */
-    fun retireStale() = retireReferences(connection)
-
-    private fun retireReferences(database: Connection) {
-        database.autoCommit = false
-        try {
-            val retired = database.createStatement().use { statement ->
-                statement.executeQuery("SELECT collection, problem, solver, version FROM reference_rows WHERE stale = 0").use { rows ->
-                    buildList {
-                        while (rows.next()) {
-                            val collection = rows.getString("collection")
-                            val solver = rows.getString("solver")
-                            if (References.stale(solver, rows.getString("version"), collection)) {
-                                add(Triple(collection, rows.getString("problem"), solver))
-                            }
-                        }
-                    }
+    fun retireStale(): Int = synchronized(lock) {
+        transaction {
+            val retired = connection.sqlRows("SELECT collection, problem, solver, version FROM reference_rows WHERE stale = 0") { rows ->
+                Triple(rows.getString("collection"), rows.getString("problem"), rows.getString("solver")).takeIf {
+                    References.stale(it.third, rows.getString("version"), it.first)
                 }
+            }.filterNotNull()
+            val at = now()
+            for ((collection, problem, solver) in retired) {
+                update("UPDATE reference_rows SET stale = 1, updated_at = ? WHERE collection = ? AND problem = ? AND solver = ?",
+                    at, collection, problem, solver)
             }
-            database.prepareStatement(
-                "UPDATE reference_rows SET stale = 1, updated_at = ? WHERE collection = ? AND problem = ? AND solver = ?",
-            ).use { update ->
-                val at = now()
-                for ((collection, problem, solver) in retired) {
-                    update.setLong(1, at)
-                    update.setString(2, collection)
-                    update.setString(3, problem)
-                    update.setString(4, solver)
-                    update.executeUpdate()
-                }
-            }
-            database.commit()
-        } catch (error: Throwable) {
-            database.rollback()
-            throw error
-        } finally {
-            database.autoCommit = true
+            retired.size
         }
     }
 
