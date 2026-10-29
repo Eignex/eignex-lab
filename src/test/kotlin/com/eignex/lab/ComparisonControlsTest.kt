@@ -85,12 +85,14 @@ class ComparisonControlsTest {
     }
 
     @Test
-    fun `planned repeats and outer execution repeats remain distinct matched blocks`() {
+    fun `planned and outer repeated feasibility losses qualify as complete matching blocks`() {
         val first = case(1, 0).copy(repeat = 0)
         val second = case(1, 1).copy(repeat = 0)
         val rerun = first.copy(repeat = 1)
 
-        assertEquals(3, listOf(first, second, rerun).map(ComparisonControls::block).distinct().size)
-        assertEquals(ComparisonControls.block(second), ComparisonControls.block(second.copy(arm = "after")))
+        val after = listOf(first, second, rerun)
+        val before = after.map { it.copy(record = JsonObject((it.record as JsonObject) + ("feasible" to JsonPrimitive(true)))) }
+
+        assertEquals(1, Confirm.flips(before, after).lost.size)
     }
 }
