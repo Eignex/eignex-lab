@@ -137,14 +137,14 @@ object References {
      * when none recorded one (an unbound run, which only unbound reference rows match), or [MIXED_SOURCES] when they
      * disagree. A case that recorded none beside others that did, such as one that failed early, does not count.
      */
-    fun sources(cases: List<CaseResult>): Map<Pair<String, String>, String?> =
+    fun sources(cases: List<CaseResult>): Map<ProblemKey, String?> =
         cases.groupBy { it.problem.referenceKey }.mapValues { (_, group) ->
             val identities = group.mapNotNull { identity(it.record) }.distinct()
             if (identities.size > 1) MIXED_SOURCES else identities.firstOrNull()
         }
 
     /** The rows of each problem of [cases] that speak for the source its cases ran on ([sources], [applicable]). */
-    fun matching(rows: Map<Pair<String, String>, List<Reference>>, cases: List<CaseResult>): Map<Pair<String, String>, List<Reference>> {
+    fun matching(rows: Map<ProblemKey, List<Reference>>, cases: List<CaseResult>): Map<ProblemKey, List<Reference>> {
         val sources = sources(cases)
         return rows.mapValues { (key, list) -> applicable(list, sources[key]) }.filterValues { it.isNotEmpty() }
     }
@@ -224,7 +224,7 @@ object References {
      * if any run solved, its best objective. Speed is left out on purpose: the reference ran under its own budget.
      * A reference on other source files than the arm's runs of a problem ([sources]) does not cover it.
      */
-    fun compare(labels: List<String>, cases: List<CaseResult>, references: Map<Pair<String, String>, Reference>): ReferenceComparison {
+    fun compare(labels: List<String>, cases: List<CaseResult>, references: Map<ProblemKey, Reference>): ReferenceComparison {
         val disagreements = ArrayList<Disagreement>()
         val shortfalls = ArrayList<Shortfall>()
         val summaries = labels.map { label ->

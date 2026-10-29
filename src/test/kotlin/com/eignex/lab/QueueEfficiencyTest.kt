@@ -18,14 +18,14 @@ class QueueEfficiencyTest {
         val threads = Executors.newFixedThreadPool(3)
         try {
             val results = threads.invokeAll(jobs.mapIndexed { i, job -> Callable {
-                runCatching { store.execution.createSession("native-$i", job, "prepare", "release", budget, ExecutionStore.token(), payload) }.isSuccess
+                runCatching { store.execution.createSession("native-$i", job, ExecutionClass.PREPARE, "release", budget, ExecutionStore.token(), payload) }.isSuccess
             } }).map { it.get() }
             assertEquals(2, results.count { it })
             assertEquals(4000L to 2048L, store.execution.nativeReservation())
             val admitted = store.execution.sessions().first()
             store.execution.loseSession(admitted.id, "completed")
             val waiting = jobs[results.indexOf(false)]
-            store.execution.createSession("replacement", waiting, "prepare", "release", budget, ExecutionStore.token(), payload)
+            store.execution.createSession("replacement", waiting, ExecutionClass.PREPARE, "release", budget, ExecutionStore.token(), payload)
             assertEquals(4000L to 2048L, store.execution.nativeReservation())
         } finally { threads.shutdownNow() }
     }
@@ -37,8 +37,8 @@ class QueueEfficiencyTest {
         val budget = ResourceBudget(1000, 3072)
         val payload = NomadBatchJob("fixture", NomadPlatform.MAC, "native", NomadCpuCapacity(28000, 10), budget,
             listOf("/release/bin/eignex-lab", "worker"), nativeCapacity = ResourceBudget(8000, 4096)).render().toString()
-        store.execution.createSession("first", jobs[0], "prepare", "release", budget, ExecutionStore.token(), payload)
-        assertFailsWith<IllegalStateException> { store.execution.createSession("second", jobs[1], "prepare", "release", budget, ExecutionStore.token(), payload) }
+        store.execution.createSession("first", jobs[0], ExecutionClass.PREPARE, "release", budget, ExecutionStore.token(), payload)
+        assertFailsWith<IllegalStateException> { store.execution.createSession("second", jobs[1], ExecutionClass.PREPARE, "release", budget, ExecutionStore.token(), payload) }
         assertEquals(1000L to 3072L, store.execution.nativeReservation())
     }
 

@@ -31,7 +31,7 @@ object Placement {
      *  none does. */
     fun localOnlyReason(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): String? {
         val benchConfirmation = spec.bench != null && Confirm.SUFFIX in name
-        val pinnedLocal = Experiments.storedHost(spec.host) == Experiments.LAB_HOST ||
+        val pinnedLocal = spec.host == Experiments.LAB_HOST ||
             "local" in spec.nodeTags?.require.orEmpty() || "cloud" in spec.nodeTags?.exclude.orEmpty()
         return when {
             Confirm.SUFFIX in name && (!benchConfirmation || pinnedLocal) -> "a confirmation"
@@ -45,10 +45,10 @@ object Placement {
 
     /** Where a job placed on [host] may run, in the words the pages and the client use: [LOCAL_ONLY] (`lab`),
      *  [LOCAL_OR_CLOUD] (`auto`) or [CLOUD] (`aws`). */
-    fun where(host: String?): String = when (host) {
-        Experiments.AUTO_HOST -> LOCAL_OR_CLOUD
-        Experiments.AWS_HOST -> CLOUD
-        else -> LOCAL_ONLY
+    fun where(host: HostPlacement?): String = when (host) {
+        HostPlacement.AUTO -> LOCAL_OR_CLOUD
+        HostPlacement.CLOUD -> CLOUD
+        HostPlacement.LOCAL, null -> LOCAL_ONLY
     }
 
     const val LOCAL_ONLY = "local only"
@@ -60,7 +60,7 @@ object Placement {
      * still lets the local machine take a run first. `local` (`lab`), the default, keeps them on the local machine.
      * Where a run goes is not what it measures ([Experiments.fingerprint]), so opting in keeps the schedule's trend.
      */
-    fun cloudOptIn(spec: ExperimentSpec): Boolean = Experiments.storedHost(spec.host) in setOf(Experiments.AUTO_HOST, Experiments.AWS_HOST)
+    fun cloudOptIn(spec: ExperimentSpec): Boolean = spec.host in setOf(Experiments.AUTO_HOST, Experiments.AWS_HOST)
 
     /** Whether job [name] is a run (`<schedule>@<sha>`, not a confirmation) of one of [schedules] that opts in to the
      *  cloud ([cloudOptIn]), as its schedule's current spec says. */
@@ -71,7 +71,7 @@ object Placement {
     /** [host] with the lab's own limits: the cloud settings and the sizes within the quota. [schedules], the lab's
      *  schedules, say whether a scheduled run's schedule opts in to the cloud ([cloudSchedule]); a submitted job is
      *  placed without them, so its name alone never takes it off the local machine. */
-    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): String {
+    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): HostPlacement {
         NodeTags.validate(spec.nodeTags)
         requireAutomatic(spec, name)
         val local = NodeTags.matches(spec.nodeTags, config.localNodeTags)

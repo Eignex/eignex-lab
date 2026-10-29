@@ -96,7 +96,7 @@ object Trend {
     ): List<TrendRun> {
         // Filtered by experiment before any case is read: a run's experiment is its spec's alone.
         val jobs = scheduled(store, name)
-            .filter { job -> experiment == null || job.experiment?.let(Experiments::trendFingerprint) == experiment }
+            .filter { job -> experiment == null || job.experiment.let(Experiments::trendFingerprint) == experiment }
         val confirmations = store.jobs(limit = MAX_RUNS, name = name + Confirm.SUFFIX, withCommands = false)
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
             .associateBy { it.name }
@@ -182,16 +182,16 @@ object Trend {
 
     /** Every run a schedule named [name] queued and did not cancel, oldest first, none of them read. */
     fun scheduled(store: Store, name: String): List<Job> = store.jobs(limit = MAX_RUNS, name = name, withCommands = false)
-        .filter { it.experiment != null && it.name.startsWith("$name@") && it.status != Status.CANCELLED }
+        .filter { it.name.startsWith("$name@") && it.status != Status.CANCELLED }
         .sortedBy { it.id }
 
     fun run(
         job: Job,
         arms: List<PlannedArm>,
         cases: List<CaseResult>,
-        references: Map<Pair<String, String>, Reference> = emptyMap(),
+        references: Map<ProblemKey, Reference> = emptyMap(),
         /** The classifier's features of the run's problems, which place a problem solver did not profile in a class. */
-        features: Map<Pair<String, String>, ProblemFeatures> = emptyMap(),
+        features: Map<ProblemKey, ProblemFeatures> = emptyMap(),
     ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
         val own = cases.filter { it.arm == label }
@@ -214,9 +214,9 @@ object Trend {
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
-            spec = job.experiment?.let { Experiments.trendFingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
-            experiment = job.experiment?.let(Experiments::trendFingerprint).orEmpty(),
-            sourceChecked = job.experiment?.let { SourceValidation.requested(it) } == true,
+            spec = job.experiment.let { Experiments.trendFingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
+            experiment = job.experiment.let(Experiments::trendFingerprint).orEmpty(),
+            sourceChecked = job.experiment.let { SourceValidation.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,
             finished = job.status.isTerminal,
             cases = own.size,
@@ -250,7 +250,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     /** A cached point, null for a run known to have none, and whether it is fresh. */
     class Cached(val run: TrendRun?, val fresh: Boolean)
 
-    private class Entry(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<Pair<String, String>>)
+    private class Entry(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<ProblemKey>)
 
     private val entries = java.util.concurrent.ConcurrentHashMap<Long, Entry>()
     private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -261,7 +261,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     /** The reference stamp last synced, and when each problem's rows last changed since the first sync. */
     private var synced = false
     private var lastStamp: Long? = null
-    private val changed = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Long>()
+    private val changed = java.util.concurrent.ConcurrentHashMap<ProblemKey, Long>()
 
     /**
      * Takes in the reference stamp [stamp] ([Store.referencesStamp]): when it moved since the last sync, the problems
@@ -269,7 +269,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
      * Returns [stamp], the one to [put] a point computed now with.
      */
     @Synchronized
-    fun sync(stamp: Long?, changedSince: (Long) -> Map<Pair<String, String>, Long>): Long? {
+    fun sync(stamp: Long?, changedSince: (Long) -> Map<ProblemKey, Long>): Long? {
         if (synced && stamp != null && stamp != lastStamp) {
             for ((problem, at) in changedSince(lastStamp ?: Long.MIN_VALUE)) changed.merge(problem, at, ::maxOf)
         }
@@ -293,7 +293,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     }
 
     /** Caches [job]'s point, or null for a run with none, computed against reference [stamp] from [problems]' rows. */
-    fun put(job: Long, version: String, stamp: Long?, run: TrendRun?, problems: Set<Pair<String, String>>) {
+    fun put(job: Long, version: String, stamp: Long?, run: TrendRun?, problems: Set<ProblemKey>) {
         entries[job] = Entry(version, stamp, clock(), run, problems)
     }
 

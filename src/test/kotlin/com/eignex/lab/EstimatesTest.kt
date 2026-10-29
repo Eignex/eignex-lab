@@ -11,7 +11,7 @@ class EstimatesTest {
     /** A six-minute timeout on one core: 0.1 core-hours a case at most. */
     private val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s", "max" to "10")), base = mapOf("timeout" to "360000"))
 
-    private fun job(status: Status, counts: CommandCounts?, experiment: ExperimentSpec? = spec, parallel: Int = 1, name: String = "e") =
+    private fun job(status: Status, counts: CommandCounts?, experiment: ExperimentSpec = spec, parallel: Int = 1, name: String = "e") =
         Job(1, name, "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, parallel = parallel,
             experiment = experiment, counts = counts)
 
@@ -24,7 +24,6 @@ class EstimatesTest {
         assertEquals(0.1 * 4, hours(Status.QUEUED, CommandCounts(10, 4, 0, 2)), 1e-9)
         assertEquals(0.1 * 6, hours(Status.RUNNING, CommandCounts(10, 4, 0, 2)), 1e-9)
         assertEquals(0.1 * 10, hours(Status.RUNNING, CommandCounts(0, 0, 0, 0)), 1e-9)
-        assertNull(Estimates.estimate(job(Status.QUEUED, null, experiment = null), none, 8))
         val guess = Estimates.estimate(job(Status.QUEUED, CommandCounts(0, 0, 0, 0)), none, 8)!!
         assertEquals(EstimateSource.TIMEOUT, guess.source)
         assertEquals("guessed, upper bound", guess.note)

@@ -165,7 +165,7 @@ class CaseChecks(
         /** Why ended job [job]'s records cannot be checked again, or null when they can. */
         fun refusal(job: Job?): String? {
             if (job == null) return "no such job"
-            val spec = job.experiment ?: return "job ${job.id} is not an experiment"
+            val spec = job.experiment
             if (spec.isAnalysis) return "job ${job.id} is an analysis or recheck job itself; name the job it checked (${spec.analyze?.job})"
             if (job.status.isActive) return "job ${job.id} is ${job.status.name.lowercase()}: check it again once it has ended"
             return null

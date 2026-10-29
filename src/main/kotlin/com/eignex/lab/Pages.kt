@@ -71,7 +71,7 @@ internal fun jobPage(
     cases: List<CaseResult> = emptyList(),
     showCommands: Boolean = true,
     previous: Long? = null,
-    references: Map<Pair<String, String>, Reference> = emptyMap(),
+    references: Map<ProblemKey, Reference> = emptyMap(),
     /** The downloads' holds on this job that have not lapsed ([Hold]). */
     holds: List<Hold> = emptyList(),
     /** Why the job waits, while it is queued ([Waiting.waiting]). */
@@ -85,16 +85,16 @@ internal fun jobPage(
     val active = job.status.isActive
     append(head("${job.id} ${job.name} · eignex lab", live = active))
     append("<header><h1>${job.id} ${esc(job.name)}</h1>")
-    job.experiment?.description?.takeIf { it.isNotBlank() }?.let { append("<p class=\"description\">${esc(it)}</p>") }
+    job.experiment.description.takeIf { it.isNotBlank() }?.let { append("<p class=\"description\">${esc(it)}</p>") }
     append("</header>")
     append("<div id=\"job\" data-live>")
     append("<dl class=\"meta\">")
     append("<dt>status</dt><dd>${statusCell(job, null, nodes)}</dd>")
-    if (job.backend == "nomad") append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
+    if (job.backend == Backend.NOMAD) append("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/${job.id}/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>")
     for (report in preparation.filter { it.preparation != null }) {
         append("<dt>preparation</dt><dd>${preparationDetails(report)}</dd>")
     }
-    append("<dt>repository</dt><dd>${esc(job.experiment?.repository ?: Repositories.DEFAULT)}</dd>")
+    append("<dt>repository</dt><dd>${esc(job.experiment.repository)}</dd>")
     append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
     append("<dt>created</dt><dd>${ago(job.createdAt)}</dd>")
@@ -102,21 +102,21 @@ internal fun jobPage(
     if (job.finishedAt != null) append("<dt>finished</dt><dd>${ago(job.finishedAt)}</dd>")
     append("<dt>elapsed</dt><dd>${elapsed(job)}</dd>")
     append("<dt>where</dt><dd>${hostCell(config, job, hosts, nodes)}</dd>")
-    job.experiment?.nodeTags?.let { selector ->
+    job.experiment.nodeTags?.let { selector ->
         append("<dt>node tags</dt><dd>")
         if (selector.require.isNotEmpty()) append("require ${esc(selector.require.sorted().joinToString())}")
         if (selector.exclude.isNotEmpty()) append("; exclude ${esc(selector.exclude.sorted().joinToString())}")
         append("</dd>")
     }
-    if (hosts.size > 1 || hosts.any { it.host != RecordedHost.LOCAL }) {
+    if (hosts.size > 1 || hosts.any { it.host != RecordedHost.Local }) {
         // One job's iterations may run on different machines, every arm of one iteration on the same one.
         append("<dt>hosts</dt><dd>${hosts.joinToString("<br>") { esc(it.text()) }}")
         append("<br><small class=\"muted\">each iteration's arms ran on one machine; timing across iterations mixes machines</small></dd>")
     }
-    job.experiment?.capped?.takeIf { it.isNotEmpty() }?.let { caps ->
+    job.experiment.capped.takeIf { it.isNotEmpty() }?.let { caps ->
         append("<dt>capped</dt><dd>${caps.joinToString("<br>") { esc(it) }}</dd>")
     }
-    job.experiment?.compilationRecording?.let { mode ->
+    job.experiment.compilationRecording?.let { mode ->
         val recording = if (mode == Experiments.COMPILATION_JFR_LOG) "compilation and HotSpot log" else "compilation recording"
         append("<dt>instrumented</dt><dd><span class=\"PARTIAL\">$recording</span>: every compilation of each ")
         append("case's CLI is recorded, so its times are no runtime measurement</dd>")
@@ -132,7 +132,7 @@ internal fun jobPage(
     }
     append("</dl>")
     job.error?.let { append("<pre class=\"error\">${esc(it)}</pre>") }
-    if (job.backend == "nomad" && (job.status == Status.FAILED || job.status == Status.CANCELLED)) {
+    if (job.backend == Backend.NOMAD && (job.status == Status.FAILED || job.status == Status.CANCELLED)) {
         append("<div class=\"actions\"><button onclick=\"act('/jobs/${job.id}/retry', null, 'Queue job ${job.id} again?')\">retry</button>")
         append("<span class=\"muted\">queues its unfinished cases again; finished ones are kept</span></div>")
     }
@@ -161,15 +161,15 @@ internal fun jobPage(
         append("<a href=\"/trend${query("name" to job.name.substringBefore('@'))}\">trend</a></p>")
     }
     val spec = job.experiment
-    if (spec != null && spec.isAnalysis) {
+    if (spec.isAnalysis) {
         append(analysisSection(config, job, spec))
-    } else if (spec?.bench != null) {
+    } else if (spec.bench != null) {
         if (cases.any { it.problem.benchCase?.attributes?.get("recordSchema") == "solver-v1" })
             append(experimentSection(config, job.id, arms, cases, references))
         append(benchSection(job, cases, arms))
-    } else if (spec != null && (spec.isProfile || spec.isScript)) {
+    } else if (spec.isProfile || spec.isScript) {
         append(singleCaseSection(config, job, spec))
-    } else if (spec != null) {
+    } else {
         append(experimentSection(config, job.id, arms, cases, references))
     }
     if (!showCommands) {
@@ -187,14 +187,14 @@ internal fun jobPage(
     }
     append("</h2><div class=\"scroll\"><table><tr><th>#</th><th>command</th><th>status</th><th>host</th><th>started</th>")
     append("<th>elapsed</th><th>output</th></tr>")
-    val legacyHost = if (job.experiment?.host == Experiments.AWS_HOST) RecordedHost.CLOUD else RecordedHost.LOCAL
+    val legacyHost = if (job.experiment.host == Experiments.AWS_HOST) RecordedHost.UnknownCloud else RecordedHost.Local
     for (command in commands) {
         val exit = command.exitCode?.takeIf { it != 0 }?.let { "<br><small>exit $it</small>" } ?: ""
         append("<tr><td>${command.index}</td><td><code>${esc(command.cmd)}</code></td>")
         append("<td class=\"${command.status}\">${command.status}$exit${terminations(dir, command.index)}</td>")
         // Where it ran; a case started before the lab recorded that ran on its job's host.
         val host = command.host ?: legacyHost.takeIf { command.status != Status.QUEUED && command.status != Status.CANCELLED }
-        append("<td>${host?.let { "<code>${esc(it)}</code>" }.orEmpty()}</td>")
+        append("<td>${host?.let { "<code>${esc(it.text)}</code>" }.orEmpty()}</td>")
         append("<td>${ago(command.startedAt)}</td><td>${duration(command.startedAt, command.finishedAt)}</td><td>")
         if (command.status != Status.QUEUED) {
             append(output(job.id, dir, "${command.index}.out", command.status == Status.RUNNING))
@@ -214,7 +214,7 @@ private fun experimentSection(
     job: Long?,
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
-    references: Map<Pair<String, String>, Reference> = emptyMap(),
+    references: Map<ProblemKey, Reference> = emptyMap(),
 ): String = buildString {
     if (arms.isEmpty()) {
         append("<p class=\"muted\">Not planned yet: the runner selects the problems and writes the cases when it sets the job up.</p>")
@@ -301,7 +301,7 @@ private fun experimentSection(
 }
 
 /** Each arm against the lab's reference results: who solved what, optima, gaps, and where they contradict. */
-private fun referenceSection(labels: List<String>, cases: List<CaseResult>, references: Map<Pair<String, String>, Reference>): String =
+private fun referenceSection(labels: List<String>, cases: List<CaseResult>, references: Map<ProblemKey, Reference>): String =
     buildString {
         val comparison = References.compare(labels, cases, references)
         append("<h2>Against the reference <small>${references.size} of ${cases.map { it.problem }.distinct().size} problems have ")
@@ -393,7 +393,7 @@ private const val NOISE_ROWS = 50
 private fun problemGrid(
     labels: List<String>,
     cases: List<CaseResult>,
-    references: Map<Pair<String, String>, Reference> = emptyMap(),
+    references: Map<ProblemKey, Reference> = emptyMap(),
     compared: Boolean = true,
 ): String = buildString {
     val byProblem = cases.groupBy { it.problem }
@@ -486,9 +486,9 @@ internal fun witnessMark(outcome: Outcome?): String {
             "the solution is valid; a proof of optimality is the solver's own claim")}\">checked</small>"
         WitnessCheck.UNCHECKED -> {
             val why = when (outcome.sourceValidation) {
-                "unknown", "not-run" -> "the source checker could not run: ${outcome.sourceValidationReason}"
-                "unsupported" -> "no external checker covers it: ${outcome.sourceValidationReason}"
-                else -> "no independent source check was asked for or performed"
+                SourceVerdict.UNKNOWN, SourceVerdict.NOT_RUN -> "the source checker could not run: ${outcome.sourceValidationReason}"
+                SourceVerdict.UNSUPPORTED -> "no external checker covers it: ${outcome.sourceValidationReason}"
+                SourceVerdict.VALID, SourceVerdict.INVALID, null -> "no independent source check was asked for or performed"
             }
             " <small class=\"muted\" title=\"${esc("the solver's own report$policy: $why")}\">unchecked</small>"
         }
@@ -533,7 +533,7 @@ internal fun comparePage(
     jobs: List<Job>,
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
-    references: Map<Pair<String, String>, Reference> = emptyMap(),
+    references: Map<ProblemKey, Reference> = emptyMap(),
 ): String = buildString {
     append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab", live = false))
     append("<header><h1>Compare ")
@@ -923,7 +923,7 @@ private const val TREND_SCRIPT = """<script>
 internal fun referencesPage(
     coverage: List<ReferenceCoverage>,
     filter: ReferenceFilter,
-    found: List<Pair<Pair<String, String>, Reference>>,
+    found: List<Pair<ProblemKey, Reference>>,
     total: Int,
     /** Problems two reference solvers contradict each other on. */
     conflicts: List<Disagreement> = emptyList(),
@@ -950,7 +950,7 @@ internal fun referencesPage(
         append("<div class=\"scroll\"><table><tr><th>collection</th><th>problem</th><th>verdict</th><th class=\"num\">time</th>")
         append("<th class=\"num\">budget</th></tr>")
         for ((key, r) in found) {
-            append("<tr><td>${esc(key.first)}</td><td><a class=\"plain\" href=\"${problemLink(key.first, key.second)}\"><code>${esc(key.second)}</code></a></td>")
+            append("<tr><td>${esc(key.collection)}</td><td><a class=\"plain\" href=\"${problemLink(key.collection, key.problem)}\"><code>${esc(key.problem)}</code></a></td>")
             append("<td>${referenceVerdict(r)}</td>")
             append("<td class=\"num\">${"%.2f".format(r.elapsedMs / 1000.0)}s</td><td class=\"num\">${r.budgetMs / 1000}s</td></tr>")
         }
@@ -1475,7 +1475,7 @@ private enum class WorkKind(val label: String) {
     CLOUD("cloud"),
 }
 
-private fun workKind(config: Config, job: Job): WorkKind = when (Placement.where(job.experiment?.host)) {
+private fun workKind(config: Config, job: Job): WorkKind = when (Placement.where(job.experiment.host)) {
     Placement.LOCAL_OR_CLOUD ->
         WorkKind.TOWARD_CLOUD
     Placement.CLOUD -> WorkKind.CLOUD
@@ -1562,7 +1562,7 @@ private fun jobTable(
                 job.status.isActive -> "active"
                 else -> job.status.name.lowercase()
             }
-            val text = esc(listOfNotNull(job.name, job.ref, job.sha, job.experiment?.description).joinToString(" ").lowercase())
+            val text = esc(listOfNotNull(job.name, job.ref, job.sha, job.experiment.description).joinToString(" ").lowercase())
             append("<tr data-state=\"$state\" data-text=\"$text\">")
         } else {
             append("<tr>")
@@ -1571,7 +1571,7 @@ private fun jobTable(
         val base = job.name.substringBefore('@')
         append("<td><a class=\"plain\" href=\"/${query("name" to base)}\" title=\"all runs of ${esc(base)}\">${esc(job.name)}</a>")
         append(" <span class=\"kind\">${kindOf(job)}</span>")
-        job.experiment?.description?.takeIf { it.isNotBlank() }?.let {
+        job.experiment.description.takeIf { it.isNotBlank() }?.let {
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
@@ -1590,7 +1590,7 @@ private fun jobTable(
  * confirmation, `reference solve` for a run of the reference solvers, `run` for any other experiment.
  */
 internal fun kindOf(job: Job): String {
-    val spec = job.experiment ?: return "commands"
+    val spec = job.experiment
     if (spec.isProfile) return "profile"
     if (spec.isScript) return "custom"
     if (Confirm.SUFFIX in job.name) return "confirm"
@@ -1644,12 +1644,12 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
  */
 private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = emptyList(), nodes: List<JobNode> = emptyList()): String {
     val spec = job.experiment
-    if (job.backend == "nomad" && job.status.isActive) {
+    if (job.backend == Backend.NOMAD && job.status.isActive) {
         val where = when {
             nodes.isNotEmpty() && nodes.all { it.local } -> "local"
             nodes.isNotEmpty() && nodes.none { it.local } -> "cloud"
             nodes.isNotEmpty() -> "local + cloud"
-            else -> Experiments.hostWord(spec?.host ?: Experiments.AUTO_HOST)
+            else -> spec.host.word
         }
         val detail = nodes.joinToString("<br>") { node ->
             val href = node.anchor?.let { "/nodes#" + URLEncoder.encode(it, "UTF-8").replace("+", "%20") } ?: "/jobs/${job.id}/execution"
@@ -1665,7 +1665,7 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
     }
     val instances = config.jobDir(job.id).resolve("aws-instances").toFile().takeIf { it.isFile }
         ?.readLines()?.filter { it.isNotBlank() }.orEmpty()
-    if (spec?.host == Experiments.AUTO_HOST) {
+    if (spec.host == Experiments.AUTO_HOST) {
         val where = "<span class=\"where\" title=\"shared by the lab: the local machine and cloud nodes each run whole iterations of it\">local or cloud</span>"
         if (job.status != Status.RUNNING) return where
         val on = Waiting.hostsText(job.local, instances.size)
@@ -1673,9 +1673,9 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
         return "$where<br><small title=\"${esc(instances.joinToString { it.substringBefore(' ') })}\">${esc(on)}" +
             (parts?.let { "<br>${esc(it)}" } ?: "") + "</small>"
     }
-    if (spec?.host != Experiments.AWS_HOST) {
+    if (spec.host != Experiments.AWS_HOST) {
         val note = when {
-            spec != null && job.status == Status.QUEUED -> " <small class=\"muted\">only</small>"
+            job.status == Status.QUEUED -> " <small class=\"muted\">only</small>"
             else -> ""
         }
         return "<span class=\"where\">local</span>$note"
@@ -1723,7 +1723,7 @@ private fun refText(config: Config, job: Job): String {
     val commit = sha?.let { full ->
         val short = full.take(9)
         val spec = job.experiment
-        val repository = if (job.backend == "legacy" || spec == null || spec.bench == null && !spec.isProfile) config.repoUrl
+        val repository = if (job.backend == Backend.LEGACY || spec.bench == null && !spec.isProfile) config.repoUrl
             else Repositories.url(spec.repository)
         commitUrl(repository, full)?.let { "<a href=\"$it\" title=\"$full\">$short</a>" } ?: short
     }
@@ -1963,14 +1963,14 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     if (configured) {
         append("<form id=\"node-request\" class=\"tools\"><label>Node pool <select id=\"node-pool\" name=\"pool\" required>")
         for (pool in pools) {
-            val limit = minOf(pool.maxNodes, settings!!.maxVcpus / pool.vcpus)
+            val limit = minOf(pool.maxNodes, settings.maxVcpus / pool.vcpus)
             append("<option value=\"${esc(pool.id)}\" data-limit=\"$limit\"${if (limit == 0) " disabled" else ""}>${esc(NodeTags.hardwareProfile(pool.tags))} · ${pool.vcpus} vCPU / ${pool.memoryMiB / 1024.0} GiB · ${esc(pool.market.tag)} · ${esc(pool.id)}</option>")
         }
         append("</select></label> <label>Keep at least <input id=\"node-count\" name=\"nodes\" type=\"number\" min=\"1\" value=\"1\" required style=\"width:5em\"> nodes</label> ")
         append("<label>For <select name=\"ttlSec\"><option value=\"900\">15 minutes</option><option value=\"1800\">30 minutes</option><option value=\"3600\">1 hour</option></select></label> ")
         append("<button type=\"submit\">Start / keep nodes</button></form><p id=\"node-feedback\" role=\"status\"></p>")
         append("<p class=\"muted small\">The selected pool fixes the hardware capabilities and market. The count is a minimum total for that pool, including nodes already running. ")
-        append("Requests share the global ${settings!!.maxVcpus} vCPU limit and expire automatically. Jobs can use these nodes; releasing a request lets automatic scaling retire idle capacity.</p>")
+        append("Requests share the global ${settings.maxVcpus} vCPU limit and expire automatically. Jobs can use these nodes; releasing a request lets automatic scaling retire idle capacity.</p>")
     } else append("<p class=\"muted\">Nomad capacity settings are unavailable; manual starts are disabled.</p>")
     append("</section><div id=\"node-capacity\" data-live><section><h2>Cloud pools</h2>")
     if (snapshot == null) append("<p class=\"warn\">Capacity has not reported. Requests take effect when fresh reports resume.</p>")
@@ -1993,7 +1993,7 @@ internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnaps
     if (snapshot?.nodes.isNullOrEmpty()) append("<p class=\"muted\">${if (snapshot == null) "Node inventory is unavailable." else "No cloud nodes running."}</p>")
     else {
         append("<div class=\"scroll\"><table><thead><tr><th>Node / pool</th><th>State</th><th>Sessions / experiments</th><th>Unreserved CPU / memory</th></tr></thead><tbody>")
-        for (node in snapshot!!.nodes) {
+        for (node in snapshot.nodes) {
             val pool = pools.singleOrNull { it.id == node.pool }
             val cpu = node.reservations.sumOf { it.budget.cpuMillis.toLong() }
             val memory = node.reservations.sumOf { it.budget.memoryMiB.toLong() }
@@ -2068,7 +2068,7 @@ internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()
     val status = report.preparation ?: return ""
     val snapshot = status.progress
     val age = (at - status.updatedAt).coerceAtLeast(0)
-    val live = report.phase == "preparing" && report.session.desired != "stop" && age <= 5000
+    val live = report.phase == "preparing" && report.session.desired != Desired.STOP && age <= 5000
     fun seconds(ms: Long) = String.format(Locale.ROOT, "%.2f s", ms / 1000.0)
     return buildString {
         append("<strong>${esc(PreparationTrace.labels.getValue(snapshot.stage))}</strong>")
@@ -2102,7 +2102,7 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): St
     for (report in reports) {
         val session = report.session
         append("<tr><td>${esc(session.id)}<br>${esc(session.allocation ?: "pending")}</td><td>${esc(session.node ?: "pending")}</td>")
-        append("<td>${esc(report.phase ?: session.desired)} / ${report.generation ?: 0}</td><td>${session.budget.cpuMillis / 1000.0} vCPU / ${session.budget.memoryMiB} MiB</td><td>${report.committed}</td></tr>")
+        append("<td>${esc(report.phase ?: session.desired.stored)} / ${report.generation ?: 0}</td><td>${session.budget.cpuMillis / 1000.0} vCPU / ${session.budget.memoryMiB} MiB</td><td>${report.committed}</td></tr>")
         report.preparation?.let { append("<tr><td colspan=\"5\">${preparationDetails(report)}</td></tr>") }
         report.observation?.let { append("<tr><td colspan=\"5\">${esc(it)}</td></tr>") }
     }
@@ -2110,7 +2110,7 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): St
 }
 
 private fun benchSection(job: Job, cases: List<CaseResult>, arms: List<PlannedArm>): String = buildString {
-    append("<h2>Bench results</h2><p>Repository <code>${esc(job.experiment!!.repository)}</code> · ")
+    append("<h2>Bench results</h2><p>Repository <code>${esc(job.experiment.repository)}</code> · ")
     append("<a href=\"/experiments/${job.id}/metrics.csv\">metrics CSV</a> · ")
     append("<a href=\"/experiments/${job.id}/cases\">case records</a> · <a href=\"/jobs/${job.id}/files\">all files</a></p>")
     for (case in cases) {

@@ -33,7 +33,7 @@ data class Outcome(
     val processors: Int? = null,
     /** The check's verdict: the lab's ([com.eignex.lab.checker.LabCheck.state]) where it checked, else the bench's
      *  `sourceValidation` statistic (`valid`, `invalid`, `unknown`). */
-    val sourceValidation: String? = null,
+    val sourceValidation: SourceVerdict? = null,
     val sourceValidationReason: String? = null,
     val floatApproximation: Boolean = false,
     /** The record's `validationPolicy`: how its claims were judged, `reported-result-v1` for the solver's own report. */
@@ -75,8 +75,8 @@ data class Outcome(
             // bench's check, if it made one, only for records the lab has not checked.
             val lab = fields["labCheck"] as? JsonObject
             fun labField(name: String) = (lab?.get(name) as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
-            val bench = stat(fields, "sourceValidation")
-            val validation = if (lab != null) labField("state") else bench
+            val bench = SourceVerdict.of(stat(fields, "sourceValidation"))
+            val validation = SourceVerdict.of(if (lab != null) labField("state") else bench?.word)
             val reason = if (lab != null) labField("reason") else stat(fields, "sourceValidationReason")
             val approximation = stat(fields, "floatApproximation") == "true"
             // Only a rejection withdraws a claim ([SourceValidation.rejects]): the solver's own claim, which a bench
@@ -88,7 +88,7 @@ data class Outcome(
             val proven = if (restored) stat(fields, "reportedProven") == "true" else field("proven")?.booleanOrNull ?: false
             val timeToBest = field("timeToBestMs")?.longOrNull ?: if (restored) producerTimeToBestMs(fields) else null
             val policy = (fields["validationPolicy"] as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
-            val accepted = validation == "valid" || (!SourceValidation.rejects(validation) && bench == "valid")
+            val accepted = validation == SourceVerdict.VALID || (!SourceValidation.rejects(validation) && bench == SourceVerdict.VALID)
             // A float approximation's claim is on a grid, not on the source: it counts only once a checker accepts it,
             // with or without a failed check beside it.
             val rejected = SourceValidation.rejects(validation) ||

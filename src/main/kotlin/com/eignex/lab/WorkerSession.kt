@@ -8,8 +8,6 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption.APPEND
-import java.nio.file.StandardOpenOption.CREATE
 import java.time.Duration
 import java.util.Base64
 import java.util.concurrent.Executors
@@ -98,7 +96,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 try { renew() } catch (_: ExecutionFenced) { deadline.set(0) } catch (_: Exception) { /* Existing monotonic deadline remains authoritative. */ }
             }, 10, 10, TimeUnit.SECONDS)
             fun remaining() = (deadline.get() - System.nanoTime()) / 1_000_000
-            fun phase(value: String) { check(remaining() > 0); retry { json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
+            fun phase(value: String) { if (remaining() <= 0) throw LeaseLost("attempt lease ended"); retry { json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
             val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
             val logs = streamLogs(claim, directory)
             try {

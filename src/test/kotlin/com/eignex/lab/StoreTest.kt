@@ -5,7 +5,6 @@ import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class StoreTest {
@@ -14,7 +13,7 @@ class StoreTest {
     @Test
     fun `each case says where it ran, one run before the lab recorded that reading as its job's host`() {
         val store = store()
-        fun job(host: String): Long {
+        fun job(host: HostPlacement): Long {
             val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = host)
             val id = store.create("e", "main", emptyList(), experiment = spec)
             store.plan(id, listOf(PlannedArm(Arm("a", emptyMap()), "sha")), listOf(Problem("s", "p")), Experiments.cases(1, 1, listOf(1, 2, 3)),
@@ -29,9 +28,10 @@ class StoreTest {
             store.commandStarted(id, 1, "i-7", "echo rendered")
         }
 
-        assertEquals(listOf("local", "i-7", null), store.cases(local).map { it.host })
-        assertEquals(listOf("cloud", "i-7", null), store.cases(cloud).map { it.host })
-        assertEquals(listOf(null, "i-7", null), store.job(local)!!.commands.map { it.host })
+        val node = RecordedHost.Node("i-7")
+        assertEquals(listOf(RecordedHost.Local, node, null), store.cases(local).map { it.host })
+        assertEquals(listOf(RecordedHost.UnknownCloud, node, null), store.cases(cloud).map { it.host })
+        assertEquals(listOf(null, node, null), store.job(local)!!.commands.map { it.host })
         assertEquals("echo rendered", store.job(local)!!.commands[1].cmd)
     }
 
@@ -90,7 +90,7 @@ class StoreTest {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val runner = Store(file)
         val api = Store(file)
-        val id = runner.create("a", "main", List(200) { "true" to 10L })
+        val id = runner.create("a", "main", List(200) { "true" to 10L }, experiment = ExperimentSpec("a"))
         runner.startForTest()
         val writer = thread {
             repeat(200) { index ->
@@ -110,7 +110,7 @@ class StoreTest {
     @Test
     fun `an ordinary running job is never claimed by the maintenance runner`() {
         val store = store()
-        val id = store.create("a", "main", listOf("true" to 10L))
+        val id = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
         store.startForTest()
 
         assertEquals(null, store.nextAnalysis())
@@ -120,7 +120,7 @@ class StoreTest {
     @Test
     fun `cancelling a queued job cancels it without a runner`() {
         val store = store()
-        val id = store.create("a", "main", listOf("true" to 10L))
+        val id = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
 
         store.requestCancel(id)
 
@@ -131,8 +131,8 @@ class StoreTest {
     fun `a queued job left with its cancel requested is cancelled when the store opens`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)
-        val stuck = store.create("a", "main", listOf("true" to 10L))
-        val waiting = store.create("b", "main", listOf("true" to 10L))
+        val stuck = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
+        val waiting = store.create("b", "main", listOf("true" to 10L), experiment = ExperimentSpec("b"))
         // What a runner from before left: requeued after its cancel was requested.
         DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().executeUpdate("UPDATE jobs SET cancel_requested = 1 WHERE id = $stuck") }
 
@@ -144,7 +144,7 @@ class StoreTest {
     @Test
     fun `cancelling a finished job reports it as finished`() {
         val store = store()
-        val id = store.create("a", "main", listOf("true" to 10L))
+        val id = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
         store.startForTest()
         store.finish(id, Status.DONE)
 
@@ -154,7 +154,7 @@ class StoreTest {
     @Test
     fun `a cancel that lands before the job finishes is not overwritten by its finish`() {
         val store = store()
-        val id = store.create("a", "main", listOf("true" to 10L))
+        val id = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
         store.startForTest()
         assertEquals(CancelOutcome.CANCELLED, store.requestCancel(id))
 
@@ -165,7 +165,7 @@ class StoreTest {
     @Test
     fun `a job's clock stops while it waits in the queue`() {
         val store = store()
-        val id = store.create("a", "main", listOf("true" to 10L))
+        val id = store.create("a", "main", listOf("true" to 10L), experiment = ExperimentSpec("a"))
         store.startForTest()
         store.requeue(id)
 
@@ -189,9 +189,8 @@ class StoreTest {
         assertEquals(false, ran.launchRequested)
     }
 
-    private fun autoJob(store: Store, name: String, priority: Int = 0, host: String = Experiments.AUTO_HOST) =
+    private fun autoJob(store: Store, name: String, priority: Int = 0, host: HostPlacement = Experiments.AUTO_HOST) =
         store.create(name, "main", emptyList(), priority = priority,
             experiment = ExperimentSpec(name, listOf(mapOf("suite" to "s")), host = host))
-
 
 }

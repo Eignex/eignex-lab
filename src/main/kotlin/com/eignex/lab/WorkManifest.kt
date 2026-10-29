@@ -31,7 +31,7 @@ data class WorkerBundle(
     val build: WorkerBuild? = null,
 ) {
     init {
-        require(sha256.matches(SHA256) && commit.matches(Regex("[a-f0-9]{40}")))
+        require(sha256.matches(SHA256) && CommitSha.isValid(commit))
         Repositories.requireAllowed(repository)
         require(os in setOf("linux", "mac") && arch in setOf("amd64", "arm64") && toolchain.isNotBlank())
         require(files.isNotEmpty() && files.map { it.path }.distinct().size == files.size)
@@ -60,7 +60,7 @@ data class WorkManifest(
         require(schemaVersion in (if (experiment.bench == null) 1..1 else 2..3) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
         require(preparationTimeoutSec == null || preparationTimeoutSec in 1..7200)
         require(arms.isNotEmpty() && (cases.isNotEmpty() || preparationTimeoutSec != null) && cases.map { it.index }.distinct().size == cases.size)
-        require(arms.all { (preparationTimeoutSec != null || it.arm.cores * 1000L <= budget.cpuMillis) && it.sha.matches(Regex("[a-f0-9]{40}")) })
+        require(arms.all { (preparationTimeoutSec != null || it.arm.cores * 1000L <= budget.cpuMillis) && CommitSha.isValid(it.sha) })
         require(cases.all { it.arm in arms.indices })
         require(schemaVersion >= 3 || cases.all { it.executionCase == null } && benchReplay == null)
         benchReplay?.let { replay ->

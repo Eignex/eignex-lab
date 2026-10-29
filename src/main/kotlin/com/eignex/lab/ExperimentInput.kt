@@ -71,12 +71,12 @@ internal fun scheduleInput(body: JsonObject): JsonObject {
     val fields = (canonical - "nodeTags") + if (NodeTags.labels(retained).isEmpty()) emptyMap() else
         mapOf("nodeTags" to Json.encodeToJsonElement(NodeSelector.serializer(), checkNotNull(retained)))
     return JsonObject(body + ("experiment" to JsonObject(fields +
-        ("host" to JsonPrimitive(if (local) Experiments.LAB_HOST else Experiments.AUTO_HOST)))))
+        ("host" to JsonPrimitive((if (local) HostPlacement.LOCAL else HostPlacement.AUTO).stored)))))
 }
 
 /** Schedule responses can be edited and submitted again using the same public vocabulary. */
 internal fun scheduleExperiment(spec: ExperimentSpec): JsonObject {
-    val selector = if (Experiments.storedHost(spec.host) == Experiments.LAB_HOST)
+    val selector = if (spec.host == Experiments.LAB_HOST)
         (spec.nodeTags ?: NodeSelector()).let { it.copy(require = it.require + "local") } else spec.nodeTags
     val labels = NodeTags.labels(selector)
     val body = Json.encodeToJsonElement(ExperimentSpec.serializer(), spec).jsonObject - RETIRED_PLACEMENT

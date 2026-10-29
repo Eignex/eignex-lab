@@ -106,7 +106,7 @@ class ConnectedNomadTest {
             assertTrue(store.job(job)!!.commands.all { it.cmd.contains("workspaces/") })
             assertEquals(1, store.execution.accepted(job).count { it.second.preparation != null })
             assertEquals(2, store.execution.accepted(job).count { it.second.preparation == null })
-            assertTrue(store.execution.sessions(job).filter { it.executionClass == "solve" }.none {
+            assertTrue(store.execution.sessions(job).filter { it.executionClass == ExecutionClass.SOLVE }.none {
                 store.execution.submission(it.id).contains("node.unique.id")
             }, "workers share the node within their CPU and memory requests")
             assertTrue(store.caseRecordText(job, 0)!!.contains("preparedCorpus"))
@@ -126,7 +126,7 @@ class ConnectedNomadTest {
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
         val spec = ExperimentSpec("nomad-http", profile = ProfileMain(script = "profile", buildTasks = listOf("installDist")),
-            grid = mapOf("x" to listOf("a", "b")), host = "auto")
+            grid = mapOf("x" to listOf("a", "b")), host = HostPlacement.AUTO)
         val script = """#!/usr/bin/env bash
             set -eu
             [[ "${'$'}{1:-}" != --help ]] || { echo fixture; exit 0; }

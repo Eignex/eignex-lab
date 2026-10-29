@@ -69,7 +69,7 @@ internal class WorkerArchiveCache(private val root: Path, private val maxBytes: 
                     } finally { storage.close(lease) }
                 }
                 trace.cache("archive", if (valid) "hit" else "miss", if (valid) "verified-local" else if (cached == null) "absent" else "verification-failed",
-                    verificationMs = verificationMs, waitingMs = waitingMs, bytes = result?.bytes, files = files.size,
+                    verificationMs = verificationMs, waitingMs = waitingMs, bytes = result.bytes, files = files.size,
                     checkedFiles = inventoryVerifier.stats.checkedFiles + zipVerifier.stats.checkedFiles + if (valid) 0 else files.size,
                     hashedFiles = inventoryVerifier.stats.hashedFiles + zipVerifier.stats.hashedFiles + if (valid) 0 else files.size,
                     hashedBytes = inventoryVerifier.stats.hashedBytes + zipVerifier.stats.hashedBytes + if (valid) 0 else files.sumOf { it.bytes })

@@ -3,13 +3,13 @@ package com.eignex.lab
 /** Queues a confirmation when a scheduled run's results flip against the schedule's previous run of the same experiment. */
 internal class Confirmations(private val config: Config, private val store: Store) {
     fun queue(job: Job) {
-        val spec = job.experiment ?: return
+        val spec = job.experiment
         val series = job.name.substringBefore('@', "")
         if (series.isEmpty() || series.endsWith(Confirm.SUFFIX) || spec.bench == null) return
         val schedule = store.schedules().singleOrNull { it.name == series } ?: return
         val fingerprint = Experiments.fingerprint(spec)
         val previous = store.jobs(limit = PREVIOUS_RUNS, name = series)
-            .filter { it.id < job.id && it.status == Status.DONE && it.experiment?.let(Experiments::fingerprint) == fingerprint }
+            .filter { it.id < job.id && it.status == Status.DONE && it.experiment.let(Experiments::fingerprint) == fingerprint }
             .maxByOrNull { it.id } ?: return
         val before = previous.sha ?: return
         val after = checkNotNull(store.job(job.id)?.sha)

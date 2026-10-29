@@ -212,16 +212,16 @@ class NomadBackendTest {
         store.execution.phase(claim.owner, "uploading")
         assertTrue(backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
         assertNull(backend().claim(session.id, token, "allocation"))
-        assertEquals("drain", store.execution.session(session.id)!!.desired)
+        assertEquals(Desired.DRAIN, store.execution.session(session.id)!!.desired)
         assertEquals(claim.indices.toSet(), store.job(id)!!.commands.filter { it.status == Status.DONE }.map { it.index }.toSet())
         assertTrue(store.job(id)!!.commands.filter { it.index !in claim.indices }.all { it.status == Status.QUEUED })
 
         control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
         backend().reconcile()
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" }, "lower-priority work must not immediately replace itself")
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP }, "lower-priority work must not immediately replace itself")
         store.setPaused(waiting, true)
         backend().reconcile()
-        val replacement = store.execution.sessions(id).single { it.desired == "run" }
+        val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
         val replacementToken = Json.parseToJsonElement(store.execution.submission(replacement.id)).jsonObject
             .getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject
             .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
@@ -236,7 +236,7 @@ class NomadBackendTest {
         val waiting = store.create("urgent", "main", emptyList(), priority = 10,
             experiment = ExperimentSpec("urgent", problems = listOf(mapOf("suite" to "s"))))
         backend().reconcile()
-        assertEquals("stop", store.execution.session(session.id)!!.desired)
+        assertEquals(Desired.STOP, store.execution.session(session.id)!!.desired)
         assertEquals(0L to 0L, store.execution.nativeReservation())
         assertTrue(store.execution.sessions(waiting).isEmpty())
         assertEquals(0, store.execution.failureCount(id))
@@ -328,7 +328,7 @@ class NomadBackendTest {
         store.execution.phase(claim.owner, "uploading")
         assertTrue(backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
         assertNull(backend().claim(session.id, token, "allocation"))
-        assertEquals("drain", store.execution.session(session.id)!!.desired)
+        assertEquals(Desired.DRAIN, store.execution.session(session.id)!!.desired)
         assertEquals(0, store.execution.failureCount(id))
     }
 
@@ -337,7 +337,7 @@ class NomadBackendTest {
         store.create("reference", "main", emptyList(), experiment = ExperimentSpec("reference",
             problems = listOf(mapOf("suite" to "s")), base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")))
         assertNotNull(backend().claim(session.id, token, "allocation"))
-        assertEquals("run", store.execution.session(session.id)!!.desired)
+        assertEquals(Desired.RUN, store.execution.session(session.id)!!.desired)
     }
 
     @Test fun `sharing policy retires a bound worker only after its current accepted iteration`() {
@@ -349,7 +349,7 @@ class NomadBackendTest {
             JsonObject(job + ("Meta" to JsonObject(job.getValue("Meta").jsonObject + ("lab_per_host_parallel" to JsonPrimitive("4")))))
         })
         changed.reconcile()
-        assertEquals("drain", store.execution.session(session.id)!!.desired)
+        assertEquals(Desired.DRAIN, store.execution.session(session.id)!!.desired)
         store.execution.phase(claim.owner, "uploading")
         assertTrue(store.execution.commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
         assertNull(store.execution.claim(session.id, token, "allocation"))
@@ -381,7 +381,7 @@ class NomadBackendTest {
         store.execution.loseSession(session.id, "infrastructure:worker-bug")
         val patched = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, workerRuntime = NomadWorkerRuntime(settings)::replace)
         patched.reconcile(); patched.reconcile()
-        val next = store.execution.sessions(id).single { it.desired == "run" }
+        val next = store.execution.sessions(id).single { it.desired == Desired.RUN }
         assertEquals(frozen.copy(session = next.id, release = "patched"), store.execution.manifest(next.id))
         assertEquals(before, store.execution.submission(previous.id))
         val payload = Json.parseToJsonElement(store.execution.submission(next.id)).jsonObject
@@ -410,7 +410,7 @@ class NomadBackendTest {
         backend().reconcile()
         backend(Store(file)).reconcile()
 
-        val replacement = store.execution.sessions(id).single { it.desired == "run" }
+        val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
         val payload = control.jobs.getValue(replacement.nomadJobId)
         val task = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
         assertEquals(3000, task.getValue("Resources").jsonObject.getValue("CPU").jsonPrimitive.int)
@@ -451,7 +451,7 @@ class NomadBackendTest {
         val original = store.execution.submission(session.id)
         control.nodeInventory["replacement"] = cpuNode("replacement", 6000)
         backend().reconcile()
-        assertEquals(listOf(session.id), store.execution.sessions(id).filter { it.desired == "run" }.map { it.id })
+        assertEquals(listOf(session.id), store.execution.sessions(id).filter { it.desired == Desired.RUN }.map { it.id })
         assertEquals(original, store.execution.submission(session.id))
         assertNotNull(backend().claim(session.id, token, "allocation"))
     }
@@ -511,7 +511,7 @@ class NomadBackendTest {
     private lateinit var session: ExecutionSession
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
-    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = "auto"), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session"): Long {
+    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = HostPlacement.AUTO), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session"): Long {
         val spec = if (preparation && !spec.isProfile && spec.bench == null) spec.copy(problems = emptyList(), bench = BenchSpec("bench.json",
             referenceFilter = spec.problems.firstOrNull()?.get("reference")?.let { ReferenceFilterMode.valueOf(it.uppercase()) } ?: ReferenceFilterMode.ANY)) else spec
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
@@ -537,7 +537,7 @@ class NomadBackendTest {
     }
     private fun register(allocation: String = "allocation") = backend().register(session.id, token, allocation, jwt(allocation), "release")
     private fun useReplacement(id: Long, allocation: String, node: String) {
-        session = store.execution.sessions(id).single { it.desired == "run" }
+        session = store.execution.sessions(id).single { it.desired == Desired.RUN }
         token = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0].jsonObject
             .getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
         control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, node, "running", "run")
@@ -555,9 +555,9 @@ class NomadBackendTest {
             nativeCapacity = ResourceBudget(cpu, 4096))
 
         configured(3000).reconcile()
-        assertTrue(store.execution.sessions(job).all { it.desired == "stop" }, "another worker's reservation must fit too")
+        assertTrue(store.execution.sessions(job).all { it.desired == Desired.STOP }, "another worker's reservation must fit too")
         configured(4000).reconcile()
-        val replacement = store.execution.sessions(job).single { it.desired != "stop" }
+        val replacement = store.execution.sessions(job).single { it.desired != Desired.STOP }
         assertNotEquals(previous.id, replacement.id)
         assertEquals(previous.budget, replacement.budget)
         assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
@@ -578,8 +578,8 @@ class NomadBackendTest {
             control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "lost")
             backend(Store(file)).reconcile()
             assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
-            val replacement = store.execution.sessions(id).single { it.desired == "run" }
-            assertEquals("prepare", replacement.executionClass)
+            val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
+            assertEquals(ExecutionClass.PREPARE, replacement.executionClass)
             assertNotEquals(previous.id, replacement.id)
             assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
             assertEquals(Status.RUNNING, store.job(id)!!.status)
@@ -609,7 +609,7 @@ class NomadBackendTest {
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertContains(store.job(id)!!.error!!, "3 worker exits without acceptance at stage selection")
         assertContains(store.job(id)!!.error!!, "exit 70, release release")
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         repeat(3) { backend().reconcile() }
         assertEquals(3, store.execution.sessions(id).size)
         assertEquals(3, store.execution.events(id).count { it.detail.startsWith("preparation-worker-exit:") })
@@ -647,7 +647,7 @@ class NomadBackendTest {
             control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "failed", workerExit = NomadWorkerExit(WORKER_SOFTWARE_EXIT))
             backend(Store(file)).reconcile()
             if (index < 2) {
-                session = store.execution.sessions(id).single { it.desired == "run" }
+                session = store.execution.sessions(id).single { it.desired == Desired.RUN }
                 allocation = "startup-failure-$index"
                 control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, "node-$index", "running", "run")
             }
@@ -655,7 +655,7 @@ class NomadBackendTest {
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertContains(store.job(id)!!.error!!, "3 worker exits without acceptance at stage registration")
         assertEquals(3, store.execution.sessions(id).size)
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
     }
 
     private fun benchProblem(name: String, collection: String = "") = BenchRuns.problem(com.eignex.lab.bench.BenchCase(name,
@@ -668,7 +668,7 @@ class NomadBackendTest {
         armPlans = manifest.arms.associate { it.arm.label to com.eignex.lab.bench.BenchPlan(selections.flatten().map { it.benchCase!! }) })
 
     @Test fun `confirmation replay pins accepted builds and refuses changed revisions requests and inputs`() {
-        val originalSpec = ExperimentSpec("original", bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("mode" to "original"))), host = "auto")
+        val originalSpec = ExperimentSpec("original", bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("mode" to "original"))), host = HostPlacement.AUTO)
         val id = setup(1, originalSpec, preparation = true)
         register()
         val claim = backend().claim(session.id, token, "allocation")!!
@@ -717,7 +717,7 @@ class NomadBackendTest {
         assertEquals(Status.RUNNING, store.job(id)!!.status)
         assertFalse(store.job(id)!!.setupDone)
         assertEquals(1, store.execution.sessions(id).size)
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         assertEquals(preparation, store.execution.accepted(id).single().second.preparation)
         assertEquals("prepared source", Files.readString(root.resolve("jobs/$id/preparation/${prepared.commit}.zip")))
         val problems = selected.flatten()
@@ -728,11 +728,11 @@ class NomadBackendTest {
     }
 
     @Test fun `selection approval is durable idempotent and cannot be changed by a preparing worker`() {
-        val spec = ExperimentSpec("selection", problems = listOf(mapOf("suite" to "s", "reference" to "proven", "max" to "1")), host = "auto")
+        val spec = ExperimentSpec("selection", problems = listOf(mapOf("suite" to "s", "reference" to "proven", "max" to "1")), host = HostPlacement.AUTO)
         val id = setup(2, spec, preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!
         store.execution.phase(claim.owner, "preparing")
-        store.putReferences(listOf(("" to "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
+        store.putReferences(listOf(ProblemKey("", "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
         val requested = listOf(listOf(benchProblem("p0"), benchProblem("p1")))
         val selected = backend().selectPreparation(claim.owner, requested)
         assertEquals(listOf("p1"), selected.single().map { it.problem })
@@ -749,7 +749,7 @@ class NomadBackendTest {
     }
 
     @Test fun `extra substring annotations do not reject or expand an approved preparation`() {
-        val spec = ExperimentSpec("annotations", problems = listOf(mapOf("suite" to "s", "reference" to "any")), host = "auto")
+        val spec = ExperimentSpec("annotations", problems = listOf(mapOf("suite" to "s", "reference" to "any")), host = HostPlacement.AUTO)
         val id = setup(1, spec, preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!
         val bytes = "prepared source".toByteArray(); val sha = ExecutionStore.digest(String(bytes))
@@ -771,14 +771,14 @@ class NomadBackendTest {
     }
 
     @Test fun `empty approved selection is a permanent preparation failure`() {
-        val spec = ExperimentSpec("empty", problems = listOf(mapOf("suite" to "s", "reference" to "proven")), host = "auto")
+        val spec = ExperimentSpec("empty", problems = listOf(mapOf("suite" to "s", "reference" to "proven")), host = HostPlacement.AUTO)
         val id = setup(1, spec, preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!
         store.execution.phase(claim.owner, "preparing")
         assertFailsWith<ExecutionFenced> { backend().selectPreparation(claim.owner, listOf(listOf(benchProblem("p0")))) }
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertTrue(store.job(id)!!.error!!.contains("reference filter"))
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
     }
 
     @Test fun `retired frozen preparation is fenced instead of returning retryable selection errors`() = testApplication {
@@ -803,7 +803,7 @@ class NomadBackendTest {
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertContains(store.job(id)!!.error!!, "repository bench manifest or explicit profile")
         assertEquals(1, store.execution.sessions(id).size)
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
     }
 
     @Test fun `retired preparation cannot be replaced after infrastructure loss`() {
@@ -840,7 +840,7 @@ class NomadBackendTest {
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertContains(store.job(id)!!.error!!, "problem selection failed 3 times")
         assertContains(store.job(id)!!.error!!, "broken selection invariant")
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         repeat(3) { backend().reconcile() }
         assertEquals(3, store.execution.sessions(id).size)
 
@@ -933,7 +933,7 @@ class NomadBackendTest {
         backend(Store(file)).reconcile()
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertEquals(String(bytes), Files.readString(root.resolve("jobs/$id/cases/0/profile.jfr")))
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         assertEquals(0, store.execution.failureCount(id))
     }
 
@@ -961,7 +961,7 @@ class NomadBackendTest {
             assertEquals(result, restarted.execution.accepted(id).single().second)
             assertFailsWith<ExecutionFenced> { restarted.execution.renew(claim.owner) }
             assertFailsWith<ExecutionFenced> { backend(restarted).commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") })) }
-            val replacement = restarted.execution.sessions(id).single { it.desired == "run" }
+            val replacement = restarted.execution.sessions(id).single { it.desired == Desired.RUN }
             assertNull(replacement.node)
             assertNull(replacement.allocation)
             assertEquals(frozen.copy(session = replacement.id), restarted.execution.manifest(replacement.id))
@@ -982,8 +982,8 @@ class NomadBackendTest {
     }
 
     @Test fun `cloud admission refuses local placement exceptions and respects schedule cloud opt in`() {
-        val spec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), host = "auto")
-        for ((candidate, name) in listOf(spec.copy(host = "lab") to "test", spec to "test${Confirm.SUFFIX}", spec to "schedule@sha",
+        val spec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), host = HostPlacement.AUTO)
+        for ((candidate, name) in listOf(spec.copy(host = HostPlacement.LOCAL) to "test", spec to "test${Confirm.SUFFIX}", spec to "schedule@sha",
             spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "scip")) to "test")) {
             assertFailsWith<IllegalArgumentException>(name) { setup(1, candidate, name) }
         }
@@ -992,13 +992,13 @@ class NomadBackendTest {
     }
 
     @Test fun `cloud workers can stage exact problem lists`() {
-        val spec = ExperimentSpec("exact", problemList = listOf(Problem("s", "p0")), host = "auto")
+        val spec = ExperimentSpec("exact", problemList = listOf(Problem("s", "p0")), host = HostPlacement.AUTO)
         val id = setup(1, spec)
         assertEquals(id, session.jobId)
     }
 
     @Test fun `cloud workers enforce the whole run profile deadline`() {
-        val spec = ExperimentSpec("bounded", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1, classpath = listOf("tools/lib/*")), host = "auto")
+        val spec = ExperimentSpec("bounded", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1, classpath = listOf("tools/lib/*")), host = HostPlacement.AUTO)
         val id = setup(1, spec)
         assertEquals(id, session.jobId)
     }
@@ -1096,7 +1096,7 @@ class NomadBackendTest {
         control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "lost")
         backend().reconcile()
         assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
-        val replacement = store.execution.sessions(id).single { it.desired == "run" }
+        val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
         assertNotEquals(session.id, replacement.id)
         assertEquals(1, store.execution.failureCount(id))
         assertEquals(2, store.execution.intents().size)

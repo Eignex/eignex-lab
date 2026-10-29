@@ -105,7 +105,7 @@ class PagesTest {
     fun `a browser gets pages and an api client gets json`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled, repoUrl = "https://github.com/Eignex/eignex-lab.git")
         val store = Store(config.database)
-        val done = store.create("sweep", "main", listOf("true" to 10L, "false" to 10L))
+        val done = store.create("sweep", "main", listOf("true" to 10L, "false" to 10L), experiment = ExperimentSpec("sweep"))
         store.startForTest()
         store.setup(done, "0123456789abcdef")
         store.commandStarted(done, 0)
@@ -113,12 +113,12 @@ class PagesTest {
         store.commandStarted(done, 1)
         store.commandFinished(done, 1, 1)
         store.finish(done, Status.DONE)
-        val queued = store.create("waiting", "main", listOf("true" to 10L))
+        val queued = store.create("waiting", "main", listOf("true" to 10L), experiment = ExperimentSpec("waiting"))
         testApplication {
             application { api(config, store, host) }
 
             val index = client.get("/") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
-            val job = client.get("/jobs/$done") { header(HttpHeaders.Accept, "text/html") }
+            val job = client.get("/jobs/$done?commands") { header(HttpHeaders.Accept, "text/html") }
             val failed = client.get("/jobs/$done?failed") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
             val json = client.get("/jobs/$done")
 
@@ -136,7 +136,7 @@ class PagesTest {
     fun `a case's termination reasons show under its exit and in the job's JSON`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
-        val id = store.create("kills", "main", listOf("sleep 1" to 60L))
+        val id = store.create("kills", "main", listOf("sleep 1" to 60L), experiment = ExperimentSpec("kills"))
         store.commandFinished(id, 0, 137)
         val dir = Files.createDirectories(config.jobDir(id))
         Termination.record(Termination.file(dir, 0), "shutdown: the runner stopped, so the lab killed the case; it reruns when the runner is back", at = 1)
@@ -144,7 +144,7 @@ class PagesTest {
         testApplication {
             application { api(config, store, host) }
 
-            val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+            val page = client.get("/jobs/$id?commands") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
             val json = client.get("/jobs/$id").bodyAsText()
 
             assertContains(page, "exit 137</small><br><small class=\"muted\" title=\"1970-01-01T00:00:00.001Z\">shutdown:")
@@ -280,10 +280,10 @@ class PagesTest {
     fun `deleting an ended job removes it and its files but a running one stays`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
-        val ended = store.create("old", "main", listOf("true" to 1L))
+        val ended = store.create("old", "main", listOf("true" to 1L), experiment = ExperimentSpec("old"))
         store.startForTest()
         store.finish(ended, Status.CANCELLED)
-        val running = store.create("now", "main", listOf("true" to 1L))
+        val running = store.create("now", "main", listOf("true" to 1L), experiment = ExperimentSpec("now"))
         store.startForTest()
         config.jobDir(ended).toFile().apply { mkdirs() }.resolve("0.out").writeText("x")
         testApplication {
@@ -478,7 +478,7 @@ class PagesTest {
         return Config(dataDir = root, auth = Auth.Disabled, cores = cores, nomadQueueSettings = queue.takeIf { aws != null })
     }
 
-    private fun work(id: Long, host: String, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
+    private fun work(id: Long, host: HostPlacement, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
         id, "e$id", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, parallel = 4, priority = priority,
         experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "360000"), host = host),
         counts = CommandCounts(cases, done, 0, 0),

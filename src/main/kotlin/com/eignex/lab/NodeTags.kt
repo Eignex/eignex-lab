@@ -79,6 +79,9 @@ object NodeTags {
         else setOf("local")
 
     fun spotOnly(selector: NodeSelector?): Boolean = selector != null && ("spot" in selector.require || "on-demand" in selector.exclude)
+    /** The market a job with [selector] buys cloud capacity on: on-demand when its tags ask for it, else Spot. */
+    fun market(selector: NodeSelector?): CapacityMarket = if (onDemand(false, selector)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT
+
     fun onDemand(profile: Boolean, selector: NodeSelector?): Boolean =
         selector?.let { "on-demand" in it.require || "spot" in it.exclude } == true || profile && !spotOnly(selector)
 

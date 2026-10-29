@@ -106,7 +106,7 @@ object NomadCoordinatorCli {
                 val pool = requireNotNull(capacitySettings?.pools?.singleOrNull { it.nodeClass == template.nodeClass }) { "cloud pool is not configured" }
                 require(manifest.budget.cpuMillis <= pool.cpuMillis && manifest.budget.memoryMiB <= pool.availableMemoryMiB && template.cpuCapacity.logicalCpus == pool.vcpus)
                 require(NodeTags.matches(manifest.experiment.nodeTags, pool.capabilities))
-                require(pool.market == if (NodeTags.onDemand(false, manifest.experiment.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
+                require(pool.market == NodeTags.market(manifest.experiment.nodeTags))
             }
         }, nativeNodeTags = config.localNodeTags)
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.

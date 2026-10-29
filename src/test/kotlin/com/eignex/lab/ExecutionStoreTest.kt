@@ -10,7 +10,7 @@ class ExecutionStoreTest {
         val id = job()
         bind(id)
         assertFalse(store.execution.loseUnallocatedSession("s", "placement-cpu-capacity", 1001))
-        assertEquals("run", store.execution.session("s")!!.desired)
+        assertEquals(Desired.RUN, store.execution.session("s")!!.desired)
         assertNotNull(store.execution.claim("s", token, "alloc-s", 1002))
     }
 
@@ -20,14 +20,14 @@ class ExecutionStoreTest {
     private val budget = ResourceBudget(2000, 2048, 2)
 
     private fun job(problems: Int = 2): Long {
-        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = listOf(1), host = "auto")
+        val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = listOf(1), host = HostPlacement.AUTO)
         val id = store.create("ab", "main", emptyList(), parallel = 2, experiment = spec)
         val cases = Experiments.cases(problems, 2, spec.seeds)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, List(problems) { Problem("s", "p$it") }, cases, cases.map { "true" to 10L })
         return id
     }
     private fun bind(id: Long, name: String = "s", s: Store = store): ExecutionSession {
-        s.execution.createSession(name, id, "solve", "release-1", budget, token, "{}", 1000)
+        s.execution.createSession(name, id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000)
         return s.execution.bind(name, token, "alloc-$name", "node-$name", "release-1", 1000)
     }
     private fun result(claim: IterationClaim) = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1010, 1020, "{}") })
@@ -64,7 +64,7 @@ class ExecutionStoreTest {
         assertTrue(restarted.execution.commit(claim.owner, result, 1801))
         assertEquals(Status.FAILED, restarted.job(id)!!.status)
         assertEquals(result, restarted.execution.accepted(id).single().second)
-        assertTrue(restarted.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(restarted.execution.sessions(id).all { it.desired == Desired.STOP })
     }
 
     @Test fun `bench deadline survives replacement and cannot be reported without an allowance`() {
@@ -84,13 +84,13 @@ class ExecutionStoreTest {
     @Test fun `preparation has fenced ownership before a plan and survives coordinator restart`() {
         val spec = ExperimentSpec("prepare")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
-        store.execution.createSession("prep", id, "prepare", "release", budget, token, "{}", 1000)
+        store.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
         store.execution.bind("prep", token, "allocation", "node", "release", 1000)
         val first = store.execution.claim("prep", token, "allocation", 1100)!!
         assertTrue(first.indices.isEmpty())
         assertEquals(first, Store(file).execution.claim("prep", token, "allocation", 1101))
         store.execution.loseSession("prep", "infrastructure:spot", 1200)
-        store.execution.createSession("replacement", id, "prepare", "release", budget, token, "{}", 1200)
+        store.execution.createSession("replacement", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1200)
         store.execution.bind("replacement", token, "allocation-2", "node-2", "release", 1200)
         val next = store.execution.claim("replacement", token, "allocation-2", 1300)!!
         assertEquals(2, next.owner.generation)
@@ -108,7 +108,7 @@ class ExecutionStoreTest {
     @Test fun `preparation progress survives restart fences stale owners and rejects updates after upload`() {
         val spec = ExperimentSpec("prepare-progress")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
-        store.execution.createSession("prep", id, "prepare", "release", budget, token, "{}", 1000)
+        store.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
         store.execution.bind("prep", token, "allocation", "node", "release", 1000)
         val claim = store.execution.claim("prep", token, "allocation", 1100)!!
         store.execution.phase(claim.owner, "preparing", 1101)
@@ -149,8 +149,8 @@ class ExecutionStoreTest {
         assertEquals(Status.RUNNING, store.job(id)!!.status)
         store.execution.expireRunDeadlines(2000)
         assertEquals(Status.FAILED, Store(file).job(id)!!.status)
-        assertEquals(RunDeadlineExceeded().message, store.job(id)!!.error)
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertEquals(RunDeadlineExceeded.ERROR, store.job(id)!!.error)
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         assertEquals(1, store.execution.failureCount(id))
     }
 
@@ -191,13 +191,13 @@ class ExecutionStoreTest {
         store.execution.rejectBuild(replacement.owner, "compile failed", 1006) // Lost failure acknowledgement.
         assertEquals(Status.FAILED, Store(file).job(id)!!.status)
         assertEquals("source-build: compile failed", store.job(id)!!.error)
-        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         assertEquals(0, store.execution.accepted(id).size)
     }
 
     @Test fun `ambiguous submission and claim reuse stable identities without storing bearer token`() {
         val id = job(); val session = bind(id)
-        assertEquals(session, store.execution.createSession("s", id, "solve", "release-1", budget, token, "{}", 1002))
+        assertEquals(session, store.execution.createSession("s", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1002))
         assertEquals(1, store.execution.intents().size)
         val first = store.execution.claim("s", token, "alloc-s", 1001)
         assertEquals(first, Store(file).execution.claim("s", token, "alloc-s", 1002))
@@ -228,7 +228,7 @@ class ExecutionStoreTest {
         assertFailsWith<ExecutionFenced> { store.execution.renew(lost.owner, 1051) }
         assertFailsWith<ExecutionFenced> { store.execution.commit(lost.owner, result(lost), 1051) }
         assertTrue(store.job(id)!!.commands.filter { it.index in finished.indices }.all { it.status == Status.DONE })
-        assertEquals(1, store.execution.intents().count { it.operation == "stop" })
+        assertEquals(1, store.execution.intents().count { it.operation == IntentOp.STOP })
     }
 
     @Test fun `lease expiry retires credential before fresh claims and repeated commit is accepted`() {
@@ -251,13 +251,13 @@ class ExecutionStoreTest {
         assertFailsWith<ExecutionFenced> { store.execution.commit(claim.owner, result(claim), 1003) }
         assertEquals(Status.CANCELLED, store.job(id)!!.status)
         assertTrue(store.job(id)!!.commands.all { it.status == Status.CANCELLED })
-        assertEquals(setOf("submit", "stop"), store.execution.intents().map { it.operation }.toSet())
+        assertEquals(setOf(IntentOp.SUBMIT, IntentOp.STOP), store.execution.intents().map { it.operation }.toSet())
     }
 
     @Test fun `several sessions preserve the per experiment per node case cap`() {
         val sharedId = job();
         for (name in listOf("same-a", "same-b")) {
-            store.execution.createSession(name, sharedId, "solve", "release-1", budget, token, """{"Meta":{"lab_per_host_parallel":"2"}}""", 1000)
+            store.execution.createSession(name, sharedId, ExecutionClass.SOLVE, "release-1", budget, token, """{"Meta":{"lab_per_host_parallel":"2"}}""", 1000)
             store.execution.bind(name, token, "alloc-$name", "shared-node", "release-1", 1000)
         }
         val first = store.execution.claim("same-a", token, "alloc-same-a", 1001)!!
@@ -271,7 +271,7 @@ class ExecutionStoreTest {
     @Test fun `same job can claim two CPU bounded workers on one node by default`() {
         val id = job()
         for (name in listOf("a", "b")) {
-            store.execution.createSession(name, id, "solve", "release-1", budget, token, "{}", 1000)
+            store.execution.createSession(name, id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000)
             store.execution.bind(name, token, "alloc-$name", "shared", "release-1", 1000)
         }
         assertEquals(2, store.execution.claim("a", token, "alloc-a", 1001)!!.parallel)
@@ -279,15 +279,15 @@ class ExecutionStoreTest {
     }
 
     @Test fun `historical backend provenance stays readable while new jobs always use Nomad`() {
-        val id = store.create("old", "main", listOf("recorded" to 1L))
+        val id = store.create("old", "main", listOf("recorded" to 1L), experiment = ExperimentSpec("old"))
         store.finish(id, Status.DONE)
         store.executionTransaction { db -> db.createStatement().use { it.execute("ALTER TABLE jobs DROP COLUMN backend") } }
         val reopened = Store(file)
-        assertEquals("legacy", reopened.job(id)!!.backend)
+        assertEquals(Backend.LEGACY, reopened.job(id)!!.backend)
         assertEquals(Status.DONE, reopened.job(id)!!.status)
         assertEquals("recorded", reopened.job(id)!!.commands.single().cmd)
         assertFalse(reopened.retry(id))
-        val current = reopened.create("new", "main", emptyList())
-        assertEquals("nomad", reopened.job(current)!!.backend)
+        val current = reopened.create("new", "main", emptyList(), experiment = ExperimentSpec("new"))
+        assertEquals(Backend.NOMAD, reopened.job(current)!!.backend)
     }
 }

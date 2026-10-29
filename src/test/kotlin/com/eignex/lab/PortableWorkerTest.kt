@@ -248,7 +248,7 @@ class PortableWorkerTest {
         assertEquals(2, Files.readAllLines(count).size)
         assertEquals(script, Files.readString(source.resolve("gradlew")))
         assertFailsWith<IllegalArgumentException> { WorkerBuild(listOf("--init-script=untrusted")) }
-        assertFailsWith<IllegalArgumentException> { cache.prepare(bundle, source, budget, System.getenv()) { 0 } }
+        assertFailsWith<LeaseLost> { cache.prepare(bundle, source, budget, System.getenv()) { 0 } }
     }
 
     @Test fun `shared builds single flight across allocations and preserve dependency caches across commits`(): Unit = service { socket ->

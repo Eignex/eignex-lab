@@ -59,7 +59,7 @@ object Estimates {
     /** The mean wall time [job], a finished run, measured a case: its finished cases' own times, or else its running
      *  time spread over its cases at the concurrency it ran at on [cores] cores. Null for a job never planned. */
     fun history(job: Job, cores: Int): CaseHistory? {
-        val spec = job.experiment?.takeUnless { it.isScript } ?: return null
+        val spec = job.experiment.takeUnless { it.isScript } ?: return null
         if (job.total == 0) return null
         val mean = when {
             job.timed > 0 -> job.timedMs.toDouble() / job.timed
@@ -95,7 +95,7 @@ object Estimates {
      * run's or guessed count. [history] is asked only for a job that has not measured [MIN_MEASURED] cases of its own.
      */
     fun estimate(job: Job, history: (Job) -> CaseHistory?, cores: Int, maxParallel: Int = Int.MAX_VALUE): WorkEstimate? {
-        val spec = job.experiment?.takeUnless { it.isScript } ?: return null
+        val spec = job.experiment.takeUnless { it.isScript } ?: return null
         return runCatching {
             val measured = measuredCaseMs(job)
             val earlier = if (measured == null) history(job) else null
@@ -166,7 +166,7 @@ class EstimateHistory(
      */
     @Synchronized
     fun lookup(job: Job): CaseHistory? {
-        val spec = job.experiment?.takeUnless { it.isScript } ?: return null
+        val spec = job.experiment.takeUnless { it.isScript } ?: return null
         runCatching { refresh() }.onFailure { println("estimates: history not read: ${it.message}") }
         val series = job.name.substringBefore('@')
         key(spec)?.let { byKey[it] }?.let { matches -> return (matches.firstOrNull { it.series == series } ?: matches.first()).history }
@@ -192,7 +192,7 @@ class EstimateHistory(
         val ids = store.doneExperimentIds(limit)
         val fresh = ids.filter { it !in runs }
         for (job in store.jobsByIds(fresh)) {
-            runs[job.id] = Run(job.experiment?.let(::key), job.name.substringBefore('@'), Estimates.history(job, cores))
+            runs[job.id] = Run(job.experiment.let(::key), job.name.substringBefore('@'), Estimates.history(job, cores))
         }
         runs.keys.retainAll(ids.toSet())
         byKey = ids.mapNotNull { id -> runs[id]?.takeIf { it.key != null && it.history != null } }.groupBy { it.key!! }

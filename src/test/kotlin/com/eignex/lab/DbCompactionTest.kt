@@ -273,7 +273,7 @@ class DbCompactionTest {
     fun `a write waits for a vacuum in another process, and only for it`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file, busyTimeoutMs = 100)
-        val id = store.create("j", "main", listOf("true" to 1L))
+        val id = store.create("j", "main", listOf("true" to 1L), experiment = ExperimentSpec("j"))
         fun holdLock(ms: Long) = DriverManager.getConnection("jdbc:sqlite:$file").let { c ->
             c.createStatement().execute("BEGIN IMMEDIATE")
             thread { Thread.sleep(ms); c.createStatement().execute("COMMIT"); c.close() }

@@ -44,7 +44,7 @@ data class NomadQueueSettings(
     fun matching(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
         NodeTags.matches(spec.nodeTags, target.capabilities) &&
             (target.os == "mac" || Placement.localOnlyReason(spec, name, cloudSchedule) == null &&
-                target.market == if (NodeTags.onDemand(false, spec.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
+                target.market == NodeTags.market(spec.nodeTags))
     }
     fun solveOptions(options: String): String {
         val heap = Regex("(?:^|\\s)-Xmx([1-9][0-9]*)([kKmMgG]?)(?=\\s|$)").findAll(options).lastOrNull()

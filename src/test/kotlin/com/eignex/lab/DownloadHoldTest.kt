@@ -43,7 +43,7 @@ class DownloadHoldTest {
 
     /** An ended job whose directory has what a trim keeps and what it removes: case output, stdout and stderr. */
     private fun endedJob(config: Config, store: Store): Long {
-        val id = store.create("fetched", "main", listOf("true" to 1L))
+        val id = store.create("fetched", "main", listOf("true" to 1L), experiment = ExperimentSpec("fetched"))
         val dir = config.jobDir(id)
         Files.createDirectories(dir.resolve("cases/0/out"))
         Files.writeString(dir.resolve("job.log"), "log\n")

@@ -25,8 +25,8 @@ class JobFilesTest {
     private class Lab {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
-        val id = store.create("job", "main", emptyList())
-        val other = store.create("other", "main", emptyList())
+        val id = store.create("job", "main", emptyList(), experiment = ExperimentSpec("job"))
+        val other = store.create("other", "main", emptyList(), experiment = ExperimentSpec("other"))
         val dir: Path = config.jobDir(id).createDirectories()
         val secret: Path = config.dataDir.resolve("secret.txt").apply { writeText("top secret") }
 
@@ -132,7 +132,7 @@ class JobFilesTest {
         val jobs = Files.createTempDirectory("jobs")
         val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = jobs, auth = Auth.Disabled)
         val store = Store(config.database)
-        val id = store.create("job", "main", emptyList())
+        val id = store.create("job", "main", emptyList(), experiment = ExperimentSpec("job"))
         jobs.resolve("$id").createDirectories().resolve("job.log").writeText("from the jobs volume\n")
         testApplication {
             application { api(config, store, host) }
@@ -148,7 +148,7 @@ class JobFilesTest {
         val root = Files.createTempDirectory("volumes")
         val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = root.resolve("Ros/jobs"), auth = Auth.Disabled, volumesRoot = root)
         val store = Store(config.database)
-        val id = store.create("job", "main", emptyList())
+        val id = store.create("job", "main", emptyList(), experiment = ExperimentSpec("job"))
         testApplication {
             application { api(config, store, host) }
 
@@ -178,7 +178,7 @@ class JobFilesTest {
         }
         val config = Config(dataDir = data, corpusDir = data.resolve("corpus"), auth = Auth.Disabled, volumeAccess = access)
         val store = Store(config.database)
-        val id = store.create("job", "main", emptyList())
+        val id = store.create("job", "main", emptyList(), experiment = ExperimentSpec("job"))
         try {
             testApplication {
                 application { api(config, store, host) }

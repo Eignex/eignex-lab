@@ -54,6 +54,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val expires = System.nanoTime() + timeout * 1_000_000_000
         fun remaining(): Long = minOf(remainingLeaseMs(), (expires - System.nanoTime()) / 1_000_000)
         fun checkActive() {
+            if (remainingLeaseMs() <= 0) throw LeaseLost("preparation lease expired")
             check(remaining() > 0) { "preparation allowance expired" }
             if (remainingRunMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
         }
@@ -117,7 +118,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 val descriptionFile = directory.resolve("bench-descriptor-$index.jsonl")
                 run(tree, prefix + BenchRuns.invocation(tree, bench, "describe"), descriptionFile)
                 val current = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchDescriptor>(Files.readString(descriptionFile))
-                require(descriptor == null || descriptor!!.id == current.id) { "bench arms name different suites" }
+                require(descriptor == null || descriptor.id == current.id) { "bench arms name different suites" }
                 descriptor = current
                 val planFile = directory.resolve("bench-plan-$index.jsonl")
                 run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), planFile)

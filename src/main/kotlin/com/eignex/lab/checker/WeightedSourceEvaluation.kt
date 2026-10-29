@@ -135,7 +135,7 @@ internal object WeightedSourceEvaluation {
             rows++
             if (!satisfied) {
                 if (hard) violation = violation ?: "hard WCNF clause $rows is false"
-                else cost += weight!!
+                else cost += weight
             }
         }
         if (expectedRows != null && rows != expectedRows) throw Unsupported("WCNF clause count differs from header")

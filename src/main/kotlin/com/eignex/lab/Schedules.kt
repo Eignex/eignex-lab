@@ -77,7 +77,7 @@ internal class Schedules(
             config.dataDir.toFile(),
             "GIT_TERMINAL_PROMPT=0 git ls-remote ${quote(sourceUrl(repository))} ${quote("refs/heads/$ref")} ${quote("refs/tags/$ref")}",
         )
-    }.getOrNull()?.lineSequence()?.map { it.substringBefore('\t').trim() }?.firstOrNull { SHA.matches(it) }
+    }.getOrNull()?.lineSequence()?.map { it.substringBefore('\t').trim() }?.firstOrNull(CommitSha::isValid)
 
     internal fun <T> withRetry(what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
         backoff, onRetry = { attempt, wait, error ->
@@ -94,9 +94,5 @@ internal class Schedules(
         val (exit, output) = runProcess(Background.prefix + listOf("bash", "-c", cmd), dir, GIT_TIMEOUT, mapOf("GIT_TERMINAL_PROMPT" to "0"))
         check(exit == 0) { "git operation failed: ${output.trim()}" }
         return output.trim()
-    }
-
-    private companion object {
-        val SHA = Regex("[0-9a-f]{40}")
     }
 }

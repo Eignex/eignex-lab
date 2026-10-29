@@ -34,7 +34,7 @@ data class ExperimentSpec(
      * cloud workers share the job, respecting priority; `aws` is cloud-only and `lab` is local-only. The serialized
      * default below preserves historical specs and local schedules; submission placement is decided by [Placement].
      */
-    val host: String = Experiments.LAB_HOST,
+    val host: HostPlacement = HostPlacement.LOCAL,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
@@ -131,6 +131,40 @@ data class AnalyzeSpec(
     }
 }
 
+/** What an analysis job runs over, read from its [AnalyzeSpec] once [Experiments.validate] has accepted it. */
+sealed interface AnalyzeTarget {
+    /** Ended job [job]'s retained captures, by the analyser of [kind]. */
+    data class OfJob(val job: Long, val kind: Kind) : AnalyzeTarget
+
+    /** The captures in a pinned saved-capture [archive], by the compilation analyser. */
+    data class OfArchive(val archive: String, val sha256: String, val manifest: String?, val manifestSha256: String?) : AnalyzeTarget
+
+    enum class Kind(val word: String) {
+        COMPILATION(AnalyzeSpec.COMPILATION), CHECK(AnalyzeSpec.CHECK);
+
+        override fun toString() = word
+
+        companion object {
+            fun of(word: String): Kind = entries.firstOrNull { it.word == word } ?: throw IllegalArgumentException("unknown analysis kind $word")
+        }
+    }
+}
+
+/** [this] as what it names: a job or a pinned archive, never both or neither. */
+val AnalyzeSpec.target: AnalyzeTarget get() = when {
+    archive != null -> AnalyzeTarget.OfArchive(archive, requireNotNull(sha256) { "an archive is pinned by its sha256" }, manifest, manifestSha256)
+    else -> AnalyzeTarget.OfJob(requireNotNull(job) { "analyze names a job or an archive" }, AnalyzeTarget.Kind.of(kind))
+}
+
+/** What a profile job runs: a committed JVM main on its classpath, or a committed executable. */
+sealed interface ProfileEntry {
+    data class JvmMain(val main: String, val classpath: List<String>, val jvmArgs: List<String>) : ProfileEntry
+    data class Script(val script: String, val outputArgument: String?) : ProfileEntry
+}
+
+/** [this] as what it runs, once [ProfileRuns.validate] has accepted it. */
+val ProfileMain.entry: ProfileEntry get() = script?.let { ProfileEntry.Script(it, outputArgument) } ?: ProfileEntry.JvmMain(main, classpath, jvmArgs)
+
 /** Whether [this] is an analysis job, which runs the lab's analyser over another job's captures. */
 val ExperimentSpec.isAnalysis: Boolean get() = analyze != null
 
@@ -179,7 +213,7 @@ data class Problem(
     val benchCase: com.eignex.lab.bench.BenchCase? = null,
 ) {
     /** Source identity shared across runtime configurations, seeds and repeats. */
-    val referenceKey: Pair<String, String> get() = collection to (benchCase?.attributes?.get("problem") ?: problem)
+    val referenceKey: ProblemKey get() = ProblemKey.of(this)
 }
 
 /** The case at one index of an experiment's commands. */
@@ -222,5 +256,18 @@ enum class ReferenceFilterMode {
         MISSING -> reference == null
         UNSETTLED -> reference == null || !reference.proven && reference.budgetMs < budgetMs
         ANY -> true
+    }
+}
+
+/**
+ * The (collection, problem) a reference row, a feature row and a trend entry are kept under. A bench case's own
+ * `problem` attribute names it when it has one, so a case is matched with the references of the instance it ran.
+ */
+@Serializable
+data class ProblemKey(val collection: String, val problem: String) {
+    override fun toString() = "$collection/$problem"
+
+    companion object {
+        fun of(problem: Problem) = ProblemKey(problem.collection, problem.benchCase?.attributes?.get("problem") ?: problem.problem)
     }
 }
