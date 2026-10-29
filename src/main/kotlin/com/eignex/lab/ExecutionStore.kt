@@ -62,9 +62,11 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionTransaction { db ->
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)
-            val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
+            val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at, preparation_caches FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
                 Triple(attempt.getString(1), attempt.getInt(2), attempt.getString(3)?.let {
-                    PreparationStatus(Json.decodeFromString<PreparationProgress>(it), attempt.getLong(4))
+                    PreparationStatus(Json.decodeFromString<PreparationProgress>(it).copy(caches = attempt.getString(5)?.let { value ->
+                        Json.decodeFromString<Map<String, PreparationCacheEvent>>(value)
+                    }.orEmpty()), attempt.getLong(4))
                 })
             }.singleOrNull()
             val done = db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE session_id = ? AND state = 'committed'", s.id) { it.getInt(1) }.single()
@@ -239,8 +241,9 @@ class ExecutionStore internal constructor(private val store: Store) {
             attempt.jobId, owner.iteration, owner.generation) { it.getString(1)?.let { value -> Json.decodeFromString<PreparationProgress>(value) } }.single()
         // A final snapshot can race the background reporter. Never replace it with an older observation.
         if (prior != null && prior.elapsedMs > progress.elapsedMs) return@executionTransaction
-        db.sqlUpdate("UPDATE iteration_attempts SET preparation_progress = ?, preparation_updated_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
-            Json.encodeToString(progress), at, attempt.jobId, owner.iteration, owner.generation)
+        db.sqlUpdate("UPDATE iteration_attempts SET preparation_progress = ?, preparation_updated_at = ?, preparation_caches = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            // Keep the original JSON shape readable by an older coordinator after rollback.
+            Json.encodeToString(progress.copy(caches = emptyMap())), at, Json.encodeToString(progress.caches), attempt.jobId, owner.iteration, owner.generation)
         if (prior?.stage != progress.stage) db.event(attempt.jobId, owner.session, "preparation:${progress.stage}:${owner.generation}", at)
     }
 
@@ -532,6 +535,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("""CREATE TABLE IF NOT EXISTS iteration_attempts (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, generation INTEGER NOT NULL, session_id TEXT NOT NULL, allocation_id TEXT NOT NULL, token_hash TEXT NOT NULL, lease_until INTEGER NOT NULL, state TEXT NOT NULL, indices TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, result TEXT, PRIMARY KEY (job_id, iteration_id, generation))""")
                 val attemptColumns = s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 if ("preparation_progress" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_progress TEXT")
+                if ("preparation_caches" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_caches TEXT")
                 if ("preparation_updated_at" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_updated_at INTEGER")
                 if ("parallel_limit" !in attemptColumns) s.execute("ALTER TABLE iteration_attempts ADD COLUMN parallel_limit INTEGER NOT NULL DEFAULT 1")
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")

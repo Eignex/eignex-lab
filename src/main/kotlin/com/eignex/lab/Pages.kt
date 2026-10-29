@@ -2125,6 +2125,16 @@ internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()
         append(snapshot.timings.filterValues { it > 0 }.entries.joinToString(" · ") {
             "${esc(PreparationTrace.labels.getValue(it.key))}: ${seconds(it.value)}"
         })
+        if (snapshot.caches.isNotEmpty()) {
+            append("<br>")
+            append(snapshot.caches.entries.joinToString(" · ") { (name, event) ->
+                buildString {
+                    append("${esc(PreparationTrace.cacheLabels.getValue(name))}: ${event.outcome} (${esc(PreparationTrace.cacheReasons.getValue(event.reason))})")
+                    if (event.verificationMs > 0) append(", verification ${seconds(event.verificationMs)}")
+                    if (event.waitingMs > 0) append(", waiting ${seconds(event.waitingMs)}")
+                }
+            })
+        }
     }
 }
 
