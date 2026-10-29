@@ -24,16 +24,15 @@ open class WeightedSourceChecker(final override val format: String) : FormatChec
         if (expected == null || !expected.content.matches(Regex("[a-f0-9]{64}")))
             return verdict(LabCheck.NOT_RUN, "no original model SHA-256 was retained")
         if (case.sources.data != null) return verdict(LabCheck.UNSUPPORTED, "weighted sources cannot have a separate data file")
-        val model = File(work, "original.source")
+        val compressed = case.sources.model.name.endsWith(".zst")
+        val model = File(work, "original.source${if (compressed) ".zst" else ""}")
         try {
-            val input = case.sources.model.inputStream()
-            (if (case.sources.model.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(input) else input).use {
-                model.writeBytes(bounded(it))
-            }
+            case.sources.model.inputStream().use { model.writeBytes(bounded(it)) }
         } catch (e: InputLimit) { return verdict(LabCheck.UNSUPPORTED, e.message.orEmpty()) }
-        if (sha256(model) != expected.content) return verdict(LabCheck.NOT_RUN, "original source snapshot differs from recorded SHA-256")
+        if (!compressed && sha256(model) != expected.content) return verdict(LabCheck.NOT_RUN, "original source snapshot differs from recorded SHA-256")
         val request = buildJsonObject {
             put("format", format); put("witness", case.witness)
+            put("sourceSha256", expected.content)
             case.claimedObjective?.let { put("objective", it) }
         }.toString()
         if (request.toByteArray().size > WeightedSourceEvaluation.MAX_BYTES)
@@ -74,11 +73,21 @@ open class WeightedSourceChecker(final override val format: String) : FormatChec
 /** All parsing and exact arithmetic run in the bounded child, including UTF-8 decoding. */
 object WeightedSourceCheckMain {
     @JvmStatic fun main(args: Array<String>) {
-        val model = File(args[0]).inputStream().use { WeightedSourceChecker.bounded(it) }.decodeToString(throwOnInvalidSequence = true)
         val request = Json.parseToJsonElement(File(args[1]).readText()) as JsonObject
         fun field(key: String) = (request[key] as? JsonPrimitive)?.content
-        val result = WeightedSourceEvaluation.check(requireNotNull(field("format")), model,
-            requireNotNull(field("witness")), field("objective"))
+        val result = try {
+            val file = File(args[0])
+            val bytes = file.inputStream().let { input ->
+                (if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(input) else input).use { WeightedSourceChecker.bounded(it) }
+            }
+            if (sha256(bytes) != field("sourceSha256")) WeightedEvaluation(LabCheck.NOT_RUN, "original source snapshot differs from recorded SHA-256")
+            else WeightedSourceEvaluation.check(requireNotNull(field("format")), bytes.decodeToString(throwOnInvalidSequence = true),
+                requireNotNull(field("witness")), field("objective"))
+        } catch (e: WeightedSourceChecker.Companion.InputLimit) {
+            WeightedEvaluation(LabCheck.UNSUPPORTED, e.message.orEmpty())
+        } catch (e: java.nio.charset.CharacterCodingException) {
+            WeightedEvaluation(LabCheck.UNSUPPORTED, "source is not UTF-8")
+        }
         println(Json.encodeToString(WeightedEvaluation.serializer(), result))
     }
 }

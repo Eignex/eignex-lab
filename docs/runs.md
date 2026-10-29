@@ -175,8 +175,8 @@ This avoids finite-width provider costs and validates a point and its cost only,
 The receipt binds original plain source bytes, complete witness, claimed objective, policy version, installed lab
 JAR, executable/classpath hashes and the existing process resource envelope. A source hash is required.
 
-Parsing and arithmetic run in a child with a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and existing
-4 GiB address-space limit on Linux; incomplete execution is `not-run`. Source snapshots are capped at 32 MiB
+Decompression, parsing and arithmetic run in a child with a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and existing
+4 GiB address-space limit on Linux; incomplete execution is `not-run`. Source snapshots and compressed transport are capped at 32 MiB
 (including decompression); individual numeric tokens at 4096 characters and variables at one million. Exceeding
 input coverage is `unsupported`; malformed source stays unsupported, while a malformed point, hard violation or
 wrong exact cost is `invalid`. Missing source/witness/objective and process failures are never valid checks.
