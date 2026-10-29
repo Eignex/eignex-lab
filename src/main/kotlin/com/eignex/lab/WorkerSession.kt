@@ -257,10 +257,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val complete = retry {
                 try {
                     // Query progress only initially or after an ambiguous response; successful PUTs carry the next offset.
+                    val queriedOffset = offset == null
                     val from = offset ?: Json.decodeFromString<UploadReply>(String(request("uploads/$sha" + if (reusable) "?reuse=true" else "", owner = owner).body())).offset
                     require(from in 0..size)
                     if (from == size && size > 0) return@retry true
-                    if (from > 0) resumed = true
+                    if (queriedOffset && from > 0) resumed = true
                     val count = minOf(size - from, 8L * 1024 * 1024).toInt()
                     val bytes = Files.newInputStream(file).use { input -> input.skipNBytes(from); input.readNBytes(count) }
                     sent = true

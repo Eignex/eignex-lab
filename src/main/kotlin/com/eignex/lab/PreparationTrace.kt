@@ -66,11 +66,12 @@ class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {
     companion object {
         val cacheLabels = linkedMapOf("build" to "Build", "input" to "Inputs", "archive" to "Archive",
             "upload" to "Upload", "workspace" to "Workspace", "dependencies" to "Gradle dependencies")
-        val cacheReasons = linkedMapOf("absent" to "entry absent on this node", "verification-failed" to "verification failed",
+        val cacheReasons = linkedMapOf("absent" to "entry absent", "verification-failed" to "verification failed",
             "verified" to "verified local entry", "verified-local" to "verified local entry",
             "coordinator-present" to "identical artifact already on coordinator", "unsupported" to "reuse unsupported",
             "lock-busy" to "cache busy", "identity-changed" to "identity changed", "local-build" to "copied verified local build",
-            "partial-upload" to "resuming partial upload", "not-reusable" to "artifact is not reusable")
+            "partial-upload" to "resuming partial upload", "not-reusable" to "artifact is not reusable",
+            "receipt-missing" to "missing verification receipt rebuilt", "receipt-rebuilt" to "missing or stale verification receipt rebuilt")
         val labels: Map<String, String> = linkedMapOf("preparing" to "Preparing", "inputs" to "Verifying inputs", "download" to "Downloading inputs",
             "build-cache" to "Checking build cache", "cache-cleanup" to "Cleaning build cache", "checkout" to "Checking out source", "compiler-wait" to "Waiting for compiler",
             "compilation" to "Compiling", "build-verification" to "Verifying build outputs", "workspace" to "Creating workspace",
