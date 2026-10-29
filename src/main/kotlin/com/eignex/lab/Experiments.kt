@@ -355,12 +355,17 @@ object Experiments {
         return if (notes.isEmpty()) spec else capped.copy(capped = spec.capped + notes.distinct())
     }
 
+    /** Check the current execution contract for persisted inputs as well as new submissions. */
+    internal fun requireExecutable(spec: ExperimentSpec) {
+        require(spec.isAnalysis || spec.isProfile || spec.bench != null) { "execution requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated" }
+    }
+
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
         NodeTags.validate(spec.nodeTags)
         if (!spec.isAnalysis) Repositories.requireAllowed(spec.repository)
-        require(spec.isAnalysis || spec.isProfile || spec.bench != null) { "execution requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated" }
+        requireExecutable(spec)
         spec.bench?.let { bench ->
             require(spec.profile == null && spec.analyze == null && !spec.isScript && !spec.measuresCli)
             require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty()) {

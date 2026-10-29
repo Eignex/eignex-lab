@@ -21,6 +21,7 @@ class NomadBackend(
     private val writeLog: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
     private val changed: () -> Unit = {},
     private val nativeNodeTags: Set<String>? = null,
+    private val selectProblems: (Store, ExperimentSpec, List<List<Problem>>, () -> Unit) -> List<List<Problem>> = ::preparationSelection,
 ) {
     private val pendingLogs = mutableSetOf<Long>()
     val logs = WorkerLogs(store, jobDirectory)
@@ -36,6 +37,7 @@ class NomadBackend(
         require(if (template.platform == NomadPlatform.LINUX) template.command == listOf("worker") else template.command.size == 2 && template.command[1] == "worker")
         if (template.platform == NomadPlatform.MAC) require(Path.of(template.command.first()).isAbsolute && "current" !in Path.of(template.command.first()).map { it.toString() }) { "native workers require a pinned release launcher" }
         val job = store.job(jobId) ?: error("missing experiment")
+        if (manifest.preparationTimeoutSec != null) Experiments.requireExecutable(manifest.experiment)
         require(job.backend == "nomad" && job.experiment == manifest.experiment)
         if (template.platform == NomadPlatform.LINUX) {
             val reason = Placement.localOnlyReason(manifest.experiment, job.name, Placement.cloudSchedule(job.name, store.schedules()))
@@ -102,14 +104,28 @@ class NomadBackend(
         check(workAllowed())
         val hash = ExecutionStore.digest(Json.encodeToString(requested))
         store.execution.preparationSelection(owner, hash)?.let { return it }
-        val spec = store.execution.manifest(owner.session).experiment
+        val manifest = store.execution.manifest(owner.session)
+        val spec = manifest.experiment
         val selected = try {
-            preparationSelection(store, spec, requested) { store.execution.authorize(owner) }.also { groups ->
+            selectProblems(store, spec, requested) { store.execution.authorize(owner) }.also { groups ->
                 require(groups.any { it.isNotEmpty() }) { "the selection matched no problems the reference filter keeps" }
             }
         } catch (failure: IllegalArgumentException) {
             store.execution.rejectBuild(owner, "problem selection: ${failure.message?.take(1024)}")
             throw ExecutionFenced("problem selection refused")
+        } catch (failure: RuntimeException) {
+            if (generateSequence<Throwable>(failure) { it.cause }.any {
+                it is ExecutionFenced || it is java.io.IOException || it is java.io.UncheckedIOException ||
+                    it is InterruptedException || it is java.util.concurrent.CancellationException || it is WorkerInfrastructureFailure
+            }) throw failure
+            val location = failure.stackTrace.firstOrNull { it.className.startsWith("com.eignex.lab.") }
+            val fingerprint = ExecutionStore.digest("${manifest.release}:$hash:${failure.javaClass.name}:$location")
+            val count = store.execution.preparationError(owner, fingerprint)
+            if (count >= 3) {
+                store.execution.rejectBuild(owner, "problem selection failed $count times with the same coordinator error: ${failure.javaClass.simpleName}: ${failure.message?.take(1024)} at $location; retry after fixing the recipe or coordinator")
+                throw ExecutionFenced("repeated problem selection failure")
+            }
+            throw failure
         }
         check(workAllowed())
         return store.execution.approvePreparationSelection(owner, hash, selected)
@@ -247,6 +263,12 @@ class NomadBackend(
                 val bound = allocations.firstOrNull { it.id == s.allocation }
                 if ((s.allocation != null && (bound == null || !bound.active)) ||
                     (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
+                    val exited = bound ?: allocations.singleOrNull()
+                    if (!current.paused && s.desired == "run" && s.executionClass == "prepare" && exited?.client == "failed") {
+                        // List stubs can omit task events. Fetch full evidence before classifying a worker crash.
+                        val exit = exited.workerExit ?: nomad.allocation(exited.id)?.workerExit
+                        if (exit?.code == WORKER_SOFTWARE_EXIT && store.execution.preparationExited(s.id, exit.code)?.count?.let { it >= 3 } == true) continue
+                    }
                     store.execution.loseSession(s.id, when {
                         current.paused || s.desired == "drain" -> "drained"
                         bound?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
@@ -254,12 +276,20 @@ class NomadBackend(
                     })
                 }
             }
+            if (store.job(job.id)?.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
             val sessions = store.execution.sessions(job.id)
             if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && accepted.none { it.second.preparation != null } && sessions.any { it.executionClass == "prepare" }) && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
                 store.execution.pauseClock(job.id)
                 // Once preparation is accepted, only admission may create the first solve session. Replacing a
                 // stopped preparation here races plan publication and recreates already accepted preparation.
                 val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: continue
+                if (previous.executionClass == "prepare") {
+                    try { Experiments.requireExecutable(store.execution.manifest(previous.id).experiment) }
+                    catch (failure: IllegalArgumentException) {
+                        store.execution.failIfActive(job.id, "Nomad preparation/admission: ${failure.message}")
+                        continue
+                    }
+                }
                 val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
                 if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id, nativeNodeTags))) continue
                 if (native) {

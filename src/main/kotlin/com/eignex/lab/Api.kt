@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
@@ -539,7 +540,8 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/schedules") {
             call.respond(JsonArray(store.schedules().map { schedule ->
                 JsonObject(Json.encodeToJsonElement(Schedule.serializer(), schedule).jsonObject +
-                    ("experiment" to scheduleExperiment(schedule.experiment)))
+                    ("experiment" to scheduleExperiment(schedule.experiment)) +
+                    schedule.blockedReason()?.let { mapOf("blockedReason" to JsonPrimitive(it)) }.orEmpty())
             }))
         }
         post("/schedules/{id}") {

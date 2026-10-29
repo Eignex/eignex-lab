@@ -1630,11 +1630,13 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
     append("<div class=\"scroll\"><table><tr><th>name</th><th>ref</th><th>every</th><th>arms</th>")
     append("<th>last run</th><th>checked</th><th>next check</th><th></th></tr>")
     for (schedule in schedules) {
+        val blocked = schedule.blockedReason()
         append("<tr><td><a class=\"plain\" href=\"/${query("name" to schedule.name)}\">${esc(schedule.name)}</a>")
         append(" <small><a href=\"/trend${query("name" to schedule.name)}\">trend</a></small>")
         if (schedule.priority != 0) append("<br><small>priority ${schedule.priority}</small>")
+        if (blocked != null) append("<br><small>blocked: ${esc(blocked)}</small>")
         append("</td><td><code>${esc(schedule.ref)}</code></td><td>${span(schedule.intervalSec)}</td>")
-        val arms = Experiments.arms(schedule.experiment).size
+        val arms = runCatching { Experiments.arms(schedule.experiment).size }.getOrNull()?.toString() ?: "invalid"
         append("<td>$arms${if (schedule.parallel > 1) " ×${schedule.parallel}" else ""}</td><td>")
         if (schedule.lastJob != null) {
             append("<a href=\"/jobs/${schedule.lastJob}\">${schedule.lastJob}</a> <code>${schedule.lastSha?.take(9) ?: ""}</code>")
@@ -1645,7 +1647,9 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
         val next = schedule.checkedAt?.let { it + schedule.intervalSec * 1000 - now() } ?: 0
         append(if (next <= 0) "due" else "in ${span(next / 1000)}")
         append("</td><td>")
-        if (schedule.launchRequested) {
+        if (blocked != null) {
+            append("<span class=\"muted\">edit schedule to resume</span>")
+        } else if (schedule.launchRequested) {
             append("<span class=\"muted\">launching</span>")
         } else {
             append("<button onclick=\"act('/schedules/${schedule.id}/launch', null, 'Queue a run of ${esc(schedule.name)} now?')\">launch now</button>")

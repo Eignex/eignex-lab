@@ -136,6 +136,11 @@ class Runner(
         for (schedule in store.schedules().filter { it.launchRequested || regular(it) }) {
             val checking = regular(schedule)
             if (checking) store.scheduleChecked(schedule.id, now())
+            val blocked = schedule.blockedReason()
+            if (blocked != null) {
+                if (checking) println("schedule ${schedule.name}: blocked: $blocked; edit the saved experiment to resume")
+                continue
+            }
             // A launch asked for while the last run is still going waits for it rather than queueing a second; it stays
             // requested, so it queues on the first poll after that run ends.
             if (schedule.lastJob?.let(store::job)?.status in setOf(Status.QUEUED, Status.RUNNING)) continue

@@ -3,6 +3,8 @@ package com.eignex.lab
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import kotlin.concurrent.thread
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -13,6 +15,31 @@ import kotlin.test.assertTrue
 import kotlin.test.assertEquals
 
 class RunnerTest {
+    @Test fun `retired schedules remain editable and show the reason without fetching or creating jobs`() = io.ktor.server.testing.testApplication {
+        val config = Config(dataDir = Files.createTempDirectory("retired-schedules"), passwordHash = null)
+        val store = Store(config.database)
+        val spec = ExperimentSpec("old-reference", problems = listOf(mapOf("set" to "sweep")))
+        val id = store.createSchedule(spec.name, "main", spec, 120)
+        store.launchNow(id)
+        var fetched = 0
+        val runner = Runner(config, store, sourceUrl = { fetched++; error("must not access source") })
+        repeat(3) { runner.enqueueScheduled() }
+        assertEquals(0, fetched)
+        assertTrue(store.jobs().isEmpty())
+        val schedule = store.schedules().single()
+        assertTrue(schedule.launchRequested)
+        assertTrue(schedule.blockedReason()!!.contains("legacy solver recipes must be migrated"))
+        val page = indexPage(config, HostReport("fixture", 4, "java"), emptyList(), listOf(schedule), emptyList(), 50, null, null)
+        assertTrue(page.contains("blocked: execution requires a repository bench manifest or explicit profile"))
+        assertTrue(page.contains("edit schedule to resume"))
+        application { api(config, store, HostReport("fixture", 4, "java")) }
+        val response = client.get("/schedules").bodyAsText()
+        assertTrue(response.contains("blockedReason"))
+        assertTrue(response.contains("legacy solver recipes must be migrated"))
+        store.updateSchedule(id, spec.copy(problems = emptyList(), bench = BenchSpec("bench.json")), null)
+        assertEquals(null, store.schedules().single().blockedReason(), "repair removes the block without deleting history")
+    }
+
     @Test
     fun `confirmations inherit a changed schedule priority even when the original run used an older priority`() {
         for (priority in listOf(0, 100)) {

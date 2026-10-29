@@ -30,7 +30,10 @@ interface NomadControl {
     fun createHostVolume(volume: JsonObject) { error("dynamic host volumes are unavailable") }
 }
 
-data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0) {
+data class NomadWorkerExit(val code: Int)
+
+data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0,
+                           val workerExit: NomadWorkerExit? = null) {
     val active get() = client in setOf("pending", "running") && desired == "run"
 }
 
@@ -70,8 +73,27 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
         IllegalStateException("Nomad $method failed with HTTP $status")
     companion object {
         internal fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
-        private fun allocationRow(j: JsonObject) = NomadAllocation(j.getValue("ID").jsonPrimitive.content, j.getValue("JobID").jsonPrimitive.content,
-            j.getValue("NodeID").jsonPrimitive.content, j.getValue("ClientStatus").jsonPrimitive.content, j.getValue("DesiredStatus").jsonPrimitive.content, j["CreateTime"]?.jsonPrimitive?.longOrNull ?: 0)
+        internal fun allocationRow(j: JsonObject) = NomadAllocation(j.getValue("ID").jsonPrimitive.content, j.getValue("JobID").jsonPrimitive.content,
+            j.getValue("NodeID").jsonPrimitive.content, j.getValue("ClientStatus").jsonPrimitive.content, j.getValue("DesiredStatus").jsonPrimitive.content, j["CreateTime"]?.jsonPrimitive?.longOrNull ?: 0,
+            workerExit(j))
+
+        private fun workerExit(j: JsonObject): NomadWorkerExit? {
+            if (j["ClientStatus"]?.jsonPrimitive?.content != "failed" || j["DesiredStatus"]?.jsonPrimitive?.content != "run") return null
+            val worker = j["TaskStates"]?.jsonObject?.get("worker")?.jsonObject ?: return null
+            if (worker["State"]?.jsonPrimitive?.content != "dead" || worker["Failed"]?.jsonPrimitive?.booleanOrNull != true) return null
+            val events = worker["Events"]?.jsonArray?.map { it.jsonObject } ?: return null
+            // Positive process-exit evidence only. Kill/eviction, signals, driver/setup errors, OOM and unknown
+            // event sequences remain infrastructure recovery, rather than spending a deterministic-error budget.
+            val ordinary = setOf("Received", "Task Setup", "Started", "Terminated", "Not Restarting")
+            if (events.any { it["Type"]?.jsonPrimitive?.content !in ordinary } || events.none { it["Type"]?.jsonPrimitive?.content == "Started" }) return null
+            val ended = events.lastOrNull { it["Type"]?.jsonPrimitive?.content == "Terminated" } ?: return null
+            val details = ended["Details"]?.jsonObject
+            val code = ended["ExitCode"]?.jsonPrimitive?.intOrNull ?: details?.get("exit_code")?.jsonPrimitive?.intOrNull ?: return null
+            val signal = ended["Signal"]?.jsonPrimitive?.intOrNull ?: details?.get("signal")?.jsonPrimitive?.intOrNull ?: return null
+            if (code == 0 || signal != 0 || details?.get("oom_killed")?.jsonPrimitive?.booleanOrNull != false ||
+                listOf("KillReason", "DriverError", "SetupError").any { !ended[it]?.jsonPrimitive?.contentOrNull.isNullOrEmpty() }) return null
+            return NomadWorkerExit(code)
+        }
         fun tlsClient(keys: Path, trust: Path, passwordFile: Path): HttpClient {
             val password = Files.readString(passwordFile).trimEnd('\r', '\n').toCharArray()
             try {

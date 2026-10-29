@@ -591,6 +591,73 @@ class NomadBackendTest {
         assertEquals(8, store.execution.failureCount(id))
     }
 
+    @Test fun `three proven worker exits at the same preparation stage stop automatic replacement`() {
+        val id = setup(preparation = true); register()
+        var allocation = "allocation"
+        repeat(3) { index ->
+            val claim = backend().claim(session.id, token, allocation)!!
+            store.execution.phase(claim.owner, "preparing")
+            store.execution.preparationProgress(claim.owner, PreparationProgress("selection", 60_000, 60_000, emptyMap()))
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "failed", workerExit = NomadWorkerExit(WORKER_SOFTWARE_EXIT))
+            backend(Store(file)).reconcile()
+            if (index < 2) {
+                assertEquals(Status.RUNNING, store.job(id)!!.status)
+                allocation = "crash-replacement-$index"
+                useReplacement(id, allocation, "node-$index")
+            }
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "3 worker exits without acceptance at stage selection")
+        assertContains(store.job(id)!!.error!!, "exit 70, release release")
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        repeat(3) { backend().reconcile() }
+        assertEquals(3, store.execution.sessions(id).size)
+        assertEquals(3, store.execution.events(id).count { it.detail.startsWith("preparation-worker-exit:") })
+
+        assertTrue(store.retry(id)); backend().reconcile()
+        useReplacement(id, "retry-crash", "retry-node")
+        val claim = backend().claim(session.id, token, "retry-crash")!!
+        store.execution.phase(claim.owner, "preparing")
+        store.execution.preparationProgress(claim.owner, PreparationProgress("selection", 1, 1, emptyMap()))
+        control.allocations["retry-crash"] = control.allocations.getValue("retry-crash").copy(client = "failed", workerExit = NomadWorkerExit(WORKER_SOFTWARE_EXIT))
+        backend().reconcile()
+        assertEquals(Status.RUNNING, store.job(id)!!.status, "manual retry starts a new crash budget")
+    }
+
+    @Test fun `failed preparation allocations with legacy temporary or absent exit evidence remain infrastructure recovery`() {
+        val id = setup(preparation = true); register()
+        var allocation = "allocation"
+        repeat(9) { index ->
+            val claim = backend().claim(session.id, token, allocation)!!
+            store.execution.phase(claim.owner, "preparing")
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "failed",
+                workerExit = when (index % 3) { 0 -> null; 1 -> NomadWorkerExit(1); else -> NomadWorkerExit(WORKER_TEMPORARY_EXIT) })
+            backend().reconcile()
+            assertEquals(Status.RUNNING, store.job(id)!!.status)
+            allocation = "infra-replacement-$index"
+            useReplacement(id, allocation, "node-$index")
+        }
+        assertFalse(store.execution.events(id).any { it.detail.startsWith("preparation-worker-exit:") })
+    }
+
+    @Test fun `software crashes before registration cannot replace preparation forever`() {
+        val id = setup(preparation = true)
+        var allocation = "allocation"
+        repeat(3) { index ->
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "failed", workerExit = NomadWorkerExit(WORKER_SOFTWARE_EXIT))
+            backend(Store(file)).reconcile()
+            if (index < 2) {
+                session = store.execution.sessions(id).single { it.desired == "run" }
+                allocation = "startup-failure-$index"
+                control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, "node-$index", "running", "run")
+            }
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "3 worker exits without acceptance at stage registration")
+        assertEquals(3, store.execution.sessions(id).size)
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+    }
+
     private fun benchProblem(name: String, collection: String = "") = BenchRuns.problem(com.eignex.lab.bench.BenchCase(name,
         attributes = mapOf("suite" to "s", "collection" to collection)))
 
@@ -712,6 +779,98 @@ class NomadBackendTest {
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertTrue(store.job(id)!!.error!!.contains("reference filter"))
         assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+    }
+
+    @Test fun `retired frozen preparation is fenced instead of returning retryable selection errors`() = testApplication {
+        val id = setup(preparation = true)
+        val legacy = manifest.experiment.copy(bench = null, problems = listOf(mapOf("set" to "sweep")))
+        store.executionTransaction { db ->
+            db.sqlUpdate("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(legacy), id)
+            db.sqlUpdate("UPDATE execution_sessions SET manifest = ? WHERE id = ?", Json.encodeToString(manifest.copy(experiment = legacy, schemaVersion = 1)), session.id)
+        }
+        register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "preparing")
+        application { workerApi(store, backend(), artifacts) { true } }
+        repeat(3) {
+            val response = client.post("/worker/v1/sessions/${session.id}/selection") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(Json.encodeToString(WorkerSelection(claim.owner, listOf(listOf(Problem("profile", "main"))))))
+            }
+            assertEquals(HttpStatusCode.Conflict, response.status)
+            backend().reconcile()
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "repository bench manifest or explicit profile")
+        assertEquals(1, store.execution.sessions(id).size)
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+    }
+
+    @Test fun `retired preparation cannot be replaced after infrastructure loss`() {
+        val id = setup(preparation = true)
+        val legacy = manifest.experiment.copy(bench = null)
+        store.executionTransaction { db ->
+            db.sqlUpdate("UPDATE execution_sessions SET manifest = ? WHERE id = ?", Json.encodeToString(manifest.copy(experiment = legacy, schemaVersion = 1)), session.id)
+        }
+        store.execution.loseSession(session.id, "infrastructure:failed")
+        repeat(3) { backend().reconcile() }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "legacy solver recipes must be migrated")
+        assertEquals(1, store.execution.sessions(id).size)
+    }
+
+    @Test fun `repeated internal selection failures are bounded across restart and replacement and reset on manual retry`() {
+        val id = setup(preparation = true); register()
+        fun broken() = NomadBackend(Store(file), control, artifacts, { root.resolve("jobs/$it") },
+            selectProblems = { _, _, _, _ -> error("broken selection invariant") })
+        val requested = listOf(listOf(benchProblem("p0")))
+        var allocation = "allocation"
+        repeat(3) { index ->
+            val claim = backend().claim(session.id, token, allocation)!!
+            store.execution.phase(claim.owner, "preparing")
+            if (index < 2) {
+                assertFailsWith<IllegalStateException> { broken().selectPreparation(claim.owner, requested) }
+                assertEquals(Status.RUNNING, store.job(id)!!.status)
+                store.execution.loseSession(session.id, "infrastructure:failed")
+                backend(Store(file)).reconcile()
+                allocation = "error-replacement-$index"
+                useReplacement(id, allocation, "node-$index")
+            } else assertFailsWith<ExecutionFenced> { broken().selectPreparation(claim.owner, requested) }
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "problem selection failed 3 times")
+        assertContains(store.job(id)!!.error!!, "broken selection invariant")
+        assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
+        repeat(3) { backend().reconcile() }
+        assertEquals(3, store.execution.sessions(id).size)
+
+        assertTrue(store.retry(id))
+        backend().reconcile(); useReplacement(id, "manual-retry", "repaired-node")
+        val retry = backend().claim(session.id, token, "manual-retry")!!
+        store.execution.phase(retry.owner, "preparing")
+        assertFailsWith<IllegalStateException> { broken().selectPreparation(retry.owner, requested) }
+        assertEquals(Status.RUNNING, store.job(id)!!.status, "manual retry grants a fresh error budget")
+        assertEquals(requested, backend().selectPreparation(retry.owner, requested))
+    }
+
+    @Test fun `selection outages and cancellation do not consume the poison error budget`() {
+        val id = setup(preparation = true); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "preparing")
+        val requested = listOf(listOf(benchProblem("p0")))
+        val held = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, workAllowed = { false })
+        val offline = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") },
+            selectProblems = { _, _, _, _ -> throw java.io.IOException("temporary storage failure") })
+        val cancelled = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") },
+            selectProblems = { _, _, _, _ -> throw java.util.concurrent.CancellationException("shutting down") })
+        repeat(4) {
+            assertFailsWith<IllegalStateException> { held.selectPreparation(claim.owner, requested) }
+            assertFailsWith<java.io.IOException> { offline.selectPreparation(claim.owner, requested) }
+            assertFailsWith<java.util.concurrent.CancellationException> { cancelled.selectPreparation(claim.owner, requested) }
+        }
+        assertFalse(store.execution.events(id).any { it.detail.startsWith("preparation-error:") })
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertEquals(requested, backend().selectPreparation(claim.owner, requested))
     }
 
     @Test fun `pending source checks preserve accepted output without blocking reconciliation or finishing early`() {
