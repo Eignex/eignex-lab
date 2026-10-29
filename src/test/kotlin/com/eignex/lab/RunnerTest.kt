@@ -180,21 +180,6 @@ class RunnerTest {
         assertFalse(child.map { it.isAlive }.orElse(false))
     }
 
-    @Test
-    fun `collecting a tree copies its files and skips the links in it`() {
-        val root = Files.createTempDirectory("lab")
-        val source = root.resolve("output").resolve("config").createDirectories().parent
-        source.resolve("config").resolve("p.json").writeText("{}")
-        Files.createSymbolicLink(source.resolve("cache"), root.resolve("elsewhere").createDirectories())
-
-        copyTree(source, root.resolve("collected"))
-
-        assertTrue(
-            root.resolve("collected/config/p.json").exists() &&
-                !Files.exists(root.resolve("collected/cache"), java.nio.file.LinkOption.NOFOLLOW_LINKS),
-        )
-    }
-
     /** A runner over a fresh lab, its store and a job of [commands] taken and set up, ready for [Runner.dispatch]. */
     private fun eventually(check: () -> Boolean): Boolean {
         val until = System.currentTimeMillis() + 10_000

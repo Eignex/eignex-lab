@@ -19,7 +19,7 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store, host:
             if (snapshot == null) call.respond(HttpStatusCode.ServiceUnavailable, "Nomad capacity has not reported") else call.respond(snapshot)
         }
         get("/nodes") {
-            val settings = runCatching { config.nomadCapacitySettings?.let { Json.decodeFromString<CapacitySettings>(Files.readString(it)) } }.getOrNull()
+            val settings = runCatching { config.nomadCapacitySettings?.let { CapacitySettings.read(it) } }.getOrNull()
             call.respondText(nodesPage(config, host, readCapacityReport(config), store.execution.capacityLeases(), settings, readResultJournalReport(config)), ContentType.Text.Html)
         }
         get("/journal") {
@@ -30,7 +30,7 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store, host:
         get("/capacity/leases") { call.respond(store.execution.capacityLeases()) }
         post("/capacity/leases") {
             val path = requireNotNull(config.nomadCapacitySettings) { "Nomad capacity is not configured" }
-            val settings = Json.decodeFromString<CapacitySettings>(Files.readString(path))
+            val settings = CapacitySettings.read(path)
             val request = call.receive<CapacityRequest>()
             val pool = requireNotNull(settings.pools.singleOrNull { it.id == request.pool }) { "unknown pool" }
             require(request.nodes in 1..pool.maxNodes && request.ttlSec in 1..3600) { "capacity requests must fit the pool limit and expire within one hour" }

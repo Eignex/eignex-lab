@@ -201,7 +201,7 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun runTimedOut(owner: AttemptOwner, at: Long = now()) = store.executionTransaction { db ->
         val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
-        if (store.job(prior.jobId)?.error == ProfileRunTimeout().message) return@executionTransaction
+        if (store.job(prior.jobId)?.error == RunDeadlineExceeded().message) return@executionTransaction
         val attempt = db.attempt(owner, at)
         require(store.job(attempt.jobId)?.experiment?.let(Experiments::runTimeoutSec) != null)
         db.failRunDeadline(attempt.jobId, at)
@@ -224,7 +224,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         }
         sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
         sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND status IN ('QUEUED', 'RUNNING')",
-            ProfileRunTimeout().message, at, at, job)
+            RunDeadlineExceeded().message, at, at, job)
         event(job, null, "profile-run-timeout", at)
     }
 
@@ -313,7 +313,7 @@ class ExecutionStore internal constructor(private val store: Store) {
             return@executionTransaction true
         }
         db.attempt(owner, at)
-        if (store.job(a.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) throw ProfileRunTimeout()
+        if (store.job(a.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) throw RunDeadlineExceeded()
         require((a.iteration == "preparation") == (result.preparation != null))
         require(!result.runTimedOut || store.job(a.jobId)?.experiment?.let(Experiments::runTimeoutSec) != null)
         require(a.state == "uploading") { "attempt is not uploading" }

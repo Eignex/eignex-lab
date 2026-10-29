@@ -128,7 +128,7 @@ class StoreTest {
     }
 
     @Test
-    fun `a queued job left with its cancel requested is found for the runner to end`() {
+    fun `a queued job left with its cancel requested is cancelled when the store opens`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)
         val stuck = store.create("a", "main", listOf("true" to 10L))
@@ -136,10 +136,9 @@ class StoreTest {
         // What a runner from before left: requeued after its cancel was requested.
         DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().executeUpdate("UPDATE jobs SET cancel_requested = 1 WHERE id = $stuck") }
 
-        assertEquals(listOf(stuck), store.queuedCancels())
-        assertEquals(Status.CANCELLED, store.requeue(stuck))
-        assertEquals(listOf(Status.CANCELLED, Status.QUEUED), listOf(stuck, waiting).map { store.job(it)!!.status })
-        assertEquals(emptyList(), store.queuedCancels())
+        val reopened = Store(file)
+        assertEquals(listOf(Status.CANCELLED, Status.QUEUED), listOf(stuck, waiting).map { reopened.job(it)!!.status })
+        assertEquals(listOf(Status.CANCELLED), reopened.job(stuck)!!.commands.map { it.status })
     }
 
     @Test

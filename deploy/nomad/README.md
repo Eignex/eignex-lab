@@ -295,8 +295,8 @@ draining/target-count state and classified capacity failures. They contain no co
 joins this with live Nomad allocations; an unknown allocation conservatively consumes a whole node. It starts a growth
 timer only for demand that cannot fit warm or booting workers, and persists backlog/cooldown/idle history across restarts.
 A small sustained backlog can grow capacity without a core-hour estimate. CPU packing uses all logical vCPU quota;
-Nomad's MHz conversion already incorporates its host reserve. Legacy `localPressureHours` and `reserveCpuMillis` fields
-remain readable but no longer impose another growth threshold or subtract a second CPU reserve.
+Nomad's MHz conversion already incorporates its host reserve. Retired `localCores`, `localPressureHours` and
+`reserveCpuMillis` fields are ignored when an older settings file still has them.
 Inventory and Nomad observations must remain within 30 seconds, including collection time. Missing/stale inventory,
 unavailable local volumes or an expired monotonic sample return no growth authorization. Capacity collectors never
 provision instances. Control credentials and purchasing-specific operations stay in provider adapters.

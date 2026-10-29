@@ -37,10 +37,6 @@ data class ExperimentSpec(
      * default below preserves historical specs and local schedules; submission placement is decided by [Placement].
      */
     val host: String = Experiments.LAB_HOST,
-    /** Legacy placement bookkeeping, retained for historical specs; new submissions store the decision in [host]. */
-    val auto: Boolean = false,
-    /** Historical worker count, read from stored recipes only. The cloud pool sizes new work automatically. */
-    val machines: Int? = null,
     /** Exact problems, as a plan recorded them, run instead of selecting: what a confirmation job ([Confirm]) reruns. */
     val problemList: List<Problem> = emptyList(),
     /** What the experiment tests and why, in a sentence or two: the queue, the history and the job page show it. */
@@ -218,8 +214,8 @@ object Experiments {
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
      * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule
-     * shares one fingerprint and an edited one starts another. Where it runs ([ExperimentSpec.host] and
-     * [ExperimentSpec.auto]) is left out too: a schedule moved between the local machine and the cloud, or a run taken
+     * shares one fingerprint and an edited one starts another. Where it runs ([ExperimentSpec.host]) is left out
+     * too: a schedule moved between the local machine and the cloud, or a run taken
      * by either, still measures the same thing, and a stored spec that names any host matches one that names another.
      * An arm's `debug` is measured: `debug=false` turns the CLI's runtime statistics off, which changes what a solve
      * runs and records, so it starts another fingerprint. `debug=true` is the default, so saying it changes nothing.
@@ -234,11 +230,9 @@ object Experiments {
             configs = spec.configs.map(::measured),
             grid = spec.grid.toSortedMap(),
             parallel = null,
-            machines = null,
             priority = 0,
             confirm = false,
             host = LAB_HOST,
-            auto = false,
             profile = spec.profile?.copy(runTimeoutSec = null),
             bench = spec.bench?.copy(runTimeoutSec = null),
             capped = emptyList(),

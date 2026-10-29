@@ -247,7 +247,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             Experiments.requirePlainName(submitted.name)
             val given = if (NodeTags.matches(submitted.nodeTags, config.localNodeTags))
                 Experiments.capToLocal(submitted, config.cores, config.maxParallel) else submitted
-            val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
+            val spec = given.copy(host = Placement.host(given, given.name, config))
             requireDescription(spec)
             requireHost(spec, config)
             Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config))

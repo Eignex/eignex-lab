@@ -72,7 +72,7 @@ object NomadCoordinatorCli {
         }
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
         val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
-        val capacitySettings = settings.capacity?.let { Json.decodeFromString<CapacitySettings>(Files.readString(Path.of(it.settingsFile))) }
+        val capacitySettings = settings.capacity?.let { CapacitySettings.read(Path.of(it.settingsFile)) }
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
             changed = { admissionSignal.wake(); reconcileSignal.wake() },
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },

@@ -40,9 +40,9 @@ class CapacityPolicyTest {
 
     @Test fun `small sustained backlog grows beyond two nodes without an estimated core hour threshold`() {
         val p = pool.copy(sustainedMs = 30000)
-        val configuration = settings.copy(pools = listOf(p), localPressureHours = 1000.0)
+        val configuration = settings.copy(pools = listOf(p))
         val nodes = (1..2).map { CapacityNode("full-$it", p.id, CapacityNodeState.READY, listOf(CapacityReservation("used-$it", it.toLong(), ResourceBudget(16000, 16384)))) }
-        val asked = demand("small", 1000).copy(coreHours = 0.0)
+        val asked = demand("small", 1000)
         val first = CapacityPolicy.evaluate(configuration, nodes, listOf(asked), at = 1000)
         assertEquals(2, first.desired[p.id])
         val next = CapacityPolicy.evaluate(configuration, nodes, listOf(asked), previous = first.history, at = 31000)
@@ -52,8 +52,15 @@ class CapacityPolicyTest {
         assertEquals(3, covered.desired[p.id]); assertNull(covered.history[p.id]?.pressureSince)
     }
 
+    @Test fun `retired settings an older file still has are ignored on read`() {
+        val text = """{"maxVcpus": 64, "localCores": 8, "localPressureHours": 0.25, "pools": [""" +
+            """{"id": "general", "nodeClass": "general", "vcpus": 16, "memoryMiB": 65536, "maxNodes": 4,""" +
+            """ "tags": ["arch:x86_64", "simd:avx2"], "reserveCpuMillis": 2000}]}"""
+        assertEquals(CapacitySettings(listOf(pool.copy(sustainedMs = 30_000, cooldownMs = 60_000)), 64), CapacitySettings.parse(text))
+    }
+
     @Test fun `logical CPU packing matches Nomad hard quotas without subtracting a second host reserve`() {
-        val p = pool.copy(reserveCpuMillis = 2000)
+        val p = pool
         val asks = (1..8).map { demand("build-$it", 2000, 4096, work = CapacityWork.BUILD) }
         val plan = CapacityPolicy.evaluate(settings.copy(pools = listOf(p)), emptyList(), asks)
         assertEquals(16000, p.cpuMillis)
@@ -62,9 +69,9 @@ class CapacityPolicyTest {
     }
 
     private val pool = CapacityPool("general", "general", 16, 65536, 4, setOf("arch:x86_64", "simd:avx2"), sustainedMs = 0, cooldownMs = 0)
-    private val settings = CapacitySettings(listOf(pool), 64, localPressureHours = 0.0)
+    private val settings = CapacitySettings(listOf(pool), 64)
     private fun demand(id: String, cpu: Int = 4000, memory: Int = 8192, job: Long = id.hashCode().toLong(), work: CapacityWork = CapacityWork.SOLVE) =
-        CapacityDemand(id, job, ResourceBudget(cpu, memory, 1), 100.0, 10, 4, work = work)
+        CapacityDemand(id, job, ResourceBudget(cpu, memory, 1), 10, 4, work = work)
 
     @Test fun `solves measurements profiles and a build fill one shared node before growing`() {
         val work = listOf(demand("solve"), demand("measure", work = CapacityWork.MEASUREMENT), demand("profile", work = CapacityWork.PROFILE), demand("build", 2000, work = CapacityWork.BUILD))

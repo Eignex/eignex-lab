@@ -150,7 +150,7 @@ class Runner(
             val advertised = advertised(schedule.ref, repository)
             if (!schedule.launchRequested && advertised != null && advertised == schedule.lastSha) continue
             val fetched = runCatching {
-                withRetry(null, "schedule ${schedule.name}: fetching") {
+                withRetry("schedule ${schedule.name}: fetching") {
                     synchronized(mirrorLock) {
                         if (!mirror.exists()) {
                             mirror.parent.createDirectories()
@@ -180,7 +180,7 @@ class Runner(
                 configs = experiment.configs.map { it - "ref" }, grid = experiment.grid - "ref")
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
-            val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)), auto = false, machines = null)
+            val spec = run.copy(host = Placement.host(run, name, config, listOf(schedule)))
             val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
             store.scheduleRan(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
@@ -325,15 +325,13 @@ class Runner(
     }
 
 
-    internal fun <T> withRetry(jobId: Long?, what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
+    internal fun <T> withRetry(what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
         backoff, onRetry = { attempt, wait, error ->
-            val text = "$what failed (try $attempt): ${error.message}; retrying in ${wait / 1000} s"
-            if (jobId == null) println(text) else log(jobId, text)
+            println("$what failed (try $attempt): ${error.message}; retrying in ${wait / 1000} s")
         }, sleep = { wait ->
             val until = now() + wait
             while (now() < until) {
                 check(!stopping) { "runner stopping" }
-                if (jobId != null && store.cancelRequested(jobId)) throw JobCancelled("cancelled while waiting for $what")
                 Thread.sleep((until - now()).coerceIn(1, 1000))
             }
         }, step = step)
@@ -432,44 +430,22 @@ internal fun stopGroups(leaders: Collection<Long>, graceMs: Long, beforeKill: ()
 private const val SIGNAL_WAIT_SEC = 1L
 private const val GROUP_POLL_MS = 100L
 
-/** Copy the tree at [source] to [target], replacing files already there. Links are not followed, nor copied. */
-internal fun copyTree(source: Path, target: Path) {
-    Files.walk(source).use { paths ->
-        paths.filter { !it.isSymbolicLink() }.forEach { path ->
-            val destination = target.resolve(source.relativize(path).toString())
-            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-                destination.createDirectories()
-            } else {
-                destination.parent.createDirectories()
-                Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING)
-            }
-        }
-    }
-}
-
 /** Delete [root] and everything under it without following symbolic links, which are removed as links. */
 internal fun deleteTree(root: Path) {
-    ProfileRunDeadline.checkActive()
     if (root.isSymbolicLink() || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
         Files.deleteIfExists(root)
         return
     }
-    Files.walk(root).use { paths -> paths.peek { ProfileRunDeadline.checkActive() }.sorted(Comparator.reverseOrder()).forEach { path ->
-        ProfileRunDeadline.checkActive()
-        Files.delete(path)
-    } }
+    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
 }
 
 /** Run git with [args] in [dir], no shell between: its exit and its output. */
 internal fun gitIn(dir: File, args: List<String>): Pair<Int, String> {
-    val process = ProfileRunDeadline.start(ProcessBuilder(listOf("git") + args).directory(dir).redirectErrorStream(true)
-        .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" })
+    val process = ProcessBuilder(listOf("git") + args).directory(dir).redirectErrorStream(true)
+        .apply { environment()["GIT_TERMINAL_PROMPT"] = "0" }.start()
     val out = process.inputStream.bufferedReader().readText()
     return process.waitFor() to out
 }
-
-/** The most of a build's output [Runner] reads to tell why it failed. */
-private const val MAX_BUILD_LOG_SCAN = 4L * 1024 * 1024
 
 internal fun quote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
@@ -480,8 +456,4 @@ internal fun Path.writeAtomically(text: String) {
     Files.move(temp, this, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
 }
 
-/** A job's step stopped, or not started, because the job's cancel was requested: never retried ([retrying]). */
-class JobCancelled(message: String) : CancellationException(message)
 
-/** Characters a `name=` selection reads as a glob, so a problem named with one cannot be asked for exactly. */
-private val GLOB_CHARS = setOf('*', '?', '[', ',')
