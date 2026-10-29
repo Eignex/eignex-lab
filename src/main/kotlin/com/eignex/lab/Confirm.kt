@@ -18,6 +18,7 @@ data class Flips(
     val proofGained: List<Problem> = emptyList(),
     val objectiveLost: List<Problem> = emptyList(),
     val objectiveGained: List<Problem> = emptyList(),
+    val persistentObjectiveLost: List<Problem> = emptyList(),
 ) {
     val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained).distinctBy { it.suite to it.problem }
 
@@ -26,7 +27,9 @@ data class Flips(
      * out: at a sweep's budget it moves with the machine's timing, both ways about equally, run after run, and
      * rerunning dozens of them each sweep took as long as the sweep while confirming nothing.
      */
-    val confirmable: List<Problem> get() = (lost + gained + proofLost + proofGained).distinctBy { it.suite to it.problem }
+    val confirmable: List<Problem> get() = (lost + gained + proofLost + proofGained + persistentObjectiveLost).distinctBy {
+        it.suite to (it.benchCase?.attributes?.get("problem") ?: it.problem)
+    }
 
     /** Two-sided sign test on the flips: how likely so lopsided a split is if each flip goes either way at random. */
     val pValue: Double get() = Confirm.signTest(lost.size, gained.size)
@@ -57,36 +60,38 @@ object Confirm {
      * Missing/invalid blocks cannot vote, but remain in the denominator. Time never selects a transition.
      */
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
-        val was = solved(before)
-        val now = solved(after)
-        val problems = (before + after).associateBy { it.problem.suite to it.problem.problem }
-        val both = was.keys.intersect(now.keys).sortedWith(compareBy({ it.first }, { it.second }))
-        val lost = both.filter { was.getValue(it) >= HALF && now.getValue(it) < HALF }
-        val gained = both.filter { was.getValue(it) < HALF && now.getValue(it) >= HALF }
+        val problems = (before + after).associateBy(ComparisonControls::problem)
+        val both = before.map(ComparisonControls::problem).toSet().intersect(after.map(ComparisonControls::problem).toSet())
+            .sortedWith(compareBy({ it.first }, { it.second }))
+        val lost = mutableListOf<Problem>()
+        val gained = mutableListOf<Problem>()
         val proofLost = mutableListOf<Problem>()
         val proofGained = mutableListOf<Problem>()
         val objectiveLost = mutableListOf<Problem>()
         val objectiveGained = mutableListOf<Problem>()
-        for (key in both - lost.toSet() - gained.toSet()) {
-            val left = before.filter { (it.problem.suite to it.problem.problem) == key }
-            val right = after.filter { (it.problem.suite to it.problem.problem) == key }
+        for (key in both) {
+            val left = before.filter { ComparisonControls.problem(it) == key }
+            val right = after.filter { ComparisonControls.problem(it) == key }
             val all = left + right
             // A contradicted proof is evidence of disagreement, never evidence of an improvement/loss.
             if (contradictory(all)) continue
-            fun blocks(cases: List<CaseResult>) = cases.groupBy { it.seed to it.repeat }
+            fun blocks(cases: List<CaseResult>) = cases.groupBy { ComparisonControls.seed(it) to it.repeat }
             val a = blocks(left)
             val b = blocks(right)
             val keys = a.keys + b.keys
-            var pl = 0; var pg = 0; var ol = 0; var og = 0
+            var fl = 0; var fg = 0; var pl = 0; var pg = 0; var ol = 0; var og = 0
             for (block in keys) {
                 val ca = a[block]?.singleOrNull() ?: continue
                 val cb = b[block]?.singleOrNull() ?: continue
                 if (ca.status != Status.DONE || cb.status != Status.DONE) continue
+                if (ComparisonControls.mismatch(ca, cb) != null) continue
                 val hashesA = (ca.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull || (it is JsonObject && it.isEmpty()) }
                 val hashesB = (cb.record as? JsonObject)?.get("sourceHashes")?.takeUnless { it == JsonNull || (it is JsonObject && it.isEmpty()) }
                 if (hashesA != null && hashesB != null && hashesA != hashesB) continue
                 val x = Outcome.of(ca.record) ?: continue
                 val y = Outcome.of(cb.record) ?: continue
+                if (x.rank > 0 && y.rank == 0) fl++
+                if (x.rank == 0 && y.rank > 0) fg++
                 if (x.rank == 0 || y.rank == 0 || x.feasible != y.feasible ||
                     x.optimize != y.optimize || x.maximize != y.maximize) continue
                 val ox = objective(ca); val oy = objective(cb)
@@ -102,12 +107,14 @@ object Confirm {
                 }
             }
             val problem = problems.getValue(key).problem
+            if (fl > keys.size / 2) lost += problem
+            if (fg > keys.size / 2) gained += problem
             if (pl > keys.size / 2) proofLost += problem
             if (pg > keys.size / 2) proofGained += problem
             if (ol > keys.size / 2) objectiveLost += problem
             if (og > keys.size / 2) objectiveGained += problem
         }
-        return Flips(lost.map { problems.getValue(it).problem }, gained.map { problems.getValue(it).problem },
+        return Flips(lost, gained,
             proofLost, proofGained, objectiveLost, objectiveGained)
     }
 
@@ -164,22 +171,28 @@ object Confirm {
 
     /** The confirmation of [flips] in run [job] of [spec] at [after], against the earlier run at [before]. Both
      *  commits ask for source validation, as every scheduled run does ([SourceValidation.scheduled]). */
-    fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long, beforeJob: Long? = null): ExperimentSpec {
+    fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long, beforeJob: Long? = null,
+             sourceCases: List<CaseResult> = emptyList()): ExperimentSpec {
         val config = Experiments.arms(spec).first().values - "ref" - "label"
+        val selected = flips.confirmable.take(MAX_PROBLEMS)
+        val identities = selected.map { it.suite to (it.benchCase?.attributes?.get("problem") ?: it.problem) }.toSet()
+        val frozen = sourceCases.filter { ComparisonControls.problem(it) in identities }.mapNotNull { it.problem.benchCase }
+            .distinctBy { listOf(it.attributes["suite"], it.attributes["problem"], it.parameters["engine"], it.parameters["seed"], it.attributes["propagationControl"]) }
+            .ifEmpty { selected.mapNotNull { it.benchCase } }
         return SourceValidation.scheduled(ExperimentSpec(
             name = name(series, after, job),
-            description = "Confirms run $job's flips against the run before it at ${before.take(SHA_LENGTH)}: " +
+            description = "Confirms run $job against reference job $beforeJob at ${before.take(SHA_LENGTH)}: " +
                 "${flips.lost.size} feasibility lost and ${flips.gained.size} gained; " +
                 "${flips.proofLost.size} proof lost and ${flips.proofGained.size} gained; " +
-                "rerun $REPEATS times on both commits (${flips.objectiveLost.size} objective worse and " +
+                "rerun $REPEATS times on both commits, including ${flips.persistentObjectiveLost.size} persistent objective losses (${flips.objectiveLost.size} objective worse and " +
                 "${flips.objectiveGained.size} better are not rerun).",
             problems = emptyList(),
-            problemList = if (spec.bench == null) flips.confirmable.take(MAX_PROBLEMS) else emptyList(),
+            problemList = if (spec.bench == null) selected else emptyList(),
             base = spec.base - "ref" - "label",
             repository = spec.repository,
             nodeTags = spec.nodeTags,
             host = spec.host,
-            bench = spec.bench?.copy(frozenCases = flips.confirmable.take(MAX_PROBLEMS).map { requireNotNull(it.benchCase) },
+            bench = spec.bench?.copy(frozenCases = frozen,
                 replayJobs = beforeJob?.let { mapOf(BEFORE to it, AFTER to job) }.orEmpty()),
             configs = listOf(config + mapOf("label" to BEFORE, "ref" to before), config + mapOf("label" to AFTER, "ref" to after)),
             seeds = spec.seeds,
@@ -195,6 +208,13 @@ object Confirm {
     /** What a finished confirmation found: the flips its repeats agree with, each way. */
     fun confirmed(cases: List<CaseResult>): Flips = flips(cases.filter { it.arm == BEFORE }, cases.filter { it.arm == AFTER })
 
+    internal fun persistent(baseline: List<CaseResult>, previous: List<CaseResult>, current: List<CaseResult>): Flips {
+        fun identity(problem: Problem) = problem.suite to (problem.benchCase?.attributes?.get("problem") ?: problem.problem)
+        val earlier = flips(baseline, previous).objectiveLost.map(::identity).toSet()
+        val anchored = flips(baseline, current)
+        return anchored.copy(persistentObjectiveLost = anchored.objectiveLost.filter { identity(it) in earlier })
+    }
+
     fun signTest(a: Int, b: Int): Double {
         val n = a + b
         if (n == 0) return 1.0
@@ -207,6 +227,5 @@ object Confirm {
         return minOf(1.0, 2 * tail)
     }
 
-    private const val HALF = 0.5
     private const val SHA_LENGTH = 9
 }

@@ -67,6 +67,7 @@ data class TrendRun(
      * sweep set was drawn by, so each holds a fair share of it. A problem of several themes counts in each.
      */
     val themes: Map<String, SuiteShare> = emptyMap(),
+    val comparisonSeries: List<String> = emptyList(),
 )
 
 object Trend {
@@ -102,7 +103,7 @@ object Trend {
             .associateBy { it.name }
         val stamp = cache?.sync(store)
         // The previous finished run of each spec: its first arm's cases, loaded only when a run after it is computed.
-        var previous: Pair<String, Long>? = null
+        val previous = HashMap<String, Long>()
         val ownCases = HashMap<Long, List<CaseResult>>()
         fun own(job: Long): List<CaseResult> = ownCases.getOrPut(job) {
             val label = store.plans.arms(job).firstOrNull()?.arm?.label
@@ -138,14 +139,14 @@ object Trend {
                     pointless?.add(job.id)
                     return@mapNotNull null
                 }
-                val flips = previous?.takeIf { it.first == trend.spec && job.status == Status.DONE }
-                    ?.let { Confirm.flips(own(it.second), own(job.id)) }
+                val flips = previous[trend.spec]?.takeIf { job.status == Status.DONE }
+                    ?.let { Confirm.flips(own(it), own(job.id)) }
                 trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
                     proofLost = flips?.proofLost?.size, proofGained = flips?.proofGained?.size,
                     objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size)
                     .also { if (finished) cache?.put(job.id, version, stamp, it, keys.toSet()) else cache?.putLive(job.id, it) }
             }
-            if (job.status == Status.DONE) previous = base.spec to job.id
+            if (job.status == Status.DONE) previous[base.spec] = job.id
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
             val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { done ->
                 cache?.confirmed(done.id) { Confirm.confirmed(store.plans.scoringCases(done.id)) } ?: Confirm.confirmed(store.plans.scoringCases(done.id))
@@ -211,10 +212,12 @@ object Trend {
         val suites = shares { listOf(it.suite.ifEmpty { "(none)" }) }
         val themes = shares { themesOf.getValue(it.referenceKey) }
         val comparison = References.compare(listOf(label), own, references)
+        val controlSeries = own.map(ComparisonControls::series).distinct().sorted()
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
-            spec = job.experiment.let { Experiments.trendFingerprint(it, own.map { case -> case.problem }.distinct()) }.orEmpty(),
+            spec = job.experiment.let { Experiments.trendFingerprint(it, own.map { case -> case.problem }.distinct()) } +
+                if (controlSeries == listOf("historical-unqualified")) "" else ":" + ExecutionStore.digest(controlSeries.joinToString("\n")),
             experiment = job.experiment.let(Experiments::trendFingerprint).orEmpty(),
             sourceChecked = job.experiment.let { SourceValidation.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,
@@ -233,6 +236,7 @@ object Trend {
             par2 = stats.par2,
             suites = suites,
             themes = themes,
+            comparisonSeries = controlSeries,
         )
     }
 

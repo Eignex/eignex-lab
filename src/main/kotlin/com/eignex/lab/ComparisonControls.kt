@@ -1,0 +1,50 @@
+package com.eignex.lab
+
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+
+/** Qualification of revision comparisons; missing historical controls remain unavailable. */
+internal object ComparisonControls {
+    fun seed(case: CaseResult): Long? = case.seed ?: text(case.record as? JsonObject, "seed")?.toLongOrNull()
+
+    fun problem(case: CaseResult): Pair<String, String> = case.problem.suite to
+        (case.problem.benchCase?.attributes?.get("problem") ?: case.problem.problem)
+
+    fun mismatch(a: CaseResult, b: CaseResult): String? {
+        val left = a.record as? JsonObject ?: return "missing record"
+        val right = b.record as? JsonObject ?: return "missing record"
+        val controlled = a.problem.benchCase != null || b.problem.benchCase != null ||
+            text(left, "solver") == "klause" || text(right, "solver") == "klause"
+        if (!controlled) return null
+        val x = left["comparisonControls"] as? JsonObject ?: return "historical controls unavailable"
+        val y = right["comparisonControls"] as? JsonObject ?: return "historical controls unavailable"
+        if (text(x, "policy") != "matched-source-v1" || text(y, "policy") != "matched-source-v1") return "unknown comparison policy"
+        if (REQUIRED.any { text(x, it).isNullOrBlank() || text(y, it).isNullOrBlank() }) return "incomplete controls"
+        if (x != y) return "runtime, source dependency, seed or allowance migration"
+        if (seed(a)?.toString() != text(x, "solverSeed") || seed(b)?.toString() != text(y, "solverSeed")) return "inconsistent seed"
+        if (text(left, "seed") != text(x, "solverSeed") || text(right, "seed") != text(y, "solverSeed")) return "inconsistent recorded seed"
+        for ((recordKey, controlKey) in listOf("budgetMs" to "solverBudgetMs", "processors" to "cpus")) {
+            if (text(left, recordKey) != text(x, controlKey) || text(right, recordKey) != text(y, controlKey)) return "inconsistent effective control"
+        }
+        val hashes = left["sourceHashes"] as? JsonObject
+        if (hashes.isNullOrEmpty() || hashes != right["sourceHashes"]) return "source identity unavailable or changed"
+        if (a.problem.format == "MINIZINC" || b.problem.format == "MINIZINC") {
+            if (text(x, "compilerFingerprint").isNullOrBlank()) return "compiler identity unavailable"
+            val compiled = left["compiledInputHashes"] as? JsonObject ?: return "compiled identity unavailable"
+            if (listOf("flatzinc", "outputMapping").any { text(compiled, it).isNullOrBlank() } ||
+                compiled != right["compiledInputHashes"]) return "compiled artifact migration"
+        }
+        return null
+    }
+
+    fun series(case: CaseResult): String {
+        val controls = (case.record as? JsonObject)?.get("comparisonControls") as? JsonObject
+        return listOfNotNull(text(controls, "series"), text(controls, "runtimeFingerprint"), text(controls, "compilerFingerprint"))
+            .takeIf { text(controls, "policy") == "matched-source-v1" }?.joinToString(":") ?: "historical-unqualified"
+    }
+
+    private fun text(value: JsonObject?, key: String) = (value?.get(key) as? JsonPrimitive)?.content?.takeUnless { it == "null" }
+    private val REQUIRED = setOf("series", "solverSeed", "compilerSeed", "solverBudgetMs", "compilerTimeoutSeconds",
+        "caseTimeoutSeconds", "cpus", "memoryMiB", "heap-mib", "gc", "debug", "measurement", "exact",
+        "complete-assignment", "deadlinePolicy", "runtimeFingerprint", "inputDigest")
+}

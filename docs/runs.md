@@ -205,3 +205,25 @@ DIMACS SAT points use the independent complete original-coordinate policy docume
 ended-case rechecks share the production registry. `checker/dimacs.json` accepts explicit frozen captures and
 retains both paths' receipts; SDK success alone is insufficient. SAT point acceptance supplies no independent
 UNSAT or optimum proof. Resource and unavailable checks remain unchecked.
+
+## Controlled sweep migrations
+
+Klause's `matched-source-v1` records retain effective solver/compiler seeds,
+processor/memory/deadline controls and normalized runtime/compiler identities.
+Revision confirmations require equal complete controls, original-source hashes and,
+for MiniZinc, FlatZinc/output-mapping hashes. Missing historical controls remain
+unqualified. Rates and historical fingerprints stay available; `comparisonSeries`
+labels controlled runtime/compiler series and historical records explicitly.
+Migrations start separate trend segments and need a retained bounded old/current
+bridge before a solver-only attribution. A seed change cannot count as recovery.
+
+Every feasibility/proof/objective vote uses a complete matching seed/repeat block;
+failed, duplicate or absent blocks cannot vote and remain in the denominator.
+Confirmations preserve each affected source's solver seeds and repeat the paired
+blocks three times. A persistent unproved objective loss is one worse than the same
+retained baseline in two successive runs; the bounded confirmation compares that
+baseline with the latest run, even when the worse objective plateaus. At most40
+sources are selected; other losses remain unconfirmed. Occasional fixed multi-seed
+baselines are repository-owned recipes, separate from per-commit trend lines.
+Independent witness checks retain their policy and unsupported states. Native
+optimality/UNSAT flags remain distinct from independently checked source proofs.
