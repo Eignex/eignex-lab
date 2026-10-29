@@ -50,7 +50,7 @@ class DimacsSourceEvaluationTest {
         val normal = DimacsSourceEvaluation.Limits()
         for (limits in listOf(normal.copy(bytes = 4), normal.copy(witness = 2), normal.copy(variables = 1),
             normal.copy(clauses = 0), normal.copy(literals = 1), normal.copy(token = 2))) {
-            val source = if (limits.token == 2) "p cnf 2 1\n1 2 0" else "p cnf 2 1\n1 2 0"
+            val source = "p cnf 2 1\n1 2 0"
             val result = DimacsSourceEvaluation.check(source, "v 1 -2", limits)
             assertEquals(LabCheck.UNSUPPORTED, result.state, result.reason)
             assertContains(result.reason, "resource limit")
