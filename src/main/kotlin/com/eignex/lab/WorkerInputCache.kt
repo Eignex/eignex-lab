@@ -10,8 +10,9 @@ import java.util.UUID
 
 /** Node-local verified distributions. Process-owned pins protect readers; eviction accounts declared expanded bytes. */
 class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L * 1024 * 1024 * 1024,
-    private val builds: WorkerBuildCache? = null) {
+    private val builds: WorkerBuildCache? = null, cleanupExecutor: java.util.concurrent.Executor? = null) {
     init { require(maxBytes >= 0) }
+    private val cleanup = WorkerCacheCleanup(root, cleanupExecutor)
     private val entries = root.resolve("entries")
     private val sizes = root.resolve("sizes")
     private val pins = root.resolve("pins")
@@ -58,7 +59,7 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
                 } finally { Files.deleteIfExists(temporary) }
             }
             Files.setLastModifiedTime(size, FileTime.fromMillis(now()))
-            // Cold acquisitions pay maintenance; warm staging never walks or removes unrelated distributions.
+            // Account cold entries synchronously; deletion of unrelated trees must not delay publication.
             if (missing) maintain(checkActive)
             return action(directory)
         } finally {
@@ -96,11 +97,10 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
             }
             removed
         }
-        // Never hold the pin/eviction lock while deleting file trees.
-        for (path in garbage) {
-            try { deleteTree(path) } catch (_: java.nio.file.NoSuchFileException) { /* Another cold maintenance pass finished it. */ }
-        }
+        if (garbage.isNotEmpty()) cleanup.request()
     }
+
+    internal fun awaitCleanupIdle(timeoutMs: Long = 10_000) = cleanup.awaitIdle(timeoutMs)
 
     private fun <T> guarded(checkActive: () -> Unit, action: () -> T): T {
         Files.createDirectories(root)

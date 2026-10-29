@@ -26,6 +26,8 @@ class PreparationPerformanceTest {
         val journalRoot = Files.createTempDirectory("preparation-perf-journal-")
         val snapshots = linkedMapOf<String, PreparationProgress>()
         val buildCaches = mutableListOf<WorkerBuildCache>()
+        val inputCaches = mutableListOf<WorkerInputCache>()
+        val archiveCaches = mutableListOf<WorkerArchiveCache>()
         val report = parent.resolve("preparation-performance.json")
         val serviceErrors = root.resolve("supervisor.err")
         val socket = root.resolve("supervisor.sock")
@@ -98,8 +100,8 @@ class PreparationPerformanceTest {
                 val trace = PreparationTrace()
                 // Reconstruct helpers between passes to exercise receipts on disk, not only in-memory state.
                 val builds = WorkerBuildCache(root.resolve("builds"), supervisor).also { buildCaches += it }
-                val inputs = WorkerInputCache(root.resolve("inputs"), builds = builds)
-                val archiveCache = WorkerArchiveCache(root.resolve("archives"))
+                val inputs = WorkerInputCache(root.resolve("inputs"), builds = builds).also { inputCaches += it }
+                val archiveCache = WorkerArchiveCache(root.resolve("archives")).also { archiveCaches += it }
                 val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "performance", "token", "allocation",
                     signedIdentity, "release", root, socket, "unused")
                 val executor = PreparationExecutor(supervisor, VerifiedCache(root.resolve("fallback-inputs")), builds,
@@ -162,6 +164,8 @@ class PreparationPerformanceTest {
             }
             process?.let { it.destroy(); if (!it.waitFor(10, TimeUnit.SECONDS)) { it.destroyForcibly(); it.waitFor(10, TimeUnit.SECONDS) } }
             buildCaches.forEach { assertTrue(it.awaitMaintenanceIdle(), "cache cleanup did not finish before fixture removal") }
+            inputCaches.forEach { assertTrue(it.awaitCleanupIdle(), "input cleanup did not finish before fixture removal") }
+            archiveCaches.forEach { assertTrue(it.awaitCleanupIdle(), "archive cleanup did not finish before fixture removal") }
             deleteTree(root)
             deleteTree(journalRoot)
         }

@@ -13,8 +13,10 @@ import java.util.UUID
 /** Reuse immutable ZIPs by verified file inventory and directory layout. Active publishers hold a process pin;
  * eviction bounds compressed bytes, and neither cache hits nor creation expose a shared mutable workspace. */
 internal class WorkerArchiveCache(private val root: Path, private val maxBytes: Long = 2L * 1024 * 1024 * 1024,
+                                  cleanupExecutor: java.util.concurrent.Executor? = null,
                                   private val create: ((Path, Path, WorkerBundle, Boolean, () -> Unit) -> WorkerBundle)? = null) {
     init { require(maxBytes >= 0) }
+    private val cleanup = WorkerCacheCleanup(root, cleanupExecutor)
     @Serializable private data class Entry(val bundle: WorkerBundle, val bytes: Long)
 
     fun <T> use(tree: Path, identity: WorkerBundle, runtimeOnly: Boolean, checkActive: () -> Unit,
@@ -113,8 +115,10 @@ internal class WorkerArchiveCache(private val root: Path, private val maxBytes: 
             } }
             removed
         }
-        for (path in garbage) try { deleteTree(path) } catch (_: java.nio.file.NoSuchFileException) { }
+        if (garbage.isNotEmpty()) cleanup.request()
     }
+
+    internal fun awaitCleanupIdle(timeoutMs: Long = 10_000) = cleanup.awaitIdle(timeoutMs)
 
     private fun <T> guarded(check: () -> Unit, action: () -> T): T {
         Files.createDirectories(root)

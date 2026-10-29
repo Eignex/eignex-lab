@@ -127,7 +127,11 @@ ctime remain unchanged on a supported filesystem. Directory membership is walked
 changed files and unsupported filesystems take the checksum path. Reuse ends with that preparation.
 The worker logs `worker selection verification` counters for hashed/reused files and hashed bytes.
 Build staging is pinned before background cleanup begins, and cleanup filters unrelated cache entries by
-name before reading their metadata.
+name before reading their metadata. Input/archive quota eviction renames unused entries to tombstones;
+background workers delete those trees under one process-owned garbage lock per cache root. Publication
+and claims do not wait for that deletion. macOS deletion threads use background disk priority,
+restoring the caller policy afterward. Worker startup resumes interrupted tombstones. Pinned inputs
+and pending garbage can temporarily exceed the cache target; free-disk admission checks still apply.
 
 Repository-specific recipes and named workload sets live with their consumers. Before removing a legacy
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
