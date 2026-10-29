@@ -277,7 +277,8 @@ class ReferencesTest {
         }
 
         val reopened = Store(file)
-        reopened.references.retireStale()
+        assertEquals(2, reopened.references.retireStale())
+        assertEquals(0, reopened.references.retireStale())
 
         assertEquals(legacy.copy(stale = true), reopened.references.rows(old.collection, old.problem).single())
         assertEquals(setOf(current, minizinc), reopened.references.matching(listOf(old, current, unversioned, minizinc)).keys)
