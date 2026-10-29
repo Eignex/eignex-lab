@@ -58,7 +58,7 @@ class PreparationPerformanceTest {
             val spec = ExperimentSpec("representative-preparation", profile = ProfileMain(script = "gradlew"))
             val manifest = WorkManifest("prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) },
                 emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 600)
-            val archivesCreated = AtomicInteger(); val downloads = AtomicInteger(); val uploadPuts = AtomicInteger()
+            val downloads = AtomicInteger(); val uploadPuts = AtomicInteger()
             val artifacts = LocalArtifactStore(root.resolve("coordinator-artifacts"))
             server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
             server.createContext("/worker/v1/sessions/performance/uploads/") { exchange ->
@@ -81,9 +81,7 @@ class PreparationPerformanceTest {
                 // Reconstruct helpers between passes to exercise receipts on disk, not only in-memory state.
                 val builds = WorkerBuildCache(root.resolve("builds"), supervisor)
                 val inputs = WorkerInputCache(root.resolve("inputs"), builds = builds)
-                val archiveCache = WorkerArchiveCache(root.resolve("archives")) { tree, zip, original, runtime, active ->
-                    archivesCreated.incrementAndGet(); archive(tree, zip, original, runtime, active)
-                }
+                val archiveCache = WorkerArchiveCache(root.resolve("archives"))
                 val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "performance", "token", "allocation",
                     signedIdentity, "release", root, socket, "unused")
                 val executor = PreparationExecutor(supervisor, VerifiedCache(root.resolve("fallback-inputs")), builds,
@@ -99,20 +97,28 @@ class PreparationPerformanceTest {
                 return snapshot
             }
             prepare("cold")
-            assertEquals(1, archivesCreated.get()); assertEquals(1, downloads.get())
+            assertEquals(1, downloads.get())
+            fun archiveMetadata(): Map<String, String> = Files.walk(root.resolve("archives")).use { paths ->
+                paths.filter { it.fileName.toString() == "archive.zip" }.toList().associate { zip ->
+                    val attrs = Files.readAttributes(zip, java.nio.file.attribute.BasicFileAttributes::class.java)
+                    root.relativize(zip).toString() to "${attrs.fileKey()}:${attrs.lastModifiedTime()}:${attrs.size()}"
+                }
+            }
+            val originalArchives = archiveMetadata(); assertEquals(1, originalArchives.size)
             assertEquals(1, Files.readAllLines(calls).size)
             repeat(2) { pass ->
                 val beforePuts = uploadPuts.get()
                 val warm = prepare("warm-${pass + 1}")
-                for (cache in listOf("build", "archive")) {
+                for (cache in listOf("input", "build", "archive")) {
                     val event = assertNotNull(warm.caches[cache], "missing $cache observation")
                     assertEquals("hit", event.outcome, "$cache must be a real warm hit")
                     assertEquals(0, event.hashedFiles, "$cache unexpectedly rehashed file contents")
                     assertEquals(0L, event.hashedBytes, "$cache unexpectedly reread file contents")
+                    assertEquals(0, event.misses, "$cache had an earlier miss hidden by a later hit")
                 }
                 assertEquals("hit", warm.caches["upload"]?.outcome, "prepared ZIP must already be on coordinator")
                 assertEquals(1, downloads.get(), "warm preparation downloaded inputs")
-                assertEquals(1, archivesCreated.get(), "warm preparation rebuilt an archive")
+                assertEquals(originalArchives, archiveMetadata(), "warm preparation rebuilt or replaced an archive")
                 assertEquals(1, Files.readAllLines(calls).size, "warm preparation invoked build command")
                 assertFalse(warm.timings.containsKey("compilation"), "warm preparation entered compilation")
                 assertFalse(warm.timings.containsKey("checkout"), "warm preparation checked out sources")

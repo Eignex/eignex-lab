@@ -2129,7 +2129,8 @@ internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()
             append("<br>")
             append(snapshot.caches.entries.joinToString(" · ") { (name, event) ->
                 buildString {
-                    append("${esc(PreparationTrace.cacheLabels.getValue(name))}: ${event.outcome} (${esc(PreparationTrace.cacheReasons.getValue(event.reason))})")
+                    append("${esc(PreparationTrace.cacheLabels.getValue(name))}: latest ${event.outcome} (${esc(PreparationTrace.cacheReasons.getValue(event.reason))})")
+                    if (event.hits.toLong() + event.misses + event.bypasses > 1) append(", ${event.hits} hits / ${event.misses} misses / ${event.bypasses} bypasses")
                     if (event.verificationMs > 0) append(", verification ${seconds(event.verificationMs)}")
                     if (event.waitingMs > 0) append(", waiting ${seconds(event.waitingMs)}")
                     if (event.checkedFiles > 0) append(", checked ${event.checkedFiles} files")

@@ -119,7 +119,7 @@ class ExecutionStoreTest {
         val report = Store(file).execution.reports(id).single()
         assertEquals(PreparationStatus(progress, 1600), report.preparation)
         assertTrue(executionPage(id, listOf(report)).contains("Compiling"))
-        assertTrue(preparationDetails(report).contains("Build: hit (verified local entry), verification 0.12 s, waiting 0.03 s"))
+        assertTrue(preparationDetails(report).contains("Build: latest hit (verified local entry), verification 0.12 s, waiting 0.03 s"))
         java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
             db.createStatement().executeQuery("SELECT preparation_progress, preparation_caches FROM iteration_attempts WHERE session_id = 'prep'").use { row ->
                 assertTrue(row.next())

@@ -41,4 +41,18 @@ class PreparationTraceTest {
         assertFailsWith<IllegalArgumentException> { trace.cache("build", "miss", "arbitrary command") }
         assertFailsWith<IllegalArgumentException> { trace.cache("build", "hit", "verified", waitingMs = -1) }
     }
+    @Test fun `cache work accumulates across arms and publication without hiding earlier rehashes`() {
+        val trace = PreparationTrace()
+        trace.cache("input", "hit", "receipt-missing", verificationMs = 100, waitingMs = 20, checkedFiles = 4096, hashedFiles = 4096, hashedBytes = 268_000_000)
+        trace.cache("input", "hit", "verified-local", verificationMs = 5, checkedFiles = 4096)
+        val event = trace.snapshot().caches.getValue("input")
+        assertEquals("verified-local", event.reason)
+        assertEquals(2, event.hits); assertEquals(8192, event.checkedFiles)
+        assertEquals(4096, event.hashedFiles); assertEquals(268_000_000, event.hashedBytes)
+        assertEquals(105, event.verificationMs); assertEquals(20, event.waitingMs)
+        repeat(3) { trace.cache("input", "hit", "verified", verificationMs = 86_400_000, checkedFiles = Int.MAX_VALUE, hashedBytes = Long.MAX_VALUE) }
+        val bounded = trace.snapshot().caches.getValue("input")
+        assertEquals(Int.MAX_VALUE, bounded.checkedFiles); assertEquals(Long.MAX_VALUE, bounded.hashedBytes)
+        assertEquals(86_400_000, bounded.verificationMs)
+    }
 }
