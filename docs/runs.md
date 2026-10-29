@@ -132,8 +132,10 @@ The request contains `record`, `model`, `fzn`, `ozn` and `stdout` as frozen UTF-
 The source must match the record's digest. Native stdout and the model witness must retain the same complete
 `flatzinc-integer-v1` comment frame. The adapter adds equality constraints to the original FlatZinc declarations,
 including their aliases and domains, and checks the claimed objective in the original solve variable's units.
-MiniZinc runs with `--compile` only: acceptance requires an empty residual model, then official `--ozn-file`
-rendering must reproduce the recorded model witness. Residual work stays unknown; no solver completes a point.
+MiniZinc runs with `--compile` only. Its residual fixed constraints go through Choco's official FlatZinc parser and
+`Constraint.isSatisfied()` API. The wrapper disables SAT/LCG, rejects every unfixed or non-integer variable, and
+invokes no search or propagation API.
+Official `--ozn-file` rendering must then reproduce the recorded model witness. Unsupported checks stay unknown.
 The policy validates the retained compiled frame under MiniZinc lowering authority, not optimality or an
 independently certified compiler. Each request has a 24 MiB text limit, one 15-second tool allowance and retained
 inputs, binary identities and bounded process receipts. The SDK result's success means capture completed;
@@ -147,6 +149,10 @@ native solution and omit unrelated record statistics when it retains the origina
 description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
 The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
 extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
+The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
+metadata and actual jar hashes identify the API; the existing XCSP checker dependency is preserved separately.
+The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.
+Its Kotlin source delegates all constraint evaluation to the provider's API.
 
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).

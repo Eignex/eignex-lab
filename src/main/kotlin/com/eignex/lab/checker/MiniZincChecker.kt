@@ -8,11 +8,11 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-/** Compile a fully pinned retained FlatZinc frame, then apply its official output model. No backend is invoked. */
+/** Check a fully pinned frame with MiniZinc and Choco's existing assignment API, then apply its output model. */
 class MiniZincChecker : FormatChecker {
     override val format = "MINIZINC"
     override val policy = Policies.MINIZINC
-    override val checker = "MiniZinc compile-only"
+    override val checker = "MiniZinc / Choco Constraint.isSatisfied"
 
     override fun check(case: CheckCase, work: File): Verdict {
         val frame = case.miniZincFrame ?: return Verdict(LabCheck.UNSUPPORTED,
@@ -39,6 +39,9 @@ class MiniZincChecker : FormatChecker {
         }
         val started = System.nanoTime()
         val identity = MiniZincIdentity.capture("gecode", TIMEOUT_MS)
+        var version = identity.stats.getValue("referenceVersion")
+        var binaryHash = identity.stats.getValue("referenceCompilerSha256")
+        var checkerName = "MiniZinc compile-only"
         val receipts = Json.decodeFromString(ListSerializer(ToolResourceReceipt.serializer()),
             identity.stats.getValue("referenceIdentityResources")).toMutableList()
         val inputs = ArrayList<CheckedInput>()
@@ -53,16 +56,16 @@ class MiniZincChecker : FormatChecker {
         val native = input("point.dzn", bound.native)
         val model = input("pinned.mzn", bound.model)
         val output = File(work, "checked.fzn")
-        fun run(arguments: List<String>, files: List<File>, stdin: File? = null): ToolRun {
+        fun run(arguments: List<String>, files: List<File>, stdin: File? = null,
+                binary: File = identity.binary, environment: Map<String, String> = emptyMap()): ToolRun {
             val remaining = TIMEOUT_MS - (System.nanoTime() - started) / 1_000_000
             if (remaining <= 0) return ToolRun(null, "", "MiniZinc assignment check exhausted its allowance", true, 0)
-            return ToolProcess.run(listOf(identity.binary.path) + arguments, work, remaining, stdin,
+            return ToolProcess.run(listOf(binary.path) + arguments, work, remaining, stdin, environment,
                 limits = ToolLimits((remaining + 999) / 1000, remaining),
-                inputFiles = listOf(identity.binary) + files).also { it.resources?.let(receipts::add) }
+                inputFiles = listOf(binary) + files).also { it.resources?.let(receipts::add) }
         }
         fun verdict(state: String, reason: String, run: ToolRun) = Verdict(
-            state, reason, identity.stats.getValue("referenceVersion"),
-            identity.stats.getValue("referenceCompilerSha256"), diagnostic = run.tail(),
+            state, reason, version, binaryHash, checker = checkerName, diagnostic = run.tail(),
             resourceReceipts = receipts, inputs = inputs,
         )
         val compile = run(listOf("--compile", "--solver", "gecode", "--no-output-ozn",
@@ -76,7 +79,25 @@ class MiniZincChecker : FormatChecker {
             return verdict(LabCheck.INVALID, "MiniZinc rejected the pinned original FlatZinc constraints or claimed objective", compile)
         }
         if (!MiniZincPoint.discharged(compiled)) {
-            return verdict(LabCheck.UNKNOWN, "MiniZinc left residual declarations or constraints; no completion was attempted", compile)
+            val runtime = try { FlatZincGroundChecker.runtime() } catch (failure: Exception) {
+                return verdict(LabCheck.UNKNOWN, "the assignment checker could not establish its pinned jars: ${failure.message}", compile)
+            }
+            binaryHash = runtime.sha256
+            checkerName = "Choco Constraint.isSatisfied / MiniZinc output"
+            version += "|${runtime.version}|sha256=$binaryHash"
+            val checked = run(runtime.arguments + output.path, listOf(output) + runtime.files,
+                binary = runtime.java, environment = mapOf("JAVA_TOOL_OPTIONS" to "", "JDK_JAVA_OPTIONS" to "", "_JAVA_OPTIONS" to ""))
+            val answer = checked.stdout.lineSequence().filter { it.startsWith("${FlatZincGroundCheckerMain.MARKER}\t") }
+                .singleOrNull()?.substringAfter('\t')
+            if (checked.resources?.qualified() != true || checked.exit != 0) {
+                return verdict(LabCheck.UNKNOWN, "the official checker could not evaluate the fixed frame: ${checked.tail()}", checked)
+            }
+            if (answer == "INVALID") {
+                return verdict(LabCheck.INVALID, "Choco Constraint.isSatisfied rejected the fixed original assignment", checked)
+            }
+            if (answer != "VALID") {
+                return verdict(LabCheck.UNKNOWN, "the assignment checker returned no recognized verdict", checked)
+            }
         }
         val rendered = run(listOf("--ozn-file", ozn.path), listOf(ozn, native), native)
         if (rendered.resources?.qualified() != true || rendered.exit != 0 || "----------" !in rendered.stdout) {
@@ -88,7 +109,7 @@ class MiniZincChecker : FormatChecker {
             return verdict(LabCheck.INVALID, "the retained output model disagrees with the recorded model witness", rendered)
         }
         return verdict(LabCheck.VALID,
-            "MiniZinc discharged the pinned integer/Boolean FlatZinc frame and reproduced its model witness; " +
+            "The pinned integer/Boolean FlatZinc frame was accepted and its model witness reproduced; " +
                 "${bound.diagnosticCoordinates} extra diagnostic coordinates excluded; no optimality claim", rendered)
     }
 
