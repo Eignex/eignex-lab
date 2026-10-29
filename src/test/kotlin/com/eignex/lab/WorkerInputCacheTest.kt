@@ -58,4 +58,49 @@ class WorkerInputCacheTest {
         use(cache, value) { assertEquals("fixture", Files.readString(it.resolve("file"))) }
         assertEquals(2, downloads)
     }
+    @Test fun `direct publication seeds a verified private tree without downloading and preserves empty directories`() {
+        val value = bundle("seeded"); val source = root.resolve("seeded")
+        Files.createDirectories(source.resolve("empty/nested"))
+        val receipt = root.resolve("seeded.verified.json")
+        TreeVerification().capture(source, receipt)
+        val cache = WorkerInputCache(root.resolve("shared"))
+        val publicationTrace = PreparationTrace()
+        publicationTrace.cache("input", "bypass", "build-hit")
+        cache.seed(value.first, source, receipt, {}, publicationTrace)
+        val published = publicationTrace.snapshot().caches.getValue("prepared-input")
+        assertEquals(1, published.misses); assertEquals(0, published.hits)
+        assertEquals(5, published.checkedFiles); assertEquals(0, published.hashedFiles)
+        assertEquals(0L, published.waitingMs)
+        assertEquals("bypass", publicationTrace.snapshot().caches["input"]?.outcome)
+        Files.writeString(source.resolve("file"), "change")
+        cache.seed(value.first, source, receipt, {}, publicationTrace)
+        val reused = publicationTrace.snapshot().caches.getValue("prepared-input")
+        assertEquals(1, reused.misses); assertEquals(1, reused.hits)
+        assertEquals(6, reused.checkedFiles); assertEquals(0, reused.hashedFiles)
+        assertEquals("build-hit", publicationTrace.snapshot().caches["input"]?.reason)
+        use(cache, value) { input ->
+            assertEquals("seeded", Files.readString(input.resolve("file")))
+            assertTrue(Files.isDirectory(input.resolve("empty/nested")))
+        }
+        assertEquals(0, downloads)
+        val proof = root.resolve("shared/entries/${inputCacheKey(value.first)}.verified.json")
+        val trace = PreparationTrace()
+        cache.use(value.first, {}, { error("warm seed must not download") }, trace) {}
+        assertEquals("hit", trace.snapshot().caches["input"]?.outcome)
+        assertEquals(0, trace.snapshot().caches["input"]?.hashedFiles)
+        assertTrue(Files.isRegularFile(proof))
+    }
+
+    @Test fun `direct publication checks missing receipts and rejects corrupt source before publication`() {
+        val value = bundle("seeded"); val cache = WorkerInputCache(root.resolve("shared"))
+        val source = root.resolve("seeded"); val receipt = root.resolve("missing.json")
+        Files.writeString(source.resolve("file"), "broken")
+        assertFailsWith<IllegalArgumentException> { cache.seed(value.first, source, receipt, {}) }
+        assertFalse(Files.exists(root.resolve("shared/entries/${inputCacheKey(value.first)}")))
+        Files.writeString(source.resolve("file"), "seeded")
+        cache.seed(value.first, source, receipt, {})
+        use(cache, value) { assertEquals("seeded", Files.readString(it.resolve("file"))) }
+        assertEquals(0, downloads)
+    }
+
 }

@@ -82,14 +82,18 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
             val partial = full.resolveSibling("$sha.partial")
             val current = if (Files.exists(partial)) Files.size(partial) else 0
             require(offset == current) { "upload offset changed" }
+            // A complete upload already passes every byte through this process. Verify that stream before
+            // publication instead of reading the newly written external file a second time. Resumed uploads
+            // still hash the complete on-disk prefix and suffix, including state from an earlier process.
+            val streamed = if (current == 0L) java.security.MessageDigest.getInstance("SHA-256") else null
             try {
                 Files.newOutputStream(partial, CREATE, APPEND).use { output ->
                     val buffer = ByteArray(64 * 1024); var total = current
-                    while (true) { val n = input.read(buffer); if (n < 0) break; total += n; require(total <= bytes) { "artifact exceeds declared size" }; output.write(buffer, 0, n) }
+                    while (true) { val n = input.read(buffer); if (n < 0) break; total += n; require(total <= bytes) { "artifact exceeds declared size" }; output.write(buffer, 0, n); streamed?.update(buffer, 0, n) }
                 }
             } catch (e: IllegalArgumentException) { Files.deleteIfExists(partial); throw e }
             if (Files.size(partial) == bytes) {
-                if (hashFile(partial) != sha) { Files.delete(partial); error("artifact checksum mismatch") }
+                if ((streamed?.digest()?.hex() ?: hashFile(partial)) != sha) { Files.delete(partial); error("artifact checksum mismatch") }
                 FileChannel.open(partial, WRITE).use { it.force(true) }
                 Files.move(partial, full, ATOMIC_MOVE)
                 FileChannel.open(full.parent, READ).use { it.force(true) }

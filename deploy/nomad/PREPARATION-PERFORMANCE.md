@@ -1,0 +1,30 @@
+# Preparation cache observations and performance regression
+
+Job and execution pages show the latest outcome/reason per input, prepared-input, build, archive and upload cache. Workspace creation remains a separately timed phase: preparation creates a fresh mutable private workspace rather than reporting a workspace cache hit. Verification and waiting time, files checked/rehashed, bytes rehashed and access counts accumulate across all arms and calls in the complete preparation. A later cheap hit cannot erase earlier expensive verification or a miss. Counters saturate rather than making large preparations fail. `preparation/cache.json` retains the observations beside the unchanged `preparation/timings.json` phase-duration map. Progress is best effort and bounded: it contains fixed cache/reason labels and counts, never paths or arbitrary worker text.
+
+`absent` means only that the requested entry was unavailable on this node. A new input identity, another node and an earlier eviction can all produce that observation; the system does not claim which happened without evidence. `verification-failed` means an existing entry failed validation. `verified-local` means a validated local hit; `build-hit` marks source-input acquisition bypassed because a verified build already exists; `coordinator-present` means a reusable upload already exists. A hit can still be slow: verification and waiting are reported independently, and nonzero rehash counters reveal a missing/stale proof or changed metadata instead of silently calling that work free.
+
+Older workers omit these fields and remain accepted. Cache observations are stored in a separate additive `preparation_caches` column. The original `preparation_progress` JSON retains its previous shape and stage identifiers, so rolling the coordinator back does not make historical progress rows unreadable. Progress fencing and elapsed-time ordering update both atomically. Deploy the coordinator before workers: older coordinators may reject the extra optional progress fields; workers tolerate rejected progress reports and continue work.
+
+## Run the full preparation regression
+
+```sh
+LAB_PREPARATION_PERF_ROOT=/Volumes/Ros/prepperf ./gradlew :verifyPreparationPerformance
+```
+
+Use a short scratch path on the filesystem being measured (Unix socket paths have a length limit). The test needs 4 GiB free and removes its own fixture/cache directories at completion. `preparation-performance.json` in the selected directory remains as the report. Ordinary `test` excludes this tagged fixture. The dedicated task skips unless `LAB_PREPARATION_PERF_ROOT` is set, including when the build plugin attaches it to `check`; Linux and native macOS CI set that variable for the explicit step and retain the report.
+
+The deterministic fixture contains 4,096 files and roughly 256 MiB: thousands of small source files, four 32 MiB distribution JAR-shaped blobs, and a 96 MiB Git-pack-shaped blob. The bytes are incompressible to avoid a tiny ZIP disguising storage costs. A supervised build script records invocations; it avoids depending on network resolution or an unrelated consumer build duration. The test runs a complete cold `PreparationExecutor` followed by two warm preparations with freshly constructed worker cache helpers and private workspaces, through a real HTTP upload endpoint and local coordinator artifact store. Each pass has a different artifact job ID: reusable lookups verify and link the previously accepted ZIP across jobs, matching the worker API. A bounded 128 MiB journal in internal `java.io.tmpdir` acknowledges tiny sidecars while background workers drain them to the selected filesystem. Both stores are isolated and cleaned with the fixture. Each report includes the complete phase timings and cache observations, including workspace creation and artifact publication, rather than timing only ZIP lookup.
+
+Warm passes must report the proven source-input bypass plus actual prepared-input/build/archive/upload hits, perform no source download, build invocation, checkout or archive replacement, and rehash no input/build/archive contents. Any unexpected large upload also fails. These are structural work assertions, not a fragile universal wall-clock threshold. Compare `elapsedMs`, `timings`, verification time, waiting time and work counters in the report across filesystems and revisions. The fixture covers the custom/full distribution path; production consumer selection, real compilation, cloud networking and concurrent disk contention still require live timing evidence. Hashing the single ZIP to identify an upload remains separate from rehashing thousands of cached tree files; upload observations report that checksum read explicitly. Cross-job coordinator reuse also validates the accepted ZIP before linking it, and its cost remains in the upload phase.
+
+## Representative measurements
+
+Independent runs on 2026-10-29 used the exact 4,096-file/~256 MiB fixture, distinct artifact job IDs, actual coordinator archive reuse, and a capped internal metadata journal:
+
+| Environment | Cold preparation | Warm pass 1 | Warm pass 2 |
+| --- | ---: | ---: | ---: |
+| Linux internal NVMe | 8.153 s | 1.371 s | 1.071 s |
+| Native Mac, `/Volumes/Ros` external volume | 115.436 s | 10.735 s | 20.165 s |
+
+Every warm pass passed the structural assertions: source acquisition bypassed, zero cached-tree content rehashes, no build invocation/download/archive replacement, and zero archive PUTs. The external-volume warm passes still spent 4.809/11.635 s creating private workspaces, 1.408/2.906 s in the archive cache, and 3.625/4.224 s publishing/reusing artifacts. Removing repeated work does not make the remaining metadata checks, private copies and cross-job ZIP checksum/link/fsync operations free. These runs used different hosts, storage and cache conditions; they are not a controlled before/after speedup measurement. The external result remains above the sub-second preparation target.

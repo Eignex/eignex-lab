@@ -114,8 +114,17 @@ class WorkerTransferTest {
             val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
             val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
                 "release", root, root.resolve("unused.sock"), "unused")
-            assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")))
+            val trace = PreparationTrace()
+            assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"), reusable = true, trace = trace))
             assertEquals(1, gets.get()); assertEquals(2, puts.get())
+            assertEquals("miss", trace.snapshot().caches["upload"]?.outcome)
+            assertEquals("absent", trace.snapshot().caches["upload"]?.reason)
+            val warm = PreparationTrace()
+            assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"), reusable = true, trace = warm))
+            assertEquals(2, gets.get()); assertEquals(2, puts.get())
+            assertEquals("coordinator-present", warm.snapshot().caches["upload"]?.reason)
+            assertEquals(1, warm.snapshot().caches["upload"]?.hashedFiles)
+            assertEquals(Files.size(file), warm.snapshot().caches["upload"]?.hashedBytes)
         } finally { server.stop(0) }
     }
 

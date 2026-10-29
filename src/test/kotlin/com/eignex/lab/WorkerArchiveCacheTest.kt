@@ -99,4 +99,31 @@ class WorkerArchiveCacheTest {
         } finally { pool.shutdownNow() }
     }
 
+    @Test fun `cold archives retain checksums executables and empty directories with mixed compression`() {
+        val random = ByteArray(2 * 1024 * 1024).also { java.util.Random(42).nextBytes(it) }
+        Files.write(source.resolve("dependency.jar"), random)
+        Files.writeString(source.resolve("compressible.kt"), "source content\n".repeat(10000))
+        Files.createDirectories(source.resolve("empty/nested"))
+        assertTrue(file.toFile().setExecutable(true, true))
+        val cache = WorkerArchiveCache(cacheRoot)
+        val trace = PreparationTrace()
+        val first = cache.use(source, identity, false, {}, trace) { zip, bundle ->
+            val extracted = VerifiedCache(root.resolve("unpacked")).stage(bundle) { Files.newInputStream(zip) }
+            assertContentEquals(random, Files.readAllBytes(extracted.resolve("dependency.jar")))
+            assertTrue(Files.isExecutable(extracted.resolve("code")))
+            assertTrue(Files.isDirectory(extracted.resolve("empty/nested")))
+            assertEquals(bundle.sha256, hashFile(zip))
+            assertTrue(Files.size(zip) < random.size + 20_000) // Source still compresses; binary framing adds little.
+            bundle
+        }
+        assertEquals("miss", trace.snapshot().caches.getValue("archive").outcome)
+        val hit = PreparationTrace()
+        cache.use(source, identity, false, {}, hit) { _, bundle -> assertEquals(first.sha256, bundle.sha256) }
+        assertEquals("hit", hit.snapshot().caches.getValue("archive").outcome)
+        assertEquals(0, hit.snapshot().caches.getValue("archive").hashedFiles)
+        assertEquals(0L, hit.snapshot().caches.getValue("archive").hashedBytes)
+        assertTrue(compressedArchivePath(".git/objects/pack/object.pack"))
+        assertFalse(compressedArchivePath("src/Main.kt"))
+    }
+
 }

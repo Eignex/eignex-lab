@@ -112,12 +112,22 @@ class ExecutionStoreTest {
         store.execution.bind("prep", token, "allocation", "node", "release", 1000)
         val claim = store.execution.claim("prep", token, "allocation", 1100)!!
         store.execution.phase(claim.owner, "preparing", 1101)
-        val progress = PreparationProgress("compilation", 500, 200, mapOf("checkout" to 300, "compilation" to 200))
+        val progress = PreparationProgress("compilation", 500, 200, mapOf("checkout" to 300, "compilation" to 200),
+            mapOf("build" to PreparationCacheEvent("hit", "verified-local", verificationMs = 120, waitingMs = 30)))
         store.execution.preparationProgress(claim.owner, progress, 1600)
-        store.execution.preparationProgress(claim.owner, progress.copy(elapsedMs = 400), 1601)
+        store.execution.preparationProgress(claim.owner, progress.copy(elapsedMs = 400, caches = emptyMap()), 1601)
         val report = Store(file).execution.reports(id).single()
         assertEquals(PreparationStatus(progress, 1600), report.preparation)
         assertTrue(executionPage(id, listOf(report)).contains("Compiling"))
+        assertTrue(preparationDetails(report).contains("Build: latest hit (verified local entry), verification 0.12 s, waiting 0.03 s"))
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().executeQuery("SELECT preparation_progress, preparation_caches FROM iteration_attempts WHERE session_id = 'prep'").use { row ->
+                assertTrue(row.next())
+                // An older binary has no cache field and strict-decodes this column.
+                assertFalse(row.getString(1).contains("caches"))
+                assertTrue(row.getString(2).contains("verified-local"))
+            }
+        }
         assertTrue(preparationDetails(report, 1700).contains("0.30 s in phase"))
         assertTrue(preparationDetails(report, 8000).contains("last update"))
         store.execution.phase(claim.owner, "uploading", 1700)

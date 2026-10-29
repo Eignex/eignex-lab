@@ -86,10 +86,15 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 WorkerTrees.copy(built, tree, ::checkActive)
                 tree
             }
-            fun prepare(input: Path): Path = if (bundle.build == null) copy(input)
-                else builds.withPrepared(bundle, input, manifest.budget, env, remainingRunMs, ::remaining, trace, ::copy)
-            trace.step("inputs") { inputCache?.use(bundle, ::checkActive, { download(bundle) }, ::prepare)
-                ?: prepare(cache.stage(bundle, ::checkActive) { download(bundle) }) }
+            fun acquireSource(consume: (Path) -> Unit) = trace.step("inputs") {
+                if (inputCache != null) inputCache.use(bundle, ::checkActive, { download(bundle) }, trace, consume)
+                else consume(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
+            }
+            if (bundle.build != null) builds.withPreparedSource(bundle, manifest.budget, env, remainingRunMs, ::remaining, trace, ::acquireSource, ::copy)
+            else trace.step("inputs") {
+                inputCache?.use(bundle, ::checkActive, { download(bundle) }, trace, ::copy)
+                    ?: copy(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
+            }
         }
         val spec = manifest.experiment
         val bench = spec.bench
@@ -148,8 +153,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             fun publish(zip: Path, built: WorkerBundle): WorkerBundle {
                 // Seed the solve input cache without a coordinator round trip.
                 trace.step("cache-publication") { if (inputCache != null) {
-                    val input = { Files.newInputStream(zip) }
-                    inputCache.use(built, ::checkActive, input) { }
+                    inputCache.seed(built, tree, tree.resolveSibling("${tree.fileName}.archive-verified.json"), ::checkActive, trace)
                 } }
                 artifacts["preparation/$sha.zip"] = transfer(zip)
                 return built
@@ -178,6 +182,9 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             if (Files.isRegularFile(path)) artifacts["preparation/$name"] = transfer(path)
         }
         require(bundles.all { artifacts["preparation/${it.commit}.zip"] == it.sha256 } && (corpusBundle == null || artifacts["preparation/corpus.zip"] == corpusBundle.sha256))
+        val cacheFile = directory.resolve("preparation-cache.json")
+        Files.writeString(cacheFile, Json.encodeToString(trace.snapshot().caches))
+        artifacts["preparation/cache.json"] = transfer(cacheFile)
         val timingFile = directory.resolve("preparation-timings.json")
         Files.writeString(timingFile, Json.encodeToString(trace.snapshot().timings))
         artifacts["preparation/timings.json"] = transfer(timingFile)
@@ -210,21 +217,30 @@ internal fun archive(tree: Path, output: Path, identity: WorkerBundle, runtimeOn
             return java.nio.file.FileVisitResult.CONTINUE
         }
     })
-    paths.sort(); directories.sort()
+    return archiveInventory(tree, output, identity, paths, directories, checkActive)
+}
+
+/** A captured inventory can be reused by the cache miss path without walking the same tree again. */
+internal fun archiveInventory(tree: Path, output: Path, identity: WorkerBundle, paths: List<Path>,
+                              directories: List<String>, checkActive: () -> Unit): WorkerBundle {
     require(paths.isNotEmpty())
     val files = mutableListOf<InputFile>(); var streamedBytes = 0L
     val archiveDigest = java.security.MessageDigest.getInstance("SHA-256")
     ZipOutputStream(java.security.DigestOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(output), 256 * 1024), archiveDigest)).use { zip ->
-        // Runtime distributions contain already-compressed jars; avoid recompressing them at the default level.
+        // Compress text quickly; each binary entry can select streaming framing below.
         zip.setLevel(java.util.zip.Deflater.BEST_SPEED)
         // Empty directories carry runtime meaning too, including a detached checkout's .git/refs.
-        for (directory in directories) {
+        for (directory in directories.sorted()) {
             checkActive(); zip.putNextEntry(ZipEntry(directory).apply { time = 0 }); zip.closeEntry()
         }
-        for (path in paths) {
+        for (path in paths.sorted()) {
             val name = tree.relativize(path).toString().replace('\\', '/')
             val before = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            require(before.isRegularFile) { "archive contains unsupported links" }
             val digest = java.security.MessageDigest.getInstance("SHA-256"); var bytes = 0L
+            // JAR/ZIP and Git pack contents are already compressed. Deflating those bytes again consumes
+            // CPU; retain DEFLATED framing so the checksum and size stream in one pass.
+            zip.setLevel(if (compressedArchivePath(name)) java.util.zip.Deflater.NO_COMPRESSION else java.util.zip.Deflater.BEST_SPEED)
             checkActive(); zip.putNextEntry(ZipEntry(name).apply { time = 0 })
             Files.newInputStream(path).use { input ->
                 val buffer = ByteArray(64 * 1024)
@@ -237,3 +253,6 @@ internal fun archive(tree: Path, output: Path, identity: WorkerBundle, runtimeOn
     }
     return identity.copy(sha256 = archiveDigest.digest().hex(), files = files, build = null)
 }
+
+internal fun compressedArchivePath(path: String): Boolean = path.substringAfterLast('.').lowercase() in
+    setOf("jar", "zip", "pack", "gz", "xz", "zst", "bz2", "png", "jpg", "jpeg", "webp")

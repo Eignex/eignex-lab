@@ -7,14 +7,13 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
 import java.util.UUID
 
 /** Reuse immutable ZIPs by verified file inventory and directory layout. Active publishers hold a process pin;
  * eviction bounds compressed bytes, and neither cache hits nor creation expose a shared mutable workspace. */
 internal class WorkerArchiveCache(private val root: Path, private val maxBytes: Long = 2L * 1024 * 1024 * 1024,
-                                  private val create: (Path, Path, WorkerBundle, Boolean, () -> Unit) -> WorkerBundle = ::archive) {
+                                  private val create: ((Path, Path, WorkerBundle, Boolean, () -> Unit) -> WorkerBundle)? = null) {
     init { require(maxBytes >= 0) }
     @Serializable private data class Entry(val bundle: WorkerBundle, val bytes: Long)
 
@@ -25,37 +24,40 @@ internal class WorkerArchiveCache(private val root: Path, private val maxBytes: 
         val original = tree.resolveSibling("${tree.fileName}.verified.json")
         val receipt = tree.resolveSibling("${tree.fileName}.archive-verified.json")
         if (!Files.exists(receipt) && Files.isRegularFile(original)) Files.copy(original, receipt)
-        val files = trace.step("archive") { TreeVerification().capture(tree, receipt, checkActive) { !runtimeOnly || WorkerTrees.runtimePath(it) } }
+        val inventoryStarted = System.nanoTime()
+        val inventoryVerifier = TreeVerification()
         val directories = mutableListOf<String>()
-        trace.step("archive") { Files.walkFileTree(tree, object : java.nio.file.SimpleFileVisitor<Path>() {
-            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): java.nio.file.FileVisitResult {
-                checkActive(); val relative = tree.relativize(dir)
-                if (runtimeOnly && !WorkerTrees.runtimePath(relative)) return java.nio.file.FileVisitResult.SKIP_SUBTREE
-                if (dir != tree) directories += relative.toString().replace('\\', '/')
-                return java.nio.file.FileVisitResult.CONTINUE
-            }
-        }) }
-        val key = ExecutionStore.digest("archive-v1\n" + Json.encodeToString(files.sortedBy { it.path }) + "\n" + Json.encodeToString(directories.sorted()))
+        val files = trace.step("archive") { inventoryVerifier.capture(tree, receipt, checkActive, directories) { !runtimeOnly || WorkerTrees.runtimePath(it) } }
+        val inventoryMs = (System.nanoTime() - inventoryStarted) / 1_000_000
+        val key = ExecutionStore.digest("archive-v2\n" + Json.encodeToString(files.sortedBy { it.path }) + "\n" + Json.encodeToString(directories.sorted()))
         val destination = root.resolve(key)
         val pin = guarded(checkActive) {
             val pins = Files.createDirectories(root.resolve("pins")); val path = pins.resolve("$key.${UUID.randomUUID()}")
             path to checkNotNull(ProcessFilePin.tryLock(path))
         }
         try {
-            val entry = locked(root.resolve("$key.lock"), checkActive) {
+            val waitStarted = System.nanoTime()
+            val entry = trace.step("archive") { locked(root.resolve("$key.lock"), checkActive) {
+                val waitingMs = (System.nanoTime() - waitStarted) / 1_000_000
+                val verificationStarted = System.nanoTime()
                 val cached = runCatching { Json.decodeFromString<Entry>(Files.readString(destination.resolve("manifest.json"))) }.getOrNull()
+                val zipVerifier = TreeVerification()
                 val valid = cached != null && cached.bundle.files.size == files.size && cached.bundle.files.toSet() == files.toSet() && cached.bytes in 0..maxBytes &&
-                    TreeVerification().valid(destination.resolve("data"), listOf(InputFile("archive.zip", cached.bundle.sha256, cached.bytes)),
-                        destination.resolve("verified.json"), checkActive, exactExecutables = true)
-                if (valid) cached else trace.step("archive") {
+                    trace.step("archive") { zipVerifier.valid(destination.resolve("data"), listOf(InputFile("archive.zip", cached.bundle.sha256, cached.bytes)),
+                        destination.resolve("verified.json"), checkActive, exactExecutables = true) }
+                val verificationMs = inventoryMs + (System.nanoTime() - verificationStarted) / 1_000_000
+                val result = if (valid) cached else trace.step("archive") {
                     if (Files.exists(destination, NOFOLLOW_LINKS)) deleteTree(destination)
                     val storage = WorkerBuildStaging(root)
                     val lease = storage.create(checkActive); val staging = lease.directory
                     try {
                         val data = Files.createDirectory(staging.resolve("data")); val output = data.resolve("archive.zip")
-                        val bundle = create(tree, output, identity, runtimeOnly, checkActive)
+                        val writeStarted = System.nanoTime()
+                        val bundle = create?.invoke(tree, output, identity, runtimeOnly, checkActive)
+                            ?: archiveInventory(tree, output, identity, files.map { tree.resolve(it.path) }, directories.map { "$it/" }, checkActive)
                         require(bundle.files.toSet() == files.toSet()) { "archive source changed" }
                         val bytes = Files.size(output)
+                        println("worker archive timing: inventoryMs=$inventoryMs writeMs=${(System.nanoTime() - writeStarted) / 1_000_000} files=${files.size} inputBytes=${files.sumOf { it.bytes }} zipBytes=$bytes")
                         val verifier = TreeVerification()
                         verifier.record(data, listOf(verifier.written(output, InputFile("archive.zip", bundle.sha256, bytes))), staging.resolve("verified.json"), checkActive)
                         val result = Entry(bundle, bytes)
@@ -64,7 +66,13 @@ internal class WorkerArchiveCache(private val root: Path, private val maxBytes: 
                         result
                     } finally { storage.close(lease) }
                 }
-            }
+                trace.cache("archive", if (valid) "hit" else "miss", if (valid) "verified-local" else if (cached == null) "absent" else "verification-failed",
+                    verificationMs = verificationMs, waitingMs = waitingMs, bytes = result?.bytes, files = files.size,
+                    checkedFiles = inventoryVerifier.stats.checkedFiles + zipVerifier.stats.checkedFiles + if (valid) 0 else files.size,
+                    hashedFiles = inventoryVerifier.stats.hashedFiles + zipVerifier.stats.hashedFiles + if (valid) 0 else files.size,
+                    hashedBytes = inventoryVerifier.stats.hashedBytes + zipVerifier.stats.hashedBytes + if (valid) 0 else files.sumOf { it.bytes })
+                result
+            } }
             Files.setLastModifiedTime(destination.resolve("manifest.json"), FileTime.fromMillis(now()))
             maintain(checkActive)
             return action(destination.resolve("data/archive.zip"), identity.copy(sha256 = entry.bundle.sha256, files = entry.bundle.files, build = null))

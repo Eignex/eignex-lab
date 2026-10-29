@@ -76,4 +76,21 @@ class ArtifactReuseTest {
         }
     }
 
+    @Test fun `fresh complete uploads stream checksums and resumed uploads verify the stored prefix`() {
+        assertEquals(bytes.size.toLong(), store().put(1, sha, bytes.size.toLong(), 0, bytes.inputStream()))
+        assertContentEquals(bytes, Files.readAllBytes(store().file(1, sha)))
+        val wrong = bytes.copyOf().also { it[0] = (it[0] + 1).toByte() }
+        assertFailsWith<IllegalStateException> { store().put(2, sha, wrong.size.toLong(), 0, wrong.inputStream()) }
+        assertFalse(Files.exists(root.resolve("2/$sha.partial")))
+        store().put(3, sha, bytes.size.toLong(), 0, bytes.copyOfRange(0, 4).inputStream())
+        assertEquals(bytes.size.toLong(), store().put(3, sha, bytes.size.toLong(), 4, bytes.copyOfRange(4, bytes.size).inputStream()))
+        assertContentEquals(bytes, Files.readAllBytes(store().file(3, sha)))
+        store().put(4, sha, bytes.size.toLong(), 0, wrong.copyOfRange(0, 4).inputStream())
+        assertFailsWith<IllegalStateException> { store().put(4, sha, bytes.size.toLong(), 4, bytes.copyOfRange(4, bytes.size).inputStream()) }
+        assertFalse(Files.exists(root.resolve("4/$sha.partial")))
+        val empty = ExecutionStore.digest("")
+        assertEquals(0L, store().put(5, empty, 0, 0, byteArrayOf().inputStream()))
+        assertTrue(Files.isRegularFile(store().file(5, empty)))
+    }
+
 }

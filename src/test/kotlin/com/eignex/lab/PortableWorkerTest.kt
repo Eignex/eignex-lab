@@ -60,8 +60,10 @@ class PortableWorkerTest {
         val archiveCache = WorkerArchiveCache(root.resolve("archives")) { tree, zip, bundle, runtime, active ->
             archivesCreated++; archive(tree, zip, bundle, runtime, active)
         }
+        val inputCache = WorkerInputCache(root.resolve("inputs"))
         val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch, trace = trace, archives = archiveCache)
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch,
+            inputCache = inputCache, trace = trace, archives = archiveCache)
         val result = executor.run(manifest, root.resolve("prepare"), { null }, { 80000 }) { file ->
             hashFile(file).also { uploads[it] = file }
         }
@@ -69,6 +71,13 @@ class PortableWorkerTest {
         val prepared = result.bundles.single()
         val source = VerifiedCache(root.resolve("verify")).stage(prepared) { Files.newInputStream(uploads.getValue(prepared.sha256)) }
         assertEquals("echo measured", Files.readString(source.resolve("bin/profile")))
+        inputCache.use(prepared, {}, { error("preparation must seed the solve input cache") }) { seeded ->
+            assertEquals("echo measured", Files.readString(seeded.resolve("bin/profile")))
+            assertTrue(Files.isExecutable(seeded.resolve("bin/profile")))
+        }
+        val observations = Json.decodeFromString<Map<String, PreparationCacheEvent>>(Files.readString(root.resolve("prepare/preparation-cache.json")))
+        assertEquals("miss", observations.getValue("archive").outcome)
+        assertEquals(hashFile(root.resolve("prepare/preparation-cache.json")), result.artifacts["preparation/cache.json"])
         val timings = Json.decodeFromString<Map<String, Long>>(Files.readString(root.resolve("prepare/preparation-timings.json")))
         assertTrue(timings.keys.containsAll(setOf("inputs", "workspace", "selection", "archive", "upload")))
         assertTrue(timings.values.all { it >= 0 })

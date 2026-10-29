@@ -89,4 +89,51 @@ class TreeVerificationTest {
         }
         assertEquals(1, reads)
     }
+    @Test fun `warm traversal records real checksum work and includes empty directories in its existing walk`() {
+        Files.createDirectories(tree.resolve("empty/nested"))
+        val cold = verifier(); val directories = mutableListOf<String>()
+        val captured = cold.capture(tree, receipt, directories = directories)
+        assertEquals(setOf("empty", "empty/nested"), directories.toSet())
+        assertEquals(1, cold.stats.hashedFiles); assertEquals(5L, cold.stats.hashedBytes)
+        val warm = verifier()
+        assertTrue(warm.valid(tree, captured, receipt))
+        assertEquals(1, warm.stats.checkedFiles); assertEquals(0, warm.stats.hashedFiles)
+        assertEquals(0L, warm.stats.hashedBytes)
+    }
+
+    @Test fun `trusted copy rejects concurrent source changes and seals private inode stamps without rehashing`() {
+        verifier().capture(tree, receipt)
+        val destination = root.resolve("private"); val targetReceipt = root.resolve("private.json")
+        val copy = verifier()
+        copy.copy(tree, receipt, destination, targetReceipt) { WorkerTrees.copy(tree, destination) {} }
+        assertEquals(0, copy.stats.hashedFiles)
+        val fresh = verifier(); assertTrue(fresh.valid(destination, expected, targetReceipt, exactExecutables = true))
+        assertEquals(0, fresh.stats.hashedFiles)
+        Files.writeString(destination.resolve("tool"), "other")
+        assertFalse(verifier().valid(destination, expected, targetReceipt))
+        val changing = root.resolve("changing")
+        assertFailsWith<IllegalArgumentException> {
+            verifier().copy(tree, receipt, changing, root.resolve("changing.json")) {
+                WorkerTrees.copy(tree, changing) {}; Files.writeString(file, "wrong")
+            }
+        }
+        assertFalse(Files.exists(root.resolve("changing.json")))
+    }
+
+    @Test fun `copy verification timing excludes time inside the trusted filesystem copy`() {
+        TreeVerification().capture(tree, receipt)
+        val copy = TreeVerification(); var copyingNanos = 0L
+        val started = System.nanoTime()
+        copy.copy(tree, receipt, root.resolve("timed"), root.resolve("timed.json")) {
+            val copyingAt = System.nanoTime()
+            Thread.sleep(25)
+            WorkerTrees.copy(tree, root.resolve("timed")) {}
+            copyingNanos = System.nanoTime() - copyingAt
+        }
+        val elapsed = System.nanoTime() - started
+        assertTrue(copy.stats.verificationNanos > 0)
+        assertTrue(copy.stats.verificationNanos <= elapsed - copyingNanos,
+            "copy execution was incorrectly counted as verification")
+    }
+
 }

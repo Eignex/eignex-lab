@@ -529,8 +529,14 @@ This switches historical cache keys once; later worker patches preserve the new 
 
 Workers reuse verified input distributions across allocations under `LAB_WORKER_CACHE_ROOT/inputs`. The node-local
 cache keeps an 8 GiB soft limit and seven-day expiry; process-owned pins protect readers during staging and compilation.
-Cold preparation seeds its published distribution into this cache so a solve on that node can reuse it immediately.
-Prepared ZIPs use buffered output and fast compression, and prune discarded compiler directories before traversal.
+Cold preparation seeds its published distribution from the verified private source tree, using a filesystem clone when
+available, instead of decompressing and rewriting the ZIP it just created. The source inventory is checked against the
+published bundle before promotion; readers still receive private copies and the existing cache size limit applies.
+Prepared ZIPs use buffered output and fast compression for source text, while already compressed JARs, Git packs and
+other compressed formats use uncompressed DEFLATE framing to avoid repeated compression. The archive-v2 identity
+makes this a one-time ZIP cache miss without invalidating the build cache. Discarded compiler directories are pruned
+before traversal. Cold publication logs inventory time, ZIP writing time, input bytes and compressed bytes separately;
+cache observations include ZIP verification and lock wait time, so slow cold reads can be separated from reuse.
 A separate node cache under `LAB_WORKER_CACHE_ROOT/archives` reuses the complete ZIP when verified file checksums,
 executable state and directory layout match. Its 2 GiB compressed-size soft limit and seven-day expiry protect disk;
 active publishers hold process pins, and crashed staging follows the same five-minute orphan grace as build staging.

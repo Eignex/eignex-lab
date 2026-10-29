@@ -79,7 +79,7 @@ tasks.register("printJavaHome") {
 }
 
 // Runs real, already-built consumer adapters through preparation, execution and coordinator ingestion.
-tasks.test { useJUnitPlatform { excludeTags("bench-adapters") } }
+tasks.test { useJUnitPlatform { excludeTags("bench-adapters", "preparation-performance") } }
 val benchAdapterMatrix = providers.environmentVariable("LAB_BENCH_ADAPTER_MATRIX")
 tasks.register<Test>("verifyBenchAdapters") {
     onlyIf("LAB_BENCH_ADAPTER_MATRIX must name prepared scenarios") { benchAdapterMatrix.isPresent }
@@ -91,6 +91,19 @@ tasks.register<Test>("verifyBenchAdapters") {
     environment("JAVA_HOME", javaToolchains.launcherFor {
         languageVersion.set(JavaLanguageVersion.of(25))
     }.get().metadata.installationPath.asFile.absolutePath)
+    outputs.upToDateWhen { false }
+    testLogging { showStandardStreams = true }
+}
+
+// Explicit full-distribution regression, including cold setup and two fresh-worker warm preparations.
+val preparationPerfRoot = providers.environmentVariable("LAB_PREPARATION_PERF_ROOT")
+tasks.register<Test>("verifyPreparationPerformance") {
+    onlyIf("LAB_PREPARATION_PERF_ROOT must name the target scratch directory") { preparationPerfRoot.isPresent }
+    group = "verification"
+    description = "Verify full-sized warm preparations; set LAB_PREPARATION_PERF_ROOT to the target scratch disk."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform { includeTags("preparation-performance") }
     outputs.upToDateWhen { false }
     testLogging { showStandardStreams = true }
 }
