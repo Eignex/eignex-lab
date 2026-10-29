@@ -105,11 +105,13 @@ internal fun trendPage(
 
 /** Whether a trend run's solution claims were checked against their sources, as a small word with its meaning on hover. */
 private fun trendWitness(run: TrendRun): String =
-    if (run.sourceChecked) {
+    (if (run.sourceChecked) {
         " <small class=\"DONE\" title=\"asked for source-witness validation: its solutions in checked formats are source-checked\">checked</small>"
     } else {
         " <small class=\"muted\" title=\"no source-witness validation asked for: its solutions are the solver's own reports\">unchecked</small>"
-    }
+    }) + " <small class=\"muted\" title=\"${esc(run.comparisonSeries.joinToString(", "))}\">" +
+        (if (run.comparisonSeries.isEmpty() || run.comparisonSeries == listOf("historical-unqualified"))
+            "historical controls unqualified" else "controlled series") + "</small>"
 
 /** A run against the one before it: lost and gained, the sign test when it is telling, and what reruns confirmed. */
 private fun flipCell(run: TrendRun): String = buildString {
@@ -292,6 +294,7 @@ private const val TREND_SCRIPT = """<script>
     const rows = [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['witnesses', r.sourceChecked ? 'source-checked' : 'unchecked solver reports'],
+      ['comparison series', (r.comparisonSeries || ['historical-unqualified']).join(', ')],
       ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
       ['proven', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
