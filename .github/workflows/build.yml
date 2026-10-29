@@ -71,6 +71,8 @@ jobs:
         run: python3 -m unittest discover -s deploy/nomad -p 'test_*.py'
       - name: Build experimental Nomad session renderer
         run: ./gradlew installDist
+      - name: Verify DIMACS ordinary runner and recheck controls
+        run: bash checker/verify-dimacs.sh
       - name: Install pinned Nomad prototype
         run: python3 deploy/nomad/sandbox.py install
       - name: Start isolated Nomad prototype

@@ -195,3 +195,9 @@ execution and retention belong to the containing job's budget. Repository tests 
 
 Exact rational MPS point checks and the remote replay contract are specified in
 [Independent source checking](01-source-checking.md#exact-rational-mps). A valid point is feasibility evidence only.
+
+DIMACS SAT points use the independent complete original-coordinate policy documented in
+[Independent source checking](01-source-checking.md#original-dimacs-sat-points). Ordinary requested checks and
+ended-case rechecks share the production registry. `checker/dimacs.json` accepts explicit frozen captures and
+retains both paths' receipts; SDK success alone is insufficient. SAT point acceptance supplies no independent
+UNSAT or optimum proof. Resource and unavailable checks remain unchecked.

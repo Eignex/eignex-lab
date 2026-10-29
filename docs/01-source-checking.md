@@ -64,3 +64,45 @@ request/input artifacts and existing process receipts bind each check. Incomplet
 The [weighted replay contract and source specifications](runs.md) define supported layouts, additional input limits
 and the distinction between SDK capture success and an actual checking verdict. `checker/weighted.json` owns that
 route; `lab/mps-check.json` owns exact MPS replay.
+
+## Original DIMACS SAT points
+
+`DimacsChecker` registers `DIMACS` under `lab-dimacs-independent-complete-point-v1`, implementation
+`eignex-lab-dimacs-complete-point-1`. It independently reads original CNF bytes and evaluates clauses without Klause
+parsing, presolve, propagation, acceptance or solving. The executing JAR identifies the implementation and embeds
+the evaluator source. Original model SHA-256 is mandatory. The existing source locator verifies the recorded plain
+bytes, and the bounded child verifies its own snapshot again after decompression. Missing or changed source stays
+`not-run`. A valid receipt establishes only the supplied SAT point; native UNSAT and optimality flags remain
+independently unverified. DIMACS optimization/objective records and separate data files are unsupported.
+
+The supported source is a single `p cnf n m` header followed by exactly `m` zero-terminated clauses. Clauses can span
+lines or share a line; `c` comment lines and ASCII space/tab/CR/LF are accepted. Empty clauses are false; an empty
+formula is true. Every nonzero source literal must name a coordinate in `1..n`. Unknown extensions, malformed or
+truncated sources, extra headers/clauses and incorrect counts are `unsupported`, never accepted as a partial model.
+All literals and clauses are consumed even after an earlier clause is false or a literal satisfies its clause.
+
+The explicit **complete assignment** policy requires every original coordinate `1..n`, including unused variables,
+exactly once. A witness consists of signed nonzero decimal integers after `v`, optionally on multiple `v` lines,
+with one optional final `0`. The lab's complete final line may omit `0`. There is no bit-string interpretation,
+implicit false value, extension, search or assignment repair. Duplicate, contradictory, malformed, out-of-range or
+incomplete witnesses and false clauses are `invalid`; only invalid withdraws the source claim. Records without a
+SAT solution claim receive no SAT check; a missing witness is `not-run`.
+
+The existing point child owns UTF-8 decoding, zstd decompression (64 MiB window), parsing and evaluation within a
+256 MiB heap, 10 CPU seconds, 15-second wall deadline and Linux 4 GiB address-space envelope. Snapshot transport and
+expanded source are capped at 32 MiB, witness at 8 MiB characters, tokens at 32 characters, declared variables at
+1,000,000, clauses at 2,000,000 and literal evaluations at 8,000,000. The evaluator retains only the source text,
+bounded scanner tokens and a byte per declared coordinate. Input coverage/resource caps are `unsupported` with a
+resource-limit reason; failed execution, timeout, memory excess, incomplete output or cleanup are `not-run`. Neither
+state is mathematical rejection or acceptance. The parent requires a qualified existing process receipt before
+using any child verdict. Receipts bind source/witness hashes, full request text and its hash, policy/version, JAR,
+Java executable/classpath and source snapshot hashes, resource limits and completion/cleanup evidence.
+
+`CaseChecks.afterCase` uses this registry when ordinary runner source validation is requested. `CaseChecks.recheck`
+uses the same adapter on ended stored cases without solving. `checker/dimacs.json` replays frozen captures through
+both actual paths and retains original/effective records, source, origin, ordinary/recheck receipts and resource
+identity. Each explicit capture supplies `model` text, original `record`, a `control` object that may replace only
+`finalWitness`, an `expected` checking state and `origin`. Pass a JSON list as the `captures` parameter; bounded
+`capture-zstd-base64` transport is also accepted. Expected states are assertions on the checks, not authority for
+acceptance. CI exercises positive, false-clause, incomplete, contradictory, resource and source-mismatch controls
+using the already-built distribution; unit fixtures require no network or external tool provisioning.

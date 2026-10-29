@@ -24,7 +24,7 @@ object Checkers {
         val solchecker = Solchecker(dir(config))
         val dolmen = Dolmen(dir(config))
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), RationalMpsChecker(MpsChecker(solchecker::binary)), MiniZincChecker(), SmtChecker(dolmen::binary), OpbChecker(), WboChecker(), WcnfChecker()),
+        adapters = listOf(Xcsp3Checker(), RationalMpsChecker(MpsChecker(solchecker::binary)), MiniZincChecker(), SmtChecker(dolmen::binary), OpbChecker(), WboChecker(), WcnfChecker(), DimacsChecker()),
         locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))
