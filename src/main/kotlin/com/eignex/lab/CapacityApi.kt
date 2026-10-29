@@ -8,7 +8,11 @@ import kotlinx.serialization.json.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.withContext
 
-/** Private capacity endpoints use their own secret; a worker credential grants no capacity access. */
+/**
+ * Private capacity endpoints use their own secret; a worker credential grants no capacity access. They answer their
+ * own failures, as [ErrorBody] JSON, before the worker listener's error pages could see them: a bad query is 400, an
+ * unknown pool 404, and a collector that cannot answer 503.
+ */
 fun Application.capacityApi(collector: CapacityCollector, journal: (() -> ResultJournal.Status)? = null) {
     routing {
         route("/capacity") {
@@ -16,13 +20,21 @@ fun Application.capacityApi(collector: CapacityCollector, journal: (() -> Result
                 withContext(CoordinatorIo.capacity) {
                     val token = call.request.headers[HttpHeaders.Authorization]?.removePrefix("Bearer ").orEmpty()
                     if (!collector.authorized(token)) { call.respond(HttpStatusCode.Unauthorized); finish() }
-                    else proceed()
+                    else try {
+                        proceed()
+                    } catch (e: ApiError) {
+                        call.respond(e.status, ErrorBody(e.message ?: e.status.description)); finish()
+                    } catch (e: IllegalArgumentException) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorBody(e.message ?: "invalid capacity request")); finish()
+                    } catch (e: IllegalStateException) {
+                        call.respond(HttpStatusCode.ServiceUnavailable, ErrorBody("capacity unavailable", e.message)); finish()
+                    }
                 }
             }
             suspend fun ApplicationCall.query(value: String?) {
                 val pool = requireNotNull(Regex("lab_capacity_desired_nodes\\{pool=\"([a-z][a-z0-9-]{0,47})\"\\}").matchEntire(value.orEmpty())) { "unsupported capacity query" }.groupValues[1]
                 val sample = collector.snapshot()
-                val count = requireNotNull(sample.decision.desired[pool]) { "unknown pool" }
+                val count = sample.decision.desired[pool] ?: throw ApiError.NotFound("unknown pool $pool")
                 respond(buildJsonObject {
                     put("status", "success")
                     putJsonObject("data") {

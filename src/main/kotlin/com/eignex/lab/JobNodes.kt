@@ -19,13 +19,16 @@ internal fun jobActivity(job: Job, nodes: List<JobNode>): String? = when {
 }
 
 /** Resolve active bindings from local state without making Nomad requests on the page's refresh path. */
-internal fun jobNodes(config: Config, store: Store, jobs: Collection<Long>): Map<Long, List<JobNode>> {
+internal fun jobNodes(
+    config: Config,
+    store: Store,
+    jobs: Collection<Long>,
+    /** The capacity settings, from the API's cache ([ApiServices.capacitySettings]); read from their file when not given. */
+    settings: CapacitySettings? = runCatching { config.nomadCapacitySettings?.let { CapacitySettings.read(it) } }.getOrNull(),
+): Map<Long, List<JobNode>> {
     if (jobs.isEmpty()) return emptyMap()
     val snapshot = readCapacityReport(config)
     val allocations = snapshot?.nodes.orEmpty().flatMap { node -> node.reservations.map { it.id to node } }.toMap()
-    val settings = runCatching {
-        config.nomadCapacitySettings?.let { CapacitySettings.read(it) }
-    }.getOrNull()
     val pools = (settings?.pools ?: snapshot?.pools).orEmpty()
     return store.execution.runningNodes(jobs).mapValues { (_, nodes) ->
         nodes.map { node ->

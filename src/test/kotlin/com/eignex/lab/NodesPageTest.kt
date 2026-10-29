@@ -85,14 +85,14 @@ class NodesPageTest {
         assertEquals(arm.id, lease.pool)
         assertEquals(2, lease.nodes)
         assertTrue(lease.expiresAt in now() + 890000..now() + 900000)
-        for (body in listOf(
-            """{"pool":"avx512","nodes":5}""",
-            """{"pool":"unknown","nodes":1}""",
-            """{"pool":"arm","nodes":0}""",
-            """{"pool":"arm","nodes":1,"ttlSec":3601}""",
-        )) assertEquals(HttpStatusCode.BadRequest, client.post("/capacity/leases") {
+        for ((body, status) in listOf(
+            """{"pool":"avx512","nodes":5}""" to HttpStatusCode.BadRequest,
+            """{"pool":"unknown","nodes":1}""" to HttpStatusCode.NotFound,
+            """{"pool":"arm","nodes":0}""" to HttpStatusCode.BadRequest,
+            """{"pool":"arm","nodes":1,"ttlSec":3601}""" to HttpStatusCode.BadRequest,
+        )) assertEquals(status, client.post("/capacity/leases") {
             contentType(ContentType.Application.Json); setBody(body)
-        }.status)
+        }.status, body)
         assertEquals(listOf(lease), store.execution.capacityLeases())
         assertEquals(HttpStatusCode.Forbidden, client.delete("/capacity/leases/${lease.id}") { header("Sec-Fetch-Site", "cross-site") }.status)
         assertEquals(listOf(lease), store.execution.capacityLeases())

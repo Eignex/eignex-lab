@@ -149,22 +149,22 @@ class EstimateHistory(
 ) {
     private class Run(val key: String?, val series: String, val history: CaseHistory?)
 
-    private val runs = HashMap<Long, Run>()
+    private val runs = java.util.concurrent.ConcurrentHashMap<Long, Run>()
     /** The runs with a history by key, newest first. */
-    private var byKey: Map<String, List<Run>> = emptyMap()
-    private var refreshedAt: Long? = null
+    @Volatile private var byKey: Map<String, List<Run>> = emptyMap()
+    @Volatile private var refreshedAt: Long? = null
+    private val refreshing = java.util.concurrent.locks.ReentrantLock()
 
     /** Per schedule, its newest done run whatever its experiment, with when it was read. */
-    private val bySeries = HashMap<String, Pair<Long, CaseHistory?>>()
+    private val bySeries = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, CaseHistory?>>()
 
     /**
      * The run [job]'s estimate learns from: the newest done run of the same experiment, a run of the same schedule
      * (or the same name) before any other. A scheduled run (`<schedule>@<sha>`) whose experiment changed since its
      * schedule last ran falls back to that last run, marked as another experiment: an edit to a schedule seldom
      * changes its size much, and a guess from its selections is far worse. Null when there is none, or the store
-     * cannot be read.
+     * cannot be read. Lookups do not wait on each other: one refreshes the history while the rest read the last one.
      */
-    @Synchronized
     fun lookup(job: Job): CaseHistory? {
         val spec = job.experiment.takeUnless { it.isScript } ?: return null
         runCatching { refresh() }.onFailure { println("estimates: history not read: ${it.message}") }
@@ -188,14 +188,20 @@ class EstimateHistory(
     private fun refresh() {
         val at = clock()
         if (refreshedAt?.let { at - it < ttlMs } == true) return
-        refreshedAt = at
-        val ids = store.doneExperimentIds(limit)
-        val fresh = ids.filter { it !in runs }
-        for (job in store.jobsByIds(fresh)) {
-            runs[job.id] = Run(job.experiment.let(::key), job.origin.series, Estimates.history(job, cores))
+        if (!refreshing.tryLock()) return
+        try {
+            if (refreshedAt?.let { at - it < ttlMs } == true) return
+            val ids = store.doneExperimentIds(limit)
+            val fresh = ids.filter { !runs.containsKey(it) }
+            for (job in store.jobsByIds(fresh)) {
+                runs[job.id] = Run(job.experiment.let(::key), job.origin.series, Estimates.history(job, cores))
+            }
+            runs.keys.retainAll(ids.toSet())
+            byKey = ids.mapNotNull { id -> runs[id]?.takeIf { it.key != null && it.history != null } }.groupBy { it.key!! }
+            refreshedAt = at
+        } finally {
+            refreshing.unlock()
         }
-        runs.keys.retainAll(ids.toSet())
-        byKey = ids.mapNotNull { id -> runs[id]?.takeIf { it.key != null && it.history != null } }.groupBy { it.key!! }
     }
 
     /** An experiment's fingerprint, which leaves out where it was placed to run, which taking a job changes. */

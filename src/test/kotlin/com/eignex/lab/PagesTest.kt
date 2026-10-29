@@ -222,7 +222,7 @@ class PagesTest {
         testApplication {
             application { api(config, store, host) }
 
-            val page = client.get("/compare?jobs=$plain,$instrumented").bodyAsText()
+            val page = client.get("/compare?jobs=$plain,$instrumented") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
 
             assertContains(page, "This mixes instrumented runs")
         }
@@ -270,7 +270,7 @@ class PagesTest {
         testApplication {
             application { api(config, store, host) }
 
-            val page = client.get("/compare?jobs=${ids.joinToString(",")}").bodyAsText()
+            val page = client.get("/compare?jobs=${ids.joinToString(",")}") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
 
             assertContains(page, "<th>${ids[0]} base</th><th>${ids[1]} base</th>")
         }
