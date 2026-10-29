@@ -24,7 +24,7 @@ object MpsReplay : BenchSuite {
             require(item.getValue("expected").jsonPrimitive.content in LabCheck.STATES)
             require(item.getValue("control").jsonObject.keys.all { it in setOf("finalWitness", "exactObjective") })
             BenchCase("mps-replay-$index", parameters = mapOf("check" to item.toString()),
-                resources = BenchResources(cpus = 1, memoryMiB = 512, timeoutSeconds = 150),
+                resources = BenchResources(cpus = 1, memoryMiB = 512, timeoutSeconds = 150, requiredTags = setOf("platform:linux", "arch:x86_64")),
                 inputs = listOf(BenchInput(model, role = "model", sha256 = hash)))
         }
     }
