@@ -19,6 +19,7 @@ object Experiments {
      * by either, still measures the same thing, and a stored spec that names any host matches one that names another.
      * An arm's `debug` is measured: `debug=false` turns the CLI's runtime statistics off, which changes what a solve
      * runs and records, so it starts another fingerprint. `debug=true` is the default, so saying it changes nothing.
+     * A bench request with `comparison-series` also measures parallelism: its aggregate CPU grant affects CLI/JIT work.
      */
     fun fingerprint(spec: ExperimentSpec): String {
         fun measured(values: Map<String, String>) = (if (values[DEBUG_KEY] == "true") values - DEBUG_KEY else values).toSortedMap()
@@ -29,7 +30,7 @@ object Experiments {
             base = measured(spec.base - "ref"),
             configs = spec.configs.map(::measured),
             grid = spec.grid.toSortedMap(),
-            parallel = null,
+            parallel = spec.parallel.takeIf { spec.bench?.request?.parameters?.containsKey("comparison-series") == true },
             priority = 0,
             confirm = false,
             host = LAB_HOST,
