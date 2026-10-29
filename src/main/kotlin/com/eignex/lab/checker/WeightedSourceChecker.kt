@@ -15,15 +15,19 @@ class WboChecker : WeightedSourceChecker("WBO")
 class WcnfChecker : WeightedSourceChecker("WCNF")
 
 open class WeightedSourceChecker(final override val format: String) : FormatChecker {
-    override val policy = "lab-${format.lowercase()}-independent-exact-point-v1"
-    override val checker = "eignex-lab independent weighted point evaluator"
+    open override val policy = "lab-${format.lowercase()}-independent-exact-point-v1"
+    open override val checker = "eignex-lab independent weighted point evaluator"
+
+    protected open val version = WeightedSourceEvaluation.VERSION
 
     override fun check(case: CheckCase, work: File): Verdict {
-        fun verdict(state: String, reason: String) = Verdict(state, reason, WeightedSourceEvaluation.VERSION, jarSha)
+        fun verdict(state: String, reason: String) = Verdict(state, reason, version, jarSha)
         val expected = (case.record["sourceHashes"] as? JsonObject)?.get("model") as? JsonPrimitive
         if (expected == null || !expected.content.matches(Regex("[a-f0-9]{64}")))
             return verdict(LabCheck.NOT_RUN, "no original model SHA-256 was retained")
-        if (case.sources.data != null) return verdict(LabCheck.UNSUPPORTED, "weighted sources cannot have a separate data file")
+        if (format == "DIMACS" && (case.optimize || case.claimedObjective != null))
+            return verdict(LabCheck.UNSUPPORTED, "DIMACS adapter checks SAT points only; no objective or optimality coverage")
+        if (case.sources.data != null) return verdict(LabCheck.UNSUPPORTED, "$format sources cannot have a separate data file")
         val compressed = case.sources.model.name.endsWith(".zst")
         val model = File(work, "original.source${if (compressed) ".zst" else ""}")
         try {
@@ -36,7 +40,7 @@ open class WeightedSourceChecker(final override val format: String) : FormatChec
             case.claimedObjective?.let { put("objective", it) }
         }.toString()
         if (request.toByteArray().size > WeightedSourceEvaluation.MAX_BYTES)
-            return verdict(LabCheck.UNSUPPORTED, "weighted witness request exceeds 32 MiB")
+            return verdict(LabCheck.UNSUPPORTED, "point witness request exceeds 32 MiB")
         val file = File(work, "weighted-request.json").apply { writeText(request) }
         val java = File(System.getProperty("java.home"), "bin/java")
         val classpath = System.getProperty("java.class.path").split(File.pathSeparator).map { File(it).absoluteFile }
@@ -51,10 +55,10 @@ open class WeightedSourceChecker(final override val format: String) : FormatChec
         fun done(state: String, reason: String) = verdict(state, reason).copy(resourceReceipts = receipts, inputs = inputs,
             diagnostic = run.stdout.take(DIAGNOSTIC_CAP))
         if (run.exit != 0 || run.resources?.qualified() != true)
-            return done(LabCheck.NOT_RUN, "weighted checker did not complete within its resource envelope (exit ${run.exit}, timeout ${run.timedOut}): ${run.tail()}")
+            return done(LabCheck.NOT_RUN, "point checker did not complete within its resource envelope (exit ${run.exit}, timeout ${run.timedOut}): ${run.tail()}")
         val result = runCatching { Json.decodeFromString(WeightedEvaluation.serializer(), run.stdout.trim()) }.getOrNull()
-            ?: return done(LabCheck.NOT_RUN, "weighted checker returned no complete verdict")
-        if (result.state !in LabCheck.STATES) return done(LabCheck.NOT_RUN, "weighted checker returned an unknown state")
+            ?: return done(LabCheck.NOT_RUN, "point checker returned no complete verdict")
+        if (result.state !in LabCheck.STATES) return done(LabCheck.NOT_RUN, "point checker returned an unknown state")
         return done(result.state, result.reason)
     }
 
@@ -63,7 +67,7 @@ open class WeightedSourceChecker(final override val format: String) : FormatChec
         internal val jarSha: String? by lazy {
             File(WeightedSourceCheckMain::class.java.protectionDomain.codeSource.location.toURI()).takeIf { it.isFile }?.let(::sha256)
         }
-        internal class InputLimit : RuntimeException("weighted source exceeds 32 MiB")
+        internal class InputLimit : RuntimeException("point source exceeds 32 MiB")
         internal fun bounded(input: InputStream): ByteArray = input.readNBytes(WeightedSourceEvaluation.MAX_BYTES + 1).also {
             if (it.size > WeightedSourceEvaluation.MAX_BYTES) throw InputLimit()
         }
@@ -81,6 +85,7 @@ object WeightedSourceCheckMain {
                 (if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(input).setLongMax(26) else input).use { WeightedSourceChecker.bounded(it) }
             }
             if (sha256(bytes) != field("sourceSha256")) WeightedEvaluation(LabCheck.NOT_RUN, "original source snapshot differs from recorded SHA-256")
+            else if (field("format") == "DIMACS") DimacsSourceEvaluation.check(bytes.decodeToString(throwOnInvalidSequence = true), requireNotNull(field("witness")))
             else WeightedSourceEvaluation.check(requireNotNull(field("format")), bytes.decodeToString(throwOnInvalidSequence = true),
                 requireNotNull(field("witness")), field("objective"))
         } catch (e: WeightedSourceChecker.Companion.InputLimit) {
