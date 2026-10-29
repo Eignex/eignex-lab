@@ -66,7 +66,7 @@ class Runner(
 
     /** The maintenance runner accepts analysis only; builds, solves and profiles cannot enter this process. */
     internal fun runJob(job: Job): Boolean {
-        require(job.experiment?.isAnalysis == true) { "experiment execution requires Nomad" }
+        require(job.experiment.isAnalysis == true) { "experiment execution requires Nomad" }
         runCatching { analyze(job) }.onFailure { failure ->
             if (stopping) return false
             if (store.cancelRequested(job.id)) cancel(job.id)
@@ -78,7 +78,7 @@ class Runner(
     internal fun recover(): Boolean {
         if (recovered) return true
         Volumes.jobFiles(config)?.let { recoveryWaits = it; return false }
-        for (job in store.active(withCommands = false).filter { it.experiment?.isAnalysis == true }) {
+        for (job in store.active(withCommands = false).filter { it.experiment.isAnalysis == true }) {
             if (job.cancelRequested) cancel(job.id)
             else if (job.status == Status.RUNNING) store.requeue(job.id)
         }

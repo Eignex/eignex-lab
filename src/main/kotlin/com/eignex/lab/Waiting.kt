@@ -65,13 +65,13 @@ object Waiting {
         job.cancelRequested -> "cancel requested: it ends without running"
         job.paused -> "paused: no worker takes it until resumed (lab resume ${job.id})"
         view.diskHeld != null -> "queue held: ${view.diskHeld}"
-        job.experiment?.isAnalysis == true -> "waiting for native execution to finish before local analysis"
+        job.experiment.isAnalysis == true -> "waiting for native execution to finish before local analysis"
         else -> "Nomad: waiting for session admission or compatible capacity; lab execution ${job.id} shows allocations"
     }
 
     fun view(config: Config, store: Store, at: Long = now()): QueueView {
         val active = store.active(withCommands = false)
-        val analysis = active.filter { it.experiment?.isAnalysis == true && !it.paused && !it.cancelRequested }
+        val analysis = active.filter { it.experiment.isAnalysis == true && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })
         val running = analysis.firstOrNull { it.status == Status.RUNNING }
         return QueueView(analysis.filter { it.status == Status.QUEUED }.map { it.id }, analysis.firstOrNull()?.id,
@@ -84,7 +84,7 @@ object Waiting {
         val positions = store.queue().withIndex().associate { (index, id) -> id to index + 1 }
         val active = store.active(withCommands = false)
         val progress = store.hostProgress(active.map { it.id })
-        val assignments = jobNodes(config, store, active.filter { it.backend == "nomad" }.map { it.id })
+        val assignments = jobNodes(config, store, active.filter { it.backend == Backend.NOMAD }.map { it.id })
         val jobs = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
             .map { placement(config, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty()) }
         val snapshot = readCapacityReport(config)
@@ -94,10 +94,10 @@ object Waiting {
 
     internal fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
                   hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null): JobPlacement {
-        val host = job.experiment?.host ?: Experiments.LAB_HOST
+        val host = job.experiment.host
         val estimate = if (job.status.isActive) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
         val activity = nodes?.let { jobActivity(job, it) }
-        return JobPlacement(job.id, job.name, job.status, Placement.where(host), Experiments.hostWord(host), job.priority,
+        return JobPlacement(job.id, job.name, job.status, Placement.where(host), host.word, job.priority,
             job.paused, job.cancelRequested, position.takeIf { job.status == Status.QUEUED },
             view.localQueue.indexOf(job.id).takeIf { it >= 0 }?.plus(1),
             estimate?.let { PlacementEstimate(it.cases, it.coreHours, it.localHours, it.note) },
@@ -106,7 +106,7 @@ object Waiting {
                 activity == "WAITING" -> null
                 activity == "CHECKING" -> "ingesting results and checking outputs"
                 activity == "PREPARING" -> "preparing inputs"
-                job.experiment?.isAnalysis == true -> "analysing retained results"
+                job.experiment.isAnalysis == true -> "analysing retained results"
                 !nodes.isNullOrEmpty() -> "running on ${nodes.joinToString { it.name }}"
                 else -> "Nomad sessions; accepted results and source checks determine completion"
             } else null,

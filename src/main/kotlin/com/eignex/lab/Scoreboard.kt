@@ -102,7 +102,7 @@ object Scoreboard {
      * pipelines: a run on another (the polynomial theory solver for nonlinear reals, an early refutation) or one that
      * failed to load reports none, and gets a [Profile.derived] class from its pipeline or [features]' logic instead.
      */
-    fun profiles(cases: List<CaseResult>, features: Map<Pair<String, String>, ProblemFeatures> = emptyMap()): Map<Problem, Profile> =
+    fun profiles(cases: List<CaseResult>, features: Map<ProblemKey, ProblemFeatures> = emptyMap()): Map<Problem, Profile> =
         cases.groupBy { it.problem }.mapNotNull { (problem, runs) ->
             val stats = runs.map { ((it.record as? JsonObject)?.get("stats") as? JsonObject).orEmpty() }
             fun stat(name: String) = stats.firstNotNullOfOrNull { (it[name] as? JsonPrimitive)?.content }
@@ -152,8 +152,8 @@ object Scoreboard {
     fun board(
         cases: List<CaseResult>,
         arm: Arm,
-        references: Map<Pair<String, String>, List<Reference>>,
-        features: Map<Pair<String, String>, ProblemFeatures>,
+        references: Map<ProblemKey, List<Reference>>,
+        features: Map<ProblemKey, ProblemFeatures>,
         groupBy: Dimension,
         filters: Map<Dimension, String> = emptyMap(),
         scoring: Scoring = Scoring.COMPLETE,
@@ -187,8 +187,8 @@ object Scoreboard {
     fun problems(
         cases: List<CaseResult>,
         arm: Arm,
-        references: Map<Pair<String, String>, List<Reference>>,
-        features: Map<Pair<String, String>, ProblemFeatures>,
+        references: Map<ProblemKey, List<Reference>>,
+        features: Map<ProblemKey, ProblemFeatures>,
         groupBy: Dimension,
         group: String?,
         solver: String,
@@ -210,8 +210,8 @@ object Scoreboard {
     private fun scoredProblems(
         cases: List<CaseResult>,
         arm: Arm,
-        references: Map<Pair<String, String>, List<Reference>>,
-        features: Map<Pair<String, String>, ProblemFeatures>,
+        references: Map<ProblemKey, List<Reference>>,
+        features: Map<ProblemKey, ProblemFeatures>,
         filters: Map<Dimension, String>,
         scoring: Scoring,
     ): List<Pair<Problem, Map<String, ScoreProblem>>> {

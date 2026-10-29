@@ -10,8 +10,8 @@ internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<Planne
     return arms.associate { arm ->
         val job = requireNotNull(bench.replayJobs[arm.arm.label])
         val original = requireNotNull(store.job(job)) { "replay job is unavailable" }
-        require(original.status == Status.DONE && original.experiment?.repository == spec.repository) { "replay requires a completed job in the same repository" }
-        val originalBench = requireNotNull(original.experiment?.bench)
+        require(original.status == Status.DONE && original.experiment.repository == spec.repository) { "replay requires a completed job in the same repository" }
+        val originalBench = requireNotNull(original.experiment.bench)
         val originalArm = requireNotNull(store.arms(job).firstOrNull())
         require(originalArm.sha == arm.sha && originalBench.manifest == bench.manifest &&
             BenchRuns.request(originalBench, originalArm.arm) == BenchRuns.request(bench, arm.arm)) {

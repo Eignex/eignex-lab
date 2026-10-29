@@ -6,28 +6,10 @@ import kotlinx.serialization.json.Json
 
 /** What the lab does with an [ExperimentSpec]: validate it, expand it into arms, problems and cases, and split it. */
 object Experiments {
-    /** The stored host values: the local machine, a cloud node, and whichever is free first. */
-    const val LAB_HOST = "lab"
-    const val AWS_HOST = "aws"
-    const val AUTO_HOST = "auto"
-    /** What the pages and messages call [LAB_HOST] and [AWS_HOST], also accepted wherever a host is given. */
-    const val LOCAL_HOST = "local"
-    const val CLOUD_HOST = "cloud"
-
-    /** [host] as the lab stores it: `local` is `lab` and `cloud` is `aws`; any other value as it is. Old jobs and
-     *  old clients keep the stored names, so nothing needs migrating. */
-    fun storedHost(host: String): String = when (host) {
-        LOCAL_HOST -> LAB_HOST
-        CLOUD_HOST -> AWS_HOST
-        else -> host
-    }
-
-    /** [host] in the words the pages and messages use: `local`, `cloud` or `auto`. */
-    fun hostWord(host: String): String = when (storedHost(host)) {
-        LAB_HOST -> LOCAL_HOST
-        AWS_HOST -> CLOUD_HOST
-        else -> host
-    }
+    /** The local machine, a cloud node, and whichever is free first ([HostPlacement]). */
+    val LAB_HOST = HostPlacement.LOCAL
+    val AWS_HOST = HostPlacement.CLOUD
+    val AUTO_HOST = HostPlacement.AUTO
 
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
@@ -89,7 +71,7 @@ object Experiments {
         val key = splitKey(spec)
         return active.firstOrNull { job ->
             job.status.isActive && !job.cancelRequested &&
-                job.experiment?.let { !exemptFromSplitting(it) && splitKey(it) == key } == true
+                job.experiment.let { !exemptFromSplitting(it) && splitKey(it) == key } == true
         }
     }
 
@@ -276,7 +258,7 @@ object Experiments {
     fun referenceCommand(launcher: String, problem: Problem, arm: Arm, seed: Long?, index: Int): String {
         val model = requireNotNull(problem.model) { "no resolved files for ${problem.suite}/${problem.problem}" }
         val args = buildList {
-            add("problem=${problem.referenceKey.second}")
+            add("problem=${problem.referenceKey.problem}")
             add("format=${problem.format}")
             add("model=$model")
             problem.data?.let { add("data=$it") }

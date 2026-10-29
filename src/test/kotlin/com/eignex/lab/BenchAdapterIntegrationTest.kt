@@ -72,7 +72,7 @@ class BenchAdapterIntegrationTest {
             if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"
             else "not-required"
         })
-        var spec = ExperimentSpec("$name-adapter", repository = scenario.repository, bench = BenchSpec(scenario.manifest, BenchRequest(scenario.parameters), sourceValidation = scenario.sourceValidation), configs = scenario.configs, base = scenario.base, repeats = scenario.repeats, confirm = true, host = "auto")
+        var spec = ExperimentSpec("$name-adapter", repository = scenario.repository, bench = BenchSpec(scenario.manifest, BenchRequest(scenario.parameters), sourceValidation = scenario.sourceValidation), configs = scenario.configs, base = scenario.base, repeats = scenario.repeats, confirm = true, host = HostPlacement.AUTO)
         Experiments.validate(spec, 4)
         var job = store.create(spec.name, revision, emptyList(), experiment = spec)
         fun upload(file: Path): String = hashFile(file).also { sha -> Files.newInputStream(file).use { artifacts.put(job, sha, Files.size(file), 0, it) } }

@@ -7,7 +7,7 @@ class NativePriorityTest {
     private val store = Store(Files.createTempDirectory("native-priority").resolve("lab.db"))
     private val priority = NativePriority(store)
     private val tags = setOf("local", "arch:arm64", "platform:mac")
-    private fun job(name: String, value: Int = 0, host: String = Experiments.AUTO_HOST, selector: NodeSelector? = null): Long =
+    private fun job(name: String, value: Int = 0, host: HostPlacement = Experiments.AUTO_HOST, selector: NodeSelector? = null): Long =
         store.create(name, "main", emptyList(), priority = value,
             experiment = ExperimentSpec(name, problems = listOf(mapOf("suite" to "s")), host = host, nodeTags = selector))
 

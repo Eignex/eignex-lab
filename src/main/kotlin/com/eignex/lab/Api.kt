@@ -186,7 +186,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val page = indexPage(config, host, active, store.schedules(), history, PAGE_SIZE, before, name,
                 store.queue(), estimates::lookup, emptyMap(),
                 store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
-                jobNodes(config, store, active.filter { it.backend == "nomad" }.map { it.id }))
+                jobNodes(config, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }))
             call.respondText(page, ContentType.Text.Html)
         }
         get("/disk") {
@@ -246,24 +246,29 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             Experiments.validate(spec, nodeCoreLimit(spec, config).let { if (spec.host == Experiments.AWS_HOST) it else config.maxParallel }, nodeCoreLimit(spec, config))
             // An analysis needs its job's captures: refused now, saying why, when they are gone or the job has not ended.
             spec.analyze?.let { analyze ->
-                val job = analyze.job
+                val target = analyze.target
                 val refusal = withContext(Dispatchers.IO) {
-                    when {
-                        analyze.kind == AnalyzeSpec.CHECK -> com.eignex.lab.CaseChecks.refusal(store.job(checkNotNull(job)))
-                        job != null -> CompilationReports.refusal(store.job(job), config.jobDir(job))
-                        else -> CaptureArchives.refusal(analyze, config)
+                    when (target) {
+                        is AnalyzeTarget.OfJob -> if (target.kind == AnalyzeTarget.Kind.CHECK) CaseChecks.refusal(store.job(target.job))
+                            else CompilationReports.refusal(store.job(target.job), config.jobDir(target.job))
+                        is AnalyzeTarget.OfArchive -> CaptureArchives.refusal(analyze, config)
                     }
                 }
-                val what = if (job != null) "job $job" else "archive ${analyze.archive}"
+                val what = when (target) {
+                    is AnalyzeTarget.OfJob -> "job ${target.job}"
+                    is AnalyzeTarget.OfArchive -> "archive ${target.archive}"
+                }
                 if (refusal != null) {
                     call.respond(HttpStatusCode.Conflict, "cannot analyse $what: $refusal")
                     return@post
                 }
                 val id = store.create(spec.name, DEFAULT_REF, emptyList(), 1, spec.priority, spec)
-                val note = if (analyze.kind == AnalyzeSpec.CHECK) "checks job $job's solution claims again on the local machine; no solver runs"
-                    else if (job != null) "analyses job $job's retained captures on the local machine; no solver runs"
-                    else "checks the lab-local archive against its sha256, verifies it and analyses its captures on the local machine; no solver runs"
-                call.respond(HttpStatusCode.Created, Created(id, listOf(note), placementNote(spec.host), Experiments.hostWord(spec.host)))
+                val note = when (target) {
+                    is AnalyzeTarget.OfJob -> if (target.kind == AnalyzeTarget.Kind.CHECK) "checks job ${target.job}'s solution claims again on the local machine; no solver runs"
+                        else "analyses job ${target.job}'s retained captures on the local machine; no solver runs"
+                    is AnalyzeTarget.OfArchive -> "checks the lab-local archive against its sha256, verifies it and analyses its captures on the local machine; no solver runs"
+                }
+                call.respond(HttpStatusCode.Created, Created(id, listOf(note), placementNote(spec.host), spec.host.word))
                 return@post
             }
             // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
@@ -278,7 +283,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
                     Experiments.profileCaps(spec).map { "capped: $it" }
             } else emptyList()).plus(spec.capped.map { "capped: $it" }).ifEmpty { null }
-            call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host), Experiments.hostWord(spec.host)))
+            call.respond(HttpStatusCode.Created, Created(id, notes, placementNote(spec.host), spec.host.word))
         }
         get("/experiments/{id}/arms") { call.respond(store.arms(call.parameters["id"]!!.toLong())) }
         get("/trend") {
@@ -304,13 +309,13 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 collection = param("collection"),
                 verdict = param("verdict")?.let { v -> ReferenceVerdict.entries.firstOrNull { it.name.equals(v, ignoreCase = true) } },
             )
-            val (found, total) = if (filter.isEmpty) emptyList<Pair<Pair<String, String>, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
+            val (found, total) = if (filter.isEmpty) emptyList<Pair<ProblemKey, Reference>>() to 0 else store.searchReferences(filter, SEARCH_LIMIT)
             if (call.wantsHtml()) {
                 val board = referenceCache.scoreboard(call.parameters)
                 val page = referencesPage(referenceCache.coverage(), filter, found, total, referenceCache.conflicts(), board)
                 call.respondText(page, ContentType.Text.Html)
             } else {
-                call.respond(found.map { (key, r) -> ReferenceHit(key.first, key.second, r) })
+                call.respond(found.map { (key, r) -> ReferenceHit(key.collection, key.problem, r) })
             }
         }
         // Retire a solver's rows on a collection, of one budget if given ([Store.retireReferenceRows]): kept as history,
@@ -343,7 +348,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         get("/compare") {
             val ids = requireNotNull(call.parameters["jobs"]) { "jobs=<id>,<id>… is required" }.split(',').map { it.trim().toLong() }
             require(ids.size in 2..MAX_COMPARED) { "compare 2 to $MAX_COMPARED experiments" }
-            val jobs = ids.map { id -> requireNotNull(store.job(id)?.takeIf { it.experiment != null }) { "job $id is not an experiment" } }
+            val jobs = ids.map { id -> requireNotNull(store.job(id)) { "no job $id" } }
             // Arms are named by their job, so the same arm of two runs stays two columns.
             val arms = jobs.flatMap { job -> store.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
             val cases = jobs.flatMap { job -> store.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
@@ -388,19 +393,18 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             when {
                 job == null -> call.respond(HttpStatusCode.NotFound, "no such job")
                 call.wantsHtml() -> {
-                    val experiment = job.experiment != null
-                    val cases = if (experiment) store.cases(job.id) else emptyList()
+                    val cases = store.cases(job.id)
                     val page = jobPage(
                         config, job, "failed" in call.parameters,
-                        arms = if (experiment) store.arms(job.id) else emptyList(),
+                        arms = store.arms(job.id),
                         cases = cases,
-                        preparation = if (job.backend == "nomad") store.execution.reports(job.id).filter { it.session.executionClass == "prepare" }.takeLast(1) else emptyList(),
+                        preparation = if (job.backend == Backend.NOMAD) store.execution.reports(job.id).filter { it.session.executionClass == ExecutionClass.PREPARE }.takeLast(1) else emptyList(),
                         references = store.references(cases.map { it.problem.referenceKey }, sources = References.sources(cases)),
-                        showCommands = !experiment || "commands" in call.parameters || "failed" in call.parameters,
-                        previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
+                        showCommands = "commands" in call.parameters || "failed" in call.parameters,
+                        previous = if ('@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
                         hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
-                        nodes = if (job.backend == "nomad" && job.status.isActive) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
+                        nodes = if (job.backend == Backend.NOMAD && job.status.isActive) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
@@ -463,7 +467,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             // It may go anywhere again, wherever it was taken last time: a planned one's commands are rendered for the
             // host that runs each case ([Runner.render]).
             store.job(id)?.takeIf { retried }?.let { job ->
-                if (job.commands.isEmpty()) job.experiment?.let { store.place(id, Placement.host(it, job.name, config, store.schedules())) }
+                if (!job.planned) job.experiment.let { store.place(id, Placement.host(it, job.name, config, store.schedules())) }
             }
             call.respond(if (retried) HttpStatusCode.OK else HttpStatusCode.Conflict, if (retried) "queued again" else "only a failed or cancelled Nomad job can be retried; resubmit historical experiments")
         }
@@ -642,10 +646,10 @@ private fun requireHost(spec: ExperimentSpec, config: Config) {
 }
 
 /** What placing a job on [host] means, for the submitter. */
-private fun placementNote(host: String): String = when (host) {
-    Experiments.AWS_HOST -> "placed on the cloud: a cloud node runs it"
-    Experiments.AUTO_HOST -> "placed by the lab: the local machine when it is free, else a cloud node"
-    else -> "placed locally"
+private fun placementNote(host: HostPlacement): String = when (host) {
+    HostPlacement.CLOUD -> "placed on the cloud: a cloud node runs it"
+    HostPlacement.AUTO -> "placed by the lab: the local machine when it is free, else a cloud node"
+    HostPlacement.LOCAL -> "placed locally"
 }
 
 /** An experiment says what it is for, so the queue and the history read as more than names. */
@@ -708,7 +712,7 @@ private fun validateScheduled(experiment: ExperimentSpec, config: Config) {
 /** The latest finished experiment queued by the same schedule before [job], whose name is `<schedule>@<sha>`. */
 private fun previousRun(store: Store, job: Job): Long? =
     store.jobs(limit = PAGE_SIZE, before = job.id, name = job.name.substringBefore('@'), withCommands = false)
-        .firstOrNull { it.experiment != null && it.status == Status.DONE && '@' in it.name }?.id
+        .firstOrNull { it.status == Status.DONE && '@' in it.name }?.id
 private const val LS_REMOTE_SEC = 15L
 private val TEXT_FILES = setOf("", "out", "err", "log", "txt", "sha", "pid")
 
@@ -912,8 +916,8 @@ internal class ScoreboardView(
 /** What a scoreboard of one arm of a run reads: its cases, and their problems' reference rows and features. */
 internal class ScoreInputs(
     val cases: List<CaseResult>,
-    val references: Map<Pair<String, String>, List<Reference>>,
-    val features: Map<Pair<String, String>, ProblemFeatures>,
+    val references: Map<ProblemKey, List<Reference>>,
+    val features: Map<ProblemKey, ProblemFeatures>,
 )
 
 internal fun scoreInputs(store: Store, job: Long, label: String?): ScoreInputs {

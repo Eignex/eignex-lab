@@ -67,7 +67,7 @@ class TrendTest {
     @Test
     fun `a run that contradicts the reference counts its disagreements`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        store.putReferences(listOf(("" to "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        store.putReferences(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         run(store, "sweep@aaa", listOf(true, false))
 
         val run = Trend.runs(store, "sweep").single()
@@ -95,8 +95,8 @@ class TrendTest {
             solved = Estimate(1.0, 1.0, 1.0), proven = 0.0, unsupported = 0, errors = 0,
             par2 = Estimate(1.0, 1.0, 1.0), suites = emptyMap())
         cache.sync(5) { emptyMap() }
-        cache.put(1, "v", stamp = 5, run, setOf("" to "p0"))
-        cache.sync(6) { mapOf(("" to "p0") to 6L) }
+        cache.put(1, "v", stamp = 5, run, setOf(ProblemKey("", "p0")))
+        cache.sync(6) { mapOf(ProblemKey("", "p0") to 6L) }
 
         now = 500
         val young = listOf(cache.lookup(1, "v", stamp = 5), cache.lookup(1, "v", stamp = 6)).map { it?.fresh }
@@ -112,7 +112,7 @@ class TrendTest {
     @Test
     fun `a reference change on one problem marks stale only the points that ran it`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        store.putReferences(listOf(("" to "p9") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        store.putReferences(listOf(ProblemKey("", "p9") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         val ranA = run(store, "sweep@aaa", listOf(true, false))
         val other = run(store, "sweep@bbb", listOf(true, false), first = 5)
         var now = 0L
@@ -120,7 +120,7 @@ class TrendTest {
         Trend.runs(store, "sweep", cache)
 
         Thread.sleep(5)
-        store.putReferences(listOf(("" to "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
+        store.putReferences(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         now = 2000
         val stamp = cache.sync(store)
         val fresh = Trend.scheduled(store, "sweep").associate { it.id to cache.lookup(it.id, TrendCache.version(it), stamp)?.fresh }

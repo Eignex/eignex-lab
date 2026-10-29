@@ -79,7 +79,7 @@ class CapacityCollector(
                     // Unknown allocations consume the whole node until a known budget is available.
                     val budget = session?.budget ?: ResourceBudget(pool.cpuMillis, pool.availableMemoryMiB)
                     CapacityReservation(allocation.getValue("ID").jsonPrimitive.content, session?.jobId ?: -1, budget,
-                        if (session?.executionClass in setOf("build", "prepare")) CapacityWork.BUILD else CapacityWork.SOLVE)
+                        if (session?.executionClass in setOf(ExecutionClass.BUILD, ExecutionClass.PREPARE)) CapacityWork.BUILD else CapacityWork.SOLVE)
                 }
             if (ready && reservations.isEmpty()) idle.putIfAbsent(id, at) else idle.remove(id)
             CapacityNode(id, pool.id, when {
@@ -89,19 +89,18 @@ class CapacityCollector(
                 else -> CapacityNodeState.BOOTING
             }, reservations, idle[id], instance.countedInTarget)
         }
-        val pending = sessions.filter { s -> s.desired == "run" && (s.executionClass != "solve" || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
+        val pending = sessions.filter { s -> s.desired == Desired.RUN && (s.executionClass != ExecutionClass.SOLVE || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
             nomad.allocations(s.nomadJobId).none { it.active } }
         val demands = pending.mapNotNull { s ->
             val manifest = store.execution.manifest(s.id)
             val spec = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
             val nodeClass = spec.getValue("Constraints").jsonArray.map { it.jsonObject }.single { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.class}" }.getValue("RTarget").jsonPrimitive.content
             val pool = settings.pools.singleOrNull { it.nodeClass == nodeClass } ?: return@mapNotNull null
-            val job = store.job(s.jobId)!!; val experiment = job.experiment!!
-            val onDemand = NodeTags.onDemand(false, experiment.nodeTags)
-            require(pool.market == if (onDemand) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT) { "session purchasing policy differs from pool" }
+            val job = store.job(s.jobId)!!; val experiment = job.experiment
+            require(pool.market == NodeTags.market(experiment.nodeTags)) { "session purchasing policy differs from pool" }
             CapacityDemand(s.id, job.id, manifest.budget, job.priority, spec["Meta"]?.jsonObject?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull, experiment.nodeTags,
                 pool.market, experiment.host != Experiments.AWS_HOST && NodeTags.matches(experiment.nodeTags, localTags),
-                when { s.executionClass in setOf("build", "prepare") -> CapacityWork.BUILD; experiment.isProfile -> CapacityWork.PROFILE; experiment.measuresCli -> CapacityWork.MEASUREMENT; else -> CapacityWork.SOLVE }, pool.id)
+                when { s.executionClass in setOf(ExecutionClass.BUILD, ExecutionClass.PREPARE) -> CapacityWork.BUILD; experiment.isProfile -> CapacityWork.PROFILE; experiment.measuresCli -> CapacityWork.MEASUREMENT; else -> CapacityWork.SOLVE }, pool.id)
         }
         val inventoryAge = inventories.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }

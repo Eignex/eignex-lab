@@ -225,7 +225,7 @@ class CompilationReportsTest {
     fun `an analysis is refused for a trimmed, missing, running or unprofiled job`() {
         val jobDir = Files.createTempDirectory("job")
         val spec = ExperimentSpec("x", measurement = Measurement.COMPILATION)
-        fun job(status: Status, experiment: ExperimentSpec? = spec) = Job(5, "x", "main", status = status, cancelRequested = false,
+        fun job(status: Status, experiment: ExperimentSpec = spec) = Job(5, "x", "main", status = status, cancelRequested = false,
             setupDone = true, createdAt = 0, experiment = experiment)
 
         assertTrue("no retained captures" in CompilationReports.refusal(job(Status.DONE), jobDir)!!)

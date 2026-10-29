@@ -7,12 +7,19 @@ import kotlin.test.assertEquals
 class WorkerFailureTest {
     @Test fun `worker process exits distinguish software from transport cancellation and fencing`() {
         for (temporary in listOf(WorkerUnavailable(503), java.io.IOException("offline"), WorkerInfrastructureFailure("dependency unavailable"),
-            InterruptedException(), java.util.concurrent.CancellationException())) {
+            InterruptedException(), java.util.concurrent.CancellationException(), LeaseLost("lease ended"))) {
             assertEquals(WORKER_TEMPORARY_EXIT, workerProcessExit(temporary))
         }
         assertEquals(0, workerProcessExit(ExecutionFenced("completed or revoked")))
         for (software in listOf(IllegalStateException("broken invariant"), IllegalArgumentException("bad recipe"), NullPointerException(),
             WorkerBuildFailure("compile failed"))) assertEquals(WORKER_SOFTWARE_EXIT, workerProcessExit(software))
+    }
+
+    @Test fun `waiting past a lost build lease is a temporary loss, never a crash`() {
+        val root = kotlin.io.path.createTempDirectory("build-cache")
+        val cache = WorkerBuildCache(root, ProcessSupervisor(root.resolve("unused.sock")))
+        val failure = assertFailsWith<LeaseLost> { cache.compilationSlot(run = { null }, lease = { 0 }) { error("must not build") } }
+        assertEquals(WORKER_TEMPORARY_EXIT, workerProcessExit(failure))
     }
 
     @Test fun `temporary dependency failure remains an infrastructure loss`() {

@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import java.nio.file.Files
@@ -36,7 +37,7 @@ data class Command(
     val terminations: List<String> = emptyList(),
     /** The machine that holds or ran it: [RecordedHost.LOCAL] for the local machine, a cloud node's instance id;
      *  null while no host has taken it, and for a case run before the lab recorded where ([CaseResult.host]). */
-    val host: String? = null,
+    val host: RecordedHost? = null,
 )
 
 /** A command as planned: what runs, how long it may, and how many cores it holds. */
@@ -67,7 +68,7 @@ data class Job(
     /** A paused job is not started, and a running one stops starting commands and goes back to the queue. */
     val paused: Boolean = false,
     /** Set for an experiment, whose commands the runner writes from it when it plans the job. */
-    val experiment: ExperimentSpec? = null,
+    val experiment: ExperimentSpec,
     val commands: List<Command> = emptyList(),
     /** Time spent running in earlier stretches: a job that yields or is paused stops its clock until taken again. */
     val runMs: Long = 0,
@@ -77,8 +78,16 @@ data class Job(
     val counts: CommandCounts? = null,
     /** Whether the local machine works on it now: it took the job, or joined it while cloud nodes ran it. */
     val local: Boolean = false,
-    val backend: String = "nomad",
+    val backend: Backend = Backend.NOMAD,
 ) {
+    init { require(counts == null || commands.isEmpty()) { "a job carries its commands or their counts, not both" } }
+
+    /** Whether this is a list's summary of the job ([Store.jobs], [Store.active]): its [counts], not its [commands]. */
+    val isSummary: Boolean get() = counts != null
+
+    /** Whether the job has been planned: it has commands, loaded or counted. Never mistakes a summary for unplanned. */
+    val planned: Boolean get() = total > 0
+
     /** Time the job has spent running, so far or in all; waiting in the queue, paused or yielded, does not count. */
     fun elapsedMs(now: Long): Long = runMs + (runningSince?.let { now - it } ?: 0)
 
@@ -102,9 +111,9 @@ enum class CancelOutcome { CANCELLED, REQUESTED, FINISHED, MISSING }
  * [host] is [RecordedHost.LOCAL] or a cloud node's instance id.
  */
 @Serializable
-data class HostProgress(val host: String, val done: Int, val running: Int, val claimed: Int = 0) {
+data class HostProgress(val host: RecordedHost, val done: Int, val running: Int, val claimed: Int = 0) {
     /** In a few words: `local 10 done, 2 running`. */
-    fun text(): String = "$host $done done" + (if (running > 0) ", $running running" else "") + (if (claimed > 0) ", $claimed claimed" else "")
+    fun text(): String = "${host.text} $done done" + (if (running > 0) ", $running running" else "") + (if (claimed > 0) ", $claimed claimed" else "")
 }
 
 /** An experiment arm as planned: its configuration and the commit its ref resolved to. */
@@ -130,7 +139,7 @@ data class CaseResult(
      * the lab recorded it reads as its job's host, [RecordedHost.LOCAL] or [RecordedHost.CLOUD] for an unknown node;
      * null while it waits.
      */
-    val host: String? = null,
+    val host: RecordedHost? = null,
     /** Suite-reported runtime debug state, or the historical arm policy; null when a suite makes no declaration. */
     val labDebug: Boolean? = null,
     /**
@@ -185,6 +194,7 @@ data class Schedule(
     val name: String,
     val ref: String,
     val experiment: ExperimentSpec,
+    /** [experiment]'s parallel (0 when it leaves it to the lab) and priority, which the schedule's runs take. */
     val parallel: Int,
     val priority: Int,
     val intervalSec: Long,
@@ -204,4 +214,49 @@ data class Schedule(
 data class Hold(val id: String, val job: Long, val createdAt: Long, val expiresAt: Long)
 
 /** Machine labels retained by historical case records; these are not execution backends. */
-internal object RecordedHost { const val LOCAL = "local"; const val CLOUD = "cloud" }
+@Serializable(with = RecordedHostSerializer::class)
+sealed interface RecordedHost {
+    /** How the lab writes it, in the database and in a case's JSON. */
+    val text: String
+
+    data object Local : RecordedHost { override val text = LOCAL }
+
+    /** A cloud node the lab no longer knows: a case that ran before cases recorded their node. */
+    data object UnknownCloud : RecordedHost { override val text = CLOUD }
+
+    data class Node(val instance: String) : RecordedHost {
+        init { require(instance.isNotBlank() && instance != LOCAL && instance != CLOUD) { "not a node instance: $instance" } }
+        override val text get() = instance
+    }
+
+    companion object {
+        const val LOCAL = "local"
+        const val CLOUD = "cloud"
+
+        fun of(text: String): RecordedHost = when (text) {
+            LOCAL -> Local
+            CLOUD -> UnknownCloud
+            else -> Node(text)
+        }
+    }
+}
+
+object RecordedHostSerializer : kotlinx.serialization.KSerializer<RecordedHost> {
+    override val descriptor = kotlinx.serialization.descriptors.PrimitiveSerialDescriptor("com.eignex.lab.RecordedHost", kotlinx.serialization.descriptors.PrimitiveKind.STRING)
+    override fun serialize(encoder: kotlinx.serialization.encoding.Encoder, value: RecordedHost) = encoder.encodeString(value.text)
+    override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): RecordedHost = RecordedHost.of(decoder.decodeString())
+}
+
+/** Which execution path owns a job: Nomad for every job since the lab moved to it, `legacy` for jobs run before. */
+@Serializable
+enum class Backend(val stored: String) {
+    @SerialName("nomad") NOMAD("nomad"),
+    @SerialName("legacy") LEGACY("legacy");
+
+    companion object {
+        fun of(stored: String): Backend = entries.firstOrNull { it.stored == stored } ?: error("unknown job backend $stored")
+    }
+}
+
+/** Whether Nomad workers run [this] job: a Nomad job that is not one of the lab's own analysis jobs, which the runner runs. */
+val Job.runsOnNomad: Boolean get() = backend == Backend.NOMAD && experiment.isAnalysis != true

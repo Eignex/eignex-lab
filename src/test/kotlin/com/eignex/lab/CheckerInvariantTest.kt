@@ -194,7 +194,7 @@ class CheckerInvariantTest {
         val job = Job(1, "status-sweep@abc", "main", "abc", Status.DONE, cancelRequested = false, setupDone = true, createdAt = 0,
             experiment = ExperimentSpec("status-sweep", listOf(mapOf("suite" to "s"))))
         val arms = listOf(PlannedArm(Arm("base", emptyMap()), "abc"))
-        val references = claims.associate { ("c" to it.name) to Reference("highs", maximize = false, objective = it.objective, feasible = it.feasible, proven = it.proven,
+        val references = claims.associate { ProblemKey("c", it.name) to Reference("highs", maximize = false, objective = it.objective, feasible = it.feasible, proven = it.proven,
             elapsedMs = 4000, budgetMs = 10000) }
         fun counted(state: Pair<Bench, String>): List<Any?> {
             val cases = run("base", state)

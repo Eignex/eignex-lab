@@ -27,7 +27,7 @@ class NomadQueue(
             store.execution.domainCompleted(id)
         }
         val schedules = store.schedules()
-        for (listed in store.active().filter { it.backend == "nomad" && it.experiment?.isAnalysis != true && !it.paused && !it.cancelRequested }
+        for (listed in store.active().filter { it.runsOnNomad && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
             var job = listed
             try {
@@ -72,7 +72,7 @@ class NomadQueue(
                 }
                 val accepted = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null } ?: continue
                 val preparation = checkNotNull(accepted.second.preparation)
-                val recipe = store.execution.manifest(sessions.first { it.executionClass == "prepare" }.id)
+                val recipe = store.execution.manifest(sessions.first { it.executionClass == ExecutionClass.PREPARE }.id)
                 if (!job.setupDone && !preparationPlan(job.id) { plan(job, recipe, preparation) }) continue
                 val current = store.job(job.id) ?: continue
                 if (current.cancelRequested || current.paused || current.status.isTerminal) continue
@@ -89,10 +89,10 @@ class NomadQueue(
                 val requestedCpu = Math.multiplyExact(Math.multiplyExact(current.parallel, preparedBench?.let(BenchRuns::resources)?.cpus ?: recipe.arms.maxOf { it.arm.cores }), 1000)
                 val cpuLimit = maxOf(minOf(this.settings.maxVcpusPerJob * 1000, requestedCpu), minimumCpu)
                 val limit = minOf(this.settings.maxSessionsPerJob, pending, cpuLimit / minimumCpu)
-                val active = sessions.filter { it.executionClass == "solve" && it.desired != "stop" }
+                val active = sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
                 var keptCpu = 0
                 var keptWorkers = 0
-                for (session in active.filter { it.desired == "run" }) {
+                for (session in active.filter { it.desired == Desired.RUN }) {
                     if (keptWorkers >= limit || keptCpu + session.budget.cpuMillis > cpuLimit) store.execution.drain(session.id)
                     else { keptWorkers++; keptCpu += session.budget.cpuMillis }
                 }
@@ -101,16 +101,16 @@ class NomadQueue(
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
                 } ?: original }
                 val ordered = ordered(targets) { checkNotNull(settings.solveBudget(it, current, preparedBench)) }
-                fun cloudSessions() = sessions.filter { session -> session.executionClass == "solve" && session.desired != "stop" &&
+                fun cloudSessions() = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE && session.desired != Desired.STOP &&
                     Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                         ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "hard-quota" }
                 for (index in active.size until limit) {
-                    val remainingCpu = cpuLimit - sessions.filter { it.executionClass == "solve" && it.desired != "stop" }.sumOf { it.budget.cpuMillis }
+                    val remainingCpu = cpuLimit - sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }.sumOf { it.budget.cpuMillis }
                     val available = ordered.filter { checkNotNull(settings.solveBudget(it, current, preparedBench)).cpuMillis <= remainingCpu }.filter { target ->
                         // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
                         if (target.os != "mac") cloudSessions().none { it.node == null } else {
                             val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
-                            val nativeSessions = sessions.filter { session -> session.executionClass == "solve" && session.desired != "stop" &&
+                            val nativeSessions = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE && session.desired != Desired.STOP &&
                                 Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
                                     ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
                             val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
@@ -130,17 +130,17 @@ class NomadQueue(
                         solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus, sharedInputs = preparation.sharedInputs)
                     val excluded = if (target.os == "mac" || this.settings.perHostParallel == null) emptySet() else cloudSessions().filter { it.node != null }
                         .groupBy { checkNotNull(it.node) }.filterValues { hosted ->
-                            hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > this.settings.perHostParallel!!
+                            hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > this.settings.perHostParallel
                         }.keys
                     backend.enqueue(job.id, manifest, target.template.copy(budget = budget, nativeCapacity = nativeCapacity(target), excludedNodes = target.template.excludedNodes + excluded, perHostParallel = this.settings.perHostParallel, environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     sessions = store.execution.sessions(job.id)
                 }
-            } catch (failure: IllegalArgumentException) {
-                store.execution.failIfActive(job.id, "Nomad preparation/admission: ${failure.message?.take(1024)}")
-                store.execution.sessions(job.id).filter { it.desired != "stop" }.forEach { store.execution.loseSession(it.id, "admission-failed") }
             } catch (failure: Exception) {
                 if (failure is InterruptedException) throw failure
-                System.err.println("nomad queue job ${job.id}: ${failure.javaClass.simpleName}; will retry")
+                if (failure is IllegalArgumentException && failure.rejectsAdmission) {
+                    store.execution.failIfActive(job.id, "Nomad preparation/admission: ${failure.message?.take(1024)}")
+                    store.execution.sessions(job.id).filter { it.desired != Desired.STOP }.forEach { store.execution.loseSession(it.id, "admission-failed") }
+                } else System.err.println("nomad queue job ${job.id}: ${describeFailure(failure)}; will retry")
             }
         }
     }
@@ -205,8 +205,8 @@ class NomadQueue(
         }
         store.prepareNomad(job.id, recipe.arms, problems, cases, commands)
         if (preparation.features.isNotEmpty()) {
-            val known = store.features(preparation.features.map { it.collection to it.problem }).keys
-            store.putFeatures(preparation.features.filter { (it.collection to it.problem) !in known })
+            val known = store.features(preparation.features.map { ProblemKey(it.collection, it.problem) }).keys
+            store.putFeatures(preparation.features.filter { ProblemKey(it.collection, it.problem) !in known })
         }
     }
 }
@@ -232,7 +232,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         trust.requireRepository(refresh = true)
         if (spec.bench?.replayJobs?.isNotEmpty() == true) {
             val arms = Experiments.arms(spec).map { arm ->
-                require(arm.ref.matches(Regex("[a-f0-9]{40}"))) { "replay refs must be pinned commits" }
+                require(CommitSha.isValid(arm.ref)) { "replay refs must be pinned commits" }
                 PlannedArm(arm, arm.ref)
             }
             return publishReplay(job, spec, arms)
@@ -246,7 +246,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         val arms = Experiments.arms(spec).map { arm ->
             val (exit, sha) = git(mirror, "rev-parse", "--verify", "${arm.ref}^{commit}")
             require(exit == 0) { "source ref '${arm.ref}' was not found in ${spec.repository} after a successful fetch" }
-            require(sha.matches(Regex("[a-f0-9]{40}")))
+            require(CommitSha.isValid(sha))
             trust.requireCommit(sha, arm.ref)
             PlannedArm(arm, sha)
         }
@@ -280,7 +280,10 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         run {
             val sources = replay.values.flatMap { source -> source.preparation.bundles.map { source.job to it } + listOfNotNull(source.preparation.corpus?.let { source.job to it }) }
             for ((jobId, bundle) in sources.distinctBy { it.second.sha256 }) {
-                val bytes = try { artifacts.size(jobId, bundle.sha256) } catch (failure: Exception) { throw IllegalArgumentException("replay build artifacts are unavailable", failure) }
+                // An artifact that is gone refuses the replay; one the store cannot read just now is retried.
+                val bytes = try { artifacts.size(jobId, bundle.sha256) }
+                catch (failure: java.io.IOException) { throw failure }
+                catch (failure: Exception) { throw AdmissionRejected("replay build artifacts are unavailable", failure) }
                 val offset = artifacts.offset(job.id, bundle.sha256)
                 artifacts.open(jobId, bundle.sha256).use { input ->
                     input.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, bytes, offset, input)
@@ -321,3 +324,13 @@ internal fun preparationSelection(store: Store, spec: ExperimentSpec, requested:
     }
     throw IllegalArgumentException("preparation requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated")
 }
+
+/** A job admission refuses for good, saying why: what [rejectsAdmission] reads as deliberate. */
+internal class AdmissionRejected(message: String, cause: Throwable? = null) : IllegalArgumentException(message, cause)
+
+/**
+ * Whether this failure refuses a job for good: a deliberate validation ([require], [AdmissionRejected]), not a stored
+ * submission that failed to parse or a number that failed to read, which are the lab's own faults and are retried.
+ */
+internal val IllegalArgumentException.rejectsAdmission: Boolean
+    get() = this !is kotlinx.serialization.SerializationException && this !is NumberFormatException

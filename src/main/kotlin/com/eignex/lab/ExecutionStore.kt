@@ -1,5 +1,6 @@
 package com.eignex.lab
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
@@ -11,9 +12,71 @@ import java.sql.SQLException
 
 @Serializable
 data class ExecutionSession(
-    val id: String, val jobId: Long, val generation: Int, val executionClass: String, val release: String,
-    val budget: ResourceBudget, val nomadJobId: String, val desired: String, val allocation: String?, val node: String?,
+    val id: String, val jobId: Long, val generation: Int, val executionClass: ExecutionClass, val release: String,
+    val budget: ResourceBudget, val nomadJobId: String, val desired: Desired, val allocation: String?, val node: String?,
 )
+
+/** What a session's worker does: prepare a job's sources and selection once, or solve its cases. Stored as [stored]. */
+@Serializable
+enum class ExecutionClass(val stored: String) {
+    @SerialName("prepare") PREPARE("prepare"),
+    @SerialName("solve") SOLVE("solve"),
+    @SerialName("build") BUILD("build");
+
+    override fun toString() = stored
+
+    companion object {
+        fun of(stored: String): ExecutionClass = entries.firstOrNull { it.stored == stored } ?: error("unknown execution class $stored")
+    }
+}
+
+/** What the lab wants of a session: keep running, finish its current iteration and leave, or stop now. */
+@Serializable
+enum class Desired(val stored: String) {
+    @SerialName("run") RUN("run"),
+    @SerialName("drain") DRAIN("drain"),
+    @SerialName("stop") STOP("stop");
+
+    override fun toString() = stored
+
+    companion object {
+        fun of(stored: String): Desired = entries.firstOrNull { it.stored == stored } ?: error("unknown session state $stored")
+    }
+}
+
+/**
+ * Where an iteration attempt is. The active states advance in declaration order and never go back; an attempt ends
+ * [COMMITTED], or invalidated with its reason stored as its state ([ENDED] here, whatever the reason).
+ */
+enum class AttemptState(val stored: String) {
+    CLAIMED("claimed"), PREPARING("preparing"), EXECUTING("executing"), UPLOADING("uploading"), COMMITTED("committed"), ENDED("");
+
+    val isActive: Boolean get() = this in ACTIVE
+
+    override fun toString() = stored
+
+    companion object {
+        val ACTIVE = setOf(CLAIMED, PREPARING, EXECUTING, UPLOADING)
+
+        /** The active states as an SQL list, for `state IN …`. */
+        val ACTIVE_SQL = ACTIVE.joinToString(", ", "(", ")") { "'${it.stored}'" }
+
+        fun of(stored: String): AttemptState = entries.firstOrNull { it.stored == stored && it != ENDED } ?: ENDED
+    }
+}
+
+/** What an outbox intent asks of Nomad. */
+@Serializable
+enum class IntentOp(val stored: String) {
+    @SerialName("submit") SUBMIT("submit"),
+    @SerialName("stop") STOP("stop");
+
+    override fun toString() = stored
+
+    companion object {
+        fun of(stored: String): IntentOp = entries.firstOrNull { it.stored == stored } ?: error("unknown execution intent $stored")
+    }
+}
 
 @Serializable
 data class AttemptOwner(val session: String, val allocation: String, val iteration: String, val generation: Int, val token: String)
@@ -30,7 +93,7 @@ data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt:
 data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false, val preparation: PreparationResult? = null)
 
 @Serializable
-data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: String, val payload: String, val acknowledged: Boolean)
+data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: IntentOp, val payload: String, val acknowledged: Boolean)
 
 @Serializable data class LiveLog(val session: String, val iteration: String, val generation: Int)
 @Serializable data class ExecutionEvent(val id: Long, val session: String?, val detail: String, val at: Long)
@@ -96,12 +159,12 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     /** The coordinator chooses the credential before persisting intent; a retry must supply identical inputs. */
-    fun createSession(id: String, jobId: Long, executionClass: String, release: String, budget: ResourceBudget,
+    fun createSession(id: String, jobId: Long, executionClass: ExecutionClass, release: String, budget: ResourceBudget,
                       token: String, payload: String, at: Long = now(), manifest: String? = null): ExecutionSession = store.executionTransaction { db ->
-        require(id.matches(Regex("[a-z0-9-]{1,64}")) && executionClass.matches(Regex("[a-z][a-z0-9-]{0,31}")))
+        require(id.matches(Regex("[a-z0-9-]{1,64}")))
         require(release.isNotBlank() && token.length >= 32)
         val job = store.job(jobId) ?: error("missing experiment")
-        require(job.backend == "nomad" && !job.cancelRequested && job.status.isActive)
+        require(job.backend == Backend.NOMAD && !job.cancelRequested && job.status.isActive)
         val nomadId = "lab-$jobId-$executionClass-$id-1"
         db.session(id)?.let { old ->
             require(old.jobId == jobId && old.executionClass == executionClass && old.release == release && old.budget == budget)
@@ -121,7 +184,7 @@ class ExecutionStore internal constructor(private val store: Store) {
             }
         }
         db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
-            id, jobId, executionClass, release, Json.encodeToString(budget), nomadId, digest(token), at)
+            id, jobId, executionClass.stored, release, Json.encodeToString(budget), nomadId, digest(token), at)
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
         db.sqlUpdate("UPDATE execution_sessions SET manifest = ? WHERE id = ?", manifest, id)
         db.event(jobId, id, "session-created", at)
@@ -147,7 +210,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                 db.failRunDeadline(session.jobId, at)
                 return@executionTransaction null
             }
-            if (store.job(session.jobId)!!.paused || session.desired != "run") return@executionTransaction null
+            if (store.job(session.jobId)!!.paused || session.desired != Desired.RUN) return@executionTransaction null
             // An HTTP retry of a claim returns the existing ownership, never a second concurrent iteration.
             val active = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS ORDER BY generation DESC", id) { attemptRow(it) }.singleOrNull()
             if (active != null) {
@@ -155,7 +218,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                 val claimToken = claimToken(token, active.iteration, active.generation)
                 return@executionTransaction IterationClaim(AttemptOwner(id, allocation, active.iteration, active.generation, claimToken), active.indices, active.leaseUntil, active.parallel)
             }
-            if (session.executionClass == "prepare") {
+            if (session.executionClass == ExecutionClass.PREPARE) {
                 if (store.job(session.jobId)!!.setupDone || db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { it.getInt(1) }.isNotEmpty()) return@executionTransaction null
                 val iteration = "preparation"
                 val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
@@ -197,18 +260,18 @@ class ExecutionStore internal constructor(private val store: Store) {
         job.runRemainingMs(at)
     }
 
-    private fun Job.runRemainingMs(at: Long): Long? = experiment?.let(Experiments::runTimeoutSec)?.let { it * 1000 - elapsedMs(at) }
+    private fun Job.runRemainingMs(at: Long): Long? = experiment.let(Experiments::runTimeoutSec)?.let { it * 1000 - elapsedMs(at) }
 
     fun runTimedOut(owner: AttemptOwner, at: Long = now()) = store.executionTransaction { db ->
         val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
-        if (store.job(prior.jobId)?.error == RunDeadlineExceeded().message) return@executionTransaction
+        if (store.job(prior.jobId)?.error == RunDeadlineExceeded.ERROR) return@executionTransaction
         val attempt = db.attempt(owner, at)
         require(store.job(attempt.jobId)?.experiment?.let(Experiments::runTimeoutSec) != null)
         db.failRunDeadline(attempt.jobId, at)
     }
 
     fun expireRunDeadlines(at: Long = now()) = store.executionTransaction { db ->
-        store.active(withCommands = false).filter { it.backend == "nomad" }.forEach { job ->
+        store.active(withCommands = false).filter { it.backend == Backend.NOMAD }.forEach { job ->
             val remaining = job.runRemainingMs(at)
             if (remaining != null && (remaining <= 0 || db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND state = 'committed'", job.id) {
                 Json.decodeFromString<IterationResult>(it.getString(1)).runTimedOut
@@ -224,22 +287,22 @@ class ExecutionStore internal constructor(private val store: Store) {
         }
         sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
         sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND status IN ('QUEUED', 'RUNNING')",
-            RunDeadlineExceeded().message, at, at, job)
+            RunDeadlineExceeded.ERROR, at, at, job)
         event(job, null, "profile-run-timeout", at)
     }
 
     fun phase(owner: AttemptOwner, phase: String, at: Long = now()) = store.executionTransaction { db ->
-        require(phase in listOf("preparing", "executing", "uploading"))
+        val next = AttemptState.of(phase)
+        require(next in setOf(AttemptState.PREPARING, AttemptState.EXECUTING, AttemptState.UPLOADING))
         val a = db.attempt(owner, at)
-        val states = listOf("claimed", "preparing", "executing", "uploading")
-        require(states.indexOf(phase) >= states.indexOf(a.state)) { "phase cannot go backwards" }
-        db.sqlUpdate("UPDATE iteration_attempts SET state = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", phase, a.jobId, owner.iteration, owner.generation)
+        require(next >= a.state) { "phase cannot go backwards" }
+        db.sqlUpdate("UPDATE iteration_attempts SET state = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?", next.stored, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "phase:$phase:${owner.iteration}:${owner.generation}", at)
     }
 
     fun preparationProgress(owner: AttemptOwner, progress: PreparationProgress, at: Long = now()) = store.executionTransaction { db ->
         val attempt = db.attempt(owner, at)
-        require(attempt.iteration == "preparation" && attempt.state == "preparing") { "preparation progress outside preparation" }
+        require(attempt.iteration == "preparation" && attempt.state == AttemptState.PREPARING) { "preparation progress outside preparation" }
         val prior = db.sqlRows("SELECT preparation_progress FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND generation = ?",
             attempt.jobId, owner.iteration, owner.generation) { it.getString(1)?.let { value -> Json.decodeFromString<PreparationProgress>(value) } }.single()
         // A final snapshot can race the background reporter. Never replace it with an older observation.
@@ -256,7 +319,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (store.job(prior.jobId)?.let { it.status == Status.FAILED && it.error == reason } == true) return@executionTransaction
         val attempt = db.attempt(owner, at)
-        require(attempt.state in setOf("claimed", "preparing")) { "build failure outside preparation" }
+        require(attempt.state in setOf(AttemptState.CLAIMED, AttemptState.PREPARING)) { "build failure outside preparation" }
         db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", attempt.jobId, map = ::attemptRow)
             .forEach { db.invalidate(it, "source-build-failed", at) }
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", attempt.jobId, map = ::sessionRow).forEach { session ->
@@ -270,7 +333,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Count reproducible coordinator errors, never worker/node losses. Durable across replacement and restart. */
     internal fun preparationError(owner: AttemptOwner, fingerprint: String, at: Long = now()): Int = store.executionTransaction { db ->
         val attempt = db.attempt(owner, at)
-        require(attempt.iteration == "preparation" && attempt.state == "preparing")
+        require(attempt.iteration == "preparation" && attempt.state == AttemptState.PREPARING)
         val event = "preparation-error:$fingerprint"
         db.event(attempt.jobId, owner.session, event, at)
         db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
@@ -281,7 +344,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Called only with positive Nomad evidence of a worker's nonzero, unsignalled process exit. */
     internal fun preparationExited(id: String, code: Int, at: Long = now()): PreparationExitFailure? = store.executionTransaction { db ->
         val session = db.session(id) ?: return@executionTransaction null
-        if (session.executionClass != "prepare" || session.desired != "run") return@executionTransaction null
+        if (session.executionClass != ExecutionClass.PREPARE || session.desired != Desired.RUN) return@executionTransaction null
         if (db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { true }.isNotEmpty()) return@executionTransaction null
         val progress = db.sqlRows("SELECT preparation_progress FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", id) {
             it.getString(1)?.let { value -> Json.decodeFromString<PreparationProgress>(value) }
@@ -300,7 +363,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     fun caseStarted(owner: AttemptOwner, index: Int, at: Long = now()) = store.executionTransaction { db ->
-        val a = db.attempt(owner, at); require(index in a.indices && a.state == "executing") { "case start outside executing iteration" }
+        val a = db.attempt(owner, at); require(index in a.indices && a.state == AttemptState.EXECUTING) { "case start outside executing iteration" }
         db.sqlUpdate("UPDATE commands SET status = 'RUNNING', started_at = COALESCE(started_at, ?) WHERE job_id = ? AND idx = ?", at, a.jobId, index)
         db.event(a.jobId, owner.session, "case-start:$index:${owner.generation}", at)
     }
@@ -308,7 +371,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Artifacts must have been checksum-verified before this transaction. A lost acknowledgement is idempotent. */
     internal fun commit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Boolean = store.executionTransaction { db ->
         val a = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
-        if (a.state == "committed") {
+        if (a.state == AttemptState.COMMITTED) {
             if (a.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
             return@executionTransaction true
         }
@@ -316,7 +379,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         if (store.job(a.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) throw RunDeadlineExceeded()
         require((a.iteration == "preparation") == (result.preparation != null))
         require(!result.runTimedOut || store.job(a.jobId)?.experiment?.let(Experiments::runTimeoutSec) != null)
-        require(a.state == "uploading") { "attempt is not uploading" }
+        require(a.state == AttemptState.UPLOADING) { "attempt is not uploading" }
         require(result.cases.map { it.index }.sorted() == a.indices.sorted()) { "all arms must be committed together, exactly once" }
         val node = db.session(owner.session)!!.node!!
         for (case in result.cases) {
@@ -345,7 +408,7 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun loseUnallocatedSession(id: String, reason: String, at: Long = now()): Boolean = store.executionTransaction { db ->
         val s = db.session(id) ?: return@executionTransaction false
-        if (s.desired != "run" || s.allocation != null) return@executionTransaction false
+        if (s.desired != Desired.RUN || s.allocation != null) return@executionTransaction false
         db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason.take(1024), id)
         db.stopIntent(s)
         db.event(s.jobId, id, "lost:${reason.take(1024)}", at)
@@ -359,7 +422,7 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun intents(): List<ExecutionIntent> = store.executionTransaction { db ->
         db.sqlRows("SELECT * FROM execution_outbox WHERE acknowledged = 0 ORDER BY rowid") {
-            ExecutionIntent(it.getString("id"), it.getLong("job_id"), it.getString("session_id"), it.getString("operation"), it.getString("payload"), false)
+            ExecutionIntent(it.getString("id"), it.getLong("job_id"), it.getString("session_id"), IntentOp.of(it.getString("operation")), it.getString("payload"), false)
         }
     }
     fun acknowledge(id: String) = store.executionTransaction { it.sqlUpdate("UPDATE execution_outbox SET acknowledged = 1 WHERE id = ?", id) }
@@ -376,7 +439,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun authorize(owner: AttemptOwner, at: Long = now()): Long = store.executionTransaction { db -> db.attempt(owner, at).jobId }
     internal fun authorizeCommit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Long = store.executionTransaction { db ->
         val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
-        if (attempt.state == "committed") {
+        if (attempt.state == AttemptState.COMMITTED) {
             if (attempt.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
         } else db.attempt(owner, at)
         attempt.jobId
@@ -433,7 +496,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
     fun preparationSelection(owner: AttemptOwner, requestHash: String? = null): List<List<Problem>>? = store.executionTransaction { db ->
         val attempt = db.attempt(owner, now())
-        require(attempt.iteration == "preparation" && attempt.state == "preparing")
+        require(attempt.iteration == "preparation" && attempt.state == AttemptState.PREPARING)
         db.sqlRows("SELECT request_hash, selected FROM execution_selections WHERE job_id = ? AND generation = ?", attempt.jobId, owner.generation) {
             if (requestHash != null && it.getString(1) != requestHash) throw ExecutionFenced("selection request changed")
             Json.decodeFromString<List<List<Problem>>>(it.getString(2))
@@ -441,7 +504,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
     fun approvePreparationSelection(owner: AttemptOwner, requestHash: String, selected: List<List<Problem>>): List<List<Problem>> = store.executionTransaction { db ->
         val attempt = db.attempt(owner, now())
-        require(attempt.iteration == "preparation" && attempt.state == "preparing")
+        require(attempt.iteration == "preparation" && attempt.state == AttemptState.PREPARING)
         val prior = db.sqlRows("SELECT request_hash, selected FROM execution_selections WHERE job_id = ? AND generation = ?", attempt.jobId, owner.generation) {
             if (it.getString(1) != requestHash) throw ExecutionFenced("selection request changed")
             Json.decodeFromString<List<List<Problem>>>(it.getString(2))
@@ -474,7 +537,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun queueRecipe(job: Long, proposed: NomadQueueSettings): NomadQueueSettings = store.executionTransaction { db ->
         val prior = db.sqlRows("SELECT settings FROM execution_queue_recipes WHERE job_id = ?", job) { it.getString(1) }.singleOrNull()
         if (prior != null) return@executionTransaction Json.decodeFromString(prior)
-        require(store.job(job)?.backend == "nomad")
+        require(store.job(job)?.backend == Backend.NOMAD)
         db.sqlUpdate("INSERT INTO execution_queue_recipes (job_id, settings) VALUES (?, ?)", job, Json.encodeToString(proposed))
         proposed
     }
@@ -508,9 +571,9 @@ class ExecutionStore internal constructor(private val store: Store) {
         val s = session(id) ?: throw ExecutionFenced("unknown session")
         val hash = sqlRows("SELECT token_hash FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
         if (!MessageDigest.isEqual(hash.toByteArray(), digest(token).toByteArray())) throw ExecutionFenced("invalid credential")
-        if (s.desired == "stop" || (allocation != null && s.allocation != allocation)) throw ExecutionFenced("session fenced")
+        if (s.desired == Desired.STOP || (allocation != null && s.allocation != allocation)) throw ExecutionFenced("session fenced")
         val job = store.job(s.jobId)!!
-        if (job.backend != "nomad" || job.cancelRequested || job.status.isTerminal) throw ExecutionFenced("experiment fenced")
+        if (job.backend != Backend.NOMAD || job.cancelRequested || job.status.isTerminal) throw ExecutionFenced("experiment fenced")
         return s
     }
     private fun Connection.findAttempt(o: AttemptOwner): Attempt? {
@@ -522,7 +585,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         val a = findAttempt(o) ?: throw ExecutionFenced("unknown attempt")
         val s = session(o.session) ?: throw ExecutionFenced("unknown session")
         val job = store.job(a.jobId)!!
-        if (s.desired == "stop" || s.allocation != o.allocation || a.state !in ACTIVE_STATES || a.leaseUntil <= at || job.cancelRequested || job.backend != "nomad" || job.status !in setOf(Status.RUNNING, Status.QUEUED)) throw ExecutionFenced("attempt fenced")
+        if (s.desired == Desired.STOP || s.allocation != o.allocation || !a.state.isActive || a.leaseUntil <= at || job.cancelRequested || job.backend != Backend.NOMAD || job.status !in setOf(Status.RUNNING, Status.QUEUED)) throw ExecutionFenced("attempt fenced")
         return a
     }
     private fun Connection.expire(jobId: Long, at: Long) {
@@ -555,8 +618,7 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     companion object {
         const val LEASE_MS = 90_000L
-        private val ACTIVE_STATES = setOf("claimed", "preparing", "executing", "uploading")
-        private const val ACTIVE_ATTEMPTS = "('claimed', 'preparing', 'executing', 'uploading')"
+        private val ACTIVE_ATTEMPTS = AttemptState.ACTIVE_SQL
         private val random = SecureRandom()
         fun token(): String = ByteArray(32).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         internal fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -565,9 +627,9 @@ class ExecutionStore internal constructor(private val store: Store) {
             mac.init(javax.crypto.spec.SecretKeySpec(secret.toByteArray(), "HmacSHA256"))
             return mac.doFinal("$iteration:$generation".toByteArray()).joinToString("") { "%02x".format(it) }
         }
-        private fun sessionRow(r: ResultSet) = ExecutionSession(r.getString("id"), r.getLong("job_id"), r.getInt("generation"), r.getString("execution_class"), r.getString("release"), Json.decodeFromString(r.getString("budget")), r.getString("nomad_job_id"), r.getString("desired"), r.getString("allocation_id"), r.getString("node_id"))
-        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: String, val leaseUntil: Long, val tokenHash: String, val result: String?, val parallel: Int)
-        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), r.getString("state"), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"))
+        private fun sessionRow(r: ResultSet) = ExecutionSession(r.getString("id"), r.getLong("job_id"), r.getInt("generation"), ExecutionClass.of(r.getString("execution_class")), r.getString("release"), Json.decodeFromString(r.getString("budget")), r.getString("nomad_job_id"), Desired.of(r.getString("desired")), r.getString("allocation_id"), r.getString("node_id"))
+        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: AttemptState, val leaseUntil: Long, val tokenHash: String, val result: String?, val parallel: Int)
+        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"))
         /** API and coordinator may initialize the same database concurrently. A column snapshot is only a
          * hint: another autocommit connection can publish the ALTER before ours. Recheck the schema after a
          * failed ALTER, accepting only the now-present column rather than hiding unrelated SQL failures. */

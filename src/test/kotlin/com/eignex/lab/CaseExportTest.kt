@@ -107,7 +107,7 @@ class CaseExportTest {
     fun `a job with no cases exports nothing`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
-        val id = store.create("plain", "main", listOf("true" to 1L))
+        val id = store.create("plain", "main", listOf("true" to 1L), experiment = ExperimentSpec("plain"))
         testApplication {
             application { api(config, store, host) }
 

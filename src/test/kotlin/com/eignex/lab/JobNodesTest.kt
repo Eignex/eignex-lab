@@ -24,7 +24,7 @@ class JobNodesTest {
     private fun bind(job: Long, session: String, allocation: String, node: String, local: Boolean = false) {
         val token = ExecutionStore.token()
         val payload = """{"Constraints":[{"LTarget":"${'$'}{node.class}","RTarget":"${if (local) "lab-native" else pool.nodeClass}"},{"LTarget":"${'$'}{attr.kernel.name}","RTarget":"${if (local) "darwin" else "linux"}"}],"Env":{"secret":"private-worker-credential"}}"""
-        store.execution.createSession(session, job, "prepare", "release", budget, token, payload)
+        store.execution.createSession(session, job, ExecutionClass.PREPARE, "release", budget, token, payload)
         store.execution.bind(session, token, allocation, node, "release")
     }
 

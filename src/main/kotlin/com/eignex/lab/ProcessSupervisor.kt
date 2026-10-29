@@ -20,7 +20,6 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
                                val stdout: String, val stderr: String, val timeoutSec: Long, val graceMs: Long, val leaseMs: Long, val experiment: String?,
                                val runRemainingMs: Long? = null)
 
-
     /** Kept for the whole native session, including artifact transfer and iteration boundaries. */
     fun reserve(experiment: String): AutoCloseable {
         require(experiment.matches(Regex("[a-zA-Z0-9-]{1,80}")))
@@ -47,7 +46,10 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
     fun run(argv: List<String>, directory: Path, environment: Map<String, String>, stdout: Path, stderr: Path,
             timeoutSec: Long, graceMs: Long = 10_000, runRemainingMs: Long? = null, remainingLeaseMs: () -> Long): Int {
         if (runRemainingMs != null && runRemainingMs <= 0) throw RunDeadlineExceeded()
-        fun remaining() = remainingLeaseMs().coerceAtMost(80_000).also { if (it <= 0 || Thread.currentThread().isInterrupted) throw CancellationException("execution lease ended") }
+        fun remaining() = remainingLeaseMs().coerceAtMost(80_000).also {
+            if (it <= 0) throw LeaseLost("execution lease ended")
+            if (Thread.currentThread().isInterrupted) throw CancellationException("execution interrupted")
+        }
         SocketChannel.open(StandardProtocolFamily.UNIX).use { channel ->
             channel.connect(UnixDomainSocketAddress.of(socket))
             channel.configureBlocking(false)

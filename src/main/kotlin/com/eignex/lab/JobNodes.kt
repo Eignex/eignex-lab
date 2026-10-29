@@ -4,7 +4,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.nio.file.Files
 
 /** Public placement facts only; a submission's worker credentials never reach a page. */
 internal data class RunningNode(val id: String, val allocation: String?, val nodeClass: String?, val local: Boolean)
@@ -12,7 +11,7 @@ internal data class JobNode(val id: String, val name: String, val profile: Strin
 
 /** Durable RUNNING means the experiment has started; it need not currently have a worker. */
 internal fun jobActivity(job: Job, nodes: List<JobNode>): String? = when {
-    job.backend != "nomad" || job.status != Status.RUNNING || job.experiment?.isAnalysis == true || job.paused || job.cancelRequested -> null
+    job.backend != Backend.NOMAD || job.status != Status.RUNNING || job.experiment.isAnalysis == true || job.paused || job.cancelRequested -> null
     job.total > 0 && job.done == job.total -> "CHECKING"
     nodes.isEmpty() -> "WAITING"
     !job.setupDone -> "PREPARING"

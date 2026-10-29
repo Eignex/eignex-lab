@@ -203,7 +203,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         commands: List<Pair<String, Long>>,
         parallel: Int = 1,
         priority: Int = 0,
-        experiment: ExperimentSpec? = null,
+        experiment: ExperimentSpec,
     ): Long = transaction {
         val id = connection.prepareStatement(
             "INSERT INTO jobs (name, ref, status, created_at, parallel, priority, experiment, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -215,7 +215,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             it.setLong(4, now())
             it.setInt(5, parallel)
             it.setInt(6, priority)
-            it.setString(7, experiment?.let { spec -> Json.encodeToString(spec) })
+            it.setString(7, experiment.let { spec -> Json.encodeToString(spec) })
             it.setString(8, "nomad")
             it.executeUpdate()
             it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
@@ -243,9 +243,9 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun prepareNomad(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>): Boolean = transaction {
         val job = job(jobId) ?: error("missing experiment")
-        require(job.backend == "nomad" && !job.cancelRequested && job.status.isActive)
+        require(job.backend == Backend.NOMAD && !job.cancelRequested && job.status.isActive)
         if (job.setupDone) return@transaction false
-        require(job.commands.isEmpty() && cases.isNotEmpty() && cases.size == commands.size)
+        require(!job.planned && cases.isNotEmpty() && cases.size == commands.size)
         planRows(jobId, arms, problems, cases, commands)
         update("UPDATE jobs SET sha = ?, setup_done = 1 WHERE id = ?", arms.first().sha, jobId)
         true
@@ -477,7 +477,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         ).use { statement ->
             ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
             statement.executeQuery().use { r ->
-                generateSequence { if (r.next()) r.getLong(1) to HostProgress(r.getString(2), r.getInt(3), r.getInt(4), r.getInt(5)) else null }
+                generateSequence { if (r.next()) r.getLong(1) to HostProgress(RecordedHost.of(r.getString(2)), r.getInt(3), r.getInt(4), r.getInt(5)) else null }
                     .groupBy({ it.first }, { it.second })
             }
         }
@@ -540,7 +540,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                     rows.getString(4), rows.longOrNull("seed"),
                     withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
                         rows.getString(9)),
-                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10), rows.getObject(11)?.let { rows.getInt(11) != 0 },
+                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10)?.let(RecordedHost::of), rows.getObject(11)?.let { rows.getInt(11) != 0 },
                     rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
                 )
             }.toList()
@@ -710,7 +710,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun requestCancel(jobId: Long): CancelOutcome = transaction {
         val job = job(jobId) ?: return@transaction CancelOutcome.MISSING
-        if (job.backend == "nomad" && job.status.isActive) {
+        if (job.backend == Backend.NOMAD && job.status.isActive) {
             execution.cancelIn(connection, jobId, now())
             return@transaction CancelOutcome.CANCELLED
         }
@@ -751,10 +751,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { rows ->
             generateSequence {
                 if (!rows.next()) return@generateSequence null
+                // Parallel and priority are the experiment's own; the columns copy them for older readers.
+                val experiment = storedExperiment(rows.getString("experiment"))
                 Schedule(
-                    rows.getLong("id"), rows.getString("name"), rows.getString("ref"),
-                    storedExperiment(rows.getString("experiment")),
-                    rows.getInt("parallel"), rows.getInt("priority"),
+                    rows.getLong("id"), rows.getString("name"), rows.getString("ref"), experiment,
+                    experiment.parallel ?: 0, experiment.priority,
                     rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
                     rows.longOrNull("checked_at"), rows.getInt("launch") == 1,
                 )
@@ -809,7 +810,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * whatever its strength. Returns how many rows changed.
      */
     @Synchronized
-    fun putReferences(rows: List<Pair<Pair<String, String>, Reference>>, source: String): Int = transaction {
+    fun putReferences(rows: List<Pair<ProblemKey, Reference>>, source: String): Int = transaction {
         val at = now()
         var changed = 0
         val select = connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND solver = ?")
@@ -822,14 +823,14 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             upsert.use {
                 for ((key, captured) in rows) {
                     val row = captured.copy(stale = captured.stale ||
-                        References.stale(captured.solver, captured.version, key.first))
-                    select.setString(1, key.first)
-                    select.setString(2, key.second)
+                        References.stale(captured.solver, captured.version, key.collection))
+                    select.setString(1, key.collection)
+                    select.setString(2, key.problem)
                     select.setString(3, row.solver)
                     val old = select.executeQuery().use { r -> if (r.next()) reference(r) else null }
                     if (old != null && !References.replaces(row, old)) continue
-                    upsert.setString(1, key.first)
-                    upsert.setString(2, key.second)
+                    upsert.setString(1, key.collection)
+                    upsert.setString(2, key.problem)
                     upsert.setString(3, row.solver)
                     upsert.setInt(4, if (row.maximize) 1 else 0)
                     upsert.setObject(5, row.objective)
@@ -925,16 +926,16 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      */
     @Synchronized
     fun references(
-        keys: Collection<Pair<String, String>>,
+        keys: Collection<ProblemKey>,
         solver: String? = null,
-        sources: Map<Pair<String, String>, String?>? = null,
-    ): Map<Pair<String, String>, Reference> =
+        sources: Map<ProblemKey, String?>? = null,
+    ): Map<ProblemKey, Reference> =
         connection.prepareStatement(
             "SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND (? IS NULL OR solver = ?)",
         ).use { statement ->
             keys.distinct().mapNotNull { key ->
-                statement.setString(1, key.first)
-                statement.setString(2, key.second)
+                statement.setString(1, key.collection)
+                statement.setString(2, key.problem)
                 statement.setString(3, solver)
                 statement.setString(4, solver)
                 val current = statement.executeQuery().use { r ->
@@ -972,8 +973,8 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                     ).use { update ->
                         for ((key, identity) in identities) {
                             update.setString(1, identity)
-                            update.setString(2, key.first)
-                            update.setString(3, key.second)
+                            update.setString(2, key.collection)
+                            update.setString(3, key.problem)
                             update.setString(4, "lab:$job")
                             bound += update.executeUpdate()
                         }
@@ -991,10 +992,10 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             "(SELECT collection, problem FROM reference_rows WHERE stale = 0 GROUP BY collection, problem HAVING COUNT(*) > 1)",
     ).use { statement ->
         statement.executeQuery().use { r ->
-            generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
+            generateSequence { if (r.next()) ProblemKey(r.getString("collection"), r.getString("problem")) to reference(r) else null }.toList()
         }
     }.groupBy({ it.first }, { it.second }).flatMap { (key, rows) ->
-        References.conflicts(rows).map { Disagreement(Problem("", key.second, collection = key.first), it) }
+        References.conflicts(rows).map { Disagreement(Problem("", key.problem, collection = key.collection), it) }
     }
 
     /** Keep the classifier's [features] of each problem, keyed by (collection, problem); a later classification wins. */
@@ -1016,14 +1017,14 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /** The classifier's features of each of [keys] that has them, keyed by (collection, problem). */
     @Synchronized
-    fun features(keys: Collection<Pair<String, String>>): Map<Pair<String, String>, ProblemFeatures> =
+    fun features(keys: Collection<ProblemKey>): Map<ProblemKey, ProblemFeatures> =
         connection.prepareStatement("SELECT * FROM problem_features WHERE collection = ? AND problem = ?").use { statement ->
             keys.distinct().mapNotNull { key ->
-                statement.setString(1, key.first)
-                statement.setString(2, key.second)
+                statement.setString(1, key.collection)
+                statement.setString(2, key.problem)
                 statement.executeQuery().use { r ->
                     if (!r.next()) return@use null
-                    key to ProblemFeatures(key.first, key.second, Json.decodeFromString(r.getString("themes")),
+                    key to ProblemFeatures(key.collection, key.problem, Json.decodeFromString(r.getString("themes")),
                         r.getString("structure"), r.getString("logic"))
                 }
             }.toMap()
@@ -1031,11 +1032,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /** Every current (not stale) reference row of each of [keys], by solver, keyed by (collection, problem). */
     @Synchronized
-    fun currentReferenceRows(keys: Collection<Pair<String, String>>): Map<Pair<String, String>, List<Reference>> =
+    fun currentReferenceRows(keys: Collection<ProblemKey>): Map<ProblemKey, List<Reference>> =
         connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND stale = 0").use { statement ->
             keys.distinct().mapNotNull { key ->
-                statement.setString(1, key.first)
-                statement.setString(2, key.second)
+                statement.setString(1, key.collection)
+                statement.setString(2, key.problem)
                 val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
                 rows.takeIf { it.isNotEmpty() }?.let { key to it }
             }.toMap()
@@ -1052,12 +1053,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * tells a cached point which of its problems' comparisons moved. Read by the `updated_at` index.
      */
     @Synchronized
-    fun referencesChangedSince(stamp: Long): Map<Pair<String, String>, Long> = connection.prepareStatement(
+    fun referencesChangedSince(stamp: Long): Map<ProblemKey, Long> = connection.prepareStatement(
         "SELECT collection, problem, MAX(updated_at) FROM reference_rows WHERE updated_at > ? GROUP BY collection, problem",
     ).use { statement ->
         statement.setLong(1, stamp)
         statement.executeQuery().use { r ->
-            generateSequence { if (r.next()) (r.getString(1) to r.getString(2)) to r.getLong(3) else null }.toMap()
+            generateSequence { if (r.next()) ProblemKey(r.getString(1), r.getString(2)) to r.getLong(3) else null }.toMap()
         }
     }
 
@@ -1082,7 +1083,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /** Up to [limit] reference rows that pass [filter], with their keys, and how many pass in all. */
     @Synchronized
-    fun searchReferences(filter: ReferenceFilter, limit: Int): Pair<List<Pair<Pair<String, String>, Reference>>, Int> {
+    fun searchReferences(filter: ReferenceFilter, limit: Int): Pair<List<Pair<ProblemKey, Reference>>, Int> {
         val conditions = ArrayList<String>()
         val values = ArrayList<Any>()
         filter.text?.let {
@@ -1104,7 +1105,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             bind(statement)
             statement.setInt(values.size + 1, limit)
             statement.executeQuery().use { r ->
-                generateSequence { if (r.next()) (r.getString("collection") to r.getString("problem")) to reference(r) else null }.toList()
+                generateSequence { if (r.next()) ProblemKey(r.getString("collection"), r.getString("problem")) to reference(r) else null }.toList()
             }
         }
         return rows to total
@@ -1176,7 +1177,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             Status.QUEUED.name, jobId, Status.FAILED.name, Status.CANCELLED.name,
         ) == 1
         if (reopened) {
-            if (job(jobId)?.backend == "nomad") execution.retryIn(connection, jobId, now())
+            if (job(jobId)?.backend == Backend.NOMAD) execution.retryIn(connection, jobId, now())
             update(
                 "UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND status IN (?, ?)",
                 Status.QUEUED.name, jobId, Status.CANCELLED.name, Status.RUNNING.name,
@@ -1217,10 +1218,10 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * before source publication, so the SQL guard also fences a concurrent coordinator in another process.
      */
     @Synchronized
-    fun place(jobId: Long, host: String, placed: ExperimentSpec? = null): Boolean {
+    fun place(jobId: Long, host: HostPlacement, placed: ExperimentSpec? = null): Boolean {
         val job = job(jobId) ?: return false
-        val spec = placed ?: job.experiment ?: return false
-        if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
+        val spec = placed ?: job.experiment
+        if (job.status != Status.QUEUED || job.planned) return false
         val moved = spec.copy(host = host)
         return update("UPDATE jobs SET experiment = ? WHERE id = ? AND status = 'QUEUED' " +
             "AND NOT EXISTS (SELECT 1 FROM commands WHERE job_id = ?) " +
@@ -1269,7 +1270,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                         rows.getInt("idx"), rows.getString("cmd"), rows.getLong("timeout_sec"),
                         Status.valueOf(rows.getString("status")), rows.intOrNull("exit_code"),
                         rows.longOrNull("started_at"), rows.longOrNull("finished_at"), rows.getInt("cores"),
-                        host = rows.getString("host"),
+                        host = rows.getString("host")?.let(RecordedHost::of),
                     )
                 }
             }.toList()
@@ -1281,11 +1282,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         Status.valueOf(rows.getString("status")), rows.getInt("cancel_requested") == 1, rows.getInt("setup_done") == 1,
         rows.getLong("created_at"), rows.longOrNull("started_at"), rows.longOrNull("finished_at"),
         rows.getString("error"), rows.getInt("parallel"), rows.getInt("priority"), rows.getInt("paused") == 1,
-        rows.getString("experiment")?.let(::storedExperiment),
+        storedExperiment(rows.getString("experiment")),
         runMs = rows.getLong("run_ms"),
         runningSince = rows.longOrNull("running_since"),
         local = rows.getInt("local") == 1,
-        backend = rows.getString("backend"),
+        backend = Backend.of(rows.getString("backend")),
     )
 
     val execution = ExecutionStore(this)

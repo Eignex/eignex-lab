@@ -97,14 +97,14 @@ class DockerCleanupTest {
 
     @Test
     fun `active jobs' commits are grepped, and one that cannot be read keeps every tag`() {
-        val job = Job(1, "x", "main", "abc", Status.QUEUED, false, false, 0)
+        val job = Job(1, "x", "main", "abc", Status.QUEUED, false, false, 0, experiment = ExperimentSpec("x"))
         val grepped = mutableListOf<String>()
         val found = referencedImages(listOf(job), { emptyList() }, repositories) { _, rev ->
             grepped += rev
             0 to "eignex-lab-xcsp3-cpsat:source-model-v2\n"
         }
         assertEquals(setOf("eignex-lab-xcsp3-cpsat:source-model-v2"), found)
-        assertEquals(listOf("abc"), grepped)
+        assertEquals(listOf("abc", "main"), grepped)
 
         assertEquals(emptySet(), referencedImages(listOf(job), { emptyList() }, repositories) { _, _ -> 1 to "" })
         assertNull(referencedImages(listOf(job), { emptyList() }, repositories) { _, _ -> 128 to "fatal: bad revision" })

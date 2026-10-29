@@ -182,7 +182,7 @@ internal object BenchRuns {
         cases.forEach { case -> result(case.record?.toString())?.let { result ->
             result.metrics.forEach { metric -> appendLine(listOf(case.index.toString(), case.arm, case.seed?.toString().orEmpty(), case.repeat.toString(), result.caseId,
                 result.status.name.lowercase(), metric.name, metric.value.toString(), metric.unit,
-                metric.direction.name.lowercase(), case.host.orEmpty()).joinToString(",", transform = ::cell)) }
+                metric.direction.name.lowercase(), case.host?.text.orEmpty()).joinToString(",", transform = ::cell)) }
         } }
     }
 

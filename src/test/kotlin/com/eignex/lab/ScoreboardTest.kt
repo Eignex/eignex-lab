@@ -42,8 +42,8 @@ class ScoreboardTest {
     fun `a board scores each reference solver and the best of them per group, and a cell lists its problems worst first`() {
         val cases = listOf(case("p1", solved(10.0, 1_000)), case("p2", solved(20.0, 1_000), format = "XCSP3"))
         val references = mapOf(
-            ("c" to "p1") to listOf(ref("cp-sat", 12.0, 500), ref("chuffed", 10.0, 500, proven = true)),
-            ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500, proven = true)),
+            ProblemKey("c", "p1") to listOf(ref("cp-sat", 12.0, 500), ref("chuffed", 10.0, 500, proven = true)),
+            ProblemKey("c", "p2") to listOf(ref("cp-sat", 15.0, 500, proven = true)),
         )
 
         val board = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.FORMAT)
@@ -61,9 +61,9 @@ class ScoreboardTest {
         val identity = References.identity(Json.parseToJsonElement(record))
         val cases = listOf(case("p1", record), case("p2", solved(20.0, 1_000)))
         val references = mapOf(
-            ("c" to "p1") to listOf(ref("chuffed", 38.0, 500, proven = true).copy(sourceIdentity = "bacp-9"),
+            ProblemKey("c", "p1") to listOf(ref("chuffed", 38.0, 500, proven = true).copy(sourceIdentity = "bacp-9"),
                 ref("cp-sat", 30.0, 1_000).copy(version = "cp-sat-fixture", sourceIdentity = identity)),
-            ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500).copy(sourceIdentity = identity)),
+            ProblemKey("c", "p2") to listOf(ref("cp-sat", 15.0, 500).copy(sourceIdentity = identity)),
         )
 
         val board = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.FORMAT)
@@ -76,7 +76,7 @@ class ScoreboardTest {
     @Test
     fun `a filter keeps only the problems that take its value`() {
         val cases = listOf(case("p1", solved(10.0, 1_000)), case("p2", solved(20.0, 1_000), format = "XCSP3"))
-        val references = mapOf(("c" to "p1") to listOf(ref("cp-sat", 12.0, 500)), ("c" to "p2") to listOf(ref("cp-sat", 15.0, 500)))
+        val references = mapOf(ProblemKey("c", "p1") to listOf(ref("cp-sat", 12.0, 500)), ProblemKey("c", "p2") to listOf(ref("cp-sat", 15.0, 500)))
 
         val board = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.KIND, mapOf(Dimension.FORMAT to "xcsp3"))
 
@@ -99,7 +99,7 @@ class ScoreboardTest {
         val record = """{"kind":"optimize","maximize":false,"feasible":true,"objective":1,"proven":false,"timeToBestMs":5,"budgetMs":60000,""" +
             """"stats":{"profile":"FiniteCp optimizing=true wide=false scheduling=true"}}"""
         val cases = listOf(case("p1", record), case("p2", solved(2.0, 5)))
-        val references = mapOf(("c" to "p1") to listOf(ref("cp-sat", 1.0, 5)), ("c" to "p2") to listOf(ref("cp-sat", 2.0, 5)))
+        val references = mapOf(ProblemKey("c", "p1") to listOf(ref("cp-sat", 1.0, 5)), ProblemKey("c", "p2") to listOf(ref("cp-sat", 2.0, 5)))
 
         val byClass = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.CLASS).rows.map { it.group }.sorted()
         val byTrait = Scoreboard.board(cases, arm, references, emptyMap(), Dimension.TRAIT).rows.map { it.group }.sorted()
@@ -116,7 +116,7 @@ class ScoreboardTest {
             case("poly", record(""""solvePipeline":"polynomial-theory"""")),
             case("bad", record(""""loadError":"no such file"""")),
         )
-        val features = mapOf(("c" to "nra") to ProblemFeatures("c", "nra", logic = "QF_NRA"))
+        val features = mapOf(ProblemKey("c", "nra") to ProblemFeatures("c", "nra", logic = "QF_NRA"))
 
         val profiles = Scoreboard.profiles(cases, features).mapKeys { it.key.problem }
 
@@ -131,11 +131,11 @@ class ScoreboardTest {
         case("p4", solved(40.0, 1_000)), case("p5", solved(50.0, 1_000)),
     ).map { it.copy(record = Json.parseToJsonElement(it.record.toString().replace("60000", "10000"))) }
     private val mixedReferences = mapOf(
-        ("c" to "p1") to listOf(ref("cp-sat", 10.0, 30_000, proven = true)),
-        ("c" to "p2") to listOf(ref("cp-sat", 20.0, 6_000, budgetMs = 10_000)),
-        ("c" to "p3") to listOf(ref("cp-sat", 30.0, 1_000, budgetMs = 10_000, proven = true)),
-        ("c" to "p4") to listOf(ref("cp-sat", 40.0, 9_000)),
-        ("c" to "p5") to listOf(ref("cp-sat", 45.0, 50_000)),
+        ProblemKey("c", "p1") to listOf(ref("cp-sat", 10.0, 30_000, proven = true)),
+        ProblemKey("c", "p2") to listOf(ref("cp-sat", 20.0, 6_000, budgetMs = 10_000)),
+        ProblemKey("c", "p3") to listOf(ref("cp-sat", 30.0, 1_000, budgetMs = 10_000, proven = true)),
+        ProblemKey("c", "p4") to listOf(ref("cp-sat", 40.0, 9_000)),
+        ProblemKey("c", "p5") to listOf(ref("cp-sat", 45.0, 50_000)),
     )
 
     @Test
@@ -158,8 +158,8 @@ class ScoreboardTest {
 
     @Test
     fun `the page shows both budgets in a cell and its problems, and marks a cell quality-only only when they differ`() {
-        val job = Job(7388, "status-sweep@abc", "main", status = Status.DONE, cancelRequested = false, setupDone = true, createdAt = 0)
-        fun page(arm: Arm, references: Map<Pair<String, String>, List<Reference>>): String {
+        val job = Job(7388, "status-sweep@abc", "main", status = Status.DONE, cancelRequested = false, setupDone = true, createdAt = 0, experiment = ExperimentSpec("status-sweep"))
+        fun page(arm: Arm, references: Map<ProblemKey, List<Reference>>): String {
             val board = Scoreboard.board(mixedCases, arm, references, emptyMap(), Dimension.FORMAT)
             val problems = Scoreboard.problems(mixedCases, arm, references, emptyMap(), Dimension.FORMAT, "all", "cp-sat")
             val view = ScoreboardView(listOf(job), job, listOf("candidate"), "candidate", Dimension.FORMAT, emptyMap(), Scoring.COMPLETE,

@@ -256,7 +256,7 @@ internal fun referencedImages(jobs: List<Job>, arms: (Long) -> List<PlannedArm>,
     val pattern = DockerCleanup.pattern(repositories) ?: return emptySet()
     val revisions = jobs.flatMap { job ->
         listOfNotNull(job.sha ?: job.ref) + arms(job.id).map { it.sha } +
-            job.experiment?.let { spec -> runCatching { Experiments.arms(spec).map { it.ref } }.getOrDefault(emptyList()) }.orEmpty()
+            job.experiment.let { spec -> runCatching { Experiments.arms(spec).map { it.ref } }.getOrDefault(emptyList()) }.orEmpty()
     }.filter { it.isNotBlank() }.distinct()
     val found = mutableSetOf<String>()
     for (revision in revisions) {

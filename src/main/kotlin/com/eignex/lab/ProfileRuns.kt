@@ -37,18 +37,19 @@ object ProfileRuns {
     fun command(worktree: String, repository: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean): String {
         validate(repository, profile)
         val prefix = "cd ${quote(worktree)} && export OUT=\"\$JOB_DIR/cases/$index/out\" LAB_REPOSITORY=${quote(repository)} LAB_WORKTREE=${quote(worktree)} LAB_CORPUS=${quote(corpus)} && mkdir -p \"\$OUT\" && "
-        profile.script?.let { script ->
+        return prefix + when (val entry = profile.entry) {
             // A tracked symlink must not turn a repository entry point into an executable elsewhere on the host.
-            return prefix + "git ls-files --error-unmatch -- ${quote(script)} >/dev/null && " +
-                "root=\"\$(pwd -P)\" && entry=\"\$(perl -MCwd=abs_path -e 'print abs_path(\$ARGV[0]) // exit 2' -- ${quote(script)})\" && " +
+            is ProfileEntry.Script -> "git ls-files --error-unmatch -- ${quote(entry.script)} >/dev/null && " +
+                "root=\"\$(pwd -P)\" && entry=\"\$(perl -MCwd=abs_path -e 'print abs_path(\$ARGV[0]) // exit 2' -- ${quote(entry.script)})\" && " +
                 "case \"\$entry\" in \"\$root\"/*) ;; *) exit 2;; esac && " +
                 "exec \"\$entry\" " + profile.args.joinToString(" ", transform = ::quote) +
-                (profile.outputArgument?.let { " ${quote(it)} \"\$OUT/report\"" } ?: "")
+                (entry.outputArgument?.let { " ${quote(it)} \"\$OUT/report\"" } ?: "")
+            is ProfileEntry.JvmMain -> {
+                val jvm = entry.jvmArgs + listOf("-cp", entry.classpath.joinToString(":") { "$worktree/$it" })
+                "exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
+                    "\"-XX:StartFlightRecording=filename=\$OUT/profile.jfr,settings=profile,dumponexit=true\" " +
+                    (jvm + entry.main + profile.args).joinToString(" ", transform = ::quote)
+            }
         }
-        val classpath = profile.classpath.joinToString(":") { "$worktree/$it" }
-        val jvm = profile.jvmArgs + listOf("-cp", classpath)
-        return prefix + "exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
-            "\"-XX:StartFlightRecording=filename=\$OUT/profile.jfr,settings=profile,dumponexit=true\" " +
-            (jvm + profile.main + profile.args).joinToString(" ", transform = ::quote)
     }
 }

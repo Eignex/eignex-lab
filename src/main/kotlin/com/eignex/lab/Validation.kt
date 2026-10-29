@@ -24,6 +24,29 @@ enum class WitnessCheck(val word: String) {
 }
 
 /**
+ * A check's verdict on a solution claim, as a record's `sourceValidation` or the lab's own check ([com.eignex.lab.checker.LabCheck])
+ * states it. A record may carry a word the lab does not know, from a newer or older bench; it reads as no verdict.
+ */
+enum class SourceVerdict(val word: String) {
+    /** The checker accepted the witness against the original source: the solution is valid. */
+    VALID("valid"),
+    /** The checker rejected the witness, or the claimed objective. */
+    INVALID("invalid"),
+    /** The checker ran and could not decide. */
+    UNKNOWN("unknown"),
+    /** The checker could not run: missing tool or source, a download that failed, a crash or a timeout. */
+    NOT_RUN("not-run"),
+    /** No external checker covers this claim. */
+    UNSUPPORTED("unsupported");
+
+    override fun toString() = word
+
+    companion object {
+        fun of(word: String?): SourceVerdict? = entries.firstOrNull { it.word == word }
+    }
+}
+
+/**
  * Source-witness validation, asked for by an arm with `param.source-validation=true`, as every scheduled solver run
  * does ([scheduled]). The lab checks each case itself, with established external checkers ([com.eignex.lab.checker]),
  * and never passes the request on to the bench, which only solves and records the witness ([forBench]).
@@ -93,17 +116,15 @@ object SourceValidation {
      * [Outcome.of] holds to this for the lab's verdicts and the bench's alike, so the trend, confirmation flips, the
      * scoreboard, the stats and comparisons, which all count through it, never move on a check that failed.
      */
-    fun rejects(state: String?): Boolean = state == INVALID
-
-    private const val INVALID = "invalid"
+    fun rejects(state: SourceVerdict?): Boolean = state == SourceVerdict.INVALID
 
     /** How far the lab's own verdict, of [state] ([com.eignex.lab.checker.LabCheck]), checked a claim: a check that
      *  could not run, or that no external checker covers, leaves the solver's report standing, unchecked. */
-    fun labCheck(state: String?): WitnessCheck = when (state) {
-        "valid" -> WitnessCheck.ACCEPTED
-        "invalid" -> WitnessCheck.INVALID
-        "unknown" -> WitnessCheck.INDETERMINATE
-        else -> WitnessCheck.UNCHECKED
+    fun labCheck(state: SourceVerdict?): WitnessCheck = when (state) {
+        SourceVerdict.VALID -> WitnessCheck.ACCEPTED
+        SourceVerdict.INVALID -> WitnessCheck.INVALID
+        SourceVerdict.UNKNOWN -> WitnessCheck.INDETERMINATE
+        SourceVerdict.NOT_RUN, SourceVerdict.UNSUPPORTED, null -> WitnessCheck.UNCHECKED
     }
 
     /**
@@ -112,11 +133,12 @@ object SourceValidation {
      * policy that left no result. An `unknown` whose [reason] says the checker never ran ([checkerFault]) is unchecked.
      * Only the mark depends on it: any `unknown` keeps the solver's claim, which the bench's check withdrew ([rejects]).
      */
-    fun check(sourceValidation: String?, policy: String?, reason: String? = null): WitnessCheck = when (sourceValidation) {
-        "valid" -> WitnessCheck.ACCEPTED
-        "invalid" -> WitnessCheck.INVALID
-        "unknown" -> if (checkerFault(reason)) WitnessCheck.UNCHECKED else WitnessCheck.INDETERMINATE
-        else -> if (policy == null || policy == UNCHECKED_POLICY) WitnessCheck.UNCHECKED else WitnessCheck.INDETERMINATE
+    fun check(sourceValidation: SourceVerdict?, policy: String?, reason: String? = null): WitnessCheck = when (sourceValidation) {
+        SourceVerdict.VALID -> WitnessCheck.ACCEPTED
+        SourceVerdict.INVALID -> WitnessCheck.INVALID
+        SourceVerdict.UNKNOWN -> if (checkerFault(reason)) WitnessCheck.UNCHECKED else WitnessCheck.INDETERMINATE
+        SourceVerdict.NOT_RUN, SourceVerdict.UNSUPPORTED, null ->
+            if (policy == null || policy == UNCHECKED_POLICY) WitnessCheck.UNCHECKED else WitnessCheck.INDETERMINATE
     }
 
     /**

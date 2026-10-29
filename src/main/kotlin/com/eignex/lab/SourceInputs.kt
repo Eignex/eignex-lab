@@ -15,7 +15,7 @@ class SourceInputs(private val requireTrusted: (repository: String, commit: Stri
     fun publish(mirror: Path, repository: String, commit: String, os: String, arch: String, toolchain: String,
                 build: WorkerBuild, output: Path, files: Map<String, Path> = emptyMap()): WorkerBundle {
         Repositories.requireAllowed(repository)
-        require(commit.matches(Regex("[a-f0-9]{40}")))
+        require(CommitSha.isValid(commit))
         requireTrusted(repository, commit) // Call before exporting any objects, including on retries.
         val bundleName = "source.git.bundle"
         require(bundleName !in files && files.keys.all { safeRelative(it).first().toString() == "lab-inputs" })

@@ -22,7 +22,7 @@ class ReferencesTest {
     @Test
     fun `a re-import keeps the stronger result already stored`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "c" to "p"
+        val key = ProblemKey("c", "p")
         store.putReferences(listOf(key to ref(true, 5.0, proven = true)), "a")
 
         val changed = store.putReferences(listOf(key to ref(true, 9.0)), "b")
@@ -35,7 +35,7 @@ class ReferencesTest {
         val case = CaseResult(0, Status.DONE, Problem("s", "p", collection = "c"), "a", null,
             Json.parseToJsonElement("""{"kind":"satisfy","feasible":false,"proven":true,"budgetMs":1000}"""))
 
-        val comparison = References.compare(listOf("a"), listOf(case), mapOf(("c" to "p") to ref(true)))
+        val comparison = References.compare(listOf("a"), listOf(case), mapOf(ProblemKey("c", "p") to ref(true)))
 
         assertEquals(listOf("a proves infeasible, cp-sat solved it"), comparison.disagreements.map { it.reason })
     }
@@ -49,7 +49,7 @@ class ReferencesTest {
         val comparison = References.compare(
             listOf("a"),
             listOf(case("close", 11), case("far", 20), case("equal", 10)),
-            mapOf(("c" to "close") to proven, ("c" to "far") to proven, ("c" to "equal") to proven),
+            mapOf(ProblemKey("c", "close") to proven, ProblemKey("c", "far") to proven, ProblemKey("c", "equal") to proven),
         )
 
         assertEquals(listOf("far" to 1.0, "close" to 0.1), comparison.shortfalls.map { it.problem.problem to it.gap })
@@ -84,17 +84,17 @@ class ReferencesTest {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         store.putReferences(
             listOf(
-                ("c" to "a") to ref(true, 1.0, proven = true),
-                ("c" to "b") to ref(false, proven = true),
-                ("c" to "c") to ref(null),
-                ("d" to "a") to ref(true, 2.0, proven = true).copy(solver = "z3"),
+                ProblemKey("c", "a") to ref(true, 1.0, proven = true),
+                ProblemKey("c", "b") to ref(false, proven = true),
+                ProblemKey("c", "c") to ref(null),
+                ProblemKey("d", "a") to ref(true, 2.0, proven = true).copy(solver = "z3"),
             ),
             "test",
         )
 
         val (rows, total) = store.searchReferences(ReferenceFilter(solver = "cp-sat", verdict = ReferenceVerdict.OPTIMUM), limit = 10)
 
-        assertEquals(listOf("c" to "a") to 1, rows.map { it.first } to total)
+        assertEquals(listOf(ProblemKey("c", "a")) to 1, rows.map { it.first } to total)
     }
 
     @Test
@@ -128,7 +128,7 @@ class ReferencesTest {
     @Test
     fun `polynomial real references persist with their binary identity and enter ordinary comparisons`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "klause-bench/smoke-corpus/qfnra-v1/core/algebraic" to "algebraic/irrational-tower"
+        val key = ProblemKey("klause-bench/smoke-corpus/qfnra-v1/core/algebraic", "algebraic/irrational-tower")
         val record = Json.parseToJsonElement("""{"solver":"z3","kind":"satisfy","feasible":true,"proven":true,
             "budgetMs":10000,"command":"z3 -model input.smt2","stats":{"solveTime":"0.006",
             "referenceVersion":"Z3 pinned|sha256=abc|smt-reference-v2","referenceStatus":"sat"}}""")
@@ -138,7 +138,7 @@ class ReferencesTest {
         val stored = store.references(listOf(key), "z3")
 
         assertEquals(row, stored[key])
-        assertEquals("Z3 pinned|sha256=abc|smt-reference-v2", store.referenceRows(key.first, key.second).single().version)
+        assertEquals("Z3 pinned|sha256=abc|smt-reference-v2", store.referenceRows(key.collection, key.problem).single().version)
     }
 
     @Test
@@ -156,7 +156,7 @@ class ReferencesTest {
     @Test
     fun `a checked rerun replaces an invalid stored proof, and an unchecked one never replaces a checked row`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "miplib2017" to "neos4"
+        val key = ProblemKey("miplib2017", "neos4")
         store.putReferences(listOf(key to mps("highs", true, -48454383704.3946, proven = true, version = "")), "old")
         val corrected = mps("highs", true, -48603440750.5895, proven = false)
 
@@ -186,16 +186,16 @@ class ReferencesTest {
     @Test
     fun `the lab's comparisons take neither stale rows nor disputed proofs`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "miplib2017" to "neos-1603965"
+        val key = ProblemKey("miplib2017", "neos-1603965")
         store.putReferences(listOf(key to mps("scip", true, 637213553.1165, proven = false)), "scip")
         store.putReferences(listOf(key to mps("highs", false, null, proven = true)), "highs")
-        val stale = "miplib2017" to "marne"
+        val stale = ProblemKey("miplib2017", "marne")
         store.putReferences(listOf(stale to mps("scip", true, 317056.2, proven = true, version = "")), "old")
 
         val trusted = store.references(listOf(key, stale))
 
         assertEquals(listOf("scip" to true), trusted.values.map { it.solver to it.feasible })
-        assertEquals(2, store.referenceRows(key.first, key.second).size)
+        assertEquals(2, store.referenceRows(key.collection, key.problem).size)
     }
 
     @Test
@@ -216,7 +216,7 @@ class ReferencesTest {
         val store = Store(file)
 
         assertEquals(listOf(true, false), listOf("miplib2017" to "neos4", "hakank" to "q").map { store.referenceRows(it.first, it.second).single().stale })
-        assertEquals(setOf("hakank" to "q"), store.references(listOf("miplib2017" to "neos4", "hakank" to "q")).keys)
+        assertEquals(setOf(ProblemKey("hakank", "q")), store.references(listOf(ProblemKey("miplib2017", "neos4"), ProblemKey("hakank", "q"))).keys)
     }
 
     @Test
@@ -235,7 +235,7 @@ class ReferencesTest {
     @Test
     fun `retired XCSP reference proofs cannot replace a registered undecided row`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "xcsp3-cop-22to25" to "case"
+        val key = ProblemKey("xcsp3-cop-22to25", "case")
         val image = "klause-xcsp3-cpsat:source-preserving-v2@sha256:${"0".repeat(64)}"
         val current = ref(null).copy(version = "$image|${References.XCSP_POLICY}")
         store.putReferences(listOf(key to current), "current")
@@ -244,18 +244,18 @@ class ReferencesTest {
         val changed = store.putReferences(listOf(key to legacy), "legacy")
 
         assertEquals(0, changed)
-        assertEquals(current, store.referenceRows(key.first, key.second).single())
+        assertEquals(current, store.referenceRows(key.collection, key.problem).single())
     }
 
     @Test
     fun `XCSP identities without a pinned image remain stale`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "xcsp3-csp-22to25" to "case"
+        val key = ProblemKey("xcsp3-csp-22to25", "case")
         val incomplete = ref(false, proven = true).copy(version = References.XCSP_POLICY)
 
         store.putReferences(listOf(key to incomplete), "incomplete")
 
-        assertEquals(true, store.referenceRows(key.first, key.second).single().stale)
+        assertEquals(true, store.referenceRows(key.collection, key.problem).single().stale)
         assertEquals(emptyMap(), store.references(listOf(key)))
     }
 
@@ -263,10 +263,10 @@ class ReferencesTest {
     fun `opening a database retires legacy XCSP claims while preserving their facts`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)
-        val old = "xcsp3-cop-22to25" to "legacy"
-        val current = "xcsp3-cop-22to25" to "current"
-        val unversioned = "xcsp3-csp-22to25" to "unversioned"
-        val minizinc = "hakank" to "minizinc"
+        val old = ProblemKey("xcsp3-cop-22to25", "legacy")
+        val current = ProblemKey("xcsp3-cop-22to25", "current")
+        val unversioned = ProblemKey("xcsp3-csp-22to25", "unversioned")
+        val minizinc = ProblemKey("hakank", "minizinc")
         val image = "klause-xcsp3-cpsat:source-preserving-v2@sha256:${"0".repeat(64)}"
         val legacy = ref(false, proven = true).copy(version = "$image|xcsp3-matrix-row-major-v1")
         val checked = ref(true, 5.0).copy(version = "$image|${References.XCSP_POLICY}")
@@ -278,7 +278,7 @@ class ReferencesTest {
 
         val reopened = Store(file)
 
-        assertEquals(legacy.copy(stale = true), reopened.referenceRows(old.first, old.second).single())
+        assertEquals(legacy.copy(stale = true), reopened.referenceRows(old.collection, old.problem).single())
         assertEquals(setOf(current, minizinc), reopened.references(listOf(old, current, unversioned, minizinc)).keys)
     }
 
@@ -298,7 +298,7 @@ class ReferencesTest {
     @Test
     fun `a proof without a solve time is timed by the wall clock, and a rerun of it refreshes the stored row`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "hakank" to "building_a_house_model"
+        val key = ProblemKey("hakank", "building_a_house_model")
         store.putReferences(listOf(key to ref(false, proven = true).copy(elapsedMs = 1000)), "old")
         val record = Json.parseToJsonElement(
             """{"solver":"cp-sat","budgetMs":1000,"feasible":false,"proven":true,"maximize":false,"elapsedMs":137,"stats":{"flatTime":"0.1"}}""",
@@ -344,10 +344,10 @@ class ReferencesTest {
         val bacp9 = Reference("chuffed", false, 38.0, true, true, 5, 1000, version = "chuffed-fixture", sourceIdentity = identity("bacp-9"))
         val unbound = bacp9.copy(sourceIdentity = null)
 
-        val other = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(("c" to "bacp") to bacp9))
-        val legacy = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(("c" to "bacp") to unbound))
-        val same = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-9")), mapOf(("c" to "bacp") to bacp9))
-        val neither = References.compare(listOf("a"), listOf(sourced("bacp", 30, null)), mapOf(("c" to "bacp") to unbound))
+        val other = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(ProblemKey("c", "bacp") to bacp9))
+        val legacy = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-24")), mapOf(ProblemKey("c", "bacp") to unbound))
+        val same = References.compare(listOf("a"), listOf(sourced("bacp", 30, "bacp-9")), mapOf(ProblemKey("c", "bacp") to bacp9))
+        val neither = References.compare(listOf("a"), listOf(sourced("bacp", 30, null)), mapOf(ProblemKey("c", "bacp") to unbound))
 
         assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.summaries.single().covered })
         assertEquals(listOf(0, 0, 1, 1), listOf(other, legacy, same, neither).map { it.disagreements.size })
@@ -366,7 +366,7 @@ class ReferencesTest {
     @Test
     fun `the store keeps a row's source, compares by the run's source, and selects by the newest bound one`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "c" to "bacp"
+        val key = ProblemKey("c", "bacp")
         val legacy = Reference("chuffed", false, 38.0, true, true, 5, 1000)
         val bound = Reference("cp-sat", false, 30.0, true, true, 5, 1000, version = "cp-sat-fixture", sourceIdentity = identity("bacp-24"))
         store.putReferences(listOf(key to legacy, key to bound), "test")
@@ -376,13 +376,13 @@ class ReferencesTest {
         assertEquals(legacy, store.references(listOf(key), sources = References.sources(listOf(sourced("bacp", 30, null))))[key])
         assertEquals(null, store.references(listOf(key), sources = References.sources(listOf(sourced("bacp", 30, "bacp-19"))))[key])
         assertEquals(emptyList(), store.referenceConflicts())
-        assertEquals(setOf(null, bound.sourceIdentity), store.referenceRows(key.first, key.second).map { it.sourceIdentity }.toSet())
+        assertEquals(setOf(null, bound.sourceIdentity), store.referenceRows(key.collection, key.problem).map { it.sourceIdentity }.toSet())
     }
 
     @Test
     fun `a row bound to new source files replaces a stronger one on others, and an unbound one never replaces a bound one`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "c" to "bacp"
+        val key = ProblemKey("c", "bacp")
         val proven = Reference("chuffed", false, 38.0, true, true, 5, 1000)
         val rebound = proven.copy(objective = 30.0, proven = false, sourceIdentity = identity("bacp-24"))
         store.putReferences(listOf(key to proven), "old")
@@ -391,7 +391,7 @@ class ReferencesTest {
         val kept = store.putReferences(listOf(key to proven), "old again")
 
         assertEquals(listOf(1, 0), listOf(replaced, kept))
-        assertEquals(listOf(rebound), store.referenceRows(key.first, key.second))
+        assertEquals(listOf(rebound), store.referenceRows(key.collection, key.problem))
     }
 
     @Test
@@ -425,13 +425,13 @@ class ReferencesTest {
         store.plan(id, listOf(PlannedArm(Arm("cp-sat", emptyMap()), "sha")), listOf(problem), Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
         store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"sourceHashes":{"model":"m1"}}""")
         store.finish(id, Status.DONE)
-        store.putReferences(listOf(("c" to "p") to ref(true, proven = true)), "lab:$id")
-        store.putReferences(listOf(("c" to "q") to ref(true, proven = true).copy(solver = "z3")), "import")
+        store.putReferences(listOf(ProblemKey("c", "p") to ref(true, proven = true)), "lab:$id")
+        store.putReferences(listOf(ProblemKey("c", "q") to ref(true, proven = true).copy(solver = "z3")), "import")
 
         assertEquals(1, store.bindLabReferenceSources())
         val identity = References.identity(Json.parseToJsonElement("""{"sourceHashes":{"model":"m1"}}"""))
-        assertEquals(identity, store.currentReferenceRows(listOf("c" to "p")).getValue("c" to "p").single().sourceIdentity)
-        assertEquals(null, store.currentReferenceRows(listOf("c" to "q")).getValue("c" to "q").single().sourceIdentity)
+        assertEquals(identity, store.currentReferenceRows(listOf(ProblemKey("c", "p"))).getValue(ProblemKey("c", "p")).single().sourceIdentity)
+        assertEquals(null, store.currentReferenceRows(listOf(ProblemKey("c", "q"))).getValue(ProblemKey("c", "q")).single().sourceIdentity)
         assertEquals(0, store.bindLabReferenceSources())
     }
 
@@ -441,9 +441,9 @@ class ReferencesTest {
     @Test
     fun `retiring a solver's rows of one budget marks only those stale and keeps them as history`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val long = "satcomp" to "a"
-        val short = "satcomp" to "b"
-        val other = "satlib" to "a"
+        val long = ProblemKey("satcomp", "a")
+        val short = ProblemKey("satcomp", "b")
+        val other = ProblemKey("satlib", "a")
         store.putReferences(listOf(long to kissat(true, 300_000), short to kissat(false, 60_000), other to kissat(true, 300_000)), "lab:1")
         store.putReferences(listOf(long to Reference("clasp", false, null, true, true, 10, 300_000)), "lab:2")
 
@@ -451,9 +451,9 @@ class ReferencesTest {
 
         assertEquals(1, retired)
         assertEquals(0, store.retireReferenceRows("satcomp", "kissat", 300_000))
-        assertEquals(listOf("clasp" to false, "kissat" to true), store.referenceRows(long.first, long.second).map { it.solver to it.stale }.sortedBy { it.first })
-        assertEquals(false, store.referenceRows(short.first, short.second).single().stale)
-        assertEquals(false, store.referenceRows(other.first, other.second).single().stale)
+        assertEquals(listOf("clasp" to false, "kissat" to true), store.referenceRows(long.collection, long.problem).map { it.solver to it.stale }.sortedBy { it.first })
+        assertEquals(false, store.referenceRows(short.collection, short.problem).single().stale)
+        assertEquals(false, store.referenceRows(other.collection, other.problem).single().stale)
         assertEquals(null, store.references(listOf(long), "kissat")[long])
         assertEquals(2, store.retireReferenceRows("satcomp", "kissat") + store.retireReferenceRows("satlib", "kissat"))
     }
@@ -461,8 +461,8 @@ class ReferencesTest {
     @Test
     fun `the scoreboard, coverage and comparisons leave retired rows out`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "satcomp" to "a"
-        store.putReferences(listOf(key to kissat(true, 300_000), ("satcomp" to "b") to kissat(true, 60_000)), "lab:1")
+        val key = ProblemKey("satcomp", "a")
+        store.putReferences(listOf(key to kissat(true, 300_000), ProblemKey("satcomp", "b") to kissat(true, 60_000)), "lab:1")
 
         store.retireReferenceRows("satcomp", "kissat", 300_000)
 
@@ -475,7 +475,7 @@ class ReferencesTest {
     @Test
     fun `a later row of any budget or strength takes the place of a retired one`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
-        val key = "satcomp" to "a"
+        val key = ProblemKey("satcomp", "a")
         val proof = kissat(true, 300_000)
         store.putReferences(listOf(key to proof), "lab:1")
         // Before it is retired, a 60 s rerun with the same verdict never displaces the 300 s row.
@@ -496,7 +496,7 @@ class ReferencesTest {
     fun `retiring over HTTP needs the password and a same-site request, and says how many rows it marked`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Required(Password.hash("secret")))
         val store = Store(config.database)
-        store.putReferences(listOf(("satcomp" to "a") to kissat(true, 300_000), ("satcomp" to "b") to kissat(true, 60_000)), "lab:1")
+        store.putReferences(listOf(ProblemKey("satcomp", "a") to kissat(true, 300_000), ProblemKey("satcomp", "b") to kissat(true, 60_000)), "lab:1")
         val auth = "Basic " + Base64.getEncoder().encodeToString(":secret".toByteArray())
         val body = """{"collection":"satcomp","solver":"kissat","budgetMs":300000}"""
         testApplication {

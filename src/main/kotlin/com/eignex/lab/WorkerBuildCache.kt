@@ -192,7 +192,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         require(slots in 1..64)
         while (true) {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
-            check(lease() > 0) { "build lease expired while waiting for compiler" }
+            if (lease() <= 0) throw LeaseLost("build lease expired while waiting for compiler")
             for (slot in 0 until slots) {
                 ProcessFilePin.tryLock(root.resolve("compile-$slot.lock"))?.use { return use() }
             }
@@ -220,7 +220,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         var slot = 0
         while (true) {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
-            require(lease() > 0) { "build lease expired while acquiring dependency cache" }
+            if (lease() <= 0) throw LeaseLost("build lease expired while acquiring dependency cache")
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
             val name = if (slot == 0) key else "$key-$slot"
             val owner = ProcessFilePin.tryLock(root.resolve("dependencies-$name.lock"))
@@ -241,7 +241,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         var waitingNanos = 0L
         while (true) {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
-            require(lease() > 0) { "build lease expired while waiting for cache" }
+            if (lease() <= 0) throw LeaseLost("build lease expired while waiting for cache")
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
             ProcessFilePin.tryLock(path)?.use { waited(waitingNanos / 1_000_000); return use() }
             val waitingAt = System.nanoTime()

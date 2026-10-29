@@ -12,7 +12,7 @@ class NomadAllocationCleanupTest {
         NomadCpuCapacity(8000, 8), ResourceBudget(1000, 1024), listOf("/releases/fixture/worker")), setOf("arch:arm64"))
     private val settings = NomadQueueSettings("release", "http://127.0.0.1:8091", listOf(target))
     private val job = store.create("fixture", "main", emptyList(), experiment = ExperimentSpec("fixture"))
-    private val session = store.execution.createSession("session", job, "solve", "release", ResourceBudget(1000, 1024), "secret-".repeat(8), "{}")
+    private val session = store.execution.createSession("session", job, ExecutionClass.SOLVE, "release", ResourceBudget(1000, 1024), "secret-".repeat(8), "{}")
     private val control = object : NomadControl {
         var rows = emptyList<JsonObject>()
         var fail: String? = null

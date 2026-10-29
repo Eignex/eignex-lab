@@ -94,16 +94,14 @@ class PlacementTest {
 
     private fun committed(file: String) = ExperimentSpec(file.removeSuffix(".json"), host = Experiments.AUTO_HOST, bench = BenchSpec("bench.json"))
 
-
-
     @Test
     fun `a schedule that opts in to the cloud places its runs local or cloud, and its confirmations local`() {
         val config = config()
         val store = Store(config.database)
         store.createSchedule("ref", "main", spec.copy(name = "ref", host = Experiments.AUTO_HOST), 3600)
-        store.createSchedule("aliased", "main", spec.copy(name = "aliased", host = Experiments.CLOUD_HOST), 3600)
+        store.createSchedule("aliased", "main", spec.copy(name = "aliased", host = HostPlacement.CLOUD), 3600)
         store.createSchedule("status-sweep", "main", spec.copy(name = "status-sweep"), 3600)
-        store.createSchedule("pinned", "main", spec.copy(name = "pinned", host = Experiments.LOCAL_HOST), 3600)
+        store.createSchedule("pinned", "main", spec.copy(name = "pinned", host = HostPlacement.LOCAL), 3600)
         store.createSchedule("refs", "main", spec.copy(name = "refs", host = Experiments.AUTO_HOST,
             base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), 3600)
         val schedules = store.schedules()
@@ -148,6 +146,5 @@ class PlacementTest {
         assertEquals("abc", schedule.lastSha)
         assertTrue(Placement.cloudOptIn(schedule.experiment))
     }
-
 
 }
