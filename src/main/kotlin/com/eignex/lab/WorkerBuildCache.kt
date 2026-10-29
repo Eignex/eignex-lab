@@ -12,7 +12,10 @@ class WorkerBuildFailure(val detail: String) : IllegalStateException("trusted so
 
 /** Builds are bounded helpers of their session, not another reservation or a whole-node exclusivity rule. */
 class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSupervisor,
-                       private val maxBytes: Long = 32L * 1024 * 1024 * 1024) {
+                       private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
+                       private val dependencyBytes: (Path) -> Long = ::dependencyTreeBytes) {
+    private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
+    @Serializable private data class DependencyUsage(val key: String, val modified: String, val bytes: Long)
     @Serializable private data class Entry(val identity: String, val files: List<InputFile>)
 
     fun prepare(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
@@ -29,7 +32,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         val destination = root.resolve(identity)
         var waitingMs = 0L
         return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
-            trace.step("cache-cleanup") { maintain() }
+            trace.step("cache-cleanup") { requestMaintenance() }
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
             val verification = TreeVerification()
@@ -45,7 +48,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             }
             if (Files.exists(destination, NOFOLLOW_LINKS)) delete(destination)
             val storage = WorkerBuildStaging(root)
-            val lease = storage.create(::checkRun)
+            val lease = trace.step("cache-cleanup") { storage.create(::checkRun) }
             val staging = lease.directory
             try {
                 val tree = staging.resolve("tree")
@@ -76,7 +79,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         checkPreparationExit(exit) { "exit $exit\n" + tail(errors) + "\n" + tail(log) }
                     }
                 }
-                trace.step("checkout") { source { source ->
+                source { source -> trace.step("checkout") {
                     if (build.gitBundle != null) {
                         Files.createDirectory(tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "init"), tree)
@@ -210,14 +213,23 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
 
     /** Gradle cannot negotiate cache locks across container namespaces. Reuse the first idle home, or give an
      * already-admitted concurrent build another home. Scheduling budgets bound concurrency; cache eviction bounds disk. */
-    private fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T {
+    internal fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T {
         var slot = 0
         while (true) {
             if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
             require(lease() > 0) { "build lease expired while acquiring dependency cache" }
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
             val name = if (slot == 0) key else "$key-$slot"
-            ProcessFilePin.tryLock(root.resolve("dependencies-$name.lock"))?.use { return use(root.resolve("dependencies/$name")) }
+            val owner = ProcessFilePin.tryLock(root.resolve("dependencies-$name.lock"))
+            if (owner != null) {
+                try { owner.use {
+                    val home = root.resolve("dependencies/$name")
+                    // Invalidate before any writer enters, including failed/crashed builds.
+                    Files.deleteIfExists(root.resolve("dependency-sizes/$name.json"))
+                    try { return use(home) }
+                    finally { if (Files.isDirectory(home, NOFOLLOW_LINKS)) Files.setLastModifiedTime(home, java.nio.file.attribute.FileTime.fromMillis(now())) }
+                } } finally { requestMaintenance() }
+            }
             slot++
         }
     }
@@ -235,42 +247,124 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
 
-    /** One maintenance pass per node per minute, using manifests instead of rescanning all build trees. */
-    internal fun maintain(at: Long = now()) {
+    /** Foreground preparation never performs an unbounded legacy inventory scan. */
+    private fun requestMaintenance() {
+        if (!maintenanceRunning.compareAndSet(false, true)) return
+        Thread({
+            try { maintain(wait = false) }
+            catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
+            finally { maintenanceRunning.set(false) }
+        }, "worker-build-cleanup").apply { isDaemon = true; start() }
+    }
+
+    /** The sweep pin serializes accounting; the staging lock covers only snapshots and atomic renames.
+     * Published manifests account immutable builds. Dependency homes are scanned once per dirty generation,
+     * under their own pin, outside the staging lock. Active/unknown homes count conservatively. */
+    internal fun maintain(at: Long = now(), wait: Boolean = true) {
         Files.createDirectories(root)
-        val maintenance = ProcessFilePin.tryLock(root.resolve("maintenance.lock")) ?: return
-        val garbage = maintenance.use {
+        val sweep = root.resolve("maintenance-sweep.lock")
+        if (wait) locked(sweep, { null }, { Long.MAX_VALUE }) { maintainSweep(at) }
+        else ProcessFilePin.tryLock(sweep)?.use { maintainSweep(at) }
+    }
+
+    private fun <T> maintenanceLock(use: () -> T): T = locked(root.resolve("maintenance.lock"), { null }, { Long.MAX_VALUE }, use = use)
+
+    private fun maintainSweep(at: Long) {
+        data class Snapshot(val builds: List<Path>, val dependencies: List<Path>, val garbage: List<Path>)
+        val snapshot = maintenanceLock {
             val stamp = root.resolve("maintenance.timestamp")
-            if (Files.exists(stamp) && at - Files.getLastModifiedTime(stamp).toMillis() < 60_000) return
-            val removed = WorkerBuildStaging(root).reapLocked(at).toMutableList()
+            if (Files.exists(stamp) && at - Files.getLastModifiedTime(stamp).toMillis() < 60_000) return@maintenanceLock null
             Files.writeString(stamp, ""); Files.setLastModifiedTime(stamp, java.nio.file.attribute.FileTime.fromMillis(at))
-            data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long)
-            val candidates = mutableListOf<Candidate>()
-            Files.list(root).use { paths -> paths.filter { it.fileName.toString().matches(SHA256) && Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
-                val manifest = path.resolve("manifest.json")
-                val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(manifest)) }.getOrNull()
-                if (entry != null) candidates += Candidate(path, root.resolve("${path.fileName}.pin"), entry.files.sumOf { it.bytes }, Files.getLastModifiedTime(manifest).toMillis())
-            } }
-            val dependencies = root.resolve("dependencies")
-            if (Files.isDirectory(dependencies)) Files.list(dependencies).use { paths -> paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { path ->
-                val bytes = runCatching { Files.walk(path).use { files -> files.filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }.mapToLong { runCatching { Files.size(it) }.getOrDefault(0) }.sum() } }.getOrDefault(0)
-                candidates += Candidate(path, root.resolve("dependencies-${path.fileName}.lock"), bytes, Files.getLastModifiedTime(path).toMillis())
-            } }
-            var size = candidates.sumOf { it.bytes }
-            for (candidate in candidates.sortedBy { it.used }) {
-                if (size <= maxBytes) break
-                ProcessFilePin.tryLock(candidate.lock)?.use {
-                    val trash = root.resolve(".evict-${java.util.UUID.randomUUID()}")
-                    if (Files.exists(candidate.path, NOFOLLOW_LINKS)) {
-                        Files.move(candidate.path, trash, ATOMIC_MOVE); removed.add(trash); size -= candidate.bytes
+            val garbage = WorkerBuildStaging(root).reapLocked(at).toMutableList()
+            val builds = Files.list(root).use { paths -> paths.filter { SHA256.matches(it.fileName.toString()) }.toList() }
+            val dependencies = root.resolve("dependencies").let { directory ->
+                if (!Files.isDirectory(directory, NOFOLLOW_LINKS)) emptyList() else Files.list(directory).use { it.toList() }
+            }
+            Files.list(root).use { paths -> garbage.addAll(paths.filter { it.fileName.toString().startsWith(".evict-") }.toList()) }
+            Snapshot(builds, dependencies, garbage)
+        } ?: return
+        data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long, val key: String?, val usage: DependencyUsage? = null)
+        val candidates = mutableListOf<Candidate>()
+        val unknown = maxBytes.coerceAtLeast(1)
+        fun attributes(path: Path) = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        for (path in snapshot.builds) {
+            checkMaintenanceActive()
+            if (!Files.isDirectory(path, NOFOLLOW_LINKS)) continue
+            val manifest = path.resolve("manifest.json")
+            val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(manifest)) }.getOrNull()
+            val bytes = runCatching {
+                require(entry != null && entry.identity == path.fileName.toString())
+                entry.files.fold(0L) { total, file -> require(file.bytes >= 0); Math.addExact(total, file.bytes) }
+            }.getOrDefault(unknown)
+            val used = runCatching { Files.getLastModifiedTime(manifest).toMillis() }.getOrDefault(0)
+            candidates += Candidate(path, root.resolve("${path.fileName}.pin"), bytes, used, attributes(path).fileKey()?.toString())
+        }
+        var accountingIncomplete = false
+        for (path in snapshot.dependencies) {
+            checkMaintenanceActive()
+            if (!Files.isDirectory(path, NOFOLLOW_LINKS)) continue
+            val lock = root.resolve("dependencies-${path.fileName}.lock")
+            var usage: DependencyUsage? = null
+            val owner = ProcessFilePin.tryLock(lock)
+            if (owner == null) {
+                // Older workers do not invalidate usage records themselves. Observing their live pin
+                // makes the old size dirty too, so their released growth must be measured again.
+                Files.deleteIfExists(usageFile(path)); accountingIncomplete = true
+            }
+            owner?.use {
+                usage = knownDependencyUsage(path) ?: run {
+                    val before = attributes(path)
+                    val bytes = dependencyBytes(path)
+                    checkMaintenanceActive()
+                    val after = attributes(path)
+                    require(bytes >= 0 && before.fileKey() == after.fileKey() && before.lastModifiedTime() == after.lastModifiedTime()) { "dependency cache changed during accounting" }
+                    after.fileKey()?.toString()?.let { key ->
+                        DependencyUsage(key, after.lastModifiedTime().toString(), bytes).also { recordDependencyUsage(path, it) }
                     }
                 }
             }
-            Files.list(root).use { paths -> removed.addAll(paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) && it.fileName.toString().startsWith(".evict-") }.toList()) }
-            removed.distinct()
+            val attrs = attributes(path)
+            candidates += Candidate(path, lock, usage?.bytes ?: unknown, attrs.lastModifiedTime().toMillis(), attrs.fileKey()?.toString(), usage)
         }
-        for (path in garbage) try { deleteTree(path) } catch (_: java.nio.file.NoSuchFileException) { }
+        fun saturated(a: Long, b: Long) = if (a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
+        var bytes = candidates.fold(0L) { total, candidate -> saturated(total, candidate.bytes) }
+        val garbage = snapshot.garbage.toMutableList()
+        // A live dirty home has no trustworthy size. Reconcile after its writer releases the pin;
+        // guessing a full budget here would evict every warm build during normal compilation.
+        if (accountingIncomplete) maintenanceLock { Files.deleteIfExists(root.resolve("maintenance.timestamp")) }
+        for (candidate in if (accountingIncomplete) emptyList() else candidates.sortedBy { it.used }) {
+            checkMaintenanceActive()
+            if (bytes <= maxBytes) break
+            ProcessFilePin.tryLock(candidate.lock)?.use {
+                maintenanceLock {
+                    if (!Files.isDirectory(candidate.path, NOFOLLOW_LINKS)) return@maintenanceLock
+                    if (attributes(candidate.path).fileKey()?.toString() != candidate.key) return@maintenanceLock
+                    if (candidate.usage != null && knownDependencyUsage(candidate.path) != candidate.usage) return@maintenanceLock
+                    val trash = root.resolve(".evict-${java.util.UUID.randomUUID()}")
+                    Files.move(candidate.path, trash, ATOMIC_MOVE)
+                    if (candidate.path.parent.fileName.toString() == "dependencies") Files.deleteIfExists(usageFile(candidate.path))
+                    garbage.add(trash); bytes = (bytes - candidate.bytes).coerceAtLeast(0)
+                }
+            }
+        }
+        for (path in garbage.distinct()) {
+            checkMaintenanceActive()
+            try { deleteTree(path) } catch (_: java.nio.file.NoSuchFileException) { }
+        }
         if (garbage.isNotEmpty()) println("worker build cache cleanup: trees=${garbage.size}")
+    }
+
+    private fun usageFile(path: Path) = root.resolve("dependency-sizes/${path.fileName}.json")
+    private fun knownDependencyUsage(path: Path): DependencyUsage? = runCatching {
+        val usage = Json.decodeFromString<DependencyUsage>(Files.readString(usageFile(path)))
+        val attrs = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        usage.takeIf { it.bytes >= 0 && attrs.isDirectory && it.key == attrs.fileKey()?.toString() && it.modified == attrs.lastModifiedTime().toString() }
+    }.getOrNull()
+    private fun recordDependencyUsage(path: Path, usage: DependencyUsage) {
+        val target = usageFile(path); Files.createDirectories(target.parent)
+        val temporary = Files.createTempFile(target.parent, ".size-", ".tmp")
+        try { Files.writeString(temporary, Json.encodeToString(usage)); Files.move(temporary, target, ATOMIC_MOVE, REPLACE_EXISTING) }
+        finally { Files.deleteIfExists(temporary) }
     }
 
     private fun valid(path: Path, identity: String, checkActive: () -> Unit, verification: TreeVerification): Boolean {
@@ -300,3 +394,22 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
  * Preserve explicit custom toolchains; the running JDK and build recipe are independently keyed above. */
 internal fun buildToolchain(toolchain: String): String =
     if (Regex("jdk25:[a-f0-9]{40}").matches(toolchain)) "jdk25" else toolchain
+
+private fun checkMaintenanceActive() {
+    if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache cleanup cancelled")
+}
+
+private fun dependencyTreeBytes(path: Path): Long {
+    var bytes = 0L
+    Files.walkFileTree(path, object : java.nio.file.SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            checkMaintenanceActive(); return java.nio.file.FileVisitResult.CONTINUE
+        }
+        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            checkMaintenanceActive()
+            if (attrs.isRegularFile) bytes = Math.addExact(bytes, attrs.size())
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+    })
+    return bytes
+}
