@@ -102,6 +102,8 @@ class NomadQueue(
                 job = store.job(job.id) ?: continue
                 if (job.paused || job.cancelRequested || job.status !in ACTIVE) continue
                 val spec = checkNotNull(job.experiment)
+                // Persisted jobs predate submission validation; refuse retired recipes before publishing or allocating.
+                Experiments.requireExecutable(spec)
                 val acceptedPreparation = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null }?.second?.preparation
                 val preparedBench = acceptedPreparation?.let { preparation ->
                     val plans = preparation.armPlans.values.ifEmpty { listOfNotNull(preparation.benchPlan) }
@@ -381,5 +383,5 @@ internal fun preparationSelection(store: Store, spec: ExperimentSpec, requested:
         require(requested == listOf(listOf(Experiments.profileProblem(spec))))
         return requested
     }
-    error("preparation requires a repository bench manifest or explicit profile")
+    throw IllegalArgumentException("preparation requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated")
 }

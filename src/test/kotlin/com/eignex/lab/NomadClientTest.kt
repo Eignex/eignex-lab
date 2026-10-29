@@ -5,9 +5,37 @@ import java.net.InetSocketAddress
 import java.net.URI
 import java.net.http.HttpClient
 import java.nio.file.Files
+import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class NomadClientTest {
+    @Test fun `worker exit evidence excludes Spot loss kills OOM setup failures and missing events`() {
+        fun allocation(client: String = "failed", desired: String = "run", signal: Int = 0, oom: Boolean = false,
+                       extra: String? = null, started: Boolean = true, includeExit: Boolean = true) = buildJsonObject {
+            put("ID", "allocation"); put("JobID", "job"); put("NodeID", "node"); put("ClientStatus", client); put("DesiredStatus", desired)
+            putJsonObject("TaskStates") { putJsonObject("worker") {
+                put("State", "dead"); put("Failed", true)
+                putJsonArray("Events") {
+                    add(buildJsonObject { put("Type", "Received") })
+                    if (started) add(buildJsonObject { put("Type", "Started") })
+                    if (includeExit) add(buildJsonObject {
+                        put("Type", "Terminated"); put("ExitCode", 1); put("Signal", signal)
+                        put("DisplayMessage", "Exit Code: 1"); put("KillReason", ""); put("DriverError", ""); put("SetupError", "")
+                        putJsonObject("Details") { put("oom_killed", oom.toString()); put("exit_code", "1"); put("signal", signal.toString()) }
+                    })
+                    if (extra != null) add(buildJsonObject { put("Type", extra) })
+                    add(buildJsonObject { put("Type", "Not Restarting"); put("FailsTask", true); put("RestartReason", "Policy allows no restarts") })
+                }
+            } }
+        }
+        assertEquals(NomadWorkerExit(1), NomadClient.allocationRow(allocation()).workerExit)
+        for (infra in listOf(allocation(client = "lost"), allocation(desired = "stop"), allocation(signal = 15), allocation(oom = true),
+            allocation(extra = "Killing"), allocation(extra = "Driver Failure"), allocation(started = false), allocation(includeExit = false))) {
+            assertNull(NomadClient.allocationRow(infra).workerExit)
+        }
+        assertNull(NomadClient.allocationRow(JsonObject(allocation() - "TaskStates")).workerExit)
+    }
+
     @Test fun `client GC handles already removed allocations without hiding other server failures`() {
         val root = Files.createTempDirectory("nomad-client")
         val token = root.resolve("token").also { Files.writeString(it, "fixture-token") }

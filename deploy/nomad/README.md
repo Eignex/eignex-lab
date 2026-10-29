@@ -407,6 +407,20 @@ These exit through infrastructure recovery without calling the permanent build-f
 code attempt. Solver exit codes remain solver outcomes. Consumers must reserve this signal for infrastructure
 failures; ordinary compiler errors and permanent invalid selections remain code failures.
 
+Saved recipes are rechecked before source publication or allocation, and invalid saved schedules show a
+`blockedReason` in `/schedules` and the queue page until edited. A malformed preparation selection fails once
+with its diagnostic instead of returning a retryable service error. Unexpected coordinator selection errors
+are fingerprinted by worker release, request and failure site; three matching errors fence the job, including
+across coordinator restart and replacement workers. IO failures, admission holds and cancellation do not count.
+
+Updated workers use process exit `70` (`EX_SOFTWARE`) for unhandled software failures and `75` for transport,
+explicit temporary dependency failure or cancellation; a fenced worker exits successfully. After three positively
+observed unsignalled software exits at the same preparation stage and worker release, without accepted preparation,
+the job fails with the exit, stage and release recorded. Nomad kill/eviction, lost nodes, lease expiry, signals,
+OOM, missing task evidence and legacy ambiguous exit `1` remain infrastructure recovery. Manual job retry resets
+both counters and retains accepted results. Worker images/native launchers must be updated for generic crash
+protection; recipe and selection protection also applies to older workers through the coordinator alone.
+
 Targeted tests exercise real Git bundle export/checkout, trust rejection, build reuse/corruption recovery, helper
 budgets and fenced failures. The connected Nomad test now builds its fixture from source in the Docker allocation,
 then exercises coordinator restart and forced allocation loss after arm A. Native macOS CI runs the same source

@@ -14,6 +14,16 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `retired persisted recipes fail before source publication or allocation`() {
+        val spec = ExperimentSpec("status-sweep@old", problems = listOf(mapOf("set" to "sweep")), host = Experiments.LAB_HOST)
+        val id = store.create(spec.name, "main", emptyList(), parallel = 1, experiment = spec)
+        repeat(3) { queue().reconcile() }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "legacy solver recipes must be migrated")
+        assertEquals(0, publications)
+        assertTrue(store.execution.sessions(id).isEmpty())
+    }
+
     @Test fun `tags cannot change while source publication is pending before the first session`() = testApplication {
         val id = job()
         val frozen = store.job(id)!!.experiment

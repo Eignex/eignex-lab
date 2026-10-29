@@ -37,6 +37,8 @@ data class ExecutionIntent(val id: String, val jobId: Long, val session: String,
 
 class ExecutionFenced(message: String) : IllegalStateException(message)
 
+internal data class PreparationExitFailure(val count: Int, val stage: String, val release: String)
+
 /** All worker mutations share Store's IMMEDIATE write transaction, including cancellation and case projection. */
 class ExecutionStore internal constructor(private val store: Store) {
     fun events(job: Long): List<ExecutionEvent> = store.executionTransaction { db ->
@@ -265,6 +267,38 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.event(attempt.jobId, owner.session, "source-build-failed", at)
     }
 
+    /** Count reproducible coordinator errors, never worker/node losses. Durable across replacement and restart. */
+    internal fun preparationError(owner: AttemptOwner, fingerprint: String, at: Long = now()): Int = store.executionTransaction { db ->
+        val attempt = db.attempt(owner, at)
+        require(attempt.iteration == "preparation" && attempt.state == "preparing")
+        val event = "preparation-error:$fingerprint"
+        db.event(attempt.jobId, owner.session, event, at)
+        db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
+            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
+            attempt.jobId, event, attempt.jobId) { it.getInt(1) }.single()
+    }
+
+    /** Called only with positive Nomad evidence of a worker's nonzero, unsignalled process exit. */
+    internal fun preparationExited(id: String, code: Int, at: Long = now()): PreparationExitFailure? = store.executionTransaction { db ->
+        val session = db.session(id) ?: return@executionTransaction null
+        if (session.executionClass != "prepare" || session.desired != "run") return@executionTransaction null
+        if (db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { true }.isNotEmpty()) return@executionTransaction null
+        val progress = db.sqlRows("SELECT preparation_progress FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", id) {
+            it.getString(1)?.let { value -> Json.decodeFromString<PreparationProgress>(value) }
+        }
+        val stage = progress.singleOrNull()?.stage ?: if (progress.isNotEmpty()) "unreported" else if (session.allocation == null) "registration" else "claim"
+        val fingerprint = digest("${session.release}:$stage:$code")
+        val detail = "preparation-worker-exit:$fingerprint:exit=$code,stage=$stage,release=${session.release}"
+        if (db.sqlRows("SELECT 1 FROM execution_events WHERE session_id = ? AND detail = ?", id, detail) { true }.isEmpty())
+            db.event(session.jobId, id, detail, at)
+        val count = db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
+            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
+            session.jobId, detail, session.jobId) { it.getInt(1) }.single()
+        if (count >= 3) db.failActive(session.jobId,
+            "Nomad preparation stopped after $count worker exits without acceptance at stage $stage (exit $code, release ${session.release}); inspect the worker log and retry after fixing the cause", at)
+        PreparationExitFailure(count, stage, session.release)
+    }
+
     fun caseStarted(owner: AttemptOwner, index: Int, at: Long = now()) = store.executionTransaction { db ->
         val a = db.attempt(owner, at); require(index in a.indices && a.state == "executing") { "case start outside executing iteration" }
         db.sqlUpdate("UPDATE commands SET status = 'RUNNING', started_at = COALESCE(started_at, ?) WHERE job_id = ? AND idx = ?", at, a.jobId, index)
@@ -378,18 +412,19 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun pauseClock(job: Long) = store.executionTransaction { db ->
         db.sqlUpdate("UPDATE jobs SET run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status = 'RUNNING' AND NOT EXISTS (SELECT 1 FROM execution_sessions WHERE job_id = ? AND desired != 'stop')", now(), job, job)
     }
-    fun failIfActive(job: Long, error: String) = store.executionTransaction { db ->
-        val at = now()
-        val changed = db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, at, at, job)
-        if (changed == 0) return@executionTransaction
-        db.sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
-            .forEach { db.invalidate(it, "failed", at) }
-        db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? AND desired != 'stop'", job, map = ::sessionRow).forEach { session ->
-            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id)
-            db.stopIntent(session)
+    fun failIfActive(job: Long, error: String) = store.executionTransaction { db -> db.failActive(job, error, now()) }
+
+    private fun Connection.failActive(job: Long, error: String, at: Long) {
+        val changed = sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, at, at, job)
+        if (changed == 0) return
+        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
+            .forEach { invalidate(it, "failed", at) }
+        sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? AND desired != 'stop'", job, map = ::sessionRow).forEach { session ->
+            sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id)
+            stopIntent(session)
         }
-        db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
-        db.event(job, null, "failed:${error.take(1024)}", at)
+        sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
+        event(job, null, "failed:${error.take(1024)}", at)
     }
     fun finishIfComplete(job: Long): Boolean = store.executionTransaction { db ->
         db.sqlUpdate("UPDATE jobs SET status = 'DONE', finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0 AND EXISTS (SELECT 1 FROM commands WHERE job_id = ?) AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.job_id = ? AND (c.status NOT IN ('DONE', 'FAILED') OR NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx))) AND NOT EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = ? AND a.state = 'committed' AND NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id))", now(), now(), job, job, job, job) == 1
