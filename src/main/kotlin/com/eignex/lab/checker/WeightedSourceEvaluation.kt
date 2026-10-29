@@ -28,7 +28,8 @@ internal object WeightedSourceEvaluation {
         }
         else if (objective == null) WeightedEvaluation(LabCheck.NOT_RUN, "no exact objective was retained")
         else {
-            if (objective.length > MAX_TOKEN || !integer.matches(objective)) throw Invalid("claimed objective is not an exact integer")
+            if (objective.length > MAX_TOKEN) throw Unsupported("claimed objective exceeds $MAX_TOKEN characters")
+            if (!integer.matches(objective)) throw Invalid("claimed objective is not an exact integer")
             if (BigInteger(objective) != BigInteger(result.exactObjective))
                 result.copy(state = LabCheck.INVALID, reason = "claimed objective $objective differs from exact source cost ${result.exactObjective}")
             else result.copy(reason = "complete original point and exact objective ${result.exactObjective} accepted; no optimality check")
