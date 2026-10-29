@@ -130,7 +130,7 @@ class DbCompactionTest {
 
     @Test
     fun `a record reads back whole, its provenance kept once, in the pages and every export`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = experiment(store, problems = 6, arms = 2)
         val records = records(store, id)

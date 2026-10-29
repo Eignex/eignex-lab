@@ -109,7 +109,7 @@ class BenchRunsTest {
     @Test fun `generic metrics and artifact links appear without solver verdicts`() {
         val root = Files.createTempDirectory("bench-page")
         try {
-            val config = Config(dataDir = root, passwordHash = null)
+            val config = Config(dataDir = root, auth = Auth.Disabled)
             val store = Store(config.database)
             val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json"))
             val job = store.job(store.create("bench", "main", emptyList(), experiment = spec))!!

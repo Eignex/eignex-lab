@@ -58,7 +58,7 @@ object NomadCoordinatorCli {
         thread(isDaemon = true, name = "nomad-result-journal-status") {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching { writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts) }
-                    .onFailure { System.err.println("result journal status: ${it.javaClass.simpleName}") }
+                    .onFailure { System.err.println("result journal status: ${describeFailure(it)}") }
                 Thread.sleep(5_000)
             }
         }
@@ -132,7 +132,7 @@ object NomadCoordinatorCli {
                     val active = store.active(withCommands = false)
                     sourceWork.retain(active.map { it.id }.toSet())
                     planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
-                }.onFailure { System.err.println("nomad admission: ${it.javaClass.simpleName}") }
+                }.onFailure { System.err.println("nomad admission: ${describeFailure(it)}") }
                 admissionSignal.await()
             }
         }
@@ -143,14 +143,14 @@ object NomadCoordinatorCli {
         // Capacity freshness must not depend on worker reconciliation, source checks or cache maintenance.
         if (capacity != null) thread(isDaemon = true, name = "nomad-capacity") {
             while (!Thread.currentThread().isInterrupted) {
-                runCatching { capacity.collect() }.onFailure { System.err.println("nomad capacity: ${it.javaClass.simpleName}: ${it.message?.take(256)}") }
+                runCatching { capacity.collect() }.onFailure { System.err.println("nomad capacity: ${describeFailure(it)}") }
                 Thread.sleep(5_000)
             }
         }
         val cleanup = NomadAllocationCleanup(client, store, queueSettings)
         thread(isDaemon = true, name = "nomad-allocation-cleanup") {
             while (!Thread.currentThread().isInterrupted) {
-                runCatching { cleanup.reconcile() }.onFailure { System.err.println("nomad allocation cleanup: ${it.javaClass.simpleName}") }
+                runCatching { cleanup.reconcile() }.onFailure { System.err.println("nomad allocation cleanup: ${describeFailure(it)}") }
                 Thread.sleep(300_000)
             }
         }
@@ -158,8 +158,8 @@ object NomadCoordinatorCli {
             while (!Thread.currentThread().isInterrupted) {
                 runCatching {
                     backend.reconcile()
-                    runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${it.javaClass.simpleName}") }
-                }.onFailure { System.err.println("nomad reconcile: ${it.javaClass.simpleName}") }
+                    runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${describeFailure(it)}") }
+                }.onFailure { System.err.println("nomad reconcile: ${describeFailure(it)}") }
                 reconcileSignal.await()
             }
         }
@@ -170,4 +170,10 @@ object NomadCoordinatorCli {
         }) { workerApi(store, backend, artifacts, disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
+}
+
+/** A background failure in one line: its type, message and the lab frame it came from, never a secret-bearing trace. */
+internal fun describeFailure(failure: Throwable): String {
+    val frame = failure.stackTrace.firstOrNull { it.className.startsWith("com.eignex.") }
+    return "${failure.javaClass.simpleName}: ${failure.message?.take(256)}" + (frame?.let { " at ${it.fileName}:${it.lineNumber}" } ?: "")
 }

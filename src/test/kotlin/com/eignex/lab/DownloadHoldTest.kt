@@ -57,7 +57,7 @@ class DownloadHoldTest {
 
     @Test
     fun `a hold is taken for 2 h, renewed, released once, and lapses on its own`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = endedJob(config, store)
         testApplication {
@@ -100,7 +100,7 @@ class DownloadHoldTest {
 
     @Test
     fun `holds outlive a restart`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val id = endedJob(config, Store(config.database))
         val taken = Store(config.database).hold(id, JobTrim.HOLD_MS)
 
@@ -109,7 +109,7 @@ class DownloadHoldTest {
 
     @Test
     fun `the hold calls need the password and refuse a cross-site browser`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = Password.hash("secret"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Required(Password.hash("secret")))
         val store = Store(config.database)
         val id = endedJob(config, store)
         val auth = "Basic " + Base64.getEncoder().encodeToString(":secret".toByteArray())
@@ -136,7 +136,7 @@ class DownloadHoldTest {
 
     @Test
     fun `the job page says how long a job is held for download`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = endedJob(config, store)
         val job = store.job(id)!!
@@ -147,7 +147,7 @@ class DownloadHoldTest {
 
     @Test
     fun `fetch holds the job while it lists and downloads, then releases it`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = endedJob(config, store)
         val heldWhileListing = mutableListOf<List<Long>>()
@@ -167,7 +167,7 @@ class DownloadHoldTest {
 
     @Test
     fun `a file gone after the listing fails the fetch with a receipt, the rest fetched and the hold released`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = endedJob(config, store)
         // As a trim would, between the listing and the downloads: the case's stdout and its output go.

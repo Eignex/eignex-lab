@@ -47,12 +47,14 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
-      - name: Preserve exact MPS checker test receipts
+      - name: Preserve independent checker test receipts
         if: always()
         run: |
           mkdir -p build/checker-test-results
           cp build/test-results/test/TEST-com.eignex.lab.checker.ExactMpsCheckerTest.xml build/checker-test-results/
           cp build/test-results/test/TEST-com.eignex.lab.checker.MpsReplayTest.xml build/checker-test-results/
+          cp build/test-results/test/TEST-com.eignex.lab.checker.DimacsCheckerTest.xml build/checker-test-results/
+          cp build/test-results/test/TEST-com.eignex.lab.checker.DimacsSourceEvaluationTest.xml build/checker-test-results/
       - name: Verify representative warm preparation work
         run: ./gradlew :verifyPreparationPerformance
         env:
@@ -71,6 +73,8 @@ jobs:
         run: python3 -m unittest discover -s deploy/nomad -p 'test_*.py'
       - name: Build experimental Nomad session renderer
         run: ./gradlew installDist
+      - name: Verify DIMACS ordinary runner and recheck controls
+        run: bash checker/verify-dimacs.sh
       - name: Install pinned Nomad prototype
         run: python3 deploy/nomad/sandbox.py install
       - name: Start isolated Nomad prototype
@@ -93,6 +97,7 @@ jobs:
         with:
           name: test-reports
           path: |
+            build/dimacs-controls/
             build/test-results/
             build/checker-test-results/
             build/reports/tests/

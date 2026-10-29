@@ -165,7 +165,7 @@ class JobTrimTest {
     @Test
     fun `the trim's settings come from the environment's defaults, the job files from LAB_JOBS`() {
         val data = Files.createTempDirectory("lab")
-        val config = Config(dataDir = data, passwordHash = null)
+        val config = Config(dataDir = data, auth = Auth.Disabled)
 
         assertEquals(JobTrim.MAX_AGE_MS, config.trimAgeMs)
         assertEquals(25 * BYTES_PER_GB, config.jobsTargetFreeBytes)
@@ -182,9 +182,9 @@ class JobTrimTest {
 
     @Test
     fun `the critical floor defaults to the queue's, so a held queue never waits on a grace`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, minFreeBytes = 12 * BYTES_PER_GB)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled, minFreeBytes = 12 * BYTES_PER_GB)
         assertEquals(config.minFreeBytes, config.trimCriticalFreeBytes)
-        assertEquals(JobTrim.DEFAULT_CRITICAL_FREE_BYTES, Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null).trimCriticalFreeBytes)
-        assertEquals(JobTrim.DEFAULT_GRACE_MS, Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null).trimGraceMs)
+        assertEquals(JobTrim.DEFAULT_CRITICAL_FREE_BYTES, Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled).trimCriticalFreeBytes)
+        assertEquals(JobTrim.DEFAULT_GRACE_MS, Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled).trimGraceMs)
     }
 }

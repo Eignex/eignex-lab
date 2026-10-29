@@ -47,7 +47,7 @@ class SubmissionOptionsTest {
     fun `schedule responses round trip through tags without changing pinned policy or measured identity`() = testApplication {
         val root = Files.createTempDirectory("schedule tags")
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
-        val config = Config(dataDir = root, passwordHash = null, nomadQueueSettings = queue)
+        val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue)
         val store = Store(config.database)
         val original = ExperimentSpec("status-sweep", bench = BenchSpec("bench.json"), description = "regression sweep", priority = 100)
         val id = store.createSchedule(original.name, "main", original, 120)
@@ -122,7 +122,7 @@ class SubmissionOptionsTest {
     fun `opaque recording requests survive immediate submissions and schedule edits`() = testApplication {
         val root = Files.createTempDirectory("measurement api")
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
-        val config = Config(dataDir = root, passwordHash = null, nomadQueueSettings = queue)
+        val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue)
         val store = Store(config.database)
         val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", bench = BenchSpec("bench.json")), 3600)
         application { api(config, store, HostReport("test", 4, "java")) }

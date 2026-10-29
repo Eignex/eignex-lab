@@ -143,7 +143,10 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     install(ContentNegotiation) { json() }
     // Every page and call needs the password, as HTTP Basic with any user name; browsers ask for it once and resend it.
     // A write a page of another site made the browser send is refused first, password or not ([sameSite]).
-    val gate = config.passwordHash?.let { PasswordGate(it) }
+    val admit: (String?, String) -> Admission = when (val auth = config.auth) {
+        is Auth.Required -> PasswordGate(auth.hash)::check
+        Auth.Disabled -> { _, _ -> Admission.ADMIT }
+    }
     install(io.ktor.server.application.createApplicationPlugin("Password") {
         onCall { call ->
             val headers = call.request.headers
@@ -152,7 +155,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 call.respondText("cross-site request refused", status = HttpStatusCode.Forbidden)
                 return@onCall
             }
-            when (gate?.check(headers[HttpHeaders.Authorization], client(call)) ?: Admission.ADMIT) {
+            when (admit(headers[HttpHeaders.Authorization], client(call))) {
                 Admission.ADMIT -> Unit
                 Admission.THROTTLE -> call.respondText("too many failed passwords; try again in a minute", status = HttpStatusCode.TooManyRequests)
                 Admission.REFUSE -> {
@@ -241,6 +244,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val body = analysisDefaults(experimentInput(call.receive<JsonObject>()))
             // Jobs eligible for the local machine are capped to it; cloud-only tag requests use compatible cloud capacity.
             val submitted = Json.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList())
+            Experiments.requirePlainName(submitted.name)
             val given = if (NodeTags.matches(submitted.nodeTags, config.localNodeTags))
                 Experiments.capToLocal(submitted, config.cores, config.maxParallel) else submitted
             val spec = given.copy(host = Placement.host(given, given.name, config), auto = false, machines = null)
@@ -531,6 +535,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
         post("/schedules") {
             val spec = Json.decodeFromJsonElement(ScheduleSpec.serializer(), scheduleInput(call.receive<JsonObject>()))
             require(spec.name.isNotBlank() && spec.ref.isNotBlank() && !spec.ref.startsWith("-")) { "name and ref are required" }
+            Experiments.requirePlainName(spec.name)
             require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
             validateScheduled(spec.experiment, config)
             requireRef(spec.ref, Repositories.source(config, spec.experiment.repository), trust(spec.experiment.repository))

@@ -23,7 +23,7 @@ class JobFilesTest {
 
     /** A job whose directory holds a log and a record, a secret beside it, and links into and out of the directory. */
     private class Lab {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = store.create("job", "main", emptyList())
         val other = store.create("other", "main", emptyList())
@@ -130,7 +130,7 @@ class JobFilesTest {
     @Test
     fun `a job's files are served from LAB_JOBS when it is set`() {
         val jobs = Files.createTempDirectory("jobs")
-        val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = jobs, passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = jobs, auth = Auth.Disabled)
         val store = Store(config.database)
         val id = store.create("job", "main", emptyList())
         jobs.resolve("$id").createDirectories().resolve("job.log").writeText("from the jobs volume\n")
@@ -146,7 +146,7 @@ class JobFilesTest {
     @Test
     fun `while the job files' volume is not mounted, a job's files are unavailable and say why`() {
         val root = Files.createTempDirectory("volumes")
-        val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = root.resolve("Ros/jobs"), passwordHash = null, volumesRoot = root)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = root.resolve("Ros/jobs"), auth = Auth.Disabled, volumesRoot = root)
         val store = Store(config.database)
         val id = store.create("job", "main", emptyList())
         testApplication {
@@ -176,7 +176,7 @@ class JobFilesTest {
             if (dir == jobs) gate.await()
             Volumes.probe(label, dir)
         }
-        val config = Config(dataDir = data, corpusDir = data.resolve("corpus"), passwordHash = null, volumeAccess = access)
+        val config = Config(dataDir = data, corpusDir = data.resolve("corpus"), auth = Auth.Disabled, volumeAccess = access)
         val store = Store(config.database)
         val id = store.create("job", "main", emptyList())
         try {

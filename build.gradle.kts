@@ -111,7 +111,7 @@ tasks.register<Test>("verifyPreparationPerformance") {
 // Retain the independent evaluator's source identity in each exact MPS receipt.
 tasks.processResources {
     from("src/main/kotlin") {
-        include("com/eignex/lab/checker/ExactMpsChecker.kt")
+        include("com/eignex/lab/checker/ExactMpsChecker.kt", "com/eignex/lab/checker/DimacsSourceEvaluation.kt")
         into("checker-source")
     }
 }

@@ -26,7 +26,7 @@ class PagesTest {
 
     @Test
     fun `a profile stopped at its time limit says so and still lists what it left in OUT`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.dataDir.resolve("lab.db"))
         val spec = ExperimentSpec("p", base = mapOf("timeout" to "36000000"),
             profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
@@ -47,7 +47,7 @@ class PagesTest {
 
     @Test
     fun `arm pages show mixed provenance and missing legacy identities`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val cases = listOf(
             """{"buildFingerprint":"build-a","validationPolicy":"source-v1"}""",
             """{"buildFingerprint":"build-b","validationPolicy":"reported-v1"}""",
@@ -103,7 +103,7 @@ class PagesTest {
 
     @Test
     fun `a browser gets pages and an api client gets json`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null, repoUrl = "https://github.com/Eignex/eignex-lab.git")
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled, repoUrl = "https://github.com/Eignex/eignex-lab.git")
         val store = Store(config.database)
         val done = store.create("sweep", "main", listOf("true" to 10L, "false" to 10L))
         store.startForTest()
@@ -134,7 +134,7 @@ class PagesTest {
 
     @Test
     fun `a case's termination reasons show under its exit and in the job's JSON`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = store.create("kills", "main", listOf("sleep 1" to 60L))
         store.commandFinished(id, 0, 137)
@@ -157,7 +157,7 @@ class PagesTest {
 
     @Test
     fun `an experiment's page compares its arms problem by problem`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")))
         val id = store.create("ab", "main", emptyList(), experiment = spec)
@@ -196,7 +196,7 @@ class PagesTest {
 
     @Test
     fun `an instrumented experiment's page says so and marks its arms`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = instrumentedJob(config, store)
         testApplication {
@@ -213,7 +213,7 @@ class PagesTest {
 
     @Test
     fun `comparing an instrumented run with an uninstrumented one warns that their times measure the instrumentation`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val instrumented = instrumentedJob(config, store)
         val plain = store.create("plain", "main", emptyList(), experiment = ExperimentSpec("plain", listOf(mapOf("suite" to "s"))))
@@ -230,7 +230,7 @@ class PagesTest {
 
     @Test
     fun `an analysis is queued on the local machine for a profiled job's captures and refused once they were trimmed`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val target = instrumentedJob(config, store)
         testApplication {
@@ -260,7 +260,7 @@ class PagesTest {
 
     @Test
     fun `two experiments compare side by side with each arm named by its job`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val ids = listOf("a", "b").map { sha ->
             val id = store.create("sweep@$sha", sha, emptyList(), experiment = ExperimentSpec("sweep@$sha", listOf(mapOf("suite" to "s"))))
@@ -278,7 +278,7 @@ class PagesTest {
 
     @Test
     fun `deleting an ended job removes it and its files but a running one stays`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val ended = store.create("old", "main", listOf("true" to 1L))
         store.startForTest()
@@ -310,7 +310,7 @@ class PagesTest {
 
     @Test
     fun `a trend's progress call counts the runs it shows and those still computing`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val problems = listOf(Problem("a", "p0"))
         val id = store.create("sweep@aaa", "sha", emptyList(), experiment = ExperimentSpec("sweep", listOf(mapOf("suite" to "a"))))
@@ -484,7 +484,7 @@ class PagesTest {
         val root = Files.createTempDirectory("lab")
         val queue = root.resolve("queue.json")
         if (aws != null) queue.toFile().writeText(java.io.File("deploy/nomad/queue.example.json").readText().replace("6000", "16000").replace("\"logicalCpus\": 8", "\"logicalCpus\": 16"))
-        return Config(dataDir = root, passwordHash = null, cores = cores, nomadQueueSettings = queue.takeIf { aws != null })
+        return Config(dataDir = root, auth = Auth.Disabled, cores = cores, nomadQueueSettings = queue.takeIf { aws != null })
     }
 
     private fun work(id: Long, host: String, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
@@ -524,7 +524,7 @@ class PagesTest {
 
     @Test
     fun `a queued AWS job waits for a node unless its cancel was requested`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST)
         fun job(id: Long, cancelRequested: Boolean) =
             Job(id, "e$id", "main", status = Status.QUEUED, cancelRequested = cancelRequested, setupDone = true, createdAt = 0, experiment = spec)
