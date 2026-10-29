@@ -250,7 +250,7 @@ class NomadBackend(
             }
         }
         val current = store.job(job.id)!!
-        if (current.status !in setOf(Status.QUEUED, Status.RUNNING)) return
+        if (current.status.isTerminal) return
         if (current.commands.isNotEmpty() && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
             current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
             // finishIfComplete rechecks cancellation and projections under the store's write lock.
@@ -304,7 +304,7 @@ class NomadBackend(
                 })
             }
         }
-        if (store.job(job.id)?.status !in setOf(Status.QUEUED, Status.RUNNING)) return
+        if (store.job(job.id)?.status?.isActive != true) return
         val sessions = store.execution.sessions(job.id)
         if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && accepted.none { it.second.preparation != null } && sessions.any { it.executionClass == "prepare" }) && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
             store.execution.pauseClock(job.id)

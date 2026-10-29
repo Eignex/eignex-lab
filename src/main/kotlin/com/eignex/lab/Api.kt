@@ -17,7 +17,6 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.accept
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
-import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
@@ -37,9 +36,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.RandomAccessFile
-import java.nio.file.Files
-import java.nio.file.LinkOption
-import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -117,9 +113,6 @@ data class Created(val id: Long, val notes: List<String>? = null, val placement:
 
 @Serializable
 data class ReferenceHit(val collection: String, val problem: String, val reference: Reference)
-
-@Serializable
-data class FileEntry(val path: String, val bytes: Long)
 
 @Serializable
 data class Health(
@@ -213,7 +206,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
             val queued = jobs.count { it.status == Status.QUEUED }
             val running = jobs.count { it.status == Status.RUNNING }
             val (held, volumes) = withContext(Dispatchers.IO) { runCatching { Volumes.hold(config) }.getOrNull() to Volumes.report(config) }
-            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags), held, volumes, readResultJournalReport(config)))
+            call.respond(Health(true, queued, running, freeBytes(config.dataDir), host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags), held, volumes, readResultJournalReport(config.dataDir)))
         }
         get("/jobs") {
             // Each job's command counts, not its commands, unless ?commands=true: a job has hundreds. ?active=true lists
@@ -256,7 +249,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                 val job = analyze.job
                 val refusal = withContext(Dispatchers.IO) {
                     when {
-                        analyze.kind == AnalyzeSpec.CHECK -> com.eignex.lab.checker.CaseChecks.refusal(store.job(checkNotNull(job)))
+                        analyze.kind == AnalyzeSpec.CHECK -> com.eignex.lab.CaseChecks.refusal(store.job(checkNotNull(job)))
                         job != null -> CompilationReports.refusal(store.job(job), config.jobDir(job))
                         else -> CaptureArchives.refusal(analyze, config)
                     }
@@ -407,7 +400,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                         previous = if (experiment && '@' in job.name) previousRun(store, job) else null,
                         holds = store.holds().filter { it.job == job.id },
                         hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
-                        nodes = if (job.backend == "nomad" && job.status in ACTIVE) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
+                        nodes = if (job.backend == "nomad" && job.status.isActive) jobNodes(config, store, listOf(job.id))[job.id].orEmpty() else emptyList(),
                     )
                     call.respondText(page, ContentType.Text.Html)
                 }
@@ -429,7 +422,7 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
                     call.respond(HttpStatusCode.NotFound, "no such job")
                     break
                 }
-                if (job.status in ENDED || now() >= deadline) {
+                if (job.status.isTerminal || now() >= deadline) {
                     call.respond(job)
                     break
                 }
@@ -615,7 +608,6 @@ fun Application.api(config: Config, store: Store, host: HostReport) {
     }
 }
 
-private val ENDED = setOf(Status.DONE, Status.FAILED, Status.CANCELLED)
 private const val DEFAULT_WAIT_SEC = 600L
 private const val MAX_WAIT_SEC = 3600L
 private const val WAIT_POLL_MS = 2000L
@@ -793,33 +785,6 @@ private suspend fun ApplicationCall.jobFilesMissing(config: Config): Boolean {
     return true
 }
 
-/**
- * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a
- * job's files are what it wrote there, and a link could lead anywhere on the machine.
- */
-internal fun jobFiles(root: Path): List<FileEntry> {
-    if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return emptyList()
-    return Files.walk(root).use { paths ->
-        paths.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
-            .map { FileEntry(root.relativize(it).joinToString("/"), Files.size(it)) }
-            .toList()
-    }.sortedBy { it.path }
-}
-
-/**
- * The regular file [segments] name under job directory [root], or null when there is none. A segment that is empty,
- * `.` or `..`, or holds a slash, a backslash or a NUL fails as a bad request, whether it came plain or
- * percent-encoded. A file reached through a symbolic link is served only when the link resolves inside [root] too.
- */
-internal fun jobFile(root: Path, segments: List<String>): Path? {
-    require(segments.isNotEmpty() && segments.none { it in setOf("", ".", "..") || it.any { c -> c in "/\\\u0000" } }) {
-        "bad file path"
-    }
-    val realRoot = runCatching { root.toRealPath() }.getOrNull() ?: return null
-    val file = runCatching { realRoot.resolve(segments.joinToString("/")).toRealPath() }.getOrNull() ?: return null
-    return file.takeIf { it.startsWith(realRoot) && Files.isRegularFile(it) }
-}
-
 /** The last [bytes] of a file that may still be growing. */
 private fun tail(file: File, bytes: Long): String = RandomAccessFile(file, "r").use { raf ->
     val start = maxOf(0, raf.length() - bytes)
@@ -898,7 +863,7 @@ internal class ReferenceCache(private val store: Store) {
 
     /** A finished run's [ScoreInputs], kept until a reference row changes: a new filter or grouping then only regroups. */
     private fun inputs(job: Job, label: String?): ScoreInputs {
-        if (job.status in ACTIVE) return scoreInputs(store, job.id, label)
+        if (job.status.isActive) return scoreInputs(store, job.id, label)
         val key = "${job.id}/$label/${job.finishedAt}"
         val stamp = store.referencesStamp().toString()
         synchronized(inputs) { inputs[key]?.takeIf { it.version == stamp }?.let { return it.value } }
@@ -907,7 +872,7 @@ internal class ReferenceCache(private val store: Store) {
 
     private fun board(key: String, params: io.ktor.http.Parameters, version: String): ScoreboardView =
         scoreboardView(store, params, ::inputs).also { view ->
-            if (view.job?.status !in ACTIVE) synchronized(boards) { boards[key] = Kept(version, view) }
+            if (view.job?.status?.isActive != true) synchronized(boards) { boards[key] = Kept(version, view) }
         }
 
     /** The default page's reads, computed before anyone asks so the first load after a restart is quick too. */

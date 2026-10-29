@@ -1,5 +1,7 @@
 package com.eignex.lab.checker
 
+import com.eignex.lab.Checkers
+
 import com.eignex.lab.bench.BenchRequest
 import java.nio.file.Files
 import kotlinx.serialization.json.buildJsonObject

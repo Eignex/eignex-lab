@@ -10,58 +10,6 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import java.security.MessageDigest
 
-/** A reference solver's verdict on one problem, as a reference arm's case records it ([References.of]). */
-@Serializable
-data class Reference(
-    val solver: String,
-    val maximize: Boolean,
-    val objective: Double?,
-    /** true: a solution; false: proved infeasible; null: undecided within its budget. */
-    val feasible: Boolean?,
-    val proven: Boolean,
-    val elapsedMs: Long,
-    val budgetMs: Long,
-    /** How the solver ran and its claim was judged, where that decides whether the row still holds: an MPS reference's
-     *  build, options and validation rules. A row produced another way replaces this one ([References.replaces]). */
-    val version: String = "",
-    /** How the solution was checked against the model: `valid`, `repaired`, or why it was not (an MPS reference). */
-    val validation: String? = null,
-    /** The solver's dual bound, which a proof rests on: one that excludes another solver's solution disputes it. */
-    val dualBound: Double? = null,
-    /** From before the solver's claims were checked: kept as evidence, never trusted. */
-    val stale: Boolean = false,
-    /** Which source files the verdict is on, as [References.identity] digests a record's `sourceHashes`: null for an
-     *  unbound row, from before the lab kept it, which only counts where the source is unknown too. */
-    val sourceIdentity: String? = null,
-)
-
-/** One collection's rows from one reference solver. */
-@Serializable
-data class ReferenceCoverage(
-    val collection: String,
-    val solver: String,
-    val rows: Int,
-    val decided: Int,
-    val proven: Int,
-    val infeasible: Int,
-    val updatedAt: Long,
-)
-
-/** One lab case of a problem, as its inspection page lists it. */
-@Serializable
-data class ProblemRun(
-    val job: Long,
-    val jobName: String,
-    val createdAt: Long,
-    val arm: String,
-    val sha: String,
-    val case: Int,
-    val seed: Long? = null,
-    val repeat: Int = 0,
-    val status: Status,
-    val record: JsonElement? = null,
-)
-
 /** A problem as its inspection page shows it: every reference row and every lab run. */
 @Serializable
 data class ProblemReport(
@@ -80,16 +28,6 @@ enum class ReferenceVerdict(val label: String, internal val sql: String) {
     SATISFIED("satisfied", "feasible = 1 AND objective IS NULL"),
     INFEASIBLE("proven infeasible", "feasible = 0"),
     UNKNOWN("unknown", "feasible IS NULL"),
-}
-
-/** Which reference rows to show: every set field must hold; [text] matches the problem or the collection. */
-data class ReferenceFilter(
-    val text: String? = null,
-    val solver: String? = null,
-    val collection: String? = null,
-    val verdict: ReferenceVerdict? = null,
-) {
-    val isEmpty: Boolean get() = text == null && solver == null && collection == null && verdict == null
 }
 
 /** One arm against the reference, over the problems both have a verdict on. */
@@ -280,7 +218,6 @@ object References {
         if (x != y) return x != null && (y == null || if (a.maximize) x > y else x < y)
         return a.budgetMs > b.budgetMs
     }
-
 
     /**
      * Each arm's cases against [references]. An arm's runs of a problem (seeds, repeats) count by their best: solved

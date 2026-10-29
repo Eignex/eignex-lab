@@ -1,6 +1,5 @@
 package com.eignex.lab
 
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -9,77 +8,12 @@ import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-@Serializable
-data class NomadQueueTarget(val template: NomadBatchJob, val tags: Set<String>, val market: CapacityMarket = CapacityMarket.SPOT) {
-    init {
-        require(tags.count { it.startsWith("arch:") } == 1)
-        require(tags.none { it in setOf("local", "cloud", "spot", "on-demand") })
-        NodeTags.validate(NodeSelector(require = tags))
-    }
-    val os get() = if (template.platform == NomadPlatform.MAC) "mac" else "linux"
-    val arch get() = when (tags.single { it.startsWith("arch:") }) {
-        "arch:arm64" -> "arm64"
-        "arch:x86_64" -> "amd64"
-        else -> error("worker architecture must be arm64 or x86_64")
-    }
-    val capabilities get() = tags + "platform:$os" + if (os == "mac") setOf("local") else setOf("cloud", market.tag)
-}
-
-/** Provider-neutral, pinned workers and bounded per-allocation budgets; no provider credentials. */
-@Serializable
-data class NomadQueueSettings(
-    val release: String, val workerApi: String, val targets: List<NomadQueueTarget>,
-    val preparationBudget: ResourceBudget = ResourceBudget(2000, 4096), val preparationTimeoutSec: Long = 3600,
-    val caseMemoryMiB: Int = 4096, val sessionMemoryMiB: Int = 512, val maxSessionsPerJob: Int = 64,
-    /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. */
-    val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
-    /** Explicitly approved infrastructure releases this worker can replace, preserving consumer inputs. */
-    val workerReplaces: Set<String> = emptySet(),
-) {
-    init {
-        require(release.isNotBlank() && targets.isNotEmpty() && targets.map { it.template.nodeClass }.distinct().size == targets.size)
-        require(preparationTimeoutSec in 1..7200 && preparationBudget.parallel == 1)
-        require(maxVcpusPerJob in 1..1024 && (perHostParallel == null || perHostParallel > 0) && maxConcurrentBuildsPerNode in 1..64)
-        require(caseMemoryMiB >= 512 && sessionMemoryMiB >= 256 && maxSessionsPerJob in 1..1024)
-        val api = java.net.URI.create(workerApi)
-        require(api.scheme in setOf("https", "http") && api.userInfo == null && api.rawQuery == null)
-        targets.forEach { it.arch }
-        require(targets.groupBy { it.os to it.arch }.values.all { group -> group.map { it.template.image }.distinct().size == 1 }) {
-            "workers sharing prepared binaries must use the same pinned image for each platform"
-        }
-    }
-    fun matching(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
-        NodeTags.matches(spec.nodeTags, target.capabilities) &&
-            (target.os == "mac" || Placement.localOnlyReason(spec, name, cloudSchedule) == null &&
-                target.market == if (NodeTags.onDemand(false, spec.nodeTags)) CapacityMarket.ON_DEMAND else CapacityMarket.SPOT)
-    }
-    fun solveOptions(options: String): String {
-        val heap = Regex("(?:^|\\s)-Xmx([1-9][0-9]*)([kKmMgG]?)(?=\\s|$)").findAll(options).lastOrNull()
-        if (heap == null) return "$options -Xmx${caseMemoryMiB - 256}m".trim()
-        val units = when (heap.groupValues[2].lowercase()) { "g" -> 1024L * 1024 * 1024; "m" -> 1024L * 1024; "k" -> 1024L; else -> 1L }
-        val bytes = Math.multiplyExact(heap.groupValues[1].toLong(), units)
-        require(bytes <= (caseMemoryMiB - 256).toLong() * 1024 * 1024) { "configured solve heap exceeds the per-case memory budget" }
-        return options
-    }
-    fun solveBudget(target: NomadQueueTarget, job: Job, plan: com.eignex.lab.bench.BenchPlan? = null): ResourceBudget? {
-        val resources = plan?.let(BenchRuns::resources)
-        val largest = resources?.cpus ?: Experiments.arms(checkNotNull(job.experiment)).maxOf { it.cores }
-        val memory = resources?.memoryMiB?.let(Math::toIntExact) ?: caseMemoryMiB
-        if (resources != null && !NodeTags.matches(NodeSelector(require = resources.requiredTags), target.capabilities)) return null
-        val maximum = target.template.budget
-        val parallel = minOf(job.parallel, Experiments.arms(checkNotNull(job.experiment)).size, maximum.parallel, maximum.cpuMillis / 1000 / largest,
-            (maximum.memoryMiB - sessionMemoryMiB) / memory)
-        if (parallel < 1) return null
-        return ResourceBudget(Math.multiplyExact(Math.multiplyExact(largest, parallel), 1000), sessionMemoryMiB + parallel * memory, parallel)
-    }
-}
-
 /** Admission is repeatable from accepted preparation and persisted sessions, without a second queue database. */
 class NomadQueue(
     private val config: Config, private val store: Store, private val backend: NomadBackend,
     private val artifacts: ArtifactStore, private val settings: NomadQueueSettings,
     private val allowed: () -> Boolean,
-    private val completed: (Job) -> Unit = Runner(config, store)::queueConfirmation,
+    private val completed: (Job) -> Unit = Confirmations(config, store)::queue,
     private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>>? =
         TrustedQueueSources(config, artifacts, store)::publish,
@@ -100,7 +34,7 @@ class NomadQueue(
                 val settings = NomadWorkerRuntime(this.settings).queue(store.execution.queueRecipe(job.id, this.settings))
                 // A tags edit may have won before the admission transaction; read the frozen input afterwards.
                 job = store.job(job.id) ?: continue
-                if (job.paused || job.cancelRequested || job.status !in ACTIVE) continue
+                if (job.paused || job.cancelRequested || job.status.isTerminal) continue
                 val spec = checkNotNull(job.experiment)
                 // Persisted jobs predate submission validation; refuse retired recipes before publishing or allocating.
                 Experiments.requireExecutable(spec)
@@ -141,7 +75,7 @@ class NomadQueue(
                 val recipe = store.execution.manifest(sessions.first { it.executionClass == "prepare" }.id)
                 if (!job.setupDone && !preparationPlan(job.id) { plan(job, recipe, preparation) }) continue
                 val current = store.job(job.id) ?: continue
-                if (current.cancelRequested || current.paused || current.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
+                if (current.cancelRequested || current.paused || current.status.isTerminal) continue
                 if (store.unclaimed(job.id) == 0) continue
                 val cases = store.casePlan(job.id).map { row ->
                     val armIndex = recipe.arms.indexOfFirst { it.arm.label == row.arm }
@@ -149,7 +83,7 @@ class NomadQueue(
                     WorkCase(row.index, armIndex, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
                         current.commands.single { it.index == row.index }.timeoutSec, execution)
                 }
-                val pending = store.casePlan(job.id).filter { it.status in setOf(Status.QUEUED, Status.RUNNING) }
+                val pending = store.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
                 val minimumCpu = targets.minOf { checkNotNull(settings.solveBudget(it, current, preparedBench)).cpuMillis }
                 val requestedCpu = Math.multiplyExact(Math.multiplyExact(current.parallel, preparedBench?.let(BenchRuns::resources)?.cpus ?: recipe.arms.maxOf { it.arm.cores }), 1000)
@@ -304,9 +238,11 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             return publishReplay(job, spec, arms)
         }
         Files.createDirectories(mirror.parent)
-        if (!Files.exists(mirror)) checked(mirror.parent, "clone", "--mirror", url, mirror.toString())
-        checked(mirror, "remote", "set-url", "origin", url)
-        checked(mirror, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
+        withMirrorLock(mirror) {
+            if (!Files.exists(mirror)) checked(mirror.parent, "clone", "--mirror", url, mirror.toString())
+            checked(mirror, "remote", "set-url", "origin", url)
+            checked(mirror, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
+        }
         val arms = Experiments.arms(spec).map { arm ->
             val (exit, sha) = git(mirror, "rev-parse", "--verify", "${arm.ref}^{commit}")
             require(exit == 0) { "source ref '${arm.ref}' was not found in ${spec.repository} after a successful fetch" }

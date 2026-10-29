@@ -18,16 +18,6 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.util.Base64
 
-/** Immutable input bytes live in a regional store; jobs carry only paths and checksums. */
-@Serializable
-data class SharedInput(val file: InputFile, val key: String, val encoding: String = "identity",
-                       val storedSha256: String = file.sha256, val storedBytes: Long = file.bytes) {
-    init {
-        safeRelative(key); require(!file.executable && encoding in setOf("identity", "zstd"))
-        require(SHA256.matches(storedSha256) && storedBytes in 0..32L * 1024 * 1024 * 1024)
-    }
-}
-
 internal interface InputTransport {
     fun matches(key: String, file: InputFile, md5: String): Boolean
     fun put(key: String, source: Path, sha: String)

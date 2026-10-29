@@ -4,16 +4,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-/** What the classifier says about a problem's source: its themes (`scheduling`, `mip`, …), structure and logic. */
-@Serializable
-data class ProblemFeatures(
-    val collection: String,
-    val problem: String,
-    val themes: List<String> = emptyList(),
-    val structure: String? = null,
-    val logic: String? = null,
-)
-
 /**
  * The MiniZinc Challenge's two scoring classes. [COMPLETE] (its free, fixed, parallel and open classes) ranks a proof
  * above an unproven result and splits an equal one by time; [INCOMPLETE] (its local-search class) ignores proofs,

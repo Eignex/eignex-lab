@@ -11,10 +11,11 @@ import java.nio.file.StandardCopyOption.*
     val stale: Boolean get() = ageMs > 15_000
 }
 
-internal fun readResultJournalReport(config: Config): ResultJournalReport? = runCatching {
-    val path = config.dataDir.resolve("nomad/result-journal-status.json")
+/** The coordinator's last result journal status under the lab's data directory [dataDir], with its age; null when unreadable. */
+internal fun readResultJournalReport(dataDir: Path, at: Long = now()): ResultJournalReport? = runCatching {
+    val path = dataDir.resolve("nomad/result-journal-status.json")
     require(Files.size(path) <= 8192)
-    Json.decodeFromString<ResultJournalReport>(Files.readString(path)).let { it.copy(ageMs = (now() - it.generatedAt).coerceAtLeast(0)) }
+    Json.decodeFromString<ResultJournalReport>(Files.readString(path)).let { it.copy(ageMs = (at - it.generatedAt).coerceAtLeast(0)) }
 }.getOrNull()
 
 /** Disposable status, written atomically on the internal volume; acknowledged results have separate durable packs. */

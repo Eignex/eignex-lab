@@ -21,6 +21,9 @@ data class Backoff(val attempts: Int, val baseMs: Long, val maxMs: Long) {
     }
 }
 
+/** A failure that no retry can change, such as a refused commit or a run past its deadline: [retrying] rethrows it. */
+interface NotRetryable
+
 /**
  * Run [step], retrying it by [backoff]. [onRetry] hears of each failure that will be retried and the wait before the
  * next try; [sleep] waits, and may throw to give up early (a cancelled job, a runner shutting down).
@@ -36,8 +39,7 @@ fun <T> retrying(
         try {
             return step()
         } catch (e: Exception) {
-            // A refused commit stays refused: no retry changes who pushed it.
-            if (attempt >= backoff.attempts || e is UntrustedCommit || e is RunDeadlineExceeded || e is CancellationException) throw e
+            if (attempt >= backoff.attempts || e is NotRetryable || e is CancellationException) throw e
             val wait = backoff.delayAfter(attempt)
             onRetry(attempt, wait, e)
             sleep(wait)

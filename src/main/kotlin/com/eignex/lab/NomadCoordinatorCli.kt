@@ -8,7 +8,6 @@ import kotlinx.serialization.json.Json
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
-import kotlin.concurrent.thread
 
 @Serializable
 data class NomadCoordinatorSettings(
@@ -41,12 +40,9 @@ object NomadCoordinatorCli {
         Files.createDirectories(config.dataDir)
         val store = Store(config.database)
         val disk = DiskGuard(volumeHealth::problem)
-        thread(isDaemon = true, name = "nomad-volume-health") {
-            while (!Thread.currentThread().isInterrupted) {
-                volumeHealth.refresh()
-                disk.allowsWork()
-                Thread.sleep(5_000)
-            }
+        periodic("nomad-volume-health", 5_000) {
+            volumeHealth.refresh()
+            disk.allowsWork()
         }
         // Actual writes retain synchronous mount/free-space validation, on the background/IO workers only.
         val journalRoot = config.dataDir.resolve("nomad/result-journal")
@@ -55,19 +51,15 @@ object NomadCoordinatorCli {
         val artifacts = ResultJournal(journalRoot,
             LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null }),
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
-        thread(isDaemon = true, name = "nomad-result-journal-status") {
-            while (!Thread.currentThread().isInterrupted) {
-                runCatching { writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts) }
-                    .onFailure { System.err.println("result journal status: ${describeFailure(it)}") }
-                Thread.sleep(5_000)
-            }
+        periodic("nomad-result-journal-status", 5_000) {
+            writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)
         }
         val admissionSignal = CoordinatorSignal()
         val reconcileSignal = CoordinatorSignal()
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
-        val checks = com.eignex.lab.checker.CaseChecks(store, { com.eignex.lab.checker.Checkers.of(config) }, config::jobDir) { job, line ->
+        val checks = com.eignex.lab.CaseChecks(store, { com.eignex.lab.Checkers.of(config) }, config::jobDir) { job, line ->
             config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
         }
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
@@ -125,43 +117,23 @@ object NomadCoordinatorCli {
             source = { job, targets, settings -> sourceWork.poll(job.id) { sources.publish(job, targets, settings) } },
             preparationPlan = { job, work -> planWork.poll(job, work) != null })
         val buildVolumes = NomadBuildVolumes(client, queueSettings)
-        thread(isDaemon = true, name = "nomad-admission") {
-            while (!Thread.currentThread().isInterrupted) {
-                runCatching {
-                    queue.reconcile()
-                    val active = store.active(withCommands = false)
-                    sourceWork.retain(active.map { it.id }.toSet())
-                    planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
-                }.onFailure { System.err.println("nomad admission: ${describeFailure(it)}") }
-                admissionSignal.await()
-            }
+        periodic("nomad-admission", admissionSignal::await) {
+            queue.reconcile()
+            val active = store.active(withCommands = false)
+            sourceWork.retain(active.map { it.id }.toSet())
+            planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
         }
         val capacity = settings.capacity?.let { integration ->
             CapacityCollector(checkNotNull(capacitySettings), integration.inventoryFiles.map(Path::of),
                 Path.of(integration.healthTokenFile), config.dataDir.resolve("nomad/capacity-state.json"), store, client, disk::allowsWork, config.localNodeTags)
         }
         // Capacity freshness must not depend on worker reconciliation, source checks or cache maintenance.
-        if (capacity != null) thread(isDaemon = true, name = "nomad-capacity") {
-            while (!Thread.currentThread().isInterrupted) {
-                runCatching { capacity.collect() }.onFailure { System.err.println("nomad capacity: ${describeFailure(it)}") }
-                Thread.sleep(5_000)
-            }
-        }
+        if (capacity != null) periodic("nomad-capacity", 5_000) { capacity.collect() }
         val cleanup = NomadAllocationCleanup(client, store, queueSettings)
-        thread(isDaemon = true, name = "nomad-allocation-cleanup") {
-            while (!Thread.currentThread().isInterrupted) {
-                runCatching { cleanup.reconcile() }.onFailure { System.err.println("nomad allocation cleanup: ${describeFailure(it)}") }
-                Thread.sleep(300_000)
-            }
-        }
-        thread(isDaemon = true, name = "nomad-reconcile") {
-            while (!Thread.currentThread().isInterrupted) {
-                runCatching {
-                    backend.reconcile()
-                    runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${describeFailure(it)}") }
-                }.onFailure { System.err.println("nomad reconcile: ${describeFailure(it)}") }
-                reconcileSignal.await()
-            }
+        periodic("nomad-allocation-cleanup", 300_000) { cleanup.reconcile() }
+        periodic("nomad-reconcile", reconcileSignal::await) {
+            backend.reconcile()
+            runCatching { buildVolumes.reconcile() }.onFailure { System.err.println("nomad build cache: ${describeFailure(it)}") }
         }
         embeddedServer(Netty, configure = {
             connectors.add(EngineConnectorBuilder().apply { host = settings.bindAddress; port = settings.workerPort })
@@ -170,10 +142,4 @@ object NomadCoordinatorCli {
         }) { workerApi(store, backend, artifacts, disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
-}
-
-/** A background failure in one line: its type, message and the lab frame it came from, never a secret-bearing trace. */
-internal fun describeFailure(failure: Throwable): String {
-    val frame = failure.stackTrace.firstOrNull { it.className.startsWith("com.eignex.") }
-    return "${failure.javaClass.simpleName}: ${failure.message?.take(256)}" + (frame?.let { " at ${it.fileName}:${it.lineNumber}" } ?: "")
 }

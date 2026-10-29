@@ -23,4 +23,4 @@ internal fun checkPreparationExit(exit: Int, detail: () -> String) {
 }
 
 /** A run's whole-run deadline ran out. Its message is what a failed job records ([ExecutionStore]), so it is kept. */
-internal class RunDeadlineExceeded : IllegalStateException("Whole-run deadline exhausted")
+internal class RunDeadlineExceeded : IllegalStateException("Whole-run deadline exhausted"), NotRetryable

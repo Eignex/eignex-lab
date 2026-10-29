@@ -66,7 +66,7 @@ class BenchAdapterIntegrationTest {
             override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
         }
         val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), corpusDir = root.resolve("checker-corpus"), auth = Auth.Disabled)
-        val checks = com.eignex.lab.checker.CaseChecks(store, { com.eignex.lab.checker.Checkers.of(config) }) { id, line -> println("check $id: $line") }
+        val checks = com.eignex.lab.CaseChecks(store, { com.eignex.lab.Checkers.of(config) }) { id, line -> println("check $id: $line") }
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { id, index ->
             val (problem, arm) = requireNotNull(store.caseOf(id, index))
             if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"

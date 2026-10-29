@@ -3,7 +3,7 @@ package com.eignex.lab
 import kotlinx.serialization.json.*
 
 /** Infrastructure placement may change CPU frequency without changing a session's vCPU budget or frozen inputs. */
-internal class NomadCpuPlacement(private val nomad: NomadControl) {
+internal class NomadCpuPlacement(private val nomad: NomadControl, private val nanoTime: () -> Long = System::nanoTime) {
     private data class Node(val id: String, val nodeClass: String, val capacity: NomadCpuCapacity,
                             val freeCpu: Long, val freeMemory: Long)
     private var sampledAt = Long.MIN_VALUE
@@ -17,7 +17,7 @@ internal class NomadCpuPlacement(private val nomad: NomadControl) {
     }
 
     private fun refresh() {
-        val at = System.nanoTime()
+        val at = nanoTime()
         if (sampledAt == Long.MIN_VALUE || at - sampledAt >= 10_000_000_000L) {
             nodes = sample(); sampledAt = at
         }

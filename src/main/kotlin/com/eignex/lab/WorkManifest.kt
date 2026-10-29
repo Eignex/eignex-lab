@@ -2,6 +2,8 @@ package com.eignex.lab
 
 import kotlinx.serialization.Serializable
 import java.nio.file.Path
+import com.eignex.lab.bench.BenchDescriptor
+import com.eignex.lab.bench.BenchPlan
 
 @Serializable
 data class InputFile(val path: String, val sha256: String, val bytes: Long, val executable: Boolean = false) {
@@ -92,3 +94,18 @@ internal fun safeRelative(value: String): Path {
     require(value.isNotEmpty() && !value.contains('\\') && !value.contains('\u0000') && !path.isAbsolute && path.normalize() == path && path.none { it.toString() in setOf("..", ".") }) { "unsafe relative path" }
     return path
 }
+
+/** Immutable input bytes live in a regional store; jobs carry only paths and checksums. */
+@Serializable
+data class SharedInput(val file: InputFile, val key: String, val encoding: String = "identity",
+                       val storedSha256: String = file.sha256, val storedBytes: Long = file.bytes) {
+    init {
+        safeRelative(key); require(!file.executable && encoding in setOf("identity", "zstd"))
+        require(SHA256.matches(storedSha256) && storedBytes in 0..32L * 1024 * 1024 * 1024)
+    }
+}
+
+/** Verified accepted preparations; workers never resolve another job or source ref themselves. */
+@Serializable
+data class BenchReplay(val plans: Map<String, BenchPlan>, val descriptor: BenchDescriptor,
+                       val corpus: WorkerBundle? = null, val sharedInputs: List<SharedInput> = emptyList())

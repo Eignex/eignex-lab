@@ -66,13 +66,9 @@ class SelfUpdater(
     }
 }
 
-private fun execute(dir: File, cmd: List<String>, log: File?): Pair<Int, String> {
-    val builder = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
-    if (log != null) builder.redirectOutput(ProcessBuilder.Redirect.appendTo(log))
-    val process = builder.start()
-    val out = if (log == null) process.inputStream.bufferedReader().readText() else ""
-    return process.waitFor() to out
-}
+// A fetch or a rev-parse is quick; an update builds a release, which on a busy machine can take a while.
+private fun execute(dir: File, cmd: List<String>, log: File?): Pair<Int, String> =
+    runProcess(cmd, dir, if (log == null) java.time.Duration.ofMinutes(5) else java.time.Duration.ofHours(1), mapOf("GIT_TERMINAL_PROMPT" to "0"), log)
 
 // A non-zero exit, so launchd and systemd (Restart=on-failure) start the runner again.
 private const val EX_RESTART = 75

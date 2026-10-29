@@ -20,10 +20,10 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store, host:
         }
         get("/nodes") {
             val settings = runCatching { config.nomadCapacitySettings?.let { CapacitySettings.read(it) } }.getOrNull()
-            call.respondText(nodesPage(config, host, readCapacityReport(config), store.execution.capacityLeases(), settings, readResultJournalReport(config)), ContentType.Text.Html)
+            call.respondText(nodesPage(config, host, readCapacityReport(config), store.execution.capacityLeases(), settings, readResultJournalReport(config.dataDir)), ContentType.Text.Html)
         }
         get("/journal") {
-            val report = readResultJournalReport(config)
+            val report = readResultJournalReport(config.dataDir)
             if (report == null) call.respond(HttpStatusCode.ServiceUnavailable, "Result journal has not reported") else call.respond(report)
         }
         get("/capacity/view") { call.respondRedirect("/nodes") }
@@ -53,6 +53,3 @@ internal fun Application.operatorCapacityApi(config: Config, store: Store, host:
 internal fun readCapacityReport(config: Config): CapacitySnapshot? = runCatching {
     Json.decodeFromString<CapacitySnapshot>(Files.readString(config.nomadCapacityReport)).let { it.copy(ageMs = (now() - it.generatedAt).coerceAtLeast(0)) }
 }.getOrNull()
-
-@Serializable
-data class ExecutionSessionReport(val session: ExecutionSession, val phase: String?, val generation: Int?, val committed: Int, val observation: String?, val observedAt: Long?, val preparation: PreparationStatus? = null)

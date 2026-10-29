@@ -12,7 +12,7 @@ import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 
 /** A commit the lab refuses to build: its code came from no trusted user. Not retried. */
-class UntrustedCommit(message: String) : IllegalArgumentException(message)
+class UntrustedCommit(message: String) : IllegalArgumentException(message), NotRetryable
 
 /**
  * Which commits the lab builds and runs: a commit on `main`, or one on a branch every push to which a trusted GitHub

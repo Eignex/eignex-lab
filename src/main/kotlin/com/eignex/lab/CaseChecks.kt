@@ -1,14 +1,7 @@
-package com.eignex.lab.checker
+package com.eignex.lab
 
-import com.eignex.lab.ACTIVE
-import com.eignex.lab.Config
-import com.eignex.lab.Job
-import com.eignex.lab.Problem
-import com.eignex.lab.REFERENCE_BACKEND
-import com.eignex.lab.SourceValidation
-import com.eignex.lab.Status
-import com.eignex.lab.Store
-import com.eignex.lab.isAnalysis
+import com.eignex.lab.checker.*
+
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -57,13 +50,13 @@ object Checkers {
 }
 
 /** Missing repository fields in pre-adapter records used the original checker mirror. */
-internal fun checkerRepository(spec: com.eignex.lab.ExperimentSpec?): String? = spec?.let {
-    it.repository.takeUnless { repository -> it.bench == null && repository == com.eignex.lab.Repositories.DEFAULT }
+internal fun checkerRepository(spec: ExperimentSpec?): String? = spec?.let {
+    it.repository.takeUnless { repository -> it.bench == null && repository == Repositories.DEFAULT }
 }
 
 internal fun checkerMirror(config: Config, repository: String?): java.nio.file.Path {
     if (repository == null) return config.mirror
-    val mirror = com.eignex.lab.Repositories.mirror(config, repository)
+    val mirror = Repositories.mirror(config, repository)
     // Old Klause checks used repo.git, including records that explicitly named the repository.
     return if (repository == "Eignex/klause" && !java.nio.file.Files.exists(mirror)) config.mirror else mirror
 }
@@ -174,7 +167,7 @@ class CaseChecks(
             if (job == null) return "no such job"
             val spec = job.experiment ?: return "job ${job.id} is not an experiment"
             if (spec.isAnalysis) return "job ${job.id} is an analysis or recheck job itself; name the job it checked (${spec.analyze?.job})"
-            if (job.status in ACTIVE) return "job ${job.id} is ${job.status.name.lowercase()}: check it again once it has ended"
+            if (job.status.isActive) return "job ${job.id} is ${job.status.name.lowercase()}: check it again once it has ended"
             return null
         }
     }

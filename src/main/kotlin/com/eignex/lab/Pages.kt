@@ -52,7 +52,7 @@ internal fun indexPage(
         append("<button class=\"chip${if (chip == "all") " on" else ""}\" data-chip=\"$chip\">$chip</button>")
     }
     append("</div><div id=\"history\" data-live>")
-    val shown = if (front) history.filter { it.status !in ACTIVE } else history
+    val shown = if (front) history.filter { it.status.isTerminal } else history
     append(jobTable(config, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes))
     append("<p class=\"pager\">")
     if (before != null) append("<a href=\"/${query("name" to name)}\">newest</a> ")
@@ -82,7 +82,7 @@ internal fun jobPage(
     preparation: List<ExecutionSessionReport> = emptyList(),
 ): String = buildString {
     val dir = config.jobDir(job.id).toFile()
-    val active = job.status in ACTIVE
+    val active = job.status.isActive
     append(head("${job.id} ${job.name} · eignex lab", live = active))
     append("<header><h1>${job.id} ${esc(job.name)}</h1>")
     job.experiment?.description?.takeIf { it.isNotBlank() }?.let { append("<p class=\"description\">${esc(it)}</p>") }
@@ -1040,10 +1040,10 @@ private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): Str
         append("<h2>Recheck</h2><p>The lab's source checkers, run again over the stored records of job ")
         append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>: each Solver solution claim in a format the lab checks gets a ")
         append("fresh verdict, which its pages, trend and comparisons then read. Nothing was built and no solver ran.</p>")
-        val result = config.jobDir(job.id).resolve(com.eignex.lab.checker.CaseChecks.RESULT).toFile().takeIf { it.isFile }
-            ?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(com.eignex.lab.checker.RecheckResult.serializer(), it.readText()) }.getOrNull() }
+        val result = config.jobDir(job.id).resolve(com.eignex.lab.CaseChecks.RESULT).toFile().takeIf { it.isFile }
+            ?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(com.eignex.lab.RecheckResult.serializer(), it.readText()) }.getOrNull() }
         if (result == null) {
-            append("<p class=\"muted\">${if (job.status in ACTIVE) "Not finished." else "No result written: see job.log."}</p>")
+            append("<p class=\"muted\">${if (job.status.isActive) "Not finished." else "No result written: see job.log."}</p>")
         } else {
             val states = result.states.entries.joinToString(", ") { "${it.value} ${esc(it.key)}" }.ifEmpty { "none" }
             append("<p>${result.checked} of ${result.cases} cases checked: $states; policies ${esc(result.policies.joinToString())}.</p>")
@@ -1065,7 +1065,7 @@ private fun analysisSection(config: Config, job: Job, spec: ExperimentSpec): Str
     val result = config.jobDir(job.id).resolve(CompilationReports.ANALYSIS).toFile().takeIf { it.isFile }
         ?.let { runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() }
     if (result == null) {
-        append("<p class=\"muted\">${if (job.status in ACTIVE) "Not finished." else "No reports written: see job.log."}</p>")
+        append("<p class=\"muted\">${if (job.status.isActive) "Not finished." else "No reports written: see job.log."}</p>")
         return@buildString
     }
     result.archive?.let { archive ->
@@ -1244,7 +1244,7 @@ private fun problemLink(collection: String, problem: String) = "/problem${query(
 
 /** One problem: every reference solver's verdict on it, and every time the lab ran it. */
 internal fun problemPage(report: ProblemReport, repoUrl: String): String = buildString {
-    append(head("${report.problem} · eignex lab", live = report.runs.any { it.status in ACTIVE }, tab = Tab.REFERENCE))
+    append(head("${report.problem} · eignex lab", live = report.runs.any { it.status.isActive }, tab = Tab.REFERENCE))
     append("<header><h1><code>${esc(report.problem)}</code></h1><p class=\"muted\">")
     append("<a href=\"/references${query("collection" to report.collection)}\">${esc(report.collection)}</a></p></header>")
     append("<h2>Reference <small>${report.references.size} solvers, strongest first</small></h2>")
@@ -1442,8 +1442,6 @@ internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildStrin
     append("</table></div></body></html>")
 }
 
-internal val ACTIVE = setOf(Status.QUEUED, Status.RUNNING)
-
 /** The GitHub page of [sha] when [repoUrl] is on GitHub. */
 internal fun commitUrl(repoUrl: String, sha: String): String? =
     Regex("github\\.com[:/]([^/]+/[^/]+?)(\\.git)?/?$").find(repoUrl)
@@ -1520,19 +1518,6 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
     append("</div>")
 }
 
-/** Core-hours, one decimal under ten and whole above. */
-internal fun coreHoursText(hours: Double): String = if (hours < 10) "%.1f".format(Locale.ROOT, hours) else "%.0f".format(Locale.ROOT, hours)
-
-/** A wall time of [hours], rounded up to the minute: `14 min`, `3 h 20 min`, `2 d 5 h`. */
-internal fun wallText(hours: Double): String {
-    val minutes = kotlin.math.ceil(hours * 60).toLong()
-    return when {
-        minutes < 60 -> "$minutes min"
-        minutes < 48 * 60 -> "${minutes / 60} h" + if (minutes % 60 != 0L) " ${minutes % 60} min" else ""
-        else -> "${minutes / (24 * 60)} d ${minutes / 60 % 24} h"
-    }
-}
-
 /**
  * A row's remaining work: its estimated core-hours, for work the local machine may run the time the local machine would
  * take at the job's own concurrency, and where the time a case came from ([WorkEstimate.note]).
@@ -1574,7 +1559,7 @@ private fun jobTable(
         if (filterable) {
             val state = when {
                 job.status == Status.FAILED || job.failed > 0 -> "failed"
-                job.status in ACTIVE -> "active"
+                job.status.isActive -> "active"
                 else -> job.status.name.lowercase()
             }
             val text = esc(listOfNotNull(job.name, job.ref, job.sha, job.experiment?.description).joinToString(" ").lowercase())
@@ -1659,7 +1644,7 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
  */
 private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = emptyList(), nodes: List<JobNode> = emptyList()): String {
     val spec = job.experiment
-    if (job.backend == "nomad" && job.status in ACTIVE) {
+    if (job.backend == "nomad" && job.status.isActive) {
         val where = when {
             nodes.isNotEmpty() && nodes.all { it.local } -> "local"
             nodes.isNotEmpty() && nodes.none { it.local } -> "cloud"
@@ -1719,8 +1704,8 @@ private fun statusCell(job: Job, position: Int?, nodes: List<JobNode>? = null): 
         activity ?: job.status.name
     }
     val notes = listOfNotNull(
-        "cancelling".takeIf { job.cancelRequested && job.status in ACTIVE },
-        "<span class=\"badge\">paused</span>".takeIf { job.paused && job.status in ACTIVE },
+        "cancelling".takeIf { job.cancelRequested && job.status.isActive },
+        "<span class=\"badge\">paused</span>".takeIf { job.paused && job.status.isActive },
         "#$position in the queue".takeIf { position != null },
         "priority ${job.priority}".takeIf { job.priority != 0 },
         "waiting for compatible capacity".takeIf { activity == "WAITING" },
@@ -1798,13 +1783,6 @@ private fun span(seconds: Long): String = when {
 private fun duration(from: Long?, to: Long?): String {
     if (from == null) return ""
     return clock(((to ?: now()) - from) / 1000)
-}
-
-internal fun size(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
-    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024)
-    else -> "%.1f GB".format(bytes / 1024.0 / 1024 / 1024)
 }
 
 private fun query(vararg params: Pair<String, String?>): String = params

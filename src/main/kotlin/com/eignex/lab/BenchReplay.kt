@@ -1,14 +1,5 @@
 package com.eignex.lab
 
-import com.eignex.lab.bench.BenchDescriptor
-import com.eignex.lab.bench.BenchPlan
-import kotlinx.serialization.Serializable
-
-/** Verified accepted preparations; workers never resolve another job or source ref themselves. */
-@Serializable
-data class BenchReplay(val plans: Map<String, BenchPlan>, val descriptor: BenchDescriptor,
-                       val corpus: WorkerBundle? = null, val sharedInputs: List<SharedInput> = emptyList())
-
 internal data class ReplaySource(val job: Long, val preparation: PreparationResult, val label: String)
 
 internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<PlannedArm>): Map<String, ReplaySource> {

@@ -95,7 +95,7 @@ object Waiting {
     internal fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
                   hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null): JobPlacement {
         val host = job.experiment?.host ?: Experiments.LAB_HOST
-        val estimate = if (job.status in ACTIVE) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
+        val estimate = if (job.status.isActive) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
         val activity = nodes?.let { jobActivity(job, it) }
         return JobPlacement(job.id, job.name, job.status, Placement.where(host), Experiments.hostWord(host), job.priority,
             job.paused, job.cancelRequested, position.takeIf { job.status == Status.QUEUED },
