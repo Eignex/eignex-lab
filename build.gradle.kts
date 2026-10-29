@@ -107,3 +107,11 @@ tasks.register<Test>("verifyPreparationPerformance") {
     outputs.upToDateWhen { false }
     testLogging { showStandardStreams = true }
 }
+
+// Retain the independent evaluator's source identity in each exact MPS receipt.
+tasks.processResources {
+    from("src/main/kotlin") {
+        include("com/eignex/lab/checker/ExactMpsChecker.kt")
+        into("checker-source")
+    }
+}

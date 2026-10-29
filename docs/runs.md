@@ -186,3 +186,6 @@ Supply frozen UTF-8 `format`, `model` and `record` parameters, optionally packed
 same bounded transport described above. It retains the complete source, record and lab receipt as artifacts.
 `details.state` is the verdict; successful SDK capture alone is not acceptance. Capture preparation, checker
 execution and retention belong to the containing job's budget. Repository tests require no external provisioner.
+
+Exact rational MPS point checks and the remote replay contract are specified in
+[Independent source checking](01-source-checking.md#exact-rational-mps). A valid point is feasibility evidence only.

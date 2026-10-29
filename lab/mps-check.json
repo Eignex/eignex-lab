@@ -1,0 +1,6 @@
+{
+  "main": "com.eignex.lab.checker.MpsReplayKt",
+  "buildTasks": ["installDist"],
+  "classpath": ["build/install/eignex-lab/lib/*"],
+  "jvmArgs": ["-Xmx384m"]
+}
