@@ -1,6 +1,5 @@
 package com.eignex.lab
 
-import com.eignex.lab.checker.CaseChecks
 import com.eignex.lab.checker.LabCheck
 import com.eignex.lab.checker.Policies
 import com.eignex.lab.checker.SourceChecker

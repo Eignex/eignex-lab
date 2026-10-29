@@ -1,5 +1,7 @@
 package com.eignex.lab
 
+import java.io.File
+
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -294,8 +296,7 @@ internal fun mirrorGrep(mirror: java.io.File): (String, String) -> Pair<Int, Str
     gitIn(mirror, listOf("grep", "-I", "-ohE", pattern, revision, "--"))
 }
 
-private fun execute(cmd: List<String>): Pair<Int, String> {
-    val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
-    val out = process.inputStream.bufferedReader().readText()
-    return process.waitFor() to out
-}
+private fun execute(cmd: List<String>): Pair<Int, String> = runProcess(cmd, timeout = java.time.Duration.ofMinutes(30))
+
+/** Run git with [args] in [dir], no shell between: its exit and its output. */
+internal fun gitIn(dir: File, args: List<String>): Pair<Int, String> = runGit(dir, args, java.time.Duration.ofMinutes(2))

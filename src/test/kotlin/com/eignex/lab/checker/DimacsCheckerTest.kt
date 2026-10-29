@@ -1,5 +1,8 @@
 package com.eignex.lab.checker
 
+import com.eignex.lab.Checkers
+import com.eignex.lab.DimacsCheckBench
+
 import com.eignex.lab.Config
 import com.eignex.lab.Problem
 import com.eignex.lab.bench.BenchRequest

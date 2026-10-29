@@ -101,7 +101,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         require(id.matches(Regex("[a-z0-9-]{1,64}")) && executionClass.matches(Regex("[a-z][a-z0-9-]{0,31}")))
         require(release.isNotBlank() && token.length >= 32)
         val job = store.job(jobId) ?: error("missing experiment")
-        require(job.backend == "nomad" && !job.cancelRequested && job.status in setOf(Status.QUEUED, Status.RUNNING))
+        require(job.backend == "nomad" && !job.cancelRequested && job.status.isActive)
         val nomadId = "lab-$jobId-$executionClass-$id-1"
         db.session(id)?.let { old ->
             require(old.jobId == jobId && old.executionClass == executionClass && old.release == release && old.budget == budget)
@@ -367,7 +367,6 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Record [detail] in [jobId]'s execution log, for [session] when given. */
     fun note(jobId: Long, session: String?, detail: String, at: Long = now()) = store.executionTransaction { it.event(jobId, session, detail, at) }
 
-
     fun credential(id: String, token: String, allocation: String? = null): ExecutionSession = store.executionTransaction { db ->
         val s = db.session(id) ?: throw ExecutionFenced("unknown session")
         val hash = db.sqlRows("SELECT token_hash FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
@@ -511,7 +510,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         if (!MessageDigest.isEqual(hash.toByteArray(), digest(token).toByteArray())) throw ExecutionFenced("invalid credential")
         if (s.desired == "stop" || (allocation != null && s.allocation != allocation)) throw ExecutionFenced("session fenced")
         val job = store.job(s.jobId)!!
-        if (job.backend != "nomad" || job.cancelRequested || job.status !in setOf(Status.QUEUED, Status.RUNNING)) throw ExecutionFenced("experiment fenced")
+        if (job.backend != "nomad" || job.cancelRequested || job.status.isTerminal) throw ExecutionFenced("experiment fenced")
         return s
     }
     private fun Connection.findAttempt(o: AttemptOwner): Attempt? {

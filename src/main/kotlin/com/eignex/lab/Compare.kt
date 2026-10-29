@@ -1,6 +1,5 @@
 package com.eignex.lab
 
-import kotlinx.serialization.Serializable
 import kotlin.math.abs
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -183,10 +182,6 @@ fun mixesInstrumented(arms: List<ArmSummary>): Boolean {
     val counted = arms.filter { it.cases > 0 }
     return counted.any { it.instrumented > 0 } && counted.any { it.instrumented < it.cases }
 }
-
-/** Arms that contradict each other on one problem, which at least one of them got wrong. */
-@Serializable
-data class Disagreement(val problem: Problem, val reason: String)
 
 data class Comparison(val arms: List<ArmSummary>, val disagreements: List<Disagreement>)
 

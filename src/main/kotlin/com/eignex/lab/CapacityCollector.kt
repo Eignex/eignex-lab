@@ -89,7 +89,7 @@ class CapacityCollector(
                 else -> CapacityNodeState.BOOTING
             }, reservations, idle[id], instance.countedInTarget)
         }
-        val pending = sessions.filter { s -> s.desired == "run" && (s.executionClass != "solve" || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status in setOf(Status.QUEUED, Status.RUNNING) && !it.paused && !it.cancelRequested } == true &&
+        val pending = sessions.filter { s -> s.desired == "run" && (s.executionClass != "solve" || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
             nomad.allocations(s.nomadJobId).none { it.active } }
         val demands = pending.mapNotNull { s ->
             val manifest = store.execution.manifest(s.id)

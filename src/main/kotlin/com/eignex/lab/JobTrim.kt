@@ -130,7 +130,7 @@ class JobTrim(
             }
             return when (relative.nameCount) {
                 1 -> name in setOf("job.log", "setup.log", "sha", MARKER, CompilationReports.ANALYSIS, CaptureArchives.MANIFEST,
-                    com.eignex.lab.checker.CaseChecks.RESULT) ||
+                    com.eignex.lab.CaseChecks.RESULT) ||
                     name.endsWith(".exit") || name.endsWith(".termination") || (name.startsWith("selection-") && name.endsWith(".jsonl"))
                 3 -> relative.getName(0).toString() == "cases" && name.endsWith(".json")
                 4 -> relative.getName(0).toString() == "cases" && relative.getName(2).toString().startsWith("profile-") && name in reports

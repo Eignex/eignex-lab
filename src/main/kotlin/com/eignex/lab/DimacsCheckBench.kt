@@ -1,6 +1,7 @@
-package com.eignex.lab.checker
+package com.eignex.lab
 
-import com.eignex.lab.*
+import com.eignex.lab.checker.*
+
 import com.eignex.lab.bench.*
 import java.io.File
 import kotlinx.serialization.json.*

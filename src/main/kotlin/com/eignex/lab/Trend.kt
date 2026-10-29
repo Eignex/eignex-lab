@@ -110,7 +110,7 @@ object Trend {
         }
         var stale = false
         val runs = jobs.mapNotNull { job ->
-            val finished = job.status !in ACTIVE
+            val finished = job.status.isTerminal
             // A stale point is still served, and refreshed off the request (see [TrendCache]); a refresh recomputes it.
             // A running one's point too, for [TrendCache.LIVE_MS]: its cases finish one by one, and a page load that
             // finds it older is served it while it is recomputed.
@@ -218,7 +218,7 @@ object Trend {
             experiment = job.experiment?.let(Experiments::trendFingerprint).orEmpty(),
             sourceChecked = job.experiment?.let { SourceValidation.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,
-            finished = job.status !in ACTIVE,
+            finished = job.status.isTerminal,
             cases = own.size,
             problems = stats.problems,
             solved = Estimate(stats.solved.value / n, stats.solved.low / n, stats.solved.high / n),

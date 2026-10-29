@@ -434,7 +434,7 @@ object CompilationReports {
         val spec = job.experiment ?: return "job ${job.id} is not an experiment"
         if (spec.isAnalysis) return "job ${job.id} is an analysis job itself; name the job it analysed (${spec.analyze?.job})"
         if (!spec.recordsCliJfr) return "job ${job.id} ran without JFR measurement: it recorded no captures to analyse"
-        if (job.status in ACTIVE) return "job ${job.id} is ${job.status.name.lowercase()}: analyse it once it has ended"
+        if (job.status.isActive) return "job ${job.id} is ${job.status.name.lowercase()}: analyse it once it has ended"
         val trimmed = jobDir.resolve(JobTrim.MARKER)
         if (Files.exists(trimmed)) {
             return "job ${job.id} was trimmed (${Files.readString(trimmed).trim()}): its raw captures (cli.jfr, hotspot-compilation.log) " +
