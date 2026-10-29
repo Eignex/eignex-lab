@@ -13,7 +13,7 @@ internal object ComparisonControls {
     fun mismatch(a: CaseResult, b: CaseResult): String? {
         val left = a.record as? JsonObject ?: return "missing record"
         val right = b.record as? JsonObject ?: return "missing record"
-        val controlled = a.problem.benchCase != null || b.problem.benchCase != null ||
+        val controlled = "comparisonControls" in left || "comparisonControls" in right ||
             text(left, "solver") == "klause" || text(right, "solver") == "klause"
         if (!controlled) return null
         val x = left["comparisonControls"] as? JsonObject ?: return "historical controls unavailable"

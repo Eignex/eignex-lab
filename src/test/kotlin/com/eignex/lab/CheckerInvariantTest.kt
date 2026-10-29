@@ -94,6 +94,11 @@ class CheckerInvariantTest {
         val shown = if (bench.withdrawn) Claim(claim.name, false, null, false) else claim
         val feasible = if (bench.withdrawn) "null" else "${claim.feasible}"
         return """{"problem":"${claim.name}","solver":"klause","kind":"optimize","maximize":false,"feasible":$feasible,
+            "seed":1,"processors":1,"comparisonControls":{"policy":"matched-source-v1","series":"fixture",
+              "solverSeed":"1","compilerSeed":"1","solverBudgetMs":"10000","compilerTimeoutSeconds":"60",
+              "caseTimeoutSeconds":"280","cpus":"1","memoryMiB":"4096","heap-mib":"2560","gc":"default",
+              "debug":"true","measurement":"none","exact":"false","complete-assignment":"true",
+              "deadlinePolicy":"cli-inclusive-v1","runtimeFingerprint":"fixture","inputDigest":"fixture"},
             "objective":${shown.objective},"exactObjective":${shown.exact?.let { "\"$it\"" }},"proven":${shown.proven},
             "timeToBestMs":${if (!bench.withdrawn && claim.feasible) TIME_TO_BEST else null},"budgetMs":10000,
             "command":"klause-cli","validationPolicy":"${bench.policy}","finalWitness":"(\n(define-fun x () Int 5)\n)",
