@@ -156,3 +156,30 @@ Its Kotlin source delegates all constraint evaluation to the provider's API.
 
 Schemas and behavior: [experiments](../src/main/kotlin/com/eignex/lab/Experiments.kt),
 [API](../src/main/kotlin/com/eignex/lab/Api.kt), [checkers](../src/main/kotlin/com/eignex/lab/checker/).
+
+OPB (including WBO sources), WBO and WCNF retained points use the independent lab evaluator
+`eignex-lab-weighted-point-1`. It reads the original source, checks every original Boolean coordinate and hard
+constraint, and compares the exact integer objective or sum of violated soft weights. WBO additionally enforces
+cost strictly below `soft:` top; weights at or above top act as hard constraints. Legacy WCNF numeric top and
+headerless `h` clauses are supported. WCNF witnesses may be the retained `v` bit vector or signed DIMACS literals;
+PB witnesses use signed `xN` literals. Missing, duplicate and extra coordinates reject; no omitted variable is
+completed by a solver. Nonlinear PB products are evaluated directly as Boolean conjunctions.
+
+The authority is [PB Competition 2010 section 3](https://www.cril.univ-artois.fr/PB10/format.pdf) and the
+[MaxSAT Evaluation input/output specification](https://maxsat-evaluations.github.io/2022/rules.html).
+The evaluator uses Java `BigInteger`, with no Klause parser, acceptance code, presolve or reference solver.
+This avoids finite-width provider costs and validates a point and its cost only, never a lower bound or optimum.
+The receipt binds original plain source bytes, complete witness, claimed objective, policy version, installed lab
+JAR, executable/classpath hashes and the existing process resource envelope. A source hash is required.
+
+Parsing and arithmetic run in a child with a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and existing
+4 GiB address-space limit on Linux; incomplete execution is `not-run`. Source snapshots are capped at 32 MiB
+(including decompression); individual numeric tokens at 4096 characters and variables at one million. Exceeding
+input coverage is `unsupported`; malformed source stays unsupported, while a malformed point, hard violation or
+wrong exact cost is `invalid`. Missing source/witness/objective and process failures are never valid checks.
+
+`checker/weighted.json` replays a retained weighted point through the same production dispatcher/adapters.
+Supply frozen UTF-8 `format`, `model` and `record` parameters, optionally packed as `capture-zstd-base64` using the
+same bounded transport described above. It retains the complete source, record and lab receipt as artifacts.
+`details.state` is the verdict; successful SDK capture alone is not acceptance. Capture preparation, checker
+execution and retention belong to the containing job's budget. Repository tests require no external provisioner.
