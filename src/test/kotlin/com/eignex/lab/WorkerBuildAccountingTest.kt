@@ -181,4 +181,27 @@ class WorkerBuildAccountingTest {
         }
     }
 
+    @Test fun `a cold build pins staging before requesting background maintenance`() {
+        val root = Files.createTempDirectory("build-before-maintenance")
+        val source = Files.createDirectory(root.resolve("source"))
+        Files.writeString(source.resolve("data"), "source")
+        val cacheRoot = root.resolve("cache")
+        val pending = mutableListOf<Thread>()
+        try {
+            val cache = WorkerBuildCache(cacheRoot, ProcessSupervisor(root.resolve("unused")), startMaintenance = { thread ->
+                val staging = Files.list(cacheRoot).use { paths -> paths.filter { it.fileName.toString().startsWith(".build-") }.toList() }
+                assertEquals(1, staging.size, "background discovery must not get ahead of staging creation")
+                assertNull(ProcessFilePin.tryLock(staging.single().resolve("owner.lock")), "staging must already be pinned")
+                pending += thread
+            })
+            val bundle = WorkerBundle("a".repeat(64), listOf(InputFile("data", ExecutionStore.digest("source"), 6)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "fixture", build = WorkerBuild())
+            val built = cache.prepare(bundle, source, ResourceBudget(1000, 512), emptyMap()) { 10_000 }
+            assertEquals("source", Files.readString(built.resolve("data")))
+            assertEquals(1, pending.size)
+        } finally {
+            pending.forEach { it.start(); it.join(10_000); assertFalse(it.isAlive) }
+            deleteTree(root)
+        }
+    }
+
 }
