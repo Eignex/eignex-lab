@@ -195,7 +195,11 @@ object Trend {
         features: Map<ProblemKey, ProblemFeatures> = emptyMap(),
     ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
-        val own = cases.filter { it.arm == label }
+        val raw = cases.filter { it.arm == label }
+        val own = raw.map { case ->
+            if ((case.record as? kotlinx.serialization.json.JsonObject)?.get("comparisonControls") == null) case
+            else case.copy(problem = case.problem.copy(problem = ComparisonControls.problem(case).second, benchCase = null))
+        }
         val stats = Stats.of(listOf(label), own).arms.single()
         if (stats.problems == 0) return null
         val summary = Compare.compare(listOf(label), own).arms.single()
@@ -216,7 +220,7 @@ object Trend {
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
-            spec = job.experiment.let { Experiments.trendFingerprint(it, own.map { case -> case.problem }.distinct()) } +
+            spec = job.experiment.let { Experiments.trendFingerprint(it, raw.map { case -> case.problem }.distinct()) } +
                 if (controlSeries == listOf("historical-unqualified")) "" else ":" + ExecutionStore.digest(controlSeries.joinToString("\n")),
             experiment = job.experiment.let(Experiments::trendFingerprint).orEmpty(),
             sourceChecked = job.experiment.let { SourceValidation.requested(it) } == true,
