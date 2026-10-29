@@ -17,7 +17,7 @@ class ComparisonControlsTest {
             "measurement" to "none", "exact" to "false", "complete-assignment" to "true", "deadlinePolicy" to "cli-inclusive-v1",
             "runtimeFingerprint" to "runtime", "inputDigest" to "inputs", "compilerFingerprint" to "compiler")
         val plan = BenchCase("s/p/$seed/$repeat", parameters = mapOf("seed" to "$seed", "engine" to "default"),
-            attributes = mapOf("suite" to "s", "problem" to "p", "seed" to "$seed"))
+            attributes = mapOf("suite" to "s", "problem" to "p", "seed" to "$seed", "repeat" to "$repeat"))
         val record = JsonObject(mapOf("solver" to JsonPrimitive("klause"), "seed" to JsonPrimitive(seed),
             "processors" to JsonPrimitive(1), "budgetMs" to JsonPrimitive(1000), "kind" to JsonPrimitive("satisfy"),
             "comparisonControls" to JsonObject(controls.mapValues { JsonPrimitive(it.value) }),
@@ -82,5 +82,15 @@ class ComparisonControlsTest {
         assertEquals(setOf("1", "3"), spec.bench!!.frozenCases.map { it.parameters["seed"] }.toSet())
         assertEquals(3, spec.repeats)
         assertTrue(spec.problemList.isEmpty())
+    }
+
+    @Test
+    fun `planned repeats and outer execution repeats remain distinct matched blocks`() {
+        val first = case(1, 0).copy(repeat = 0)
+        val second = case(1, 1).copy(repeat = 0)
+        val rerun = first.copy(repeat = 1)
+
+        assertEquals(3, listOf(first, second, rerun).map(ComparisonControls::block).distinct().size)
+        assertEquals(ComparisonControls.block(second), ComparisonControls.block(second.copy(arm = "after")))
     }
 }

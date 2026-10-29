@@ -7,6 +7,9 @@ import kotlinx.serialization.json.JsonPrimitive
 internal object ComparisonControls {
     fun seed(case: CaseResult): Long? = case.seed ?: text(case.record as? JsonObject, "seed")?.toLongOrNull()
 
+    fun block(case: CaseResult): Triple<Long?, Int, Int> = Triple(seed(case),
+        case.problem.benchCase?.attributes?.get("repeat")?.toIntOrNull() ?: 0, case.repeat)
+
     fun problem(case: CaseResult): Pair<String, String> = case.problem.suite to
         (case.problem.benchCase?.attributes?.get("problem") ?: case.problem.problem)
 

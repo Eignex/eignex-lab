@@ -74,7 +74,7 @@ object Confirm {
             val all = left + right
             // A contradicted proof is evidence of disagreement, never evidence of an improvement/loss.
             if (contradictory(all)) continue
-            fun blocks(cases: List<CaseResult>) = cases.groupBy { ComparisonControls.seed(it) to it.repeat }
+            fun blocks(cases: List<CaseResult>) = cases.groupBy(ComparisonControls::block)
             val a = blocks(left)
             val b = blocks(right)
             val keys = a.keys + b.keys
