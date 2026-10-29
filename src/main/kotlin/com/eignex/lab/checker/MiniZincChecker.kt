@@ -17,6 +17,10 @@ class MiniZincChecker : FormatChecker {
     override fun check(case: CheckCase, work: File): Verdict {
         val frame = case.miniZincFrame ?: return Verdict(LabCheck.UNSUPPORTED,
             "no retained FlatZinc/OZN/native point; solver-based witness completion is disabled", checker = "none")
+        val witnessLevel = ((case.record["stats"] as? JsonObject)?.get("finalWitnessLevel") as? JsonPrimitive)?.content
+        if (witnessLevel != null && witnessLevel != "model") {
+            return Verdict(LabCheck.UNSUPPORTED, "the record did not retain a model-level witness for output checking")
+        }
         val sourceHashes = case.record["sourceHashes"] as? JsonObject
         val modelHash = (sourceHashes?.get("model") as? JsonPrimitive)?.content
         val source = source(case.sources.model)

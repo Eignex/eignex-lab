@@ -13,6 +13,24 @@ import kotlin.test.assertTrue
 
 class MiniZincCheckerTest {
     @Test
+    fun `FlatZinc fallback output is unavailable for source witness comparison rather than invalid`() {
+        val work = Files.createTempDirectory("checks").toFile()
+        try {
+            val record = buildJsonObject {
+                put("stats", buildJsonObject { put("finalWitnessLevel", "flatzinc") })
+            }
+
+            val check = MiniZincChecker().check(CheckCase(record, SourceFiles(File(work, "source.mzn")), "x=3;",
+                MiniZincFrame("var 1..5: x; solve satisfy;", "", "")), work)
+
+            assertEquals(LabCheck.UNSUPPORTED, check.state)
+            assertTrue(check.resourceReceipts.isEmpty())
+        } finally {
+            work.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `captured compiler output cannot validate a source without its recorded digest`() {
         val work = Files.createTempDirectory("checks").toFile()
         try {
