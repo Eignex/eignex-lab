@@ -235,4 +235,28 @@ class TrendTest {
         assertEquals(1.0, themes.getValue("pb").solved)
         assertEquals(listOf(2, 1), listOf(themes.getValue("sat").problems, themes.getValue("pb").problems))
     }
+    @Test
+    fun `bench workload identities retain themes and reference disagreements in completed chart points`() {
+        val store = Store(Files.createTempDirectory("bench-trend-identity").resolve("lab.db"))
+        val benchCase = com.eignex.lab.bench.BenchCase("hakank/model/default/1/0", attributes = mapOf(
+            "suite" to "hakank", "collection" to "hakank", "problem" to "model"))
+        val problem = BenchRuns.problem(benchCase)
+        val id = store.create("sweep@bench", "sha", emptyList(), experiment = ExperimentSpec("sweep", bench = BenchSpec("bench.json")))
+        store.startForTest()
+        store.plan(id, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), listOf(problem),
+            Experiments.cases(1, 1, emptyList()), listOf("true" to 1L))
+        store.caseRecord(id, 0, """{"kind":"satisfy","feasible":true,"budgetMs":1000}""")
+        store.putFeatures(listOf(ProblemFeatures("hakank", "model", listOf("sat"))))
+        store.putReferences(listOf(problem.referenceKey to Reference("reference", false, null, false, true, 10, 1000)), "fixture")
+        store.finish(id, Status.DONE)
+
+        val cache = TrendCache()
+        val point = Trend.runs(store, "sweep", cache).single()
+        assertEquals(id, point.job)
+        assertEquals(SuiteShare(1, 1.0), point.themes.getValue("sat"))
+        assertEquals(1, point.disagreements)
+        assertEquals(mapOf("sat" to 1), point.disagreementsByTheme)
+        assertEquals(listOf(point), Trend.runs(store, "sweep", cache, missing = mutableListOf()))
+    }
+
 }
