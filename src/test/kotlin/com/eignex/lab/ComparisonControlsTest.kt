@@ -22,7 +22,7 @@ class ComparisonControlsTest {
             "processors" to JsonPrimitive(1), "budgetMs" to JsonPrimitive(1000), "kind" to JsonPrimitive("satisfy"),
             "comparisonControls" to JsonObject(controls.mapValues { JsonPrimitive(it.value) }),
             "sourceHashes" to JsonObject(mapOf("model" to JsonPrimitive("source"))),
-            "compiledInputHashes" to JsonObject(mapOf("flatzinc" to JsonPrimitive("fzn"), "outputMapping" to JsonPrimitive("ozn")))))
+            "compiledInputHashes" to JsonObject(mapOf("flatzinc" to JsonPrimitive("fzn"), "flatzincContentV1" to JsonPrimitive("content"), "outputMapping" to JsonPrimitive("ozn")))))
         return CaseResult(repeat, Status.DONE, Problem("s", plan.id, format = format, benchCase = plan), "arm",
             seed = seed, repeat = repeat, record = record)
     }
@@ -59,6 +59,16 @@ class ComparisonControlsTest {
         val changed = JsonObject(record + ("compiledInputHashes" to JsonObject(mapOf("flatzinc" to JsonPrimitive("changed")))))
         assertNotNull(ComparisonControls.mismatch(before, before.copy(record = changed)))
         assertNull(ComparisonControls.mismatch(before, before))
+    }
+
+    @Test
+    fun `generated path comments retain raw identities without splitting compiled content`() {
+        val before = case(format = "MINIZINC")
+        val record = before.record as JsonObject
+        val compiled = record.getValue("compiledInputHashes") as JsonObject
+        val relocated = JsonObject(compiled + ("flatzinc" to JsonPrimitive("other raw path comments")))
+
+        assertNull(ComparisonControls.mismatch(before, before.copy(record = JsonObject(record + ("compiledInputHashes" to relocated)))))
     }
 
     @Test

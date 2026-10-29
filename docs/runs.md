@@ -211,7 +211,10 @@ UNSAT or optimum proof. Resource and unavailable checks remain unchecked.
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,
 processor/memory/deadline controls and normalized runtime/compiler identities.
 Revision confirmations require equal complete controls, original-source hashes and,
-for MiniZinc, FlatZinc/output-mapping hashes. Missing historical controls remain
+for MiniZinc, compiled-content/output-mapping hashes. FlatZinc raw hashes remain
+retained separately: content policy v1 elides only the two generated path-comment
+lines immediately after MiniZinc's version header, preserving every remaining byte.
+Missing historical controls remain
 unqualified. Rates and historical fingerprints stay available; `comparisonSeries`
 labels controlled runtime/compiler series and historical records explicitly.
 Migrations start separate trend segments and need a retained bounded old/current

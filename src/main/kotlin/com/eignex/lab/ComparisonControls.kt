@@ -31,8 +31,10 @@ internal object ComparisonControls {
         if (a.problem.format == "MINIZINC" || b.problem.format == "MINIZINC") {
             if (text(x, "compilerFingerprint").isNullOrBlank()) return "compiler identity unavailable"
             val compiled = left["compiledInputHashes"] as? JsonObject ?: return "compiled identity unavailable"
-            if (listOf("flatzinc", "outputMapping").any { text(compiled, it).isNullOrBlank() } ||
-                compiled != right["compiledInputHashes"]) return "compiled artifact migration"
+            val other = right["compiledInputHashes"] as? JsonObject ?: return "compiled identity unavailable"
+            if (listOf("flatzinc", "outputMapping", "flatzincContentV1").any { text(compiled, it).isNullOrBlank() ||
+                    text(other, it).isNullOrBlank() }) return "compiled identity unavailable"
+            if (listOf("outputMapping", "flatzincContentV1").any { compiled[it] != other[it] }) return "compiled artifact migration"
         }
         return null
     }
