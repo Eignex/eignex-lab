@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # CI integration controls; use the already-built distribution, no setup/provisioning/network.
 set -euo pipefail
-scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$PWD/build/dimacs-controls"
+scratch=$(mktemp -d "$PWD/build/dimacs-controls/run-XXXXXX")
 classpath="$PWD/build/install/eignex-lab/lib/*"
 run() { java -Xmx256m -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -cp "$classpath" com.eignex.lab.checker.DimacsCheckBenchKt "$@"; }
 model=$'p cnf 2 2\n1 0\n2 0\n'
@@ -25,4 +25,7 @@ for index in 0 1 2 3 4 5; do
   jq ".cases[$index]" "$scratch/plan.json" > "$scratch/case.json"
   run run "$scratch/case.json" "$scratch/out-$index"
   jq -e '.status == "success"' "$scratch/out-$index/result.json"
+  if (( index < 5 )); then
+    jq -e '.details | [.ordinary, .recheck] | all(.resourceReceipts | length == 1)' "$scratch/out-$index/result.json"
+  fi
 done

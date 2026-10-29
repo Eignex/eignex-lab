@@ -95,6 +95,7 @@ jobs:
         with:
           name: test-reports
           path: |
+            build/dimacs-controls/
             build/test-results/
             build/checker-test-results/
             build/reports/tests/
