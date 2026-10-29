@@ -18,7 +18,7 @@ class NodesPageTest {
         val root = Files.createTempDirectory("nodes-page")
         val path = root.resolve("capacity.json")
         Files.writeString(path, Json.encodeToString(settings))
-        return Config(dataDir = root, passwordHash = null, nomadCapacitySettings = path)
+        return Config(dataDir = root, auth = Auth.Disabled, nomadCapacitySettings = path)
     }
 
     @Test fun `journal status exposes bounded usage retained errors and stale reports without leaking markup`() = testApplication {
@@ -102,7 +102,7 @@ class NodesPageTest {
     }
 
     @Test fun `nodes and manual capacity are protected by the operator password`() = testApplication {
-        val config = config().copy(passwordHash = Password.hash("fixture-password"))
+        val config = config().copy(auth = Auth.Required(Password.hash("fixture-password")))
         val store = Store(config.database)
         application { api(config, store, host) }
 

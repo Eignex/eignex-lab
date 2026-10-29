@@ -13,10 +13,10 @@ data class Config(
     /** Legacy repository URL, used only to render historical result links. */
     val repoUrl: String = env("LAB_REPO", ""),
     /**
-     * The hash of the password every page and API call needs ([Password]); the one the lab ships with unless
-     * `LAB_PASSWORD_HASH` gives another. Null turns the check off, which only a test does.
+     * The password every page and API call needs ([Password]): the one the lab ships with unless `LAB_PASSWORD_HASH`
+     * gives another. Only a test turns it off, and it has to say so ([Auth.Disabled]).
      */
-    val passwordHash: String? = System.getenv("LAB_PASSWORD_HASH")?.takeIf { it.isNotBlank() } ?: Password.bundled(),
+    val auth: Auth = Auth.Required(System.getenv("LAB_PASSWORD_HASH")?.takeIf { it.isNotBlank() } ?: Password.bundled()),
     /** The GitHub users whose branches the lab builds, besides `main` ([Trust]). */
     val trustedUsers: Set<String> = env("LAB_TRUSTED_USERS", "rasros").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     /** The lab's own launcher, which a reference arm's cases run ([com.eignex.lab.reference.ReferenceCli]): the

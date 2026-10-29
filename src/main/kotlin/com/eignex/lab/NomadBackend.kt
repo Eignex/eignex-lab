@@ -24,6 +24,8 @@ class NomadBackend(
     private val selectProblems: (Store, ExperimentSpec, List<List<Problem>>, () -> Unit) -> List<List<Problem>> = ::preparationSelection,
 ) {
     private val pendingLogs = mutableSetOf<Long>()
+    /** Consecutive delivery failures of each unacknowledged intent, until [MAX_INTENT_ATTEMPTS] abandons it. */
+    private val intentFailures = mutableMapOf<String, Int>()
     val logs = WorkerLogs(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
     private val cpuPlacement = NomadCpuPlacement(nomad)
@@ -188,127 +190,150 @@ class NomadBackend(
         val logJobs = store.active(withCommands = false).filter { it.backend == "nomad" && it.experiment?.isAnalysis != true }.map { it.id }.toMutableSet()
         store.execution.expireRunDeadlines()
         store.execution.expire()
+        // Each intent and each job is isolated: one that keeps failing must not hold back delivery or observation of the rest.
         for (intent in store.execution.intents()) {
-            val session = store.execution.session(intent.session) ?: continue
             logJobs += intent.jobId
-            when (intent.operation) {
-                "submit" -> {
-                    if (session.desired == "stop") { store.execution.acknowledge(intent.id); continue }
-                    if (!workAllowed()) continue
-                    val planned = Json.parseToJsonElement(intent.payload).jsonObject
-                    val existing = nomad.job(session.nomadJobId)
-                    if (existing == null) nomad.submit(planned)
-                    else require(existing["Meta"]?.jsonObject?.get("lab_spec_hash") == planned["Meta"]?.jsonObject?.get("lab_spec_hash")) { "Nomad job identity collision" }
+            try {
+                deliver(intent)
+                intentFailures.remove(intent.id)
+            } catch (failure: Exception) {
+                val attempts = intentFailures.merge(intent.id, 1, Int::plus)!!
+                val reason = describeFailure(failure)
+                println("nomad intent ${intent.id} (${intent.operation}) failed, attempt $attempts: $reason")
+                if (attempts >= MAX_INTENT_ATTEMPTS) {
+                    store.execution.note(intent.jobId, intent.session, "intent-abandoned:${intent.operation}: $reason")
+                    store.execution.acknowledge(intent.id)
+                    intentFailures.remove(intent.id)
                 }
-                "stop" -> nomad.stop(intent.payload)
-                else -> error("unknown execution intent")
             }
-            store.execution.acknowledge(intent.id)
         }
         if (!workAllowed()) return
         logJobs += store.execution.pendingProjectionJobs()
         for (job in store.jobsByIds(logJobs.toList()).filter { it.backend == "nomad" && it.experiment?.isAnalysis != true }) {
-            val accepted = store.execution.accepted(job.id)
-            val checked = store.execution.checksComplete(job.id)
-            val ingested = store.execution.ingested(job.id)
-            for ((iteration, result) in accepted) {
-                if (iteration !in ingested) {
-                    if (!projectResult(job.id, iteration) { project(job.id, result) }) continue
-                    store.execution.markIngested(job.id, iteration)
-                }
-                for (case in result.cases) if (case.index !in checked) {
-                    val detail = checkCase(job.id, case.index) ?: continue
-                    store.execution.checkComplete(job.id, case.index, detail)
-                }
-            }
-            val current = store.job(job.id)!!
-            if (current.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
-            if (current.commands.isNotEmpty() && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
-                current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
-                // finishIfComplete rechecks cancellation and projections under the store's write lock.
-                if (store.execution.finishIfComplete(job.id)) {
-                    for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) store.execution.loseSession(s.id, "completed")
-                }
-                continue
-            }
-            for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) {
-                if (s.executionClass == "prepare" && accepted.any { it.second.preparation != null }) {
-                    store.execution.loseSession(s.id, "prepared")
-                    continue
-                }
-                if (s.executionClass == "solve" && s.allocation == null && store.unclaimed(job.id) == 0) {
-                    store.execution.loseSession(s.id, "no-unclaimed-work")
-                    continue
-                }
-                // Pending allocations cannot reach the claim boundary themselves. Release their reservation
-                // so higher-priority native work can be admitted; bound workers yield on their next claim.
-                if (s.allocation == null &&
-                    Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject["Meta"]?.jsonObject
-                        ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
-                    !NativePriority(store).allows(job.id, nativeNodeTags) &&
-                    store.execution.loseUnallocatedSession(s.id, "priority")) continue
-                if (current.paused) store.execution.drain(s.id)
-                if (!current.paused && s.desired == "run" && s.allocation != null) {
-                    val submitted = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
-                    // A sharing-policy change retires the worker after its accepted iteration, preserving compilation.
-                    if (placementPolicy(submitted) != submitted) store.execution.drain(s.id)
-                }
-                val allocations = nomad.allocations(s.nomadJobId)
-                store.execution.observed(s.id, allocations.joinToString { "${it.id}:${it.client}:${it.node}" })
-                if (!current.paused && s.allocation == null && allocations.isEmpty()) {
-                    val submission = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
-                    if (cpuPlacement.calibrate(placementPolicy(submission), s.budget) != submission &&
-                        store.execution.loseUnallocatedSession(s.id, "placement-cpu-capacity")) continue
-                }
-                val bound = allocations.firstOrNull { it.id == s.allocation }
-                if ((s.allocation != null && (bound == null || !bound.active)) ||
-                    (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
-                    val exited = bound ?: allocations.singleOrNull()
-                    if (!current.paused && s.desired == "run" && s.executionClass == "prepare" && exited?.client == "failed") {
-                        // List stubs can omit task events. Fetch full evidence before classifying a worker crash.
-                        val exit = exited.workerExit ?: nomad.allocation(exited.id)?.workerExit
-                        if (exit?.code == WORKER_SOFTWARE_EXIT && store.execution.preparationExited(s.id, exit.code)?.count?.let { it >= 3 } == true) continue
-                    }
-                    store.execution.loseSession(s.id, when {
-                        current.paused || s.desired == "drain" -> "drained"
-                        bound?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
-                        else -> "infrastructure:${bound?.client ?: "failed"}"
-                    })
-                }
-            }
-            if (store.job(job.id)?.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
-            val sessions = store.execution.sessions(job.id)
-            if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && accepted.none { it.second.preparation != null } && sessions.any { it.executionClass == "prepare" }) && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
-                store.execution.pauseClock(job.id)
-                // Once preparation is accepted, only admission may create the first solve session. Replacing a
-                // stopped preparation here races plan publication and recreates already accepted preparation.
-                val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: continue
-                if (previous.executionClass == "prepare") {
-                    try { Experiments.requireExecutable(store.execution.manifest(previous.id).experiment) }
-                    catch (failure: IllegalArgumentException) {
-                        store.execution.failIfActive(job.id, "Nomad preparation/admission: ${failure.message}")
-                        continue
-                    }
-                }
-                val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-                if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id, nativeNodeTags))) continue
-                if (native) {
-                    val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
-                    val limit = nativeLimits(meta)
-                    if (limit == null) {
-                        if (store.execution.nativeOwnedByAnother(job.id)) continue
-                    } else {
-                        val held = store.execution.nativeReservation()
-                        if (held.first + previous.budget.cpuMillis > limit.first || held.second + previous.budget.memoryMiB > limit.second) continue
-                    }
-                }
-                // Worker/node loss revokes ownership, never the experiment. Keep its frozen inputs and
-                // accepted results, and let a fresh session wait for any compatible replacement node.
-                replace(previous)
-            }
+            try { observe(job) }
+            catch (failure: Exception) { println("nomad job ${job.id} observation failed: ${describeFailure(failure)}") }
         }
         pendingLogs += logJobs
         pendingLogs.removeAll { job -> writeLog(job) { projectLog(job) } }
+    }
+
+    /** Deliver [intent] to Nomad and acknowledge it; returns without acknowledging while work is held. */
+    private fun deliver(intent: ExecutionIntent) {
+        val session = store.execution.session(intent.session) ?: return
+        when (intent.operation) {
+            "submit" -> {
+                if (session.desired == "stop") { store.execution.acknowledge(intent.id); return }
+                if (!workAllowed()) return
+                val planned = Json.parseToJsonElement(intent.payload).jsonObject
+                val existing = nomad.job(session.nomadJobId)
+                if (existing == null) nomad.submit(planned)
+                else require(existing["Meta"]?.jsonObject?.get("lab_spec_hash") == planned["Meta"]?.jsonObject?.get("lab_spec_hash")) { "Nomad job identity collision" }
+            }
+            "stop" -> nomad.stop(intent.payload)
+            else -> error("unknown execution intent ${intent.operation}")
+        }
+        store.execution.acknowledge(intent.id)
+    }
+
+    private fun observe(job: Job) {
+        val accepted = store.execution.accepted(job.id)
+        val checked = store.execution.checksComplete(job.id)
+        val ingested = store.execution.ingested(job.id)
+        for ((iteration, result) in accepted) {
+            if (iteration !in ingested) {
+                if (!projectResult(job.id, iteration) { project(job.id, result) }) continue
+                store.execution.markIngested(job.id, iteration)
+            }
+            for (case in result.cases) if (case.index !in checked) {
+                val detail = checkCase(job.id, case.index) ?: continue
+                store.execution.checkComplete(job.id, case.index, detail)
+            }
+        }
+        val current = store.job(job.id)!!
+        if (current.status !in setOf(Status.QUEUED, Status.RUNNING)) return
+        if (current.commands.isNotEmpty() && current.commands.all { it.status in setOf(Status.DONE, Status.FAILED) } &&
+            current.commands.all { it.index in store.execution.checksComplete(job.id) }) {
+            // finishIfComplete rechecks cancellation and projections under the store's write lock.
+            if (store.execution.finishIfComplete(job.id)) {
+                for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) store.execution.loseSession(s.id, "completed")
+            }
+            return
+        }
+        for (s in store.execution.sessions(job.id).filter { it.desired != "stop" }) {
+            if (s.executionClass == "prepare" && accepted.any { it.second.preparation != null }) {
+                store.execution.loseSession(s.id, "prepared")
+                continue
+            }
+            if (s.executionClass == "solve" && s.allocation == null && store.unclaimed(job.id) == 0) {
+                store.execution.loseSession(s.id, "no-unclaimed-work")
+                continue
+            }
+            // Pending allocations cannot reach the claim boundary themselves. Release their reservation
+            // so higher-priority native work can be admitted; bound workers yield on their next claim.
+            if (s.allocation == null &&
+                Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject["Meta"]?.jsonObject
+                    ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
+                !NativePriority(store).allows(job.id, nativeNodeTags) &&
+                store.execution.loseUnallocatedSession(s.id, "priority")) continue
+            if (current.paused) store.execution.drain(s.id)
+            if (!current.paused && s.desired == "run" && s.allocation != null) {
+                val submitted = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
+                // A sharing-policy change retires the worker after its accepted iteration, preserving compilation.
+                if (placementPolicy(submitted) != submitted) store.execution.drain(s.id)
+            }
+            val allocations = nomad.allocations(s.nomadJobId)
+            store.execution.observed(s.id, allocations.joinToString { "${it.id}:${it.client}:${it.node}" })
+            if (!current.paused && s.allocation == null && allocations.isEmpty()) {
+                val submission = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
+                if (cpuPlacement.calibrate(placementPolicy(submission), s.budget) != submission &&
+                    store.execution.loseUnallocatedSession(s.id, "placement-cpu-capacity")) continue
+            }
+            val bound = allocations.firstOrNull { it.id == s.allocation }
+            if ((s.allocation != null && (bound == null || !bound.active)) ||
+                (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
+                val exited = bound ?: allocations.singleOrNull()
+                if (!current.paused && s.desired == "run" && s.executionClass == "prepare" && exited?.client == "failed") {
+                    // List stubs can omit task events. Fetch full evidence before classifying a worker crash.
+                    val exit = exited.workerExit ?: nomad.allocation(exited.id)?.workerExit
+                    if (exit?.code == WORKER_SOFTWARE_EXIT && store.execution.preparationExited(s.id, exit.code)?.count?.let { it >= 3 } == true) continue
+                }
+                store.execution.loseSession(s.id, when {
+                    current.paused || s.desired == "drain" -> "drained"
+                    bound?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
+                    else -> "infrastructure:${bound?.client ?: "failed"}"
+                })
+            }
+        }
+        if (store.job(job.id)?.status !in setOf(Status.QUEUED, Status.RUNNING)) return
+        val sessions = store.execution.sessions(job.id)
+        if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && accepted.none { it.second.preparation != null } && sessions.any { it.executionClass == "prepare" }) && sessions.isNotEmpty() && sessions.all { it.desired == "stop" }) {
+            store.execution.pauseClock(job.id)
+            // Once preparation is accepted, only admission may create the first solve session. Replacing a
+            // stopped preparation here races plan publication and recreates already accepted preparation.
+            val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == "solve" } ?: return
+            if (previous.executionClass == "prepare") {
+                try { Experiments.requireExecutable(store.execution.manifest(previous.id).experiment) }
+                catch (failure: IllegalArgumentException) {
+                    store.execution.failIfActive(job.id, "Nomad preparation/admission: ${failure.message}")
+                    return
+                }
+            }
+            val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
+            if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id, nativeNodeTags))) return
+            if (native) {
+                val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
+                val limit = nativeLimits(meta)
+                if (limit == null) {
+                    if (store.execution.nativeOwnedByAnother(job.id)) return
+                } else {
+                    val held = store.execution.nativeReservation()
+                    if (held.first + previous.budget.cpuMillis > limit.first || held.second + previous.budget.memoryMiB > limit.second) return
+                }
+            }
+            // Worker/node loss revokes ownership, never the experiment. Keep its frozen inputs and
+            // accepted results, and let a fresh session wait for any compatible replacement node.
+            replace(previous)
+        }
     }
 
     private fun projectLog(job: Long) {
@@ -365,6 +390,9 @@ class NomadBackend(
     }
 
     companion object {
+        /** Delivery attempts after which an intent Nomad keeps refusing is recorded and given up on. */
+        internal const val MAX_INTENT_ATTEMPTS = 20
+
         internal fun authenticatedJob(original: JsonObject, session: String, release: String): JsonObject {
             val groups = original.getValue("TaskGroups").jsonArray.map { group ->
                 val g = group.jsonObject

@@ -1652,7 +1652,8 @@ private fun schedulesTable(schedules: List<Schedule>): String = buildString {
         } else if (schedule.launchRequested) {
             append("<span class=\"muted\">launching</span>")
         } else {
-            append("<button onclick=\"act('/schedules/${schedule.id}/launch', null, 'Queue a run of ${esc(schedule.name)} now?')\">launch now</button>")
+            // The prompt rides in a data attribute, never inside the JavaScript string, so a name cannot break out of it.
+            append("<button data-confirm=\"Queue a run of ${esc(schedule.name)} now?\" onclick=\"act('/schedules/${schedule.id}/launch', null, this.dataset.confirm)\">launch now</button>")
         }
         append("</td></tr>")
     }

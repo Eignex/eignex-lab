@@ -223,7 +223,7 @@ class ExecutionStore internal constructor(private val store: Store) {
             sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id); stopIntent(s)
         }
         sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", job)
-        sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ?",
+        sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND status IN ('QUEUED', 'RUNNING')",
             ProfileRunTimeout().message, at, at, job)
         event(job, null, "profile-run-timeout", at)
     }
@@ -262,7 +262,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ?", attempt.jobId, map = ::sessionRow).forEach { session ->
             db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", session.id); db.stopIntent(session)
         }
-        db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ?", reason, at, at, attempt.jobId)
+        db.sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND status IN ('QUEUED', 'RUNNING')", reason, at, at, attempt.jobId)
         db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", attempt.jobId)
         db.event(attempt.jobId, owner.session, "source-build-failed", at)
     }
@@ -364,6 +364,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
     fun acknowledge(id: String) = store.executionTransaction { it.sqlUpdate("UPDATE execution_outbox SET acknowledged = 1 WHERE id = ?", id) }
 
+    /** Record [detail] in [jobId]'s execution log, for [session] when given. */
+    fun note(jobId: Long, session: String?, detail: String, at: Long = now()) = store.executionTransaction { it.event(jobId, session, detail, at) }
+
 
     fun credential(id: String, token: String, allocation: String? = null): ExecutionSession = store.executionTransaction { db ->
         val s = db.session(id) ?: throw ExecutionFenced("unknown session")
@@ -415,7 +418,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun failIfActive(job: Long, error: String) = store.executionTransaction { db -> db.failActive(job, error, now()) }
 
     private fun Connection.failActive(job: Long, error: String, at: Long) {
-        val changed = sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, at, at, job)
+        val changed = sqlUpdate("UPDATE jobs SET status = 'FAILED', error = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0", error, at, at, job)
         if (changed == 0) return
         sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS", job, map = ::attemptRow)
             .forEach { invalidate(it, "failed", at) }
@@ -427,7 +430,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         event(job, null, "failed:${error.take(1024)}", at)
     }
     fun finishIfComplete(job: Long): Boolean = store.executionTransaction { db ->
-        db.sqlUpdate("UPDATE jobs SET status = 'DONE', finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0 AND EXISTS (SELECT 1 FROM commands WHERE job_id = ?) AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.job_id = ? AND (c.status NOT IN ('DONE', 'FAILED') OR NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx))) AND NOT EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = ? AND a.state = 'committed' AND NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id))", now(), now(), job, job, job, job) == 1
+        db.sqlUpdate("UPDATE jobs SET status = 'DONE', finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL, local = 0, paused = 0 WHERE id = ? AND backend = 'nomad' AND status IN ('QUEUED', 'RUNNING') AND cancel_requested = 0 AND EXISTS (SELECT 1 FROM commands WHERE job_id = ?) AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.job_id = ? AND (c.status NOT IN ('DONE', 'FAILED') OR NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx))) AND NOT EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = ? AND a.state = 'committed' AND NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id))", now(), now(), job, job, job, job) == 1
     }
     fun preparationSelection(owner: AttemptOwner, requestHash: String? = null): List<List<Problem>>? = store.executionTransaction { db ->
         val attempt = db.attempt(owner, now())
@@ -492,7 +495,8 @@ class ExecutionStore internal constructor(private val store: Store) {
             db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop' WHERE id = ?", s.id)
             db.stopIntent(s)
         }
-        db.sqlUpdate("UPDATE jobs SET status = 'CANCELLED', cancel_requested = 1, finished_at = ?, running_since = NULL WHERE id = ?", at, jobId)
+        db.sqlUpdate("UPDATE jobs SET status = 'CANCELLED', cancel_requested = 1, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), " +
+            "running_since = NULL, local = 0, paused = 0 WHERE id = ?", at, at, jobId)
         db.sqlUpdate("UPDATE commands SET status = 'CANCELLED', host = NULL WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING')", jobId)
         db.event(jobId, null, "cancelled", at)
     }

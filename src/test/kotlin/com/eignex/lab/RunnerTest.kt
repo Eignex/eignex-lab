@@ -16,7 +16,7 @@ import kotlin.test.assertEquals
 
 class RunnerTest {
     @Test fun `retired schedules remain editable and show the reason without fetching or creating jobs`() = io.ktor.server.testing.testApplication {
-        val config = Config(dataDir = Files.createTempDirectory("retired-schedules"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("retired-schedules"), auth = Auth.Disabled)
         val store = Store(config.database)
         val spec = ExperimentSpec("old-reference", problems = listOf(mapOf("set" to "sweep")))
         val id = store.createSchedule(spec.name, "main", spec, 120)

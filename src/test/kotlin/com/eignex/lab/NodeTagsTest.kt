@@ -82,7 +82,7 @@ class NodeTagsTest {
     @Test
     fun `submission allows cloud only core capacity and refuses unavailable tags`() = testApplication {
         val root = Files.createTempDirectory("tag api")
-        val config = Config(dataDir = root, cpuCapabilities = arm, cores = 2, maxParallel = 2, passwordHash = null, nomadQueueSettings = cloudQueue(root))
+        val config = Config(dataDir = root, cpuCapabilities = arm, cores = 2, maxParallel = 2, auth = Auth.Disabled, nomadQueueSettings = cloudQueue(root))
         val store = Store(config.database)
         application { api(config, store, HostReport("test", 2, "java")) }
         suspend fun submit(tag: String) = client.post("/experiments") {

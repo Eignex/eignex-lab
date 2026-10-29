@@ -494,7 +494,7 @@ class ReferencesTest {
 
     @Test
     fun `retiring over HTTP needs the password and a same-site request, and says how many rows it marked`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = Password.hash("secret"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Required(Password.hash("secret")))
         val store = Store(config.database)
         store.putReferences(listOf(("satcomp" to "a") to kissat(true, 300_000), ("satcomp" to "b") to kissat(true, 60_000)), "lab:1")
         val auth = "Basic " + Base64.getEncoder().encodeToString(":secret".toByteArray())

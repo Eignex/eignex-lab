@@ -52,7 +52,7 @@ class DiskUsageTest {
         val script = "echo x >> $calls; while [ ! -e $gate ]; do sleep 0.05; done; for p in \"\$@\"; do printf '4\\t%s\\n' \"\$p\"; done"
         val data = dir.resolve("data").createDirectories()
         data.resolve("work").createDirectories()
-        val config = Config(dataDir = data, corpusDir = dir.resolve("corpus"), passwordHash = null)
+        val config = Config(dataDir = data, corpusDir = dir.resolve("corpus"), auth = Auth.Disabled)
         val usage = DiskUsage(config, { emptySet() }, DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
             0, System::currentTimeMillis)
 
@@ -104,7 +104,7 @@ class DiskUsageTest {
         val data = dir.resolve("data").createDirectories()
         val jobs = dir.resolve("jobs").createDirectories()
         val corpus = dir.resolve("corpus").createDirectories()
-        val config = Config(dataDir = data, jobsDir = jobs, corpusDir = corpus, passwordHash = null)
+        val config = Config(dataDir = data, jobsDir = jobs, corpusDir = corpus, auth = Auth.Disabled)
         val now = System.currentTimeMillis()
         fun job(id: Long, ageMs: Long): Path =
             jobs.resolve("$id").createDirectories().also { Files.setLastModifiedTime(it, FileTime.fromMillis(now - ageMs)) }

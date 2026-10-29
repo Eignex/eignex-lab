@@ -209,7 +209,7 @@ object Trend {
             (p.referenceKey) to Scoreboard.values(Dimension.THEME, p, features[p.referenceKey], emptyList())
         }
         val suites = shares { listOf(it.suite.ifEmpty { "(none)" }) }
-        val themes = shares { themesOf.getValue(it.collection to it.problem) }
+        val themes = shares { themesOf.getValue(it.referenceKey) }
         val comparison = References.compare(listOf(label), own, references)
         return TrendRun(
             job = job.id,

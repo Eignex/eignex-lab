@@ -176,7 +176,7 @@ class ValidationTest {
         assertTrue(mixesValidation(mixed.arms))
         assertFalse(mixesValidation(alike.arms))
 
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val arms = listOf(PlannedArm(Arm("6991", emptyMap()), "abc"), PlannedArm(Arm("7004", emptyMap()), "def"))
         val page = comparePage(config, emptyList(), arms, before + after)
 

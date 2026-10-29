@@ -903,9 +903,9 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /** Hold [id] on job [jobId] extended to [ttlMs] from [at]; null when there is no such hold or it has lapsed. */
     @Synchronized
-    fun renewHold(jobId: Long, id: String, ttlMs: Long, at: Long = now()): Hold? {
+    fun renewHold(jobId: Long, id: String, ttlMs: Long, at: Long = now()): Hold? = transaction {
         val renewed = update("UPDATE holds SET expires_at = ? WHERE id = ? AND job_id = ? AND expires_at > ?", at + ttlMs, id, jobId, at)
-        return if (renewed == 0) null else holdsWhere("id = ?", id).single()
+        if (renewed == 0) null else holdsWhere("id = ?", id).single()
     }
 
     /** Releases hold [id] on job [jobId]; false when there was no such hold, lapsed or not. */
@@ -1040,9 +1040,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
 
     /** Put [indices] of [jobId] that started back to queued: their host went away before they finished. */
     @Synchronized
-    fun requeueCommands(jobId: Long, indices: Collection<Int>) = indices.forEach { index ->
-        update("UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND idx = ? AND status = ?",
-            Status.QUEUED.name, jobId, index, Status.RUNNING.name)
+    fun requeueCommands(jobId: Long, indices: Collection<Int>) = transaction {
+        indices.forEach { index ->
+            update("UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND idx = ? AND status = ?",
+                Status.QUEUED.name, jobId, index, Status.RUNNING.name)
+        }
     }
 
     /** Command [index] of [jobId] starts on [host] (its recorded node identity) as [cmd], the command line that host rendered
@@ -1067,12 +1069,14 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         Json.encodeToString(phase), jobId, index, Status.RUNNING.name,
     )
 
+    /** End [jobId] as [status]; 0 when it had already ended, so a cancel that landed first is never overwritten. */
     @Synchronized
     fun finish(jobId: Long, status: Status, error: String? = null): Int {
         val at = now()
         return update(
-            "UPDATE jobs SET local = 0, status = ?, finished_at = ?, error = ?, run_ms = run_ms + COALESCE(? - running_since, 0), " +
-                "running_since = NULL WHERE id = ?",
+            "UPDATE jobs SET local = 0, paused = 0, status = ?, finished_at = ?, error = ?, " +
+                "run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL " +
+                "WHERE id = ? AND status NOT IN ('DONE', 'FAILED', 'CANCELLED')",
             status.name, at, error, at, jobId,
         )
     }
@@ -1169,7 +1173,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             SELECT 1 FROM execution_sessions s WHERE s.job_id = jobs.id AND (s.desired != 'stop' OR NOT EXISTS (
                 SELECT 1 FROM execution_outbox o WHERE o.id = s.id || ':stop' AND o.acknowledged = 1)))""",
             id, Status.QUEUED.name, Status.RUNNING.name) == 1
-        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_queue_recipes", "execution_selections", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions")) update("DELETE FROM $table WHERE job_id = ?", id)
+        if (deleted) for (table in listOf("commands", "arms", "problems", "cases", "execution_ingestion", "execution_checks", "execution_queue_recipes", "execution_selections", "execution_events", "iteration_attempts", "execution_outbox", "execution_sessions", "holds")) update("DELETE FROM $table WHERE job_id = ?", id)
         deleted
     }
 
@@ -1563,22 +1567,22 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
      * job is left in, null when it was neither running nor cancel-requested.
      */
     @Synchronized
-    fun requeue(jobId: Long): Status? {
+    fun requeue(jobId: Long): Status? = transaction {
         val at = now()
         val queued = update(
             "UPDATE jobs SET local = 0, status = ?, run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL " +
                 "WHERE id = ? AND status = ? AND cancel_requested = 0",
             Status.QUEUED.name, at, jobId, Status.RUNNING.name,
         )
-        if (queued == 1) return Status.QUEUED
+        if (queued == 1) return@transaction Status.QUEUED
         val cancelled = update(
             "UPDATE jobs SET local = 0, status = ?, finished_at = ?, run_ms = run_ms + COALESCE(? - running_since, 0), " +
                 "running_since = NULL WHERE id = ? AND status IN (?, ?) AND cancel_requested = 1",
             Status.CANCELLED.name, at, at, jobId, Status.QUEUED.name, Status.RUNNING.name,
         )
-        if (cancelled == 0) return null
+        if (cancelled == 0) return@transaction null
         cancelRemaining(jobId)
-        return Status.CANCELLED
+        Status.CANCELLED
     }
 
     /** Queued jobs whose cancel was requested: left by a runner from before a requeue ended them, as no host takes one. */
