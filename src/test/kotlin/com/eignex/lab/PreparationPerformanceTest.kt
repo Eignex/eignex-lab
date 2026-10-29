@@ -11,6 +11,7 @@ import java.nio.file.Path
 import java.util.Random
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.*
 
 /** Whole preparations, rather than a ZIP microbenchmark. Explicit task keeps the ~2 GiB fixture off ordinary tests. */
@@ -21,12 +22,15 @@ class PreparationPerformanceTest {
         Files.createDirectories(parent)
         require(Files.getFileStore(parent).usableSpace >= 4L * 1024 * 1024 * 1024) { "performance fixture requires 4 GiB free" }
         val root = Files.createTempDirectory(parent, "preparation-perf-")
+        // java.io.tmpdir is internal storage even when the representative data/cache root is external.
+        val journalRoot = Files.createTempDirectory("preparation-perf-journal-")
         val snapshots = linkedMapOf<String, PreparationProgress>()
         val report = parent.resolve("preparation-performance.json")
         val serviceErrors = root.resolve("supervisor.err")
         val socket = root.resolve("supervisor.sock")
         var process: Process? = null
         var server: HttpServer? = null
+        var journal: ResultJournal? = null
         try {
             val source = Files.createDirectory(root.resolve("source"))
             val calls = root.resolve("build-calls")
@@ -59,15 +63,27 @@ class PreparationPerformanceTest {
             val manifest = WorkManifest("prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) },
                 emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 600)
             val downloads = AtomicInteger(); val uploadPuts = AtomicInteger()
-            val artifacts = LocalArtifactStore(root.resolve("coordinator-artifacts"))
+            val external = LocalArtifactStore(root.resolve("coordinator-artifacts"))
+            val artifacts = ResultJournal(journalRoot, external, maxBytes = 128L * 1024 * 1024)
+            journal = artifacts
+            val artifactJob = AtomicLong()
+            val archivePuts = AtomicInteger()
             server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
             server.createContext("/worker/v1/sessions/performance/uploads/") { exchange ->
                 try {
                     val sha = exchange.requestURI.path.substringAfterLast('/')
-                    val offset = if (exchange.requestMethod == "GET") artifacts.offset(1, sha) else {
+                    val job = artifactJob.get()
+                    val query = exchange.requestURI.rawQuery.orEmpty().split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
+                    val reusable = query["reuse"] == "true"
+                    val offset = if (exchange.requestMethod == "GET") {
+                        (if (reusable) artifacts.reuse(job, sha) else null) ?: artifacts.offset(job, sha)
+                    } else {
                         uploadPuts.incrementAndGet()
-                        val query = exchange.requestURI.rawQuery.split('&').associate { it.substringBefore('=') to it.substringAfter('=') }
-                        artifacts.put(1, sha, query.getValue("bytes").toLong(), query.getValue("offset").toLong(), exchange.requestBody)
+                        if (reusable) archivePuts.incrementAndGet()
+                        val bytes = query.getValue("bytes").toLong()
+                        artifacts.put(job, sha, bytes, query.getValue("offset").toLong(), exchange.requestBody).also {
+                            if (reusable && it == bytes) artifacts.remember(job, sha)
+                        }
                     }
                     val bytes = """{"offset":$offset}""".toByteArray()
                     exchange.sendResponseHeaders(200, bytes.size.toLong()); exchange.responseBody.write(bytes)
@@ -77,6 +93,7 @@ class PreparationPerformanceTest {
             val signedIdentity = root.resolve("identity"); Files.writeString(signedIdentity, "performance-fixture")
             val owner = AttemptOwner("performance", "allocation", "preparation", 1, "fixture")
             fun prepare(name: String): PreparationProgress {
+                val job = artifactJob.incrementAndGet() // cold and each warm preparation publish into distinct jobs.
                 val trace = PreparationTrace()
                 // Reconstruct helpers between passes to exercise receipts on disk, not only in-memory state.
                 val builds = WorkerBuildCache(root.resolve("builds"), supervisor)
@@ -91,6 +108,8 @@ class PreparationPerformanceTest {
                     worker.upload(file, owner, reusable = file.fileName.toString().endsWith(".zip"), trace = trace)
                 }
                 assertEquals(1, result.bundles.size)
+                val prepared = result.bundles.single()
+                assertTrue(Files.isRegularFile(external.readFile(job, prepared.sha256)), "accepted archive must exist in the new job namespace")
                 val snapshot = trace.snapshot(); snapshots[name] = snapshot
                 Files.writeString(report, Json.encodeToString(snapshots))
                 println("PREPARATION_PERFORMANCE $name ${Json.encodeToString(snapshot)}")
@@ -108,6 +127,7 @@ class PreparationPerformanceTest {
             assertEquals(1, Files.readAllLines(calls).size)
             repeat(2) { pass ->
                 val beforePuts = uploadPuts.get()
+                val beforeArchivePuts = archivePuts.get()
                 val warm = prepare("warm-${pass + 1}")
                 assertEquals("bypass", warm.caches["input"]?.outcome, "a verified build must bypass source staging")
                 assertEquals("build-hit", warm.caches["input"]?.reason)
@@ -121,7 +141,8 @@ class PreparationPerformanceTest {
                     if (cache != "input") assertTrue(event.checkedFiles >= 4096,
                         "$cache must report verification of the representative tree, rather than default zero telemetry")
                 }
-                assertEquals("hit", warm.caches["upload"]?.outcome, "prepared ZIP must already be on coordinator")
+                assertEquals("hit", warm.caches["upload"]?.outcome, "prepared ZIP must be reused across jobs by the coordinator")
+                assertEquals(beforeArchivePuts, archivePuts.get(), "cross-job archive reuse sent archive bytes")
                 assertEquals(1, downloads.get(), "warm preparation downloaded inputs")
                 assertEquals(originalArchives, archiveMetadata(), "warm preparation rebuilt or replaced an archive")
                 assertEquals(1, Files.readAllLines(calls).size, "warm preparation invoked build command")
@@ -132,8 +153,15 @@ class PreparationPerformanceTest {
             }
         } finally {
             server?.stop(0)
+            journal?.let { pending ->
+                val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
+                while (pending.status().batches > 0 && System.nanoTime() < until) { pending.drainOne(); Thread.sleep(20) }
+                pending.close()
+                check(pending.status().batches == 0) { "fixture journal did not finish draining" }
+            }
             process?.let { it.destroy(); if (!it.waitFor(10, TimeUnit.SECONDS)) { it.destroyForcibly(); it.waitFor(10, TimeUnit.SECONDS) } }
             deleteTree(root)
+            deleteTree(journalRoot)
         }
     }
 }

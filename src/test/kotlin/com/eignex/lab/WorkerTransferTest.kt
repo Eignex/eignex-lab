@@ -123,6 +123,8 @@ class WorkerTransferTest {
             assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"), reusable = true, trace = warm))
             assertEquals(2, gets.get()); assertEquals(2, puts.get())
             assertEquals("coordinator-present", warm.snapshot().caches["upload"]?.reason)
+            assertEquals(1, warm.snapshot().caches["upload"]?.hashedFiles)
+            assertEquals(Files.size(file), warm.snapshot().caches["upload"]?.hashedBytes)
         } finally { server.stop(0) }
     }
 

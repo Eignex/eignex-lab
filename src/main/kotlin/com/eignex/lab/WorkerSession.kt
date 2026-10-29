@@ -274,7 +274,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             }
             if (complete) {
                 if (reusable) trace?.cache("upload", if (sent) "miss" else "hit",
-                    if (!sent) "coordinator-present" else if (resumed) "partial-upload" else "absent", verificationMs = verificationMs, bytes = size)
+                    if (!sent) "coordinator-present" else if (resumed) "partial-upload" else "absent", verificationMs = verificationMs, bytes = size, checkedFiles = 1, hashedFiles = 1, hashedBytes = size)
                 return sha
             }
         }
