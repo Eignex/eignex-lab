@@ -96,7 +96,9 @@ tasks.register<Test>("verifyBenchAdapters") {
 }
 
 // Explicit full-distribution regression, including cold setup and two fresh-worker warm preparations.
+val preparationPerfRoot = providers.environmentVariable("LAB_PREPARATION_PERF_ROOT")
 tasks.register<Test>("verifyPreparationPerformance") {
+    onlyIf("LAB_PREPARATION_PERF_ROOT must name the target scratch directory") { preparationPerfRoot.isPresent }
     group = "verification"
     description = "Verify full-sized warm preparations; set LAB_PREPARATION_PERF_ROOT to the target scratch disk."
     testClassesDirs = sourceSets.test.get().output.classesDirs
