@@ -51,9 +51,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             val storage = WorkerBuildStaging(root)
             val lease = trace.step("cache-cleanup") { storage.create(::checkRun) }
             // Create and pin staging before our background sweep can take its discovery lock.
-            requestMaintenance()
             val staging = lease.directory
             try {
+                requestMaintenance()
                 val tree = staging.resolve("tree")
                 val log = staging.resolve("build.out"); val errors = staging.resolve("build.err")
                 var deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000

@@ -204,4 +204,19 @@ class WorkerBuildAccountingTest {
         }
     }
 
+    @Test fun `failure to start cleanup releases and removes the new build staging`() {
+        val root = Files.createTempDirectory("build-maintenance-start-failure")
+        try {
+            val source = Files.createDirectory(root.resolve("source"))
+            Files.writeString(source.resolve("data"), "source")
+            val cacheRoot = root.resolve("cache")
+            val cache = WorkerBuildCache(cacheRoot, ProcessSupervisor(root.resolve("unused")), startMaintenance = { error("thread unavailable") })
+            val bundle = WorkerBundle("a".repeat(64), listOf(InputFile("data", ExecutionStore.digest("source"), 6)),
+                Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "fixture", build = WorkerBuild())
+            assertFailsWith<IllegalStateException> { cache.prepare(bundle, source, ResourceBudget(1000, 512), emptyMap()) { 10_000 } }
+            assertTrue(cache.awaitMaintenanceIdle(0))
+            assertTrue(Files.list(cacheRoot).use { paths -> paths.noneMatch { it.fileName.toString().startsWith(".build-") } })
+        } finally { deleteTree(root) }
+    }
+
 }
