@@ -101,13 +101,6 @@ internal fun jobPage(
     if (job.startedAt != null) append("<dt>started</dt><dd>${ago(job.startedAt)}</dd>")
     if (job.finishedAt != null) append("<dt>finished</dt><dd>${ago(job.finishedAt)}</dd>")
     append("<dt>elapsed</dt><dd>${elapsed(job)}</dd>")
-    // A cloud case's own phase: a case RUNNING long past its timeout is then seen waiting on SSH, not solving.
-    val phases = job.commands.mapNotNull { command -> command.phase?.let { command.index to it } }
-    if (phases.isNotEmpty()) {
-        append("<dt>running</dt><dd>")
-        append(phases.joinToString("<br>") { (index, phase) -> "case $index: ${esc(phaseText(phase, now()))}" })
-        append("</dd>")
-    }
     append("<dt>where</dt><dd>${hostCell(config, job, hosts, nodes)}</dd>")
     job.experiment?.nodeTags?.let { selector ->
         append("<dt>node tags</dt><dd>")
@@ -198,8 +191,7 @@ internal fun jobPage(
     for (command in commands) {
         val exit = command.exitCode?.takeIf { it != 0 }?.let { "<br><small>exit $it</small>" } ?: ""
         append("<tr><td>${command.index}</td><td><code>${esc(command.cmd)}</code></td>")
-        val phase = command.phase?.let { "<br><small>${esc(phaseText(it, now()))}</small>" } ?: ""
-        append("<td class=\"${command.status}\">${command.status}$exit$phase${terminations(dir, command.index)}</td>")
+        append("<td class=\"${command.status}\">${command.status}$exit${terminations(dir, command.index)}</td>")
         // Where it ran; a case started before the lab recorded that ran on its job's host.
         val host = command.host ?: legacyHost.takeIf { command.status != Status.QUEUED && command.status != Status.CANCELLED }
         append("<td>${host?.let { "<code>${esc(it)}</code>" }.orEmpty()}</td>")
@@ -1698,7 +1690,6 @@ private fun hostCell(config: Config, job: Job, hosts: List<HostProgress> = empty
     }
     if (spec?.host != Experiments.AWS_HOST) {
         val note = when {
-            spec?.auto == true -> " <small class=\"muted\" title=\"could have gone to a cloud node; the local machine took it\">taken</small>"
             spec != null && job.status == Status.QUEUED -> " <small class=\"muted\">only</small>"
             else -> ""
         }
@@ -1790,27 +1781,6 @@ private fun ago(millis: Long?): String {
     val seconds = (now() - millis) / 1000
     val text = if (seconds < 86_400) "${span(seconds)} ago" else clock.format(Instant.ofEpochMilli(millis))
     return "<span title=\"${stamp.format(Instant.ofEpochMilli(millis))}\">$text</span>"
-}
-
-/** What the lab is doing with a running cloud case, in words: its phase and for how long, which run of the case it is
- *  when not the first, when the next run starts after a dropped connection, and the solve's own time once known. */
-internal fun phaseText(phase: CasePhase, now: Long): String = buildString {
-    append(
-        when (phase.phase) {
-            CasePhase.Phase.EXECUTING -> "executing"
-            CasePhase.Phase.TRANSFERRING_OUTPUT -> "transferring output"
-            CasePhase.Phase.RETRY_BACKOFF -> "SSH dropped, waiting to retry"
-            CasePhase.Phase.TERMINATING -> "terminating"
-        },
-    )
-    append(" for ${span(((now - phase.since) / 1000).coerceAtLeast(0))}")
-    if (phase.phase == CasePhase.Phase.RETRY_BACKOFF) {
-        append(", attempt ${phase.attempt} of ${phase.attempts} failed")
-    } else if (phase.attempt > 1) {
-        append(", attempt ${phase.attempt} of ${phase.attempts}")
-    }
-    phase.retryAt?.let { append(", next in ${span(((it - now) / 1000).coerceAtLeast(0))}") }
-    phase.elapsedMs?.let { append(", solve took ${span(it / 1000)}") }
 }
 
 /** A job's running time as h:mm:ss, its waits in the queue left out. */

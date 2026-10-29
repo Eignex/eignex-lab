@@ -31,8 +31,6 @@ data class Command(
     val finishedAt: Long? = null,
     /** Cores the command keeps busy: its arm's `processors`; the runner's core budget counts these. */
     val cores: Int = 1,
-    /** What the lab is doing with it while it runs on a cloud node; null when it does not run or runs locally. */
-    val phase: CasePhase? = null,
     /** Why the lab, or something else, ended its processes ([Termination]), each line with when; read from the job's
      *  directory for a single job's JSON, empty elsewhere. */
     val terminations: List<String> = emptyList(),
@@ -40,28 +38,6 @@ data class Command(
      *  null while no host has taken it, and for a case run before the lab recorded where ([CaseResult.host]). */
     val host: String? = null,
 )
-
-/**
- * What the lab is doing with a running cloud case, so a long RUNNING case tells the solver's work apart from the lab's:
- * the case [EXECUTING][Phase.EXECUTING] over SSH, its output coming back, a wait before running it again after SSH
- * dropped, or its tree being killed after a timeout or a cancel.
- */
-@Serializable
-data class CasePhase(
-    val phase: Phase,
-    /** When it entered [phase]. */
-    val since: Long,
-    /** Which run of the case this is, counting from 1, of at most [attempts]. */
-    val attempt: Int = 1,
-    val attempts: Int = 1,
-    /** When the next run starts, during a [Phase.RETRY_BACKOFF]. */
-    val retryAt: Long? = null,
-    /** The solve's own time from the case's record, once it came back. */
-    val elapsedMs: Long? = null,
-) {
-    @Serializable
-    enum class Phase { EXECUTING, TRANSFERRING_OUTPUT, RETRY_BACKOFF, TERMINATING }
-}
 
 /** A command as planned: what runs, how long it may, and how many cores it holds. */
 data class CaseCommand(val cmd: String, val timeoutSec: Long, val cores: Int = 1)
@@ -314,6 +290,11 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             }
             if ("backend" !in jobColumns) it.execute("ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'legacy'")
             ExecutionStore.migrate(this)
+            // A queued job whose cancel was requested, which a runner from before requeues left: it is cancelled.
+            it.executeUpdate("UPDATE commands SET status = 'CANCELLED' WHERE status IN ('QUEUED', 'RUNNING') AND job_id IN " +
+                "(SELECT id FROM jobs WHERE status = 'QUEUED' AND cancel_requested = 1)")
+            it.executeUpdate("UPDATE jobs SET status = 'CANCELLED', finished_at = COALESCE(finished_at, ${now()}), local = 0, paused = 0 " +
+                "WHERE status = 'QUEUED' AND cancel_requested = 1")
             val scheduleColumns = it.executeQuery("PRAGMA table_info(schedules)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
             if ("launch" !in scheduleColumns) it.execute("ALTER TABLE schedules ADD COLUMN launch INTEGER NOT NULL DEFAULT 0")
             val commandColumns = it.executeQuery("PRAGMA table_info(commands)").use { r -> generateSequence { if (r.next()) r.getString("name") else null }.toSet() }
@@ -439,18 +420,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeBatch()
     }
 
-    /** Record an experiment's plan in one transaction: its arms, its problems, and a command per case, the case at
-     *  each command's index. A job with commands is planned. */
-    @Synchronized
-    fun plan(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<Pair<String, Long>>) =
-        planCommands(jobId, arms, problems, cases, commands.map { (cmd, timeout) -> CaseCommand(cmd, timeout) })
-
-    @Synchronized
-    fun planCommands(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>) {
-        require(cases.size == commands.size) { "a command per case" }
-        transaction { planRows(jobId, arms, problems, cases, commands) }
-    }
-
     /** Publish a verified preparation as one plan, including its setup marker, under the cancellation lock. */
     @Synchronized
     fun prepareNomad(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>): Boolean = transaction {
@@ -463,47 +432,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         true
     }
 
-    /**
-     * Turn records an earlier job left into a finished experiment: a new job of [name] at [sha], whose cases are
-     * [records], each already done with its record kept, so the experiment views compare them like any other.
-     */
-    @Synchronized
-    fun importExperiment(
-        name: String,
-        ref: String,
-        sha: String,
-        spec: ExperimentSpec,
-        arms: List<PlannedArm>,
-        problems: List<Problem>,
-        records: List<Pair<Case, String>>,
-        sources: List<String>,
-    ): Long = transaction {
-        val id = connection.prepareStatement(
-            "INSERT INTO jobs (name, ref, sha, status, setup_done, created_at, started_at, finished_at, experiment) " +
-                "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
-            java.sql.Statement.RETURN_GENERATED_KEYS,
-        ).use {
-            val at = now()
-            it.setString(1, name)
-            it.setString(2, ref)
-            it.setString(3, sha)
-            it.setString(4, Status.DONE.name)
-            it.setLong(5, at)
-            it.setLong(6, at)
-            it.setLong(7, at)
-            it.setString(8, Json.encodeToString(spec))
-            it.executeUpdate()
-            it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
-        }
-        planRows(id, arms, problems, records.map { it.first }, sources.map { CaseCommand(it, 0L) })
-        update("UPDATE commands SET status = ? WHERE job_id = ?", Status.DONE.name, id)
-        records.forEachIndexed { index, (_, record) ->
-            update("UPDATE cases SET record = ? WHERE job_id = ? AND idx = ?", storedRecord(record), id, index)
-        }
-        id
-    }
-
-    private fun planRows(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>) {
+    internal fun planRows(jobId: Long, arms: List<PlannedArm>, problems: List<Problem>, cases: List<Case>, commands: List<CaseCommand>) {
         arms.forEachIndexed { index, planned ->
             update(
                 "INSERT INTO arms (job_id, idx, label, arm, sha) VALUES (?, ?, ?, ?, ?)",
@@ -547,7 +476,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         }
     }
 
-    /** Keep the record a case's `solve-one` wrote. */
     /** The problem and arm of case [index] of [jobId]. */
     @Synchronized
     fun caseOf(jobId: Long, index: Int): Pair<Problem, Arm>? = connection.prepareStatement(
@@ -572,18 +500,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.setLong(1, jobId)
         statement.setInt(2, index)
         statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
-    }
-
-    /** Keep the native solver stdout files case [index] of [jobId] left ([CaseResult.stdout]), replacing any earlier ones. */
-    @Synchronized
-    fun caseStdout(jobId: Long, index: Int, files: List<CaseFile>): Int =
-        update("UPDATE cases SET stdout = ? WHERE job_id = ? AND idx = ?",
-            if (files.isEmpty()) null else Json.encodeToString(ListSerializer(CaseFile.serializer()), files), jobId, index)
-
-    /** Keep the record a case wrote, compacted ([StoredRecords]); a lab check of the record it replaces goes with it. */
-    @Synchronized
-    fun caseRecord(jobId: Long, index: Int, record: String): Int = transaction {
-        update("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", storedRecord(record), jobId, index)
     }
 
     /** [record] as it is stored ([StoredRecords.compact]), its provenance kept once in `provenances`. In a transaction. */
@@ -722,46 +638,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun casePlan(jobId: Long): List<CaseResult> = casesWith("NULL", jobId)
 
-    /**
-     * Queue again the finished cases of every iteration of [jobId] that is only part done: an iteration is the arms of
-     * one problem, seed and repeat, which are compared with each other and so must all run on one machine. A finished
-     * case whose iteration still has a queued or running case loses its result and runs again with the rest, wherever
-     * they run. Only the cases in [among] are queued again when it is given: the ones a lost host finished. Returns them.
-     */
-    @Synchronized
-    fun requeueSplitIterations(jobId: Long, among: Collection<Int>? = null): List<Int> = transaction { requeueSplit(jobId, among) }
-
-    private fun requeueSplit(jobId: Long, among: Collection<Int>?): List<Int> {
-        data class Row(val index: Int, val iteration: Triple<Int, Long?, Int>, val status: Status)
-        val rows = connection.prepareStatement(
-            "SELECT c.idx, c.problem_idx, c.seed, c.repeat, m.status FROM cases c " +
-                "JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx WHERE c.job_id = ? ORDER BY c.idx",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.executeQuery().use { r ->
-                generateSequence {
-                    if (r.next()) Row(r.getInt(1), Triple(r.getInt(2), r.longOrNull("seed"), r.getInt(4)), Status.valueOf(r.getString(5))) else null
-                }.toList()
-            }
-        }
-        val finished = setOf(Status.DONE, Status.FAILED)
-        val split = rows.groupBy { it.iteration }.values
-            .filter { cases -> cases.any { it.status in finished } && cases.any { it.status == Status.QUEUED || it.status == Status.RUNNING } }
-        val again = split.flatten().filter { it.status in finished && (among == null || it.index in among) }.map { it.index }
-        for (index in again) {
-            update("UPDATE commands SET status = ?, exit_code = NULL, started_at = NULL, finished_at = NULL, phase = NULL, host = NULL " +
-                "WHERE job_id = ? AND idx = ?", Status.QUEUED.name, jobId, index)
-            update("UPDATE cases SET record = NULL, lab_check = NULL, stdout = NULL WHERE job_id = ? AND idx = ?", jobId, index)
-        }
-        return again
-    }
-
-    /**
-     * Give back what [holder] holds of [jobId]: its claimed cases and any it left running go back to the queue, to be
-     * claimed by any host. With [whole], the cases [holder] finished of each iteration it gave back go back too, their
-     * results dropped, so the iteration runs again whole wherever it goes next ([requeueSplitIterations]): what a host
-     * that yields mid-iteration or is lost leaves. The cases given back.
-     */
     /** Cases of [jobId] queued that no host has claimed: the work another host could join it for. */
     @Synchronized
     fun unclaimed(jobId: Long): Int = connection.prepareStatement(
@@ -771,11 +647,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         statement.executeQuery().use { r -> if (r.next()) r.getInt(1) else 0 }
     }
 
-    /**
-     * The running jobs a cloud node may help, with their [unclaimed] cases: shared (`auto`) and cloud (`aws`) jobs, not
-     * paused or cancelling, that have an iteration no host has claimed, wherever they run now, the local machine
-     * included, by priority, series and age. A profile job is one case, so no second host joins it.
-     */
     /** Each host's part of the jobs [ids] ([HostProgress]), the local machine first, then the nodes by name; a case that
      *  ran before cases recorded their host is left out. */
     @Synchronized
@@ -792,20 +663,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
             }
         }
 
-    /** Say whether the local machine works on [jobId] now ([Job.local]). */
-    @Synchronized
-    fun setLocal(jobId: Long, local: Boolean) = update("UPDATE jobs SET local = ? WHERE id = ?", if (local) 1 else 0, jobId)
-
-    /**
-     * Make job [jobId], taken whole by one host before jobs were shared (an `auto` job whose host became `lab` or
-     * `aws`), a shared `auto` job again: every host may then run its iterations. Its finished cases that recorded no
-     * host ran where it was taken, which they keep ([CaseResult.host]).
-     */
-    /**
-     * After a restart, put running shared job [jobId] back as no host holds it: every case claimed or left running goes
-     * back to the queue, each iteration left part done runs again whole, and the local machine works on it no more.
-     * The caller queues the job again ([requeue]).
-     */
     /** Every case of an experiment in command order, with its problem, arm, status and record. */
     @Synchronized
     fun cases(jobId: Long): List<CaseResult> = casesWith("c.record", jobId, whole = true)
@@ -1012,62 +869,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         it.executeUpdate()
     }
 
-    /**
-     * The job the local machine is about to take, which a node must leave to it: the first of its queue when the local
-     * machine is free, or when the job it runs gives way to that one between cases ([shouldYield]). Null when the local
-     * machine keeps what it runs. [nodesUp] is what [next] is given, whether a cloud node is up or launching, so the two
-     * agree on the job.
-     */
     /** Whether the local machine is running a job. */
     @Synchronized
     fun localBusy(): Boolean = connection.prepareStatement("SELECT 1 FROM jobs WHERE status = ? AND local = 1 LIMIT 1").use {
         it.setString(1, Status.RUNNING.name)
         it.executeQuery().use { rows -> rows.next() }
     }
-
-    /**
-     * The queued, unpaused jobs a cloud node may take, `auto` and `aws` ones alike, in the order a node takes them: by
-     * priority, then series, then age, as the local machine orders its own. Without their commands, with their counts.
-     */
-    /**
-     * Claim queued job [id] for a cloud node, which starts it; an `auto` job stays shared, for the local machine and other
-     * nodes to join once it is planned. Null when it is no longer one a node may take: a host took it, or it was paused
-     * or cancelled meanwhile.
-     */
-    /** A command a crashed runner left RUNNING is rerun from the start: its partial output is not a result. */
-    @Synchronized
-    fun setup(jobId: Long, sha: String) = update("UPDATE jobs SET sha = ?, setup_done = 1 WHERE id = ?", sha, jobId)
-
-    /** Put [indices] of [jobId] that started back to queued: their host went away before they finished. */
-    @Synchronized
-    fun requeueCommands(jobId: Long, indices: Collection<Int>) = transaction {
-        indices.forEach { index ->
-            update("UPDATE commands SET status = ?, started_at = NULL WHERE job_id = ? AND idx = ? AND status = ?",
-                Status.QUEUED.name, jobId, index, Status.RUNNING.name)
-        }
-    }
-
-    /** Command [index] of [jobId] starts on [host] (its recorded node identity) as [cmd], the command line that host rendered
-     *  for it ([CasePlan]), which replaces the one written when the job was planned. */
-    @Synchronized
-    fun commandStarted(jobId: Long, index: Int, host: String? = null, cmd: String? = null) = update(
-        "UPDATE commands SET status = ?, started_at = ?, exit_code = NULL, phase = NULL, host = COALESCE(?, host), " +
-            "cmd = COALESCE(?, cmd) WHERE job_id = ? AND idx = ?",
-        Status.RUNNING.name, now(), host, cmd, jobId, index,
-    )
-
-    @Synchronized
-    fun commandFinished(jobId: Long, index: Int, exitCode: Int) = update(
-        "UPDATE commands SET status = ?, exit_code = ?, finished_at = ?, phase = NULL WHERE job_id = ? AND idx = ?",
-        if (exitCode == 0) Status.DONE.name else Status.FAILED.name, exitCode, now(), jobId, index,
-    )
-
-    /** Record what the lab is doing with [jobId]'s running command [index]; written only as the phase changes. */
-    @Synchronized
-    fun commandPhase(jobId: Long, index: Int, phase: CasePhase) = update(
-        "UPDATE commands SET phase = ? WHERE job_id = ? AND idx = ? AND status = ?",
-        Json.encodeToString(phase), jobId, index, Status.RUNNING.name,
-    )
 
     /** End [jobId] as [status]; 0 when it had already ended, so a cancel that landed first is never overwritten. */
     @Synchronized
@@ -1585,15 +1392,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         Status.CANCELLED
     }
 
-    /** Queued jobs whose cancel was requested: left by a runner from before a requeue ended them, as no host takes one. */
-    @Synchronized
-    fun queuedCancels(): List<Long> = connection.prepareStatement(
-        "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 1 ORDER BY id",
-    ).use {
-        it.setString(1, Status.QUEUED.name)
-        it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
-    }
-
     /**
      * Place a queued experiment that has not been planned on [host] (`lab`, `aws` or `auto`): what [Placement] decides,
      * or an operator updates its tags. [placed], when given, is the replacement spec. Admission freezes the recipe
@@ -1604,21 +1402,12 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         val job = job(jobId) ?: return false
         val spec = placed ?: job.experiment ?: return false
         if (job.status != Status.QUEUED || job.commands.isNotEmpty()) return false
-        val moved = spec.copy(host = host, auto = false, machines = null)
+        val moved = spec.copy(host = host)
         return update("UPDATE jobs SET experiment = ? WHERE id = ? AND status = 'QUEUED' " +
             "AND NOT EXISTS (SELECT 1 FROM commands WHERE job_id = ?) " +
             "AND NOT EXISTS (SELECT 1 FROM execution_queue_recipes WHERE job_id = ?) " +
             "AND NOT EXISTS (SELECT 1 FROM execution_sessions WHERE job_id = ?)",
             Json.encodeToString(moved), jobId, jobId, jobId, jobId) == 1
-    }
-
-    @Synchronized
-    fun release(jobId: Long, host: String): Boolean {
-        val job = job(jobId) ?: return false
-        val spec = job.experiment ?: return false
-        if (job.status != Status.QUEUED) return false
-        val moved = spec.copy(host = host, auto = false, machines = null)
-        return update("UPDATE jobs SET experiment = ? WHERE id = ? AND status = ?", Json.encodeToString(moved), jobId, Status.QUEUED.name) == 1
     }
 
     /** Set an experiment's description; false when there is no such experiment. */
@@ -1632,12 +1421,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun setParallel(jobId: Long, parallel: Int): Boolean {
         return update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
-    }
-
-    @Synchronized
-    fun parallel(jobId: Long): Int = connection.prepareStatement("SELECT parallel FROM jobs WHERE id = ?").use {
-        it.setLong(1, jobId)
-        it.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else 1 }
     }
 
     @Synchronized
@@ -1667,9 +1450,6 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                         rows.getInt("idx"), rows.getString("cmd"), rows.getLong("timeout_sec"),
                         Status.valueOf(rows.getString("status")), rows.intOrNull("exit_code"),
                         rows.longOrNull("started_at"), rows.longOrNull("finished_at"), rows.getInt("cores"),
-                        // A phase is the running command's only: one a requeue or a cancel left behind is stale.
-                        rows.getString("phase")?.takeIf { rows.getString("status") == Status.RUNNING.name }
-                            ?.let { runCatching { Json.decodeFromString<CasePhase>(it) }.getOrNull() },
                         host = rows.getString("host"),
                     )
                 }

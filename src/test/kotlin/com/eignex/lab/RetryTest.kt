@@ -10,8 +10,8 @@ class RetryTest {
     fun `an exhausted profile deadline is not retried`() {
         var tries = 0
 
-        assertFailsWith<ProfileRunTimeout> {
-            retrying(Backoff(3, 1, 1), sleep = {}) { tries++; throw ProfileRunTimeout() }
+        assertFailsWith<RunDeadlineExceeded> {
+            retrying(Backoff(3, 1, 1), sleep = {}) { tries++; throw RunDeadlineExceeded() }
         }
 
         assertEquals(1, tries)

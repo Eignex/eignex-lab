@@ -46,7 +46,7 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
 
     fun run(argv: List<String>, directory: Path, environment: Map<String, String>, stdout: Path, stderr: Path,
             timeoutSec: Long, graceMs: Long = 10_000, runRemainingMs: Long? = null, remainingLeaseMs: () -> Long): Int {
-        if (runRemainingMs != null && runRemainingMs <= 0) throw ProfileRunTimeout()
+        if (runRemainingMs != null && runRemainingMs <= 0) throw RunDeadlineExceeded()
         fun remaining() = remainingLeaseMs().coerceAtMost(80_000).also { if (it <= 0 || Thread.currentThread().isInterrupted) throw CancellationException("execution lease ended") }
         SocketChannel.open(StandardProtocolFamily.UNIX).use { channel ->
             channel.connect(UnixDomainSocketAddress.of(socket))
@@ -73,7 +73,7 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
                     response.append(String(buffer.array(), 0, n)); require(response.length <= 4096)
                     if ('\n' in response) {
                         val json = Json.parseToJsonElement(response.toString().substringBefore('\n')).jsonObject
-                        if (json["runTimedOut"]?.jsonPrimitive?.content == "true") throw ProfileRunTimeout()
+                        if (json["runTimedOut"]?.jsonPrimitive?.content == "true") throw RunDeadlineExceeded()
                         return json["exitCode"]?.jsonPrimitive?.int ?: error("process supervision failed")
                     }
                 }

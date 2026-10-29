@@ -456,7 +456,7 @@ PY
         val (input, bytes) = bundle(mapOf("gradlew" to "#!/usr/bin/env bash\nexec sleep 30\n"))
         val source = VerifiedCache(root.resolve("source")).stage(input) { ByteArrayInputStream(bytes) }
         val deadline = System.nanoTime() + 500_000_000
-        assertFailsWith<ProfileRunTimeout> {
+        assertFailsWith<RunDeadlineExceeded> {
             WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(input.copy(build = WorkerBuild(listOf("fixture"))),
                 source, ResourceBudget(1000, 512), System.getenv(), remainingRunMs = { (deadline - System.nanoTime()) / 1_000_000 }) { 80000 }
         }

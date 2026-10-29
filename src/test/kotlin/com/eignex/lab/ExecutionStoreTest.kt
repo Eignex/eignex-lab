@@ -149,7 +149,7 @@ class ExecutionStoreTest {
         assertEquals(Status.RUNNING, store.job(id)!!.status)
         store.execution.expireRunDeadlines(2000)
         assertEquals(Status.FAILED, Store(file).job(id)!!.status)
-        assertEquals(ProfileRunTimeout().message, store.job(id)!!.error)
+        assertEquals(RunDeadlineExceeded().message, store.job(id)!!.error)
         assertTrue(store.execution.sessions(id).all { it.desired == "stop" })
         assertEquals(1, store.execution.failureCount(id))
     }
@@ -174,7 +174,7 @@ class ExecutionStoreTest {
         val id = profile(); bind(id)
         val claim = store.execution.claim("s", token, "alloc-s", 1100)!!
         store.execution.phase(claim.owner, "uploading", 1700)
-        assertFailsWith<ProfileRunTimeout> { store.execution.commit(claim.owner, result(claim), 2000) }
+        assertFailsWith<RunDeadlineExceeded> { store.execution.commit(claim.owner, result(claim), 2000) }
         assertTrue(store.execution.accepted(id).isEmpty())
         assertNull(store.execution.claim("s", token, "alloc-s", 2000))
         assertEquals(Status.FAILED, store.job(id)!!.status)

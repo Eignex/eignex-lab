@@ -12,7 +12,8 @@ import kotlinx.serialization.json.JsonElement
 
 /** Read historical recording and placement fields without accepting those fields in new submissions. */
 internal fun storedExperiment(text: String): ExperimentSpec {
-    val body = Json.parseToJsonElement(text).jsonObject
+    // Placement bookkeeping a historical recipe may carry; the lab no longer reads it.
+    val body = JsonObject(Json.parseToJsonElement(text).jsonObject - setOf("auto", "machines"))
     val retired = setOf("profileCli", "measureCliResources", "profileCompilation")
     if (retired.none { it in body }) return Json.decodeFromJsonElement(ExperimentSpec.serializer(), body)
     fun enabled(key: String): Boolean = body[key]?.takeUnless { it == JsonNull }?.let {

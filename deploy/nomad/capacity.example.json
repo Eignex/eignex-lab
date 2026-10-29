@@ -1,6 +1,5 @@
 {
   "maxVcpus": 64,
-  "localCores": 8,
   "pools": [
     {
       "id": "general",
