@@ -22,7 +22,10 @@ internal object WeightedSourceEvaluation {
         val assignment = assignment(witness, format == "WCNF")
         val result = if (format == "WCNF") wcnf(source, assignment) else opb(source, assignment, format == "WBO")
         if (result.state != LabCheck.VALID) result
-        else if (result.exactObjective == null) result
+        else if (result.exactObjective == null) {
+            if (objective != null) throw Unsupported("source has no objective for the claimed cost")
+            result
+        }
         else if (objective == null) WeightedEvaluation(LabCheck.NOT_RUN, "no exact objective was retained")
         else {
             if (objective.length > MAX_TOKEN || !integer.matches(objective)) throw Invalid("claimed objective is not an exact integer")

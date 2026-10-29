@@ -165,6 +165,9 @@ headerless `h` clauses are supported. WCNF witnesses may be the retained `v` bit
 PB witnesses use signed `xN` literals. Missing, duplicate and extra coordinates reject; no omitted variable is
 completed by a solver. Nonlinear PB products are evaluated directly as Boolean conjunctions.
 
+The optional `alteredControl=true` replay adds a second case that flips exactly the first retained coordinate,
+retaining both original and altered records. Its verdict is observed rather than assumed to be a rejection.
+
 The authority is [PB Competition 2010 section 3](https://www.cril.univ-artois.fr/PB10/format.pdf) and the
 [MaxSAT Evaluation input/output specification](https://maxsat-evaluations.github.io/2022/rules.html).
 The evaluator uses Java `BigInteger`, with no Klause parser, acceptance code, presolve or reference solver.

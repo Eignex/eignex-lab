@@ -76,7 +76,7 @@ class WeightedSourceEvaluationTest {
     @Test fun `complete declared coordinates include unused variables`() {
         val pb = "* #variable= 2 #constraint= 1\n1 x1 >= 1;"
         val cnf = "p wcnf 2 1 2\n2 1 0\n"
-        assertEquals(LabCheck.INVALID, check("OPB", pb, "v x1").state)
+        assertEquals(LabCheck.INVALID, check("OPB", pb, "v x1", null).state)
         assertEquals(LabCheck.INVALID, check("WCNF", cnf, "v 1").state)
         assertEquals(LabCheck.VALID, check("OPB", pb, "v x1 -x2", null).state)
         assertEquals(LabCheck.VALID, check("WCNF", cnf, "v 10").state)

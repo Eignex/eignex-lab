@@ -14,7 +14,7 @@ class WeightedCheckBenchTest {
         val case = WeightedCheckBench.plan(BenchRequest(parameters)).single()
         assertEquals(parameters, case.parameters)
         assertEquals(1, case.resources.cpus)
-        assertEquals(30, case.resources.timeoutSeconds)
+        assertEquals(30L, case.resources.timeoutSeconds)
         assertFailsWith<IllegalArgumentException> { WeightedCheckBench.plan(BenchRequest(parameters + ("format" to "MPS"))) }
     }
 

@@ -45,7 +45,8 @@ open class WeightedSourceChecker(final override val format: String) : FormatChec
             "-XX:MaxMetaspaceSize=128m", "-XX:ReservedCodeCacheSize=64m", "-XX:CompressedClassSpaceSize=32m",
             "-XX:ActiveProcessorCount=1", "-cp", classpath.joinToString(File.pathSeparator) { it.path },
             WeightedSourceCheckMain::class.java.name, model.absolutePath, file.absolutePath), work, TIMEOUT_MS,
-            limits = ToolLimits(cpuSeconds = 10, timeoutMs = TIMEOUT_MS), inputFiles = listOf(model, file, java) + classpath.filter { it.isFile })
+            limits = ToolLimits(cpuSeconds = 10, timeoutMs = TIMEOUT_MS),
+            env = mapOf("JAVA_TOOL_OPTIONS" to "", "JDK_JAVA_OPTIONS" to "", "_JAVA_OPTIONS" to ""), inputFiles = listOf(model, file, java) + classpath.filter { it.isFile })
         val receipts = listOfNotNull(run.resources)
         val inputs = listOf(CheckedInput(file.canonicalPath, sha256(file), request))
         fun done(state: String, reason: String) = verdict(state, reason).copy(resourceReceipts = receipts, inputs = inputs,
