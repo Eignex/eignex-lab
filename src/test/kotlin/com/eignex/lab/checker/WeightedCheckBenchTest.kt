@@ -9,6 +9,23 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class WeightedCheckBenchTest {
+    @Test fun `production registry covers all weighted source formats`() {
+        val work = Files.createTempDirectory("weighted-registry")
+        try {
+            val checker = Checkers.of(com.eignex.lab.Config(dataDir = work))
+            for (format in listOf("OPB", "WBO", "WCNF")) assertEquals(true, checker.covers(format))
+        } finally { work.toFile().deleteRecursively() }
+    }
+
+    @Test fun `altered controls preserve source objective and every other coordinate`() {
+        for ((format, witness, changed) in listOf(Triple("OPB", "v x1 -x2 x3", "v -x1 -x2 x3"),
+            Triple("WCNF", "v 1011", "v 0011"), Triple("WCNF", "v 1 -2 3 4 0", "v -1 -2 3 4 0"))) {
+            val original = buildJsonObject { put("finalWitness", witness); put("exactObjective", "19"); put("sourceHashes", "unchanged") }
+            val altered = WeightedCheckBench.altered(original, format)
+            assertEquals(buildJsonObject { put("finalWitness", changed); put("exactObjective", "19"); put("sourceHashes", "unchanged") }, altered)
+        }
+    }
+
     @Test fun `retained capture plan freezes original text and bounded resources`() {
         val parameters = mapOf("format" to "OPB", "model" to "soft: ; [3] 1 x1 >= 1;", "record" to "{}")
         val case = WeightedCheckBench.plan(BenchRequest(parameters)).single()

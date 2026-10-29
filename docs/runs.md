@@ -177,7 +177,7 @@ JAR, executable/classpath hashes and the existing process resource envelope. A s
 
 Decompression, parsing and arithmetic run in a child with a 256 MiB heap, 10 CPU seconds, 15-second wall deadline and existing
 4 GiB address-space limit on Linux; incomplete execution is `not-run`. Source snapshots and compressed transport are capped at 32 MiB
-(including decompression); individual numeric tokens at 4096 characters and variables at one million. Exceeding
+(including decompression, with a 64 MiB zstd window); individual numeric tokens at 4096 characters and variables at one million. Exceeding
 input coverage is `unsupported`; malformed source stays unsupported, while a malformed point, hard violation or
 wrong exact cost is `invalid`. Missing source/witness/objective and process failures are never valid checks.
 
