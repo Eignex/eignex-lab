@@ -17,8 +17,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
     fun stage(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, false, download)
     internal fun stage(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace): Path = stage(bundle, checkActive, false, download, trace)
     internal fun seed(bundle: WorkerBundle, source: Path, sourceReceipt: Path, checkActive: () -> Unit, trace: PreparationTrace) =
-        stage(bundle, checkActive, false, { error("seed cannot download") }, trace) { tree, receipt ->
-            val verifier = TreeVerification()
+        stage(bundle, checkActive, false, { error("seed cannot download") }, trace, "prepared-input") { tree, receipt, verifier ->
             // Missing/corrupt receipts take the checksum path before using filesystem-copy proof.
             require(verifier.valid(source, bundle.files, sourceReceipt, checkActive, exactExecutables = true)) { "seed source differs from approved files" }
             verifier.copy(source, sourceReceipt, tree, receipt, checkActive, copy = { WorkerTrees.copy(source, tree, checkActive) })
@@ -29,7 +28,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
     internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace): Path = stage(bundle, checkActive, true, download, trace)
 
     private fun stage(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream,
-                      trace: PreparationTrace = PreparationTrace(), seed: ((Path, Path) -> Boolean)? = null): Path {
+                      trace: PreparationTrace = PreparationTrace(), cacheName: String = "input", seed: ((Path, Path, TreeVerification) -> Boolean)? = null): Path {
         checkActive()
         val included = bundle.files.filter { !runtimeOnly || WorkerTrees.runtimePath(Path.of(it.path)) }
         val declaredBytes = bundle.files.fold(0L) { total, file ->
@@ -55,7 +54,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             checkActive()
             val validation = TreeVerification()
             val valid = validation.valid(destination, included, receipt, checkActive)
-            trace.cache("input", if (valid) "hit" else "miss", if (valid) (if (validation.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
+            trace.cache(cacheName, if (valid) "hit" else "miss", if (valid) (if (validation.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
                 verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs,
                 bytes = included.sumOf { it.bytes }, files = included.size,
                 checkedFiles = validation.stats.checkedFiles, hashedFiles = validation.stats.hashedFiles, hashedBytes = validation.stats.hashedBytes)
@@ -65,12 +64,14 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             val staging = Files.createTempDirectory(root, "$key-")
             val tree = staging.resolve("tree")
             try {
-                if (seed?.invoke(tree, receipt) == true || runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
-                    require(TreeVerification().valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
+                val localStarted = System.nanoTime()
+                val localVerification = TreeVerification()
+                if (seed?.invoke(tree, receipt, localVerification) == true || runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
+                    require(localVerification.valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
                     checkActive(); Files.move(tree, destination, ATOMIC_MOVE)
-                    trace.cache("input", "miss", "verified-local", verificationMs = (System.nanoTime() - verificationAt) / 1_000_000,
-                        waitingMs = waitingMs, bytes = included.sumOf { it.bytes }, files = included.size,
-                checkedFiles = validation.stats.checkedFiles, hashedFiles = validation.stats.hashedFiles, hashedBytes = validation.stats.hashedBytes)
+                    trace.cache(cacheName, "miss", "verified-local", verificationMs = (System.nanoTime() - localStarted) / 1_000_000,
+                        bytes = included.sumOf { it.bytes }, files = included.size,
+                        checkedFiles = localVerification.stats.checkedFiles, hashedFiles = localVerification.stats.hashedFiles, hashedBytes = localVerification.stats.hashedBytes)
                     println("worker input cache: materialized verified local files=${included.size}")
                     return destination
                 }

@@ -16,7 +16,11 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     @Serializable private data class Entry(val identity: String, val files: List<InputFile>)
 
     fun prepare(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
-                remainingRunMs: () -> Long? = { null }, trace: PreparationTrace = PreparationTrace(), remainingLeaseMs: () -> Long): Path {
+                remainingRunMs: () -> Long? = { null }, trace: PreparationTrace = PreparationTrace(), remainingLeaseMs: () -> Long): Path =
+        prepareFrom(bundle, { consume -> consume(source) }, budget, environment, remainingRunMs, trace, remainingLeaseMs)
+
+    private fun prepareFrom(bundle: WorkerBundle, source: ((Path) -> Unit) -> Unit, budget: ResourceBudget, environment: Map<String, String>,
+                            remainingRunMs: () -> Long?, trace: PreparationTrace, remainingLeaseMs: () -> Long): Path {
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
         checkRun()
         val build = requireNotNull(bundle.build)
@@ -73,7 +77,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         checkPreparationExit(exit) { "exit $exit\n" + tail(errors) + "\n" + tail(log) }
                     }
                 }
-                trace.step("checkout") {
+                trace.step("checkout") { source { source ->
                     if (build.gitBundle != null) {
                         Files.createDirectory(tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "init"), tree)
@@ -88,7 +92,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                             Files.copy(source.resolve(file.path), target, COPY_ATTRIBUTES, REPLACE_EXISTING)
                         }
                     } else copy(source, tree, ::checkRun)
-                }
+                } }
                 val tasks = build.benchManifest?.let { BenchRuns.entry(tree, BenchSpec(it)).buildTasks } ?: build.tasks
                 if (tasks.isNotEmpty()) {
                     require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
@@ -121,11 +125,25 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
     fun <T> withPrepared(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
-                         remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(), use: (Path) -> T): T {
+                         remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(), use: (Path) -> T): T =
+        withPreparedSource(bundle, budget, environment, remainingRunMs, remainingLeaseMs, trace, { consume -> consume(source) }, use)
+
+    /** Warm verified builds need no source archive at all. Acquire source inputs only during cold checkout,
+     * retaining their caller-owned pin throughout consumption instead of returning an unpinned cache path. */
+    internal fun <T> withPreparedSource(bundle: WorkerBundle, budget: ResourceBudget, environment: Map<String, String>,
+                                       remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(),
+                                       source: ((Path) -> Unit) -> Unit, use: (Path) -> T): T {
         Files.createDirectories(root)
         return trace.step("build-cache") {
+            val waitingAt = System.nanoTime()
             locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs) {
-                use(prepare(bundle, source, budget, environment, remainingRunMs, trace, remainingLeaseMs))
+                val waitingMs = (System.nanoTime() - waitingAt) / 1_000_000
+                var acquired = false
+                val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs)
+                // Report only new work here; trace counters aggregate repeated cache observations.
+                if (waitingMs >= 50) trace.cache("build", trace.snapshot().caches["build"]?.outcome ?: "hit", "lock-busy", waitingMs = waitingMs)
+                if (!acquired) trace.cache("input", "bypass", "build-hit")
+                use(tree)
             }
         }
     }
