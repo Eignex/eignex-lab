@@ -178,6 +178,7 @@ object Confirm {
         val frozen = sourceCases.filter { ComparisonControls.problem(it) in identities }.mapNotNull { it.problem.benchCase }
             .distinctBy { listOf(it.attributes["suite"], it.attributes["problem"], it.parameters["engine"], it.parameters["seed"], it.attributes["propagationControl"]) }
             .ifEmpty { selected.mapNotNull { it.benchCase } }
+        require(spec.bench == null || selected.isEmpty() || frozen.isNotEmpty()) { "Confirmation lost its frozen workloads" }
         return SourceValidation.scheduled(ExperimentSpec(
             name = name(series, after, job),
             description = "Confirms run $job against reference job $beforeJob at ${before.take(SHA_LENGTH)}: " +

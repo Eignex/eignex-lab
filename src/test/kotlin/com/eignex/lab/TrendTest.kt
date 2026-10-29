@@ -6,6 +6,24 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class TrendTest {
+    @Test
+    fun `controlled multi seed baselines count sources rather than runtime case ids`() {
+        val cases = listOf(1L, 3L).flatMap { seed -> (0..1).map { repeat ->
+            val plan = com.eignex.lab.bench.BenchCase("s/p/$seed/$repeat", attributes = mapOf("problem" to "p"))
+            val record = kotlinx.serialization.json.Json.parseToJsonElement(
+                """{"kind":"satisfy","budgetMs":1000,"comparisonControls":{},"feasible":${if (seed == 1L) "true" else "null"}}""")
+            CaseResult(repeat, Status.DONE, Problem("s", plan.id, benchCase = plan), "base", seed, record, repeat)
+        } }
+        val job = Job(1, "baseline", "sha", status = Status.DONE, cancelRequested = false,
+            setupDone = true, createdAt = 0, experiment = ExperimentSpec("baseline", emptyList()))
+
+        val run = Trend.run(job, listOf(PlannedArm(Arm("base", emptyMap()), "sha")), cases)!!
+
+        assertEquals(1, run.problems)
+        assertEquals(4, run.cases)
+        assertEquals(0.5, run.solved.value)
+    }
+
     private fun run(store: Store, name: String, solvedOf: List<Boolean>, finish: Boolean = true, first: Int = 0): Long {
         val problems = solvedOf.indices.map { Problem(if (it % 2 == 0) "a" else "b", "p${first + it}") }
         val id = store.create(name, "sha", emptyList(), experiment = ExperimentSpec(name, listOf(mapOf("suite" to "a"))))
