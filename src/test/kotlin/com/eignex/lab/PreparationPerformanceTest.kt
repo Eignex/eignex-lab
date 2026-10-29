@@ -25,6 +25,7 @@ class PreparationPerformanceTest {
         // java.io.tmpdir is internal storage even when the representative data/cache root is external.
         val journalRoot = Files.createTempDirectory("preparation-perf-journal-")
         val snapshots = linkedMapOf<String, PreparationProgress>()
+        val buildCaches = mutableListOf<WorkerBuildCache>()
         val report = parent.resolve("preparation-performance.json")
         val serviceErrors = root.resolve("supervisor.err")
         val socket = root.resolve("supervisor.sock")
@@ -96,7 +97,7 @@ class PreparationPerformanceTest {
                 val job = artifactJob.incrementAndGet() // cold and each warm preparation publish into distinct jobs.
                 val trace = PreparationTrace()
                 // Reconstruct helpers between passes to exercise receipts on disk, not only in-memory state.
-                val builds = WorkerBuildCache(root.resolve("builds"), supervisor)
+                val builds = WorkerBuildCache(root.resolve("builds"), supervisor).also { buildCaches += it }
                 val inputs = WorkerInputCache(root.resolve("inputs"), builds = builds)
                 val archiveCache = WorkerArchiveCache(root.resolve("archives"))
                 val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "performance", "token", "allocation",
@@ -160,6 +161,7 @@ class PreparationPerformanceTest {
                 check(pending.status().batches == 0) { "fixture journal did not finish draining" }
             }
             process?.let { it.destroy(); if (!it.waitFor(10, TimeUnit.SECONDS)) { it.destroyForcibly(); it.waitFor(10, TimeUnit.SECONDS) } }
+            buildCaches.forEach { assertTrue(it.awaitMaintenanceIdle(), "cache cleanup did not finish before fixture removal") }
             deleteTree(root)
             deleteTree(journalRoot)
         }

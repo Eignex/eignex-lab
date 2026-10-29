@@ -154,4 +154,31 @@ class WorkerBuildAccountingTest {
         }
     }
 
+    @Test fun `synchronous maintenance drains a request that has not started before returning to fixture teardown`() {
+        val root = Files.createTempDirectory("pending-dependency-cleanup")
+        val pending = java.util.concurrent.atomic.AtomicReference<Thread>()
+        val executor = Executors.newSingleThreadExecutor()
+        val cache = WorkerBuildCache(root, ProcessSupervisor(root.resolve("unused")), startMaintenance = { pending.set(it) })
+        try {
+            cache.dependencyHome("3".repeat(64), { null }, { 10_000 }) { home ->
+                Files.createDirectories(home); Files.writeString(home.resolve("data"), "data")
+            }
+            assertEquals(Thread.State.NEW, pending.get().state)
+            assertFalse(cache.awaitMaintenanceIdle(0), "reserved but unscheduled work must remain pending")
+            val synchronous = executor.submit { cache.maintain(now() + 120_000) }
+            assertFailsWith<java.util.concurrent.TimeoutException> { synchronous.get(50, TimeUnit.MILLISECONDS) }
+            pending.get().start()
+            synchronous.get(5, TimeUnit.SECONDS)
+            assertTrue(cache.awaitMaintenanceIdle(0))
+            // This was the macOS failure: no scheduled cleanup may recreate files after this removal.
+            deleteTree(root)
+            assertFalse(Files.exists(root))
+        } finally {
+            pending.get()?.takeIf { it.state == Thread.State.NEW }?.start()
+            executor.shutdownNow(); assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+            assertTrue(cache.awaitMaintenanceIdle())
+            if (Files.exists(root)) deleteTree(root)
+        }
+    }
+
 }

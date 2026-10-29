@@ -13,7 +13,8 @@ class WorkerBuildFailure(val detail: String) : IllegalStateException("trusted so
 /** Builds are bounded helpers of their session, not another reservation or a whole-node exclusivity rule. */
 class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSupervisor,
                        private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
-                       private val dependencyBytes: (Path) -> Long = ::dependencyTreeBytes) {
+                       private val dependencyBytes: (Path) -> Long = ::dependencyTreeBytes,
+                       private val startMaintenance: (Thread) -> Unit = Thread::start) {
     private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
     @Serializable private data class DependencyUsage(val key: String, val modified: String, val bytes: Long)
     @Serializable private data class Entry(val identity: String, val files: List<InputFile>)
@@ -250,21 +251,39 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     /** Foreground preparation never performs an unbounded legacy inventory scan. */
     private fun requestMaintenance() {
         if (!maintenanceRunning.compareAndSet(false, true)) return
-        Thread({
+        val thread = Thread({
             try { maintain(wait = false) }
             catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
             finally { maintenanceRunning.set(false) }
-        }, "worker-build-cleanup").apply { isDaemon = true; start() }
+        }, "worker-build-cleanup").apply { isDaemon = true }
+        try { startMaintenance(thread) }
+        catch (failure: Throwable) { maintenanceRunning.set(false); throw failure }
     }
 
     /** The sweep pin serializes accounting; the staging lock covers only snapshots and atomic renames.
      * Published manifests account immutable builds. Dependency homes are scanned once per dirty generation,
      * under their own pin, outside the staging lock. Active/unknown homes count conservatively. */
     internal fun maintain(at: Long = now(), wait: Boolean = true) {
+        // The request flag is reserved before Thread.start(), so a synchronous caller also drains
+        // requests that have not been scheduled yet, before it concludes maintenance is finished.
+        if (wait) check(awaitMaintenanceIdle(Long.MAX_VALUE))
         Files.createDirectories(root)
         val sweep = root.resolve("maintenance-sweep.lock")
         if (wait) locked(sweep, { null }, { Long.MAX_VALUE }) { maintainSweep(at) }
         else ProcessFilePin.tryLock(sweep)?.use { maintainSweep(at) }
+    }
+
+    /** After foreground users finish, wait until this instance has no pending filesystem work. */
+    internal fun awaitMaintenanceIdle(timeoutMs: Long = 10_000): Boolean {
+        require(timeoutMs >= 0)
+        val started = System.nanoTime()
+        val timeoutNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (maintenanceRunning.get()) {
+            checkMaintenanceActive()
+            if (System.nanoTime() - started >= timeoutNanos) return false
+            Thread.sleep(10)
+        }
+        return true
     }
 
     private fun <T> maintenanceLock(use: () -> T): T = locked(root.resolve("maintenance.lock"), { null }, { Long.MAX_VALUE }, use = use)
