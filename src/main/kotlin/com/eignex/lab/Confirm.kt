@@ -23,9 +23,8 @@ data class Flips(
     val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained).distinctBy { it.suite to it.problem }
 
     /**
-     * The flips a confirmation reruns: a solution or a proof gained or lost. An unproven objective that moved is left
-     * out: at a sweep's budget it moves with the machine's timing, both ways about equally, run after run, and
-     * rerunning dozens of them each sweep took as long as the sweep while confirming nothing.
+     * Solutions/proofs gained or lost, plus objective losses that persist against one retained baseline.
+     * A single unproved objective movement remains unconfirmed.
      */
     val confirmable: List<Problem> get() = (lost + gained + proofLost + proofGained + persistentObjectiveLost).distinctBy {
         it.suite to (it.benchCase?.attributes?.get("problem") ?: it.problem)
@@ -56,7 +55,7 @@ object Confirm {
             .groupBy({ it.first.suite to it.first.problem }, { if (it.second.rank > 0) 1.0 else 0.0 })
             .mapValues { (_, runs) -> runs.average() }
 
-    /** Feasibility keeps its historical majority rule; proof and quality use matched seed/repeat blocks.
+    /** Feasibility, proof and quality use a majority of matched seed/repeat blocks.
      * Missing/invalid blocks cannot vote, but remain in the denominator. Time never selects a transition.
      */
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
