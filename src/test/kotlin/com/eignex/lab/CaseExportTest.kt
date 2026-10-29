@@ -50,7 +50,7 @@ class CaseExportTest {
 
     @Test
     fun `the export has each case whole, its final witness and lab check included`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = experiment(config, store, 2)
         testApplication {
@@ -73,7 +73,7 @@ class CaseExportTest {
 
     @Test
     fun `the default cases response stays one JSON array of the same cases`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = experiment(config, store, 3)
         testApplication {
@@ -89,7 +89,7 @@ class CaseExportTest {
 
     @Test
     fun `many cases stream out across pages, each once and in order`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = experiment(config, store, 250)
         testApplication {
@@ -105,7 +105,7 @@ class CaseExportTest {
 
     @Test
     fun `a job with no cases exports nothing`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = store.create("plain", "main", listOf("true" to 1L))
         testApplication {
@@ -117,7 +117,7 @@ class CaseExportTest {
 
     @Test
     fun `the client prints the export and fetch saves it beside the job's files`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val store = Store(config.database)
         val id = experiment(config, store, 40)
         config.jobDir(id).resolve("job.log").toFile().writeText("log\n")

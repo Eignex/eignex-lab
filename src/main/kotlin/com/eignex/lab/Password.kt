@@ -69,6 +69,12 @@ enum class Admission { ADMIT, REFUSE, THROTTLE }
  * costs the lab machine next to nothing, so it cannot slow the cases running there. There is no limit across clients:
  * a stranger could use it up and keep everyone else from logging in.
  */
+/** Whether the API asks for the password: always in a running lab, [Disabled] only in tests. */
+sealed interface Auth {
+    data class Required(val hash: String) : Auth
+    data object Disabled : Auth
+}
+
 class PasswordGate(private val stored: String, private val clock: () -> Long = System::currentTimeMillis) {
     private val accepted: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val failures = ConcurrentHashMap<String, Window>()

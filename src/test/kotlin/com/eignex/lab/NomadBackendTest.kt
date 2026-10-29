@@ -895,6 +895,22 @@ class NomadBackendTest {
         assertEquals(manifest, register())
     }
 
+    @Test fun `an intent Nomad keeps refusing neither blocks later intents nor stays forever`() {
+        setup(sessionId = "colliding")
+        val colliding = session
+        control.jobs[colliding.nomadJobId] = buildJsonObject { putJsonObject("Meta") { put("lab_spec_hash", "other") } }
+        setup(sessionId = "second")
+        val backend = backend()
+
+        backend.reconcile()
+        assertTrue(control.jobs.containsKey(session.nomadJobId))
+        assertEquals(listOf(colliding.id), store.execution.intents().map { it.session })
+
+        repeat(NomadBackend.MAX_INTENT_ATTEMPTS - 1) { backend.reconcile() }
+        assertTrue(store.execution.intents().isEmpty())
+        assertTrue(store.execution.events(colliding.jobId).any { it.detail.startsWith("intent-abandoned:submit") })
+    }
+
     @Test fun `cancelled jobs retain stop intents until a restarted coordinator delivers them`() {
         val id = setup(); backend().reconcile(); register()
         store.requestCancel(id)
@@ -989,7 +1005,7 @@ class NomadBackendTest {
 
     @Test fun `ambiguous registration retries persisted identity and coordinator restart retains claims`() {
         val id = setup(); control.failAfterSubmit = true
-        assertFailsWith<IllegalStateException> { backend().reconcile() }
+        backend().reconcile()
         assertEquals(1, store.execution.intents().size)
         backend(Store(file)).reconcile(); assertEquals(1, control.submissions); assertTrue(store.execution.intents().isEmpty())
         assertEquals(manifest, register())

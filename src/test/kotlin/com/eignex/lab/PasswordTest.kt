@@ -89,7 +89,7 @@ class PasswordTest {
 
     @Test
     fun `every page and call, health included, needs the password`() {
-        val config = Config(dataDir = Files.createTempDirectory("lab"), passwordHash = Password.hash("secret"))
+        val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Required(Password.hash("secret")))
         val store = Store(config.database)
         testApplication {
             application { api(config, store, host) }

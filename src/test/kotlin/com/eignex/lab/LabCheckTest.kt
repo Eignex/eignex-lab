@@ -135,7 +135,7 @@ class LabCheckTest {
     @Test
     fun `a recheck job checks an ended job's XCSP3 claims with the official checker, solving nothing`() {
         val corpus = Files.createTempDirectory("corpus")
-        val config = Config(dataDir = Files.createTempDirectory("lab"), corpusDir = corpus, passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("lab"), corpusDir = corpus, auth = Auth.Disabled)
         val store = Store(config.dataDir.resolve("lab.db"))
         val model = File(corpus.toFile(), "xcsp3-test/COP/Circuit-4.xml").apply {
             parentFile.mkdirs()

@@ -31,7 +31,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 class CaptureArchivesTest {
     private val temp: Path = Files.createTempDirectory("archives")
-    private val config = Config(dataDir = temp.resolve("lab"), passwordHash = null)
+    private val config = Config(dataDir = temp.resolve("lab"), auth = Auth.Disabled)
     private val store = Store(config.dataDir.createDirectories().resolve("lab.db"))
     private val sample = checkNotNull(javaClass.getResource("/compilation/tasks.log")).readText()
     private val profile = "evidence/returned-files/cases/0/profile-a"

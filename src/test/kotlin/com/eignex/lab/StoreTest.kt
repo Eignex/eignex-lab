@@ -153,6 +153,17 @@ class StoreTest {
     }
 
     @Test
+    fun `a cancel that lands before the job finishes is not overwritten by its finish`() {
+        val store = store()
+        val id = store.create("a", "main", listOf("true" to 10L))
+        store.startForTest()
+        assertEquals(CancelOutcome.CANCELLED, store.requestCancel(id))
+
+        assertEquals(0, store.finish(id, Status.DONE))
+        assertEquals(Status.CANCELLED, store.job(id)!!.status)
+    }
+
+    @Test
     fun `a job's clock stops while it waits in the queue`() {
         val store = store()
         val id = store.create("a", "main", listOf("true" to 10L))

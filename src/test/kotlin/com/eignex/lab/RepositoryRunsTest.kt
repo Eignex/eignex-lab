@@ -83,7 +83,7 @@ class RepositoryRunsTest {
 
     @Test
     fun `submission rejects a non Eignex repository before any source is fetched`() = testApplication {
-        val config = Config(dataDir = Files.createTempDirectory("repository api"), passwordHash = null)
+        val config = Config(dataDir = Files.createTempDirectory("repository api"), auth = Auth.Disabled)
         val store = Store(config.database)
         application { api(config, store, HostReport("test", 4, "java")) }
 

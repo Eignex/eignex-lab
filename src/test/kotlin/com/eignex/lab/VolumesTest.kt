@@ -27,7 +27,7 @@ class VolumesTest {
         dataDir = Path("/Users/lab/eignex-lab-data"),
         jobsDir = root.resolve("Ros/eignex-lab/jobs"),
         corpusDir = root.resolve("Ros/eignex-lab/corpus"),
-        passwordHash = null,
+        auth = Auth.Disabled,
         volumesRoot = root,
         volumeAccess = answers,
     )
@@ -41,8 +41,8 @@ class VolumesTest {
     fun `job directories live under LAB_JOBS, by default the data directory's jobs`() {
         val data = Path("/tmp/lab-data")
 
-        assertEquals(Path("/tmp/lab-data/jobs/12"), Config(dataDir = data, passwordHash = null).jobDir(12))
-        assertEquals(Path("/Volumes/Ros/jobs/12"), Config(dataDir = data, jobsDir = Path("/Volumes/Ros/jobs"), passwordHash = null).jobDir(12))
+        assertEquals(Path("/tmp/lab-data/jobs/12"), Config(dataDir = data, auth = Auth.Disabled).jobDir(12))
+        assertEquals(Path("/Volumes/Ros/jobs/12"), Config(dataDir = data, jobsDir = Path("/Volumes/Ros/jobs"), auth = Auth.Disabled).jobDir(12))
     }
 
     @Test
@@ -80,7 +80,7 @@ class VolumesTest {
 
     @Test
     fun `everything on one disk is one volume, held by its free space alone`() {
-        val config = Config(dataDir = Path("/Users/lab/data"), corpusDir = Path("/Users/lab/corpus"), passwordHash = null, volumeAccess = answers)
+        val config = Config(dataDir = Path("/Users/lab/data"), corpusDir = Path("/Users/lab/corpus"), auth = Auth.Disabled, volumeAccess = answers)
         val volumes = Volumes.report(config, space(100 * gb, 0)) { true }
 
         assertEquals(1, volumes.size)
@@ -169,7 +169,7 @@ class VolumesTest {
             if (dir == corpus && corpusRefused) throw AccessDeniedException(dir.toString(), null, "Operation not permitted")
             Volumes.probe(label, dir)
         }
-        val config = Config(dataDir = base.resolve("data"), jobsDir = jobs, corpusDir = corpus, passwordHash = null, minFreeBytes = 0,
+        val config = Config(dataDir = base.resolve("data"), jobsDir = jobs, corpusDir = corpus, auth = Auth.Disabled, minFreeBytes = 0,
             dockerCleanupDays = 0, volumeAccess = access)
     }
 

@@ -360,6 +360,13 @@ object Experiments {
         require(spec.isAnalysis || spec.isProfile || spec.bench != null) { "execution requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated" }
     }
 
+    /** Refuse a submitted experiment or schedule name the lab would read as a scheduled run (`@`) or a confirmation
+     *  ([Confirm.SUFFIX]): those are the names the lab gives its own jobs, and they change how a job is placed. */
+    fun requirePlainName(name: String) {
+        require(name.isNotBlank()) { "name is required" }
+        require('@' !in name && '~' !in name) { "name must not contain '@' or '~': the lab reserves them for scheduled runs and confirmations" }
+    }
+
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
