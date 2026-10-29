@@ -41,6 +41,9 @@ dependencies {
     implementation("com.github.luben:zstd-jni:1.5.7-24")
     // The official XCSP3 solution checker (MIT), which the lab runs over solver XCSP3 witnesses ([com.eignex.lab.checker]).
     implementation(project(":xcsp3-tools"))
+    implementation("org.choco-solver:choco-parsers:5.0.1") {
+        exclude(group = "org.xcsp", module = "xcsp3-tools")
+    }
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation("io.ktor:ktor-server-test-host:$ktor")
     testImplementation(gradleTestKit())
