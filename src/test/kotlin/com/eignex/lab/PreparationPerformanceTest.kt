@@ -109,9 +109,12 @@ class PreparationPerformanceTest {
             repeat(2) { pass ->
                 val beforePuts = uploadPuts.get()
                 val warm = prepare("warm-${pass + 1}")
-                for (cache in listOf("input", "build", "archive")) {
+                assertEquals("bypass", warm.caches["input"]?.outcome, "a verified build must bypass source staging")
+                assertEquals("build-hit", warm.caches["input"]?.reason)
+                assertEquals(0, warm.caches["input"]?.checkedFiles, "source acquisition performed verification work")
+                for (cache in listOf("input", "prepared-input", "build", "archive")) {
                     val event = assertNotNull(warm.caches[cache], "missing $cache observation")
-                    assertEquals("hit", event.outcome, "$cache must be a real warm hit")
+                    assertEquals(if (cache == "input") "bypass" else "hit", event.outcome, "$cache must reuse prepared work")
                     assertEquals(0, event.hashedFiles, "$cache unexpectedly rehashed file contents")
                     assertEquals(0L, event.hashedBytes, "$cache unexpectedly reread file contents")
                     assertEquals(0, event.misses, "$cache had an earlier miss hidden by a later hit")

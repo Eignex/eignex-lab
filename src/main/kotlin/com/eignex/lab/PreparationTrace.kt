@@ -81,6 +81,7 @@ class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {
             "coordinator-present" to "identical artifact already on coordinator", "unsupported" to "reuse unsupported",
             "lock-busy" to "cache busy", "identity-changed" to "identity changed", "local-build" to "copied verified local build",
             "partial-upload" to "resuming partial upload", "not-reusable" to "artifact is not reusable",
+            "build-hit" to "verified build makes source acquisition unnecessary",
             "receipt-missing" to "missing verification receipt rebuilt", "receipt-rebuilt" to "missing or stale verification receipt rebuilt")
         val labels: Map<String, String> = linkedMapOf("preparing" to "Preparing", "inputs" to "Verifying inputs", "download" to "Downloading inputs",
             "build-cache" to "Checking build cache", "cache-cleanup" to "Cleaning build cache", "checkout" to "Checking out source", "compiler-wait" to "Waiting for compiler",
