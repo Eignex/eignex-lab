@@ -4,7 +4,7 @@ set -euo pipefail
 mkdir -p "$PWD/build/dimacs-controls"
 scratch=$(mktemp -d "$PWD/build/dimacs-controls/run-XXXXXX")
 classpath="$PWD/build/install/eignex-lab/lib/*"
-run() { java -Xmx256m -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -cp "$classpath" com.eignex.lab.checker.DimacsCheckBenchKt "$@"; }
+run() { java -Xmx256m -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -cp "$classpath" com.eignex.lab.DimacsCheckBenchKt "$@"; }
 model=$'p cnf 2 2\n1 0\n2 0\n'
 resource=$'p cnf 1000001 0\n'
 model_sha=$(printf '%s' "$model" | sha256sum | cut -d ' ' -f1)
