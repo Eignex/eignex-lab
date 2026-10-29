@@ -18,11 +18,15 @@ class WarmBuildSourceTest {
                 acquisitions++; pinned = true
                 try { consume(source) } finally { pinned = false }
             }
-            val cold = cache.withPreparedSource(bundle, budget, emptyMap(), { null }, { 10000 }, source = ::acquire) {
+            val coldTrace = PreparationTrace()
+            val cold = cache.withPreparedSource(bundle, budget, emptyMap(), { null }, { 10000 }, coldTrace, source = ::acquire) {
                 assertFalse(pinned, "source pin should be released before compilation/use")
                 assertEquals("trusted", Files.readString(it.resolve("code"))); it
             }
             assertEquals(1, acquisitions)
+            assertEquals(1, coldTrace.snapshot().caches.getValue("build").misses)
+            assertEquals("absent", coldTrace.snapshot().caches.getValue("build").reason)
+            assertEquals(0L, coldTrace.snapshot().caches.getValue("build").waitingMs)
             Files.delete(source.resolve("code")); Files.delete(source)
             val trace = PreparationTrace()
             WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(root.resolve("unused.sock")))
@@ -33,6 +37,8 @@ class WarmBuildSourceTest {
             assertEquals("bypass", trace.snapshot().caches["input"]?.outcome)
             assertEquals("build-hit", trace.snapshot().caches["input"]?.reason)
             assertEquals(0, trace.snapshot().caches["build"]?.hashedFiles)
+            assertEquals(1, trace.snapshot().caches.getValue("build").hits)
+            assertEquals(0, trace.snapshot().caches.getValue("build").misses)
             assertEquals(1, acquisitions)
             val file = cold.resolve("code"); val modified = Files.getLastModifiedTime(file)
             Files.writeString(file, "corrupt"); Files.setLastModifiedTime(file, modified)

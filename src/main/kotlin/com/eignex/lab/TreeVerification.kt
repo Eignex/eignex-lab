@@ -21,7 +21,8 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     }
     @Serializable internal data class Written(val file: InputFile, val stamp: Stamp)
     @Serializable private data class Receipt(val version: Int, val rootKey: String?, val files: List<Written>)
-    internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0)
+    internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0,
+                              var verificationNanos: Long = 0)
     val stats = Stats()
     private fun checksum(path: Path, checkActive: () -> Unit, bytes: Long): String {
         stats.hashedFiles++; stats.hashedBytes = Math.addExact(stats.hashedBytes, bytes)
@@ -55,6 +56,17 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
      * then record the new private inodes. No hard links, and setup changes still require fresh checksums. */
     fun copy(source: Path, sourceReceipt: Path, destination: Path, receipt: Path,
              checkActive: () -> Unit = {}, include: (Path) -> Boolean = { true }, copy: () -> Unit) {
+        val started = System.nanoTime(); var copyingNanos = 0L
+        try {
+            copyTree(source, sourceReceipt, destination, receipt, checkActive, include) {
+                val copyingAt = System.nanoTime()
+                try { copy() } finally { copyingNanos = System.nanoTime() - copyingAt }
+            }
+        } finally { stats.verificationNanos += (System.nanoTime() - started - copyingNanos).coerceAtLeast(0) }
+    }
+
+    private fun copyTree(source: Path, sourceReceipt: Path, destination: Path, receipt: Path,
+                         checkActive: () -> Unit, include: (Path) -> Boolean, copy: () -> Unit) {
         val proof = if (reliable(source)) previous(source, sourceReceipt)?.let { it.copy(files = it.files.filter { file -> include(Path.of(file.file.path)) }) } else null
         fun unchanged() {
             for (entry in proof?.files.orEmpty()) {
@@ -87,6 +99,13 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
 
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},
               exactExecutables: Boolean = false, removeUndeclared: Boolean = false, allowUndeclared: Boolean = false): Boolean {
+        val started = System.nanoTime()
+        try { return validTree(tree, expected, receipt, checkActive, exactExecutables, removeUndeclared, allowUndeclared) }
+        finally { stats.verificationNanos += System.nanoTime() - started }
+    }
+
+    private fun validTree(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit,
+                          exactExecutables: Boolean, removeUndeclared: Boolean, allowUndeclared: Boolean): Boolean {
         checkActive()
         if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return false
         // Coarse timestamp filesystems (for example HFS+/FAT) cannot distinguish a quick write/mtime restore.

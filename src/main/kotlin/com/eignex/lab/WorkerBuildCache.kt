@@ -20,16 +20,15 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         prepareFrom(bundle, { consume -> consume(source) }, budget, environment, remainingRunMs, trace, remainingLeaseMs)
 
     private fun prepareFrom(bundle: WorkerBundle, source: ((Path) -> Unit) -> Unit, budget: ResourceBudget, environment: Map<String, String>,
-                            remainingRunMs: () -> Long?, trace: PreparationTrace, remainingLeaseMs: () -> Long): Path {
+                            remainingRunMs: () -> Long?, trace: PreparationTrace, remainingLeaseMs: () -> Long, pinWaitingMs: Long = 0): Path {
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw ProfileRunTimeout() }
         checkRun()
         val build = requireNotNull(bundle.build)
         val identity = identity(bundle, budget)
         Files.createDirectories(root)
         val destination = root.resolve(identity)
-        val waitingAt = System.nanoTime()
-        return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs) {
-            val waitingMs = (System.nanoTime() - waitingAt) / 1_000_000
+        var waitingMs = 0L
+        return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
             trace.step("cache-cleanup") { maintain() }
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
@@ -38,7 +37,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             val verificationAt = System.nanoTime()
             val hit = trace.step("build-cache") { valid(destination, identity, ::checkRun, verification) }
             trace.cache("build", if (hit) "hit" else "miss", if (hit) (if (verification.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
-                verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs, checkedFiles = verification.stats.checkedFiles,
+                verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs + pinWaitingMs, checkedFiles = verification.stats.checkedFiles,
                 hashedFiles = verification.stats.hashedFiles, hashedBytes = verification.stats.hashedBytes)
             if (hit) {
                 Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
@@ -135,13 +134,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                                        source: ((Path) -> Unit) -> Unit, use: (Path) -> T): T {
         Files.createDirectories(root)
         return trace.step("build-cache") {
-            val waitingAt = System.nanoTime()
-            locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs) {
-                val waitingMs = (System.nanoTime() - waitingAt) / 1_000_000
+            var waitingMs = 0L
+            locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
                 var acquired = false
-                val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs)
-                // Report only new work here; trace counters aggregate repeated cache observations.
-                if (waitingMs >= 50) trace.cache("build", trace.snapshot().caches["build"]?.outcome ?: "hit", "lock-busy", waitingMs = waitingMs)
+                val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs, waitingMs)
                 if (!acquired) trace.cache("input", "bypass", "build-hit")
                 use(tree)
             }
@@ -226,13 +222,16 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
     }
 
-    private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, use: () -> T): T {
+    private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, waited: (Long) -> Unit = {}, use: () -> T): T {
+        var waitingNanos = 0L
         while (true) {
             if (run()?.let { it <= 0 } == true) throw ProfileRunTimeout()
             require(lease() > 0) { "build lease expired while waiting for cache" }
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
-            ProcessFilePin.tryLock(path)?.use { return use() }
+            ProcessFilePin.tryLock(path)?.use { waited(waitingNanos / 1_000_000); return use() }
+            val waitingAt = System.nanoTime()
             Thread.sleep(50)
+            waitingNanos += System.nanoTime() - waitingAt
         }
     }
 

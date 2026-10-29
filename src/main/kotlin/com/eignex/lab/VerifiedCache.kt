@@ -40,45 +40,51 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
         val key = inputCacheKey(bundle, runtimeOnly)
         val destination = root.resolve(key)
         val receipt = root.resolve("$key.verified.json")
-        val waitingAt = System.nanoTime()
+        var waitingNanos = 0L
         // ProcessFilePin keeps a same-process waiter from opening and then closing another descriptor
         // for a held POSIX lock (which would release the owner's cross-process lock).
         while (true) {
             checkActive()
             val owner = ProcessFilePin.tryLock(root.resolve("$key.lock"))
-            if (owner == null) { Thread.sleep(10); continue }
+            if (owner == null) {
+                val waitingAt = System.nanoTime(); Thread.sleep(10)
+                waitingNanos += System.nanoTime() - waitingAt; continue
+            }
             owner.use {
-            val waitingMs = (System.nanoTime() - waitingAt) / 1_000_000
+            val waitingMs = waitingNanos / 1_000_000
             val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
-            val verificationAt = System.nanoTime()
             checkActive()
             val validation = TreeVerification()
             val valid = validation.valid(destination, included, receipt, checkActive)
-            trace.cache(cacheName, if (valid) "hit" else "miss", if (valid) (if (validation.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
-                verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs,
-                bytes = included.sumOf { it.bytes }, files = included.size,
-                checkedFiles = validation.stats.checkedFiles, hashedFiles = validation.stats.hashedFiles, hashedBytes = validation.stats.hashedBytes)
-            if (valid) return destination
+            val localVerification = TreeVerification()
+            fun observed(outcome: String, reason: String) {
+                trace.cache(cacheName, outcome, reason,
+                    verificationMs = (validation.stats.verificationNanos + localVerification.stats.verificationNanos) / 1_000_000,
+                    waitingMs = waitingMs, bytes = included.sumOf { it.bytes }, files = included.size,
+                    checkedFiles = validation.stats.checkedFiles + localVerification.stats.checkedFiles,
+                    hashedFiles = validation.stats.hashedFiles + localVerification.stats.hashedFiles,
+                    hashedBytes = validation.stats.hashedBytes + localVerification.stats.hashedBytes)
+            }
+            if (valid) {
+                observed("hit", if (validation.stats.hashedFiles > 0) "receipt-rebuilt" else "verified")
+                return destination
+            }
             Files.deleteIfExists(receipt)
             if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
             val staging = Files.createTempDirectory(root, "$key-")
             val tree = staging.resolve("tree")
             try {
-                val localStarted = System.nanoTime()
-                val localVerification = TreeVerification()
                 if (seed?.invoke(tree, receipt, localVerification) == true || runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
                     require(localVerification.valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
                     checkActive(); Files.move(tree, destination, ATOMIC_MOVE)
-                    trace.cache(cacheName, "miss", "verified-local", verificationMs = (System.nanoTime() - localStarted) / 1_000_000,
-                        bytes = included.sumOf { it.bytes }, files = included.size,
-                        checkedFiles = localVerification.stats.checkedFiles, hashedFiles = localVerification.stats.hashedFiles, hashedBytes = localVerification.stats.hashedBytes)
+                    observed("miss", "verified-local")
                     println("worker input cache: materialized verified local files=${included.size}")
                     return destination
                 }
                 Files.createDirectory(tree)
                 val expected = bundle.files.associateBy { it.path }; require(expected.size == bundle.files.size)
                 val seen = mutableSetOf<String>()
-                val verifier = TreeVerification(); val written = mutableListOf<TreeVerification.Written>()
+                val verifier = localVerification; val written = mutableListOf<TreeVerification.Written>()
                 val digest = MessageDigest.getInstance("SHA-256")
                 download().use { input ->
                 val bounded = object : FilterInputStream(input) {
@@ -111,10 +117,13 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                             while (true) { checkActive(); val n = zip.read(buffer); if (n < 0) break; size += n; require(size <= file.bytes) { "expanded file exceeds declared size" }; output.write(buffer, 0, n); fileDigest.update(buffer, 0, n) }
                             require(size == file.bytes)
                         }
+                        verifier.stats.hashedFiles++; verifier.stats.hashedBytes += file.bytes
                         require(fileDigest.digest().hex() == file.sha256) { "file checksum mismatch" }
                         if (keep) {
                             if (file.executable) require(target.toFile().setExecutable(true, true))
-                            written += verifier.written(target, file)
+                            val checkingAt = System.nanoTime()
+                            try { written += verifier.written(target, file) }
+                            finally { verifier.stats.verificationNanos += System.nanoTime() - checkingAt }
                         }
                     }
                     // ZipInputStream stops at the central directory. Drain the entire raw archive, including its
@@ -124,9 +133,12 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 } }
                 require(digest.digest().hex() == bundle.sha256) { "archive checksum mismatch" }
                 require(seen == expected.keys) { "archive is incomplete" }
-                verifier.record(tree, written, receipt, checkActive)
+                val recordingAt = System.nanoTime()
+                try { verifier.record(tree, written, receipt, checkActive) }
+                finally { verifier.stats.verificationNanos += System.nanoTime() - recordingAt }
                 checkActive()
                 Files.move(tree, destination, ATOMIC_MOVE)
+                observed("miss", if (present) "verification-failed" else "absent")
                 return destination
             } finally { remove(staging) }
         }

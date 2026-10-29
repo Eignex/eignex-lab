@@ -120,4 +120,20 @@ class TreeVerificationTest {
         assertFalse(Files.exists(root.resolve("changing.json")))
     }
 
+    @Test fun `copy verification timing excludes time inside the trusted filesystem copy`() {
+        TreeVerification().capture(tree, receipt)
+        val copy = TreeVerification(); var copyingNanos = 0L
+        val started = System.nanoTime()
+        copy.copy(tree, receipt, root.resolve("timed"), root.resolve("timed.json")) {
+            val copyingAt = System.nanoTime()
+            Thread.sleep(25)
+            WorkerTrees.copy(tree, root.resolve("timed")) {}
+            copyingNanos = System.nanoTime() - copyingAt
+        }
+        val elapsed = System.nanoTime() - started
+        assertTrue(copy.stats.verificationNanos > 0)
+        assertTrue(copy.stats.verificationNanos <= elapsed - copyingNanos,
+            "copy execution was incorrectly counted as verification")
+    }
+
 }
