@@ -44,10 +44,10 @@ internal class WorkerBuildStaging(private val root: Path) {
     fun reapLocked(at: Long): List<Path> {
         val garbage = mutableListOf<Path>()
         Files.list(root).use { paths -> paths.forEach { path ->
-            if (!Files.isDirectory(path, NOFOLLOW_LINKS)) return@forEach
             val name = path.fileName.toString()
+            if (!name.startsWith(".build-trash-") && !name.matches(Regex("\\.build-[0-9]+"))) return@forEach
+            if (!Files.isDirectory(path, NOFOLLOW_LINKS)) return@forEach
             if (name.startsWith(".build-trash-")) { garbage.add(path); return@forEach }
-            if (!name.matches(Regex("\\.build-[0-9]+"))) return@forEach
             val owner = path.resolve("owner.lock")
             val legacy = !Files.exists(owner, NOFOLLOW_LINKS)
             if (legacy && at - Files.getLastModifiedTime(path, NOFOLLOW_LINKS).toMillis() < 24L*60*60*1000) return@forEach

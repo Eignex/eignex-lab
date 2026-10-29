@@ -33,7 +33,6 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         val destination = root.resolve(identity)
         var waitingMs = 0L
         return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
-            trace.step("cache-cleanup") { requestMaintenance() }
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
             val verification = TreeVerification()
@@ -44,12 +43,15 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs + pinWaitingMs, checkedFiles = verification.stats.checkedFiles,
                 hashedFiles = verification.stats.hashedFiles, hashedBytes = verification.stats.hashedBytes)
             if (hit) {
+                requestMaintenance()
                 Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
                 return@locked destination.resolve("tree")
             }
             if (Files.exists(destination, NOFOLLOW_LINKS)) delete(destination)
             val storage = WorkerBuildStaging(root)
             val lease = trace.step("cache-cleanup") { storage.create(::checkRun) }
+            // Create and pin staging before our background sweep can take its discovery lock.
+            requestMaintenance()
             val staging = lease.directory
             try {
                 val tree = staging.resolve("tree")

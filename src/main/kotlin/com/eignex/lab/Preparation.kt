@@ -99,11 +99,12 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val spec = manifest.experiment
         val bench = spec.bench
         val armPlans = linkedMapOf<String, com.eignex.lab.bench.BenchPlan>()
+        val inputDigests = BenchInputDigests(::checkActive)
         var descriptor: com.eignex.lab.bench.BenchDescriptor? = replay?.descriptor
         if (replay != null) {
             armPlans.putAll(replay.plans)
             for (arm in manifest.arms) for (case in armPlans.getValue(arm.arm.label).cases) {
-                val current = BenchRuns.pinned(case, prepared.getValue(arm.sha), corpus)
+                val current = BenchRuns.pinned(case, prepared.getValue(arm.sha), corpus, digests = inputDigests)
                 require(current.attributes["labInputDigest"] == case.attributes["labInputDigest"]) { "replay input bytes changed" }
             }
         } else if (bench != null) {
@@ -122,7 +123,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), planFile)
                 val plan = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchPlan>(Files.readString(planFile))
                 BenchRuns.resources(plan)
-                armPlans[arm.arm.label] = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, BenchRuns.runtime(tree, bench)) })
+                val runtime = BenchRuns.runtime(tree, bench)
+                armPlans[arm.arm.label] = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, runtime, inputDigests) })
             }
             val first = armPlans.values.firstOrNull() ?: error("a bench experiment needs at least one repository arm")
             val canonical = bench.frozenCases.ifEmpty { first.cases }
@@ -145,6 +147,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             benchPlan = benchPlan.copy(cases = benchPlan.cases.filter { BenchRuns.key(it) in keys })
         } else require(selections == raw)
 
+        println("worker selection verification: hashedFiles=${inputDigests.hashedFiles} reusedFiles=${inputDigests.reusedFiles} hashedBytes=${inputDigests.hashedBytes}")
         val features = emptyList<ProblemFeatures>()
         val artifacts = mutableMapOf<String, String>()
         fun transfer(file: Path): String = trace.step("upload") { upload(file) }

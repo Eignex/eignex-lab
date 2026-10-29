@@ -122,6 +122,12 @@ Top-level `measurement` is retained only for historical records and is refused o
 Set `bench.sourceValidation=true` for independent witness checking. A checked witness does not certify
 optimality. Only an invalid verdict withdraws the solver claim; unsupported or failed checks leave it unchecked.
 `bench.runTimeoutSec` optionally bounds active preparation and execution time; queue time is excluded.
+During one preparation, repeated compiler/include files reuse checksums only while inode, size, mtime and
+ctime remain unchanged on a supported filesystem. Directory membership is walked again for every input;
+changed files and unsupported filesystems take the checksum path. Reuse ends with that preparation.
+The worker logs `worker selection verification` counters for hashed/reused files and hashed bytes.
+Build staging is pinned before background cleanup begins, and cleanup filters unrelated cache entries by
+name before reading their metadata.
 
 Repository-specific recipes and named workload sets live with their consumers. Before removing a legacy
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab

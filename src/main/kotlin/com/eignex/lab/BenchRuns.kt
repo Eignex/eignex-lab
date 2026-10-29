@@ -76,14 +76,15 @@ internal object BenchRuns {
         })
     }
 
-    fun pinned(case: BenchCase, source: Path, corpus: Path, runtime: Runtime = Runtime()): BenchCase {
-        validateInputs(case, source, corpus)
+    fun pinned(case: BenchCase, source: Path, corpus: Path, runtime: Runtime = Runtime(), digests: BenchInputDigests = BenchInputDigests()): BenchCase {
+        validateInputs(case, source, corpus, digests)
         val inventory = case.inputs.flatMap { input ->
-            val root = (if (input.root == BenchInputRoot.SOURCE) source else corpus).resolve(input.path)
+            val base = if (input.root == BenchInputRoot.SOURCE) source else corpus
+            val root = base.resolve(input.path)
             val files = if (Files.isDirectory(root)) Files.walk(root).use { it.sorted().toList() } else listOf(root)
             files.map { file ->
                 require(!Files.isSymbolicLink(file)) { "bench input contains a link" }
-                "${input.root}/${input.path}/${root.relativize(file)}:" + if (Files.isDirectory(file)) "directory" else hashFile(file)
+                "${input.root}/${input.path}/${root.relativize(file)}:" + if (Files.isDirectory(file)) "directory" else digests.checksum(base, file)
             }
         }
         return case.copy(resources = case.resources.copy(requiredTags = case.resources.requiredTags + runtime.requiredTags),
@@ -137,12 +138,12 @@ internal object BenchRuns {
     private fun portableInput(input: BenchInput): String =
         (if (input.root == BenchInputRoot.CORPUS) "lab-corpus/" else "lab-source/") + input.path
 
-    fun validateInputs(case: BenchCase, source: Path, corpus: Path) {
+    fun validateInputs(case: BenchCase, source: Path, corpus: Path, digests: BenchInputDigests = BenchInputDigests()) {
         for (input in case.inputs) {
             val root = if (input.root == BenchInputRoot.SOURCE) source else corpus
             val path = root.resolve(safeRelative(input.path))
             require(path.toRealPath().startsWith(root.toRealPath())) { "bench input escapes its root" }
-            input.sha256?.let { require(Files.isRegularFile(path) && hashFile(path) == it) { "bench input checksum mismatch" } }
+            input.sha256?.let { require(Files.isRegularFile(path) && digests.checksum(root, path) == it) { "bench input checksum mismatch" } }
         }
     }
 
