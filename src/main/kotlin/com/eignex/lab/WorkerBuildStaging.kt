@@ -37,7 +37,7 @@ internal class WorkerBuildStaging(private val root: Path) {
                 }
             }
         } finally { lease.close() }
-        trash?.let { try { deleteTree(it) } catch (_: java.nio.file.NoSuchFileException) { } }
+        trash?.let(::deleteCacheGarbage)
     }
     /** Caller holds maintenance.lock. Return tombstones for deletion outside that lock. Older workers
      * have no pin: retain their staging longer than the maximum two-hour preparation allowance. */
