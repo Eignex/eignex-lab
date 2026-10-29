@@ -7,10 +7,6 @@ import java.util.concurrent.TimeUnit
 
 /** Private mutable worktrees keep the shared verified distribution immutable. Prefer filesystem clones where supported. */
 internal object WorkerTrees {
-    fun runtimeOnly(spec: ExperimentSpec): Boolean = spec.repository == "Eignex/klause" && spec.bench == null &&
-        spec.script == null && spec.scriptFile == null && spec.profile?.script == null &&
-        spec.profile?.buildTasks.orEmpty().isEmpty() && spec.profile?.classpath.orEmpty().isEmpty()
-
     fun runtimePath(path: Path): Boolean {
         val parts = path.map { it.toString() }
         return !((parts.size >= 2 && parts[0] == "build" && parts[1] in compilerScratch) ||

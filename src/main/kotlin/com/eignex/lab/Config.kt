@@ -10,8 +10,8 @@ data class Config(
     val dataDir: Path = Path(env("LAB_DATA", "${System.getProperty("user.home")}/eignex-lab-data")),
     /** Each job's files, one directory per job: on a volume of its own, such as an external drive, when set. */
     val jobsDir: Path = Path(env("LAB_JOBS", "$dataDir/jobs")),
-    /** The klause repository to fetch refs from. */
-    val repoUrl: String = env("LAB_REPO", "https://github.com/Eignex/klause.git"),
+    /** Legacy repository URL, used only to render historical result links. */
+    val repoUrl: String = env("LAB_REPO", ""),
     /**
      * The hash of the password every page and API call needs ([Password]); the one the lab ships with unless
      * `LAB_PASSWORD_HASH` gives another. Null turns the check off, which only a test does.
@@ -20,14 +20,14 @@ data class Config(
     /** The GitHub users whose branches the lab builds, besides `main` ([Trust]). */
     val trustedUsers: Set<String> = env("LAB_TRUSTED_USERS", "rasros").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
     /** The lab's own launcher, which a reference arm's cases run ([com.eignex.lab.reference.ReferenceCli]): the
-     *  current release, so a case needs no klause build. */
+     *  current release, independent of any consumer build. */
     val launcher: String = env("LAB_LAUNCHER", "$dataDir/releases/current/bin/eignex-lab"),
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
-    val corpusDir: Path = Path(env("LAB_CORPUS", "${System.getProperty("user.home")}/.cache/klause-bench/corpus")),
+    val corpusDir: Path = Path(env("LAB_CORPUS", "${System.getProperty("user.home")}/.cache/eignex-lab/corpus")),
     val port: Int = env("LAB_PORT", "8420").toInt(),
-    /** JDK the klause build and CLI run on. */
+    /** Default JDK for committed build and launch recipes. */
     val javaHome: String = env("LAB_JAVA_HOME", System.getenv("JAVA_HOME") ?: ""),
-    /** JVM flags for every klause-cli solve a command starts. */
+    /** JVM flags for lab-owned reference solver processes. */
     val solveJavaOpts: String = env("LAB_SOLVE_JAVA_OPTS", "-Xmx3g -XX:+UseSerialGC"),
     /** The most cases one job may run at once, whatever it asks for: each holds its own solve heap, so memory bounds
      *  this, where [cores] bounds the threads. */

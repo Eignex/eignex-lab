@@ -23,7 +23,7 @@ data class Outcome(
     val timeToBestMs: Long?,
     val budgetMs: Long,
     val error: Boolean,
-    /** Why klause declined the model, when it did: the run decided nothing, and nothing went wrong. */
+    /** Why solver declined the model, when it did: the run decided nothing, and nothing went wrong. */
     val unsupported: String? = null,
     /** Why the problem never reached the solver: it did not compile or parse. */
     val loadError: String? = null,
@@ -31,6 +31,7 @@ data class Outcome(
     val solveTimeMs: Long? = null,
     /** The solve's wall-clock time, as the bench timed its subprocess; null in records from before it was kept. */
     val elapsedMs: Long? = null,
+    val processors: Int? = null,
     /** The check's verdict: the lab's ([com.eignex.lab.checker.LabCheck.state]) where it checked, else the bench's
      *  `sourceValidation` statistic (`valid`, `invalid`, `unknown`). */
     val sourceValidation: String? = null,
@@ -38,7 +39,7 @@ data class Outcome(
     val floatApproximation: Boolean = false,
     /** The record's `validationPolicy`: how its claims were judged, `reported-result-v1` for the solver's own report. */
     val validationPolicy: String? = null,
-    /** How far a Klause record's solution claim was checked ([SourceValidation.check]); null for another solver's. */
+    /** How far a solver record's solution claim was checked ([SourceValidation.check]); null for another solver's. */
     val witness: WitnessCheck? = null,
     /** Whether the solver claimed a solution, as it reported it before any check withdrew the claim. */
     val claimedSolution: Boolean = false,
@@ -108,8 +109,7 @@ data class Outcome(
                 sourceValidationReason = reason,
                 floatApproximation = approximation,
                 validationPolicy = policy,
-                witness = if (field("solver")?.content != KLAUSE) null
-                    else if (lab != null) SourceValidation.labCheck(validation) else SourceValidation.check(validation, policy, reason),
+                witness = if (lab != null) SourceValidation.labCheck(validation) else if (policy != null || fields.containsKey("finalWitness")) SourceValidation.check(validation, policy, reason) else null,
                 claimedSolution = reportedFeasible == true || stat(fields, "reportedFeasible") == "true",
                 reportedObjective = stat(fields, "reportedObjective")?.takeUnless { it == "null" },
                 reportedProven = stat(fields, "reportedProven") == "true",
@@ -117,6 +117,7 @@ data class Outcome(
                 solveTimeMs = stat(fields, "solveTime")?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
                     ?.let { (it * MS_PER_S).toLong() },
                 elapsedMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 },
+                processors = field("processors")?.content?.toIntOrNull()?.takeIf { it > 0 },
             )
         }
 
@@ -128,7 +129,6 @@ data class Outcome(
             (fields["feasible"] as? JsonPrimitive)?.booleanOrNull == null && stat(fields, "reportedFeasible") in setOf("true", "false")
 
         private const val MS_PER_S = 1000.0
-        private const val KLAUSE = "klause"
 
         private fun stat(fields: JsonObject, name: String): String? =
             ((fields["stats"] as? JsonObject)?.get(name) as? JsonPrimitive)?.content
@@ -153,7 +153,7 @@ data class ArmSummary(
     val proven: Int,
     /** Solver crashes and problems that failed to load. */
     val errors: Int,
-    /** Problems klause declined. */
+    /** Problems solver declined. */
     val unsupported: Int,
     /** Pairwise Borda points against every other arm, over the (problem, seed) pairs both ran. */
     val score: Double,
@@ -166,7 +166,7 @@ data class ArmSummary(
     val missingProvenance: Int = 0,
     /** Its cases from an instrumented job ([ExperimentSpec.instrumented]), whose times are no runtime measurement. */
     val instrumented: Int = 0,
-    /** Its Klause solution claims by how far each was checked against its source ([WitnessCheck]). */
+    /** Its solver solution claims by how far each was checked against its source ([WitnessCheck]). */
     val witnesses: Map<WitnessCheck, Int> = emptyMap(),
     /** Contests (problem, seed, repeat) where its record's validation policy differs from the first arm's. */
     val validationMismatches: Int = 0,

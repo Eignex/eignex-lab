@@ -17,7 +17,7 @@ class ProfileRunsTest {
         try {
             val source = root.resolve("Main.java")
             source.writeText("""
-                package com.eignex.demo;
+                package org.example.demo;
                 public class Main {
                     public static void main(String[] args) throws Exception {
                         java.nio.file.Files.writeString(java.nio.file.Path.of(System.getenv("OUT"), "received.txt"),
@@ -28,7 +28,7 @@ class ProfileRunsTest {
             assertEquals(0, javax.tools.ToolProvider.getSystemJavaCompiler().run(null, null, null,
                 "-d", root.resolve("classes").toString(), source.toString()))
             val job = root.resolve("job").createDirectories()
-            val profile = ProfileMain("com.eignex.demo.Main", args = listOf("literal ' argument"),
+            val profile = ProfileMain("org.example.demo.Main", args = listOf("literal ' argument"),
                 classpath = listOf("classes"), jvmArgs = listOf("-Ddemo.marker=prepared"))
             val command = ProfileRuns.command(root.toString(), "Eignex/skema", profile, 0, "/c", true)
             val process = ProcessBuilder("bash", "-c", command).redirectErrorStream(true).apply {

@@ -20,7 +20,7 @@ class NomadQueueTest {
         NomadQueue(config, store, backend, artifacts, settings, { true }, source = { _, _, _ -> null }).reconcile()
         assertTrue(store.execution.sessions(id).isEmpty())
         val apiStore = Store(config.database)
-        application { api(config.copy(passwordHash = null), apiStore, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), apiStore, HostReport("fixture", 4, "java")) }
         val response = client.post("/jobs/$id/tags") {
             contentType(ContentType.Application.Json); setBody("""{"tags":["cloud"]}""")
         }
@@ -34,7 +34,7 @@ class NomadQueueTest {
         val session = store.execution.sessions(id).single()
         val frozen = store.execution.manifest(session.id)
         assertTrue(store.job(id)!!.commands.isEmpty())
-        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java")) }
         val response = client.post("/jobs/$id/tags") {
             contentType(ContentType.Application.Json); setBody("""{"tags":["cloud"]}""")
         }
@@ -195,7 +195,7 @@ class NomadQueueTest {
         }
         val solves = store.execution.sessions(id).filter { it.executionClass == "solve" }
         assertEquals(6, solves.size)
-        assertTrue(solves.all { it.budget == ResourceBudget(1000, 4608) })
+        assertTrue(solves.all { it.budget == ResourceBudget(1000, 1024) })
         assertEquals(setOf("large-node"), solves.map { it.node }.toSet())
     }
 
@@ -257,8 +257,10 @@ class NomadQueueTest {
             publications++
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
         })
-    private fun job(spec: ExperimentSpec = ExperimentSpec("portable", problems = listOf(mapOf("suite" to "s")), host = "auto")): Long =
-        store.create(spec.name, "main", emptyList(), parallel = spec.parallel ?: 2, experiment = spec)
+    private fun job(spec: ExperimentSpec = ExperimentSpec("portable", host = "auto")): Long {
+        val generic = if (spec.isProfile || spec.bench != null) spec else spec.copy(problems = emptyList(), bench = BenchSpec("bench.json"))
+        return store.create(generic.name, "main", emptyList(), parallel = generic.parallel ?: 2, experiment = generic)
+    }
     private fun prepare(id: Long, count: Int = 3) {
         val session = store.execution.sessions(id).single { it.executionClass == "prepare" }
         val recipe = store.execution.manifest(session.id)
@@ -269,8 +271,12 @@ class NomadQueueTest {
         val bundle = recipe.bundles.first { it.os == "mac" || recipe.bundles.none { it.os == "mac" } }
         val outputs = mapOf("preparation/${bundle.commit}.zip" to bundle.sha256)
         store.execution.phase(claim.owner, "preparing")
-        val selected = backend.selectPreparation(claim.owner, listOf(List(count) { Problem("s", "p$it") }))
-        val result = PreparationResult(selected, listOf(bundle), artifacts = outputs)
+        val plan = com.eignex.lab.bench.BenchPlan(List(count) { com.eignex.lab.bench.BenchCase("p$it",
+            resources = com.eignex.lab.bench.BenchResources(recipe.arms.maxOf { it.arm.cores }, 512, 1)) })
+        val selected = backend.selectPreparation(claim.owner, listOf(plan.cases.map(BenchRuns::problem)))
+        val result = PreparationResult(selected, listOf(bundle), artifacts = outputs, benchPlan = plan,
+            benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "generic queue fixture"),
+            armPlans = recipe.arms.associate { it.arm.label to plan })
         store.execution.phase(claim.owner, "uploading")
         backend.commit(claim.owner, IterationResult(emptyList(), outputs, preparation = result))
     }
@@ -301,10 +307,10 @@ class NomadQueueTest {
     }
 
     @Test fun `normal API submissions choose Nomad and provider neutral cloud placement without AWS settings`() = testApplication {
-        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java")) }
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"api-nomad","description":"exercise automatic admission","problems":{"suite":"s"},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud"]}""")
+            setBody("""{"name":"api-nomad","description":"exercise automatic admission","bench":{"manifest":"bench.json"},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud"]}""")
         }
         assertEquals(HttpStatusCode.Created, response.status)
         val job = store.active().single()
@@ -312,21 +318,11 @@ class NomadQueueTest {
         assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
     }
 
-    @Test fun `reference filtering refills its cap before atomically publishing the plan`() {
-        val spec = ExperimentSpec("filtered", problems = listOf(mapOf("suite" to "s", "reference" to "proven", "max" to "1")), host = "auto")
-        val id = job(spec); queue().reconcile()
-        store.putReferences(listOf(("" to "p1") to Reference("gecode", false, 1.0, true, true, 100, 60000)), "fixture")
-        prepare(id); queue().reconcile()
-        assertTrue(store.job(id)!!.setupDone)
-        assertEquals(listOf("p1"), store.casePlan(id).map { it.problem.problem })
-        assertEquals(1, store.job(id)!!.commands.size)
-    }
-
     @Test fun `normal API accepts a bounded cloud profile under Nomad`() = testApplication {
-        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java", "vector", true, emptyList())) }
+        application { api(config.copy(passwordHash = null), store, HostReport("fixture", 4, "java")) }
         val response = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud","spot"]}""")
+            setBody("""{"name":"cloud-profile","description":"bounded Spot profile","profile":{"main":"com.eignex.Main","classpath":["tools/lib/*"],"runTimeoutSec":600},"base":{"ref":"${"a".repeat(40)}"},"tags":["cloud","spot"]}""")
         }
         assertEquals(HttpStatusCode.Created, response.status)
         val job = store.active().single()
@@ -493,7 +489,7 @@ class NomadQueueTest {
     }
 
     @Test fun `cloud selection needs no AWS settings and profiles use Spot unless explicitly on demand`() {
-        val spec = ExperimentSpec("cloud", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60), nodeTags = NodeSelector(require = setOf("cloud")))
+        val spec = ExperimentSpec("cloud", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60, classpath = listOf("tools/lib/*")), nodeTags = NodeSelector(require = setOf("cloud")))
         assertEquals(listOf(CapacityMarket.SPOT), settings.matching(spec, spec.name).map { it.market })
         assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
         assertTrue(settings.matching(spec.copy(nodeTags = NodeSelector(require = setOf("on-demand"))), spec.name).isEmpty())

@@ -28,7 +28,7 @@ object Checkers {
         locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))
-                    com.eignex.lab.portablePath(value, config.worktree(revision.job), config.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
+                    com.eignex.lab.portablePath(value, config.jobDir(revision.job).resolve("nomad/prepared-source/${revision.sha}").takeIf(java.nio.file.Files::exists) ?: config.worktree(revision.job), config.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
                 problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
             }
         }),
@@ -40,9 +40,10 @@ object Checkers {
      *  A planned path under the lab's or a cloud node's worktrees is a repository path. */
     fun fixtures(config: Config): RepositoryFixtures = RepositoryFixtures(
         mirror = config.mirror.toFile(),
+        mirrorFor = { revision -> checkerMirror(config, revision.repository).toFile() },
         worktrees = { (job, sha) ->
             val own = config.worktree(job).toFile()
-            listOf(own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
+            listOf(config.jobDir(job).resolve("nomad/prepared-source/$sha").toFile(), own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
         },
         worktreeRoots = listOf(config.worktree(0).parent.toString(), "/home/ubuntu/work"),
     )
@@ -53,6 +54,18 @@ object Checkers {
 
     /** How much of a commit names a job's worktree of it beside its own (`<job>@<sha>`), as the runner builds it. */
     private const val SHA_DIR = 12
+}
+
+/** Missing repository fields in pre-adapter records used the original checker mirror. */
+internal fun checkerRepository(spec: com.eignex.lab.ExperimentSpec?): String? = spec?.let {
+    it.repository.takeUnless { repository -> it.bench == null && repository == com.eignex.lab.Repositories.DEFAULT }
+}
+
+internal fun checkerMirror(config: Config, repository: String?): java.nio.file.Path {
+    if (repository == null) return config.mirror
+    val mirror = com.eignex.lab.Repositories.mirror(config, repository)
+    // Old Klause checks used repo.git, including records that explicitly named the repository.
+    return if (repository == "Eignex/klause" && !java.nio.file.Files.exists(mirror)) config.mirror else mirror
 }
 
 /** What a recheck job ([CaseChecks.recheck]) did, written as `recheck.json` in its directory. */
@@ -81,7 +94,7 @@ class CaseChecks(
     fun afterCase(jobId: Long, index: Int) {
         runCatching {
             val (problem, arm) = store.caseOf(jobId, index) ?: return
-            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(arm.values)) return
+            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(store.job(jobId)?.experiment, arm.values)) return
             if (!checker.covers(problem.format)) return
             val future = pool.submit {
                 runCatching { check(jobId, index, problem) }.onFailure { log(jobId, "case $index: source check failed: ${it.message}") }
@@ -105,7 +118,7 @@ class CaseChecks(
     fun check(jobId: Long, index: Int, problem: Problem): LabCheck? {
         val text = store.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
-        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it) }
+        val revision = store.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
         val inputs = store.execution.accepted(jobId).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)

@@ -84,15 +84,15 @@ class NodeTagsTest {
         val root = Files.createTempDirectory("tag api")
         val config = Config(dataDir = root, cpuCapabilities = arm, cores = 2, maxParallel = 2, passwordHash = null, nomadQueueSettings = cloudQueue(root))
         val store = Store(config.database)
-        application { api(config, store, HostReport("test", 2, "java", "vector", true, emptyList())) }
+        application { api(config, store, HostReport("test", 2, "java")) }
         suspend fun submit(tag: String) = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"cloud","description":"hardware run","problems":{"suite":"s"},"base":{"ref":"0123456789abcdef","processors":"4"},"tags":["$tag"]}""")
+            setBody("""{"name":"cloud","description":"hardware run","bench":{"manifest":"bench.json"},"base":{"ref":"0123456789abcdef","param.cpus":"4"},"tags":["$tag"]}""")
         }
         assertEquals(HttpStatusCode.Created, submit("simd:avx512").status)
         val job = store.active().single()
         assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
-        assertEquals("4", job.experiment!!.base["processors"])
+        assertEquals("4", job.experiment!!.base["param.cpus"])
         assertEquals(HttpStatusCode.BadRequest, submit("missing-node").status)
         assertEquals(1, store.active().size)
     }

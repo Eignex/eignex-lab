@@ -16,6 +16,9 @@ class PortableWorkerTest {
         val environment = mapOf("HOME" to "/home/worker", "LAB_WORKER_CACHE_ROOT" to "/lab-cache", "UNRELATED_SECRET" to "private")
         assertEquals("/lab-cache/consumer", workerEnvironment(false, environment)["XDG_CACHE_HOME"])
         assertNull(workerEnvironment(true, environment)["XDG_CACHE_HOME"])
+        val input = workerEnvironment(false, environment + mapOf("LAB_SHARED_INPUT_ROOT" to "/inputs", "LAB_CORPUS_MIRROR" to "https://inputs.invalid/packs"))
+        assertEquals("true", input["LAB_CORPUS_KEEP_PACKED"])
+        assertEquals("https://inputs.invalid/packs", input["LAB_CORPUS_MIRROR"])
         for (mac in listOf(false, true)) {
             assertEquals("/custom", workerEnvironment(mac, environment + ("XDG_CACHE_HOME" to "/custom"))["XDG_CACHE_HOME"])
             assertFalse("UNRELATED_SECRET" in workerEnvironment(mac, environment))
@@ -31,7 +34,7 @@ class PortableWorkerTest {
             files.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() }
         } }.toByteArray()
         val manifest = WorkerBundle(MessageDigest.getInstance("SHA-256").digest(bytes).hex(), files.map { (name, text) ->
-            InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong(), name.endsWith("/klause-bench") || name.endsWith("/klause-cli"))
+            InputFile(name, ExecutionStore.digest(text), text.toByteArray().size.toLong(), name.startsWith("bin/"))
         }, Repositories.DEFAULT, "a".repeat(40), if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(), "fixture")
         return manifest to bytes
     }
@@ -46,81 +49,92 @@ class PortableWorkerTest {
         } finally { process.destroy(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); process.destroyForcibly() }
     }
 
-    @Test fun `preparation selects portable files and publishes verified build and corpus bundles`(): Unit = service { socket ->
-        val script = """#!/usr/bin/env bash
-            set -eu
-            [[ "${'$'}JAVA_OPTS" == *'-Dklause.bench.corpus.shared=true'* ]]
-            corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"
-            corpus="${'$'}{corpus%% *}"
-            mkdir -p "${'$'}corpus"
-            printf 'model contents' > "${'$'}corpus/model.mps"
-            printf '{"suite":"s","problem":"p","model":"%s/model.mps","format":"mps"}\n' "${'$'}corpus"
-        """.trimIndent()
-        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
-        val spec = ExperimentSpec("prepare", problems = listOf(mapOf("suite" to "s")), base = mapOf("backend" to "reference", "solver" to "highs"))
-        val arms = Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }
-        val manifest = WorkManifest("prepare", "release", spec, arms, emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
+    @Test fun `generic profile preparation preserves source and publishes progress timings`(): Unit = service { socket ->
+        val (bundle, bytes) = bundle(mapOf("bin/profile" to "echo measured"))
+        val spec = ExperimentSpec("profile", profile = ProfileMain(script = "bin/profile"))
+        val manifest = WorkManifest("prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) },
+            emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
+        val trace = PreparationTrace()
         val uploads = mutableMapOf<String, Path>()
         var archivesCreated = 0
         val archiveCache = WorkerArchiveCache(root.resolve("archives")) { tree, zip, bundle, runtime, active ->
             archivesCreated++; archive(tree, zip, bundle, runtime, active)
         }
         val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch, archives = archiveCache)
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch, trace = trace, archives = archiveCache)
         val result = executor.run(manifest, root.resolve("prepare"), { null }, { 80000 }) { file ->
-            hashFile(file).also { sha -> uploads[sha] = file }
+            hashFile(file).also { uploads[it] = file }
         }
-        assertEquals("lab-corpus/model.mps", result.selections.single().single().model)
-        val corpus = requireNotNull(result.corpus)
-        val contents = VerifiedCache(root.resolve("verify")).stage(corpus) { Files.newInputStream(uploads.getValue(corpus.sha256)) }
-        assertEquals("model contents", Files.readString(contents.resolve("model.mps")))
+        assertEquals(listOf(Experiments.profileProblem(spec)), result.selections.single())
         val prepared = result.bundles.single()
         val source = VerifiedCache(root.resolve("verify")).stage(prepared) { Files.newInputStream(uploads.getValue(prepared.sha256)) }
-        assertEquals(script, Files.readString(source.resolve(bundle.files.single().path)))
+        assertEquals("echo measured", Files.readString(source.resolve("bin/profile")))
+        val timings = Json.decodeFromString<Map<String, Long>>(Files.readString(root.resolve("prepare/preparation-timings.json")))
+        assertTrue(timings.keys.containsAll(setOf("inputs", "workspace", "selection", "archive", "upload")))
+        assertTrue(timings.values.all { it >= 0 })
+        assertEquals(hashFile(root.resolve("prepare/preparation-timings.json")), result.artifacts["preparation/timings.json"])
+        assertEquals("ready", trace.snapshot().stage)
         val repeated = executor.run(manifest, root.resolve("prepare-again"), { null }, { 80000 }) { hashFile(it) }
         assertEquals(prepared.sha256, repeated.bundles.single().sha256)
         assertEquals(1, archivesCreated)
-        assertEquals(contents.resolve("model.mps"), portablePath(result.selections.single().single().model!!, source, contents))
-        assertEquals(contents, portablePath("lab-corpus/", source, contents))
-        assertFailsWith<IllegalStateException> { portableProblem(Problem("s", "p", model = "/outside/model"), source, contents) }
-        assertFailsWith<IllegalArgumentException> { portablePath("lab-corpus/../escape", source, contents) }
     }
 
-    @Test fun `preparation resolves files only after central filtering and keeps classifier output`(): Unit = service { socket ->
-        val marker = root.resolve("resolved-names")
-        val script = """#!/usr/bin/env bash
-            set -eu
-            corpus="${'$'}{JAVA_OPTS#*-Dklause.bench.corpusCache=}"; corpus="${'$'}{corpus%% *}"
-            if [[ " ${'$'}* " == *' features=true '* ]]; then
-                echo '{"suite":"s","collection":"fixture","problem":"p1","themes":["mip"]}'
-            elif [[ " ${'$'}* " == *' files=true '* ]]; then
-                [[ " ${'$'}* " == *' name=p1 '* ]]
-                echo p1 > '$marker'
-                echo approved > "${'$'}corpus/p1.mps"
-                printf '{"suite":"s","collection":"fixture","problem":"p1","model":"%s/p1.mps","format":"mps"}\n' "${'$'}corpus"
-            else
-                echo '{"suite":"s","collection":"fixture","problem":"p0"}'
-                echo '{"suite":"s","collection":"fixture","problem":"p1"}'
-            fi
+    @Test fun `replay preserves accepted archive bytes without invoking the current archive writer`(): Unit = service { socket ->
+        val (bundle, bytes) = bundle(mapOf("bin/tool" to "accepted build"))
+        val spec = ExperimentSpec("replay", bench = BenchSpec("bench.json"))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }
+        val case = BenchRuns.pinned(com.eignex.lab.bench.BenchCase("p"), root, root)
+        val replay = BenchReplay(mapOf(arms.single().arm.label to com.eignex.lab.bench.BenchPlan(listOf(case))),
+            com.eignex.lab.bench.BenchDescriptor("fixture", "accepted build replay"))
+        val manifest = WorkManifest("replay", "release", spec, arms, emptyList(), listOf(bundle), ResourceBudget(1000, 2048),
+            preparationTimeoutSec = 60, benchReplay = replay)
+        val archiveCache = WorkerArchiveCache(root.resolve("archives")) { _, _, _, _, _ -> error("must reuse accepted archive") }
+        val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) },
+            bundle.os, bundle.arch, shared = null, archives = archiveCache)
+        val result = executor.run(manifest, root.resolve("replay"), { null }, { 80000 }) { file ->
+            assertFalse(file.fileName.toString().endsWith(".zip"), "accepted source archive needs no upload")
+            hashFile(file)
+        }
+        assertEquals(bundle, result.bundles.single())
+        assertEquals(bundle.sha256, result.artifacts["preparation/${bundle.commit}.zip"])
+    }
+
+    @Test fun `multi megabyte bench cases launch through files instead of shell arguments`(): Unit = service { socket ->
+        val case = com.eignex.lab.bench.BenchCase("large", mapOf("opaque" to ("literal '$ value'\n" + "x".repeat(4 * 1024 * 1024))),
+            resources = com.eignex.lab.bench.BenchResources(timeoutSeconds = 5))
+        val encoded = com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchCase.serializer(), case) + "\n"
+        val expected = ExecutionStore.digest(encoded)
+        val java = """package fixture;
+            import java.nio.file.*;
+            import java.security.MessageDigest;
+            import java.util.HexFormat;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    byte[] bytes = Files.readAllBytes(Path.of(args[1]));
+                    String sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+                    if (!sha.equals("$expected")) throw new Exception("frozen case changed");
+                    Files.writeString(Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"large\"}");
+                }
+            }
         """.trimIndent()
-        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
-        val spec = ExperimentSpec("filtered", problems = listOf(mapOf("suite" to "s")), base = mapOf("backend" to "reference", "solver" to "highs"))
-        val manifest = WorkManifest("prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) }, emptyList(),
-            listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
-        val executor = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)),
-            { ByteArrayInputStream(bytes) }, bundle.os, bundle.arch)
-        val result = executor.run(manifest, root.resolve("filtered"), { null }, { 80000 }, selectProblems = { raw ->
-            assertFalse(Files.exists(marker)); assertTrue(raw.flatten().all { it.model == null })
-            raw.map { group -> group.filter { it.problem == "p1" } }
-        }) { hashFile(it) }
-        assertEquals("p1", Files.readString(marker).trim())
-        assertEquals(listOf("p1"), result.selections.flatten().map { it.problem })
-        assertEquals(listOf("p1.mps"), result.corpus!!.files.map { it.path })
-        assertEquals(listOf("mip"), result.features.single().themes)
-        val timings = Json.decodeFromString<Map<String, Long>>(Files.readString(root.resolve("filtered/preparation-timings.json")))
-        assertTrue(timings.keys.containsAll(setOf("workspace", "selection", "classification", "archive", "upload")))
-        assertTrue(timings.values.all { it >= 0 })
-        assertEquals(hashFile(root.resolve("filtered/preparation-timings.json")), result.artifacts["preparation/timings.json"])
+        val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
+        val (source, bytes) = bundle(mapOf("Bench.java" to java,
+            "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val built = source.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("large", bench = BenchSpec("bench.json"))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, source.commit) }
+        val manifest = WorkManifest("large", "release", spec, arms,
+            listOf(WorkCase(0, 0, BenchRuns.problem(case), null, 0, 5, case)), listOf(built), ResourceBudget(1000, 2048))
+        val directory = root.resolve("large-run")
+        val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) },
+            "unused", source.os, source.arch, buildCache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
+            .run(manifest, listOf(0), directory, "fixture", 1, remainingLeaseMs = { 80000 }).cases.single()
+        assertEquals(0, result.exitCode, Files.readString(directory.resolve("0.err")))
+        assertEquals(encoded, Files.readString(directory.resolve("cases/0/bench-case.json")))
+        assertTrue(result.command!!.length < 8192)
+        assertEquals("large", BenchRuns.result(result.record)!!.caseId)
     }
 
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {
@@ -143,87 +157,6 @@ class PortableWorkerTest {
         val tree = VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { ByteArrayInputStream(bytes) }
         assertEquals(0, Files.size(tree.resolve("empty.dzn")))
         assertEquals(tree, VerifiedCache(root.resolve("empty-corpus")).stage(manifest) { error("verified input reused") })
-    }
-
-    @Test fun `parallel measured cases retain separate captures and relocated launcher provenance`(): Unit = service { socket ->
-        val bench = """#!/usr/bin/env bash
-            set -eu
-            cli="../klause-cli/build/install/klause-cli-jvm/bin/klause-cli"
-            case "${'$'}1" in
-              --help) echo 'bench provenance out=<file>'; exit 0;;
-              provenance) printf '%s\n' "${'$'}PWD:$(cksum "${'$'}cli")" > "${'$'}{2#out=}"; exit 0;;
-              solve-one)
-                [[ "$(cat build/provenance.json)" == "${'$'}PWD:$(cksum "${'$'}cli")" ]] || exit 42
-                "${'$'}cli"
-                case_dir="$(dirname "${'$'}EIGNEX_LAB_PROFILE_DIR")"
-                echo '{"feasible":true}' > "${'$'}case_dir/result.json";;
-            esac
-        """.trimIndent()
-        val (input, bytes) = bundle(mapOf(
-            "klause-bench/build/install/klause-bench/bin/klause-bench" to bench,
-            "klause-bench/build/provenance.json" to "stale preparation path and launcher",
-            CliMeasurements.CLI to """#!/usr/bin/env bash
-                set -eu
-                index="$(basename "$(dirname "${'$'}EIGNEX_LAB_PROFILE_DIR")")"
-                touch "${'$'}JOB_DIR/started-${'$'}index"
-                deadline=${'$'}((SECONDS + 5))
-                until [[ -f "${'$'}JOB_DIR/started-0" && -f "${'$'}JOB_DIR/started-1" ]]; do
-                    (( SECONDS < deadline )) || exit 43
-                    sleep 0.02
-                done
-            """.trimIndent(),
-        ))
-        val spec = ExperimentSpec("provenance", problems = listOf(mapOf("suite" to "s")),
-            configs = listOf(mapOf("label" to "a"), mapOf("label" to "b")), parallel = 2, measurement = Measurement.RESOURCES)
-        val arms = Experiments.arms(spec).map { PlannedArm(it, input.commit) }
-        val cases = (0..1).map { WorkCase(it, it, Problem("s", "p"), null, 0, 10) }
-        val manifest = WorkManifest("provenance", "release", spec, arms, cases, listOf(input), ResourceBudget(2000, 1024, 2))
-        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            { ByteArrayInputStream(bytes) }, "/unused", input.os, input.arch, privateWorkspaces = WorkerWorkspaces(root.resolve("private")))
-        repeat(2) { attempt ->
-            val directory = root.resolve("relocated-attempt-$attempt")
-            val result = executor.run(manifest, listOf(0, 1), directory, "node", 1) { 80000 }
-            assertEquals(2, result.cases.size)
-            for (case in result.cases) {
-                assertEquals(0, case.exitCode)
-                assertContains(case.record!!, "\"feasible\":true")
-                assertTrue(Files.walk(directory.resolve("cases/${case.index}")).use { paths -> paths.anyMatch { it.fileName.toString() == "resources.txt" } })
-            }
-        }
-    }
-
-    @Test fun `serial attempts reuse private runtime setup and restore a modified workspace`(): Unit = service { socket ->
-        val captures = root.resolve("provenance-captures")
-        val bench = """#!/usr/bin/env bash
-            set -eu
-            case "${'$'}1" in
-              --help) echo 'bench provenance out=<file>';;
-              provenance) echo capture >> '$captures'; echo "${'$'}PWD" > "${'$'}{2#out=}";;
-              solve-one)
-                [[ "$(cat build/provenance.json)" == "${'$'}PWD" ]]
-                for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
-                mkdir -p "${'$'}out"; echo '{"feasible":true}' > "${'$'}out/result.json"
-                touch build/generated-consumer-cache;;
-            esac
-        """.trimIndent()
-        val name = "klause-bench/build/install/klause-bench/bin/klause-bench"
-        val (input, bytes) = bundle(mapOf(name to bench))
-        val spec = ExperimentSpec("workspace-reuse", problems = listOf(mapOf("suite" to "s")))
-        val manifest = WorkManifest("session", "release", spec, Experiments.arms(spec).map { PlannedArm(it, input.commit) },
-            listOf(WorkCase(0, 0, Problem("s", "p"), null, 0, 10)), listOf(input), ResourceBudget(1000, 512))
-        var downloads = 0
-        val privateRoot = root.resolve("private-trees")
-        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
-            { downloads++; ByteArrayInputStream(bytes) }, "unused", input.os, input.arch,
-            privateWorkspaces = WorkerWorkspaces(privateRoot))
-        fun run(index: Int) = executor.run(manifest, listOf(0), root.resolve("attempt-$index"), "fixture", 1, remainingLeaseMs = { 30000 })
-        assertEquals(0, run(1).cases.single().exitCode)
-        assertEquals(0, run(2).cases.single().exitCode)
-        assertEquals(1, Files.readAllLines(captures).size); assertEquals(1, downloads)
-        val tree = Files.list(privateRoot).use { it.filter(Files::isDirectory).findFirst().orElseThrow() }
-        Files.writeString(tree.resolve(name), "corrupt runtime")
-        assertEquals(0, run(3).cases.single().exitCode)
-        assertEquals(2, Files.readAllLines(captures).size); assertEquals(1, downloads)
     }
 
     @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->
@@ -449,26 +382,6 @@ PY
         assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch { Files.isDirectory(it) && it.fileName.toString().matches(SHA256) } })
     }
 
-    @Test fun `standalone executor runs a complete paired iteration and leaves baseline unchanged`(): Unit = service { socket ->
-        val script = """#!/usr/bin/env bash
-            set -eu
-            for arg in "${'$'}@"; do case "${'$'}arg" in out=*) out="${'$'}{arg#out=}";; esac; done
-            mkdir -p "${'$'}out"
-            echo '{}' > "${'$'}out/record.json"
-        """.trimIndent()
-        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
-        val spec = ExperimentSpec("paired", grid = mapOf("x" to listOf("a", "b")))
-        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
-        val cases = arms.indices.map { WorkCase(it, it, Problem("s", "p"), 1, 0, 5) }
-        val manifest = WorkManifest("session", "fixture", spec, arms, cases, listOf(bundle), ResourceBudget(2000, 512, 2))
-        val cache = VerifiedCache(root.resolve("cache"))
-        val executor = IterationExecutor(ProcessSupervisor(socket), cache, { ByteArrayInputStream(bytes) }, "unused", bundle.os, bundle.arch)
-        val result = executor.run(manifest, listOf(0, 1), root.resolve("attempt"), "node", 1) { 10000 }
-        assertEquals(listOf(0, 0), result.cases.map { it.exitCode }); assertTrue(result.cases.all { it.record?.trim() == "{}" })
-        assertEquals(script, Files.readString(cache.stage(bundle) { error("cache") }.resolve(bundle.files.single().path)))
-        assertFailsWith<IllegalArgumentException> { executor.run(manifest, listOf(0), root.resolve("partial"), "node", 1) { 10000 } }
-    }
-
     @Test fun `long profile command succeeds and retains the literal invocation as an artifact`(): Unit = service { socket ->
         val argument = "x".repeat(76000)
         val build = "#!/usr/bin/env bash\nset -eu\ngit init -q\ngit config user.email fixture@example.com\ngit config user.name fixture\ngit add profile.sh\ngit commit -qm fixture\n"
@@ -539,33 +452,6 @@ PY
                 source, ResourceBudget(1000, 512), System.getenv(), remainingRunMs = { (deadline - System.nanoTime()) / 1_000_000 }) { 80000 }
         }
         assertTrue(System.nanoTime() < deadline + 2_000_000_000)
-    }
-
-    @Test fun `solver timeout retains the existing thirty second capture flush allowance`(): Unit = service { socket ->
-        val flushed = root.resolve("capture-flushed")
-        val script = """
-            #!/usr/bin/env python3
-            import signal, sys, time
-            from pathlib import Path
-            if '--help' in sys.argv:
-                print('fixture without provenance support')
-                raise SystemExit(0)
-            def flush(_signal, _frame):
-                time.sleep(12)
-                Path('$flushed').write_text('complete')
-                raise SystemExit(0)
-            signal.signal(signal.SIGTERM, flush)
-            time.sleep(60)
-        """.trimIndent()
-        val (bundle, bytes) = bundle(mapOf("klause-bench/build/install/klause-bench/bin/klause-bench" to script))
-        val spec = ExperimentSpec("flush")
-        val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
-        val manifest = WorkManifest("session", "fixture", spec, arms, listOf(WorkCase(0, 0, Problem("s", "p"), null, 0, 1)), listOf(bundle), ResourceBudget(1000, 512))
-        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) }, "unused", bundle.os, bundle.arch)
-        val result = executor.run(manifest, listOf(0), root.resolve("flush-attempt"), "node", 1) { 80000 }
-        assertEquals(124, result.cases.single().exitCode)
-        assertFalse(result.runTimedOut)
-        assertEquals("complete", Files.readString(flushed))
     }
 
     @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { socket ->

@@ -71,6 +71,21 @@ class StoreTest {
     }
 
     @Test
+    fun `repository arms report their actual recording and debug policies independently`() {
+        val store = store()
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json"), configs = listOf(mapOf("label" to "plain"), mapOf("label" to "recorded")))
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Problem("bench", "p")), Experiments.cases(1, 2, emptyList()), List(2) { "true" to 1L })
+        store.caseRecord(id, 0, """{"stats":{"labMeasurement":"jfr","labDebug":"false"}}""")
+        store.caseRecord(id, 1, """{"stats":{"labMeasurement":"compilation+log","labDebug":"true"}}""")
+
+        for (cases in listOf(store.cases(id), store.scoringCases(id))) {
+            assertEquals(listOf(false, true), cases.map { it.instrumented })
+            assertEquals(listOf(false, true), cases.map { it.labDebug })
+        }
+    }
+
+    @Test
     fun `a cancel from a second process lands while the other one keeps writing`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val runner = Store(file)

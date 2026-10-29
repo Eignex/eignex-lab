@@ -11,7 +11,7 @@ import java.time.Instant
 
 /**
  * One reference case: a reference solver on one instance, written to [out] as the record a lab case keeps
- * (`<problem>.json`, in klause-bench's `SolveRecord` shape, which [com.eignex.lab.References.of] reads), its raw
+ * (`<problem>.json`, in the solver-v1 record schema, which [com.eignex.lab.References.of] reads), its raw
  * output (`<problem>.out`), and the solution a solver returned (`<problem>.sol`). A failing run is an `ERROR` record
  * with why under `stats`, so the case still ends with a record.
  */
@@ -111,7 +111,7 @@ internal class ReferenceCase(
         (failure.message ?: failure::class.simpleName.orEmpty()).lineSequence().map { it.trim() }
             .filter { it.isNotEmpty() }.joinToString(" / ").take(REASON_CAP)
 
-    /** The failure and its causes, each class and message under its own key, as klause-bench records them. */
+    /** The failure and its causes, each class and message under its own key, as the suite records them. */
     private fun failureStats(failure: Throwable): Map<String, String> = buildMap {
         put("errorClass", failure::class.qualifiedName ?: failure::class.toString())
         failure.message?.let { put("errorMessage", it.take(REASON_CAP)) }

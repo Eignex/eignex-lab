@@ -192,13 +192,13 @@ class ExecutionStore internal constructor(private val store: Store) {
         job.runRemainingMs(at)
     }
 
-    private fun Job.runRemainingMs(at: Long): Long? = experiment?.profile?.let(Experiments::profileRunTimeoutSec)?.let { it * 1000 - elapsedMs(at) }
+    private fun Job.runRemainingMs(at: Long): Long? = experiment?.let(Experiments::runTimeoutSec)?.let { it * 1000 - elapsedMs(at) }
 
     fun runTimedOut(owner: AttemptOwner, at: Long = now()) = store.executionTransaction { db ->
         val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (store.job(prior.jobId)?.error == ProfileRunTimeout().message) return@executionTransaction
         val attempt = db.attempt(owner, at)
-        require(store.job(attempt.jobId)?.experiment?.profile?.runTimeoutSec != null)
+        require(store.job(attempt.jobId)?.experiment?.let(Experiments::runTimeoutSec) != null)
         db.failRunDeadline(attempt.jobId, at)
     }
 
@@ -277,7 +277,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.attempt(owner, at)
         if (store.job(a.jobId)!!.runRemainingMs(at)?.let { it <= 0 } == true) throw ProfileRunTimeout()
         require((a.iteration == "preparation") == (result.preparation != null))
-        require(!result.runTimedOut || store.job(a.jobId)?.experiment?.profile?.runTimeoutSec != null)
+        require(!result.runTimedOut || store.job(a.jobId)?.experiment?.let(Experiments::runTimeoutSec) != null)
         require(a.state == "uploading") { "attempt is not uploading" }
         require(result.cases.map { it.index }.sorted() == a.indices.sorted()) { "all arms must be committed together, exactly once" }
         val node = db.session(owner.session)!!.node!!

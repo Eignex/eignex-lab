@@ -26,7 +26,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class DbCompactionTest {
-    private val host = HostReport("Test/Arm64", 4, "java", "engine", true, emptyList(), vendor = "Accelerate")
+    private val host = HostReport("Test/Arm64", 4, "java")
 
     /** A build provenance like the bench's: tens of kilobytes, one per arm here, with numbers and text kept as written. */
     private fun provenance(arm: Int, kib: Int = 4): String {

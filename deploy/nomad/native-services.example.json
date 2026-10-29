@@ -14,6 +14,6 @@
   "coordinatorConfig": "/Users/lab/eignex-lab-data/nomad/coordinator.json",
   "labEnvironment": {
     "LAB_JOBS": "/Users/lab/eignex-lab-data/jobs",
-    "LAB_CORPUS": "/Users/lab/.cache/klause-bench/corpus"
+    "LAB_CORPUS": "/Users/lab/.cache/eignex-lab/corpus"
   }
 }

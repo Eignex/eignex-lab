@@ -13,10 +13,12 @@ class BenchRunsTest {
             val entry = BenchEntryPoint("com.eignex.tools.AdapterKt", listOf("build/lib/*"), listOf(":tools:prepare"), listOf("-Xmx256m"))
             Files.writeString(root.resolve("bench.json"), BenchProtocol.json.encodeToString(entry))
             val case = BenchCase("case with spaces", mapOf("argv" to "['literal $ value']"))
-            val command = BenchRuns.command(root, BenchSpec("bench.json"), case, 7, root.resolve("corpus"), "Eignex/tools")
+            val file = BenchRuns.writeCase(root.resolve("attempt"), 7, case)
+            val command = BenchRuns.command(root, BenchSpec("bench.json"), 7, root.resolve("corpus"), "Eignex/tools")
             assertContains(command, "LAB_CORPUS=")
             assertContains(command, "bench-case.json")
-            assertContains(command, "literal $ value")
+            assertFalse("literal $ value" in command)
+            assertEquals(case, BenchProtocol.json.decodeFromString<BenchCase>(Files.readString(file)))
             assertContains(command, "-Xmx256m")
             assertFalse("StartFlightRecording" in command || "jdk.incubator.vector" in command)
         } finally { root.toFile().deleteRecursively() }
@@ -54,6 +56,32 @@ class BenchRunsTest {
         assertEquals(BenchStatus.FAILED, BenchRuns.result(contradiction.json)!!.status)
     }
 
+    @Test fun `bench schedules retain their explicit check policy without legacy runtime options`() {
+        val unchecked = ExperimentSpec("bench", bench = BenchSpec("bench.json"))
+        val checked = unchecked.copy(bench = unchecked.bench!!.copy(sourceValidation = true))
+        for (spec in listOf(unchecked, checked)) {
+            val scheduled = SourceValidation.scheduled(spec)
+            assertEquals(spec, scheduled)
+            Experiments.validate(scheduled, 4)
+            assertEquals(spec.bench!!.sourceValidation, SourceValidation.requested(scheduled))
+            assertEquals(spec.bench.sourceValidation, SourceValidation.requested(scheduled, emptyMap()))
+        }
+        assertNotEquals(Experiments.fingerprint(unchecked), Experiments.fingerprint(checked))
+        assertEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(checked))
+    }
+
+    @Test fun `bench run deadline is explicit bounded and persists without changing the adapter request`() {
+        val bench = BenchSpec("bench.json", BenchRequest(mapOf("timeout-ms" to "500")), runTimeoutSec = 30, sourceValidation = true)
+        val spec = ExperimentSpec("bench", bench = bench)
+        Experiments.validate(spec, 4)
+        assertEquals(30L, Experiments.runTimeoutSec(spec))
+        assertEquals(spec, storedExperiment(Json.encodeToString(spec)))
+        val unlimited = spec.copy(bench = bench.copy(runTimeoutSec = null))
+        assertNull(Experiments.runTimeoutSec(unlimited))
+        assertEquals(Experiments.fingerprint(unlimited), Experiments.fingerprint(spec))
+        for (limit in listOf(0L, -1L, 7201L)) assertFailsWith<IllegalArgumentException> { bench.copy(runTimeoutSec = limit) }
+    }
+
     @Test fun `resolved corpus inputs stay pinned after relocation`() {
         val root = Files.createTempDirectory("bench-inputs")
         try {
@@ -74,7 +102,7 @@ class BenchRunsTest {
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("fixture", "c".repeat(64), 0)), spec.repository, arm.sha, "linux", "amd64", "test")
         val manifest = WorkManifest("prepare", "release", spec, listOf(arm), emptyList(), listOf(bundle), ResourceBudget(1000, 1024), preparationTimeoutSec = 60)
         val encoded = Json.encodeToString(manifest)
-        assertEquals(2, Json.parseToJsonElement(encoded).jsonObject.getValue("schemaVersion").jsonPrimitive.int)
+        assertEquals(3, Json.parseToJsonElement(encoded).jsonObject.getValue("schemaVersion").jsonPrimitive.int)
         assertFailsWith<IllegalArgumentException> { manifest.copy(schemaVersion = 1) }
     }
 

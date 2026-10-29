@@ -1,7 +1,7 @@
 package com.eignex.lab
 
 /**
- * How far a Klause case's solution claim was checked against its original source, as its record says. Witness
+ * How far a solver case's solution claim was checked against its original source, as its record says. Witness
  * checking speaks for the solution alone: an accepted witness is a valid solution, and says nothing of a proof of
  * optimality or infeasibility, which no witness check verifies.
  */
@@ -24,7 +24,7 @@ enum class WitnessCheck(val word: String) {
 }
 
 /**
- * Source-witness validation, asked for by an arm with `param.source-validation=true`, as every scheduled Klause run
+ * Source-witness validation, asked for by an arm with `param.source-validation=true`, as every scheduled solver run
  * does ([scheduled]). The lab checks each case itself, with established external checkers ([com.eignex.lab.checker]),
  * and never passes the request on to the bench, which only solves and records the witness ([forBench]).
  */
@@ -41,19 +41,20 @@ object SourceValidation {
     /** The policy of a record whose claims are the solver's own report. */
     const val UNCHECKED_POLICY = "reported-result-v1"
 
-    /** What every scheduled Klause run carries in its base. */
+    /** What every scheduled solver run carries in its base. */
     val SCHEDULED: Map<String, String> = mapOf(PARAM to "true", GZIP_PARAM to "true")
 
     /**
-     * [spec] as a schedule runs it: a Klause experiment with [SCHEDULED] in its base, overriding any config or grid
+     * [spec] as a schedule runs it: a solver experiment with [SCHEDULED] in its base, overriding any config or grid
      * value of those keys, so every run and confirmation of a schedule asks for source validation whatever spec it was
      * saved with. A reference run, a profile and an analysis are left as they are. The request is part of the
      * [Experiments.fingerprint], so a checked run is never confirmed against an unchecked one; the trend leaves it out
      * ([Experiments.trendFingerprint]), since the check changes nothing the solver does, and marks each run instead.
-     * Applying it twice changes nothing.
+     * Repository-owned bench schedules preserve their explicit [BenchSpec.sourceValidation] policy instead of
+     * adding solver runtime options to the lab-owned base. Applying it twice changes nothing.
      */
     fun scheduled(spec: ExperimentSpec): ExperimentSpec {
-        if (spec.isProfile || spec.isAnalysis || spec.isScript) return spec
+        if (spec.bench != null || spec.isProfile || spec.isAnalysis || spec.isScript) return spec
         if (Experiments.arms(spec).any { it.values["backend"] == REFERENCE_BACKEND }) return spec
         val keys = SCHEDULED.keys
         return spec.copy(base = spec.base + SCHEDULED, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
@@ -61,15 +62,21 @@ object SourceValidation {
 
     /** [spec] without the validation request, wherever it was set: what the solver itself was asked to do. */
     fun unrequested(spec: ExperimentSpec): ExperimentSpec {
+        spec.bench?.let { return spec.copy(bench = it.copy(sourceValidation = false)) }
         val keys = SCHEDULED.keys
-        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
+        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys,
+            bench = spec.bench?.copy(sourceValidation = false))
     }
 
     /** Whether an arm's [values] ask for source validation. */
     fun requested(values: Map<String, String>): Boolean = values[PARAM]?.toBooleanStrictOrNull() == true
 
     /** Whether [spec]'s first arm, the one a trend reads, asks for source validation. */
-    fun requested(spec: ExperimentSpec): Boolean = Experiments.arms(spec).firstOrNull()?.let { requested(it.values) } == true
+    fun requested(spec: ExperimentSpec): Boolean = spec.bench?.sourceValidation
+        ?: (Experiments.arms(spec).firstOrNull()?.let { requested(it.values) } == true)
+
+    /** The coordinator's check policy for a stored case, including repository-owned bench results. */
+    fun requested(spec: ExperimentSpec?, values: Map<String, String>): Boolean = spec?.bench?.sourceValidation ?: requested(values)
 
     /**
      * An arm's [values] as a case passes them to the bench: without the validation request, which the lab consumes
@@ -79,7 +86,7 @@ object SourceValidation {
     fun forBench(values: Map<String, String>): Map<String, String> = values - PARAM - GZIP_PARAM
 
     /**
-     * The one check verdict that changes how a Klause result counts: a definite rejection of its witness. Every other
+     * The one check verdict that changes how a solver result counts: a definite rejection of its witness. Every other
      * outcome of a check, accepted, undecided (`unknown`), not run (`not-run`, a checker that threw included),
      * `unsupported`, or none at all, leaves the solver's reported claim standing as it is: feasibility, proof,
      * objective and time to it, and so whether the case is solved. Such a check only adds a mark ([WitnessCheck]).

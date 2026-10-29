@@ -164,8 +164,8 @@ object Confirm {
 
     /** The confirmation of [flips] in run [job] of [spec] at [after], against the earlier run at [before]. Both
      *  commits ask for source validation, as every scheduled run does ([SourceValidation.scheduled]). */
-    fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long): ExperimentSpec {
-        val config = spec.configs.firstOrNull().orEmpty() - "ref" - "label"
+    fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long, beforeJob: Long? = null): ExperimentSpec {
+        val config = Experiments.arms(spec).first().values - "ref" - "label"
         return SourceValidation.scheduled(ExperimentSpec(
             name = name(series, after, job),
             description = "Confirms run $job's flips against the run before it at ${before.take(SHA_LENGTH)}: " +
@@ -174,8 +174,13 @@ object Confirm {
                 "rerun $REPEATS times on both commits (${flips.objectiveLost.size} objective worse and " +
                 "${flips.objectiveGained.size} better are not rerun).",
             problems = emptyList(),
-            problemList = flips.confirmable.take(MAX_PROBLEMS),
-            base = spec.base - "ref",
+            problemList = if (spec.bench == null) flips.confirmable.take(MAX_PROBLEMS) else emptyList(),
+            base = spec.base - "ref" - "label",
+            repository = spec.repository,
+            nodeTags = spec.nodeTags,
+            host = spec.host,
+            bench = spec.bench?.copy(frozenCases = flips.confirmable.take(MAX_PROBLEMS).map { requireNotNull(it.benchCase) },
+                replayJobs = beforeJob?.let { mapOf(BEFORE to it, AFTER to job) }.orEmpty()),
             configs = listOf(config + mapOf("label" to BEFORE, "ref" to before), config + mapOf("label" to AFTER, "ref" to after)),
             seeds = spec.seeds,
             repeats = REPEATS,

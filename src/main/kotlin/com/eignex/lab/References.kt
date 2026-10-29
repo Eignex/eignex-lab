@@ -200,7 +200,7 @@ object References {
      * disagree. A case that recorded none beside others that did, such as one that failed early, does not count.
      */
     fun sources(cases: List<CaseResult>): Map<Pair<String, String>, String?> =
-        cases.groupBy { it.problem.collection to it.problem.problem }.mapValues { (_, group) ->
+        cases.groupBy { it.problem.referenceKey }.mapValues { (_, group) ->
             val identities = group.mapNotNull { identity(it.record) }.distinct()
             if (identities.size > 1) MIXED_SOURCES else identities.firstOrNull()
         }
@@ -230,7 +230,7 @@ object References {
     val UNCHECKED_SOLVERS = listOf("scip", "highs")
 
     internal const val XCSP_POLICY = "xcsp3-source-preserving-v2"
-    private val xcspIdentity = Regex("klause-xcsp3-cpsat:[^@|]+@sha256:[0-9a-f]{64}\\|$XCSP_POLICY")
+    private val xcspIdentity = com.eignex.lab.checker.sourcePreservingXcspIdentity(XCSP_POLICY)
 
     internal fun stale(solver: String, version: String, collection: String = ""): Boolean =
         solver in UNCHECKED_SOLVERS && version.isEmpty() ||
@@ -305,7 +305,7 @@ object References {
             var better = 0
             val gaps = ArrayList<Double>()
             for ((problem, runs) in byProblem) {
-                val key = problem.collection to problem.problem
+                val key = problem.referenceKey
                 val reference = references[key]?.takeIf { applicable(listOf(it), sources[key]).isNotEmpty() } ?: continue
                 covered++
                 val solved = runs.any { it.rank > 0 }

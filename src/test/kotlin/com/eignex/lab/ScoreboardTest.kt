@@ -8,10 +8,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ScoreboardTest {
-    private val arm = Arm("klause", mapOf("timeout" to "60000"))
+    private val arm = Arm("candidate", mapOf("timeout" to "60000"))
 
     private fun case(problem: String, record: String, collection: String = "c", format: String = "MINIZINC") = CaseResult(
-        0, Status.DONE, Problem("s", problem, collection = collection, format = format, category = "OPTIMIZATION"), "klause",
+        0, Status.DONE, Problem("s", problem, collection = collection, format = format, category = "OPTIMIZATION"), "candidate",
         record = Json.parseToJsonElement(record),
     )
 
@@ -95,7 +95,7 @@ class ScoreboardTest {
     }
 
     @Test
-    fun `problems group by the class and traits of klause's own profile of the model`() {
+    fun `problems group by the class and traits of candidate's own profile of the model`() {
         val record = """{"kind":"optimize","maximize":false,"feasible":true,"objective":1,"proven":false,"timeToBestMs":5,"budgetMs":60000,""" +
             """"stats":{"profile":"FiniteCp optimizing=true wide=false scheduling=true"}}"""
         val cases = listOf(case("p1", record), case("p2", solved(2.0, 5)))
@@ -109,7 +109,7 @@ class ScoreboardTest {
     }
 
     @Test
-    fun `a run klause did not profile takes its class from the logic, then the pipeline, then a failed load`() {
+    fun `a run candidate did not profile takes its class from the logic, then the pipeline, then a failed load`() {
         fun record(stats: String) = """{"kind":"satisfy","maximize":false,"feasible":true,"objective":null,"proven":true,"timeToBestMs":5,"budgetMs":60000,"stats":{$stats}}"""
         val cases = listOf(
             case("nra", record(""""solvePipeline":"refuted"""")),
@@ -120,16 +120,16 @@ class ScoreboardTest {
 
         val profiles = Scoreboard.profiles(cases, features).mapKeys { it.key.problem }
 
-        assertEquals(mapOf("nra" to "Nonlinear", "poly" to "Nonlinear", "bad" to "did not load"), profiles.mapValues { it.value.problemClass })
+        assertEquals(mapOf("nra" to "Nonlinear", "bad" to "did not load"), profiles.mapValues { it.value.problemClass })
         assertEquals(listOf("unknown"), Scoreboard.values(Dimension.TRAIT, cases[0].problem, null, emptyList(), profiles["nra"]))
     }
 
     /** A 10 s run against cp-sat verdicts, three of them reached at 60 s and two at 10 s. */
-    private val shortArm = Arm("klause", mapOf("timeout" to "10000"))
+    private val shortArm = Arm("candidate", mapOf("timeout" to "10000"))
     private val mixedCases = listOf(
         case("p1", solved(10.0, 1_000)), case("p2", solved(20.0, 2_000)), case("p3", solved(30.0, 4_000, proven = true)),
         case("p4", solved(40.0, 1_000)), case("p5", solved(50.0, 1_000)),
-    )
+    ).map { it.copy(record = Json.parseToJsonElement(it.record.toString().replace("60000", "10000"))) }
     private val mixedReferences = mapOf(
         ("c" to "p1") to listOf(ref("cp-sat", 10.0, 30_000, proven = true)),
         ("c" to "p2") to listOf(ref("cp-sat", 20.0, 6_000, budgetMs = 10_000)),
@@ -149,7 +149,7 @@ class ScoreboardTest {
         assertEquals(ScoreCell(2.0, 3.0, 5, 10_000, mapOf(10_000L to 2, 60_000L to 3)), incomplete.total.cells["cp-sat"])
         assertEquals(
             listOf("p1" to (0.0 to 1.0), "p5" to (0.0 to 1.0), "p3" to (0.2 to 0.8), "p4" to (0.5 to 0.5), "p2" to (0.75 to 0.25)),
-            problems.map { it.problem.problem to (it.klause to it.reference) },
+            problems.map { it.problem.problem to (it.candidate to it.reference) },
         )
         assertTrue(complete.total.cells.getValue("cp-sat").budgetsDiffer)
         assertEquals("budgets differ: 10 s vs 60 s", problems.first { it.problem.problem == "p1" }.untimed)
@@ -162,7 +162,7 @@ class ScoreboardTest {
         fun page(arm: Arm, references: Map<Pair<String, String>, List<Reference>>): String {
             val board = Scoreboard.board(mixedCases, arm, references, emptyMap(), Dimension.FORMAT)
             val problems = Scoreboard.problems(mixedCases, arm, references, emptyMap(), Dimension.FORMAT, "all", "cp-sat")
-            val view = ScoreboardView(listOf(job), job, listOf("klause"), "klause", Dimension.FORMAT, emptyMap(), Scoring.COMPLETE,
+            val view = ScoreboardView(listOf(job), job, listOf("candidate"), "candidate", Dimension.FORMAT, emptyMap(), Scoring.COMPLETE,
                 emptyMap(), board, "all" to "cp-sat", problems)
             return referencesPage(emptyList(), ReferenceFilter(), emptyList(), 0, scoreboard = view)
         }

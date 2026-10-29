@@ -20,7 +20,7 @@ class IterationExecutor(
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
             prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingRunMs: () -> Long? = { null },
             remainingLeaseMs: () -> Long): IterationResult {
-        val runLimit = remainingRunMs() ?: manifest.experiment.profile?.let(Experiments::profileRunTimeoutSec)?.times(1000)
+        val runLimit = remainingRunMs() ?: Experiments.runTimeoutSec(manifest.experiment)?.times(1000)
         val runDeadline = runLimit?.let { System.nanoTime() + it.coerceAtLeast(0) * 1_000_000 }
         fun runRemaining() = runDeadline?.let { minOf((it - System.nanoTime()) / 1_000_000, remainingRunMs() ?: Long.MAX_VALUE) }
         fun checkRun() {
@@ -52,37 +52,17 @@ class IterationExecutor(
             privateWorkspaces?.reuse(key, ::checkRun)?.let { return@associateWith it }
             fresh += sha
             fun copy(cached: Path): Path {
-                val runtimeOnly = WorkerTrees.runtimeOnly(manifest.experiment)
-                fun stage(destination: Path) {
-                    if (runtimeOnly) WorkerTrees.copyRuntime(cached, destination, ::checkRun) else copyTree(cached, destination, ::checkRun)
-                }
+                fun stage(destination: Path) { copyTree(cached, destination, ::checkRun) }
                 // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                return privateWorkspaces?.copy(key, cached, ::checkRun, runtimeOnly)
+                return privateWorkspaces?.copy(key, cached, ::checkRun, false)
                     ?: directory.resolve("worktrees").resolve(sha).also(::stage)
             }
-            withInput(bundle, ::checkRun, runtimeOnly = bundle.build == null && WorkerTrees.runtimeOnly(manifest.experiment)) { source ->
+            withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
                 if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                     .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
             }
         }
         val workspacesReady = System.nanoTime()
-        if (manifest.experiment.measuresCli) for ((sha, worktree) in worktrees) {
-            if (sha !in fresh) continue
-            val exit = supervisor.run(listOf("bash", "-c", CliMeasurements.install(worktree.toString(), os == "mac")), worktree,
-                environment(), directory.resolve("measurement-setup.out"), directory.resolve("measurement-setup.err"), 60,
-                runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
-            require(exit == 0) { "measurement launcher setup failed" }
-        }
-        // Provenance binds absolute distribution/runtime paths and launcher metadata. Capture only after
-        // relocation and measurement installation, on the host and in the tree that actually runs the cases.
-        if (!manifest.experiment.isProfile && manifest.experiment.bench == null) for ((sha, worktree) in worktrees) {
-            if (sha !in fresh) continue
-            if (manifest.arms.none { it.sha == sha && it.arm.values["backend"] != REFERENCE_BACKEND }) continue
-            val exit = supervisor.run(listOf("bash", "-c", Experiments.captureProvenance(worktree.toString())), worktree,
-                environment(), directory.resolve("provenance-$sha.out"), directory.resolve("provenance-$sha.err"), 60,
-                runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
-            if (exit != 0) throw WorkerBuildFailure("execution provenance capture failed (exit $exit)")
-        }
         val setupReady = System.nanoTime()
         if (privateWorkspaces != null) for (sha in fresh) {
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
@@ -97,7 +77,9 @@ class IterationExecutor(
         try {
             val results = threads.invokeAll(selected.map { case -> Callable {
                 val arm = manifest.arms[case.arm].arm
-                val permits = Math.multiplyExact(case.problem.benchCase?.resources?.cpus ?: arm.cores, 1000)
+                val benchCase = case.executionCase ?: case.problem.benchCase
+                val reference = arm.values["backend"] == REFERENCE_BACKEND
+                val permits = Math.multiplyExact(benchCase?.resources?.cpus ?: arm.cores, 1000)
                 require(permits <= manifest.budget.cpuMillis) { "bench case exceeds the session CPU budget" }
                 cpu.acquire(permits)
                 try {
@@ -108,18 +90,15 @@ class IterationExecutor(
                     val problem = case.problem.copy(model = case.problem.model?.let { portablePath(it, worktree, corpus).toString() },
                         data = case.problem.data?.let { portablePath(it, worktree, corpus).toString() },
                         includeDirs = case.problem.includeDirs.map { portablePath(it, worktree, corpus).toString() })
-                    case.problem.benchCase?.let { BenchRuns.validateInputs(it, worktree, corpus) }
-                    val command = manifest.experiment.bench?.let { BenchRuns.command(worktree, it, requireNotNull(case.problem.benchCase), case.index, corpus, manifest.experiment.repository) }
+                    benchCase?.let { BenchRuns.validateInputs(it, worktree, corpus) }
+                    val command = if (reference) Experiments.referenceCommand(launcher, problem, arm, case.seed, case.index)
+                        else manifest.experiment.bench?.let {
+                            BenchRuns.writeCase(directory, case.index, requireNotNull(benchCase))
+                            BenchRuns.command(worktree, it, case.index, corpus, manifest.experiment.repository)
+                        }
                         ?: manifest.experiment.profile?.let { Experiments.profileCommand(worktree.toString(), it, case.index, corpus.toString(), arm.debug, manifest.experiment.repository) }
-                        ?: if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(launcher, problem, arm, case.seed, case.index)
-                        else Experiments.command(worktree.toString(), problem, arm, case.seed, case.index, corpus.toString())
-                    val id = UUID.randomUUID().toString()
-                    val profile = if (manifest.experiment.measuresCli) Files.createDirectories(directory.resolve("cases/${case.index}/profile-$id")) else null
-                    val runtime = "${manifest.solveJavaOptions} -XX:ActiveProcessorCount=${permits / 1000}".trim()
-                    val javaOptions = listOf(runtime, profile?.takeIf { manifest.experiment.recordsCliJfr }?.let { CliMeasurements.options(it.toString(), manifest.experiment.compilationRecording) }.orEmpty()).joinToString(" ").trim()
-                    val env = environment() + mapOf("JOB_DIR" to directory.toString()) +
-                        (if (manifest.experiment.bench != null) emptyMap() else mapOf("KLAUSE_DEBUG" to "true", "KLAUSE_CLI_OPTS" to javaOptions, "KLAUSE_CLI_PREFLIGHT_OPTS" to runtime)) +
-                        (profile?.let { mapOf("EIGNEX_LAB_PROFILE_DIR" to it.toString()) } ?: emptyMap())
+                        ?: error("execution requires a repository bench manifest or explicit profile")
+                    val env = environment() + mapOf("JOB_DIR" to directory.toString())
                     val start = now()
                     val processRunMs = runRemaining()
                     val graceMs = minOf(Experiments.STOP_GRACE_SEC * 1000, processRunMs?.let { (it / 10).coerceAtLeast(0) } ?: Long.MAX_VALUE)
@@ -132,16 +111,14 @@ class IterationExecutor(
                         124
                     }
                     val finish = now()
-                    val record = if (manifest.experiment.bench != null) {
+                    val record = if (manifest.experiment.bench != null && !reference) {
                         val resultFile = directory.resolve("cases/${case.index}/out/result.json")
                         val processed = BenchRuns.executionRecord(
-                            resultFile.takeIf(Files::isRegularFile)?.let(Files::readString), requireNotNull(case.problem.benchCase), exit)
+                            resultFile.takeIf(Files::isRegularFile)?.let(Files::readString), requireNotNull(benchCase), exit)
                         exit = processed.exit
                         processed.json
                     } else directory.resolve("cases/${case.index}").toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     Files.writeString(directory.resolve("${case.index}.exit"), "$exit\n")
-                    if (profile != null) CliMeasurements.writeManifest(profile, case.index, generation, id, host, command, exit,
-                        javaOptions, record, os == "mac", manifest.experiment.compilationRecording, manifest.experiment.recordsCliJfr)
                     ExecutionCaseResult(case.index, exit, start, finish, record, recordedCommand(directory, case.index, command))
                 } finally { cpu.release(permits) }
             } }).map { future ->
@@ -178,7 +155,7 @@ class IterationExecutor(
 /** Resolve and verify this iteration's model/data/include trees, rather than the experiment's entire corpus. */
 internal fun iterationInputPaths(cases: List<WorkCase>): List<String> = cases.flatMap { case ->
     listOfNotNull(case.problem.model, case.problem.data) + case.problem.includeDirs +
-        case.problem.benchCase?.inputs.orEmpty().filter { it.root == BenchInputRoot.CORPUS }.map { "lab-corpus/${it.path}" }
+        (case.executionCase ?: case.problem.benchCase)?.inputs.orEmpty().filter { it.root == BenchInputRoot.CORPUS }.map { "lab-corpus/${it.path}" }
 }.filter { it == "lab-corpus" || it.startsWith("lab-corpus/") }
     .map { it.removePrefix("lab-corpus").removePrefix("/") }.distinct()
 

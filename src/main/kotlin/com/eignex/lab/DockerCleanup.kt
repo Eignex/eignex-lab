@@ -157,7 +157,7 @@ class DockerCleanup(
         const val RETRY_MS = 10 * 60_000L
         const val BUILD_CACHE_AGE = "168h"
         const val IMAGE_FORMAT = "{{.Repository}}\t{{.Tag}}\t{{.ID}}"
-        const val DEFAULT_KEEP = "klause-xcsp3-cpsat:source-preserving-v2,klause-scip:latest,klause-clasp:latest"
+        const val DEFAULT_KEEP = "eignex-lab-xcsp3-cpsat:source-preserving-v2,eignex-lab-scip:latest,eignex-lab-clasp:latest"
         private const val KIB = 1024L
 
         /** The last cleanup written to [stateFile]; null before the first or when it cannot be read. */
@@ -248,7 +248,7 @@ class DockerCleanup(
     }
 }
 
-/** The reference image tags the commits of the queued and running [jobs] name in klause-bench, found with [grep]
+/** The reference image tags the commits of the queued and running [jobs] name in their repository, found with [grep]
  *  (`git grep` in the mirror, given a revision); null when a revision could not be read. */
 internal fun referencedImages(jobs: List<Job>, arms: (Long) -> List<PlannedArm>, repositories: Set<String>, grep: (String, String) -> Pair<Int, String>): Set<String>? {
     val pattern = DockerCleanup.pattern(repositories) ?: return emptySet()
@@ -291,7 +291,7 @@ internal fun dockerCleanup(
 
 /** The `git grep` [referencedImages] runs in [mirror]. */
 internal fun mirrorGrep(mirror: java.io.File): (String, String) -> Pair<Int, String> = { pattern, revision ->
-    gitIn(mirror, listOf("grep", "-I", "-ohE", pattern, revision, "--", "klause-bench"))
+    gitIn(mirror, listOf("grep", "-I", "-ohE", pattern, revision, "--"))
 }
 
 private fun execute(cmd: List<String>): Pair<Int, String> {

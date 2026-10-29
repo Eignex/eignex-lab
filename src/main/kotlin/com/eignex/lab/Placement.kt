@@ -23,19 +23,24 @@ object Placement {
      * need the local machine's reference solvers; and an analysis job, which reads
      * captures kept on the local machine. [cloudSchedule] says [name] is a run of a schedule that opts in to the cloud
      * ([Placement.cloudSchedule]): such a run may go to either unless another of these reasons holds, and its
-     * confirmations still stay.
+     * legacy confirmations still stay. Repository bench confirmations retain their original placement and platform.
      */
     fun localOnly(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): Boolean = localOnlyReason(spec, name, cloudSchedule) != null
 
     /** Which of [localOnly]'s reasons keeps [spec] named [name] on the local machine, in a few plain words; null when
      *  none does. */
-    fun localOnlyReason(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): String? = when {
-        Confirm.SUFFIX in name -> "a confirmation"
-        '@' in name && !cloudSchedule -> "a scheduled run whose schedule stays local"
-        spec.isAnalysis -> "an analysis of captures kept on the local machine"
-        runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND } ->
-            "a reference run, which needs the local machine's reference solvers"
-        else -> null
+    fun localOnlyReason(spec: ExperimentSpec, name: String, cloudSchedule: Boolean = false): String? {
+        val benchConfirmation = spec.bench != null && Confirm.SUFFIX in name
+        val pinnedLocal = Experiments.storedHost(spec.host) == Experiments.LAB_HOST ||
+            "local" in spec.nodeTags?.require.orEmpty() || "cloud" in spec.nodeTags?.exclude.orEmpty()
+        return when {
+            Confirm.SUFFIX in name && (!benchConfirmation || pinnedLocal) -> "a confirmation"
+            '@' in name && !cloudSchedule && !benchConfirmation -> "a scheduled run whose schedule stays local"
+            spec.isAnalysis -> "an analysis of captures kept on the local machine"
+            runCatching { Experiments.arms(spec) }.getOrDefault(emptyList()).any { it.values["backend"] == REFERENCE_BACKEND } ->
+                "a reference run, which needs the local machine's reference solvers"
+            else -> null
+        }
     }
 
     /** Where a job placed on [host] may run, in the words the pages and the client use: [LOCAL_ONLY] (`lab`),

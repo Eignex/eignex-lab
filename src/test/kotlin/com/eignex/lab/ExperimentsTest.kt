@@ -17,7 +17,7 @@ class ExperimentsTest {
     @Test
     fun `a local profile can opt into a whole run deadline`() {
         val spec = Json.decodeFromString<ExperimentSpec>(
-            """{"name":"bounded","host":"lab","profile":{"main":"com.eignex.klause.bench.profile.Tool","runTimeoutSec":180}}""",
+            """{"name":"bounded","host":"lab","profile":{"main":"com.eignex.tools.profile.Tool","classpath":["tools/lib/*"],"runTimeoutSec":180}}""",
         )
 
         Experiments.validate(spec, maxParallel = 4)
@@ -28,7 +28,7 @@ class ExperimentsTest {
     @Test
     fun `whole run deadlines reject nonpositive and overflowing limits`() {
         for (limit in listOf(0L, -1L, Long.MAX_VALUE)) {
-            val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = limit))
+            val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.tools.profile.Tool", runTimeoutSec = limit, classpath = listOf("tools/lib/*")))
 
             assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
         }
@@ -38,7 +38,7 @@ class ExperimentsTest {
     fun `Nomad supports whole run deadlines on portable jobs`() {
         for (host in listOf(Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
             val spec = ExperimentSpec("bounded", host = host,
-                profile = ProfileMain("com.eignex.klause.bench.profile.Tool", runTimeoutSec = 180))
+                profile = ProfileMain("com.eignex.tools.profile.Tool", runTimeoutSec = 180, classpath = listOf("tools/lib/*")))
 
             Experiments.validate(spec, maxParallel = 4)
         }
@@ -46,170 +46,11 @@ class ExperimentsTest {
 
     @Test
     fun `profile deadlines do not change the measurement fingerprint`() {
-        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+        val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
 
         assertEquals(Experiments.fingerprint(spec), Experiments.fingerprint(
             spec.copy(profile = spec.profile!!.copy(runTimeoutSec = 180)),
         ))
-    }
-
-    @Test
-    fun `maintained nonlinear reference specs preserve whole frozen memberships`() {
-        for ((file, set) in listOf(
-            "reference-qfnra.json" to "qfnra-core-v1,qfnra-holdout-v1",
-            "reference-qfnra-extensions.json" to "qfnra-extensions-v1",
-            "reference-qfnra-source-canonical.json" to "qfnra-source-canonical-v1",
-        )) {
-            val spec = Json.decodeFromJsonElement(ExperimentSpec.serializer(), experimentInput(
-                Json.parseToJsonElement(java.io.File("deploy/specs/$file").readText()).jsonObject))
-
-            Experiments.validate(spec, maxParallel = 4)
-
-            assertEquals(listOf(mapOf("set" to set, "reference" to "any")), spec.problems)
-            assertEquals("z3", spec.base["solver"])
-            assertEquals("reference", spec.base["backend"])
-            assertEquals("10000", spec.base["timeout"])
-            assertEquals("1", spec.base["processors"])
-            assertEquals(1, spec.parallel)
-        }
-    }
-
-    @Test
-    fun `a missing bench launcher cannot be mistaken for legacy provenance support`() {
-        val root = Files.createTempDirectory("missing bench ").toFile()
-        try {
-            root.resolve("klause-bench").mkdirs()
-            val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path)).start()
-            assertNotEquals(0, process.waitFor())
-        } finally { root.deleteRecursively() }
-    }
-
-    @Test
-    fun `successful capture without a manifest fails setup`() {
-        val root = Files.createTempDirectory("empty manifest ").toFile()
-        try {
-            val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
-            bench.parentFile.mkdirs()
-            bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo 'bench provenance out=<file>'; exit 1;; provenance) exit 0;; esac\n")
-            bench.setExecutable(true)
-            val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path)).start()
-            assertNotEquals(0, process.waitFor())
-        } finally { root.deleteRecursively() }
-    }
-
-    @Test
-    fun `setup captures manifests for supported revisions and keeps older revisions runnable`() {
-        for (supported in listOf(true, false)) {
-            val root = Files.createTempDirectory("provenance path ").toFile()
-            try {
-                val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
-                bench.parentFile.mkdirs()
-                val help = if (supported) "bench provenance out=<file>" else "bench solve-one"
-                // A bench's --help exits 1, as klause-bench's does, whether or not it can write a manifest.
-                bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo '$help'; exit 1;; provenance) pwd > \"\${2#out=}\";; esac\n")
-                bench.setExecutable(true)
-
-                val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path))
-                    .redirectErrorStream(true).start()
-                process.inputStream.bufferedReader().readText()
-                val exit = process.waitFor()
-
-                assertEquals(0, exit)
-                assertEquals(supported, root.resolve("klause-bench/build/provenance.json").exists())
-                if (supported) {
-                    assertEquals(root.resolve("klause-bench").path,
-                        root.resolve("klause-bench/build/provenance.json").readText().trim())
-                }
-            } finally {
-                root.deleteRecursively()
-            }
-        }
-    }
-
-    @Test
-    fun `case commands select their manifest and clear stale inherited paths for older revisions`() {
-        for (captured in listOf(true, false)) {
-            val root = Files.createTempDirectory("case provenance ").toFile()
-            try {
-                val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
-                bench.parentFile.mkdirs()
-                bench.writeText("#!/bin/sh\nprintf '%s' \"\${KLAUSE_BENCH_PROVENANCE-unset}\" > \"\$RECORDED\"\n")
-                bench.setExecutable(true)
-                val manifest = root.resolve("klause-bench/build/provenance.json")
-                if (captured) manifest.writeText("{}")
-                val recorded = root.resolve("environment.txt")
-                val command = Experiments.command(root.path, Problem("s", "p"), Arm("a", emptyMap()), null, 0, "/corpus")
-                val builder = ProcessBuilder("bash", "-c", command).redirectErrorStream(true)
-                builder.environment().putAll(mapOf("KLAUSE_BENCH_PROVENANCE" to "/stale",
-                    "JOB_DIR" to root.path, "RECORDED" to recorded.path))
-
-                val process = builder.start()
-                process.inputStream.bufferedReader().readText()
-                val exit = process.waitFor()
-
-                assertEquals(0, exit)
-                assertEquals(if (captured) manifest.path else "unset", recorded.readText())
-            } finally {
-                root.deleteRecursively()
-            }
-        }
-    }
-
-    @Test
-    fun `a failed manifest capture fails setup`() {
-        val root = Files.createTempDirectory("provenance failure").toFile()
-        try {
-            val bench = root.resolve("klause-bench/build/install/klause-bench/bin/klause-bench")
-            bench.parentFile.mkdirs()
-            bench.writeText("#!/bin/sh\ncase \"\$1\" in --help) echo 'bench provenance out=<file>';; provenance) exit 7;; esac\n")
-            bench.setExecutable(true)
-
-            val process = ProcessBuilder("bash", "-c", Experiments.captureProvenance(root.path))
-                .redirectErrorStream(true).start()
-            process.inputStream.bufferedReader().readText()
-            val exit = process.waitFor()
-
-            assertEquals(7, exit)
-        } finally {
-            root.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `CLI profiling accepts normal parallel limits wherever it runs`() {
-        val experiment = spec().copy(measurement = Measurement.JFR)
-
-        for (host in listOf("lab", "auto", "aws")) for (parallel in listOf(null, 1, 4)) {
-            Experiments.validate(experiment.copy(host = host, parallel = parallel), maxParallel = 4)
-        }
-        assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(experiment))
-    }
-
-    @Test
-    fun `CLI resource measurement accepts parallel native cases and keeps recording disabled`() {
-        val measured = spec().copy(measurement = Measurement.RESOURCES, parallel = 1)
-
-        for (host in listOf("lab", "auto", "aws")) Experiments.validate(measured.copy(host = host), maxParallel = 4)
-        assertTrue(measured.measuresCli)
-        assertFalse(measured.recordsCliJfr || measured.instrumented)
-        assertNotEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(measured))
-        Experiments.validate(measured.copy(parallel = 2), maxParallel = 4)
-        assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(measured.copy(configs = listOf(mapOf("backend" to "reference"))), maxParallel = 4)
-        }
-    }
-
-    @Test
-    fun `compilation measurement enables JFR and marks the experiment instrumented`() {
-        val profiled = spec().copy(measurement = Measurement.JFR, parallel = 1)
-        for (mode in listOf(Measurement.COMPILATION, Measurement.COMPILATION_LOG)) {
-            val instrumented = profiled.copy(measurement = mode)
-            Experiments.validate(instrumented, maxParallel = 4)
-            assertTrue(instrumented.recordsCliJfr && instrumented.instrumented)
-            assertNotEquals(Experiments.fingerprint(profiled), Experiments.fingerprint(instrumented))
-        }
-        assertFalse(profiled.instrumented)
-        assertEquals(Experiments.fingerprint(spec()), Experiments.fingerprint(spec().copy(measurement = Measurement.NONE)))
     }
 
     @Test
@@ -226,26 +67,13 @@ class ExperimentsTest {
             analysis.copy(base = mapOf("ref" to "main")),
             analysis.copy(measurement = Measurement.JFR),
             analysis.copy(measurement = Measurement.RESOURCES),
-            analysis.copy(profile = ProfileMain("com.eignex.klause.bench.profile.Tool")),
+            analysis.copy(profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*"))),
         )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxParallel = 4) }
         val defaulted = Json.decodeFromJsonElement(ExperimentSpec.serializer(),
             analysisDefaults(Json.parseToJsonElement("""{"analyze": {"job": 9}}""").jsonObject))
         assertEquals("analyze-9", defaulted.name)
         assertEquals(AnalyzeSpec(9, "compilation"), defaulted.analyze)
         assertTrue(defaulted.description.isNotBlank())
-    }
-
-    @Test
-    fun `exact policy is validated and forwarded to each case`() {
-        for (exact in listOf("true", "false")) {
-            val experiment = spec(base = mapOf("exact" to exact))
-            Experiments.validate(experiment, maxParallel = 4)
-            val arm = Experiments.arms(experiment).single()
-
-            val command = Experiments.command("/w/7", Problem("hakank", "agprice"), arm, 1, 0, "/corpus")
-
-            assertContains(command, "'exact=$exact'")
-        }
     }
 
     @Test
@@ -262,39 +90,6 @@ class ExperimentsTest {
                 "out=\"\$JOB_DIR/cases/2\"",
             command,
         )
-    }
-
-    @Test
-    fun `a Klause case passes only solve-one's own keys to the bench`() {
-        val arm = Arm("k", mapOf("ref" to "main", "backend" to "klause", "solver" to "z3", "fixed" to "true",
-            "timeout" to "3000", "engine" to "cp", "processors" to "2", "lp" to "on", "presolve" to "off", "exact" to "true",
-            "param.restarts" to "luby"))
-
-        val command = Experiments.command("/w/7", Problem("xcsp3-cop", "Rack-1"), arm, 5, 12, "/corpus")
-
-        for (key in listOf("backend=", "solver=", "fixed=", "ref=", "label=")) assertFalse("'$key" in command, key)
-        assertContains(
-            command,
-            "solve-one 'suite=xcsp3-cop' 'problem=Rack-1' 'engine=cp' 'exact=true' 'lp=on' 'param=restarts=luby' " +
-                "'presolve=off' 'processors=2' 'timeout=3000' 'solver-seed=5' out=\"\$JOB_DIR/cases/12\"",
-        )
-    }
-
-    @Test
-    fun `backend is klause by default or reference, and solver and fixed need a reference arm`() {
-        for (base in listOf(emptyMap(), mapOf("backend" to "klause"), mapOf("backend" to "reference", "solver" to "chuffed", "fixed" to "true"))) {
-            Experiments.validate(spec(base = base), maxParallel = 4)
-        }
-        val refused = listOf(
-            mapOf("backend" to "minizinc") to "backend must be klause",
-            mapOf("solver" to "z3") to "'solver' is for reference arms",
-            mapOf("backend" to "klause", "fixed" to "true") to "'fixed' is for reference arms",
-            mapOf("backend" to "reference", "fixed" to "yes") to "fixed must be true or false",
-        )
-        for ((base, message) in refused) {
-            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec(base = base), maxParallel = 4) }
-            assertContains(error.message.orEmpty(), message)
-        }
     }
 
     @Test
@@ -368,7 +163,7 @@ class ExperimentsTest {
             Experiments.validate(spec(configs = listOf(mapOf("cmd" to "rm"))), maxParallel = 4)
         }
 
-        assertContains(error.message.orEmpty(), "unknown config key 'cmd'")
+        assertContains(error.message.orEmpty(), "execution requires a repository bench manifest")
     }
 
     @Test
@@ -376,80 +171,6 @@ class ExperimentsTest {
         assertFailsWith<IllegalArgumentException> {
             Experiments.validate(spec(base = mapOf("engine" to "cp; rm -rf /")), maxParallel = 4)
         }
-    }
-
-    @Test
-    fun `a case solves one problem with its arm's arguments and seed`() {
-        val arm = Arm("x", mapOf("ref" to "main", "timeout" to "3000", "param.restarts" to "luby"))
-
-        val command = Experiments.command("/w/7", Problem("xcsp3-cop", "Rack-1"), arm, 5, 12, "/corpus")
-
-        assertContains(
-            command,
-            "solve-one 'suite=xcsp3-cop' 'problem=Rack-1' 'param=restarts=luby' 'timeout=3000' 'solver-seed=5' " +
-                "out=\"\$JOB_DIR/cases/12\"",
-        )
-    }
-
-    @Test
-    fun `an arm's debug defaults to on, is never passed to the bench, and false turns KLAUSE_DEBUG off`() {
-        val on = Arm("on", mapOf("timeout" to "3000"))
-        val explicit = Arm("explicit", mapOf("timeout" to "3000", "debug" to "true"))
-        val off = Arm("off", mapOf("timeout" to "3000", "debug" to "false"))
-
-        assertTrue(on.debug && explicit.debug)
-        assertFalse(off.debug)
-        for (arm in listOf(on, explicit, off)) {
-            val command = Experiments.command("/w/7", Problem("s", "p"), arm, null, 0, "/corpus")
-            assertFalse("debug=" in command.substringAfter("solve-one"), command)
-            assertEquals(!arm.debug, "KLAUSE_DEBUG=false" in command, command)
-        }
-        assertContains(Experiments.profileCommand("/w", ProfileMain("com.eignex.klause.bench.profile.Tool"), 0, "/c", debug = false),
-            "KLAUSE_DEBUG=false")
-        assertFalse("KLAUSE_DEBUG" in Experiments.profileCommand("/w", ProfileMain("com.eignex.klause.bench.profile.Tool"), 0, "/c"))
-    }
-
-    @Test
-    fun `a case with debug off runs its CLI with KLAUSE_DEBUG=false over the host's true, keeping its profiling options`() {
-        val root = Files.createTempDirectory("debug case").toFile()
-        try {
-            val bin = root.resolve("w/klause-bench/build/install/klause-bench/bin").apply { mkdirs() }
-            bin.resolve("klause-bench").apply {
-                writeText("#!/usr/bin/env bash\nprintf '%s\\n' \"\$KLAUSE_DEBUG\" \"\$KLAUSE_CLI_OPTS\"\n")
-                setExecutable(true)
-            }
-            fun run(arm: Arm): List<String> {
-                val command = Experiments.command(root.resolve("w").path, Problem("s", "p"), arm, null, 0, "/corpus")
-                val builder = ProcessBuilder("bash", "-c", command).redirectErrorStream(true)
-                // What every host sets for a case, profiling options included.
-                builder.environment()["KLAUSE_DEBUG"] = "true"
-                builder.environment()["KLAUSE_CLI_OPTS"] = "-XX:StartFlightRecording=filename=cli.jfr"
-                builder.environment()["JOB_DIR"] = root.path
-                val process = builder.start()
-                return process.inputStream.bufferedReader().readText().lines().also { assertEquals(0, process.waitFor()) }
-            }
-
-            assertEquals(listOf("false", "-XX:StartFlightRecording=filename=cli.jfr"), run(Arm("off", mapOf("debug" to "false"))).take(2))
-            assertEquals(listOf("true", "-XX:StartFlightRecording=filename=cli.jfr"), run(Arm("on", emptyMap())).take(2))
-        } finally {
-            root.deleteRecursively()
-        }
-    }
-
-    @Test
-    fun `debug must be true or false, with profiling too, and only false changes the fingerprint`() {
-        Experiments.validate(spec(base = mapOf("debug" to "false")), maxParallel = 4)
-        Experiments.validate(spec(grid = mapOf("debug" to listOf("true", "false"))), maxParallel = 4)
-        Experiments.validate(spec(base = mapOf("debug" to "false")).copy(parallel = 1, measurement = Measurement.COMPILATION), maxParallel = 4)
-        for (value in listOf("yes", "TRUE", "0")) {
-            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec(base = mapOf("debug" to value)), maxParallel = 4) }
-            assertContains(error.message.orEmpty(), "debug must be true or false")
-        }
-
-        val plain = spec(base = mapOf("timeout" to "10000"))
-        assertEquals(Experiments.fingerprint(plain), Experiments.fingerprint(spec(base = mapOf("timeout" to "10000", "debug" to "true"))))
-        assertEquals(Experiments.fingerprint(plain), Experiments.fingerprint(plain.copy(configs = listOf(mapOf("debug" to "true")))))
-        assertNotEquals(Experiments.fingerprint(plain), Experiments.fingerprint(spec(base = mapOf("timeout" to "10000", "debug" to "false"))))
     }
 
     @Test
@@ -483,27 +204,6 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `an experiment that runs the reference solver is not filtered by it`() {
-        val reference = spec(base = mapOf("backend" to "reference"))
-
-        assertEquals(listOf(ReferenceFilterMode.DECIDED, ReferenceFilterMode.ANY),
-            listOf(spec(), reference).map { Experiments.referenceFilter(it, mapOf("suite" to "s")) })
-    }
-
-    @Test
-    fun `a filtered selection is capped per family and in all after filtering`() {
-        val problems = listOf("a" to 1, "a" to 2, "a" to 3, "b" to 1, "b" to 2).map { (f, i) -> Problem("s", "$f$i", family = f) }
-
-        assertEquals(listOf("a1", "b1", "a2"), Experiments.cap(problems, perFamily = 2, max = 3).map { it.problem })
-    }
-
-    @Test
-    fun `a capped selection is asked of the bench without its caps`() {
-        assertEquals(mapOf("suite" to "s", "per-family" to "1000000", "seed" to "1"),
-            Experiments.uncapped(mapOf("suite" to "s", "per-family" to "1", "max" to "20", "seed" to "1")))
-    }
-
-    @Test
     fun `the missing filter keeps only problems without a reference verdict`() {
         val decided = Reference("scip", false, 3.0, true, true, 100, 10_000)
 
@@ -529,31 +229,12 @@ class ExperimentsTest {
     }
 
     @Test
-    fun `a selection with one problem per family and no per-family is flagged as capped by the suite`() {
-        val one = listOf("a", "b", "c").map { Problem("s", "$it/1", family = it) }
-        val two = one + Problem("s", "a/2", family = "a")
-
-        assertNotNull(Experiments.defaultCapped(mapOf("suite" to "s"), one))
-        assertNull(Experiments.defaultCapped(mapOf("suite" to "s", "per-family" to "1"), one))
-        assertNull(Experiments.defaultCapped(mapOf("suite" to "s"), two))
-    }
-
-    @Test
     fun `a fingerprint ignores how a spec runs but not what it measures`() {
         val sweep = spec(base = mapOf("timeout" to "10000"))
 
         assertEquals(Experiments.fingerprint(sweep),
             Experiments.fingerprint(sweep.copy(name = "x@abc", base = sweep.base + ("ref" to "abc"), priority = -1, parallel = 3)))
         assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(spec(base = mapOf("timeout" to "60000"))))
-    }
-
-    @Test
-    fun `a named set is selected whole, without a suite`() {
-        val sweep = ExperimentSpec("e", listOf(mapOf("set" to "sweep")))
-
-        Experiments.validate(sweep, maxParallel = 6)
-        assertEquals(ReferenceFilterMode.ANY, Experiments.referenceFilter(sweep, mapOf("set" to "sweep")))
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(ExperimentSpec("e", listOf(mapOf("max" to "5"))), maxParallel = 6) }
     }
 
     @Test
@@ -582,11 +263,11 @@ class ExperimentsTest {
 
     @Test
     fun `a profile job names an Eignex main and no problems configs seeds or repeats`() {
-        val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.klause.bench.profile.Timing", listOf("a=1")), description = "d")
+        val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.tools.profile.Timing", listOf("a=1"), classpath = listOf("tools/lib/*")), description = "d")
 
         Experiments.validate(profile, maxParallel = 4)
-        for (main in listOf("java.lang.Runtime", "com.eignex", "com.eignex.klause.bench.profile.X; rm -rf /", "com.eignex.bad-name.Main")) {
-            assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main)), maxParallel = 4) }
+        for (main in listOf("unqualified", "9bad.Class", "com.eignex.tools.profile.X; rm -rf /", "com.eignex.bad-name.Main")) {
+            assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main, classpath = listOf("tools/lib/*"))), maxParallel = 4) }
         }
         assertFailsWith<IllegalArgumentException> {
             Experiments.validate(profile.copy(problems = listOf(mapOf("suite" to "s"))), maxParallel = 4)
@@ -608,7 +289,7 @@ class ExperimentsTest {
                 setExecutable(true)
             }
             val args = listOf("plain", "with space", "\$(touch pwned)", "it's")
-            val command = Experiments.profileCommand(worktree.path, ProfileMain("com.eignex.klause.bench.Tool", args), 0, "/corpus")
+            val command = Experiments.profileCommand(worktree.path, ProfileMain("com.eignex.tools.Tool", args, classpath = listOf("tools/lib/*")), 0, "/corpus")
             val builder = ProcessBuilder("bash", "-c", command).directory(root).redirectErrorStream(true)
             builder.environment()["JOB_DIR"] = jobDir.path
             builder.environment()["JAVA_HOME"] = javaHome.path
@@ -621,7 +302,7 @@ class ExperimentsTest {
             assertEquals(worktree.canonicalPath, out.resolve("where").readText().trim())
             val argv = out.resolve("argv").readLines()
             assertTrue(argv.first().startsWith("-XX:StartFlightRecording=filename=${out.path}/profile.jfr"))
-            assertEquals(listOf("com.eignex.klause.bench.Tool") + args, argv.takeLast(args.size + 1))
+            assertEquals(listOf("com.eignex.tools.Tool") + args, argv.takeLast(args.size + 1))
             assertTrue(root.walkTopDown().none { it.name == "pwned" })
         } finally {
             root.deleteRecursively()
@@ -640,7 +321,7 @@ class ExperimentsTest {
 
     @Test
     fun `a capped profile limit says what was asked, and one within the cap says nothing`() {
-        val main = ProfileMain("com.eignex.klause.bench.profile.Tool")
+        val main = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*"))
         val within = ExperimentSpec("p", base = mapOf("timeout" to "1800000"), profile = main)
         val over = ExperimentSpec("p", host = Experiments.LAB_HOST, base = mapOf("timeout" to "36000000"),
             profile = main.copy(runTimeoutSec = 86_400))
@@ -658,7 +339,7 @@ class ExperimentsTest {
     @Test
     fun `a profile timeout must be a positive number of ms`() {
         for (timeout in listOf("0", "-5", "soon")) {
-            val spec = ExperimentSpec("p", base = mapOf("timeout" to timeout), profile = ProfileMain("com.eignex.klause.bench.profile.Tool"))
+            val spec = ExperimentSpec("p", base = mapOf("timeout" to timeout), profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
 
             val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
             assertContains(error.message!!, "10 min unless it says")
@@ -668,7 +349,7 @@ class ExperimentsTest {
     @Test
     fun `a profile job's spec reads from JSON without problems, and a retired script job's still reads`() {
         val spec = Json.decodeFromString<ExperimentSpec>(
-            """{"name":"p","description":"d","profile":{"main":"com.eignex.klause.bench.profile.Tool","args":["x"]},"base":{"ref":"main"}}""",
+            """{"name":"p","description":"d","profile":{"main":"com.eignex.tools.profile.Tool","classpath":["tools/lib/*"],"args":["x"]},"base":{"ref":"main"}}""",
         )
         val old = Json.decodeFromString<ExperimentSpec>("""{"name":"s","description":"d","script":"echo hi","base":{"ref":"main"}}""")
 
@@ -679,7 +360,7 @@ class ExperimentsTest {
 
     @Test
     fun `an experiment may not set what a case solves or where it writes, nor odd option names`() {
-        val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("engine" to "cp"), description = "d")
+        val spec = ExperimentSpec("e", bench = BenchSpec("bench.json"), description = "d")
 
         Experiments.validate(spec, maxParallel = 4)
         for (base in listOf(mapOf("out" to "/tmp/x"), mapOf("problem" to "p"), mapOf("suite" to "s"), mapOf("a b" to "1"), mapOf("x" to "a\nb"))) {
@@ -733,8 +414,8 @@ class ExperimentsTest {
             assertNull(Experiments.splitOf(batched.copy(name = name), listOf(activeJob(batched))))
             assertNull(Experiments.splitOf(batched, listOf(activeJob(batched.copy(name = name)))))
         }
-        val profile = ExperimentSpec("profile", base = mapOf("ref" to "main"), profile = ProfileMain("com.eignex.klause.bench.profile.Tool", listOf("a")))
-        assertNull(Experiments.splitOf(profile.copy(profile = ProfileMain("com.eignex.klause.bench.profile.Tool", listOf("b"))), listOf(activeJob(profile))))
+        val profile = ExperimentSpec("profile", base = mapOf("ref" to "main"), profile = ProfileMain("com.eignex.tools.profile.Tool", listOf("a"), classpath = listOf("tools/lib/*")))
+        assertNull(Experiments.splitOf(profile.copy(profile = ProfileMain("com.eignex.tools.profile.Tool", listOf("b"), classpath = listOf("tools/lib/*"))), listOf(activeJob(profile))))
         for (job in listOf(
             activeJob(batched, Status.RUNNING, cancelRequested = true),
             activeJob(batched, Status.CANCELLED, cancelRequested = true),

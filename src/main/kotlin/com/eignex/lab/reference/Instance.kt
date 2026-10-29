@@ -6,11 +6,11 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Locale
 
-/** The source formats a reference solver reads, named as `klause-bench select` prints them. */
+/** The source formats a reference solver reads, named in solver-v1 records. */
 enum class Format { MINIZINC, XCSP3, DIMACS, OPB, WCNF, SMTLIB, MPS }
 
 /**
- * One problem as `klause-bench select files=true` resolves it: its [model] file (plain or zstd-compressed), the
+ * One problem as the repository manifest resolves it: its [model] file (plain or zstd-compressed), the
  * MiniZinc [data] file, and the [includeDirs] its collection ships for `minizinc -I`.
  */
 data class Instance(
@@ -94,7 +94,7 @@ object CorpusFiles {
         return hex(digest.digest())
     }
 
-    /** The `model` and `data` digests a lab record binds its verdict to, as klause-bench computes them. */
+    /** The `model` and `data` digests a lab record binds its verdict to, as the suite computes them. */
     fun sourceHashes(instance: Instance): Map<String, String> = buildMap {
         put("model", sha256(instance.model))
         instance.data?.let { put("data", sha256(it)) }

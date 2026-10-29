@@ -49,10 +49,10 @@ class SubmissionOptionsTest {
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
         val config = Config(dataDir = root, passwordHash = null, nomadQueueSettings = queue)
         val store = Store(config.database)
-        val original = ExperimentSpec("status-sweep", problems = listOf(mapOf("suite" to "s")), description = "regression sweep", priority = 100)
+        val original = ExperimentSpec("status-sweep", bench = BenchSpec("bench.json"), description = "regression sweep", priority = 100)
         val id = store.createSchedule(original.name, "main", original, 120)
         store.scheduleRan(id, "abc", 1)
-        application { api(config, store, HostReport("test", 4, "java", "vector", true, emptyList())) }
+        application { api(config, store, HostReport("test", 4, "java")) }
         val response = client.get("/schedules")
         val experiment = Json.parseToJsonElement(response.bodyAsText()).jsonArray.single().jsonObject.getValue("experiment").jsonObject
         assertEquals(listOf("local"), experiment.getValue("tags").jsonArray.map { it.jsonPrimitive.content })
@@ -88,7 +88,6 @@ class SubmissionOptionsTest {
             assertEquals(experiment, Json.decodeFromString<ExperimentSpec>(stored))
             assertEquals(name != "none", "measurement" in Json.parseToJsonElement(stored).jsonObject)
             assertTrue(fingerprints.add(Experiments.fingerprint(experiment)))
-            Experiments.validate(experiment, 4)
         }
         assertEquals(Json.parseToJsonElement("""{"name":"ordinary"}"""), input("""{"name":"ordinary"}"""))
     }
@@ -105,62 +104,54 @@ class SubmissionOptionsTest {
         )) assertFailsWith<IllegalArgumentException>(fields) {
             spec("""{"name":"e","problems":{"suite":"s"},$fields}""")
         }
-        val profile = spec("""{"name":"e","measurement":"jfr","profile":{"main":"com.eignex.Main"}}""")
+        val profile = spec("""{"name":"e","measurement":"jfr","profile":{"main":"com.eignex.Main","classpath":["tools/lib/*"]}}""")
         assertFailsWith<IllegalArgumentException> { Experiments.validate(profile, 4) }
     }
 
     @Test
-    fun `all measurement modes accept parallel cases within the configured limit`() {
+    fun `bench instrumentation belongs to the repository request`() {
+        val bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("measurement" to "jfr")))
         for (mode in Measurement.entries) {
-            val experiment = ExperimentSpec("e", problems = listOf(mapOf("suite" to "s")), measurement = mode, parallel = 4)
-            Experiments.validate(experiment, 4, 4)
-            assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment.copy(parallel = 5), 4, 4) }
+            val experiment = ExperimentSpec("e", bench = bench, measurement = mode, parallel = 4)
+            if (mode == Measurement.NONE) Experiments.validate(experiment, 4)
+            else assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, 4) }
         }
     }
 
     @Test
-    fun `measurement is stored directly for immediate submissions and schedule edits`() = testApplication {
+    fun `opaque recording requests survive immediate submissions and schedule edits`() = testApplication {
         val root = Files.createTempDirectory("measurement api")
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
         val config = Config(dataDir = root, passwordHash = null, nomadQueueSettings = queue)
         val store = Store(config.database)
-        val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", problems = listOf(mapOf("suite" to "s"))), 3600)
-        application { api(config, store, HostReport("test", 4, "java", "vector", true, emptyList())) }
+        val schedule = store.createSchedule("nightly", "main", ExperimentSpec("e", description = "d", bench = BenchSpec("bench.json")), 3600)
+        application { api(config, store, HostReport("test", 4, "java")) }
         val created = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"e","description":"record resources","problems":{"suite":"s"},"base":{"ref":"0123456789abcdef"},"measurement":"resources"}""")
+            setBody("""{"name":"e","description":"record resources","bench":{"manifest":"bench.json","request":{"parameters":{"measurement":"resources"}}},"base":{"ref":"0123456789abcdef"}}""")
         }
         assertEquals(HttpStatusCode.Created, created.status)
-        assertEquals(Measurement.RESOURCES, store.active().single().experiment!!.measurement)
-        assertEquals(1, store.active().single().parallel)
-        val id = store.active().single().id
-        val parallel = client.post("/jobs/$id/parallel") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"parallel":4}""")
-        }
-        assertEquals(HttpStatusCode.OK, parallel.status)
-        assertEquals(4, store.job(id)!!.parallel)
+        assertEquals("resources", store.active().single().experiment!!.bench!!.request.parameters["measurement"])
         val updated = client.post("/schedules/$schedule") {
             contentType(ContentType.Application.Json)
-            setBody("""{"experiment":{"name":"e","description":"record compilations","problems":{"suite":"s"},"measurement":"compilation+log","parallel":4}}""")
+            setBody("""{"experiment":{"name":"e","description":"record compilations","bench":{"manifest":"bench.json","request":{"parameters":{"measurement":"compilation+log"}}},"parallel":4}}""")
         }
         assertEquals(HttpStatusCode.OK, updated.status)
-        assertEquals("jfr+log", store.schedules().single().experiment.compilationRecording)
+        assertEquals("compilation+log", store.schedules().single().experiment.bench!!.request.parameters["measurement"])
         assertEquals(4, store.schedules().single().experiment.parallel)
         val rejected = client.post("/experiments") {
             contentType(ContentType.Application.Json)
-            setBody("""{"name":"bad","measurement":"jfr","profileCli":false}""")
+            setBody("""{"name":"bad","description":"d","bench":{"manifest":"bench.json"},"measurement":"jfr"}""")
         }
         assertEquals(HttpStatusCode.BadRequest, rejected.status)
-        assertEquals(1, store.active().size)
     }
 
     @Test
-    fun `client accepts only consolidated options and passes harness and main arguments literally`() {
+    fun `client accepts only consolidated options and passes main arguments literally`() {
         val root = Files.createTempDirectory("submission client")
         try {
             root.resolve("curl").apply { writeText("#!/bin/sh\ncat\n"); toFile().setExecutable(true) }
-            fun command(vararg args: String): Pair<Int, String> = ProcessBuilder(listOf("bash", "deploy/lab") + args)
+            fun command(vararg args: String): Pair<Int, String> = ProcessBuilder(listOf("bash", "deploy/lab") + (if (args.firstOrNull() == "profile") listOf("profile", "--repo", "Eignex/example", "--classpath", "tools/lib/*") + args.drop(1) else args.toList()))
                 .redirectErrorStream(true).apply {
                     environment()["PATH"] = "$root:${System.getenv("PATH")}"
                     environment()["LAB_PASSWORD"] = "fixture-password"
@@ -174,18 +165,17 @@ class SubmissionOptionsTest {
                 assertEquals(0, exit, output)
                 return Json.parseToJsonElement(output).jsonObject
             }
-            val capture = payload("koblas", "--tags", "arch:arm64, simd:sme,!spot", "--tags", "dedicated", "--timeout", "900",
-                "main", "SME run", "--smoke", "--operation", "dot")
+            val capture = payload("profile", "--tags", "arch:arm64, simd:sme,!spot", "--tags", "dedicated", "--timeout", "900",
+                "com.eignex.Main", "main", "SME run", "--", "--mode=small", "literal value")
             assertEquals(listOf("!spot", "arch:arm64", "dedicated", "simd:sme"), capture["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals("900000", capture["base"]!!.jsonObject["timeout"]!!.jsonPrimitive.content)
-            assertEquals(listOf("--smoke", "--operation", "dot"), capture["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals(listOf("--mode=small", "literal value"), capture["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
 
             val modern = payload("profile", "--timeout", "600", "com.eignex.Main", "main", "JFR run", "--", "--mode=small", "literal value")
             assertEquals("600000", modern["base"]!!.jsonObject["timeout"]!!.jsonPrimitive.content)
             assertEquals(listOf("--mode=small", "literal value"), modern["profile"]!!.jsonObject["args"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(2, command("profile", "com.eignex.Main", "main", "JFR run", "local", "600", "--mode=small").first)
             for (flag in listOf("--require-tag", "--exclude-tag")) {
-                assertEquals(2, command("koblas", flag, "spot", "main", "bad").first)
                 assertEquals(2, command("profile", flag, "spot", "com.eignex.Main", "main", "bad").first)
             }
             val defaults = payload("profile", "com.eignex.Main", "main", "JFR run", "--", "--mode=small")
@@ -199,9 +189,10 @@ class SubmissionOptionsTest {
             assertEquals(listOf("!spot", "fast-ssd", "simd:avx2"), run["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(listOf("!spot", "arch:x86_64"), payload("tags", "7", "arch:x86_64,!spot")["tags"]!!.jsonArray.map { it.jsonPrimitive.content })
             assertEquals(0, payload("tags", "7")["tags"]!!.jsonArray.size)
+            assertEquals(2, command("koblas", "main", "retired capture").first)
             assertEquals(2, command("host", "7", "auto").first)
             assertEquals(2, command("machines", "7", "2").first)
-            assertEquals(2, command("koblas", "--tags", "simd:avx2,,!spot", "main", "bad").first)
+            assertEquals(2, command("profile", "--tags", "simd:avx2,,!spot", "com.eignex.Main", "main", "bad").first)
         } finally { root.toFile().deleteRecursively() }
     }
 }

@@ -22,7 +22,7 @@ class CliMeasurementsTest {
         val cli = dir.resolve(CliMeasurements.CLI)
         Files.createDirectories(cli.parent)
         val javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java")
-        Files.writeString(cli, "#!/bin/bash\nexec ${quote(javaExecutable.toString())} \$KLAUSE_CLI_OPTS -version\n")
+        Files.writeString(cli, "#!/bin/bash\nexec ${quote(javaExecutable.toString())} \$FIXTURE_JAVA_OPTS -version\n")
         cli.toFile().setExecutable(true)
         val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString())).start()
         assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
@@ -30,7 +30,7 @@ class CliMeasurementsTest {
         Files.createDirectories(profile)
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
         builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
-        builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m -XX:ActiveProcessorCount=1 ${CliMeasurements.options(profile.toString())}"
+        builder.environment()["FIXTURE_JAVA_OPTS"] = "-Xmx64m -XX:ActiveProcessorCount=1 ${CliMeasurements.options(profile.toString())}"
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()
@@ -88,14 +88,14 @@ class CliMeasurementsTest {
         Files.createDirectories(cli.parent)
         val javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java")
         // A shell CLI reads its options as the real start script does: split on spaces, each word one argument.
-        Files.writeString(cli, "#!/bin/bash\nexec ${quote(javaExecutable.toString())} \$KLAUSE_CLI_OPTS -Xshare:off -version\n")
+        Files.writeString(cli, "#!/bin/bash\nexec ${quote(javaExecutable.toString())} \$FIXTURE_JAVA_OPTS -Xshare:off -version\n")
         cli.toFile().setExecutable(true)
         val setup = ProcessBuilder("bash", "-c", CliMeasurements.install(dir.toString())).start()
         assertEquals(0, setup.waitFor(), setup.errorStream.bufferedReader().readText())
         val profile = Files.createDirectories(dir.resolve("profile"))
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
         builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
-        builder.environment()["KLAUSE_CLI_OPTS"] = "-Xmx64m ${CliMeasurements.options(profile.toString(), "jfr+log")}"
+        builder.environment()["FIXTURE_JAVA_OPTS"] = "-Xmx64m ${CliMeasurements.options(profile.toString(), "jfr+log")}"
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()
@@ -117,12 +117,12 @@ class CliMeasurementsTest {
     @Test
     fun `the macOS launcher hands the compilation options to the CLI as they were set`() {
         val dir = Files.createTempDirectory("measurement")
-        val cli = macLauncher(dir, "#!/bin/bash\nprintf '%s\\n' \$KLAUSE_CLI_OPTS\n")
+        val cli = macLauncher(dir, "#!/bin/bash\nprintf '%s\\n' \$FIXTURE_JAVA_OPTS\n")
         val profile = Files.createDirectories(dir.resolve("profile"))
         val builder = ProcessBuilder(cli.toString()).redirectErrorStream(true)
         builder.environment()["EIGNEX_LAB_PROFILE_DIR"] = profile.toString()
         val options = CliMeasurements.options(profile.toString(), "jfr+log")
-        builder.environment()["KLAUSE_CLI_OPTS"] = options
+        builder.environment()["FIXTURE_JAVA_OPTS"] = options
 
         val process = builder.start()
         val output = process.inputStream.bufferedReader().readText()

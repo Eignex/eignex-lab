@@ -155,9 +155,8 @@ data class CaseResult(
      * null while it waits.
      */
     val host: String? = null,
-    /** The `KLAUSE_DEBUG` the lab set for its CLI ([Arm.debug]): true unless its arm said `debug=false`. Every case
-     *  run before the setting existed ran with it on. */
-    val labDebug: Boolean = true,
+    /** Suite-reported runtime debug state, or the historical arm policy; null when a suite makes no declaration. */
+    val labDebug: Boolean? = null,
     /**
      * The native solver stdout its solve left beside its record (`cases/<index>/<name>.out`), each with its size and
      * SHA-256 as the lab holds it, from the local machine or brought back whole from a cloud node ([CaseFile.of]).
@@ -564,7 +563,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
         }
     }
 
-    /** The klause commit case [index] of [jobId] ran: the one its arm was planned at. */
+    /** The solver commit case [index] of [jobId] ran: the one its arm was planned at. */
     @Synchronized
     fun caseSha(jobId: Long, index: Int): String? = connection.prepareStatement(
         """SELECT a.sha FROM cases c JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
@@ -865,7 +864,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
                     rows.getString(4), rows.longOrNull("seed"),
                     withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
                         rows.getString(9)),
-                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10), rows.getInt(11) != 0,
+                    rows.getInt(7), rows.getInt(8) != 0, rows.getString(10), rows.getObject(11)?.let { rows.getInt(11) != 0 },
                     rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
                 )
             }.toList()
@@ -1248,7 +1247,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
     @Synchronized
     fun problemRunCount(collection: String, problem: String): Int = connection.prepareStatement(
         """SELECT count(*) FROM problems p JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
-           WHERE json_extract(p.problem, '$.collection') = ? AND json_extract(p.problem, '$.problem') = ?""",
+           WHERE json_extract(p.problem, '$.collection') = ? AND COALESCE(json_extract(p.problem, '$.benchCase.attributes.problem'), json_extract(p.problem, '$.problem')) = ?""",
     ).use { statement ->
         statement.setString(1, collection)
         statement.setString(2, problem)
@@ -1266,7 +1265,7 @@ class Store(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS) {
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
            JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
            JOIN jobs j ON j.id = c.job_id
-           WHERE json_extract(p.problem, '$.collection') = ? AND json_extract(p.problem, '$.problem') = ?
+           WHERE json_extract(p.problem, '$.collection') = ? AND COALESCE(json_extract(p.problem, '$.benchCase.attributes.problem'), json_extract(p.problem, '$.problem')) = ?
            ORDER BY j.id DESC, a.idx, c.seed, c.repeat
            LIMIT ?""",
     ).use { statement ->
@@ -1751,11 +1750,15 @@ private const val QUEUE_ORDER = "ORDER BY priority DESC, $SERIES_ORDER"
 private const val CASE_HOST = "COALESCE(m.host, CASE WHEN m.status IN ('RUNNING', 'DONE', 'FAILED') THEN " +
     "CASE COALESCE(json_extract(j.experiment, '\$.host'), 'lab') WHEN 'aws' THEN 'cloud' WHEN 'auto' THEN NULL ELSE 'local' END END) AS host"
 
-/** Whether arm `a` ran its CLI with `KLAUSE_DEBUG=true` ([Arm.debug]), as 1 or 0. */
-private const val LAB_DEBUG = "(COALESCE(json_extract(a.arm, '\$.values.${Experiments.DEBUG_KEY}'), 'true') != 'false') AS lab_debug"
+/** Runtime debug state is reported by the suite; old jobs retain their recorded arm policy. */
+private const val LAB_DEBUG = "CASE WHEN json_extract(j.experiment, '$.bench') IS NULL THEN " +
+    "(COALESCE(json_extract(a.arm, '$.values.debug'), 'true') != 'false') " +
+    "WHEN json_valid(c.record) AND json_extract(c.record, '$.stats.labDebug') IN ('true', 'false') " +
+    "THEN (json_extract(c.record, '$.stats.labDebug') = 'true') ELSE NULL END AS lab_debug"
 
-/** Whether job `j` is instrumented ([ExperimentSpec.instrumented]), as 1 or 0. */
-private const val INSTRUMENTED = "COALESCE(json_extract(j.experiment, '\$.measurement') IN ('compilation', 'compilation+log'), 0) AS instrumented"
+/** Instrumented captures are identified per result, including repository-owned paired arms. */
+private const val INSTRUMENTED = "COALESCE(json_extract(j.experiment, '$.measurement') IN ('compilation', 'compilation+log') OR " +
+    "CASE WHEN json_valid(c.record) THEN json_extract(c.record, '$.stats.labMeasurement') IN ('compilation', 'compilation+log') ELSE 0 END, 0) AS instrumented"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
 private const val HOST = "COALESCE(json_extract(experiment, '\$.host'), 'lab')"

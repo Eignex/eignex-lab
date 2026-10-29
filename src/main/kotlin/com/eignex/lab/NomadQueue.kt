@@ -82,7 +82,7 @@ class NomadQueue(
     private val completed: (Job) -> Unit = Runner(config, store)::queueConfirmation,
     private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>>? =
-        TrustedQueueSources(config, artifacts)::publish,
+        TrustedQueueSources(config, artifacts, store)::publish,
     private val preparationPlan: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
 ) {
     fun reconcile() {
@@ -102,7 +102,11 @@ class NomadQueue(
                 job = store.job(job.id) ?: continue
                 if (job.paused || job.cancelRequested || job.status !in ACTIVE) continue
                 val spec = checkNotNull(job.experiment)
-                val preparedBench = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null }?.second?.preparation?.benchPlan
+                val acceptedPreparation = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null }?.second?.preparation
+                val preparedBench = acceptedPreparation?.let { preparation ->
+                    val plans = preparation.armPlans.values.ifEmpty { listOfNotNull(preparation.benchPlan) }
+                    plans.takeIf { it.isNotEmpty() }?.let { com.eignex.lab.bench.BenchPlan(it.flatMap { plan -> plan.cases }.mapIndexed { index, case -> case.copy(id = index.toString()) }) }
+                }
                 val targets = settings.matching(spec, job.name, Placement.cloudSchedule(job.name, schedules))
                     .filter { settings.solveBudget(it, job, preparedBench) != null }
                     .filter { if (it.os == "mac") spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
@@ -113,15 +117,20 @@ class NomadQueue(
                         it.template.budget.cpuMillis >= settings.preparationBudget.cpuMillis && it.template.budget.memoryMiB >= settings.preparationBudget.memoryMiB
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
-                    val target = ordered(fitting) { settings.preparationBudget }.firstOrNull {
+                    val (arms, bundles) = source(job, targets, settings) ?: continue
+                    val required = bundles.flatMap { it.build?.requiredTags.orEmpty() }.toSet()
+                    val compatible = fitting.filter { target -> NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
+                        arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
+                    require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
+                    val target = ordered(compatible) { settings.preparationBudget }.firstOrNull {
                         it.os != "mac" || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
                             held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
                         }
                     } ?: continue
-                    val (arms, bundles) = source(job, targets, settings) ?: continue
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
-                        settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec)
+                        settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
+                        benchReplay = spec.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     continue
                 }
@@ -133,8 +142,10 @@ class NomadQueue(
                 if (current.cancelRequested || current.paused || current.status !in setOf(Status.QUEUED, Status.RUNNING)) continue
                 if (store.unclaimed(job.id) == 0) continue
                 val cases = store.casePlan(job.id).map { row ->
-                    WorkCase(row.index, recipe.arms.indexOfFirst { it.arm.label == row.arm }, row.problem, row.seed, row.repeat,
-                        current.commands.single { it.index == row.index }.timeoutSec)
+                    val armIndex = recipe.arms.indexOfFirst { it.arm.label == row.arm }
+                    val execution = preparation.armPlans[row.arm]?.cases?.single { BenchRuns.key(it) == BenchRuns.key(requireNotNull(row.problem.benchCase)) }
+                    WorkCase(row.index, armIndex, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
+                        current.commands.single { it.index == row.index }.timeoutSec, execution)
                 }
                 val pending = store.casePlan(job.id).filter { it.status in setOf(Status.QUEUED, Status.RUNNING) }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
@@ -216,10 +227,12 @@ class NomadQueue(
         val selections = preparation.selections
         val problems = interleave(selections).distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
-        val cases = Experiments.cases(problems.size, recipe.arms.size, spec.seeds, spec.repeats)
+        val cases = Experiments.cases(problems.size, recipe.arms.size, spec.seeds, spec.repeats).map { case ->
+            case.copy(seed = problems[case.problem].benchCase?.attributes?.get("seed")?.toLongOrNull() ?: case.seed)
+        }
         val hours = preparation.benchPlan?.let { plan ->
-            maxOf(plan.cases.sumOf { it.resources.timeoutSeconds.toDouble() } / job.parallel,
-                plan.cases.sumOf { it.resources.timeoutSeconds.toDouble() * it.resources.cpus } / config.cores) / 3600
+            maxOf(cases.sumOf { case -> (preparation.armPlans[recipe.arms[case.arm].arm.label]?.cases?.get(case.problem) ?: plan.cases[case.problem]).resources.timeoutSeconds.toDouble() } / job.parallel,
+                cases.sumOf { case -> val resources = (preparation.armPlans[recipe.arms[case.arm].arm.label]?.cases?.get(case.problem) ?: plan.cases[case.problem]).resources; resources.timeoutSeconds.toDouble() * resources.cpus } / config.cores) / 3600
         } ?: Experiments.estimateHours(cases, recipe.arms.map { it.arm }, job.parallel, config.cores)
         require(spec.confirm || hours <= config.maxExperimentHours) { "${cases.size} cases could take $hours h; resubmit with confirm=true" }
         preparation.corpus?.let { bundle ->
@@ -236,15 +249,23 @@ class NomadQueue(
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
             require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
         }
+        if (spec.bench?.sourceValidation == true) for (arm in recipe.arms.distinctBy { it.sha }) {
+            val bundle = preparation.bundles.first { it.commit == arm.sha }
+            val root = VerifiedCache(config.dataDir.resolve("nomad/check-sources")).stage(bundle) { artifacts.open(job.id, bundle.sha256) }
+            val link = config.jobDir(job.id).resolve("nomad/prepared-source/${arm.sha}")
+            Files.createDirectories(link.parent)
+            if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
+            require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
+        }
         val commands = cases.mapIndexed { index, case ->
             val arm = recipe.arms[case.arm].arm
             val problem = problems[case.problem]
-            val command = spec.bench?.let { "bench ${spec.repository}: ${problem.benchCase!!.id}" }
+            val execution = preparation.armPlans[arm.label]?.cases?.get(case.problem) ?: problem.benchCase
+            val command = if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, case.seed, index)
+                else spec.bench?.let { "bench ${spec.repository}: ${requireNotNull(execution).id}" }
                 ?: spec.profile?.let { Experiments.profileCommand("lab-source", it, index, "lab-corpus", arm.debug, spec.repository) }
-                ?: if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, case.seed, index)
-                else Experiments.command("lab-source", problem, arm, case.seed, index, "lab-corpus")
-            CaseCommand(command, problem.benchCase?.resources?.timeoutSeconds ?: if (spec.isProfile) Experiments.profileTimeoutSec(arm) else Experiments.caseTimeoutSec(arm),
-                problem.benchCase?.resources?.cpus ?: arm.cores)
+                ?: error("execution requires a bench manifest or explicit profile")
+            CaseCommand(command, execution?.resources?.timeoutSeconds ?: Experiments.profileTimeoutSec(arm), execution?.resources?.cpus ?: arm.cores)
         }
         store.prepareNomad(job.id, recipe.arms, problems, cases, commands)
         if (preparation.features.isNotEmpty()) {
@@ -255,7 +276,7 @@ class NomadQueue(
 }
 
 /** Resolves and verifies source on the coordinator; all builds and selection run in preparation allocations. */
-internal class TrustedQueueSources(private val config: Config, private val artifacts: ArtifactStore) {
+internal class TrustedQueueSources(private val config: Config, private val artifacts: ArtifactStore, private val store: Store) {
     fun publish(job: Job, targets: List<NomadQueueTarget>, settings: NomadQueueSettings): Pair<List<PlannedArm>, List<WorkerBundle>> {
         val spec = checkNotNull(job.experiment); val mirror = Repositories.mirror(config, spec.repository)
         val directory = config.createJobDir(job.id).resolve("nomad/source"); Files.createDirectories(directory)
@@ -269,14 +290,21 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             } finally { if (process.isAlive) { process.descendants().forEach { it.destroyForcibly() }; process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS) } }
         }
         fun checked(at: Path, vararg args: String): String = git(at, *args).let { (code, output) -> check(code == 0) { "source operation failed" }; output }
-        Files.createDirectories(mirror.parent)
         val url = Repositories.source(config, spec.repository)
-        if (!Files.exists(mirror)) checked(mirror.parent, "clone", "--mirror", url, mirror.toString())
-        checked(mirror, "remote", "set-url", "origin", url)
-        checked(mirror, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
         val trust = Trust(config.trustedUsers, url, { args -> git(mirror, *args.toTypedArray()) },
             Trust.githubApi(config.githubTokenFile.takeIf(Files::isRegularFile)?.let(Files::readString)?.trim()))
         trust.requireRepository(refresh = true)
+        if (spec.bench?.replayJobs?.isNotEmpty() == true) {
+            val arms = Experiments.arms(spec).map { arm ->
+                require(arm.ref.matches(Regex("[a-f0-9]{40}"))) { "replay refs must be pinned commits" }
+                PlannedArm(arm, arm.ref)
+            }
+            return publishReplay(job, spec, arms)
+        }
+        Files.createDirectories(mirror.parent)
+        if (!Files.exists(mirror)) checked(mirror.parent, "clone", "--mirror", url, mirror.toString())
+        checked(mirror, "remote", "set-url", "origin", url)
+        checked(mirror, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
         val arms = Experiments.arms(spec).map { arm ->
             val (exit, sha) = git(mirror, "rev-parse", "--verify", "${arm.ref}^{commit}")
             require(exit == 0) { "source ref '${arm.ref}' was not found in ${spec.repository} after a successful fetch" }
@@ -286,9 +314,15 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         }
         val approved = arms.map { it.sha }.toSet()
         val inputs = SourceInputs({ repository, sha -> require(repository == spec.repository && sha in approved); trust.requireRepository() })
-        val build = WorkerBuild(spec.profile?.let { ProfileRuns.buildTasks(spec.repository, it) }
-            ?: if (spec.bench != null) emptyList() else klauseBuildTasks(arms.all { it.arm.values["backend"] == REFERENCE_BACKEND }).split(' '), settings.preparationTimeoutSec,
-            benchManifest = spec.bench?.manifest)
+        val requirements = spec.bench?.let { bench -> arms.map { it.sha }.distinct().flatMap { sha ->
+            val text = checked(mirror, "show", "$sha:${bench.manifest}")
+            val value = com.eignex.lab.bench.BenchProtocol.json.parseToJsonElement(text).jsonObject["runtime"]
+            val runtime = value?.let { com.eignex.lab.bench.BenchProtocol.json.decodeFromJsonElement(BenchRuns.Runtime.serializer(), it) } ?: BenchRuns.Runtime()
+            runtime.validate()
+            runtime.requiredTags
+        }.toSet() }.orEmpty()
+        val build = WorkerBuild(spec.profile?.let { ProfileRuns.buildTasks(spec.repository, it) } ?: emptyList(), settings.preparationTimeoutSec,
+            benchManifest = spec.bench?.manifest, requiredTags = requirements)
         val platforms = targets.distinctBy { it.os to it.arch }
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
@@ -302,6 +336,24 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         }
         return arms to bundles
     }
+    private fun publishReplay(job: Job, spec: ExperimentSpec, arms: List<PlannedArm>): Pair<List<PlannedArm>, List<WorkerBundle>> {
+        val replay = replaySources(store, spec, arms)
+        require(replay.isNotEmpty())
+        run {
+            val sources = replay.values.flatMap { source -> source.preparation.bundles.map { source.job to it } + listOfNotNull(source.preparation.corpus?.let { source.job to it }) }
+            for ((jobId, bundle) in sources.distinctBy { it.second.sha256 }) {
+                val bytes = try { artifacts.size(jobId, bundle.sha256) } catch (failure: Exception) { throw IllegalArgumentException("replay build artifacts are unavailable", failure) }
+                val offset = artifacts.offset(job.id, bundle.sha256)
+                artifacts.open(jobId, bundle.sha256).use { input ->
+                    input.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, bytes, offset, input)
+                }
+            }
+            return arms to replay.values.flatMap { it.preparation.bundles }.filter { bundle -> arms.any { it.sha == bundle.commit } }
+                .distinctBy { Triple(it.commit, it.os, it.arch) }
+        }
+        error("unreachable replay")
+    }
+
 }
 
 /** Filter in small database reads so a large catalogue cannot hold the lease/renewal write lock. */
@@ -310,28 +362,24 @@ internal fun preparationSelection(store: Store, spec: ExperimentSpec, requested:
         require(requested.size == 1 && requested.single().isNotEmpty())
         require(requested.single().all { it.benchCase != null && it == BenchRuns.problem(it.benchCase) })
         require(requested.single().map { it.benchCase!!.id }.distinct().size == requested.single().size)
-        return requested
+        val mode = requireNotNull(spec.bench).referenceFilter
+        if (mode == ReferenceFilterMode.ANY && spec.bench.referenceFilters.isEmpty() || spec.bench.frozenCases.isNotEmpty()) return requested
+        val solver = Experiments.arms(spec).map { it.values["solver"] }.distinct().singleOrNull()
+        return requested.map { group ->
+            val references = group.map { it.referenceKey }.distinct().chunked(256).flatMap { keys ->
+                active(); store.references(keys, solver).entries.map { it.key to it.value }
+            }.toMap()
+            group.filter { problem ->
+                val selectedMode = spec.bench.referenceFilters[problem.suite] ?: mode
+                val budget = problem.benchCase?.attributes?.get("budgetMs")?.toLongOrNull()
+                    ?: Experiments.arms(spec).maxOf { it.timeoutMs }
+                selectedMode.keeps(references[problem.referenceKey], budget)
+            }
+        }
     }
     if (spec.isProfile) {
         require(requested == listOf(listOf(Experiments.profileProblem(spec))))
         return requested
     }
-    if (spec.problemList.isNotEmpty()) {
-        require(requested.size == 1 && requested.single().map { it.suite to it.problem } == spec.problemList.map { it.suite to it.problem })
-        return requested
-    }
-    require(requested.size == spec.problems.size)
-    val arms = Experiments.arms(spec)
-    val solver = arms.takeIf { all -> all.all { it.values["backend"] == REFERENCE_BACKEND } }
-        ?.map { it.values["solver"] }?.distinct()?.singleOrNull()
-    return spec.problems.mapIndexed { index, selection ->
-        val selected = requested[index]
-        val references = selected.map { it.collection to it.problem }.distinct().chunked(256).flatMap { keys ->
-            active()
-            store.references(keys, solver).entries.map { it.key to it.value }
-        }.toMap()
-        val mode = Experiments.referenceFilter(spec, selection)
-        val kept = selected.filter { mode.keeps(references[it.collection to it.problem], arms.maxOf { it.timeoutMs }) }
-        if (Experiments.refills(mode, selection)) Experiments.cap(kept, selection["per-family"]?.toIntOrNull(), selection["max"]?.toIntOrNull()) else kept
-    }
+    error("preparation requires a repository bench manifest or explicit profile")
 }

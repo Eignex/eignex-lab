@@ -198,9 +198,24 @@ Submit an experiment file with `lab run experiment.json`:
 }
 ```
 
-A bench request names one source revision. Cases, backends, seeds, repetitions, runtime flags and instrumentation
-belong to the adapter; the lab does not add JFR or Vector API flags. Use legacy Klause experiments for reference arms
-and paired multi-revision comparisons. Generic bench jobs do not trigger solver regression confirmations.
+Cases, runtime flags and instrumentation belong to the adapter; the lab does not add JFR or Vector API flags.
+Top-level `configs`/`grid` pair revisions and opaque `param.<key>` request overrides; `repeats` repeats whole paired
+iterations. Reference arms use declared solver-domain input files. Solver records support regression confirmations
+that replay accepted prepared bundles and frozen workloads. These controls require manifest schema 3 workers.
+
+Optional `bench.runTimeoutSec` limits the job's total active preparation/execution time to 1–7200 seconds;
+queue time is excluded. The allowance persists across worker replacements. Workers reserve shutdown/transfer
+time, retain partial files and report a permanent deadline failure. Without it, the adapter's per-case resource
+ceilings apply without a separate whole-job limit. Worker and coordinator releases must support these fields.
+
+Set `bench.sourceValidation` to `true` to request the lab's independent source-witness checks for solver-domain
+records. The coordinator uses the preserved solve record, final witness and source hashes; the SDK request and
+runtime parameters do not receive this lab policy. An unsupported checker or missing input leaves the claim
+unchecked and records why; only an invalid witness withdraws the claim. The SDK envelope remains intact alongside
+the lab verdict. This does not add proof checking for infeasibility or optimality.
+
+Bench schedules preserve these explicit controls without injecting legacy solver options. For a checked solver
+schedule, include `bench.sourceValidation: true` in its experiment. Timing suites can leave it false.
 
 The coordinator retains the SDK envelope as the case record, displays metrics/artifacts on the job page and exports
 `/experiments/<id>/metrics.csv`. `/experiments/<id>/cases` exposes full records. An adapter marking its case
@@ -220,28 +235,69 @@ Stage the unpublished SDK using the same metadata and URL layout as a public rel
 ./gradlew :lab-bench:stageAdapterRepository -PbenchVersion=0.1.0
 ```
 
-The three consumer bench modules accept
+The consumer bench modules accept
 `-PlabBenchRepository=file:///absolute/eignex-lab/lab-bench/build/adapter-repository`
 and `-PlabBenchVersion=0.1.0`. Build the tasks declared in each consumer's committed manifest with those properties.
 Their default repository URL resolves public GitHub Release assets anonymously after publication. When restaging
 the same unpublished version, refresh consumer dependencies with `--refresh-dependencies` or select a fresh
 development version so Gradle cannot reuse an earlier SDK artifact.
 
-Arrange the consumer checkouts as `<root>/klause`, `<root>/koblas` and `<root>/kumulant`, then run:
+Provide a JSON scenario matrix for the opt-in local worker/coordinator gate. Each entry names
+`name`, `repository`, `source` (an absolute checkout), `manifest`, prepared `outputs`, opaque
+`parameters`, and optional `configs` and `repeats`. For example:
 
-```sh
-LAB_BENCH_ADAPTER_ROOT=/absolute/consumer-checkouts \
-LAB_BENCH_ADAPTER_NATIVE=true LAB_BENCH_ADAPTER_MINIZINC=true ./gradlew verifyBenchAdapters
+```json
+[{"name":"tools","repository":"Eignex/tools","source":"/work/tools",
+  "manifest":"bench/lab.json","outputs":["bench/build/install/bench"],
+  "parameters":{"mode":"small"},"configs":[{"label":"before"},{"label":"after","param.policy":"new"}]}]
 ```
 
-This opt-in test stages the real prepared outputs, calls each manifest's planner through `PreparationExecutor`,
-relocates bundles, executes frozen cases under the process supervisor, transfers artifacts and ingests accepted
-records through `NomadBackend`. It checks Klause solve provenance, Koblas CSV/report retention and Kumulant JMH/
-Native reports. The Native option requires Linux x86_64 binaries built by the Native manifests. Without that
-option it covers the JVM adapters. The ordinary test task excludes this integration gate, so unit tests do not
-build consumer repos or run performance captures. The smoke timings establish wiring, not performance evidence.
-The MiniZinc option also exercises a file-backed Klause MiniZinc case with a locally installed compiler.
-A local run does not validate live Nomad scheduling, remote transport or other hardware platforms.
+```sh
+LAB_BENCH_ADAPTER_MATRIX=/absolute/scenarios.json ./gradlew verifyBenchAdapters
+```
+
+The test stages the declared prepared outputs, calls each manifest planner, relocates frozen
+inputs, executes complete paired iterations under the process supervisor, transfers artifacts
+and ingests records through `NomadBackend`. Solver-v1 scenarios retain source hashes and build
+provenance. The lab contains no consumer-specific selections, build paths or report expectations.
+Consumer repositories own those scenarios and their workload assertions. Ordinary unit tests
+exclude this gate. Local captures establish wiring, not performance or live scheduling evidence.
+
+## Paired runs and runtime declarations
+
+Top-level `configs` and `grid` expand paired arms. Each arm selects a `ref` and can override
+opaque request values with `param.<key>`. Top-level `repeats` repeats each paired block; the
+suite owns seed expansion. Plans are resolved at each pinned commit and retained separately.
+`attributes.comparisonKey` optionally names the same workload across runtime variants; it defaults
+to the case id. Keys must be unique and all arms must select the same workload identities and
+input bytes. Directory contents are pinned too. Missing workloads and changed inputs fail preparation.
+
+The optional manifest `runtime` object declares `java` (the exact Java feature version),
+`requiredTags`, `tools` (executable names) and `environment`. Tags constrain preparation and
+execution; Java and tools are checked before entry-point invocation. Environment assignments
+cannot override lab custody variables, PATH, HOME or the Java executable/options. This is lab
+manifest metadata; it does not change the SDK 0.1.0 entry-point or result protocol.
+
+For solver-v1 workloads, reference arms use `backend=reference`, `solver`, `timeout` in ms,
+`processors` and optional `fixed`. The repository planner still resolves the frozen files, including
+in a reference-only run. Checkers and independent reference executables remain lab-owned.
+`bench.referenceFilter` and per-suite `bench.referenceFilters` filter frozen plans by stored reference
+verdicts. Source matching uses `attributes.problem` within its collection; case/seed/runtime identities
+remain separate. Selection caps remain repository-owned and are not refilled after this filter.
+
+Bench schedules preserve their explicit checking policy. A solver regression queues a confirmation
+with the same repository, request, placement, selected workload bytes and both pinned source commits.
+Bench confirmations retain compatible placement instead of inheriting the legacy native-only policy.
+It reuses the original accepted prepared bundles for both revisions instead of resolving build dependencies again.
+Changed requests or missing retained builds are refused.
+It repeats paired blocks three times. Invalid witnesses and exact objective/proof semantics keep the
+same solver-v1 interpretation. Generic metric-only suites do not claim solver regressions.
+
+New paired worker manifests use schema 3 so older workers cannot silently execute a canonical case
+for every arm. Deploy matching workers and coordinator before migrating schedules. Legacy solver
+recipes are refused at admission; their owning repository supplies the translation and profile wrapper.
+Saved records and captures remain readable. The only retained consumer implementation dependency
+is the MPS parser within the independent checker boundary.
 
 ## Build and release
 
@@ -262,3 +318,14 @@ The `release-bench` workflow validates and publishes assets for tags named `lab-
 release does not replace the service's latest-release channel; KBuild's upload task does not expose that flag.
 Only publication uses GitHub credentials. Published versions must keep their asset names and
 contents unchanged; consumers pin an exact SDK version. This change does not publish a release by itself.
+
+Consumer corpus transport settings use `LAB_CORPUS_MIRROR`, `LAB_CORPUS_MIRROR_WRITE`,
+`LAB_CORPUS_KEEP_PACKED` and the preparation-only `LAB_INPUT_SIGNER`. These are generic
+input capabilities; adapters own their pack formats and downloads. Replace older consumer-specific
+worker variables when deploying the matching coordinator/worker release. Provider credentials
+and worker authentication tokens are not forwarded to consumer processes.
+
+Metrics CSV identifies each arm, seed and repeat. Solver-v1 records retain the normal
+solver comparison and source-check views alongside SDK artifacts. Per-result
+`stats.labMeasurement` marks compilation-instrumented captures, and `stats.labDebug`
+reports the suite-owned debug setting; the coordinator does not inject either setting.

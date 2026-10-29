@@ -252,7 +252,7 @@ class CaptureArchivesTest {
         assertContains(valid(AnalyzeSpec(7, sha256 = "a".repeat(64))).exceptionOrNull()?.message.orEmpty(), "pin an archive")
         val (archive, _) = packed()
         testApplication {
-            application { api(config, store, HostReport("Test/Arm64", 4, "java", "engine", true, emptyList())) }
+            application { api(config, store, HostReport("Test/Arm64", 4, "java")) }
             suspend fun analyze(body: String) = client.post("/experiments") {
                 contentType(ContentType.Application.Json)
                 setBody(body)

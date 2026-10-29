@@ -11,11 +11,11 @@ import java.util.concurrent.TimeUnit
  * Returns a [ReferenceResult] scored like any other reference.
  */
 internal object Xcsp3CpSatReference {
-    const val IMAGE = "klause-xcsp3-cpsat:source-preserving-v2"
+    const val IMAGE = "eignex-lab-xcsp3-cpsat:source-preserving-v2"
     const val VERSION = "xcsp3-source-preserving-v2"
 
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
-    const val CONTAINER_LABEL = "klause-xcsp3-ref"
+    const val CONTAINER_LABEL = "eignex-lab-xcsp3-ref"
 
     private const val DOCKER_INSPECT_WAIT_MS = 5_000L
 

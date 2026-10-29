@@ -1,15 +1,15 @@
 # XCSP3 cp-sat reference image
 
-The klause bench's XCSP3 reference solver. CPMpy reads the original XCSP3 `.xml` and solves it with
+The lab's independent XCSP3 reference solver. CPMpy reads the original XCSP3 `.xml` and solves it with
 OR-Tools cp-sat, so no FlatZinc conversion is involved. The bench runs the image per instance as
-`klause-xcsp3-cpsat:source-preserving-v2` and parses the JSON verdict that follows the `o` and `v` lines.
+`eignex-lab-xcsp3-cpsat:source-preserving-v2` and parses the JSON verdict that follows the `o` and `v` lines.
 `solve.py` reports `VERSION`, which must match the bench's `Xcsp3CpSatReference.VERSION`; change both together
 and retag the image.
 
 ```sh
-docker build -t klause-xcsp3-cpsat:source-preserving-v2 images/xcsp3-cpsat
+docker build -t eignex-lab-xcsp3-cpsat:source-preserving-v2 images/xcsp3-cpsat
 docker run --rm --entrypoint python -v "$PWD/images/xcsp3-cpsat:/tests:ro" -w /tests \
-  klause-xcsp3-cpsat:source-preserving-v2 test_solve.py
+  eignex-lab-xcsp3-cpsat:source-preserving-v2 test_solve.py
 ```
 
 The importer uses column-count strides for row-major matrix selection and enforces both source index

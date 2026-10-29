@@ -1,5 +1,7 @@
 package com.eignex.lab
 
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -22,7 +24,7 @@ class CompilationReportsTest {
     private val worker = WorkerProvenance(labRelease = "abc1234-20261020", labSha = "abc1234", host = "test", analyzedAt = 1)
 
     /** Code no other test runs, hot enough that the JIT compiles it while a recording is on. */
-    private object Workload {
+    private class Workload {
         fun mix(n: Int): Long {
             var sum = 0L
             for (i in 0 until n) sum += step(i, sum)
@@ -37,6 +39,12 @@ class CompilationReportsTest {
     /** A recording of this JVM with `jdk.Compilation` at [threshold], over code that gets compiled, in [dir]. */
     private fun record(dir: Path, threshold: Duration = Duration.ZERO): Path {
         val file = dir.resolve(CliMeasurements.JFR)
+        // A fresh hidden class keeps every recording cold even when another test used this workload first.
+        val bytes = Workload::class.java.getResourceAsStream("CompilationReportsTest\$Workload.class")!!.use { it.readBytes() }
+        val lookup = MethodHandles.lookup().defineHiddenClass(bytes, true, MethodHandles.Lookup.ClassOption.NESTMATE)
+        val instance = lookup.findConstructor(lookup.lookupClass(), MethodType.methodType(Void.TYPE)).invoke()
+        val mix = lookup.findVirtual(lookup.lookupClass(), "mix", MethodType.methodType(Long::class.javaPrimitiveType, Int::class.javaPrimitiveType))
+        val strings = lookup.findVirtual(lookup.lookupClass(), "strings", MethodType.methodType(Int::class.javaPrimitiveType, Int::class.javaPrimitiveType))
         Recording().use { recording ->
             recording.enable("jdk.Compilation").withThreshold(threshold)
             recording.enable("jdk.CompilationFailure")
@@ -46,7 +54,7 @@ class CompilationReportsTest {
             recording.enable("jdk.ActiveSetting")
             recording.start()
             var sink = 0L
-            repeat(20) { sink += Workload.mix(200_000) + Workload.strings(20_000) }
+            repeat(20) { sink += (mix.invoke(instance, 200_000) as Long) + (strings.invoke(instance, 20_000) as Int) }
             Thread.sleep(200)
             recording.stop()
             recording.dump(file)

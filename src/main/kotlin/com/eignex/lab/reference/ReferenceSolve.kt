@@ -13,7 +13,7 @@ internal object ReferenceSolve {
     /** The MiniZinc solver a reference arm without `solver=` uses. */
     const val MINIZINC_DEFAULT = "cp-sat"
 
-    /** The seed a case without `solver-seed=` runs with, as in klause-bench. */
+    /** The seed a case without `solver-seed=` runs with, for unspecified solver seeds. */
     const val DEFAULT_SEED = 3L
 
     /** The reference solvers each format can be solved by, the default first; MiniZinc takes any
