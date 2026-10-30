@@ -40,12 +40,22 @@ class NomadBackend(
     val logs = WorkerLogs(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
     private val cpuPlacement = NomadCpuPlacement(nomad)
+    private val preparationAdmission = PreparationAdmission(store)
 
     internal fun hasCapacity(template: NomadBatchJob, budget: ResourceBudget): Boolean = cpuPlacement.hasCapacity(template, budget)
 
+    internal fun canPrepare(template: NomadBatchJob, limit: Int = template.environment["LAB_WORKER_MAX_CONCURRENT_BUILDS"]?.toIntOrNull() ?: 2): Boolean =
+        preparationAdmission.allows(template.nodeClass, template.platform == NomadPlatform.MAC, limit)
+
+    private fun placement(job: JsonObject, budget: ResourceBudget): JsonObject = cpuPlacement.calibrate(
+        preparationAdmission.place(placementPolicy(PreparationAdmission.clear(job))), budget)
+
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
+    @Synchronized
     fun enqueue(jobId: Long, manifest: WorkManifest, template: NomadBatchJob, api: String): ExecutionSession {
         check(workAllowed())
+        if (manifest.preparationTimeoutSec != null && store.execution.session(manifest.session) == null)
+            check(canPrepare(template)) { "waiting for preparation placement" }
         admit(manifest, template)
         require(if (template.platform == NomadPlatform.LINUX) template.command == listOf("worker") else template.command.size == 2 && template.command[1] == "worker")
         if (template.platform == NomadPlatform.MAC) require(Path.of(template.command.first()).isAbsolute && "current" !in Path.of(template.command.first()).map { it.toString() }) { "native workers require a pinned release launcher" }
@@ -76,7 +86,9 @@ class NomadBackend(
             "LAB_WORKER_API" to (template.environment["LAB_WORKER_API"] ?: api),
             "LAB_WORKER_RELEASE" to manifest.release, "LAB_WORKER_IDENTITY_FILE" to "${'$'}{NOMAD_TASK_DIR}/lab-worker.jwt",
         )).render()
-        val calibrated = cpuPlacement.calibrate(placementPolicy(original), manifest.budget)
+        val preparation = if (manifest.preparationTimeoutSec == null) original else PreparationAdmission.mark(original,
+            template.environment["LAB_WORKER_MAX_CONCURRENT_BUILDS"]?.toIntOrNull() ?: 2)
+        val calibrated = placement(preparation, manifest.budget)
         val payload = authenticatedJob(JsonObject(calibrated + ("Namespace" to JsonPrimitive(nomad.namespace))), id, manifest.release)
         return store.execution.createSession(id, jobId, executionClass, manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest)).also { changed() }
     }
@@ -309,7 +321,7 @@ class NomadBackend(
             store.execution.observed(s.id, allocations.joinToString { "${it.id}:${it.client}:${it.node}" })
             if (!current.paused && s.allocation == null && allocations.isEmpty()) {
                 val submission = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
-                if (cpuPlacement.calibrate(placementPolicy(submission), s.budget) != submission &&
+                if (placement(submission, s.budget) != submission &&
                     store.execution.loseUnallocatedSession(s.id, "placement-cpu-capacity")) continue
             }
             val bound = allocations.firstOrNull { it.id == s.allocation }
@@ -389,10 +401,16 @@ class NomadBackend(
         !store.localBusy() && nativeMayClaim(jobId) && NativePriority(store).allows(jobId, nativeNodeTags)
 
     private fun replace(previous: ExecutionSession) {
+        val submitted = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject
+        val priorPlacement = SessionPlacement.of(submitted)
+        val limit = priorPlacement.preparationSlots ?: 2
+        if (previous.executionClass == ExecutionClass.PREPARE &&
+            !preparationAdmission.allows(priorPlacement.nodeClass, priorPlacement.native, limit)) return
         val id = UUID.randomUUID().toString(); val token = ExecutionStore.token()
-        val (runtime, manifest) = workerRuntime(Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject,
+        val (runtime, manifest) = workerRuntime(submitted,
             store.execution.manifest(previous.id).copy(session = id))
-        val original = cpuPlacement.calibrate(placementPolicy(runtime), previous.budget)
+        val preparation = if (previous.executionClass == ExecutionClass.PREPARE) PreparationAdmission.mark(runtime, limit) else runtime
+        val original = placement(preparation, previous.budget)
         val groups = original.getValue("TaskGroups").jsonArray.map { group -> JsonObject(group.jsonObject + ("Tasks" to JsonArray(group.jsonObject.getValue("Tasks").jsonArray.map { task ->
             val t = task.jsonObject
             JsonObject(t + ("Env" to JsonObject(t.getValue("Env").jsonObject + mapOf("LAB_WORKER_SESSION" to JsonPrimitive(id), "LAB_WORKER_TOKEN" to JsonPrimitive(token)))))

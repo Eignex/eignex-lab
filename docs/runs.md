@@ -159,6 +159,16 @@ and claims do not wait for that deletion. macOS deletion threads use background 
 restoring the caller policy afterward. Worker startup resumes interrupted tombstones. Pinned inputs
 and pending garbage can temporarily exceed the cache target; free-disk admission checks still apply.
 
+Cold preparation placement respects the node's configured compiler-slot count as well as CPU and memory.
+The coordinator places one pending preparation per cloud class at a time and excludes nodes whose preparation
+slots are occupied. Other jobs wait before source publication and before starting a charged worker attempt;
+their existing spent allowance is preserved. Capacity requests count compiler slots within the existing pool
+and physical-vCPU limits. Warm verified builds bypass the compiler gate. Cold compilers use arrival-ordered,
+process-owned tickets; cancelled or crashed waiters release their place without leaving a blocking lock file.
+Queue and placement time remains part of wall-clock turnaround, observable from job creation through completion.
+The whole-run allowance charges active worker attempts, including compiler waits after a claim; time before
+a claim is admission time. Moving a wait before admission does not reduce solver work or erase spent attempt time.
+
 Preparation diagnostics are provisional observations retained on the attempt before completion. The execution
 report and preparation details expose the last snapshot: bounded build stdout/stderr tails, observed child exit
 code, the last 16 upload responses (including offsets and retries), resource counters and remaining lease/run time.

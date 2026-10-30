@@ -17,6 +17,21 @@ import java.util.concurrent.Executors
 import kotlin.test.*
 
 class ExecutionStoreTest {
+    @Test fun `compiler admission limit survives restart without changing strict placement JSON`() {
+        val spec = ExperimentSpec("compiler-admission")
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        store.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", budget, token,
+            """{"Meta":{"lab_preparation_slots":"3"}}""", 1000)
+        assertEquals(3, Store(file).execution.placement("prep").preparationSlots)
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().executeQuery("SELECT placement FROM execution_sessions WHERE id = 'prep'").use { row ->
+                assertTrue(row.next())
+                assertFalse(row.getString(1).contains("preparationSlots"))
+                assertEquals(SessionPlacement(), SessionPlacement.parse(row.getString(1)))
+            }
+        }
+    }
+
     @Test fun `registration winning a placement replacement race preserves ownership`() {
         val id = job()
         bind(id)

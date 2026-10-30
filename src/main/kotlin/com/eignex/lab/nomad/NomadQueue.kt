@@ -61,16 +61,18 @@ class NomadQueue(
                         it.template.budget.cpuMillis >= settings.preparationBudget.cpuMillis && it.template.budget.memoryMiB >= settings.preparationBudget.memoryMiB
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
+                    val available = fitting.filter { backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) }
+                    if (available.isEmpty()) continue
                     val (arms, bundles) = source(job, targets, settings) ?: continue
                     val required = bundles.flatMap { it.build?.requiredTags.orEmpty() }.toSet()
                     val compatible = fitting.filter { target -> NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
                     val target = ordered(compatible) { settings.preparationBudget }.firstOrNull {
-                        !it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
+                        backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) && (!it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
                             held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
-                        }
+                        })
                     } ?: continue
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
