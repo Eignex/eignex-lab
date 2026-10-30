@@ -24,6 +24,7 @@ data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdo
 object MiniZincPoint {
     private val scalar = Regex("([^\\s=]+)\\s*=\\s*(-?[0-9]+|true|false);")
     private val objective = Regex("\\b(minimize|maximize)\\s+([A-Za-z_][A-Za-z0-9_]*|-?[0-9]+)\\s*;\\s*$")
+    private val satisfaction = Regex("\\bsatisfy\\s*;\\s*$")
     private val quotedString = Regex("\"(?:\\\\.|[^\"\\\\])*\"")
     private val symmetryUse = Regex("::\\s*klause_symmetry\\b")
     private val symmetryDeclaration = Regex("annotation\\s+klause_symmetry\\b.*", RegexOption.DOT_MATCHES_ALL)
@@ -59,7 +60,7 @@ object MiniZincPoint {
         }
         val solve = items.single { it.startsWith("solve ") }
         val target = objective.find(solve)?.groupValues?.get(2)
-        require(target != null || solve.trim() == "solve satisfy;") { "unsupported solve item" }
+        require(target != null || satisfaction.containsMatchIn(solve)) { "unsupported solve item" }
         if (target != null) {
             require(claimedObjective?.matches(Regex("-?[0-9]+")) == true) { "missing exact integer objective" }
             require(point["_objective"] == claimedObjective) { "point and record objectives differ" }
