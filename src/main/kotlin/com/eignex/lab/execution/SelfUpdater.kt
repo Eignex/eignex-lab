@@ -13,8 +13,8 @@ import java.nio.file.Path
 import kotlin.system.exitProcess
 
 /**
- * Keeps the lab on the newest eignex-lab commit. At most every [intervalMs], or at once when [requestFile] exists (`lab
- * update` writes it), it fetches [source], the checkout the services were installed from, and finds whether its
+ * Keeps the lab on the newest eignex-lab commit. At most every [intervalMs] (never when it is 0), or at once when
+ * [requestFile] exists (`lab update` writes it), it fetches [source], the checkout the services were installed from, and finds whether its
  * upstream is ahead. An update never overlaps native work: while a worker holds the native execution lock the runner
  * asks [due] and, when it is, writes the yield file that tells native workers to stop after their current iteration;
  * once it holds the lock itself, between analysis jobs, it calls [maybeUpdate]. That runs `deploy/update.sh`, which pulls, builds a new
@@ -40,7 +40,7 @@ class SelfUpdater(
         val dir = source?.toFile() ?: return false
         val requested = requestFile?.exists() == true
         val now = clock()
-        if (!requested && lastCheck?.let { now - it < intervalMs } == true) return false
+        if (!requested && (intervalMs <= 0 || lastCheck?.let { now - it < intervalMs } == true)) return false
         lastCheck = now
         requestFile?.delete()
         // Checked between a running job's cases, so off the solves' cores.

@@ -235,14 +235,16 @@ Only test reports and non-secret verification summaries are CI artifacts.
 
 `native_services.py` manages four separate launchd daemons: the persistent Nomad server, native client, independent
 process supervisor and lab coordinator. Copy the server/client/coordinator/native-services examples to private local
-configuration, replacing every example path and private-network address. The native daemon runs as the lab user.
+configuration, replacing every example path and `203.0.113.10` with the home address. The server listens for RPC on
+all interfaces and advertises the home address so cloud clients reach it through the router; everything else stays on
+loopback. Mutual TLS and ACLs guard the RPC port. The native daemon runs as the lab user.
 Server and client state directories are distinct and persistent; both require TLS and ACLs. Keep all state and keys
 private and back up the Nomad server snapshot alongside the lab database. Bootstrap its ACLs and issue the restricted
 coordinator token separately; never give the management token to a worker.
 
-On the Mac, `python3 deploy/nomad/native_services.py --init-runtime "$LAB_DATA/nomad" --server-ip PRIVATE_IP` installs
+On the Mac, `python3 deploy/nomad/native_services.py --init-runtime "$LAB_DATA/nomad"` installs
 the checksum-pinned native binary and initializes CA/server/client/CLI certificates. Set up the coordinator's PKCS12
-stores from those CLI credentials and CA. Provide the private route before starting the client. Render without
+stores from those CLI credentials and CA. Render without
 registering anything using `--config native-services.json --output /temporary/review-directory`; review the plists,
 then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` integrates this
 with `deploy/install.sh`, including its dry run. This does not opt normal submissions in to Nomad.

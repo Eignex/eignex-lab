@@ -33,7 +33,7 @@ class Runner(
     private val confirmations = Confirmations(config.local, config.paths, store)
     private val analysis = AnalysisJobs(config.paths, config.archives, store, checks)
     private val updater by lazy { selfUpdater ?: SelfUpdater(
-        config.sourceDir.takeIf { config.updateCheckSec > 0 }, config.updateCheckSec * 1000,
+        config.sourceDir, config.updateCheckSec * 1000,
         config.dataDir.resolve("logs/update.log").toFile(), requestFile = config.updateRequest.toFile()) }
     private val dockerCleanup by lazy {
         dockerCleanup(config.paths, config.docker, config.jobsTargetFreeBytes, store) { pattern, revision -> withMirrorLock(config.mirror) { mirrorGrep(config.mirror.toFile())(pattern, revision) } }

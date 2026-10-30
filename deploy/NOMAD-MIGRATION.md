@@ -86,10 +86,9 @@ flowchart TB
     H[Independent provider capacity expiry] --> T
 ```
 
-Worker HTTP traffic and Nomad RPC use an authenticated private network. Cloud clients need to reach the Nomad
-server, worker API, and artifact endpoints; solver jobs do not require connectivity to each other. The existing
-public HTTP relay is not automatically a transport for Nomad RPC. Provide a separate private route/VPN with
-documented bootstrap, DNS, and credential rotation. A single Nomad server and the coordinator can be unavailable
+Cloud clients reach the Mac directly at its fixed home address: Nomad RPC through a router port forward, guarded
+by mutual TLS and ACLs, and the worker API and artifacts over HTTPS through the Mac's Caddy proxy. Solver jobs do not
+require connectivity to each other, and nothing runs in the cloud between jobs. A single Nomad server and the coordinator can be unavailable
 together; recovery and cost controls must handle that explicitly.
 
 Do not add Consul, Vault, a service mesh, or shared network filesystems as prerequisites for this migration.
