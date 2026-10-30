@@ -27,6 +27,19 @@ class MiniZincPointTest {
         ----------
     """.trimIndent()
 
+    @Test
+    fun `annotated satisfaction goals retain every original variable obligation`() {
+        val source = fzn.replace("minimize hidden;", "satisfy;")
+        val point = stdout.lineSequence().filterNot { "_objective" in it }.joinToString("\n")
+
+        val bound = MiniZincPoint.bind(MiniZincFrame(source, "", point), null)
+
+        assertFalse(bound.optimize)
+        assertFalse("int_search" in bound.model)
+        assertContains(bound.model, "constraint int_lin_eq([2,-1], [x,hidden], 0);")
+        assertContains(bound.model, "constraint hidden = 14;")
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = [false, true])
     fun `symmetry metadata is declared without dropping the tagged constraint`(declared: Boolean) {
