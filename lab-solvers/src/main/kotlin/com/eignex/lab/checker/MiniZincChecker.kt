@@ -92,7 +92,9 @@ class MiniZincChecker : FormatChecker {
             binaryHash = runtime.sha256
             checkerName = "Choco Constraint.isSatisfied / MiniZinc output"
             version += "|${runtime.version}|sha256=$binaryHash"
-            val checked = run(runtime.arguments + output.path, listOf(output) + runtime.files,
+            val providerText = FixedSubcircuit.providerInput(compiled)
+            val providerInput = if (providerText == compiled) output else input("provider.fzn", providerText)
+            val checked = run(runtime.arguments + providerInput.path, listOf(providerInput) + runtime.files,
                 binary = runtime.java, environment = mapOf("JAVA_TOOL_OPTIONS" to "", "JDK_JAVA_OPTIONS" to "", "_JAVA_OPTIONS" to ""))
             val answer = checked.stdout.lineSequence().filter { it.startsWith("${FlatZincGroundCheckerMain.MARKER}\t") }
                 .singleOrNull()?.substringAfter('\t')
