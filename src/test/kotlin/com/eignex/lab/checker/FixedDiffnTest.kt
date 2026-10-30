@@ -50,6 +50,18 @@ class FixedDiffnTest {
     }
 
     @ParameterizedTest
+    @CsvSource(delimiter = '|', value = ["0,2,1|VALID", "0,1,1|INVALID"])
+    fun `rectangle binding preserves fixed disjunctive scheduling obligations`(starts: String, expected: String) {
+        val provider = work.resolve("provider.fzn")
+        Files.writeString(provider, "constraint diffn([0,1],[0,0],[1,1],[1,1]);\n" +
+            "constraint fzn_disjunctive([$starts],[2,1,0]);\nsolve satisfy;")
+
+        val state = FlatZincGroundCheckerMain.evaluate(provider)
+
+        assertEquals(expected, state)
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = [
         "var 0..1: x; constraint diffn([x],[0],[1],[1]);",
         "constraint diffn([0,1],[0],[1],[1]);",
