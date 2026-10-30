@@ -179,7 +179,8 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
                 if (section.isNotEmpty() && order.indexOf(next) <= order.indexOf(section)) syntax("section order $next")
                 if (section == "OBJSENSE" && !senseRead) syntax("missing OBJSENSE value")
                 section = next
-                if (section == "NAME") { if (t.size !in 1..2) syntax("NAME fields"); continue }
+                // NAME carries a label and may include descriptive metadata (for example Afiro SIZE notes).
+                if (section == "NAME") continue
                 if (section == "OBJSENSE" && t.size == 2) { readSense(t[1]); continue }
                 if (t.size != 1) syntax("section header fields at ${lineNumber + 1}")
                 if (section == "ENDATA") ended = true
