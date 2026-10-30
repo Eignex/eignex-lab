@@ -122,6 +122,17 @@ Top-level `measurement` is retained only for historical records and is refused o
 Set `bench.sourceValidation=true` for independent witness checking. A checked witness does not certify
 optimality. Only an invalid verdict withdraws the solver claim; unsupported or failed checks leave it unchecked.
 `bench.runTimeoutSec` optionally bounds active preparation and execution time; queue time is excluded.
+
+Set `bench.replayJobs` to a map from each new arm label to a completed or failed source job to reuse its
+durably accepted preparation and resolved arm plan. `bench.frozenCases` pins the requested workload subset. Each arm must match
+an original arm's revision and exact request, including selections and runtime settings, in the same
+repository and manifest. The retained input hashes must match; a failed job without accepted preparation
+cannot supply a replay.
+Replay reuses prepared builds and corpus inputs while executing the requested cases anew.
+Independent source checks run when requested.
+It does not copy earlier solver outcomes or reset the source job's spent allowance. Retain the source job's
+full preparation, failed work and retirement costs alongside the replay's own bounded costs.
+
 During one preparation, repeated compiler/include files reuse checksums only while inode, size, mtime and
 ctime remain unchanged on a supported filesystem. Directory membership is walked again for every input;
 changed files and unsupported filesystems take the checksum path. Reuse ends with that preparation.

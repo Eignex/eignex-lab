@@ -20,6 +20,8 @@ import io.ktor.server.engine.EngineConnectorBuilder
 import io.ktor.server.netty.Netty
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.security.KeyPairGenerator
@@ -678,7 +680,9 @@ class NomadBackendTest {
         benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "protocol fixture"),
         armPlans = manifest.arms.associate { it.arm.label to com.eignex.lab.bench.BenchPlan(selections.flatten().map { it.benchCase!! }) })
 
-    @Test fun `confirmation replay pins accepted builds and refuses changed revisions requests and inputs`() {
+    @ParameterizedTest
+    @EnumSource(value = Status::class, names = ["DONE", "FAILED"])
+    fun `bench replay pins accepted builds and refuses changed revisions requests and inputs`(status: Status) {
         val originalSpec = ExperimentSpec("original", bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("mode" to "original"))), host = HostPlacement.AUTO)
         val id = setup(1, originalSpec, preparation = true)
         register()
@@ -696,7 +700,7 @@ class NomadBackendTest {
         store.execution.phase(claim.owner, "uploading")
         backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = preparation))
         store.plan(id, manifest.arms, listOf(problem), Experiments.cases(1, 1, emptyList()), listOf("true" to 5L))
-        store.finish(id, Status.DONE)
+        store.finish(id, status)
         val spec = originalSpec.copy(configs = listOf(mapOf("label" to "before", "ref" to prepared.commit), mapOf("label" to "after", "ref" to prepared.commit)),
             bench = originalSpec.work.bench!!.copy(frozenCases = listOf(problem.benchCase!!), replayJobs = mapOf("before" to id, "after" to id)))
         val arms = Experiments.arms(spec).map { PlannedArm(it, prepared.commit) }
@@ -708,8 +712,64 @@ class NomadBackendTest {
         assertEquals(setOf("before", "after"), benchReplay(replay, spec.work.bench!!)!!.plans.keys)
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.work.bench!!.copy(request = com.eignex.lab.bench.BenchRequest(mapOf("mode" to "changed")))), arms) }
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec, arms.map { it.copy(sha = "f".repeat(40)) }) }
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.work.bench!!.copy(manifest = "other.json")), arms) }
+        val changed = problem.benchCase!!.copy(attributes = problem.benchCase!!.attributes + ("labInputDigest" to ExecutionStore.digest("changed")))
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.work.bench!!.copy(frozenCases = listOf(changed))), arms) }
         val missing = problem.benchCase!!.copy(attributes = mapOf("comparisonKey" to "missing"))
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.work.bench!!.copy(frozenCases = listOf(missing))), arms) }
+    }
+
+    @Test fun `failed replay requires a retained preparation`() {
+        val original = ExperimentSpec("missing-preparation", bench = BenchSpec("bench.json"), host = HostPlacement.AUTO)
+        val id = setup(1, original, preparation = true)
+        val problem = benchProblem("p")
+        val cases = Experiments.cases(1, manifest.arms.size, emptyList())
+        store.plan(id, manifest.arms, listOf(problem), cases, cases.map { "true" to 5L })
+        store.finish(id, Status.FAILED)
+        val arm = manifest.arms.single()
+        val spec = original.copy(bench = original.work.bench!!.copy(
+            frozenCases = listOf(benchProblem("p").benchCase!!), replayJobs = mapOf(arm.arm.label to id)))
+
+        val failure = assertFailsWith<IllegalArgumentException> { replaySources(store, spec, listOf(arm)) }
+
+        assertContains(failure.message.orEmpty(), "preparation")
+    }
+
+    @Test fun `replay preserves the retained runtime for each arm`() {
+        val original = ExperimentSpec("paired-replay", bench = BenchSpec("bench.json"),
+            configs = listOf(mapOf("label" to "ordinary", "param.mode" to "false"),
+                mapOf("label" to "incremental", "param.mode" to "true")), host = HostPlacement.AUTO)
+        val id = setup(1, original, preparation = true)
+        register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val bytes = "prepared pair".toByteArray()
+        val sha = ExecutionStore.digest(String(bytes))
+        artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
+        val prepared = manifest.bundles.single().copy(sha256 = sha)
+        val case = benchProblem("p").benchCase!!
+        val problem = BenchRuns.problem(case.copy(attributes = case.attributes + ("labInputDigest" to ExecutionStore.digest(""))))
+        val outputs = mapOf(("preparation/" + prepared.commit + ".zip") to sha)
+        store.execution.phase(claim.owner, "preparing")
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(problem)))
+        val preparation = benchPreparation(selected, listOf(prepared), artifacts = outputs).copy(
+            armPlans = manifest.arms.associate { arm ->
+                arm.arm.label to com.eignex.lab.bench.BenchPlan(listOf(problem.benchCase!!.copy(
+                    parameters = mapOf("mode" to arm.arm.values.getValue("param.mode")))))
+            })
+        store.execution.phase(claim.owner, "uploading")
+        backend().commit(claim.owner, IterationResult(emptyList(), outputs, preparation = preparation))
+        val cases = Experiments.cases(1, manifest.arms.size, emptyList())
+        store.plan(id, manifest.arms, listOf(problem), cases, cases.map { "true" to 5L })
+        store.finish(id, Status.DONE)
+        val spec = original.copy(bench = original.work.bench!!.copy(frozenCases = listOf(problem.benchCase!!),
+            replayJobs = manifest.arms.associate { it.arm.label to id }))
+        val arms = Experiments.arms(spec).map { PlannedArm(it, prepared.commit) }
+
+        val replay = replaySources(store, spec, arms)
+        val plans = benchReplay(replay, spec.work.bench!!)!!.plans
+
+        assertEquals(mapOf("ordinary" to "false", "incremental" to "true"),
+            plans.mapValues { it.value.cases.single().parameters.getValue("mode") })
     }
 
     @Test fun `accepted preparation is retained without completing the experiment or preparing twice`() {
