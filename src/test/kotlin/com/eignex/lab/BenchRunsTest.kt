@@ -18,6 +18,61 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class BenchRunsTest {
+    @Test fun `adapter resource mode encloses runtime preflight and the frozen SDK invocation`() {
+        val root = Files.createTempDirectory("bench-adapter-resources")
+        try {
+            val entry = BenchEntryPoint("com.eignex.tools.AdapterKt", listOf("build/lib/*"), listOf(":tools:prepare"), listOf("-Xmx256m"))
+            Files.writeString(root.resolve("bench.json"), BenchProtocol.json.encodeToString(entry))
+            val spec = BenchSpec("bench.json", BenchRequest(mapOf("literal" to "fixed")), adapterResources = true)
+
+            val command = BenchRuns.command(root, spec, 7, root.resolve("corpus"), "Eignex/tools")
+
+            assertContains(command, "exec /usr/bin/time --quiet")
+            assertContains(command, "cases/7/adapter-resources.txt")
+            assertContains(command, "bash -c")
+            assertContains(command, "com.eignex.tools.AdapterKt")
+            assertContains(command, "bench-case.json")
+            assertEquals(setOf("platform:linux"), BenchRuns.runtime(root, spec).requiredTags)
+            assertEquals(spec.request, BenchRuns.request(spec, Arm("base", emptyMap())))
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test fun `adapter resources require an explicit Linux placement selector`() {
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json", adapterResources = true))
+
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, 4) }
+        Experiments.validate(spec.copy(nodeTags = NodeSelector(require = setOf("platform:linux"))), 4)
+    }
+
+    @Test fun `adapter resources do not relabel a reference invocation as an SDK measurement`() {
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json", adapterResources = true),
+            nodeTags = NodeSelector(require = setOf("platform:linux")),
+            base = mapOf("backend" to "reference", "solver" to "fixture"))
+
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, 4) }
+    }
+
+    @Test fun `adapter instrumentation changes comparison identity without changing the suite request`() {
+        val ordinary = ExperimentSpec("bench", bench = BenchSpec("bench.json", BenchRequest(mapOf("seed" to "1"))))
+        val measured = ordinary.copy(bench = ordinary.work.bench!!.copy(adapterResources = true))
+
+        assertNotEquals(Experiments.fingerprint(ordinary), Experiments.fingerprint(measured))
+        assertEquals(ordinary.work.bench!!.request, measured.work.bench!!.request)
+    }
+
+    @Test fun `adapter resource manifests fence workers that cannot execute the measurement contract`() {
+        val spec = ExperimentSpec("bench", bench = BenchSpec("bench.json", adapterResources = true),
+            nodeTags = NodeSelector(require = setOf("platform:linux")))
+        val arm = PlannedArm(Experiments.arms(spec).single(), "a".repeat(40))
+        val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("fixture", "c".repeat(64), 0)), spec.repository, arm.sha, "linux", "amd64", "test")
+
+        val manifest = WorkManifest("prepare", "release", spec, listOf(arm), emptyList(), listOf(bundle),
+            ResourceBudget(1000, 1024), preparationTimeoutSec = 60)
+
+        assertEquals(4, manifest.schemaVersion)
+        assertFailsWith<IllegalArgumentException> { manifest.copy(schemaVersion = 3) }
+    }
+
     @Test fun `bench command preserves frozen parameters and uses only repository runtime flags`() {
         val root = Files.createTempDirectory("bench-runs")
         try {

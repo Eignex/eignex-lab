@@ -38,6 +38,7 @@ class IterationExecutor(
             if (remainingLeaseMs() <= 0) throw ExecutionFenced("lease expired during staging")
         }
         checkRun()
+        require(manifest.experiment.work.bench?.adapterResources != true || os == "linux") { "adapter resources require Linux" }
         require(indices.isNotEmpty() && indices.distinct().size == indices.size)
         val selected = indices.map { index -> manifest.cases.single { it.index == index } }
         require(selected.map { Triple(it.problem, it.seed, it.repeat) }.distinct().size == 1) { "one whole paired iteration per execution" }
@@ -117,6 +118,8 @@ class IterationExecutor(
                             is Work.Analysis, is Work.Script, Work.Recipe -> error("execution requires a repository bench manifest or explicit profile")
                         }
                     val env = environment() + mapOf("JOB_DIR" to directory.toString())
+                    val adapterResources = manifest.experiment.work.bench?.adapterResources == true && !reference
+                    val timerSha = if (adapterResources) runCatching { hashFile(Path.of(AdapterResources.TIMER)) }.getOrNull() else null
                     val start = now()
                     val processRunMs = runRemaining()
                     val graceMs = minOf(Experiments.STOP_GRACE_SEC * 1000, processRunMs?.let { (it / 10).coerceAtLeast(0) } ?: Long.MAX_VALUE)
@@ -129,6 +132,7 @@ class IterationExecutor(
                         124
                     }
                     val finish = now()
+                    if (adapterResources) AdapterResources.capture(directory, case.index, command, exit, timerSha)
                     val record = if (manifest.experiment.isBench && !reference) {
                         val resultFile = directory.resolve("cases/${case.index}/out/result.json")
                         val processed = BenchRuns.executionRecord(

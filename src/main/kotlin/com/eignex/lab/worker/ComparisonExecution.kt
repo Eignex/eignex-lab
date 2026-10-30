@@ -16,8 +16,10 @@ import kotlinx.serialization.json.*
 internal object ComparisonExecution {
     fun record(text: String?, observation: ResourceObservation?, receipt: String?, release: String): String? {
         val record = text?.let { runCatching { Json.parseToJsonElement(it) as? JsonObject }.getOrNull() } ?: return text
-        if ("comparisonControls" !in record && (record["solver"] as? JsonPrimitive)?.content != "klause") return text
-        val clean = record - "labExecution"
+        if ("comparisonControls" !in record && (record["solver"] as? JsonPrimitive)?.content != "klause") {
+            return if ("labAdapterResources" in record) JsonObject(record - "labAdapterResources").toString() else text
+        }
+        val clean = record - setOf("labExecution", "labAdapterResources")
         if (observation == null || receipt == null) return JsonObject(clean).toString()
         val frame = buildJsonObject {
             put("enforcement", observation.enforcement)
@@ -48,6 +50,7 @@ internal object ComparisonExecution {
         if ((receipt["policy"] as? JsonPrimitive)?.content != "worker-receipt-v1" ||
             (receipt["receiptSha256"] as? JsonPrimitive)?.content?.matches(SHA256) != true) return null
         val frame = receipt["frame"] as? JsonObject ?: return null
+        if (frame["adapterResources"]?.let { !AdapterResources.qualified(it) } == true) return null
         if (REQUIRED.any { (frame[it] as? JsonPrimitive)?.content.let { value -> value.isNullOrBlank() || value == "null" } }) return null
         if ((frame["enforcement"] as? JsonPrimitive)?.content != "cgroup-v2-hard" ||
             (frame["cpuIdentity"] as? JsonPrimitive)?.content?.matches(SHA256) != true) return null

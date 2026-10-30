@@ -14,6 +14,8 @@ import com.eignex.lab.cli.*
 import java.nio.file.Files
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class ExecutionStoreTest {
@@ -44,6 +46,21 @@ class ExecutionStoreTest {
                 assertEquals(SessionPlacement(), SessionPlacement.parse(row.getString(1)))
             }
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["true", "false", "missing", "null", "malformed"])
+    fun `adapter resource projection follows the frozen session contract`(mode: String) {
+        val id = job()
+        val manifest = when (mode) {
+            "missing" -> """{"experiment":{"bench":{}}}"""
+            "null" -> null
+            "malformed" -> "incomplete historical manifest"
+            else -> """{"experiment":{"bench":{"adapterResources":$mode}}}"""
+        }
+        store.execution.createSession("s", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000, manifest)
+
+        assertEquals(mode == "true", store.execution.adapterResources("s"))
     }
 
     @Test fun `registration winning a placement replacement race preserves ownership`() {

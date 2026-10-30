@@ -28,6 +28,8 @@ data class BenchSpec(
     val referenceFilter: ReferenceFilterMode = ReferenceFilterMode.ANY,
     val referenceFilters: Map<String, ReferenceFilterMode> = emptyMap(),
     val replayJobs: Map<String, Long> = emptyMap(),
+    /** External Linux timing of the adapter's `run` invocation and its waited child processes. */
+    val adapterResources: Boolean = false,
 ) {
     init {
         safeRelative(manifest)
@@ -62,7 +64,8 @@ internal object BenchRuns {
 
     fun runtime(tree: Path, spec: BenchSpec): Runtime {
         val manifest = BenchProtocol.json.parseToJsonElement(Files.readString(tree.resolve(safeRelative(spec.manifest)))).jsonObject
-        return manifest["runtime"]?.let { BenchProtocol.json.decodeFromJsonElement(Runtime.serializer(), it) } ?: Runtime()
+        val runtime = manifest["runtime"]?.let { BenchProtocol.json.decodeFromJsonElement(Runtime.serializer(), it) } ?: Runtime()
+        return if (spec.adapterResources) runtime.copy(requiredTags = runtime.requiredTags + "platform:linux") else runtime
     }
 
     /** The lab passes opaque parameter overrides to the repository planner. */
@@ -138,11 +141,12 @@ internal object BenchRuns {
     }
 
     fun command(tree: Path, spec: BenchSpec, index: Int, corpus: Path, repository: String): String {
+        val invocation = invocation(tree, spec, "run") + " \"\$OUT/../bench-case.json\""
         return "cd ${quote(tree.toString())} && " +
             "export OUT=\"\$JOB_DIR/cases/$index/out\" LAB_WORKTREE=${quote(tree.toString())} " +
             "LAB_CORPUS=${quote(corpus.toString())} LAB_REPOSITORY=${quote(repository)} && " +
             "mkdir -p \"\$OUT\" && " +
-            invocation(tree, spec, "run") + " \"\$OUT/../bench-case.json\""
+            if (spec.adapterResources) AdapterResources.command(invocation, index) else invocation
     }
 
     fun problem(case: BenchCase): Problem {

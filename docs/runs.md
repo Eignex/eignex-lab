@@ -153,6 +153,24 @@ and exclude `simd:avx512`; for NEON-only placement, exclude `simd:sve` and `simd
 Recording settings belong in the suite request; consult the repository bench documentation.
 Top-level `measurement` is retained only for historical records and is refused on new bench submissions.
 
+`bench.adapterResources=true` requests external GNU time recording of the runtime preflight and SDK `run`
+invocation, including CPU of child processes waited for through that invocation. It requires an explicit
+`platform:linux` tag and a matching updated coordinator with worker protocol 4; older workers refuse that protocol.
+Verify the effective stored option and accepted receipt before using a measurement. Reference arms use their own recordings.
+The case keeps `adapter-resources.txt` and `adapter-resources.json` beside its output directory. The coordinator
+projects them as `labAdapterResources` only after checking their accepted artifact hashes and command identity.
+Interrupted, missing, malformed or mismatched receipts stay unavailable, with raw partial captures retained.
+The accepted timer identity and measurement scope split physical comparison frames; an unavailable requested
+receipt withholds comparability. The opaque suite request and case allowances stay fixed.
+
+The receipt records user/system CPU and elapsed seconds at GNU time's 0.01-second resolution. Its maximum
+process RSS is the largest individual process value, not simultaneous tree memory. It does not measure detached
+or unwaited descendants, the timer observer, planning, builds, worker staging, upload, coordinator work or post-commit checking.
+CPU from waited CLI children is included and must not be added again. Post-commit source-checker receipts retain
+their separate scopes; their CPU ceilings are limits, not consumed CPU. Whole-job lifecycle costs remain separate.
+These child and RSS semantics follow the
+[Linux resource-usage contract](https://man7.org/linux/man-pages/man2/getrusage.2.html).
+
 Set `bench.sourceValidation=true` for independent witness checking. A checked witness does not certify
 optimality. Only an invalid verdict withdraws the solver claim; unsupported or failed checks leave it unchecked.
 `bench.runTimeoutSec` optionally bounds active preparation and execution time; queue time is excluded.

@@ -548,6 +548,12 @@ class ExecutionStore internal constructor(private val store: Store) {
             SELECT s.id FROM execution_manifests m JOIN execution_sessions s ON s.id = m.session_id JOIN jobs j ON j.id = s.job_id
             WHERE s.desired = 'stop' AND j.status = 'DONE' AND j.finished_at < ? LIMIT ?)""", doneBefore, batch)
     }
+    /** Whether session [id]'s frozen contract requests external adapter resource receipts. */
+    fun adapterResources(id: String): Boolean = store.executionRead { db ->
+        db.sqlRows("SELECT CASE WHEN json_valid(manifest) THEN COALESCE(json_extract(manifest, '$.experiment.bench.adapterResources'), 0) ELSE 0 END FROM execution_sessions WHERE id = ?", id) {
+            it.getInt(1) != 0
+        }.single()
+    }
     fun drain(id: String) = store.executionTransaction { db -> db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain' WHERE id = ? AND desired = 'run'", id) }
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->
         db.sqlRows("SELECT iteration_id, result FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) { it.getString(1) to Json.decodeFromString<IterationResult>(it.getString(2)) }
