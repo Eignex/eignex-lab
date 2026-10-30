@@ -702,8 +702,6 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("CREATE TABLE IF NOT EXISTS execution_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, session_id TEXT, detail TEXT NOT NULL, at INTEGER NOT NULL)")
                 val columns = s.executeQuery("PRAGMA table_info(execution_sessions)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 addColumn(db, "execution_sessions", "manifest", "TEXT", columns)
-                // Keep the old strict placement JSON readable after rollback.
-                addColumn(db, "execution_sessions", "preparation_slots", "INTEGER", columns)
                 s.execute("CREATE TABLE IF NOT EXISTS capacity_leases (id TEXT PRIMARY KEY, pool TEXT NOT NULL, nodes INTEGER NOT NULL, expires_at INTEGER NOT NULL)")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_ingestion (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, PRIMARY KEY (job_id, iteration_id))")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_checks (job_id INTEGER NOT NULL, idx INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (job_id, idx))")

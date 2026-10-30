@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -248,6 +248,14 @@ internal object Schema {
         for ((id, payload) in submitted) {
             val placement = runCatching { SessionPlacement.of(payload) }.getOrNull() ?: continue
             db.sqlUpdate("UPDATE execution_sessions SET placement = ?, cpu_enforcement = ? WHERE id = ?", placement.json(), placement.enforcement?.stored, id)
+        }
+    }
+
+    /** Step 9: preserve compiler admission limits without extending the strict placement JSON shape. */
+    private fun preparationAdmission(db: Connection) {
+        db.createStatement().use {
+            if ("preparation_slots" !in it.columns("execution_sessions"))
+                it.execute("ALTER TABLE execution_sessions ADD COLUMN preparation_slots INTEGER")
         }
     }
 
