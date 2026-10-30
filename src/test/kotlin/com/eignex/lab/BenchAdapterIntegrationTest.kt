@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import com.eignex.lab.bench.*
 import kotlinx.serialization.json.*
 import org.junit.jupiter.api.Tag
@@ -8,6 +19,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
+import com.eignex.lab.execution.CaseChecks
 
 /** Explicit local release gate: requires built consumer checkouts, never resolves or publishes a release. */
 @Tag("bench-adapters")
@@ -66,7 +78,7 @@ class BenchAdapterIntegrationTest {
             override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
         }
         val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), corpusDir = root.resolve("checker-corpus"), auth = Auth.Disabled)
-        val checks = com.eignex.lab.CaseChecks(store, { com.eignex.lab.Checkers.of(config) }) { id, line -> println("check $id: $line") }
+        val checks = CaseChecks(store, { Checkers.of(config) }) { id, line -> println("check $id: $line") }
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { id, index ->
             val (problem, arm) = requireNotNull(store.plans.caseOf(id, index))
             if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"

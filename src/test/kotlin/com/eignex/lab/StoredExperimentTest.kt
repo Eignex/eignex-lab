@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.sql.DriverManager
@@ -8,6 +19,20 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class StoredExperimentTest {
+    @Test fun `a stored experiment is one kind of work`() {
+        val json = Json { ignoreUnknownKeys = true }
+        assertEquals(Work.Recipe, json.decodeFromString<ExperimentSpec>("{\"name\":\"old\",\"problems\":[{\"suite\":\"s\"}]}").work)
+        assertEquals(Work.Script, json.decodeFromString<ExperimentSpec>("{\"name\":\"old\",\"script\":\"echo\"}").work)
+        assertEquals(Work.Analysis(AnalyzeSpec(job = 3)), ExperimentSpec("a", analyze = AnalyzeSpec(job = 3)).work)
+        assertEquals(Work.Bench(BenchSpec("bench.json")), ExperimentSpec("b", bench = BenchSpec("bench.json")).work)
+        assertEquals(Work.Profile(ProfileMain("Main")), ExperimentSpec("p", profile = ProfileMain("Main")).work)
+        assertFailsWith<IllegalArgumentException> { ExperimentSpec("x", bench = BenchSpec("bench.json"), profile = ProfileMain("Main")) }
+        assertFailsWith<IllegalArgumentException> { ExperimentSpec("x", analyze = AnalyzeSpec(job = 3), script = "echo") }
+        assertFailsWith<IllegalArgumentException> {
+            json.decodeFromString<ExperimentSpec>("{\"name\":\"x\",\"bench\":{\"manifest\":\"bench.json\"},\"analyze\":{\"job\":3}}")
+        }
+    }
+
     @Test fun `retired recording settings preserve the historical measurement mode`() {
         val cases = mapOf(
             "\"measureCliResources\":true" to Measurement.RESOURCES,

@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -60,7 +71,7 @@ class TrendTest {
             store.commandFinished(confirmation, it.index, 0)
         }
         store.finish(confirmation, Status.DONE)
-        val result = Trend.runs(store, "sweep").last()
+        val result = Trend.runs(TrendData.of(store), "sweep").last()
         assertEquals(0, result.lost)
         assertEquals(1, result.proofLost)
         assertEquals(0, result.objectiveLost)
@@ -76,7 +87,7 @@ class TrendTest {
         run(store, "other@aaa", listOf(true))
         val second = run(store, "sweep@bbb", listOf(true, true, true, false), finish = false)
 
-        val runs = Trend.runs(store, "sweep")
+        val runs = Trend.runs(TrendData.of(store), "sweep")
 
         assertEquals(listOf(first to 0.25, second to 0.75), runs.map { it.job to it.solved.value })
         assertEquals(listOf(true, false), runs.map { it.finished })
@@ -89,7 +100,7 @@ class TrendTest {
         store.references.put(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         run(store, "sweep@aaa", listOf(true, false))
 
-        val run = Trend.runs(store, "sweep").single()
+        val run = Trend.runs(TrendData.of(store), "sweep").single()
 
         assertEquals(listOf(1, 1), listOf(run.disagreements, run.disagreementsBySuite["a"]))
         assertEquals(null, run.disagreementsBySuite["b"])
@@ -101,7 +112,7 @@ class TrendTest {
         run(store, "sweep@aaa", listOf(true, true, false))
         run(store, "sweep@bbb", listOf(false, true, true))
 
-        val runs = Trend.runs(store, "sweep")
+        val runs = Trend.runs(TrendData.of(store), "sweep")
 
         assertEquals(listOf(null to null, 1 to 1), runs.map { it.lost to it.gained })
     }
@@ -136,18 +147,18 @@ class TrendTest {
         val other = run(store, "sweep@bbb", listOf(true, false), first = 5)
         var now = 0L
         val cache = TrendCache(maxReferenceLagMs = 1000) { now }
-        Trend.runs(store, "sweep", cache)
+        Trend.runs(TrendData.of(store), "sweep", cache)
 
         Thread.sleep(5)
         store.references.put(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         now = 2000
-        val stamp = cache.sync(store)
-        val fresh = Trend.scheduled(store, "sweep").associate { it.id to cache.lookup(it.id, TrendCache.version(it), stamp)?.fresh }
+        val stamp = cache.sync(TrendData.of(store))
+        val fresh = Trend.scheduled(TrendData.of(store), "sweep").associate { it.id to cache.lookup(it.id, TrendCache.version(it), stamp)?.fresh }
 
         assertEquals(mapOf(ranA to false, other to true), fresh)
         // A recompute takes the changed row in: the run now disagrees with it.
-        assertEquals(1, Trend.runs(store, "sweep", cache, refreshing = true).first { it.job == ranA }.disagreements)
-        assertEquals(true, cache.lookup(ranA, TrendCache.version(store.job(ranA)!!), cache.sync(store))?.fresh)
+        assertEquals(1, Trend.runs(TrendData.of(store), "sweep", cache, refreshing = true).first { it.job == ranA }.disagreements)
+        assertEquals(true, cache.lookup(ranA, TrendCache.version(store.job(ranA)!!), cache.sync(TrendData.of(store)))?.fresh)
     }
 
     @Test
@@ -158,11 +169,11 @@ class TrendTest {
         store.finish(failed, Status.FAILED)
         val done = run(store, "sweep@bbb", listOf(true))
         val cache = TrendCache()
-        Trend.runs(store, "sweep", cache)
+        Trend.runs(TrendData.of(store), "sweep", cache)
 
         val missing = ArrayList<Long>()
         val pointless = ArrayList<Long>()
-        val runs = Trend.runs(store, "sweep", cache, missing = missing, pointless = pointless)
+        val runs = Trend.runs(TrendData.of(store), "sweep", cache, missing = missing, pointless = pointless)
 
         assertEquals(listOf(done), runs.map { it.job })
         assertEquals(emptyList(), missing)
@@ -179,7 +190,7 @@ class TrendTest {
         store.schedules.create("sweep", "main", ExperimentSpec("sweep", listOf(mapOf("suite" to "b"))), 3600)
         val cache = TrendCache()
 
-        Trend.warm(store, cache)
+        Trend.warm(TrendData.of(store), cache)
 
         val job = store.job(older)!!
         val deadline = System.currentTimeMillis() + 10_000
@@ -211,14 +222,14 @@ class TrendTest {
         val cache = TrendCache()
         val missing = ArrayList<Long>()
 
-        val first = Trend.runs(store, "sweep", cache, missing = missing)
+        val first = Trend.runs(TrendData.of(store), "sweep", cache, missing = missing)
 
         assertEquals(listOf(going), first.map { it.job })
         assertEquals(listOf(done), missing)
         val deadline = System.currentTimeMillis() + 10_000
         while (cache.lookup(done, TrendCache.version(store.job(done)!!), store.references.stamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
         val later = ArrayList<Long>()
-        assertEquals(listOf(done, going), Trend.runs(store, "sweep", cache, missing = later).map { it.job })
+        assertEquals(listOf(done, going), Trend.runs(TrendData.of(store), "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)
     }
 
@@ -236,7 +247,7 @@ class TrendTest {
         store.caseRecord(id, 2, mps("MPS source checking failed: lower bounds following upper bounds are unsupported"))
         store.references.putFeatures((0..2).map { ProblemFeatures("", "p$it", listOf("linear-real")) })
 
-        val run = Trend.runs(store, "sweep").single()
+        val run = Trend.runs(TrendData.of(store), "sweep").single()
 
         assertEquals(3, run.themes.getValue("linear-real").problems)
         assertEquals(1.0, run.themes.getValue("linear-real").solved)
@@ -248,7 +259,7 @@ class TrendTest {
         run(store, "sweep@aaa", listOf(true, false))
         store.references.putFeatures(listOf(ProblemFeatures("", "p0", listOf("sat", "pb")), ProblemFeatures("", "p1", listOf("sat"))))
 
-        val themes = Trend.runs(store, "sweep").single().themes
+        val themes = Trend.runs(TrendData.of(store), "sweep").single().themes
 
         assertEquals(setOf("pb", "sat"), themes.keys)
         assertEquals(1.0, themes.getValue("pb").solved)
@@ -270,12 +281,12 @@ class TrendTest {
         store.finish(id, Status.DONE)
 
         val cache = TrendCache()
-        val point = Trend.runs(store, "sweep", cache).single()
+        val point = Trend.runs(TrendData.of(store), "sweep", cache).single()
         assertEquals(id, point.job)
         assertEquals(SuiteShare(1, 1.0), point.themes.getValue("sat"))
         assertEquals(1, point.disagreements)
         assertEquals(mapOf("sat" to 1), point.disagreementsByTheme)
-        assertEquals(listOf(point), Trend.runs(store, "sweep", cache, missing = mutableListOf()))
+        assertEquals(listOf(point), Trend.runs(TrendData.of(store), "sweep", cache, missing = mutableListOf()))
     }
 
 }

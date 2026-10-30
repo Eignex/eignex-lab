@@ -30,22 +30,20 @@ val ktor = "3.2.3"
 
 dependencies {
     implementation(project(":lab-bench"))
+    implementation(project(":lab-model"))
+    // The source checkers and reference solvers, and the XCSP3 checker and Choco they alone need.
+    implementation(project(":lab-solvers"))
     implementation("io.ktor:ktor-server-core:$ktor")
     implementation("io.ktor:ktor-server-netty:$ktor")
     implementation("io.ktor:ktor-server-content-negotiation:$ktor")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktor")
     implementation("io.ktor:ktor-server-status-pages:$ktor")
-    // Retained MPS source-checker parser; consumer execution uses only repository manifests.
-    implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
     implementation("com.github.luben:zstd-jni:1.5.7-24")
-    // The official XCSP3 solution checker (MIT), which the lab runs over solver XCSP3 witnesses ([com.eignex.lab.checker]).
-    implementation(project(":xcsp3-tools"))
-    implementation("org.choco-solver:choco-parsers:5.0.1") {
-        exclude(group = "org.xcsp", module = "xcsp3-tools")
-    }
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation("io.ktor:ktor-server-test-host:$ktor")
+    testImplementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
+    testImplementation(project(":xcsp3-tools"))
     testImplementation(gradleTestKit())
 }
 
@@ -58,7 +56,7 @@ eignexLint { enabled.set(false) }
 val parserJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
 
 application {
-    mainClass.set("com.eignex.lab.MainKt")
+    mainClass.set("com.eignex.lab.cli.MainKt")
     applicationDefaultJvmArgs = parserJvmArgs
 }
 
@@ -108,10 +106,3 @@ tasks.register<Test>("verifyPreparationPerformance") {
     testLogging { showStandardStreams = true }
 }
 
-// Retain the independent evaluator's source identity in each exact MPS receipt.
-tasks.processResources {
-    from("src/main/kotlin") {
-        include("com/eignex/lab/checker/ExactMpsChecker.kt", "com/eignex/lab/checker/DimacsSourceEvaluation.kt")
-        into("checker-source")
-    }
-}
