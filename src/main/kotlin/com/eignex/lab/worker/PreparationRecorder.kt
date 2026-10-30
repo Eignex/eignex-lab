@@ -7,6 +7,7 @@ import java.nio.file.Path
 
 /** Bounded in-memory tail, periodically copied to the coordinator while the owning lease is live. */
 internal class PreparationRecorder(private val observation: ResourceObservation, private val trace: PreparationTrace) {
+    private var sequence = 0L
     private var stdout: Path? = null
     private var stderr: Path? = null
     private var build: PreparationBuildDiagnostic? = null
@@ -29,7 +30,7 @@ internal class PreparationRecorder(private val observation: ResourceObservation,
         return PreparationDiagnostics(progress.elapsedMs, progress.stage, observation.budget, observation.enforcement,
             observation.cpuMax, observation.memoryMax, ResourceObservation.counters().mapValues { it.value.take(2048) },
             leaseMs.coerceAtLeast(0), runMs?.coerceAtLeast(0),
-            (System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2).coerceIn(1, 64), latest, uploads.toList())
+            (System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2).coerceIn(1, 64), latest, uploads.toList(), ++sequence)
     }
     companion object {
         private fun tail(path: Path): String = runCatching {

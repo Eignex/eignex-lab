@@ -188,9 +188,10 @@ class ExecutionStoreTest {
         val claim = store.execution.claim("prep", token, "allocation", 1100)!!
         store.execution.phase(claim.owner, "preparing", 1101)
         val diagnostic = PreparationDiagnostics(500, "compilation", budget, "advisory-native", null, null, emptyMap(),
-            1000, 2000, 2, PreparationBuildDiagnostic(3, "compiler output", "compile failure"))
+            1000, 2000, 2, PreparationBuildDiagnostic(3, "compiler output", "compile failure"), sequence = 2)
         store.execution.preparationDiagnostics(claim.owner, diagnostic, 1600)
         store.execution.preparationDiagnostics(claim.owner, diagnostic.copy(elapsedMs = 400), 1601)
+        store.execution.preparationDiagnostics(claim.owner, diagnostic.copy(build = null, sequence = 1), 1602)
         assertEquals(diagnostic, Store(file).execution.reports(id).single().preparation!!.diagnostics)
         assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner.copy(generation = 2), diagnostic, 1602) }
         assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner.copy(token = "wrong"), diagnostic, 1602) }

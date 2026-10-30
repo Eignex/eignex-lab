@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 data class PreparationDiagnostics(val elapsedMs: Long, val stage: String, val budget: ResourceBudget,
     val enforcement: String, val cpuMax: String?, val memoryMax: String?, val counters: Map<String, String>,
     val leaseRemainingMs: Long, val runRemainingMs: Long?, val compilerSlots: Int,
-    val build: PreparationBuildDiagnostic? = null, val uploads: List<PreparationUploadDiagnostic> = emptyList()) {
+    val build: PreparationBuildDiagnostic? = null, val uploads: List<PreparationUploadDiagnostic> = emptyList(), val sequence: Long = 0) {
     init {
         require(elapsedMs in 0..86_400_000 && stage in PreparationTrace.labels)
         require(enforcement in setOf("advisory-native", "cgroup-v2-hard"))
@@ -15,7 +15,7 @@ data class PreparationDiagnostics(val elapsedMs: Long, val stage: String, val bu
         require(counters.keys.all { it in setOf("cpu.stat", "memory.events", "memory.current") })
         require(counters.values.all { it.length <= 2048 })
         require(leaseRemainingMs >= 0 && (runRemainingMs == null || runRemainingMs >= 0))
-        require(compilerSlots in 1..64 && uploads.size <= 16)
+        require(compilerSlots in 1..64 && uploads.size <= 16 && sequence in 0..1_000_000)
     }
 }
 

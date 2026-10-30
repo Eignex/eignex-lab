@@ -339,7 +339,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         require(diagnostics.budget == db.session(owner.session)!!.budget) { "diagnostic budget differs from reservation" }
         val prior = db.sqlRows("SELECT preparation_diagnostics FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND generation = ?",
             attempt.jobId, owner.iteration, owner.generation) { it.getString(1)?.let { value -> Json.decodeFromString<PreparationDiagnostics>(value) } }.single()
-        if (prior != null && prior.elapsedMs > diagnostics.elapsedMs) return@executionTransaction
+        if (prior != null && (prior.elapsedMs > diagnostics.elapsedMs ||
+            prior.elapsedMs == diagnostics.elapsedMs && prior.sequence >= diagnostics.sequence)) return@executionTransaction
         db.sqlUpdate("UPDATE iteration_attempts SET preparation_diagnostics = ?, preparation_progress = COALESCE(preparation_progress, ?), preparation_updated_at = COALESCE(preparation_updated_at, ?) WHERE job_id = ? AND iteration_id = ? AND generation = ?",
             Json.encodeToString(diagnostics), Json.encodeToString(PreparationProgress(diagnostics.stage, diagnostics.elapsedMs, 0, emptyMap())),
             at, attempt.jobId, owner.iteration, owner.generation)
