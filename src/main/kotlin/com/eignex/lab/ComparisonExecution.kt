@@ -11,7 +11,11 @@ internal object ComparisonExecution {
         if (observation == null || receipt == null) return JsonObject(clean).toString()
         val frame = buildJsonObject {
             put("enforcement", observation.enforcement)
-            put("budget", Json.encodeToJsonElement(ResourceBudget.serializer(), observation.budget))
+            put("budget", buildJsonObject {
+                put("cpuMillis", observation.budget.cpuMillis)
+                put("memoryMiB", observation.budget.memoryMiB)
+                put("parallel", observation.budget.parallel)
+            })
             observation.cpuMax?.let { put("cpuMax", it) }
             observation.memoryMax?.let { put("memoryMax", it) }
             observation.cpuIdentity?.let { put("cpuIdentity", it) }
