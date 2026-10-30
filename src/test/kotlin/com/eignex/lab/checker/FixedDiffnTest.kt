@@ -54,6 +54,8 @@ class FixedDiffnTest {
         "var 0..1: x; constraint diffn([x],[0],[1],[1]);",
         "constraint diffn([0,1],[0],[1],[1]);",
         "constraint diffn([0],[0],[0],[1]);",
+        "constraint fzn_diffn([0],[0],[0],[1]);",
+        "constraint fzn_diffn([],[],[],[]);",
         "constraint diffn([0],[0],[-1],[1]);",
         "constraint diffn([2147483647],[0],[1],[1]);",
         "constraint diffn_nonstrict([0],[0],[1],[1]);",
