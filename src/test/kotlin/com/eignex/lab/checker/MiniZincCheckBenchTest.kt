@@ -6,18 +6,31 @@ import java.util.Base64
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class MiniZincCheckBenchTest {
-    @Test
-    fun `planning packed captures keeps process parameters packed`() {
-        val inputs = mapOf("record" to "{}", "model" to "source", "fzn" to "frame", "ozn" to "output", "stdout" to "point")
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `planning packed captures keeps process parameters packed`(paired: Boolean) {
+        val inputs = mapOf("record" to "{}", "model" to "source", "fzn" to "frame", "ozn" to "output", "stdout" to "point") +
+            if (paired) mapOf("data" to "original data") else emptyMap()
         val text = Json.encodeToString(MapSerializer(String.serializer(), String.serializer()), inputs)
         val frozen = mapOf("capture-zstd-base64" to Base64.getEncoder().encodeToString(Zstd.compress(text.toByteArray())))
 
         val case = MiniZincCheckBench.plan(BenchRequest(frozen)).single()
 
         assertEquals(frozen, case.parameters)
+    }
+
+    @Test
+    fun `unexpected capture fields remain rejected`() {
+        val inputs = mapOf("record" to "{}", "model" to "source", "fzn" to "frame", "ozn" to "output", "stdout" to "point",
+            "unexpected" to "field")
+
+        assertFailsWith<IllegalArgumentException> { MiniZincCheckBench.plan(BenchRequest(inputs)) }
     }
 }

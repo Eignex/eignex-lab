@@ -25,7 +25,9 @@ object MiniZincCheckBench : BenchSuite {
     override fun plan(request: BenchRequest): List<BenchCase> {
         val parameters = parameters(request.parameters)
         val fields = setOf("record", "model", "fzn", "ozn", "stdout")
-        require(parameters.keys == fields) { "Supply record, model, fzn, ozn and stdout as frozen UTF-8 text" }
+        require(parameters.keys == fields || parameters.keys == fields + "data") {
+            "Supply record, model, optional data, fzn, ozn and stdout as frozen UTF-8 text"
+        }
         require(parameters.values.sumOf { it.length.toLong() } <= 24 * 1024 * 1024)
         require(request.parameters.values.sumOf { it.length.toLong() } <= 120 * 1024) {
             "Use capture-zstd-base64 to keep the frozen case below the shell argument limit"
@@ -50,12 +52,13 @@ object MiniZincCheckBench : BenchSuite {
         val report = context.outputDirectory.resolve("report").toFile().apply { mkdirs() }
         fun keep(key: String, name: String) = File(report, name).apply { writeText(parameters.getValue(key)) }
         val model = keep("model", "source.mzn")
+        val data = parameters["data"]?.let { keep("data", "source.dzn") }
         val recordFile = keep("record", "record.json")
         val record = Json.parseToJsonElement(recordFile.readText()) as JsonObject
         val fzn = keep("fzn", "model.fzn")
         val ozn = keep("ozn", "model.ozn")
         val stdout = keep("stdout", "cli.stdout")
-        val problem = Problem("capture", "point", collection = "capture", format = "MINIZINC", model = model.path)
+        val problem = Problem("capture", "point", collection = "capture", format = "MINIZINC", model = model.path, data = data?.path)
         val checker = SourceChecker(listOf(MiniZincChecker()), SourceLocator(report, hash = ::sha256), File(report, "scratch"))
         val verdict = checkNotNull(checker.check(problem, record, miniZincFrame = MiniZincFrame(
             fzn.readText(), ozn.readText(), stdout.readText()))) { "record has no solution claim" }
