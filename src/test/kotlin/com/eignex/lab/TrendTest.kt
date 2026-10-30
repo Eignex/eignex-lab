@@ -7,6 +7,38 @@ import kotlin.test.assertFalse
 
 class TrendTest {
     @Test
+    fun `rechecking a finished run refreshes its cached outcome count`() {
+        val store = Store(Files.createTempDirectory("rechecked-trend").resolve("lab.db"))
+        val id = run(store, "sweep@checked", listOf(true))
+        TrendCache().use { cache ->
+            assertEquals(1.0, Trend.runs(store, "sweep", cache).single().solved.value)
+
+            store.plans.caseCheck(id, 0, com.eignex.lab.checker.LabCheck("fixture", "invalid", "rejected", "fixture").json())
+
+            assertEquals(0.0, Trend.runs(store, "sweep", cache).single().solved.value)
+        }
+    }
+
+    @Test
+    fun `rechecking a completed confirmation refreshes its cached losses`() {
+        val record = kotlinx.serialization.json.Json.parseToJsonElement("""{"kind":"satisfy","feasible":true}""")
+        val absent = kotlinx.serialization.json.Json.parseToJsonElement("""{"kind":"satisfy"}""")
+        val problem = Problem("s", "p")
+        val cases = (0..2).flatMap { repeat -> listOf(
+            CaseResult(repeat * 2, Status.DONE, problem, Confirm.BEFORE, record = record, repeat = repeat),
+            CaseResult(repeat * 2 + 1, Status.DONE, problem, Confirm.AFTER, record = absent, repeat = repeat)) }
+        val rejected = cases.map { case -> if (case.arm != Confirm.BEFORE) case else case.copy(record = withLabCheck(
+            case.record, com.eignex.lab.checker.LabCheck("fixture", "invalid", "rejected", "fixture").json())) }
+        TrendCache().use { cache ->
+            assertEquals(1, cache.confirmed(1, 0) { Confirm.confirmed(cases) }.lost.size)
+
+            val refreshed = cache.confirmed(1, 1) { Confirm.confirmed(rejected) }
+
+            assertEquals(0, refreshed.lost.size)
+        }
+    }
+
+    @Test
     fun `controlled multi seed baselines count sources rather than runtime case ids`() {
         val cases = listOf(1L, 3L).flatMap { seed -> (0..1).map { repeat ->
             val plan = com.eignex.lab.bench.BenchCase("s/p/$seed/$repeat", attributes = mapOf("problem" to "p"))
