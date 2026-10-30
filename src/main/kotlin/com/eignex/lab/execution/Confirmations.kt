@@ -38,7 +38,8 @@ internal class Confirmations(private val local: LocalNode, private val paths: Da
         if (flips.confirmable.isEmpty()) return
         val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id, reference.id,
             sourceCases = currentCases)
-        if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
+        // The name filter selects the stored schedule series, shared by its runs and confirmations.
+        if (store.jobs(limit = 100, name = series).any { it.name == confirmation.name && it.experiment == confirmation }) return
         val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: local.defaultParallel, confirmation.priority, confirmation,
             JobOrigin.Confirmation(series))
         logJob(paths, job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
