@@ -12,7 +12,7 @@ import com.eignex.lab.worker.PreparationResult
 internal data class ReplaySource(val job: Long, val preparation: PreparationResult, val label: String)
 
 internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<PlannedArm>): Map<String, ReplaySource> {
-    val bench = spec.bench ?: return emptyMap()
+    val bench = spec.work.bench ?: return emptyMap()
     if (bench.replayJobs.isEmpty()) return emptyMap()
     require(bench.replayJobs.keys == arms.map { it.arm.label }.toSet()) { "replay must pin every arm" }
     require(bench.frozenCases.isNotEmpty()) { "replay needs frozen workload inputs" }
@@ -20,7 +20,7 @@ internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<Planne
         val job = requireNotNull(bench.replayJobs[arm.arm.label])
         val original = requireNotNull(store.job(job)) { "replay job is unavailable" }
         require(original.status == Status.DONE && original.experiment.repository == spec.repository) { "replay requires a completed job in the same repository" }
-        val originalBench = requireNotNull(original.experiment.bench)
+        val originalBench = requireNotNull(original.experiment.work.bench)
         val originalArm = requireNotNull(store.plans.arms(job).firstOrNull())
         require(originalArm.sha == arm.sha && originalBench.manifest == bench.manifest &&
             BenchRuns.request(originalBench, originalArm.arm) == BenchRuns.request(bench, arm.arm)) {

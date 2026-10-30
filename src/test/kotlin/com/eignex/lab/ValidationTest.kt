@@ -200,7 +200,7 @@ class ValidationTest {
     @Test
     fun `a trend run says whether it asked for source validation`() {
         val spec = committed("status-sweep.json")
-        val saved = spec.copy(bench = spec.bench!!.copy(sourceValidation = false))
+        val saved = spec.copy(bench = spec.work.bench!!.copy(sourceValidation = false))
         fun run(experiment: ExperimentSpec) = Trend.run(
             Job(1, "status-sweep@abc", "main", "abc", Status.DONE, cancelRequested = false, setupDone = true, createdAt = 0,
                 experiment = experiment),

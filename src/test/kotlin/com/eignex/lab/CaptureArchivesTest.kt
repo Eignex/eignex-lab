@@ -280,7 +280,7 @@ class CaptureArchivesTest {
             assertEquals(HttpStatusCode.Created, queued.status, queued.bodyAsText())
             val job = store.jobs(10, null, null, withCommands = false).single()
             assertEquals("analyze-archive-${shaOf(archive).take(12)}", job.name)
-            assertEquals(AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive)), job.experiment?.analyze)
+            assertEquals(AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive)), job.experiment?.work?.analysis)
         }
     }
 

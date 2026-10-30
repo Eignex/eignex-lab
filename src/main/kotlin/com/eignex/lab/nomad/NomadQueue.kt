@@ -74,7 +74,7 @@ class NomadQueue(
                     } ?: continue
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
-                        benchReplay = spec.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
+                        benchReplay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     continue
                 }
@@ -191,7 +191,7 @@ class NomadQueue(
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
             require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
         }
-        if (spec.bench?.sourceValidation == true) for (arm in recipe.arms.distinctBy { it.sha }) {
+        if (spec.work.bench?.sourceValidation == true) for (arm in recipe.arms.distinctBy { it.sha }) {
             val bundle = preparation.bundles.first { it.commit == arm.sha }
             val root = VerifiedCache(config.dataDir.resolve("nomad/check-sources")).stage(bundle) { artifacts.open(job.id, bundle.sha256) }
             val link = config.jobDir(job.id).resolve("nomad/prepared-source/${arm.sha}")
@@ -207,7 +207,7 @@ class NomadQueue(
                 else when (val work = spec.work) {
                     is Work.Bench -> "bench ${spec.repository}: ${requireNotNull(execution).id}"
                     is Work.Profile -> Experiments.profileCommand("lab-source", work.main, index, "lab-corpus", arm.debug, spec.repository)
-                    is Work.Analysis, Work.Script, Work.Recipe -> error("execution requires a bench manifest or explicit profile")
+                    is Work.Analysis, is Work.Script, Work.Recipe -> error("execution requires a bench manifest or explicit profile")
                 }
             CaseCommand(command, execution?.resources?.timeoutSeconds ?: Experiments.profileTimeoutSec(arm), execution?.resources?.cpus ?: arm.cores)
         }
@@ -238,7 +238,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         val trust = Trust(config.trustedUsers, url, { args -> git(mirror, *args.toTypedArray()) },
             Trust.githubApi(config.githubTokenFile.takeIf(Files::isRegularFile)?.let(Files::readString)?.trim()))
         trust.requireRepository(refresh = true)
-        if (spec.bench?.replayJobs?.isNotEmpty() == true) {
+        if (spec.work.bench?.replayJobs?.isNotEmpty() == true) {
             val arms = Experiments.arms(spec).map { arm ->
                 require(CommitSha.isValid(arm.ref)) { "replay refs must be pinned commits" }
                 PlannedArm(arm, arm.ref)
@@ -260,15 +260,15 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         }
         val approved = arms.map { it.sha }.toSet()
         val inputs = SourceInputs({ repository, sha -> require(repository == spec.repository && sha in approved); trust.requireRepository() })
-        val requirements = spec.bench?.let { bench -> arms.map { it.sha }.distinct().flatMap { sha ->
+        val requirements = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().flatMap { sha ->
             val text = checked(mirror, "show", "$sha:${bench.manifest}")
             val value = com.eignex.lab.bench.BenchProtocol.json.parseToJsonElement(text).jsonObject["runtime"]
             val runtime = value?.let { com.eignex.lab.bench.BenchProtocol.json.decodeFromJsonElement(BenchRuns.Runtime.serializer(), it) } ?: BenchRuns.Runtime()
             runtime.validate()
             runtime.requiredTags
         }.toSet() }.orEmpty()
-        val build = WorkerBuild(spec.profile?.let { ProfileRuns.buildTasks(spec.repository, it) } ?: emptyList(), settings.preparationTimeoutSec,
-            benchManifest = spec.bench?.manifest, requiredTags = requirements)
+        val build = WorkerBuild(spec.work.profile?.let { ProfileRuns.buildTasks(spec.repository, it) } ?: emptyList(), settings.preparationTimeoutSec,
+            benchManifest = spec.work.bench?.manifest, requiredTags = requirements)
         val platforms = targets.distinctBy { it.os to it.arch }
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
@@ -332,7 +332,7 @@ internal fun preparationSelection(store: Store, spec: ExperimentSpec, requested:
             require(requested == listOf(listOf(Experiments.profileProblem(spec))))
             return requested
         }
-        is Work.Analysis, Work.Script, Work.Recipe ->
+        is Work.Analysis, is Work.Script, Work.Recipe ->
             throw IllegalArgumentException("preparation requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated")
     }
 }

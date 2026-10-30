@@ -260,7 +260,7 @@ class PagesTest {
             val job = store.job(id)!!
             assertEquals("analyze-$target", job.name)
             assertEquals(Experiments.LAB_HOST, job.experiment?.host)
-            assertEquals(AnalyzeSpec(target), job.experiment?.analyze)
+            assertEquals(AnalyzeSpec(target), job.experiment?.work?.analysis)
             assertEquals(HttpStatusCode.Conflict, refused.status)
             assertContains(refused.bodyAsText(), "was trimmed")
             assertEquals(HttpStatusCode.OK, client.get("/") { header(HttpHeaders.Accept, "text/html") }.status)

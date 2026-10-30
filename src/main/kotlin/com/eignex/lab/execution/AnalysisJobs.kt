@@ -43,7 +43,7 @@ internal class AnalysisJobs(private val config: Config, private val store: Store
      * Nothing is built and no consumer code runs. It fails, saying why, when the captures were trimmed or are missing.
      */
     fun analyze(job: Job) {
-        val spec = checkNotNull(job.experiment.analyze)
+        val spec = checkNotNull(job.experiment.work.analysis)
         val dir = config.createJobDir(job.id)
         val analysed = when (val target = spec.target) {
             is AnalyzeTarget.OfArchive -> return analyzeArchive(job, spec, dir)

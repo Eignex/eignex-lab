@@ -133,7 +133,8 @@ class CaseChecks(
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
                 .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
-            requireNotNull(SharedInputs.environment()).acquire(inputs, required = required)
+            checkNotNull(SharedInputs.environment()) { "LAB_SHARED_INPUT_ROOT is not set in this service's environment" }
+                .acquire(inputs, required = required)
         } catch (failure: Exception) { throw SharedCheckInputUnavailable(failure) } else null
         val check = lease.use {
             val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
@@ -182,7 +183,7 @@ class CaseChecks(
         fun refusal(job: Job?): String? {
             if (job == null) return "no such job"
             val spec = job.experiment
-            if (spec.isAnalysis) return "job ${job.id} is an analysis or recheck job itself; name the job it checked (${spec.analyze?.job})"
+            if (spec.isAnalysis) return "job ${job.id} is an analysis or recheck job itself; name the job it checked (${spec.work.analysis?.job})"
             if (job.status.isActive) return "job ${job.id} is ${job.status.name.lowercase()}: check it again once it has ended"
             return null
         }

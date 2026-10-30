@@ -121,7 +121,7 @@ internal fun jobPage(
                 append(experimentSection(config, job.id, arms, cases, references))
             append(benchSection(job, cases, arms))
         }
-        is Work.Profile, Work.Script -> append(singleCaseSection(job, spec, files))
+        is Work.Profile, is Work.Script -> append(singleCaseSection(job, spec, files))
         Work.Recipe -> append(experimentSection(config, job.id, arms, cases, references))
     }
     if (!showCommands) {
@@ -162,7 +162,7 @@ internal fun jobPage(
 
 /** A profile job, or a retired script job: what it ran, its exit, and what it left in `$OUT`, each readable with the job's files. */
 private fun singleCaseSection(job: Job, spec: ExperimentSpec, files: JobDirView): String = buildString {
-    val profile = spec.profile
+    val profile = spec.work.profile
     if (profile != null) {
         append("<h2>Profile</h2><p>Runs <code>${esc(profile.script ?: profile.main)}</code>")
         if (profile.args.isNotEmpty()) append(" with <code>${esc(profile.args.joinToString(" "))}</code>")
@@ -177,8 +177,10 @@ private fun singleCaseSection(job: Job, spec: ExperimentSpec, files: JobDirView)
     } else {
         append("<h2>Script</h2><p class=\"muted\">A retired script job: the lab no longer runs these.</p>")
     }
-    spec.scriptFile?.takeIf { it.isNotBlank() }?.let { append("<p>Runs <code>${esc(it)}</code> from the repository at the job's commit.</p>") }
-    spec.script?.takeIf { it.isNotBlank() }?.let { append("<pre class=\"script\">${esc(it)}</pre>") }
+    (spec.work as? Work.Script)?.let { script ->
+        script.file?.let { append("<p>Runs <code>${esc(it)}</code> from the repository at the job's commit.</p>") }
+        script.script?.let { append("<pre class=\"script\">${esc(it)}</pre>") }
+    }
     val exit = files.exit
     append("<p>")
     append(if (exit == null) "<span class=\"muted\">not finished</span>" else "exit <b>${esc(exit)}</b>")
@@ -198,7 +200,7 @@ private fun singleCaseSection(job: Job, spec: ExperimentSpec, files: JobDirView)
 
 /** An analysis job: the job whose captures it analysed, and the reports it wrote, once it has. */
 private fun analysisSection(job: Job, spec: ExperimentSpec, files: JobDirView): String = buildString {
-    val analyze = spec.analyze ?: return@buildString
+    val analyze = spec.work.analysis ?: return@buildString
     if (analyze.kind == AnalyzeSpec.CHECK) {
         append("<h2>Recheck</h2><p>The lab's source checkers, run again over the stored records of job ")
         append("<a href=\"/jobs/${analyze.job}\">${analyze.job}</a>: each Solver solution claim in a format the lab checks gets a ")

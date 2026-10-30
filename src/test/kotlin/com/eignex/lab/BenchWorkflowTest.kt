@@ -55,7 +55,7 @@ class BenchWorkflowTest {
         Experiments.validate(spec, 4)
         val arms = Experiments.arms(spec)
         assertEquals(4, arms.size)
-        assertEquals(mapOf("mode" to "base", "policy" to "a"), BenchRuns.request(spec.bench!!, arms.first()).parameters)
+        assertEquals(mapOf("mode" to "base", "policy" to "a"), BenchRuns.request(spec.work.bench!!, arms.first()).parameters)
         assertEquals(listOf("before", "after"), arms.map { it.ref }.distinct())
         assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(base = mapOf("engine" to "solver-specific")), 4) }
     }
@@ -64,7 +64,7 @@ class BenchWorkflowTest {
         val spec = ExperimentSpec("opaque", bench = BenchSpec("bench.json"),
             base = mapOf("param.source-validation" to "suite-policy"))
         assertEquals(Experiments.trendFingerprint(spec),
-            Experiments.trendFingerprint(spec.copy(bench = spec.bench!!.copy(sourceValidation = true))))
+            Experiments.trendFingerprint(spec.copy(bench = spec.work.bench!!.copy(sourceValidation = true))))
         assertNotEquals(Experiments.trendFingerprint(spec),
             Experiments.trendFingerprint(spec.copy(base = mapOf("param.source-validation" to "different-policy"))))
         assertEquals(spec.base, SourceValidation.unrequested(spec).base)
@@ -80,8 +80,8 @@ class BenchWorkflowTest {
         assertEquals(spec.repository, confirmation.repository)
         assertEquals(spec.host, confirmation.host)
         assertEquals(spec.nodeTags, confirmation.nodeTags)
-        assertEquals(listOf(frozen.benchCase), confirmation.bench!!.frozenCases)
-        assertEquals(spec.bench!!.request, confirmation.bench.request)
+        assertEquals(listOf(frozen.benchCase), confirmation.work.bench!!.frozenCases)
+        assertEquals(spec.work.bench!!.request, confirmation.work.bench!!.request)
         assertEquals(listOf("a".repeat(40), "b".repeat(40)), Experiments.arms(confirmation).map { it.ref })
         assertTrue(Experiments.arms(confirmation).all { it.values["param.mode"] == "first" })
         assertEquals(Confirm.REPEATS, confirmation.repeats)

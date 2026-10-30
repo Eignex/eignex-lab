@@ -87,7 +87,7 @@ data class WorkManifest(
         cases.forEach { case -> (listOfNotNull(case.problem.model, case.problem.data) + case.problem.includeDirs).forEach(::safeRelative) }
         require(bundles.all { it.repository == experiment.repository })
         require(arms.all { arm -> bundles.any { it.commit == arm.sha } })
-        require(experiment.work !is Work.Analysis && experiment.work != Work.Script) { "analysis stays in the coordinator" }
+        require(experiment.work !is Work.Analysis && experiment.work !is Work.Script) { "analysis stays in the coordinator" }
     }
 }
 

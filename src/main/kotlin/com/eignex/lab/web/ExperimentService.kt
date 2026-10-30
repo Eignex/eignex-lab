@@ -52,7 +52,7 @@ class ExperimentService internal constructor(private val services: ApiServices) 
         services.placement.requireFits(spec)
         val coreLimit = services.placement.coreLimit(spec)
         Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) coreLimit else config.maxParallel, coreLimit)
-        spec.analyze?.let { return analysis(spec, it) }
+        spec.work.analysis?.let { return analysis(spec, it) }
         // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
         Experiments.splitOf(spec, store.active(withCommands = false))?.let { return Submission.SplitConflict(Experiments.splitMessage(it)) }
         val arms = Experiments.arms(spec)

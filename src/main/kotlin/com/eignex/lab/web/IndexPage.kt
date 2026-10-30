@@ -197,7 +197,7 @@ internal fun kindOf(job: Job): String {
     val spec = job.experiment
     when (spec.work) {
         is Work.Profile -> return "profile"
-        Work.Script -> return "custom"
+        is Work.Script -> return "custom"
         is Work.Bench, is Work.Analysis, Work.Recipe -> {}
     }
     if (job.origin is JobOrigin.Confirmation) return "confirm"

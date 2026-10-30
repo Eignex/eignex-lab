@@ -173,7 +173,7 @@ class LabCheckTest {
         store.finish(target, Status.DONE)
         val body = analysisDefaults(Json.parseToJsonElement("""{"recheck":{"job":$target}}""") as JsonObject)
         val spec = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body)
-        assertEquals(AnalyzeSpec(target, kind = AnalyzeSpec.CHECK), spec.analyze)
+        assertEquals(AnalyzeSpec(target, kind = AnalyzeSpec.CHECK), spec.work.analysis)
         assertEquals("recheck-$target", spec.name)
         Experiments.validate(spec, 4)
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)

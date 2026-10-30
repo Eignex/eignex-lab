@@ -203,11 +203,11 @@ class BenchAdapterIntegrationTest {
         val selectedValues = arms.first().arm.values - "ref"
         spec = spec.copy(name = Confirm.name("$name-replay", revision, originalJob), base = selectedValues, grid = emptyMap(), repeats = 1,
             configs = listOf(mapOf("label" to "before", "ref" to revision), mapOf("label" to "after", "ref" to revision)),
-            bench = spec.bench!!.copy(frozenCases = frozen, replayJobs = mapOf("before" to originalJob, "after" to originalJob)))
+            bench = spec.work.bench!!.copy(frozenCases = frozen, replayJobs = mapOf("before" to originalJob, "after" to originalJob)))
         Experiments.validate(spec, 4)
         job = store.create(spec.name, revision, emptyList(), experiment = spec)
         arms = Experiments.arms(spec).map { PlannedArm(it, revision) }
-        val replay = requireNotNull(benchReplay(replaySources(store, spec, arms), spec.bench!!))
+        val replay = requireNotNull(benchReplay(replaySources(store, spec, arms), spec.work.bench!!))
         for (input in preparation.bundles + listOfNotNull(preparation.corpus)) {
             artifacts.open(originalJob, input.sha256).use { stream -> artifacts.put(job, input.sha256, artifacts.size(originalJob, input.sha256), 0, stream) }
         }

@@ -39,12 +39,12 @@ object Experiments {
             base = measured(spec.base - "ref"),
             configs = spec.configs.map(::measured),
             grid = spec.grid.toSortedMap(),
-            parallel = spec.parallel.takeIf { spec.bench?.request?.parameters?.containsKey("comparison-series") == true },
+            parallel = spec.parallel.takeIf { spec.work.bench?.request?.parameters?.containsKey("comparison-series") == true },
             priority = 0,
             confirm = false,
             host = LAB_HOST,
-            profile = spec.profile?.copy(runTimeoutSec = null),
-            bench = spec.bench?.copy(runTimeoutSec = null),
+            profile = spec.work.profile?.copy(runTimeoutSec = null),
+            bench = spec.work.bench?.copy(runTimeoutSec = null),
             capped = emptyList(),
             nodeTags = spec.nodeTags?.let { it.copy(require = it.require.toSortedSet(), exclude = it.exclude.toSortedSet()) }
                 ?.takeIf { it.require.isNotEmpty() || it.exclude.isNotEmpty() },
@@ -92,7 +92,7 @@ object Experiments {
             "runtime itself (per-case timeouts, placement on the local machine or a cloud node by load), so don't split or cancel jobs to " +
             "keep them short; read partial results with `lab cases ${job.id}` while it runs"
 
-    private fun exemptFromSplitting(spec: ExperimentSpec) = spec.work !in Work.RETIRED || '@' in spec.name || Confirm.SUFFIX in spec.name
+    private fun exemptFromSplitting(spec: ExperimentSpec) = !spec.work.retired || '@' in spec.name || Confirm.SUFFIX in spec.name
 
     /** What [spec] runs apart from its problems: each arm's values with their defaults filled in, labels left out. */
     private fun splitKey(spec: ExperimentSpec): List<Any> = listOf(
@@ -163,7 +163,7 @@ object Experiments {
     internal fun requireExecutable(spec: ExperimentSpec) {
         when (spec.work) {
             is Work.Bench, is Work.Profile, is Work.Analysis -> {}
-            Work.Script -> throw IllegalArgumentException("script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead")
+            is Work.Script -> throw IllegalArgumentException("script jobs are retired: the lab runs only committed code; name a main to run with \"profile\" instead")
             Work.Recipe -> throw IllegalArgumentException("execution requires a repository bench manifest or explicit profile; legacy solver recipes must be migrated")
         }
     }
@@ -186,7 +186,7 @@ object Experiments {
             is Work.Analysis -> { requireOptions(spec); validateAnalysis(spec, work.spec) }
             is Work.Profile -> { requireOptions(spec); validateProfile(spec, work.main, cores) }
             // Refused by [requireExecutable] above.
-            Work.Script, Work.Recipe -> error("unreachable")
+            is Work.Script, Work.Recipe -> error("unreachable")
         }
     }
 
@@ -305,7 +305,7 @@ object Experiments {
     fun profileTimeoutSec(arm: Arm): Long = profileLimitMs(arm) / 1000 + CASE_OVERHEAD_SEC
 
     /** Active-time ceiling shared by worker preparation and execution; queue time is excluded. */
-    fun runTimeoutSec(spec: ExperimentSpec): Long? = spec.bench?.runTimeoutSec ?: spec.profile?.let(::profileRunTimeoutSec)
+    fun runTimeoutSec(spec: ExperimentSpec): Long? = spec.work.bench?.runTimeoutSec ?: spec.work.profile?.let(::profileRunTimeoutSec)
 
     /** A local profile's whole-run limit ([ProfileMain.runTimeoutSec]), capped as its time limit is; null without one. */
     fun profileRunTimeoutSec(profile: ProfileMain): Long? = profile.runTimeoutSec?.coerceAtMost(PROFILE_MAX_TIMEOUT_MS / 1000)
@@ -319,7 +319,7 @@ object Experiments {
 
     /** What [spec] asked for over the profile cap, each with what it got instead; empty when nothing was. */
     fun profileCaps(spec: ExperimentSpec): List<String> {
-        val profile = spec.profile ?: return emptyList()
+        val profile = spec.work.profile ?: return emptyList()
         val asked = arms(spec).single().values["timeout"]?.toLongOrNull()
         return listOfNotNull(
             asked?.takeIf { it > PROFILE_MAX_TIMEOUT_MS }?.let {

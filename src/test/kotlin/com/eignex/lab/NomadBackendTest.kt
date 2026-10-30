@@ -523,7 +523,7 @@ class NomadBackendTest {
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
     private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = HostPlacement.AUTO), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session"): Long {
-        val spec = if (preparation && !spec.isProfile && spec.bench == null) spec.copy(problems = emptyList(), bench = BenchSpec("bench.json",
+        val spec = if (preparation && !spec.isProfile && spec.work.bench == null) spec.copy(problems = emptyList(), bench = BenchSpec("bench.json",
             referenceFilter = spec.problems.firstOrNull()?.get("reference")?.let { ReferenceFilterMode.valueOf(it.uppercase()) } ?: ReferenceFilterMode.ANY)) else spec
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
@@ -698,18 +698,18 @@ class NomadBackendTest {
         store.plan(id, manifest.arms, listOf(problem), Experiments.cases(1, 1, emptyList()), listOf("true" to 5L))
         store.finish(id, Status.DONE)
         val spec = originalSpec.copy(configs = listOf(mapOf("label" to "before", "ref" to prepared.commit), mapOf("label" to "after", "ref" to prepared.commit)),
-            bench = originalSpec.bench!!.copy(frozenCases = listOf(problem.benchCase!!), replayJobs = mapOf("before" to id, "after" to id)))
+            bench = originalSpec.work.bench!!.copy(frozenCases = listOf(problem.benchCase!!), replayJobs = mapOf("before" to id, "after" to id)))
         val arms = Experiments.arms(spec).map { PlannedArm(it, prepared.commit) }
 
         val replay = replaySources(store, spec, arms)
 
         assertEquals(setOf("before", "after"), replay.keys)
         assertTrue(replay.values.all { it.preparation.bundles.single().sha256 == sha })
-        assertEquals(setOf("before", "after"), benchReplay(replay, spec.bench!!)!!.plans.keys)
-        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.bench.copy(request = com.eignex.lab.bench.BenchRequest(mapOf("mode" to "changed")))), arms) }
+        assertEquals(setOf("before", "after"), benchReplay(replay, spec.work.bench!!)!!.plans.keys)
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.work.bench!!.copy(request = com.eignex.lab.bench.BenchRequest(mapOf("mode" to "changed")))), arms) }
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec, arms.map { it.copy(sha = "f".repeat(40)) }) }
         val missing = problem.benchCase!!.copy(attributes = mapOf("comparisonKey" to "missing"))
-        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.bench.copy(frozenCases = listOf(missing))), arms) }
+        assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.work.bench!!.copy(frozenCases = listOf(missing))), arms) }
     }
 
     @Test fun `accepted preparation is retained without completing the experiment or preparing twice`() {
