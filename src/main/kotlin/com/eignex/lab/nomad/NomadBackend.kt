@@ -393,6 +393,7 @@ class NomadBackend(
     private fun nativeMayRun(jobId: Long): Boolean =
         !store.localBusy() && nativeMayClaim(jobId) && NativePriority(store).allows(jobId, nativeNodeTags)
 
+    @Synchronized
     private fun replace(previous: ExecutionSession) {
         val submitted = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject
         val priorPlacement = SessionPlacement.of(submitted)
