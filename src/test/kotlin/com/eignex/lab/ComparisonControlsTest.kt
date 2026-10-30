@@ -4,6 +4,8 @@ import com.eignex.lab.bench.BenchCase
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -88,13 +90,14 @@ class ComparisonControlsTest {
         assertNotNull(ComparisonControls.mismatch(before, before.copy(record = changed)))
     }
 
-    @Test
-    fun `checking policy migrations split series and withhold revision attribution`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `checking policy migrations split series and withhold revision attribution`(missing: Boolean) {
         val base = case()
         val record = base.record as JsonObject
         val before = base.copy(record = JsonObject(record + ("labCheck" to JsonObject(mapOf(
             "policy" to JsonPrimitive("policy-v1"), "state" to JsonPrimitive("valid"))))))
-        val after = base.copy(record = JsonObject(record + ("labCheck" to JsonObject(mapOf(
+        val after = if (missing) base else base.copy(record = JsonObject(record + ("labCheck" to JsonObject(mapOf(
             "policy" to JsonPrimitive("policy-v2"), "state" to JsonPrimitive("valid"))))))
 
         assertNotNull(ComparisonControls.mismatch(before, after))
