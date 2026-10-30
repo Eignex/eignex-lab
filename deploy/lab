@@ -371,26 +371,35 @@ fetch)
     fi
     [[ -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
     mkdir -p "$dest/$(dirname "$path")"
-    code=$(curl -sS -o "$dest/$path.part" -w '%{http_code}' "$url/jobs/$id/files/$path") || true
-    if [[ "$code" == 200 ]]; then
+    curl_status=0
+    code=$(curl -sS -o "$dest/$path.part" -w '%{http_code}' "$url/jobs/$id/files/$path") || curl_status=$?
+    received=0; [[ ! -f "$dest/$path.part" ]] || received=$(wc -c < "$dest/$path.part" | tr -d '[:space:]')
+    if [[ "$curl_status" -eq 0 && "$code" == 200 && "$received" -eq "$bytes" ]]; then
       mv "$dest/$path.part" "$dest/$path"
     else
       rm -f "$dest/$path.part"
-      missing+="$path"$'\t'"$bytes"$'\t'"${code:-000}"$'\n'
-      echo "lab fetch: $path, listed with $bytes bytes, could not be downloaded (HTTP ${code:-000})" >&2
+      missing+="$path"$'\t'"$bytes"$'\t'"${code:-000}"$'\t'"$curl_status"$'\t'"$received"$'\n'
+      echo "lab fetch: $path incomplete: received $received of $bytes bytes (HTTP ${code:-000}, curl $curl_status)" >&2
     fi
   done <<< "$listing"
   # The cases as the lab's database holds them, lab checks included, which the job's files do not have. Fetched afresh
   # every time, since a recheck replaces the verdicts; a job with no cases gets none.
-  curl -fsS -o "$dest/lab-cases.jsonl.part" "$url/experiments/$id/cases.jsonl"
-  if [[ -s "$dest/lab-cases.jsonl.part" ]]; then mv "$dest/lab-cases.jsonl.part" "$dest/lab-cases.jsonl"
-  else rm -f "$dest/lab-cases.jsonl.part"; fi
+  curl_status=0
+  code=$(curl -fsS -o "$dest/lab-cases.jsonl.part" -w '%{http_code}' "$url/experiments/$id/cases.jsonl") || curl_status=$?
+  if [[ "$curl_status" -eq 0 && "$code" == 200 ]]; then
+    if [[ -s "$dest/lab-cases.jsonl.part" ]]; then mv "$dest/lab-cases.jsonl.part" "$dest/lab-cases.jsonl"
+    else rm -f "$dest/lab-cases.jsonl.part"; fi
+  else
+    received=0; [[ ! -f "$dest/lab-cases.jsonl.part" ]] || received=$(wc -c < "$dest/lab-cases.jsonl.part" | tr -d '[:space:]')
+    rm -f "$dest/lab-cases.jsonl.part"
+    missing+="lab-cases.jsonl"$'\t\t'"${code:-000}"$'\t'"$curl_status"$'\t'"$received"$'\n'
+  fi
   # A listed file that could not be downloaded fails the fetch, with a receipt naming each one beside what did arrive.
   if [[ -n "$missing" ]]; then
     printf '%s' "$missing" | jq -R -s --argjson job "$id" --argjson listed "$listed" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "$url" \
       '{job: $job, url: $url, fetchedAt: $at, listed: $listed,
-        missing: [split("\n")[] | select(. != "") | split("\t") | {path: .[0], bytes: (.[1] | tonumber), httpStatus: .[2]}]}' > "$receipt"
-    echo "lab fetch: job $id is incomplete: $(jq '.missing | length' "$receipt") of $listed listed files missing; see $receipt" >&2
+        missing: [split("\n")[] | select(. != "") | split("\t") | {path: .[0], bytes: (if .[1] == "" then null else (.[1] | tonumber) end), httpStatus: .[2], curlExit: (.[3] | tonumber), receivedBytes: (.[4] | tonumber)}]}' > "$receipt"
+    echo "lab fetch: job $id is incomplete: $(jq '.missing | length' "$receipt") downloads failed ($listed job files listed); see $receipt" >&2
     exit 1
   fi
   rm -f "$receipt" ;;

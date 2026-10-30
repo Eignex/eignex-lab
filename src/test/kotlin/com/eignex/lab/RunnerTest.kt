@@ -78,6 +78,42 @@ class RunnerTest {
         }
     }
 
+    @Test fun `checked benchmark proof loss queues one frozen two revision confirmation with retained input identities`() {
+        val config = Config(dataDir = Files.createTempDirectory("bench-completion"))
+        val store = Store(config.database)
+        val request = com.eignex.lab.bench.BenchRequest(mapOf("selection" to "frozen", "solver-seeds" to "1,3"))
+        val original = ExperimentSpec("checked-sweep", bench = BenchSpec("bench.json", request, sourceValidation = true), priority = -2)
+        store.schedules.create(original.name, "main", original, 120)
+        val workloads = listOf(1L, 3L).map { seed -> com.eignex.lab.bench.BenchCase("model/$seed/0", parameters = mapOf("seed" to seed.toString()),
+            attributes = mapOf("suite" to "fixture", "problem" to "model", "comparisonKey" to "model/$seed/0", "labInputDigest" to "exact-input", "seed" to seed.toString())) }
+        fun completed(sha: String, proven: Boolean): Long {
+            val spec = original.copy(name = "checked-sweep@$sha", base = mapOf("ref" to sha))
+            val id = store.create(spec.name, sha, emptyList(), experiment = spec)
+            store.plan(id, Experiments.arms(spec).map { PlannedArm(it, sha) }, workloads.map(BenchRuns::problem),
+                Experiments.cases(workloads.size, 1, emptyList()).map { it.copy(seed = workloads[it.problem].parameters.getValue("seed").toLong()) }, workloads.map { "true" to 1L })
+            store.setup(id, sha)
+            workloads.forEachIndexed { index, _ ->
+                store.caseRecord(id, index, """{"kind":"optimize","feasible":true,"proven":$proven,"exactObjective":"9007199254740993","budgetMs":1000}""")
+                store.commandFinished(id, index, 0)
+            }
+            store.finish(id, Status.DONE)
+            return id
+        }
+        val before = completed("a".repeat(40), true)
+        val after = completed("b".repeat(40), false)
+        repeat(2) { Runner(config, Store(config.database)).queueConfirmation(store.job(after)!!) }
+        val confirmation = store.active().single()
+        assertEquals(JobOrigin.Confirmation(original.name), confirmation.origin)
+        assertEquals(-1, confirmation.priority)
+        assertEquals(request, confirmation.experiment.work.bench!!.request)
+        assertTrue(confirmation.experiment.work.bench!!.sourceValidation)
+        assertEquals(workloads, confirmation.experiment.work.bench!!.frozenCases)
+        assertEquals(mapOf("before" to before, "after" to after), confirmation.experiment.work.bench!!.replayJobs)
+        assertEquals(listOf("a".repeat(40), "b".repeat(40)), Experiments.arms(confirmation.experiment).map { it.ref })
+        assertEquals(Confirm.REPEATS, confirmation.experiment.repeats)
+        assertEquals(1, store.jobs().count { it.origin is JobOrigin.Confirmation })
+    }
+
     @Test
     fun `a launch asked for while the last run is still queued stays due instead of waiting out the interval`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"))
