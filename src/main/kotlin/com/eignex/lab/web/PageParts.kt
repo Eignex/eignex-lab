@@ -536,12 +536,15 @@ internal fun query(vararg params: Pair<String, String?>): String = params
 internal fun esc(text: String): Html = Html(text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"))
 
 /**
- * Markup the pages may put in a page as it is: what [esc] made of text, or what a renderer built of escaped parts. A
- * page interpolates only Html, a number, or text through [esc] ([PageEscapingTest] holds every page to it), so a
- * value is escaped unless it is already markup.
+ * Markup the pages may put in a page as it is: what [esc] made of text, or what a renderer built of escaped parts. Pages
+ * build markup as `Html("<td>") + value + Html("</td>")`, never as a string template, so a value is escaped unless it
+ * is already Html: escaping is the default, and leaving it out takes saying the value is markup.
  */
 @JvmInline
 internal value class Html(val markup: String) {
+    /** [this] followed by [value]: as it is when it is Html, escaped otherwise. */
+    operator fun plus(value: Any?): Html = Html(markup + if (value is Html) value.markup else esc(value.toString()).markup)
+
     override fun toString() = markup
 }
 
