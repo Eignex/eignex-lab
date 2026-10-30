@@ -3,7 +3,7 @@
   "capacityTokenFile": "/Users/lab/eignex-lab-data/nomad/capacity.token",
   "nomadTokenFile": "/Users/lab/eignex-lab-data/nomad/autoscaler.token",
   "nomad": {
-    "address": "https://100.64.0.10:4646", "tls_server_name": "server.global.nomad",
+    "address": "https://127.0.0.1:4646", "tls_server_name": "server.global.nomad",
     "ca_cert": "/Users/lab/eignex-lab-data/nomad/nomad-agent-ca.pem",
     "client_cert": "/Users/lab/eignex-lab-data/nomad/global-cli-nomad.pem",
     "client_key": "/Users/lab/eignex-lab-data/nomad/global-cli-nomad-key.pem"

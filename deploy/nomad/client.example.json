@@ -7,7 +7,7 @@
   "advertise": {"http": "127.0.0.1:4649", "rpc": "127.0.0.1:4650", "serf": "127.0.0.1:4651"},
   "server": {"enabled": false},
   "client": {
-    "enabled": true, "servers": ["100.64.0.10:4647"], "node_class": "lab-mac",
+    "enabled": true, "servers": ["127.0.0.1:4647"], "node_class": "lab-mac",
     "reserved": {"cpu": 500, "memory": 1024}
   },
   "plugin": [{"raw_exec": {"config": [{"enabled": true}]}}],

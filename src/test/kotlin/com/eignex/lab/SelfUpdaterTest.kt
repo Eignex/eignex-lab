@@ -68,6 +68,22 @@ class SelfUpdaterTest {
     }
 
     @Test
+    fun `with periodic checks off only a request fetches`() {
+        val git = FakeGit(head = "aaa", upstream = "bbb")
+        val request = File.createTempFile("update", ".requested").apply { delete() }
+        val updater = SelfUpdater(
+            Files.createTempDirectory("src"), 0, File.createTempFile("update", ".log"), { 0L }, git::exec, { restarts++ },
+            requestFile = request,
+        )
+
+        val unrequested = updater.due()
+        request.writeText("now")
+        updater.maybeUpdate()
+
+        assertEquals(listOf(false, 1, 1), listOf(unrequested, git.calls.count { it.contains("fetch") }, restarts))
+    }
+
+    @Test
     fun `a successful update restarts the runner`() {
         val git = FakeGit(head = "aaa", upstream = "bbb")
 

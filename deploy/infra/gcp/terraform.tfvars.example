@@ -15,6 +15,6 @@ network_tags = ["lab-nomad-private"]
 control_member = "user:REPLACE_WITH_OPERATOR_IDENTITY"
 bootstrap_secret = "projects/dedicated-lab-project/secrets/lab-worker-bootstrap"
 signing_secret = "projects/dedicated-lab-project/secrets/lab-capacity-signing"
-nomad_servers = ["100.64.0.10:4647"]
+nomad_servers = ["lab.eignex.com:4647"]
 node_class = "general-spot"
 worker_image = "registry.example/lab-worker@sha256:REPLACE_WITH_64_HEX_DIGEST"

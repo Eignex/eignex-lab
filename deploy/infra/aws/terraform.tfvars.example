@@ -13,6 +13,6 @@ security_group_ids = ["sg-REPLACE_WITH_PRIVATE_NOMAD_ONLY_RULES"]
 control_principal_arn = "arn:aws:iam::000000000000:role/lab-control"
 bootstrap_secret_arn = "arn:aws:secretsmanager:eu-north-1:000000000000:secret:lab-worker-bootstrap"
 signing_secret_arn = "arn:aws:secretsmanager:eu-north-1:000000000000:secret:lab-capacity-signing"
-nomad_servers = ["100.64.0.10:4647"]
+nomad_servers = ["lab.eignex.com:4647"]
 node_class = "general-spot"
 worker_image = "registry.example/lab-worker@sha256:REPLACE_WITH_64_HEX_DIGEST"

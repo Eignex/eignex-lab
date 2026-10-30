@@ -63,7 +63,7 @@ if [[ -z "$docker_mode" ]]; then
   else docker_mode=none
   fi
 fi
-# The runner updates itself from this checkout between jobs (LAB_UPDATE_CHECK_SEC=0 turns that off).
+# The runner updates itself from this checkout between jobs (LAB_UPDATE_CHECK_SEC=0 leaves only `lab update`).
 service_env=("LAB_SOURCE=$here" "LAB_DATA=$LAB_DATA")
 case "$docker_mode" in
 system) service_env+=("LAB_REQUIRE_DOCKER=true") ;;

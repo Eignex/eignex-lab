@@ -37,7 +37,8 @@ address) forwards TCP 80 and 443 to Caddy on the Mac and TCP 4647 to its Nomad s
 points at the home address. `sudo deploy/proxy/install-proxy.sh` installs Caddy as a boot service: it renews its
 own certificate and forwards `/worker/v1/*` to the coordinator's worker API and everything else to the lab.
 The Nomad server advertises its RPC at the home address so cloud clients reach it directly; mutual TLS and ACLs
-guard it.
+guard it. A server first set up on the earlier private network keeps that address in its Raft configuration
+and still binds it; keep it as a loopback alias with a boot service that runs `ifconfig lo0 alias ADDRESS/32`.
 
 ## Storage and updates
 
