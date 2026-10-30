@@ -33,13 +33,19 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     private val runDeadline = AtomicLong(Long.MAX_VALUE)
     private val retryLeaseDeadline = AtomicLong(Long.MAX_VALUE)
     private val retries = WorkerRetry()
+    @Volatile internal var preparationRecorder: PreparationRecorder? = null
     private fun leaseRemainingMs(): Long = retryLeaseDeadline.get().takeIf { it != Long.MAX_VALUE }
         ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
     private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
     private fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
         val started = System.nanoTime()
-        val timeout = if (path == "run-timeout") 30_000L else {
+        val timeout = if (path == "run-timeout") 30_000L else if (path == "preparation-diagnostics") {
+            // Evidence only: do not extend work, retry, or accept writes after the owning lease expires.
+            val lease = leaseRemainingMs()
+            if (lease <= 0) throw ExecutionFenced("worker lease expired")
+            minOf(5_000, lease)
+        } else {
             checkRun(); val lease = leaseRemainingMs()
             if (lease <= 0) throw ExecutionFenced("worker lease expired")
             minOf(30_000, runRemainingMs() ?: 30_000, lease).coerceAtLeast(1)
@@ -50,7 +56,18 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             .header("Content-Type", if (path == "commit-packed") "application/octet-stream" else "application/json")
         if (owner != null) builder.header("X-Lab-Attempt", Json.encodeToString(owner))
         if (range > 0) builder.header("Range", "bytes=$range-")
-        val response = client.send(builder.method(method, body).build(), HttpResponse.BodyHandlers.ofByteArray())
+        val upload = Regex("uploads/([0-9a-f]{64})(?:\\?(.*))?").matchEntire(path)
+        fun record(status: Int?, responseOffset: Long? = null, failure: String? = null) {
+            if (upload == null) return
+            val offset = Regex("(?:^|&)offset=([0-9]+)(?:&|$)").find(upload.groupValues[2])?.groupValues?.get(1)?.toLongOrNull()
+            preparationRecorder?.upload(PreparationUploadDiagnostic(upload.groupValues[1], method, status, offset,
+                responseOffset, body.contentLength().coerceAtLeast(0), (System.nanoTime() - started) / 1_000_000, failure))
+        }
+        val response = try { client.send(builder.method(method, body).build(), HttpResponse.BodyHandlers.ofByteArray()) }
+        catch (failure: java.io.IOException) {
+            record(null, failure = if (failure is java.net.http.HttpTimeoutException) "timeout" else "io"); throw failure
+        } catch (failure: InterruptedException) { record(null, failure = "interrupted"); throw failure }
+        record(response.statusCode(), if (upload == null) null else runCatching { Json.decodeFromString<UploadReply>(String(response.body())).offset }.getOrNull())
         val elapsed = (System.nanoTime()-started)/1_000_000
         if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
@@ -70,7 +87,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
-        val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket))
+        val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket),
+            observeBuild = { stdout, stderr, exit -> preparationRecorder?.build(stdout, stderr, exit) })
         Thread({
             try { builds.maintain() } catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
         }, "worker-build-cleanup").apply { isDaemon = true; start() }
@@ -115,8 +133,20 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 phase("preparing")
                 val result = if (manifest.preparationTimeoutSec != null) {
                     val trace = PreparationTrace()
+                    val recorder = PreparationRecorder(observation, trace)
+                    preparationRecorder = recorder
+                    val nextDiagnostic = AtomicLong(0)
+                    fun reportDiagnostics() { runCatching {
+                        json("preparation-diagnostics", Json.encodeToString(WorkerPreparationDiagnostics(claim.owner,
+                            recorder.snapshot(leaseRemainingMs(), runRemainingMs()))))
+                    } }
                     val reporter = Executors.newSingleThreadScheduledExecutor { Thread(it, "preparation-progress").apply { isDaemon = true } }
-                    fun reportPreparation() { runCatching { json("preparation-progress", Json.encodeToString(WorkerPreparationProgress(claim.owner, trace.snapshot()))) } }
+                    fun reportPreparation() {
+                        runCatching { json("preparation-progress", Json.encodeToString(WorkerPreparationProgress(claim.owner, trace.snapshot()))) }
+                        val at = System.nanoTime()
+                        val next = nextDiagnostic.get()
+                        if (at >= next && nextDiagnostic.compareAndSet(next, at + 5_000_000_000)) reportDiagnostics()
+                    }
                     reporter.scheduleWithFixedDelay(::reportPreparation, 0, 1, TimeUnit.SECONDS)
                     try {
                         fun signature(input: InputSignature): SignedInput = retry {
@@ -133,7 +163,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         }
                         reportPreparation()
                         IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
-                    } finally { reporter.shutdownNow() }
+                    } finally {
+                        reporter.shutdownNow()
+                        reportDiagnostics()
+                        preparationRecorder = null
+                    }
                 } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing"); executionStarted = System.nanoTime() }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
                 val outputStarted = System.nanoTime()
                 phase("uploading")

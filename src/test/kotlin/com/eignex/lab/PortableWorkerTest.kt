@@ -413,10 +413,18 @@ PY
     @Test fun `failed build preserves a bounded diagnostic and never publishes a cache entry`(): Unit = service { socket ->
         val (input, bytes) = bundle(mapOf("gradlew" to "echo expected-compile-failure >&2; exit 3"))
         val source = VerifiedCache(root.resolve("sources")).stage(input) { ByteArrayInputStream(bytes) }
+        val budget = ResourceBudget(1000, 512)
+        val recorder = PreparationRecorder(ResourceObservation("advisory-native", budget, null, null, "test", "test", "test", emptyMap()), PreparationTrace())
         val failure = assertFailsWith<WorkerBuildFailure> {
-            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)).prepare(input.copy(build = WorkerBuild(listOf("installDist"))), source,
-                ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket), observeBuild = recorder::build)
+                .prepare(input.copy(build = WorkerBuild(listOf("installDist"))), source, budget, System.getenv()) { 10000 }
         }
+        val evidence = recorder.snapshot(10000, 10000).build!!
+        assertEquals(3, evidence.exitCode)
+        assertEquals(0, evidence.signal); assertEquals(false, evidence.runTimedOut)
+        assertEquals("compilation", evidence.kind); assertEquals("compilation", evidence.stage)
+        assertEquals(input.commit, evidence.sourceCommit)
+        assertTrue(evidence.stderr.contains("expected-compile-failure"))
         assertTrue(failure.detail.contains("expected-compile-failure")); assertTrue(failure.detail.contains("exit 3"))
         assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch { Files.isDirectory(it) && it.fileName.toString().matches(SHA256) } })
     }
@@ -537,6 +545,17 @@ PY
         repeat(3) { index ->
             assertEquals(0, ProcessSupervisor(socket).run(listOf("sleep", "1"), root, System.getenv(), root.resolve("out-$index"), root.resolve("err-$index"), 5) { 10000 })
         }
+    }
+
+    @Test fun `supervisor distinguishes a child signal from an ordinary exit with the same numeric code`(): Unit = service { socket ->
+        val supervisor = ProcessSupervisor(socket)
+        var observed: ProcessTermination? = null
+        fun run(code: String) = supervisor.run(listOf("python3", "-c", code), root, System.getenv(), root.resolve("signal.out"), root.resolve("signal.err"),
+            5, observeTermination = { observed = it }) { 10000 }
+        assertEquals(137, run("import os, signal; os.kill(os.getpid(), signal.SIGKILL)"))
+        assertEquals(ProcessTermination(137, 9, false), observed)
+        assertEquals(137, run("raise SystemExit(137)"))
+        assertEquals(ProcessTermination(137, 0, false), observed)
     }
 
     @Test fun `supervisor reports bounded timeout and worker refuses an expired lease`(): Unit = service { socket ->

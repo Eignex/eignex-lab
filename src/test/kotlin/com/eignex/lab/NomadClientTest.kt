@@ -40,6 +40,12 @@ class NomadClientTest {
             } }
         }
         assertEquals(NomadWorkerExit(1), NomadClient.allocationRow(allocation()).workerExit)
+        val oom = NomadClient.allocationRow(allocation(signal = 9, oom = true)).termination!!
+        assertEquals(9, oom.signal); assertEquals(1, oom.exitCode); assertEquals(true, oom.oomKilled)
+        assertNull(NomadClient.allocationRow(allocation(includeExit = false)).termination!!.exitCode)
+        assertNull(NomadClient.allocationRow(allocation(includeExit = false)).termination!!.oomKilled)
+        assertEquals("Killing", NomadClient.allocationRow(allocation(extra = "Killing")).termination!!.events.dropLast(1).last())
+        assertFalse(kotlinx.serialization.json.Json.encodeToString(NomadTaskTermination.serializer(), oom).contains("DisplayMessage"))
         for (infra in listOf(allocation(client = "lost"), allocation(desired = "stop"), allocation(signal = 15), allocation(oom = true),
             allocation(extra = "Killing"), allocation(extra = "Driver Failure"), allocation(started = false), allocation(includeExit = false))) {
             assertNull(NomadClient.allocationRow(infra).workerExit)

@@ -139,6 +139,45 @@ class WorkerTransferTest {
         } finally { server.stop(0) }
     }
 
+    @Test fun `preparation upload evidence retains rejected offsets and retry responses without credentials`() {
+        val root = Files.createTempDirectory("upload-evidence")
+        val file = root.resolve("capture").also { Files.writeString(it, "prepared artifact") }
+        val hash = hashFile(file)
+        val puts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/uploads/$hash") { exchange ->
+            try {
+                val isPut = exchange.requestMethod == "PUT"
+                exchange.requestBody.readAllBytes()
+                if (isPut && puts.incrementAndGet() == 1) exchange.sendResponseHeaders(503, -1)
+                else {
+                    val bytes = "{\"offset\":${if (isPut) Files.size(file) else 0}}".toByteArray()
+                    exchange.sendResponseHeaders(200, bytes.size.toLong()); exchange.responseBody.write(bytes)
+                }
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture-identity-secret") }
+            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "fixture-bearer-secret", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            val budget = ResourceBudget(1000, 512)
+            val recorder = PreparationRecorder(ResourceObservation("advisory-native", budget, null, null, "test", "test", "test", emptyMap()), PreparationTrace())
+            worker.preparationRecorder = recorder
+            assertEquals(hash, worker.upload(file, AttemptOwner("session", "allocation", "preparation", 1, "fixture-attempt-secret")))
+            val diagnostic = recorder.snapshot(1000, 2000)
+            assertEquals(listOf(200, 503, 200, 200), diagnostic.uploads.map { it.status })
+            assertEquals(listOf(null, 0L, null, 0L), diagnostic.uploads.map { it.offset })
+            assertEquals(Files.size(file), diagnostic.uploads.last().acceptedOffset)
+            val json = Json.encodeToString(PreparationDiagnostics.serializer(), diagnostic)
+            assertFalse(json.contains("secret")); assertFalse(json.contains("Authorization")); assertFalse(json.contains("http://"))
+            repeat(20) { recorder.upload(diagnostic.uploads.last().copy(offset = it.toLong())) }
+            assertEquals((4L..19L).toList(), recorder.snapshot(1000, 2000).uploads.map { it.offset })
+            assertFailsWith<IllegalArgumentException> { diagnostic.uploads.last().copy(method = "DELETE") }
+            assertFailsWith<IllegalArgumentException> { diagnostic.uploads.last().copy(sha256 = "not-a-hash") }
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
     @Test fun `upload resumes stored bytes after a nonfinal chunk acknowledgement is lost`() {
         val root = Files.createTempDirectory("worker-transfer")
         val file = root.resolve("capture")

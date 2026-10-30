@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -256,6 +256,14 @@ internal object Schema {
         db.createStatement().use {
             if ("preparation_slots" !in it.columns("execution_sessions"))
                 it.execute("ALTER TABLE execution_sessions ADD COLUMN preparation_slots INTEGER")
+        }
+    }
+
+    /** Step 10: failure evidence remains separate from the original strict progress JSON. */
+    private fun preparationDiagnostics(db: Connection) {
+        db.createStatement().use {
+            if ("preparation_diagnostics" !in it.columns("iteration_attempts"))
+                it.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_diagnostics TEXT")
         }
     }
 
