@@ -11,7 +11,8 @@ import kotlin.system.exitProcess
  * `docker-cleanup` ([DockerCleanup]) is a tool run by hand from a checkout, on any host, and
  * prunes the lab machine's Docker now instead of at the runner's next cleanup. `reference` ([ReferenceCli]) runs one
  * reference-solver case, as a reference arm's case command calls it. `nomad-spec` renders an operator's experimental
- * batch session without starting either service or opening the lab database.
+ * batch session without starting either service or opening the lab database. `capacity-export` writes the capacity
+ * pools' contract ([CapacityContract]) the autoscaler, the provider adapters and their Terraform check themselves against.
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
@@ -23,6 +24,7 @@ fun main(args: Array<String>) {
         "worker" -> exitProcess(WorkerSession.main(args.drop(1)))
         "worker-local" -> exitProcess(WorkerCli.main(args.drop(1)))
         "nomad-spec" -> exitProcess(NomadSpecCli.main(args.drop(1)))
+        "capacity-export" -> exitProcess(CapacityContract.main(args.drop(1)))
     }
     if (mode == "password") {
         // A new password and the hash to commit as src/main/resources/lab-password; the password goes to the clients.
@@ -32,18 +34,25 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator|capacity-export")
         exitProcess(2)
     }
-    val host = runCatching { hostReport() }.getOrElse { e ->
+    // The CPU is probed once, here, and handed to everything that needs it.
+    val cpu = NodeTags.probeLocal()
+    val host = runCatching { hostReport(cpu) }.getOrElse { e ->
         System.err.println("refusing to start: ${e.message}")
         exitProcess(EX_CONFIG)
     }
     if (mode == "check") return
-    val config = Config()
+    val config = configOrExit(cpu)
     config.dataDir.createDirectories()
-    require(config.nomadQueueSettings != null) { "LAB_NOMAD_QUEUE_SETTINGS is required; experiment execution uses Nomad" }
+    if (config.nomadQueue == null) {
+        System.err.println("refusing to start: LAB_NOMAD_QUEUE_SETTINGS is required; experiment execution uses Nomad")
+        exitProcess(EX_CONFIG)
+    }
     val store = Store(config.database)
+    // Every directory the lab uses is probed from here on, on a thread of its own: the pages and the runner only read.
+    Volumes.watch(config)
     println("eignex-lab $mode: data=${config.dataDir} repo=${config.repoUrl} corpus=${config.corpusDir}")
     when (mode) {
         "api" -> {
@@ -60,7 +69,7 @@ fun main(args: Array<String>) {
  * Exits 0 after a cleanup, 1 when it skipped.
  */
 private fun dockerCleanupNow(): Int {
-    val config = Config()
+    val config = configOrExit()
     val store = config.database.takeIf { it.toFile().isFile }?.let { Store(it) }
     val cleanup = if (store != null) {
         dockerCleanup(config, store, enabled = true, grep = mirrorGrep(config.mirror.toFile()))
@@ -70,6 +79,14 @@ private fun dockerCleanupNow(): Int {
         )
     }
     return if (cleanup.run("it was run by hand") != null) 0 else 1
+}
+
+/** The settings of the environment ([Config.fromEnv]); a bad one stops the process here, naming every bad variable. */
+private fun configOrExit(cpu: CpuCapabilities = CpuCapabilities()): Config = try {
+    Config.fromEnv(cpu = cpu)
+} catch (e: ConfigException) {
+    System.err.println("refusing to start: ${e.message}")
+    exitProcess(EX_CONFIG)
 }
 
 /** sysexits' configuration error: the service manager is told not to restart on it. */

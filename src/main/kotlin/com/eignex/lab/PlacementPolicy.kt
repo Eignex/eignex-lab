@@ -15,20 +15,11 @@ class PlacementPolicy(private val config: Config, private val schedules: () -> L
         return host
     }
 
-    /** A job that may run on a cloud node needs the lab's cloud settings, runs repository-owned work, and fits a node. */
-    fun requireFits(spec: ExperimentSpec) {
-        require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
-            "host must be local, cloud or auto (or lab or aws, their older names)"
-        }
-        if (spec.host == Experiments.LAB_HOST) return
-        require(Placement.cloudCoreLimit(spec, config) >= Experiments.arms(spec).maxOf { it.cores }) {
-            "no configured Nomad cloud worker fits its cases"
-        }
-    }
+    /** [Placement.requireFits] on this lab. */
+    fun requireFits(spec: ExperimentSpec) = Placement.requireFits(spec, config)
 
-    /** The most cores a case of [spec] can have where it may run: the local machine's when its tags match it. */
-    fun coreLimit(spec: ExperimentSpec): Int =
-        if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) config.cores else Placement.cloudCoreLimit(spec, config)
+    /** [Placement.coreLimit] on this lab. */
+    fun coreLimit(spec: ExperimentSpec): Int = Placement.coreLimit(spec, config)
 
     companion object {
         /** What placing a job on [host] means, for the submitter. */

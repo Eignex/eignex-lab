@@ -9,7 +9,7 @@ import java.sql.Connection
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -225,6 +225,24 @@ internal object Schema {
         db.createStatement().use {
             it.execute("""CREATE TRIGGER IF NOT EXISTS commands_lifecycle BEFORE UPDATE OF status ON commands
                 WHEN NOT (${CommandLifecycle.SQL}) BEGIN SELECT RAISE(ABORT, 'command status move is not allowed'); END""")
+        }
+    }
+
+    /**
+     * Step 8: where each session's worker was placed ([SessionPlacement]) and how its CPU is held to its budget, kept
+     * with the session rather than read back out of its submitted job; existing sessions' are read from theirs once, here.
+     */
+    private fun sessionPlacement(db: Connection) {
+        db.createStatement().use {
+            val columns = it.columns("execution_sessions")
+            if ("cpu_enforcement" !in columns) it.execute("ALTER TABLE execution_sessions ADD COLUMN cpu_enforcement TEXT")
+            if ("placement" !in columns) it.execute("ALTER TABLE execution_sessions ADD COLUMN placement TEXT")
+        }
+        val submitted = db.sqlRows("""SELECT s.id, o.payload FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
+            WHERE s.placement IS NULL""") { it.getString(1) to it.getString(2) }
+        for ((id, payload) in submitted) {
+            val placement = runCatching { SessionPlacement.of(payload) }.getOrNull() ?: continue
+            db.sqlUpdate("UPDATE execution_sessions SET placement = ?, cpu_enforcement = ? WHERE id = ?", placement.json(), placement.enforcement?.stored, id)
         }
     }
 

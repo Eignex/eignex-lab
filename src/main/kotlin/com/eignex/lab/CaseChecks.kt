@@ -56,7 +56,7 @@ internal fun checkerRepository(spec: ExperimentSpec?): String? = spec?.let {
 
 internal fun checkerMirror(config: Config, repository: String?): java.nio.file.Path {
     if (repository == null) return config.mirror
-    val mirror = Repositories.mirror(config, repository)
+    val mirror = Repositories.mirror(config.paths, repository)
     // Old Klause checks used repo.git, including records that explicitly named the repository.
     return if (repository == "Eignex/klause" && !java.nio.file.Files.exists(mirror)) config.mirror else mirror
 }

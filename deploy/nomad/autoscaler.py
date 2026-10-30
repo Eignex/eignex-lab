@@ -10,6 +10,8 @@ import urllib.request
 import zipfile
 
 HERE = Path(__file__).resolve().parent
+# The metric the coordinator serves each pool's desired size as (CapacityWire, deploy/capacity-wire.json).
+DESIRED_METRIC = 'lab_capacity_desired_nodes'
 
 
 def render(settings, capacity, output):
@@ -43,7 +45,7 @@ def render(settings, capacity, output):
             'node_drain_deadline': '60s', 'node_purge': 'true', 'node_drain_ignore_system_jobs': 'false'}
         files[Path('policies') / (pool['id'] + '.json')] = {'scaling': {pool['id']: {'enabled': True, 'min': 0, 'max': pool['maxNodes'], 'policy': {
             'cooldown': '30s', 'evaluation_interval': '10s', 'on_check_error': 'fail',
-            'check': {'fresh-demand': {'source': 'lab-demand', 'query': 'lab_capacity_desired_nodes{pool="' + pool['id'] + '"}',
+            'check': {'fresh-demand': {'source': 'lab-demand', 'query': DESIRED_METRIC + '{pool="' + pool['id'] + '"}',
                 'query_window': 'instant', 'on_error': 'fail', 'strategy': {'pass-through': {}}}},
             'target': {name: options}}}}}
     files[Path('agent.json')] = agent

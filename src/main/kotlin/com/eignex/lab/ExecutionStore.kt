@@ -125,6 +125,11 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun releaseCapacity(id: String): Boolean = store.executionTransaction { it.sqlUpdate("DELETE FROM capacity_leases WHERE id = ?", id) == 1 }
 
     fun session(id: String): ExecutionSession? = store.executionRead { it.session(id) }
+
+    /** Where session [id]'s worker was placed ([SessionPlacement]), as kept when it was created. */
+    fun placement(id: String): SessionPlacement = store.executionRead { db ->
+        db.sqlRows("SELECT placement FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.singleOrNull()?.let(SessionPlacement::parse)
+    } ?: SessionPlacement.of(submission(id))
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)
@@ -149,11 +154,12 @@ class ExecutionStore internal constructor(private val store: Store) {
     internal fun runningNodes(jobs: Collection<Long>): Map<Long, List<RunningNode>> {
         if (jobs.isEmpty()) return emptyMap()
         return store.executionTransaction { db ->
-            db.sqlRows("""SELECT s.job_id, s.node_id, s.allocation_id, o.payload
+            db.sqlRows("""SELECT s.job_id, s.node_id, s.allocation_id, s.placement, o.payload
                 FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
                 WHERE s.job_id IN (${jobs.joinToString(",") { "?" }}) AND s.desired != 'stop' AND s.node_id IS NOT NULL
                 ORDER BY s.job_id, s.node_id""", *jobs.toTypedArray()) { row ->
-                row.getLong("job_id") to runningNode(row.getString("node_id"), row.getString("allocation_id"), row.getString("payload"))
+                val placement = row.getString("placement")?.let(SessionPlacement::parse) ?: SessionPlacement.of(row.getString("payload"))
+                row.getLong("job_id") to runningNode(row.getString("node_id"), row.getString("allocation_id"), placement)
             }.groupBy({ it.first }, { it.second })
         }
     }
@@ -172,11 +178,9 @@ class ExecutionStore internal constructor(private val store: Store) {
             require(db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single() == payload)
             return@executionTransaction old
         }
-        val native = db.sqlRows("SELECT json_extract(?, '$.Meta.lab_cpu_enforcement')", payload) { it.getString(1) }.single() == "advisory-native"
-        if (native) {
-            val limit = db.sqlRows("SELECT json_extract(?, '$.Meta.lab_native_cpu_limit'), json_extract(?, '$.Meta.lab_native_memory_limit')", payload, payload) {
-                if (it.getObject(1) == null || it.getObject(2) == null) null else it.getLong(1) to it.getLong(2)
-            }.single()
+        val placement = SessionPlacement.of(payload)
+        if (placement.native) {
+            val limit = placement.nativeCpuLimit?.let { cpu -> placement.nativeMemoryLimit?.let { cpu to it } }
             if (limit == null) check(!nativeOwnedByAnother(db, jobId)) { "native execution is reserved by another experiment" }
             else {
                 val held = nativeReservation(db)
@@ -186,7 +190,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
             id, jobId, executionClass.stored, release, Json.encodeToString(budget), nomadId, digest(token), at)
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
-        db.sqlUpdate("UPDATE execution_sessions SET manifest = ? WHERE id = ?", manifest, id)
+        db.sqlUpdate("UPDATE execution_sessions SET manifest = ?, placement = ?, cpu_enforcement = ? WHERE id = ?",
+            manifest, placement.json(), placement.enforcement?.stored, id)
         db.event(jobId, id, "session-created", at)
         db.session(id)!!
     }
@@ -525,14 +530,14 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     private fun nativeReservation(db: Tx): Pair<Long, Long> =
         db.sqlRows("""SELECT COALESCE(SUM(json_extract(s.budget, '$.cpuMillis')),0), COALESCE(SUM(json_extract(s.budget, '$.memoryMiB')),0)
-            FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
-            WHERE s.desired != 'stop' AND json_extract(o.payload, '$.Meta.lab_cpu_enforcement') = 'advisory-native'""".trimIndent()) { it.getLong(1) to it.getLong(2) }.single()
+            FROM execution_sessions s WHERE s.desired != 'stop' AND s.cpu_enforcement = ?""".trimIndent(), CpuEnforcement.ADVISORY_NATIVE.stored) {
+            it.getLong(1) to it.getLong(2)
+        }.single()
     fun nativeOwnedByAnother(job: Long): Boolean = store.executionRead { db -> nativeOwnedByAnother(db, job) }
 
     private fun nativeOwnedByAnother(db: Tx, job: Long): Boolean =
-        db.sqlRows("""SELECT 1 FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
-            WHERE s.job_id != ? AND s.desired != 'stop' AND json_extract(o.payload, '$.Meta.lab_cpu_enforcement') = 'advisory-native' LIMIT 1""",
-            job) { true }.isNotEmpty()
+        db.sqlRows("SELECT 1 FROM execution_sessions s WHERE s.job_id != ? AND s.desired != 'stop' AND s.cpu_enforcement = ? LIMIT 1",
+            job, CpuEnforcement.ADVISORY_NATIVE.stored) { true }.isNotEmpty()
 
     fun queueRecipe(job: Long, proposed: NomadQueueSettings): NomadQueueSettings = store.executionTransaction { db ->
         val prior = db.sqlRows("SELECT settings FROM execution_queue_recipes WHERE job_id = ?", job) { it.getString(1) }.singleOrNull()

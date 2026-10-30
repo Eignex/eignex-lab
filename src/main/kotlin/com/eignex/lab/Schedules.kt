@@ -8,10 +8,10 @@ import kotlin.io.path.exists
 internal class Schedules(
     private val config: Config,
     private val store: Store,
-    private val sourceUrl: (String) -> String = { Repositories.source(config, it) },
+    private val sourceUrl: (String) -> String = { Repositories.source(it) },
     private val stopping: () -> Boolean = { false },
 ) {
-    private fun mirror(repository: String) = Repositories.mirror(config, repository)
+    private fun mirror(repository: String) = Repositories.mirror(config.paths, repository)
 
     fun enqueue() {
         fun regular(s: Schedule) = s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true

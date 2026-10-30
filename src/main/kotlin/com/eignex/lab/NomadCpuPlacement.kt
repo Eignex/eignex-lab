@@ -4,8 +4,9 @@ import kotlinx.serialization.json.*
 
 /** Infrastructure placement may change CPU frequency without changing a session's vCPU budget or frozen inputs. */
 internal class NomadCpuPlacement(private val nomad: NomadControl, private val nanoTime: () -> Long = System::nanoTime) {
-    private data class Node(val id: String, val nodeClass: String, val capacity: NomadCpuCapacity,
-                            val freeCpu: Long, val freeMemory: Long)
+    /** A Nomad node as calibration sees it: its class, CPU, and the CPU (MHz) and memory (MiB) still free on it. */
+    internal data class Node(val id: String, val nodeClass: String, val capacity: NomadCpuCapacity,
+                             val freeCpu: Long, val freeMemory: Long)
     private var sampledAt = Long.MIN_VALUE
     private var nodes = emptyList<Node>()
 
@@ -23,38 +24,46 @@ internal class NomadCpuPlacement(private val nomad: NomadControl, private val na
         }
     }
 
+    /** [job] calibrated ([calibrate]) against the nodes as last sampled, at most ten seconds ago. */
     @Synchronized
     fun calibrate(job: JsonObject, budget: ResourceBudget): JsonObject {
-        if (job["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content != "hard-quota") return job
-        val constraints = job.getValue("Constraints").jsonArray.map { it.jsonObject }
-        fun value(target: String) = constraints.singleOrNull {
-            it["LTarget"]?.jsonPrimitive?.content == target && it["Operand"]?.jsonPrimitive?.content == "="
-        }?.get("RTarget")?.jsonPrimitive?.content
-        val nodeClass = value("${'$'}{node.class}") ?: return job
-        val capacity = NomadCpuCapacity(value("${'$'}{attr.cpu.usablecompute}")?.toIntOrNull() ?: return job,
-            value("${'$'}{attr.cpu.numcores}")?.toIntOrNull() ?: return job)
-        val excluded = constraints.filter { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.unique.id}" &&
-            it["Operand"]?.jsonPrimitive?.content == "!=" }.map { it.getValue("RTarget").jsonPrimitive.content }.toSet()
         refresh()
-        val candidates = nodes.filter { it.nodeClass == nodeClass && it.capacity.logicalCpus == capacity.logicalCpus && it.id !in excluded }
-        val fitting = candidates.filter { it.freeCpu >= budget.nomadCpuMHz(it.capacity) && it.freeMemory >= budget.memoryMiB }
-        if (fitting.any { it.capacity == capacity }) return job
-        val selected = fitting.minByOrNull { it.freeCpu - budget.nomadCpuMHz(it.capacity) }
-            ?: if (candidates.any { it.capacity == capacity }) return job else candidates.minByOrNull { it.capacity.usableMHz }
-            ?: return job
-        if (selected.capacity == capacity) return job
-        val groups = job.getValue("TaskGroups").jsonArray.map { group ->
-            val tasks = group.jsonObject.getValue("Tasks").jsonArray.map { task ->
-                val resources = task.jsonObject.getValue("Resources").jsonObject
-                require(resources.getValue("CPU").jsonPrimitive.int == budget.nomadCpuMHz(capacity))
-                JsonObject(task.jsonObject + ("Resources" to JsonObject(resources + ("CPU" to JsonPrimitive(budget.nomadCpuMHz(selected.capacity))))))
+        return calibrate(job, budget, nodes)
+    }
+
+    internal companion object {
+        /**
+         * [job], a hard-quota worker of [budget], asking for the CPU of a node among [nodes] it would fit on: the nodes
+         * of its class may run at another frequency than its constraints say, and Nomad counts CPU in MHz. The job as it
+         * is when it fits as it is, or no node of its class fits better. Pure: [nodes] are what the caller sampled.
+         */
+        fun calibrate(job: JsonObject, budget: ResourceBudget, nodes: List<Node>): JsonObject {
+            val placement = SessionPlacement.of(job)
+            if (placement.enforcement != CpuEnforcement.HARD_QUOTA) return job
+            val constraints = job.getValue("Constraints").jsonArray.map { it.jsonObject }
+            val nodeClass = placement.nodeClass ?: return job
+            val capacity = placement.cpuCapacity ?: return job
+            val excluded = placement.excludedNodes
+            val candidates = nodes.filter { it.nodeClass == nodeClass && it.capacity.logicalCpus == capacity.logicalCpus && it.id !in excluded }
+            val fitting = candidates.filter { it.freeCpu >= budget.nomadCpuMHz(it.capacity) && it.freeMemory >= budget.memoryMiB }
+            if (fitting.any { it.capacity == capacity }) return job
+            val selected = fitting.minByOrNull { it.freeCpu - budget.nomadCpuMHz(it.capacity) }
+                ?: if (candidates.any { it.capacity == capacity }) return job else candidates.minByOrNull { it.capacity.usableMHz }
+                ?: return job
+            if (selected.capacity == capacity) return job
+            val groups = job.getValue("TaskGroups").jsonArray.map { group ->
+                val tasks = group.jsonObject.getValue("Tasks").jsonArray.map { task ->
+                    val resources = task.jsonObject.getValue("Resources").jsonObject
+                    require(resources.getValue("CPU").jsonPrimitive.int == budget.nomadCpuMHz(capacity))
+                    JsonObject(task.jsonObject + ("Resources" to JsonObject(resources + ("CPU" to JsonPrimitive(budget.nomadCpuMHz(selected.capacity))))))
+                }
+                JsonObject(group.jsonObject + ("Tasks" to JsonArray(tasks)))
             }
-            JsonObject(group.jsonObject + ("Tasks" to JsonArray(tasks)))
+            return JsonObject(job + mapOf("TaskGroups" to JsonArray(groups), "Constraints" to JsonArray(constraints.map {
+                if (it["LTarget"]?.jsonPrimitive?.content == "${'$'}{attr.cpu.usablecompute}")
+                    JsonObject(it + ("RTarget" to JsonPrimitive(selected.capacity.usableMHz.toString()))) else it
+            })))
         }
-        return JsonObject(job + mapOf("TaskGroups" to JsonArray(groups), "Constraints" to JsonArray(constraints.map {
-            if (it["LTarget"]?.jsonPrimitive?.content == "${'$'}{attr.cpu.usablecompute}")
-                JsonObject(it + ("RTarget" to JsonPrimitive(selected.capacity.usableMHz.toString()))) else it
-        })))
     }
 
     private fun sample(): List<Node> = nomad.nodes().filter {

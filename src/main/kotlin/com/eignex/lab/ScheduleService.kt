@@ -15,7 +15,7 @@ class ScheduleService internal constructor(private val services: ApiServices) {
         Experiments.requirePlainName(spec.name)
         require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
         validate(spec.experiment)
-        services.experiments.requireRef(spec.ref, Repositories.source(config, spec.experiment.repository), services.trust(spec.experiment.repository))
+        services.experiments.requireRef(spec.ref, Repositories.source(spec.experiment.repository), services.trust(spec.experiment.repository))
         return store.schedules.create(spec.name, spec.ref, spec.experiment, spec.intervalSec)
     }
 

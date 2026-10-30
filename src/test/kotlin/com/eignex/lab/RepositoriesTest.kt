@@ -30,17 +30,16 @@ class RepositoriesTest {
         val koblas = ExperimentSpec("p", repository = "Eignex/koblas", profile = profile)
         val skema = koblas.copy(repository = "Eignex/skema")
 
-        assertEquals(config.dataDir.resolve("repos/eignex-lab.git"), Repositories.mirror(config, Repositories.DEFAULT))
-        assertNotEquals(Repositories.mirror(config, koblas.repository), Repositories.mirror(config, skema.repository))
+        assertEquals(config.dataDir.resolve("repos/eignex-lab.git"), Repositories.mirror(config.paths, Repositories.DEFAULT))
+        assertNotEquals(Repositories.mirror(config.paths, koblas.repository), Repositories.mirror(config.paths, skema.repository))
         assertNotEquals(Experiments.fingerprint(koblas), Experiments.fingerprint(skema))
-        assertTrue(Repositories.mirror(config, koblas.repository).startsWith(config.dataDir))
+        assertTrue(Repositories.mirror(config.paths, koblas.repository).startsWith(config.dataDir))
     }
 
     @Test
     fun `a configured URL cannot override the Eignex source restriction`() {
-        for (url in listOf("/tmp/repo", "https://github.com/other/klause.git", "https://github.com.evil/Eignex/klause.git")) {
-            assertEquals(Repositories.url(Repositories.DEFAULT), Repositories.source(Config(repoUrl = url), Repositories.DEFAULT))
-        }
+        // A repository's source takes no configuration at all: whatever LAB_REPO says, it is fetched from its GitHub URL.
+        assertEquals(Repositories.url(Repositories.DEFAULT), Repositories.source(Repositories.DEFAULT))
     }
 
     @Test

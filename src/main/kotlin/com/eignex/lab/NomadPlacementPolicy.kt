@@ -6,7 +6,7 @@ import kotlinx.serialization.json.*
 internal class NomadPlacementPolicy(private val settings: NomadQueueSettings) {
     fun apply(job: JsonObject): JsonObject {
         val constraints = job.getValue("Constraints").jsonArray.map { it.jsonObject }
-        val nodeClass = constraints.single { it["LTarget"]?.jsonPrimitive?.content == "${'$'}{node.class}" }.getValue("RTarget").jsonPrimitive.content
+        val nodeClass = SessionPlacement.of(job).nodeClass
         val template = settings.targets.singleOrNull { it.template.nodeClass == nodeClass }?.template ?: return job
         val meta = job.getValue("Meta").jsonObject.toMutableMap()
         if (settings.perHostParallel == null) meta.remove("lab_per_host_parallel")

@@ -128,7 +128,7 @@ class VolumesTest {
         Files.createDirectories(root.resolve("Ros"))
         val config = external(root).copy(corpusDir = root.resolve("Other/corpus"))
 
-        val dir = Volumes.ensure(Volumes.JOB_FILES, config.jobsDir, root) { true }
+        val dir = Volumes.ensure(Volumes.JOB_FILES, config.jobsDir, root, config.volumeAccess) { true }
 
         assertTrue(Files.isDirectory(dir))
         assertEquals("corpus volume ${root.resolve("Other")} is not mounted", Volumes.missing(config) { it.endsWith("Ros") })
@@ -140,9 +140,9 @@ class VolumesTest {
         val dir = Files.createTempDirectory("jobs")
         val file = Files.createTempFile("jobs", ".txt")
 
-        assertNull(Volumes.problem(Volumes.JOB_FILES, dir, Path("/Volumes")))
-        assertNull(Volumes.problem(Volumes.JOB_FILES, dir.resolve("not-yet"), Path("/Volumes")))
-        assertEquals("job files directory $file is not writable", Volumes.problem(Volumes.JOB_FILES, file, Path("/Volumes")))
+        assertNull(Volumes.problem(Volumes.JOB_FILES, dir, Path("/Volumes"), VolumeAccess()))
+        assertNull(Volumes.problem(Volumes.JOB_FILES, dir.resolve("not-yet"), Path("/Volumes"), VolumeAccess()))
+        assertEquals("job files directory $file is not writable", Volumes.problem(Volumes.JOB_FILES, file, Path("/Volumes"), VolumeAccess()))
     }
 
     @Test

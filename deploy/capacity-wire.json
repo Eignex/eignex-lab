@@ -1,0 +1,9 @@
+{
+  "_comment": "What the coordinator's capacity endpoints and the provider-side Python agree on. CapacityWire (Kotlin) and the Python modules carry these values; tests on both sides hold them to this file.",
+  "grantDomain": "eignex-capacity-v1\n",
+  "grantSchemaVersion": 1,
+  "grantFreshMs": 30000,
+  "grantClockSkewMs": 5000,
+  "desiredMetric": "lab_capacity_desired_nodes",
+  "capacityIdMeta": "lab_capacity_id"
+}

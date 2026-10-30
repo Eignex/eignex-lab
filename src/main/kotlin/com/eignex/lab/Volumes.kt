@@ -75,7 +75,7 @@ object Volumes {
         label: String,
         dir: Path,
         root: Path,
-        access: VolumeAccess = VolumeAccess.shared,
+        access: VolumeAccess,
         mounted: (Path) -> Boolean = ::isMounted,
     ): String? {
         mountPointOf(dir, root)?.let { mount -> if (!mounted(mount)) return "$label volume $mount is not mounted" }
@@ -101,7 +101,7 @@ object Volumes {
         label: String,
         dir: Path,
         root: Path,
-        access: VolumeAccess = VolumeAccess.shared,
+        access: VolumeAccess,
         mounted: (Path) -> Boolean = ::isMounted,
     ): Path {
         problem(label, dir, root, access, mounted)?.let { throw IllegalStateException(it) }
@@ -114,15 +114,27 @@ object Volumes {
 
     /** Why the job files or the corpus cannot be used now ([problem]), or null when both can. */
     fun missing(config: Config, mounted: (Path) -> Boolean = ::isMounted): String? {
-        start(config, mounted)
+        if (!watching) probeAll(config, mounted)
         return jobFiles(config, mounted) ?: problem(CORPUS, config.corpusDir, config.volumesRoot, config.volumeAccess, mounted)
+    }
+
+    @Volatile private var watching = false
+
+    /**
+     * Keep every one of the lab's directories probed ([probeAll]) every [everyMs], on a thread of its own, so that
+     * [report], [missing] and [hold] only read outcomes and never start a probe themselves. A service starts it once,
+     * when it starts; a one-shot caller without it has its directories probed side by side when it first asks.
+     */
+    fun watch(config: Config, everyMs: Long = VolumeAccess.FRESH_MS / 2): Thread {
+        watching = true
+        return periodic("volume-probes", everyMs) { probeAll(config, ::isMounted) }
     }
 
     /**
      * Start probing each of the lab's directories whose volume is mounted ([VolumeAccess.start]), so that directories
      * on a blocked volume wait out their timeouts side by side rather than one after another.
      */
-    private fun start(config: Config, mounted: (Path) -> Boolean) {
+    fun probeAll(config: Config, mounted: (Path) -> Boolean = ::isMounted) {
         for (entry in paths(config)) {
             val dir = Path.of(entry.path)
             if (mountPointOf(dir, config.volumesRoot)?.let(mounted) != false) config.volumeAccess.start(entry.label, dir)
@@ -149,7 +161,7 @@ object Volumes {
         space: (Path) -> VolumeSpace = ::space,
         mounted: (Path) -> Boolean = ::isMounted,
     ): List<VolumeReport> {
-        start(config, mounted)
+        if (!watching) probeAll(config, mounted)
         val volumes = LinkedHashMap<String, VolumeReport>()
         for (entry in paths(config)) {
             val dir = Path.of(entry.path)
@@ -281,7 +293,6 @@ class VolumeAccess(
         private const val NANOS_PER_MS = 1_000_000L
 
         /** The one this process checks its directories with. */
-        val shared: VolumeAccess by lazy { VolumeAccess() }
 
         /** The java binary this process runs, its links resolved: the one macOS's privacy settings must name. */
         fun javaBinary(): String {
