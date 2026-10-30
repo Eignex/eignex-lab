@@ -231,7 +231,8 @@ description in `captureOrigin`. Source, compiler outputs, witness coordinates an
 The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
 extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
 Policy v4 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
-It declares the no-argument `klause_symmetry` annotation when the captured frame uses it without a declaration.
+Policy v5 declares the no-argument `klause_symmetry` and `klause_redundant` annotations when the captured frame
+uses either without a declaration.
 Tagged constraints remain asserted exactly as captured. Other solver annotations and opaque predicates retain their
 ordinary compiler/provider handling; an unsupported predicate cannot be accepted by discarding it.
 The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
