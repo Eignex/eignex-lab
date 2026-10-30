@@ -36,6 +36,24 @@ class ExecutionStoreTest {
         store.execution.commit(claim.owner, result(claim), 1020)
     }
 
+    @Test fun `coordinator record metadata preserves the accepted manifest for acknowledgement retries`() {
+        val id = job(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
+        store.execution.phase(claim.owner, "uploading", 1010)
+        val result = result(claim)
+        val projected = """{"coordinator":true}"""
+
+        store.execution.commit(claim.owner, result, 1020, projectRecord = { projected })
+        val restarted = Store(file)
+        restarted.execution.authorizeCommit(claim.owner, result, 1021)
+
+        assertTrue(restarted.execution.commit(claim.owner, result, 1021))
+        assertEquals(result, restarted.execution.accepted(id).single().second)
+        assertTrue(restarted.plans.cases(id).filter { it.index in claim.indices }.all {
+            it.record.toString() == projected
+        })
+    }
+
     private fun profile(): Long {
         val spec = ExperimentSpec("profile", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 1, classpath = listOf("tools/lib/*")))
         val id = store.create("profile", "main", emptyList(), experiment = spec)

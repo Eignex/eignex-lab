@@ -369,7 +369,8 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     /** Artifacts must have been checksum-verified before this transaction. A lost acknowledgement is idempotent. */
-    internal fun commit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Boolean = store.executionTransaction { db ->
+    internal fun commit(owner: AttemptOwner, result: IterationResult, at: Long = now(),
+                        projectRecord: (ExecutionCaseResult) -> String? = { it.record }): Boolean = store.executionTransaction { db ->
         val a = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (a.state == AttemptState.COMMITTED) {
             if (a.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
@@ -384,9 +385,11 @@ class ExecutionStore internal constructor(private val store: Store) {
         val node = db.session(owner.session)!!.node!!
         for (case in result.cases) {
             case.record?.let { Json.parseToJsonElement(it) }
+            val record = projectRecord(case)
+            record?.let { Json.parseToJsonElement(it) }
             db.sqlUpdate("UPDATE commands SET status = ?, exit_code = ?, started_at = ?, finished_at = ?, phase = NULL, host = ?, cmd = COALESCE(?, cmd) WHERE job_id = ? AND idx = ?",
                 if (case.exitCode == 0) "DONE" else "FAILED", case.exitCode, case.startedAt, case.finishedAt, node, case.command, a.jobId, case.index)
-            db.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", case.record?.let(store.plans::storedRecord), a.jobId, case.index)
+            db.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", record?.let(store.plans::storedRecord), a.jobId, case.index)
         }
         db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
             Json.encodeToString(result), at, a.jobId, owner.iteration, owner.generation)
