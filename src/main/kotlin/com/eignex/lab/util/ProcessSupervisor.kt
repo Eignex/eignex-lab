@@ -38,6 +38,9 @@ private class ChannelWait(channel: SocketChannel) : AutoCloseable {
     }
 }
 
+/** Supervised exit code and, when supplied by the supervisor, the actual child signal (zero means none). */
+data class ProcessTermination(val exitCode: Int, val signal: Int?, val runTimedOut: Boolean)
+
 /** Process ownership lives in an independent, same-user service. Closing the connection relinquishes the tree. */
 class ProcessSupervisor(private val socket: Path, private val experiment: String? = System.getenv("LAB_WORKER_EXPERIMENT")) {
     @Serializable
@@ -72,7 +75,8 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
     }
 
     fun run(argv: List<String>, directory: Path, environment: Map<String, String>, stdout: Path, stderr: Path,
-            timeoutSec: Long, graceMs: Long = 10_000, runRemainingMs: Long? = null, remainingLeaseMs: () -> Long): Int {
+            timeoutSec: Long, graceMs: Long = 10_000, runRemainingMs: Long? = null,
+            observeTermination: (ProcessTermination) -> Unit = {}, remainingLeaseMs: () -> Long): Int {
         if (runRemainingMs != null && runRemainingMs <= 0) throw RunDeadlineExceeded()
         fun remaining() = remainingLeaseMs().coerceAtMost(80_000).also {
             if (it <= 0) throw LeaseLost("execution lease ended")
@@ -104,8 +108,11 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
                         response.append(String(buffer.array(), 0, n)); require(response.length <= 4096)
                         if ('\n' in response) {
                             val json = Json.parseToJsonElement(response.toString().substringBefore('\n')).jsonObject
-                            if (json["runTimedOut"]?.jsonPrimitive?.content == "true") throw RunDeadlineExceeded()
-                            return json["exitCode"]?.jsonPrimitive?.int ?: error("process supervision failed")
+                            val exit = json["exitCode"]?.jsonPrimitive?.int ?: error("process supervision failed")
+                            val timedOut = json["runTimedOut"]?.jsonPrimitive?.content == "true"
+                            observeTermination(ProcessTermination(exit, json["signal"]?.jsonPrimitive?.content?.toIntOrNull(), timedOut))
+                            if (timedOut) throw RunDeadlineExceeded()
+                            return exit
                         }
                     } else {
                         // Until the supervisor answers, or the next heartbeat is due.

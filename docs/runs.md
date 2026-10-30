@@ -174,6 +174,15 @@ Queue and placement time remains part of wall-clock turnaround, observable from 
 The whole-run allowance charges active worker attempts, including compiler waits after a claim; time before
 a claim is admission time. Moving a wait before admission does not reduce solver work or erase spent attempt time.
 
+Preparation diagnostics are provisional observations retained on the attempt before completion. The execution
+report and preparation details expose the last snapshot: bounded build stdout/stderr tails, observed child exit
+code, the last 16 upload responses (including offsets and retries), resource counters and remaining lease/run time.
+Workers report every five seconds and make one best-effort final report before staging cleanup or failure exits.
+The final evidence request is bounded to five seconds and the existing lease; it grants no additional work time.
+Abrupt node loss can prevent the final snapshot. Missing exit/signal/OOM evidence stays unknown. The coordinator
+also retains bounded Nomad task termination evidence in execution events, including for older worker releases.
+These receipts do not accept a build, reset failed-attempt costs, or change owner/generation/lease fencing.
+
 Repository-specific recipes and named workload sets live with their consumers. Before removing a legacy
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.

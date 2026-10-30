@@ -24,7 +24,8 @@ class WorkerBuildFailure(val detail: String) : IllegalStateException("trusted so
 class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSupervisor,
                        private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
                        private val dependencyBytes: (Path) -> Long = ::dependencyTreeBytes,
-                       private val startMaintenance: (Thread) -> Unit = Thread::start) {
+                       private val startMaintenance: (Thread) -> Unit = Thread::start,
+                       private val observeBuild: (Path, Path, PreparationBuildDiagnostic) -> Unit = { _, _, _ -> }) {
     private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
     @Serializable private data class DependencyUsage(val key: String, val modified: String, val bytes: Long)
     @Serializable private data class Entry(val identity: String, val files: List<InputFile>)
@@ -82,9 +83,16 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, buildToolchain(bundle.toolchain), bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
                 val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                     "LAB_SOURCE_COMMIT" to bundle.commit)
-                fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env) {
-                    val exit = supervisor.run(argv, directory, runEnvironment, log, errors, build.timeoutSec,
-                        graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining)
+                fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env, kind: String = "checkout") {
+                    val child = PreparationBuildDiagnostic(kind = kind, stage = trace.snapshot().stage, sourceCommit = bundle.commit)
+                    observeBuild(log, errors, child)
+                    var termination: ProcessTermination? = null
+                    val exit = try {
+                        supervisor.run(argv, directory, runEnvironment, log, errors, build.timeoutSec,
+                            graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(),
+                            observeTermination = { termination = it }, remainingLeaseMs = ::remaining)
+                    } finally { observeBuild(log, errors, child.copy(exitCode = termination?.exitCode,
+                        signal = termination?.signal, runTimedOut = termination?.runTimedOut)) }
                     if (exit != 0) {
                         fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
                             input.seek((input.length() - 8192).coerceAtLeast(0)); String(ByteArray((input.length() - input.filePointer).toInt()).also { input.readFully(it) })
@@ -121,7 +129,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                                 trace.step("compilation") {
                                     run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                                         "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree,
-                                        env + ("GRADLE_USER_HOME" to dependencyHome.toString()))
+                                        env + ("GRADLE_USER_HOME" to dependencyHome.toString()), kind = "compilation")
                                 }
                                 Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
                             }

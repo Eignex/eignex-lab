@@ -613,6 +613,21 @@ class NomadBackendTest {
         assertEquals(8, store.execution.failureCount(id))
     }
 
+    @Test fun `preparation loss keeps controller termination evidence without counting OOM as software poison`() {
+        val id = setup(preparation = true); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "preparing")
+        val diagnostic = NomadTaskTermination("failed", "run", "dead", listOf("Started", "Terminated"), 137, 9, true, false, false, false)
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "failed", termination = diagnostic)
+        backend(Store(file)).reconcile()
+        val events = Store(file).execution.events(id)
+        val retained = events.single { it.detail.startsWith("preparation-termination:") }
+        assertEquals(diagnostic, Json.decodeFromString<NomadTaskTermination>(retained.detail.removePrefix("preparation-termination:")))
+        assertFalse(events.any { it.detail.startsWith("preparation-worker-exit:") })
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+    }
+
     @Test fun `three proven worker exits at the same preparation stage stop automatic replacement`() {
         val id = setup(preparation = true); register()
         var allocation = "allocation"

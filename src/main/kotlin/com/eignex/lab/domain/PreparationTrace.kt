@@ -32,7 +32,7 @@ data class PreparationCacheEvent(val outcome: String, val reason: String, val ve
 }
 
 @Serializable
-data class PreparationStatus(val progress: PreparationProgress, val updatedAt: Long)
+data class PreparationStatus(val progress: PreparationProgress, val updatedAt: Long, val diagnostics: PreparationDiagnostics? = null)
 
 /** Exclusive monotonic timings: nested download/build operations do not double-count their parent. */
 class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {

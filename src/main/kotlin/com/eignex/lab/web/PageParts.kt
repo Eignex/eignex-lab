@@ -710,6 +710,10 @@ internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()
         append(snapshot.timings.filterValues { it > 0 }.entries.joinHtml(Html(" · ")) {
             esc(PreparationTrace.labels.getValue(it.key)) + Html(": ") + seconds(it.value)
         })
+        status.diagnostics?.let { evidence ->
+            append(Html("<details><summary>Last preparation diagnostics (provisional)</summary><pre>") +
+                esc(kotlinx.serialization.json.Json.encodeToString(PreparationDiagnostics.serializer(), evidence)) + Html("</pre></details>"))
+        }
         if (snapshot.caches.isNotEmpty()) {
             append(Html("<br>"))
             append(snapshot.caches.entries.joinHtml(Html(" · ")) { (name, event) ->
