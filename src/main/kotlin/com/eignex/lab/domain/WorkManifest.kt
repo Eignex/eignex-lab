@@ -54,13 +54,18 @@ data class WorkManifest(
     val session: String, val release: String, val experiment: ExperimentSpec, val arms: List<PlannedArm>,
     val cases: List<WorkCase>, val bundles: List<WorkerBundle>, val budget: ResourceBudget,
     val solveJavaOptions: String = "",
-    @kotlinx.serialization.EncodeDefault val schemaVersion: Int = if (!experiment.isBench) 1 else 3,
+    @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
+        !experiment.isBench -> 1
+        experiment.work.bench?.adapterResources == true -> 4
+        else -> 3
+    },
     val preparationTimeoutSec: Long? = null, val inputCorpus: WorkerBundle? = null,
     val sharedInputs: List<SharedInput> = emptyList(),
     val benchReplay: BenchReplay? = null,
 ) {
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..3) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..4) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion >= 4 || experiment.work.bench?.adapterResources != true) { "adapter resources require worker protocol 4" }
         require(preparationTimeoutSec == null || preparationTimeoutSec in 1..7200)
         require(arms.isNotEmpty() && (cases.isNotEmpty() || preparationTimeoutSec != null) && cases.map { it.index }.distinct().size == cases.size)
         require(arms.all { (preparationTimeoutSec != null || it.arm.cores * 1000L <= budget.cpuMillis) && CommitSha.isValid(it.sha) })

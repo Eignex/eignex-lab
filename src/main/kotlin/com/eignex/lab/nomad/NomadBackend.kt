@@ -222,7 +222,22 @@ class NomadBackend(
                     Json.decodeFromString<ResourceObservation>(bytes.toString(Charsets.UTF_8)).takeIf { it.budget == session.budget }
                 }
             }.getOrNull() }
-            accepted.cases.associate { case -> case.index to ComparisonExecution.record(case.record, observation, receipt, session.release) }
+            val measured = store.execution.adapterResources(session.id)
+            fun capture(name: String, limit: Int): Pair<String?, String?> {
+                val sha = accepted.artifacts[name] ?: return null to null
+                val text = runCatching { artifacts.open(session.jobId, sha).use { input ->
+                    val bytes = input.readNBytes(limit + 1)
+                    require(bytes.size <= limit)
+                    bytes.toString(Charsets.UTF_8)
+                } }.getOrNull()
+                return text to sha
+            }
+            accepted.cases.associate { case ->
+                val (metadata, metadataSha) = if (measured) capture("cases/${case.index}/${AdapterResources.RECEIPT}", AdapterResources.LIMIT * 2) else null to null
+                val (raw, rawSha) = if (measured) capture("cases/${case.index}/${AdapterResources.RAW}", AdapterResources.LIMIT) else null to null
+                val physical = ComparisonExecution.record(case.record, observation, receipt, session.release)
+                case.index to if (measured) AdapterResources.project(physical, true, metadata, metadataSha, raw, rawSha, case.command) else physical
+            }
         } else emptyMap()
         return store.execution.commit(owner, accepted, projectRecord = { case ->
             if (case.index in projected) projected[case.index] else case.record

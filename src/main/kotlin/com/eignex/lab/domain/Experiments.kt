@@ -192,6 +192,9 @@ object Experiments {
 
     private fun validateBench(spec: ExperimentSpec, work: Work.Bench, maxParallel: Int) {
         val bench = work.spec
+        require(!bench.adapterResources || spec.nodeTags?.require?.contains("platform:linux") == true) {
+            "adapter resources require an explicit platform:linux tag"
+        }
         require(!spec.measuresCli)
         require(spec.problems.isEmpty() && spec.problemList.isEmpty() && spec.seeds.isEmpty()) {
             "bench owns selection and seed expansion; submit opaque parameters in bench.request"
@@ -210,6 +213,7 @@ object Experiments {
         for (arm in arms) {
             require(arm.ref.isNotBlank() && !arm.ref.startsWith('-') && arm.ref.none(Char::isISOControl))
             val reference = arm.values["backend"] == REFERENCE_BACKEND
+            require(!bench.adapterResources || !reference) { "adapter resources measure SDK arms; reference arms use their own recordings" }
             val keys = if (reference) setOf("ref", "backend", "solver", "timeout", "processors", "fixed") else setOf("ref")
             require(arm.values.keys.all { key -> key in keys || !reference && key.startsWith("param.") && key.length > 6 }) {
                 "bench arms take ref and param.<opaque request key>; reference arms take backend, solver, timeout, processors and fixed"
