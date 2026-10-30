@@ -46,6 +46,18 @@ class ExactMpsCheckerTest {
         assertEquals(emptyList(), File(dir, "scratch").listFiles()!!.toList())
     }
 
+    @Test fun `NAME descriptive metadata keeps exact source and point checks`() {
+        val originalHeader = "NAME          AFIRO   SIZE: N=32, M=28, NZ=115"
+        val text = source("pure-real-min").replaceFirst("NAME T", originalHeader)
+        val valid = expect(LabCheck.VALID, check(text))
+        assertEquals(sha256(text.toByteArray()), valid.sourceSha256["model"])
+        expect(LabCheck.INVALID, check(text, "v X=0"))
+        expect(LabCheck.INVALID, check(text, objective = "2/3"))
+        expect(LabCheck.NOT_RUN, check(text, hash = "0".repeat(64)))
+        expect(LabCheck.UNKNOWN, check(text.replace("ROWS", "ROWS extra")))
+        expect(LabCheck.UNKNOWN, check(text.replace("ENDATA", "NAME SECOND\nENDATA")))
+    }
+
     @Test fun `objective constant and sense retain original units including fixed-column layout`() {
         val text = """NAME          OFFSET
 OBJSENSE
