@@ -31,7 +31,8 @@ object FlatZincGroundCheckerMain {
         println("$MARKER\t$state")
     }
 
-    internal fun evaluate(path: Path): String =
+    /** Evaluate only a complete integer/Boolean frame, without search or variable completion. */
+    fun evaluate(path: Path): String =
         try {
             val model = Model("fixed-assignment", SettingsBuilder.init().setLCG(false).setEnableSAT(false))
             val errors = object : BaseErrorListener() {
@@ -52,7 +53,15 @@ object FlatZincGroundCheckerMain {
             }
             parser.flatzinc_model(model, Datas(model, Level.SILENT, false))
             check(parser.numberOfSyntaxErrors == 0 && parser.currentToken.type == Token.EOF)
-            if (model.vars.any { it !is IntVar || !it.isInstantiated }) "UNKNOWN" else {
+            val unfixed = model.vars.filter { it !is IntVar || !it.isInstantiated }
+            if (unfixed.isNotEmpty()) {
+                val sample = unfixed.take(8).joinToString { variable ->
+                    val name = variable.name.take(80)
+                    if (variable is IntVar) "$name=${variable.lb}..${variable.ub}" else "$name:${variable.javaClass.simpleName}"
+                }
+                System.err.println("The provider retained ${unfixed.size} non-integer or unfixed variables: $sample".take(2000))
+                "UNKNOWN"
+            } else {
                 val checks = model.cstrs.map { it to it.isSatisfied() }
                 when {
                     checks.any { it.second == ESat.FALSE } -> {
@@ -60,7 +69,12 @@ object FlatZincGroundCheckerMain {
                         "INVALID"
                     }
                     checks.all { it.second == ESat.TRUE } -> "VALID"
-                    else -> "UNKNOWN"
+                    else -> {
+                        val undecided = checks.filter { it.second != ESat.TRUE }
+                        System.err.println("The provider left ${undecided.size} fixed constraints undecided: " +
+                            undecided.take(8).joinToString { it.first.name }.take(1000))
+                        "UNKNOWN"
+                    }
                 }
             }
         } catch (failure: Throwable) {

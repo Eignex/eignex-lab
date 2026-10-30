@@ -1,6 +1,7 @@
 package com.eignex.lab.checker
 
-internal object FixedGlobals {
+/** Bind explicit fixed global arguments to pinned official assignment APIs. */
+object FixedGlobals {
     private val constraint = Regex(
         """constraint\s+(klause_all_different_int|klause_circuit|klause_inverse_offsets|klause_lex_less_int)\s*\((.*)\)\s*((?:::\s*[A-Za-z_][A-Za-z0-9_]*\s*)*);""",
     )
@@ -8,6 +9,7 @@ internal object FixedGlobals {
         """array\s*\[\s*1\s*\.\.\s*([0-9]+)\s*]\s*of\s+(?:var\s+)?int\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*[A-Za-z_][A-Za-z0-9_]*\s*)*=\s*(\[[^]]*])\s*;""",
     )
 
+    /** Keep the original text when no supported fixed call can be translated. */
     fun providerInput(text: String): String {
         val items = MiniZincPoint.items(text)
         val arrays = FixedGlobals.arrays(items)

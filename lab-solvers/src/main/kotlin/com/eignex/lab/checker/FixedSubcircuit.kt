@@ -1,12 +1,14 @@
 package com.eignex.lab.checker
 
-internal object FixedSubcircuit {
+/** Map fixed one-based subcircuits to the pinned provider's active-circuit assignment API. */
+object FixedSubcircuit {
     private val constraint = Regex("""constraint\s+klause_subcircuit\s*\(([^;]*)\)\s*;""")
     private val array = Regex(
         """array\s*\[\s*1\s*\.\.\s*([0-9]+)\s*]\s*of\s+(?:var\s+)?int\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\[[^]]*])\s*;""",
     )
     private val identifier = Regex("[A-Za-z_][A-Za-z0-9_]*")
 
+    /** Preserve unsupported forms and every constraint outside a supported fixed subcircuit call. */
     fun providerInput(text: String): String {
         val items = MiniZincPoint.items(text)
         val arrays = items.mapNotNull { array.matchEntire(it) }.groupBy { it.groupValues[2] }
