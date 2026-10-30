@@ -23,6 +23,14 @@ internal object ComparisonControls {
     fun mismatch(a: CaseResult, b: CaseResult): String? {
         val left = a.record as? JsonObject ?: return "missing record"
         val right = b.record as? JsonObject ?: return "missing record"
+        val originA = a.origin
+        val originB = b.origin
+        val paired = when {
+            originA == null || originB == null -> false
+            originA.job != originB.job -> false
+            originA.attempt.isNullOrBlank() || originA.attempt != originB.attempt -> return "accepted worker attempt unavailable or changed"
+            else -> true
+        }
         val controlled = "comparisonControls" in left || "comparisonControls" in right ||
             text(left, "solver") == "klause" || text(right, "solver") == "klause"
         if (!controlled) return null
@@ -31,9 +39,11 @@ internal object ComparisonControls {
         if (text(x, "policy") != "matched-source-v1" || text(y, "policy") != "matched-source-v1") return "unknown comparison policy"
         if (REQUIRED.any { text(x, it).isNullOrBlank() || text(y, it).isNullOrBlank() }) return "incomplete controls"
         if (x != y) return "runtime, source dependency, seed or allowance migration"
-        val execution = ComparisonExecution.frame(left) ?: return "physical execution controls unavailable"
-        val otherExecution = ComparisonExecution.frame(right) ?: return "physical execution controls unavailable"
-        if (execution != otherExecution) return "physical execution migration"
+        if (!paired) {
+            val execution = ComparisonExecution.frame(left) ?: return "physical execution controls unavailable"
+            val otherExecution = ComparisonExecution.frame(right) ?: return "physical execution controls unavailable"
+            if (execution != otherExecution) return "physical execution migration"
+        }
         if (checkerPolicy(left) != checkerPolicy(right)) return "source checking policy migration"
         if (seed(a)?.toString() != text(x, "solverSeed") || seed(b)?.toString() != text(y, "solverSeed")) return "inconsistent seed"
         if (text(left, "seed") != text(x, "solverSeed") || text(right, "seed") != text(y, "solverSeed")) return "inconsistent recorded seed"
