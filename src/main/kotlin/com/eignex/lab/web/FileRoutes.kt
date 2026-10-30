@@ -33,7 +33,7 @@ internal fun Route.fileRoutes(services: ApiServices) {
         val id = io { call.job(store) }.id
         requireJobFiles(config.paths)
         val files = io { jobFiles(config.jobDir(id)) }
-        if (call.wantsHtml()) call.respondText(filesPage(id, files), ContentType.Text.Html) else call.respond(files)
+        if (call.wantsHtml()) call.respondHtml(filesPage(id, files)) else call.respond(files)
     }
     get("/jobs/{id}/files/{path...}") {
         val id = io { call.job(store) }.id

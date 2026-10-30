@@ -37,7 +37,7 @@ internal fun Route.capacityRoutes(services: ApiServices) {
             nodesPage(config.local, services.host, readCapacityReport(config.nomadCapacityReport), store.execution.capacityLeases(), services.capacitySettings.get(),
                 readResultJournalReport(config.dataDir))
         }
-        call.respondText(page, ContentType.Text.Html)
+        call.respondHtml(page)
     }
     get("/journal") {
         call.respond(io { readResultJournalReport(config.dataDir) } ?: throw ApiError.Unavailable("Result journal has not reported"))
@@ -61,6 +61,6 @@ internal fun Route.capacityRoutes(services: ApiServices) {
     get("/jobs/{id}/execution") {
         val job = io { call.job(store) }
         val reports = io { store.execution.reports(job.id) }
-        if (call.wantsHtml()) call.respondText(executionPage(job.id, reports), ContentType.Text.Html) else call.respond(reports)
+        if (call.wantsHtml()) call.respondHtml(executionPage(job.id, reports)) else call.respond(reports)
     }
 }

@@ -18,6 +18,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
+import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,6 +27,25 @@ import kotlin.test.assertTrue
 
 /** Text anyone can put in the lab (names, descriptions, refs, problems, arm labels, file names) reaches a page only escaped. */
 class PageEscapingTest {
+    @Test
+    fun `a value joins markup escaped unless it is markup itself`() {
+        assertEquals("<b>&lt;i&gt;</b>", (Html("<b>") + "<i>" + Html("</b>")).markup)
+        assertEquals("<b><i></b>", (Html("<b>") + Html("<i>") + Html("</b>")).markup)
+        assertEquals("<p>1 &amp; &quot;2&quot;</p>", buildHtml { append(Html("<p>") + 1 + " & \"2\"" + Html("</p>")) }.markup)
+        assertEquals("a<br>&lt;b&gt;", listOf("a", "<b>").joinHtml(Html("<br>")) { esc(it) }.markup)
+    }
+
+    @Test
+    fun `pages build markup from Html only, never from a string template`() {
+        val pages = File("src/main/kotlin/com/eignex/lab/web").listFiles { file -> "Page" in file.name }.orEmpty()
+        assertTrue(pages.size > 5)
+        for (page in pages) {
+            val text = page.readText()
+            assertFalse("buildString" in text, "${page.name} builds markup as a String, which takes text unescaped")
+            assertFalse(Regex("""Html\("(\\.|[^"\\])*\$""").containsMatchIn(text), "${page.name} interpolates a value into Html, unescaped")
+        }
+    }
+
     private val host = HostReport("Test/Arm64", 4, "java")
     private val hostile = "\"><script>alert(1)</script>"
 

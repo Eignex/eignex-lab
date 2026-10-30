@@ -63,8 +63,7 @@ internal fun Route.trendRoutes(services: ApiServices) {
         val view = io { trendView(store, services.trends, call.parameters["name"], call.parameters["all"] != null) }
         if (call.wantsHtml()) {
             val repository = io { store.schedules.all() }.firstOrNull { it.name == view.name }?.experiment?.repository ?: Repositories.DEFAULT
-            call.respondText(trendPage(view.name, view.shown, Repositories.url(repository), view.schedules, view.earlier, view.all, view.computing),
-                ContentType.Text.Html)
+            call.respondHtml(trendPage(view.name, view.shown, Repositories.url(repository), view.schedules, view.earlier, view.all, view.computing))
         } else {
             call.respond(view.shown)
         }

@@ -34,11 +34,11 @@ internal fun Route.statusRoutes(services: ApiServices) {
             indexPage(config.status, services.host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
                 view.queue, { histories[it.id] }, emptyMap(), view.hosts, view.nodes, view.instances, view.free, view.held)
         }
-        call.respondText(page, ContentType.Text.Html)
+        call.respondHtml(page)
     }
     get("/disk") {
         val view = io { PageQueries(services).disk() }
-        if (call.wantsHtml()) call.respondText(diskPage(view.disk, view.holds, view.database, view.volumes, view.held), ContentType.Text.Html)
+        if (call.wantsHtml()) call.respondHtml(diskPage(view.disk, view.holds, view.database, view.volumes, view.held))
         else call.respond((view.disk ?: DiskReport(0, view.freeBytes, emptyList()))
             .copy(holds = view.holds, database = view.database, volumes = view.volumes, held = view.held))
     }

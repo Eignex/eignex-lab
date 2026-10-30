@@ -59,7 +59,7 @@ internal fun Route.experimentRoutes(services: ApiServices) {
             else References.compare(arms.map { it.arm.label }, cases, references)
         }
         // A browser gets the page; an API client the same comparison `/experiments/{id}/reference` gives of one job.
-        if (compared is String) call.respondText(compared, ContentType.Text.Html) else call.respond(compared)
+        if (compared is Html) call.respondHtml(compared) else call.respond(compared)
     }
     get("/experiments/{id}/metrics.csv") {
         call.respondText(io { BenchRuns.metricsCsv(store.plans.cases(call.longParam())) }, ContentType.Text.CSV)

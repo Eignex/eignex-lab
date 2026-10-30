@@ -59,7 +59,7 @@ internal fun Route.jobRoutes(services: ApiServices) {
                     files = JobDirView.read(config.paths, job),
                 )
             }
-            call.respondText(page, ContentType.Text.Html)
+            call.respondHtml(page)
         } else {
             val dir = config.jobDir(job.id)
             val terminations = io { Volumes.jobFiles(config.paths) == null }

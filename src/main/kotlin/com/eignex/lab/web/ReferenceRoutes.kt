@@ -37,7 +37,7 @@ internal fun Route.referenceRoutes(services: ApiServices) {
                 val board = services.references.scoreboard(call.parameters)
                 referencesPage(services.references.coverage(), filter, found, total, services.references.conflicts(), board)
             }
-            call.respondText(page, ContentType.Text.Html)
+            call.respondHtml(page)
         } else {
             call.respond(found.map { (key, r) -> ReferenceHit(key.collection, key.problem, r) })
         }
@@ -63,7 +63,7 @@ internal fun Route.referenceRoutes(services: ApiServices) {
             val total = if (limit != null && runs.size >= limit) store.problemRunCount(collection, problem) else runs.size
             ProblemReport(collection, problem, store.references.rows(collection, problem), runs, total)
         }
-        if (call.wantsHtml()) call.respondText(problemPage(report, config.repoUrl), ContentType.Text.Html) else call.respond(report)
+        if (call.wantsHtml()) call.respondHtml(problemPage(report, config.repoUrl)) else call.respond(report)
     }
 }
 

@@ -64,7 +64,7 @@ class DiskGuardTest {
             ), "job files volume /Volumes/Ros is not mounted"),
         )
 
-        val page = diskPage(null, volumes = volumes, held = "job files volume /Volumes/Ros is not mounted")
+        val page = diskPage(null, volumes = volumes, held = "job files volume /Volumes/Ros is not mounted").markup
 
         assertTrue("<h2>Volumes</h2>" in page, page)
         assertTrue("The queue is held: job files volume /Volumes/Ros is not mounted" in page, page)
