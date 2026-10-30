@@ -178,7 +178,7 @@ class NomadBackend(
             require(allowed || result.preparation?.artifacts?.get(name) == sha && name.startsWith("preparation/")) { "artifact does not belong to this iteration" }
             artifacts.verify(session.jobId, sha)
         }
-        if (session.executionClass == ExecutionClass.SOLVE) {
+        val projected = if (session.executionClass == ExecutionClass.SOLVE) {
             val receipt = result.artifacts["nomad/${owner.iteration.replace(':', '-')}-${owner.generation}-resources.json"]
             val observation = receipt?.let { sha -> runCatching {
                 artifacts.open(session.jobId, sha).use { input ->
@@ -187,11 +187,11 @@ class NomadBackend(
                     Json.decodeFromString<ResourceObservation>(bytes.toString(Charsets.UTF_8)).takeIf { it.budget == session.budget }
                 }
             }.getOrNull() }
-            accepted = accepted.copy(cases = accepted.cases.map { case ->
-                case.copy(record = ComparisonExecution.record(case.record, observation, receipt, session.release))
-            })
-        }
-        return store.execution.commit(owner, accepted).also { changed() }
+            accepted.cases.associate { case -> case.index to ComparisonExecution.record(case.record, observation, receipt, session.release) }
+        } else emptyMap()
+        return store.execution.commit(owner, accepted, projectRecord = { case ->
+            if (case.index in projected) projected[case.index] else case.record
+        }).also { changed() }
     }
 
     fun reconcile() {
