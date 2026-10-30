@@ -24,8 +24,12 @@ object FlatZincGroundCheckerMain {
 
     @JvmStatic
     fun main(args: Array<String>) {
-        val state = try {
-            require(args.size == 1)
+        val state = args.singleOrNull()?.let { evaluate(Path.of(it)) } ?: "UNKNOWN"
+        println("$MARKER\t$state")
+    }
+
+    internal fun evaluate(path: Path): String =
+        try {
             val model = Model("fixed-assignment", SettingsBuilder.init().setLCG(false).setEnableSAT(false))
             val errors = object : BaseErrorListener() {
                 override fun syntaxError(recognizer: Recognizer<*, *>?, offendingSymbol: Any?, line: Int,
@@ -33,7 +37,7 @@ object FlatZincGroundCheckerMain {
                     throw ParseCancellationException("FlatZinc syntax error at $line:$charPositionInLine: $msg")
                 }
             }
-            val lexer = Flatzinc4Lexer(CharStreams.fromPath(Path.of(args[0]))).apply {
+            val lexer = Flatzinc4Lexer(CharStreams.fromPath(path)).apply {
                 removeErrorListeners()
                 addErrorListener(errors)
             }
@@ -59,6 +63,4 @@ object FlatZincGroundCheckerMain {
             System.err.println("${failure::class.simpleName}: ${failure.message}".take(2000))
             "UNKNOWN"
         }
-        println("$MARKER\t$state")
-    }
 }
