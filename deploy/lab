@@ -371,7 +371,7 @@ fetch)
     mkdir -p "$dest/$(dirname "$path")"
     curl_status=0
     code=$(curl -sS -o "$dest/$path.part" -w '%{http_code}' "$url/jobs/$id/files/$path") || curl_status=$?
-    received=0; [[ ! -f "$dest/$path.part" ]] || received=$(wc -c < "$dest/$path.part")
+    received=0; [[ ! -f "$dest/$path.part" ]] || received=$(wc -c < "$dest/$path.part" | tr -d '[:space:]')
     if [[ "$curl_status" -eq 0 && "$code" == 200 && "$received" -eq "$bytes" ]]; then
       mv "$dest/$path.part" "$dest/$path"
     else
@@ -388,7 +388,7 @@ fetch)
     if [[ -s "$dest/lab-cases.jsonl.part" ]]; then mv "$dest/lab-cases.jsonl.part" "$dest/lab-cases.jsonl"
     else rm -f "$dest/lab-cases.jsonl.part"; fi
   else
-    received=0; [[ ! -f "$dest/lab-cases.jsonl.part" ]] || received=$(wc -c < "$dest/lab-cases.jsonl.part")
+    received=0; [[ ! -f "$dest/lab-cases.jsonl.part" ]] || received=$(wc -c < "$dest/lab-cases.jsonl.part" | tr -d '[:space:]')
     rm -f "$dest/lab-cases.jsonl.part"
     missing+="lab-cases.jsonl"$'\t\t'"${code:-000}"$'\t'"$curl_status"$'\t'"$received"$'\n'
   fi
