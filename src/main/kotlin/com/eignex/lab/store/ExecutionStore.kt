@@ -139,6 +139,21 @@ class ExecutionStore internal constructor(private val store: Store) {
             row.getString(1)?.let { value -> SessionPlacement.parse(value).copy(preparationSlots = row.getObject(2)?.let { row.getInt(2) }) }
         }.singleOrNull()
     } ?: SessionPlacement.of(submission(id))
+    /** Executing claim concurrency and unallocated solve slots, without treating reserved arms as running CPUs. */
+    internal fun parallelism(jobs: Collection<Long>, at: Long = now()): Map<Long, Pair<Int, Int>> {
+        if (jobs.isEmpty()) return emptyMap()
+        return store.executionRead { db ->
+            db.sqlRows("""SELECT s.job_id, s.budget, s.allocation_id, a.state, a.parallel_limit, a.lease_until
+                FROM execution_sessions s LEFT JOIN iteration_attempts a ON a.session_id = s.id AND a.state IN $ACTIVE_ATTEMPTS
+                WHERE s.execution_class = 'solve' AND s.desired != 'stop' AND s.job_id IN (${jobs.joinToString(",") { "?" }})""",
+                *jobs.toTypedArray()) { row ->
+                val executing = if (row.getString(4) == "executing" && row.getLong(6) > at) row.getInt(5) else 0
+                val pending = if (row.getString(3) == null) Json.decodeFromString<ResourceBudget>(row.getString(2)).parallel else 0
+                row.getLong(1) to (executing to pending)
+            }.groupBy({ it.first }, { it.second }).mapValues { (_, workers) -> workers.sumOf { it.first } to workers.sumOf { it.second } }
+        }
+    }
+
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)

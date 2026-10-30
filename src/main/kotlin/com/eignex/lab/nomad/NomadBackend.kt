@@ -361,6 +361,9 @@ class NomadBackend(
                     return
                 }
             }
+            // Queue admission owns intentional cloud-to-native handoff; do not recreate the cloud intent in between.
+            if (previous.executionClass == ExecutionClass.SOLVE && store.execution.reports(job.id)
+                    .firstOrNull { it.session.id == previous.id }?.observation == "placement-native-capacity") return
             val pool = store.execution.placement(previous.id).pool
             if (pool is WorkerPool.Native) {
                 if (!nativeMayRun(job.id)) return

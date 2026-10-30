@@ -34,6 +34,7 @@ internal fun jobPage(
     preparation: List<ExecutionSessionReport> = emptyList(),
     /** What the job's directory holds ([JobDirView.read]); the route reads it before rendering, behind the volume probe. */
     files: JobDirView = JobDirView.read(status.paths, job),
+    parallelism: Pair<Int, Int>? = null,
 ): Html = buildHtml {
     val active = job.status.isActive
     append(head("${job.id} ${job.name} · eignex lab", live = active))
@@ -84,6 +85,11 @@ internal fun jobPage(
         append(Html("<dt>held</dt><dd>held for download until ") + clockTime(end) + Html(": the disk's trim leaves its files alone</dd>"))
     }
     append(Html("</dl>"))
+    parallelism?.takeIf { active }?.let { (executing, pending) ->
+        append(Html("<p>") + executing + Html(" executing / ") + job.parallel + Html(" requested slots"))
+        if (pending > 0) append(Html(" · ") + pending + Html(" awaiting allocation"))
+        append(Html(" · <a href=\"/jobs/") + job.id + Html("/execution\">worker details</a></p>"))
+    }
     job.error?.let { append(Html("<pre class=\"error\">") + esc(it) + Html("</pre>")) }
     if (job.backend == Backend.NOMAD && (job.status == Status.FAILED || job.status == Status.CANCELLED)) {
         append(Html("<div class=\"actions\"><button onclick=\"act('/jobs/") + job.id + Html("/retry', null, 'Queue job ") + job.id + Html(" again?')\">retry</button>"))

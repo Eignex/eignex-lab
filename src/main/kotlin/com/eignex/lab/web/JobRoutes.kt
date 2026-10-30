@@ -57,6 +57,8 @@ internal fun Route.jobRoutes(services: ApiServices) {
                     nodes = if (job.backend == Backend.NOMAD && job.status.isActive)
                         jobNodes(config.status, store, listOf(job.id), services.capacitySettings.get())[job.id].orEmpty() else emptyList(),
                     files = JobDirView.read(config.paths, job),
+                    parallelism = if (job.backend == Backend.NOMAD && job.status.isActive)
+                        store.execution.parallelism(listOf(job.id))[job.id] ?: (0 to 0) else null,
                 )
             }
             call.respondHtml(page)

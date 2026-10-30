@@ -17,6 +17,20 @@ import java.util.concurrent.Executors
 import kotlin.test.*
 
 class ExecutionStoreTest {
+    @Test fun `parallelism reports executing live claims separately from unallocated reservations`() {
+        val id = job(); bind(id)
+        store.execution.createSession("pending", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000)
+        val claim = store.execution.claim("s", token, "alloc-s", 1100)!!
+        assertEquals(0 to 2, store.execution.parallelism(listOf(id), 1101)[id])
+        store.execution.phase(claim.owner, "executing", 1102)
+        assertEquals(claim.parallel to 2, store.execution.parallelism(listOf(id), 1103)[id])
+        assertEquals(0 to 2, store.execution.parallelism(listOf(id), 1100 + ExecutionStore.LEASE_MS)[id])
+        store.execution.phase(claim.owner, "uploading", 1104)
+        assertEquals(0 to 2, store.execution.parallelism(listOf(id), 1105)[id])
+        assertTrue(store.execution.loseUnallocatedSession("pending", "placement-native-capacity", 1106))
+        assertEquals(0 to 0, store.execution.parallelism(listOf(id), 1107)[id])
+    }
+
     @Test fun `compiler admission limit survives restart without changing strict placement JSON`() {
         val spec = ExperimentSpec("compiler-admission")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)

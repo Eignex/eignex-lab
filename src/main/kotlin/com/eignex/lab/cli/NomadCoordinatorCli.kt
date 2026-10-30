@@ -126,7 +126,7 @@ object NomadCoordinatorCli {
         val sources = TrustedQueueSources(config, artifacts, store)
         val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork,
             source = { job, targets, settings -> sourceWork.poll(job.id) { sources.publish(job, targets, settings) } },
-            preparationPlan = { job, work -> planWork.poll(job, work) != null })
+            preparationPlan = { job, work -> planWork.poll(job, work) != null }, capacitySettings = capacitySettings)
         val buildVolumes = NomadBuildVolumes(client, queueSettings)
         periodic("nomad-admission", admissionSignal::await) {
             queue.reconcile()

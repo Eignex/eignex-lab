@@ -26,6 +26,7 @@ class NomadQueue(
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>>? =
         TrustedQueueSources(config, artifacts, store)::publish,
     private val preparationPlan: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
+    private val capacitySettings: CapacitySettings? = config.cluster?.capacity,
 ) {
     fun reconcile() {
         if (!allowed()) return
@@ -69,7 +70,7 @@ class NomadQueue(
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
                     val target = ordered(compatible) { settings.preparationBudget }.firstOrNull {
-                        backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) && (!it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
+                        cloudMayRun(it, job, settings.preparationBudget) && backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) && (!it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
                             held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
                         })
@@ -99,6 +100,26 @@ class NomadQueue(
                 val requestedCpu = Math.multiplyExact(Math.multiplyExact(current.parallel, preparedBench?.let(BenchRuns::resources)?.cpus ?: recipe.arms.maxOf { it.arm.cores }), 1000)
                 val cpuLimit = maxOf(minOf(this.settings.maxVcpusPerJob * 1000, requestedCpu), minimumCpu)
                 val limit = minOf(this.settings.maxSessionsPerJob, pending, cpuLimit / minimumCpu)
+                // Unbound cloud intent must not occupy the last slot while compatible native capacity is idle.
+                // Retirement races registration under the store lock: a bound/claimed attempt is never moved.
+                val native = targets.firstOrNull { it.native && mayUseNative(job.id, it) }
+                if (native != null) {
+                    val budget = checkNotNull(settings.solveBudget(native, current, preparedBench))
+                    val held = store.execution.nativeReservation()
+                    var cpu = held.first; var memory = held.second
+                    var nativeWorkers = sessions.count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP &&
+                        store.execution.placement(it.id).native }
+                    val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
+                    for (waiting in sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN && it.allocation == null &&
+                        !store.execution.placement(it.id).native }) {
+                        if (nativeWorkers >= maximum || cpu + budget.cpuMillis > config.cores * 1000L ||
+                            memory + budget.memoryMiB > native.template.budget.memoryMiB) break
+                        if (store.execution.loseUnallocatedSession(waiting.id, "placement-native-capacity")) {
+                            cpu += budget.cpuMillis; memory += budget.memoryMiB; nativeWorkers++
+                        }
+                    }
+                    sessions = store.execution.sessions(job.id)
+                }
                 val active = sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
                 var keptCpu = 0
                 var keptWorkers = 0
@@ -127,7 +148,7 @@ class NomadQueue(
                     }
                     val reserved = store.execution.nativeReservation()
                     val target = available.firstOrNull { target ->
-                        if (!target.native) true else {
+                        if (!target.native) cloudMayRun(target, current, checkNotNull(settings.solveBudget(target, current, preparedBench))) else {
                             val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
                             reserved.first + budget.cpuMillis <= config.cores * 1000L &&
                                 reserved.second + budget.memoryMiB <= target.template.budget.memoryMiB
@@ -151,6 +172,13 @@ class NomadQueue(
                 } else System.err.println("nomad queue job ${job.id}: ${describeFailure(failure)}; will retry")
             }
         }
+    }
+
+    /** Match the pool's growth eligibility; lower-priority local work may still reuse compatible warm nodes. */
+    private fun cloudMayRun(target: NomadQueueTarget, job: Job, budget: ResourceBudget): Boolean {
+        if (target.native || backend.hasCapacity(target.template, budget)) return true
+        val pool = capacitySettings?.pools?.singleOrNull { it.nodeClass == target.template.nodeClass } ?: return capacitySettings == null
+        return job.priority >= pool.minPriority || !Placement.localEligible(job.experiment, config.localNodeTags)
     }
 
     private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =

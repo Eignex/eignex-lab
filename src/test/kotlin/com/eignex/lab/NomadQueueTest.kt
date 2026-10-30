@@ -249,6 +249,63 @@ class NomadQueueTest {
         assertEquals(setOf("large-node"), solves.map { it.node }.toSet())
     }
 
+    private fun pools() = CapacitySettings(listOf(CapacityPool("fixture-spot", "portable-spot", 8, 8192, 2,
+        setOf("arch:x86_64"), minPriority = 0)), 16)
+
+    @Test fun `low priority local work does not reserve cloud slots that cannot grow capacity`() {
+        val id = job(ExperimentSpec("background", parallel = 4, priority = -2, host = HostPlacement.AUTO))
+        store.setPriority(id, -2)
+        queue(capacity = pools()).reconcile(); prepare(id, 8); backend.reconcile()
+        queue(cores = 1, capacity = pools()).reconcile()
+        val active = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(1, active.size)
+        assertTrue(active.all { store.execution.placement(it.id).native })
+    }
+
+    @Test fun `unbound cloud intent yields its slot to native capacity without touching bound workers`() {
+        val id = job(ExperimentSpec("reclaim", parallel = 4, priority = -2, host = HostPlacement.AUTO))
+        store.setPriority(id, -2)
+        queue().reconcile(); prepare(id, 8); backend.reconcile()
+        // Initial policy predates capacity-aware admission and fills the remaining slot with a cloud intent.
+        queue(cores = 1).reconcile()
+        val pending = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE &&
+            it.desired == Desired.RUN && !store.execution.placement(it.id).native }
+        val frozen = store.execution.manifest(pending.id)
+        queue(capacity = pools()).reconcile()
+        assertEquals(Desired.STOP, store.execution.session(pending.id)!!.desired)
+        assertEquals(frozen, store.execution.manifest(pending.id))
+        assertTrue(store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN }
+            .all { store.execution.placement(it.id).native })
+        assertEquals(0L, store.job(id)!!.runMs)
+        assertTrue(store.execution.events(id).any { it.detail == "lost:placement-native-capacity" })
+    }
+
+    @Test fun `a cloud row that bound before native handoff keeps its owner and complete attempt`() {
+        val id = job(ExperimentSpec("bound-cloud", parallel = 4, priority = -2, host = HostPlacement.AUTO))
+        store.setPriority(id, -2)
+        queue().reconcile(); prepare(id, 8); backend.reconcile(); queue(cores = 1).reconcile()
+        val cloud = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE &&
+            it.desired == Desired.RUN && !store.execution.placement(it.id).native }
+        val submitted = Json.parseToJsonElement(store.execution.submission(cloud.id)).jsonObject
+        val token = submitted.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject
+            .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+        store.execution.bind(cloud.id, token, "cloud-bound", "cloud-node", "release")
+        val claim = store.execution.claim(cloud.id, token, "cloud-bound")!!
+        store.execution.phase(claim.owner, "executing")
+        queue(capacity = pools()).reconcile()
+        assertEquals(Desired.RUN, store.execution.session(cloud.id)!!.desired)
+        assertEquals("cloud-node", store.execution.session(cloud.id)!!.node)
+        store.execution.renew(claim.owner)
+    }
+
+    @Test fun `cloud only background work can still request capacity below the native priority floor`() {
+        val id = job(ExperimentSpec("cloud-background", parallel = 1, priority = -2, host = Experiments.AWS_HOST))
+        store.setPriority(id, -2)
+        queue(capacity = pools()).reconcile()
+        assertTrue(store.execution.sessions(id).isNotEmpty())
+        assertFalse(store.execution.placement(store.execution.sessions(id).single().id).native)
+    }
+
     @Test fun `cloud preparation reuses a running larger shape before starting a small one`() {
         val large = target(NomadPlatform.LINUX, "large")
         val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 2048, 2)))
@@ -302,8 +359,9 @@ class NomadQueueTest {
         return WorkerBundle(sha, listOf(InputFile("fixture", ExecutionStore.digest(text), text.length.toLong())), Repositories.DEFAULT,
             "a".repeat(40), os, arch, "fixture")
     }
-    private fun queue(cores: Int = config.cores, policy: NomadQueueSettings = settings, allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
-        completed = { completions++ }, nativeAllowed = { true }, source = { job, targets, _ ->
+    private fun queue(cores: Int = config.cores, policy: NomadQueueSettings = settings, capacity: CapacitySettings? = null,
+                      allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
+        completed = { completions++ }, nativeAllowed = { true }, capacitySettings = capacity, source = { job, targets, _ ->
             publications++
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
         })

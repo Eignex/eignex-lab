@@ -580,6 +580,15 @@ class NomadBackendTest {
         assertEquals("4096", meta.getValue("lab_native_memory_limit").jsonPrimitive.content)
     }
 
+    @Test fun `intentional unallocated native handoff waits for queue admission instead of recreating a cloud worker`() {
+        val id = setup(1)
+        val previous = session
+        assertTrue(store.execution.loseUnallocatedSession(previous.id, "placement-native-capacity"))
+        backend().reconcile()
+        assertEquals(listOf(previous.id), store.execution.sessions(id).map { it.id })
+        assertEquals(Desired.STOP, store.execution.session(previous.id)!!.desired)
+    }
+
     @Test fun `repeated Spot loss replaces preparation on new nodes before there are planned commands`() {
         val id = setup(preparation = true); backend().reconcile(); register()
         var allocation = "allocation"

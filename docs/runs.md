@@ -64,6 +64,11 @@ can contribute, and the lab adds cloud capacity as demand grows. Local and cloud
 Hardware or market selectors can narrow the compatible workers when a measurement needs them.
 
 Priority controls native admission and iteration claims; sweeps and reference runs win equal-priority ties.
+Locally eligible jobs below a cloud pool's growth priority may reuse compatible existing cloud capacity;
+they do not reserve workers that require new capacity. An unallocated cloud worker yields its slot when
+compatible native resources become available. A bound attempt keeps its machine through the complete row.
+`lab placement <id>` and the job page distinguish requested slots, executing claim concurrency and slots
+awaiting allocation. Preparation, transfers and idle reservations do not count as executing solver slots.
 A repository recipe can set priority 100 and its regression confirmations then use 101, ahead of ordinary jobs at 0.
 Ordinary reference runs also use priority 0, with their confirmations at 1.
 Lower-priority local workers yield between iterations when compatible higher-priority work arrives or is
