@@ -2,7 +2,7 @@ package com.eignex.lab.checker
 
 /** Original CNF evaluation only: no solver, propagation, coordinate repair or Klause dependency. */
 internal object DimacsSourceEvaluation {
-    const val VERSION = "eignex-lab-dimacs-complete-point-1"
+    const val VERSION = "eignex-lab-dimacs-complete-point-2"
     const val MAX_WITNESS = 8 * 1024 * 1024
     internal data class Limits(
         val bytes: Int = WeightedSourceEvaluation.MAX_BYTES,
@@ -36,6 +36,13 @@ internal object DimacsSourceEvaluation {
         var satisfied = false
         var firstFalse: Int? = null
         while (token != null) {
+            if (token.text == "%") {
+                if (!token.lineStart || pending || rows != clauses) unsupported("SATLIB end marker precedes complete declared clauses")
+                val tail = cnf.next()
+                if (tail != null && (tail.text != "0" || !tail.lineStart || tail.line <= token.line || cnf.next() != null))
+                    unsupported("unexpected tokens after SATLIB end marker")
+                break
+            }
             if (rows >= clauses) unsupported("clauses follow declared clause count")
             if (token.text == "0") {
                 rows++
@@ -59,7 +66,7 @@ internal object DimacsSourceEvaluation {
         else WeightedEvaluation(LabCheck.VALID, "complete original coordinates and all $rows CNF clauses accepted; SAT point only, no UNSAT or optimality check", variables = variables, constraints = rows)
     } catch (e: Refusal) { WeightedEvaluation(e.state, e.message.orEmpty()) }
 
-    private data class Token(val text: String, val line: Int)
+    private data class Token(val text: String, val line: Int, val lineStart: Boolean)
     /** Bounded tokens with line provenance; comments are permitted only at the start of a source line. */
     private class Tokens(val text: String, val comments: Boolean, val limits: Limits) {
         private var at = 0
@@ -77,13 +84,14 @@ internal object DimacsSourceEvaluation {
                 break
             }
             if (at == text.length) return null
+            val lineStart = start
             start = false
             val begin = at
             while (at < text.length && text[at] !in " \t\r\n") {
                 if (at - begin >= limits.token) resource("numeric token length limit")
                 at++
             }
-            return Token(text.substring(begin, at), line)
+            return Token(text.substring(begin, at), line, lineStart)
         }
     }
 

@@ -15,7 +15,7 @@ class DimacsCheckerTest {
         val root = Files.createTempDirectory("dimacs-registry")
         try {
             assertTrue(Checkers.of(Config(dataDir = root)).covers("DIMACS"))
-            assertEquals("lab-dimacs-independent-complete-point-v1", DimacsChecker().policy)
+            assertEquals("lab-dimacs-independent-complete-point-v2", DimacsChecker().policy)
         } finally { root.toFile().deleteRecursively() }
     }
 

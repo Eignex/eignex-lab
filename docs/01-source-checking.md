@@ -67,8 +67,8 @@ route; `lab/mps-check.json` owns exact MPS replay.
 
 ## Original DIMACS SAT points
 
-`DimacsChecker` registers `DIMACS` under `lab-dimacs-independent-complete-point-v1`, implementation
-`eignex-lab-dimacs-complete-point-1`. It independently reads original CNF bytes and evaluates clauses without Klause
+`DimacsChecker` registers `DIMACS` under `lab-dimacs-independent-complete-point-v2`, implementation
+`eignex-lab-dimacs-complete-point-2`. It independently reads original CNF bytes and evaluates clauses without Klause
 parsing, presolve, propagation, acceptance or solving. The executing JAR identifies the implementation and embeds
 the evaluator source. Original model SHA-256 is mandatory. The existing source locator verifies the recorded plain
 bytes, and the bounded child verifies its own snapshot again after decompression. Missing or changed source stays
@@ -80,6 +80,10 @@ lines or share a line; `c` comment lines and ASCII space/tab/CR/LF are accepted.
 formula is true. Every nonzero source literal must name a coordinate in `1..n`. Unknown extensions, malformed or
 truncated sources, extra headers/clauses and incorrect counts are `unsupported`, never accepted as a partial model.
 All literals and clauses are consumed even after an earlier clause is false or a literal satisfies its clause.
+The [SATLIB](https://www.cs.ubc.ca/~hoos/SATLIB/benchm.html) end marker is a standalone `%` line after all declared
+clauses, optionally followed by one standalone `0` line. It cannot truncate a clause, replace a missing declared
+clause or hide extra clauses before it. Other tokens after this marker are unsupported. Original source hashes
+include the marker and trailer; neither ordinary checking nor replay rewrites those bytes.
 
 The explicit **complete assignment** policy requires every original coordinate `1..n`, including unused variables,
 exactly once. A witness consists of signed nonzero decimal integers after `v`, optionally on multiple `v` lines,
