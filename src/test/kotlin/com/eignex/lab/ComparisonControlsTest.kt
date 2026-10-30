@@ -16,7 +16,8 @@ class ComparisonControlsTest {
             "compilerSeed" to "1", "solverBudgetMs" to "1000", "compilerTimeoutSeconds" to "60", "caseTimeoutSeconds" to "280",
             "cpus" to "1", "memoryMiB" to "4096", "heap-mib" to "2560", "gc" to "default", "debug" to "true",
             "measurement" to "none", "exact" to "false", "complete-assignment" to "true", "deadlinePolicy" to "cli-inclusive-v1",
-            "runtimeFingerprint" to "runtime", "inputDigest" to "inputs", "compilerFingerprint" to "compiler")
+            "runtimeFingerprint" to "runtime", "harnessFingerprint" to "harness", "libraryFingerprint" to "libraries",
+            "inputDigest" to "inputs", "compilerFingerprint" to "compiler")
         val plan = BenchCase("s/p/$seed/$repeat", parameters = mapOf("seed" to "$seed", "engine" to "default"),
             attributes = mapOf("suite" to "s", "problem" to "p", "seed" to "$seed", "repeat" to "$repeat"))
         val record = JsonObject(mapOf("solver" to JsonPrimitive("klause"), "seed" to JsonPrimitive(seed),
