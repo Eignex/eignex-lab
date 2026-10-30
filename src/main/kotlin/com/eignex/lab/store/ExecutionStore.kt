@@ -705,7 +705,6 @@ class ExecutionStore internal constructor(private val store: Store) {
                 val attemptColumns = s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 addColumn(db, "iteration_attempts", "preparation_progress", "TEXT", attemptColumns)
                 addColumn(db, "iteration_attempts", "preparation_caches", "TEXT", attemptColumns)
-                addColumn(db, "iteration_attempts", "preparation_diagnostics", "TEXT", attemptColumns)
                 addColumn(db, "iteration_attempts", "preparation_updated_at", "INTEGER", attemptColumns)
                 addColumn(db, "iteration_attempts", "parallel_limit", "INTEGER NOT NULL DEFAULT 1", attemptColumns)
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")
