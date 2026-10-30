@@ -202,7 +202,6 @@ class DbCompaction(
         const val VACUUM_CHECK_MIN = 15L
         const val VACUUM_MIN_FREE_BYTES = 1L shl 30
         const val VACUUM_SPACE_FACTOR = 2
-        private const val BYTES_PER_MB = 1_000_000L
         private const val MS_PER_S = 1000L
         private const val MS_PER_MIN = 60_000L
     }

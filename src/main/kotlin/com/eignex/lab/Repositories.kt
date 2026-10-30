@@ -18,12 +18,11 @@ object Repositories {
         return "https://github.com/$repository.git"
     }
 
-    fun source(config: Config, repository: String): String {
-        return url(repository)
-    }
+    fun source(repository: String): String = url(repository)
 
-    fun mirror(config: Config, repository: String): Path {
+    /** The lab's mirror of [repository], under [paths]. */
+    fun mirror(paths: DataPaths, repository: String): Path {
         requireAllowed(repository)
-        return config.dataDir.resolve("repos").resolve(repository.substringAfter('/').lowercase() + ".git")
+        return paths.repositories.resolve(repository.substringAfter('/').lowercase() + ".git")
     }
 }

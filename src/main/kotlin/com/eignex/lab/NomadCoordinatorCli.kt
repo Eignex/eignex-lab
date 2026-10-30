@@ -30,10 +30,11 @@ object NomadCoordinatorCli {
     fun main(args: List<String>): Int = runCatching {
         require(args.size == 1) { "usage: nomad-coordinator SETTINGS.json" }
         val settings = Json.decodeFromString<NomadCoordinatorSettings>(Files.readString(Path.of(args.single())))
-        val config = Config()
+        val config = Config.fromEnv(cpu = NodeTags.probeLocal())
         val queueSettings = requireNotNull(config.nomadQueue) { "Nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
-        val nativeCapacity = queueSettings.targets.filter { it.os == "mac" }.minOfOrNull { it.template.budget.memoryMiB }
+        val nativeCapacity = queueSettings.targets.filter { it.native }.minOfOrNull { it.template.budget.memoryMiB }
             ?.let { ResourceBudget(config.cores * 1000, it) }
+        Volumes.watch(config)
         val volumeHealth = VolumeHealth(reason = { Volumes.hold(config) })
         volumeHealth.refresh()
         require(volumeHealth.problem() == null) { "coordinator volumes unavailable" }
@@ -64,7 +65,13 @@ object NomadCoordinatorCli {
         }
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }
         val pendingChecks = java.util.concurrent.ConcurrentHashMap<Pair<Long, Int>, java.util.concurrent.Future<String>>()
-        val capacitySettings = settings.capacity?.let { CapacitySettings.read(Path.of(it.settingsFile)) }
+        // The pools the API placed jobs by must be the ones admission holds them to: one file, checked with the queue.
+        val capacityFile = settings.capacity?.let { Path.of(it.settingsFile) }
+        require(config.nomadCapacitySettings == null || capacityFile == null || config.nomadCapacitySettings == capacityFile) {
+            "LAB_NOMAD_CAPACITY_SETTINGS (${config.nomadCapacitySettings}) is not the coordinator's capacity settings file ($capacityFile)"
+        }
+        val cluster = ClusterSettings(queueSettings, capacityFile?.let(CapacitySettings::read))
+        val capacitySettings = cluster.capacity
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
             changed = { admissionSignal.wake(); reconcileSignal.wake() },
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
@@ -98,17 +105,7 @@ object NomadCoordinatorCli {
                     detail
                 } finally { pendingChecks.remove(key, future) }
             }
-        }, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, workerRuntime = NomadWorkerRuntime(queueSettings)::replace, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template ->
-            if (template.platform == NomadPlatform.MAC) {
-                require(manifest.budget.cpuMillis <= config.cores * 1000 && manifest.budget.parallel <= config.maxParallel)
-            } else {
-                require(template.networkMode == null && template.statusHostVolume == "lab-status") { "cloud workers require private container networking and read-only interruption status" }
-                val pool = requireNotNull(capacitySettings?.pools?.singleOrNull { it.nodeClass == template.nodeClass }) { "cloud pool is not configured" }
-                require(manifest.budget.cpuMillis <= pool.cpuMillis && manifest.budget.memoryMiB <= pool.availableMemoryMiB && template.cpuCapacity.logicalCpus == pool.vcpus)
-                require(NodeTags.matches(manifest.experiment.nodeTags, pool.capabilities))
-                require(pool.market == NodeTags.market(manifest.experiment.nodeTags))
-            }
-        }, nativeNodeTags = config.localNodeTags)
+        }, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, workerRuntime = NomadWorkerRuntime(queueSettings)::replace, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template -> Placement.admit(cluster, manifest, template, config.cores, config.maxParallel) }, nativeNodeTags = config.localNodeTags)
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.
         val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
         val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan", completed = admissionSignal::wake)

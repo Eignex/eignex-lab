@@ -28,7 +28,7 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport) : 
 
     /** Who may push to [repository]'s branches the lab runs. */
     fun trust(repository: String): Trust = trusts.computeIfAbsent(repository) {
-        Trust(config.trustedUsers, Repositories.source(config, repository), git = { 1 to "" },
+        Trust(config.trustedUsers, Repositories.source(repository), git = { 1 to "" },
             github = { path -> Trust.githubApi(githubToken.get())(path) })
     }
 

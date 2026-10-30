@@ -44,7 +44,7 @@ data class DockerCleanupRun(
  * repositories that are neither kept nor named by an active job's commit, and dangling images. Historical VM
  * measurements remain readable in old cleanup reports.
  *
- * It is due [intervalMs] after the last one, sooner when the disk has under [JobTrim.TARGET_FREE_BYTES] free (at most
+ * It is due [intervalMs] after the last one, sooner when the disk has under [lowFreeBytes] free (at most
  * every [LOW_DISK_GAP_MS] then), and at once when [requestFile] exists. The runner calls [maybeRun] between jobs, with
  * nothing of its own running; a cleanup still skips while any container runs, a reference case of a solve started by
  * hand among them, and tries again [RETRY_MS] later. Never removed: the [keep] tags, every repository's `latest`, the
@@ -62,6 +62,8 @@ class DockerCleanup(
     private val needed: () -> Set<String>?,
     private val freeBytes: () -> Long,
     private val log: (String) -> Unit = ::println,
+    /** Below this much free a cleanup comes sooner: the job files' target ([Config.jobsTargetFreeBytes]). */
+    private val lowFreeBytes: Long = JobTrim.TARGET_FREE_BYTES,
     private val clock: () -> Long = System::currentTimeMillis,
     private val exec: (List<String>) -> Pair<Int, String> = ::execute,
 ) {
@@ -84,8 +86,8 @@ class DockerCleanup(
         val last = last()?.at
         if (last == null) return "no cleanup has run yet"
         if (now - last >= intervalMs) return "the last cleanup was over ${intervalMs / DAY_MS} days ago"
-        if (freeBytes() < JobTrim.TARGET_FREE_BYTES && now - last >= LOW_DISK_GAP_MS) {
-            return "the disk had under ${JobTrim.TARGET_FREE_BYTES / BYTES_PER_GB} GB free"
+        if (freeBytes() < lowFreeBytes && now - last >= LOW_DISK_GAP_MS) {
+            return "the disk had under ${lowFreeBytes / BYTES_PER_GB} GB free"
         }
         return null
     }
@@ -159,7 +161,7 @@ class DockerCleanup(
         const val RETRY_MS = 10 * 60_000L
         const val BUILD_CACHE_AGE = "168h"
         const val IMAGE_FORMAT = "{{.Repository}}\t{{.Tag}}\t{{.ID}}"
-        const val DEFAULT_KEEP = "eignex-lab-xcsp3-cpsat:source-preserving-v2,eignex-lab-scip:latest,eignex-lab-clasp:latest"
+        const val DEFAULT_KEEP = Defaults.DOCKER_KEEP
         private const val KIB = 1024L
 
         /** The last cleanup written to [stateFile]; null before the first or when it cannot be read. */
@@ -289,6 +291,7 @@ internal fun dockerCleanup(
         referencedImages(store.active(withCommands = false), store.plans::arms, config.dockerKeep.map(DockerCleanup::repository).toSet(), grep)
     },
     freeBytes = { freeBytes(config.dataDir) },
+    lowFreeBytes = config.jobsTargetFreeBytes,
 )
 
 /** The `git grep` [referencedImages] runs in [mirror]. */

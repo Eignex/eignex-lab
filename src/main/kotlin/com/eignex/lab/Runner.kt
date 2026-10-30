@@ -17,7 +17,7 @@ class Runner(
     private val store: Store,
     sourceChecker: () -> SourceChecker = { Checkers.of(config) },
     private val selfUpdater: SelfUpdater? = null,
-    sourceUrl: (String) -> String = { Repositories.source(config, it) },
+    sourceUrl: (String) -> String = { Repositories.source(it) },
 ) {
     internal val checks = CaseChecks(store, sourceChecker, config::jobDir, ::log)
     @Volatile private var stopping = false

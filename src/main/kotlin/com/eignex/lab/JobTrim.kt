@@ -103,19 +103,17 @@ class JobTrim(
 
     internal companion object {
         const val MARKER = "trimmed"
-        const val MS_PER_DAY = 24 * 3_600_000L
-        /** `LAB_TRIM_AGE_DAYS`'s default. */
-        const val MAX_AGE_MS = 7 * MS_PER_DAY
-        /** `LAB_JOBS_TARGET_FREE_GB`'s default, and the free space below which a Docker cleanup comes sooner. */
-        const val TARGET_FREE_BYTES = 25 * BYTES_PER_GB
+        /** `LAB_TRIM_AGE_DAYS`'s default ([Defaults]). */
+        const val MAX_AGE_MS = Defaults.TRIM_AGE_DAYS * MS_PER_DAY
+        /** `LAB_JOBS_TARGET_FREE_GB`'s default ([Defaults]). */
+        const val TARGET_FREE_BYTES = Defaults.JOBS_TARGET_FREE_GB * BYTES_PER_GB
         const val INTERVAL_MIN = 30L
-        /** `LAB_TRIM_GRACE_HOURS`'s default. */
-        const val DEFAULT_GRACE_MS = 6 * 3_600_000L
-        /** `LAB_TRIM_CRITICAL_FREE_GB`'s default, that of `LAB_MIN_FREE_GB`. */
-        const val DEFAULT_CRITICAL_FREE_BYTES = 10 * BYTES_PER_GB
+        /** `LAB_TRIM_GRACE_HOURS`'s default ([Defaults]). */
+        const val DEFAULT_GRACE_MS = Defaults.TRIM_GRACE_HOURS * MS_PER_HOUR
+        /** `LAB_TRIM_CRITICAL_FREE_GB`'s default, that of `LAB_MIN_FREE_GB` ([Defaults]). */
+        const val DEFAULT_CRITICAL_FREE_BYTES = Defaults.MIN_FREE_GB * BYTES_PER_GB
         /** How long a download's hold lasts, unless renewed: both its default and the longest one may ask for. */
         const val HOLD_MS = 2 * 3_600_000L
-        private const val BYTES_PER_MB = 1_000_000L
 
         /**
          * Whether a trim keeps [relative], a path inside a job directory. A profiled case's compilation report and its

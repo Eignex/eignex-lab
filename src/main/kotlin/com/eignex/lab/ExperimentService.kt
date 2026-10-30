@@ -45,7 +45,7 @@ class ExperimentService internal constructor(private val services: ApiServices) 
         // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
         Experiments.splitOf(spec, store.active(withCommands = false))?.let { return Submission.SplitConflict(Experiments.splitMessage(it)) }
         val arms = Experiments.arms(spec)
-        for (ref in arms.map { it.ref }.distinct()) requireRef(ref, Repositories.source(config, spec.repository), services.trust(spec.repository))
+        for (ref in arms.map { it.ref }.distinct()) requireRef(ref, Repositories.source(spec.repository), services.trust(spec.repository))
         val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
         val notes = (if (spec.isProfile) {
             listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +

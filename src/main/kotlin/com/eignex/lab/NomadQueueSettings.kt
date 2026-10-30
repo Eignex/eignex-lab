@@ -9,13 +9,15 @@ data class NomadQueueTarget(val template: NomadBatchJob, val tags: Set<String>, 
         require(tags.none { it in setOf("local", "cloud", "spot", "on-demand") })
         NodeTags.validate(NodeSelector(require = tags))
     }
-    val os get() = if (template.platform == NomadPlatform.MAC) "mac" else "linux"
+    /** Whether its workers are the local machine's native worker, which the lab reserves for itself ([CpuEnforcement]). */
+    val native get() = template.platform == NomadPlatform.MAC
+    val os get() = if (native) "mac" else "linux"
     val arch get() = when (tags.single { it.startsWith("arch:") }) {
         "arch:arm64" -> "arm64"
         "arch:x86_64" -> "amd64"
         else -> error("worker architecture must be arm64 or x86_64")
     }
-    val capabilities get() = tags + "platform:$os" + if (os == "mac") setOf("local") else setOf("cloud", market.tag)
+    val capabilities get() = tags + "platform:$os" + if (native) setOf("local") else setOf("cloud", market.tag)
 }
 
 /** Provider-neutral, pinned workers and bounded per-allocation budgets; no provider credentials. */
@@ -43,7 +45,7 @@ data class NomadQueueSettings(
     }
     fun matching(spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
         NodeTags.matches(spec.nodeTags, target.capabilities) &&
-            (target.os == "mac" || Placement.localOnlyReason(spec, origin, cloudSchedule) == null &&
+            (target.native || Placement.localOnlyReason(spec, origin, cloudSchedule) == null &&
                 target.market == NodeTags.market(spec.nodeTags))
     }
 

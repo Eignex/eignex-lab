@@ -1,8 +1,6 @@
 package com.eignex.lab
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
@@ -45,7 +43,7 @@ class NomadQueue(
                 }
                 val targets = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
                     .filter { settings.solveBudget(it, job, preparedBench) != null }
-                    .filter { if (it.os == "mac") spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
+                    .filter { if (it.native) spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
                 require(targets.isNotEmpty()) { "no configured Nomad worker can run this experiment within its resource budget" }
                 var sessions = store.execution.sessions(job.id)
                 if (sessions.isEmpty()) {
@@ -59,7 +57,7 @@ class NomadQueue(
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
                     val target = ordered(compatible) { settings.preparationBudget }.firstOrNull {
-                        it.os != "mac" || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
+                        !it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
                             held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
                                 held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
                         }
@@ -101,25 +99,23 @@ class NomadQueue(
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
                 } ?: original }
                 val ordered = ordered(targets) { checkNotNull(settings.solveBudget(it, current, preparedBench)) }
-                fun cloudSessions() = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE && session.desired != Desired.STOP &&
-                    Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
-                        ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "hard-quota" }
+                fun solving(enforcement: CpuEnforcement) = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE &&
+                    session.desired != Desired.STOP && store.execution.placement(session.id).enforcement == enforcement }
+                fun cloudSessions() = solving(CpuEnforcement.HARD_QUOTA)
                 for (index in active.size until limit) {
                     val remainingCpu = cpuLimit - sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }.sumOf { it.budget.cpuMillis }
                     val available = ordered.filter { checkNotNull(settings.solveBudget(it, current, preparedBench)).cpuMillis <= remainingCpu }.filter { target ->
                         // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
-                        if (target.os != "mac") cloudSessions().none { it.node == null } else {
+                        if (!target.native) cloudSessions().none { it.node == null } else {
                             val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
-                            val nativeSessions = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE && session.desired != Desired.STOP &&
-                                Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject["Meta"]?.jsonObject
-                                    ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" }
+                            val nativeSessions = solving(CpuEnforcement.ADVISORY_NATIVE)
                             val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
                             mayUseNative(job.id, target) && nativeSessions.size < maximum
                         }
                     }
                     val reserved = store.execution.nativeReservation()
                     val target = available.firstOrNull { target ->
-                        if (target.os != "mac") true else {
+                        if (!target.native) true else {
                             val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
                             reserved.first + budget.cpuMillis <= config.cores * 1000L &&
                                 reserved.second + budget.memoryMiB <= target.template.budget.memoryMiB
@@ -128,7 +124,7 @@ class NomadQueue(
                     val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, recipe.arms, cases, bundles, budget,
                         solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus, sharedInputs = preparation.sharedInputs)
-                    val excluded = if (target.os == "mac" || this.settings.perHostParallel == null) emptySet() else cloudSessions().filter { it.node != null }
+                    val excluded = if (target.native || this.settings.perHostParallel == null) emptySet() else cloudSessions().filter { it.node != null }
                         .groupBy { checkNotNull(it.node) }.filterValues { hosted ->
                             hosted.sumOf { it.budget.parallel.toLong() } + budget.parallel > this.settings.perHostParallel
                         }.keys
@@ -146,14 +142,14 @@ class NomadQueue(
     }
 
     private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =
-        if (target.os == "mac") ResourceBudget(config.cores * 1000, target.template.budget.memoryMiB) else null
+        if (target.native) ResourceBudget(config.cores * 1000, target.template.budget.memoryMiB) else null
 
     private fun mayUseNative(id: Long, target: NomadQueueTarget): Boolean =
         nativeAllowed(id) && NativePriority(store).allows(id, target.capabilities)
 
     /** Reuse compatible running capacity, then prefer larger nodes so sessions share host and build overhead. */
     private fun ordered(targets: List<NomadQueueTarget>, budget: (NomadQueueTarget) -> ResourceBudget): List<NomadQueueTarget> =
-        targets.sortedWith(compareBy<NomadQueueTarget> { if (it.os == "mac") 0 else if (backend.hasCapacity(it.template, budget(it))) 1 else 2 }
+        targets.sortedWith(compareBy<NomadQueueTarget> { if (it.native) 0 else if (backend.hasCapacity(it.template, budget(it))) 1 else 2 }
             .thenByDescending { it.template.cpuCapacity.logicalCpus }.thenByDescending { it.template.budget.memoryMiB }.thenBy { it.template.nodeClass })
 
     private fun plan(job: Job, recipe: WorkManifest, preparation: PreparationResult) {
@@ -214,7 +210,7 @@ class NomadQueue(
 /** Resolves and verifies source on the coordinator; all builds and selection run in preparation allocations. */
 internal class TrustedQueueSources(private val config: Config, private val artifacts: ArtifactStore, private val store: Store) {
     fun publish(job: Job, targets: List<NomadQueueTarget>, settings: NomadQueueSettings): Pair<List<PlannedArm>, List<WorkerBundle>> {
-        val spec = checkNotNull(job.experiment); val mirror = Repositories.mirror(config, spec.repository)
+        val spec = checkNotNull(job.experiment); val mirror = Repositories.mirror(config.paths, spec.repository)
         val directory = config.createJobDir(job.id).resolve("nomad/source"); Files.createDirectories(directory)
         fun git(at: Path, vararg args: String): Pair<Int, String> {
             val log = directory.resolve("git-output.log")
@@ -226,7 +222,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             } finally { if (process.isAlive) { process.descendants().forEach { it.destroyForcibly() }; process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS) } }
         }
         fun checked(at: Path, vararg args: String): String = git(at, *args).let { (code, output) -> check(code == 0) { "source operation failed" }; output }
-        val url = Repositories.source(config, spec.repository)
+        val url = Repositories.source(spec.repository)
         val trust = Trust(config.trustedUsers, url, { args -> git(mirror, *args.toTypedArray()) },
             Trust.githubApi(config.githubTokenFile.takeIf(Files::isRegularFile)?.let(Files::readString)?.trim()))
         trust.requireRepository(refresh = true)

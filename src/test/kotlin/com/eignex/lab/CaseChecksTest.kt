@@ -19,8 +19,8 @@ class CaseChecksTest {
             assertEquals(config.mirror, checkerMirror(config, "Eignex/klause"))
             val bench = ExperimentSpec("new", repository = "Eignex/example", bench = BenchSpec("bench.json"))
             assertEquals(bench.repository, checkerRepository(bench))
-            assertEquals(Repositories.mirror(config, bench.repository), checkerMirror(config, bench.repository))
-            val current = Repositories.mirror(config, "Eignex/klause")
+            assertEquals(Repositories.mirror(config.paths, bench.repository), checkerMirror(config, bench.repository))
+            val current = Repositories.mirror(config.paths, "Eignex/klause")
             Files.createDirectories(current)
             assertEquals(current, checkerMirror(config, "Eignex/klause"))
         } finally { root.toFile().deleteRecursively() }

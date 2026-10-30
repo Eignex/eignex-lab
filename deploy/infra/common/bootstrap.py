@@ -8,6 +8,8 @@ import subprocess
 import sys
 
 ROOT = Path('/etc/eignex-lab')
+# The node meta the coordinator finds a provider instance's Nomad node by (CapacityWire, deploy/capacity-wire.json).
+CAPACITY_ID_META = 'lab_capacity_id'
 
 
 def render(config, secret, instance_id, probe, cpus, memory_mib):
@@ -29,7 +31,7 @@ def render(config, secret, instance_id, probe, cpus, memory_mib):
         'acl': {'enabled': True}, 'tls': {'http': True, 'rpc': True, 'verify_server_hostname': True, 'verify_https_client': True,
             'ca_file': str(ROOT / 'ca.pem'), 'cert_file': str(ROOT / 'client.pem'), 'key_file': str(ROOT / 'client-key.pem')},
         'client': {'enabled': True, 'servers': config['servers'], 'node_class': config['nodeClass'],
-            'meta': {'lab_capacity_id': instance_id, 'lab_pool': config['pool'], 'lab_cpu_model': probe.get('model', '')},
+            'meta': {CAPACITY_ID_META: instance_id, 'lab_pool': config['pool'], 'lab_cpu_model': probe.get('model', '')},
             'reserved': {'cpu': config.get('reservedMHz', 2000), 'memory': 1024},
             'host_volume': {'lab-status': {'path': '/run/eignex-lab/status', 'read_only': True}},
             'drain_on_shutdown': {'deadline': '60s', 'force': False, 'ignore_system_jobs': False}},

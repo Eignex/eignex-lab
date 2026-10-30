@@ -2,7 +2,7 @@
   "maxVcpus": 64,
   "pools": [
     {
-      "id": "general",
+      "id": "general-spot",
       "nodeClass": "general-linux-amd64-spot",
       "vcpus": 16,
       "memoryMiB": 65536,

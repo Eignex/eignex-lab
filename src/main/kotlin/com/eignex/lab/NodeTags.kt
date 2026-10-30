@@ -46,7 +46,11 @@ object NodeTags {
         val cpu = when (architecture) { "arm64" -> "ARM64"; "x86_64" -> "x86_64"; else -> "Unknown" }
         return listOfNotNull(cpu, simd).joinToString(" / ")
     }
-    val localCapabilities: CpuCapabilities by lazy {
+    /**
+     * This machine's CPU, as the probe script finds it; undetected when it cannot run. It starts a process, so a
+     * service runs it once, when it starts, and passes the result on ([Config.fromEnv], [hostReport]).
+     */
+    fun probeLocal(): CpuCapabilities =
         runCatching {
             val process = ProcessBuilder("bash", "-c", probeScript).redirectErrorStream(true).start()
             if (!process.waitFor(5, TimeUnit.SECONDS)) {
@@ -54,7 +58,6 @@ object NodeTags {
                 CpuCapabilities()
             } else if (process.exitValue() == 0) parse(process.inputStream.bufferedReader().readText()) else CpuCapabilities()
         }.getOrDefault(CpuCapabilities())
-    }
 
     fun validate(selector: NodeSelector?) {
         if (selector == null) return

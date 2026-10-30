@@ -41,10 +41,8 @@ class NomadBackend(
         val job = store.job(jobId) ?: error("missing experiment")
         if (manifest.preparationTimeoutSec != null) Experiments.requireExecutable(manifest.experiment)
         require(job.backend == Backend.NOMAD && job.experiment == manifest.experiment)
-        if (template.platform == NomadPlatform.LINUX) {
-            val reason = Placement.localOnlyReason(manifest.experiment, job.origin, Placement.cloudSchedule(job.origin, store.schedules.all()))
-            require(reason == null && manifest.experiment.host != Experiments.LAB_HOST) { reason ?: "experiment is placed on the local host" }
-        } else require(manifest.experiment.host != Experiments.AWS_HOST) { "experiment is cloud-only" }
+        Placement.refusal(template.platform, manifest.experiment, job.origin, Placement.cloudSchedule(job.origin, store.schedules.all()))
+            ?.let { throw IllegalArgumentException(it) }
         if (manifest.preparationTimeoutSec == null) require(store.plans.arms(jobId) == manifest.arms && job.commands.map { it.index }.toSet() == manifest.cases.map { it.index }.toSet())
         else require(!job.setupDone && !job.planned && manifest.arms.map { it.arm } == Experiments.arms(manifest.experiment))
         require(template.budget == manifest.budget)
@@ -91,11 +89,8 @@ class NomadBackend(
 
     fun claim(id: String, token: String, allocation: String): IterationClaim? {
         val session = store.execution.session(id) ?: throw ExecutionFenced("unknown session")
-        val spec = Json.parseToJsonElement(store.execution.submission(id)).jsonObject
         // A retried claim must retain its current iteration even if priorities changed meanwhile.
-        if (!store.execution.hasActiveAttempt(id) &&
-            spec["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
-            (store.localBusy() || !nativeMayClaim(session.jobId) || !NativePriority(store).allows(session.jobId, nativeNodeTags))) {
+        if (!store.execution.hasActiveAttempt(id) && store.execution.placement(id).native && !nativeMayRun(session.jobId)) {
             store.execution.drain(id)
             return null
         }
@@ -270,9 +265,7 @@ class NomadBackend(
             }
             // Pending allocations cannot reach the claim boundary themselves. Release their reservation
             // so higher-priority native work can be admitted; bound workers yield on their next claim.
-            if (s.allocation == null &&
-                Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject["Meta"]?.jsonObject
-                    ?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native" &&
+            if (s.allocation == null && store.execution.placement(s.id).native &&
                 !NativePriority(store).allows(job.id, nativeNodeTags) &&
                 store.execution.loseUnallocatedSession(s.id, "priority")) continue
             if (current.paused) store.execution.drain(s.id)
@@ -318,11 +311,10 @@ class NomadBackend(
                     return
                 }
             }
-            val native = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject?.get("lab_cpu_enforcement")?.jsonPrimitive?.content == "advisory-native"
-            if (native && (store.localBusy() || !nativeMayClaim(job.id) || !NativePriority(store).allows(job.id, nativeNodeTags))) return
-            if (native) {
-                val meta = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject["Meta"]?.jsonObject
-                val limit = nativeLimits(meta)
+            val placement = store.execution.placement(previous.id)
+            if (placement.native && !nativeMayRun(job.id)) return
+            if (placement.native) {
+                val limit = nativeLimits(placement)
                 if (limit == null) {
                     if (store.execution.nativeOwnedByAnother(job.id)) return
                 } else {
@@ -347,11 +339,16 @@ class NomadBackend(
         if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
     }
 
-    private fun nativeLimits(meta: JsonObject?): Pair<Long, Long>? {
-        val cpu = listOfNotNull(meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull, nativeCapacity?.cpuMillis?.toLong()).minOrNull() ?: return null
-        val memory = listOfNotNull(meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull, nativeCapacity?.memoryMiB?.toLong()).minOrNull() ?: return null
+    /** The native reservation's limits a session placed as [placement] holds to: its own, else the native worker's capacity. */
+    private fun nativeLimits(placement: SessionPlacement): Pair<Long, Long>? {
+        val cpu = listOfNotNull(placement.nativeCpuLimit, nativeCapacity?.cpuMillis?.toLong()).minOrNull() ?: return null
+        val memory = listOfNotNull(placement.nativeMemoryLimit, nativeCapacity?.memoryMiB?.toLong()).minOrNull() ?: return null
         return cpu to memory
     }
+
+    /** Whether the native worker may take up job [jobId] now: the runner is idle, no update waits, and it comes first. */
+    private fun nativeMayRun(jobId: Long): Boolean =
+        !store.localBusy() && nativeMayClaim(jobId) && NativePriority(store).allows(jobId, nativeNodeTags)
 
     private fun replace(previous: ExecutionSession) {
         val id = UUID.randomUUID().toString(); val token = ExecutionStore.token()
@@ -363,8 +360,9 @@ class NomadBackend(
             JsonObject(t + ("Env" to JsonObject(t.getValue("Env").jsonObject + mapOf("LAB_WORKER_SESSION" to JsonPrimitive(id), "LAB_WORKER_TOKEN" to JsonPrimitive(token)))))
         }))) }
         val originalMeta = (original.getValue("Meta").jsonObject - "lab_spec_hash").toMutableMap()
-        if (originalMeta["lab_cpu_enforcement"]?.jsonPrimitive?.content == "advisory-native") {
-            nativeLimits(JsonObject(originalMeta))?.let { (cpu, memory) ->
+        val placement = SessionPlacement.of(original)
+        if (placement.native) {
+            nativeLimits(placement)?.let { (cpu, memory) ->
                 // New intent carries the same limits into the atomic reservation check; history remains immutable.
                 originalMeta["lab_native_cpu_limit"] = JsonPrimitive(cpu.toString())
                 originalMeta["lab_native_memory_limit"] = JsonPrimitive(memory.toString())

@@ -1,10 +1,5 @@
 package com.eignex.lab
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-
 /** Public placement facts only; a submission's worker credentials never reach a page. */
 internal data class RunningNode(val id: String, val allocation: String?, val nodeClass: String?, val local: Boolean)
 internal data class JobNode(val id: String, val name: String, val profile: String?, val local: Boolean, val anchor: String?)
@@ -44,10 +39,6 @@ internal fun jobNodes(
     }
 }
 
-/** Read only node identity and placement constraints from a frozen submission. */
-internal fun runningNode(id: String, allocation: String?, payload: String): RunningNode {
-    val constraints = Json.parseToJsonElement(payload).jsonObject["Constraints"]?.jsonArray.orEmpty().map { it.jsonObject }
-    fun constraint(name: String) = constraints.singleOrNull { it["LTarget"]?.jsonPrimitive?.content == name }
-        ?.get("RTarget")?.jsonPrimitive?.content
-    return RunningNode(id, allocation, constraint("${'$'}{node.class}"), constraint("${'$'}{attr.kernel.name}") == "darwin")
-}
+/** A running session's node, where its [placement] put it: a node class, or the local machine's native worker. */
+internal fun runningNode(id: String, allocation: String?, placement: SessionPlacement): RunningNode =
+    RunningNode(id, allocation, placement.nodeClass, placement.native)

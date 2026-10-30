@@ -5,7 +5,11 @@ import hmac
 import json
 import time
 
+# The wire format shared with the coordinator (CapacityWire): deploy/capacity-wire.json holds the same values.
 DOMAIN = b"eignex-capacity-v1\n"
+SCHEMA_VERSION = 1
+FRESH_MS = 30000
+CLOCK_SKEW_MS = 5000
 LEASE_SECONDS = 1800
 
 
@@ -22,9 +26,9 @@ def verify(grant, key, pool, max_nodes, now_ms=None):
     if not hmac.compare_digest(expected, signature):
         raise ValueError("invalid capacity signature")
     value = json.loads(raw)
-    if value.get("schemaVersion") != 1 or value.get("pool") != pool or value.get("maxNodes") != max_nodes:
+    if value.get("schemaVersion") != SCHEMA_VERSION or value.get("pool") != pool or value.get("maxNodes") != max_nodes:
         raise ValueError("capacity grant target mismatch")
-    if type(value.get("issuedAt")) is not int or not -5000 <= now_ms - value["issuedAt"] <= 30000:
+    if type(value.get("issuedAt")) is not int or not -CLOCK_SKEW_MS <= now_ms - value["issuedAt"] <= FRESH_MS:
         raise ValueError("capacity grant expired")
     if type(value.get("desired")) is not int or not 0 <= value["desired"] <= max_nodes:
         raise ValueError("capacity grant exceeds finite limit")

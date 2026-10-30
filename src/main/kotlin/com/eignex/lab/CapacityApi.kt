@@ -32,7 +32,7 @@ fun Application.capacityApi(collector: CapacityCollector, journal: (() -> Result
                 }
             }
             suspend fun ApplicationCall.query(value: String?) {
-                val pool = requireNotNull(Regex("lab_capacity_desired_nodes\\{pool=\"([a-z][a-z0-9-]{0,47})\"\\}").matchEntire(value.orEmpty())) { "unsupported capacity query" }.groupValues[1]
+                val pool = requireNotNull(Regex(CapacityWire.DESIRED_METRIC + "\\{pool=\"([a-z][a-z0-9-]{0,47})\"\\}").matchEntire(value.orEmpty())) { "unsupported capacity query" }.groupValues[1]
                 val sample = collector.snapshot()
                 val count = sample.decision.desired[pool] ?: throw ApiError.NotFound("unknown pool $pool")
                 respond(buildJsonObject {
@@ -40,7 +40,7 @@ fun Application.capacityApi(collector: CapacityCollector, journal: (() -> Result
                     putJsonObject("data") {
                         put("resultType", "vector")
                         putJsonArray("result") { add(buildJsonObject {
-                            putJsonObject("metric") { put("__name__", "lab_capacity_desired_nodes"); put("pool", pool) }
+                            putJsonObject("metric") { put("__name__", CapacityWire.DESIRED_METRIC); put("pool", pool) }
                             putJsonArray("value") { add(JsonPrimitive(sample.generatedAt / 1000.0)); add(JsonPrimitive(count.toString())) }
                         }) }
                     }

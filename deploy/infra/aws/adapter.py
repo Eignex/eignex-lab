@@ -11,7 +11,9 @@ import urllib.request
 import sys
 import threading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+from capacity_contract import check as check_contract
 from capacity_files import write_atomic
+from inventory import merge, observation
 
 
 class RenewalError(RuntimeError):
@@ -35,14 +37,10 @@ def inventory(asg, group, deployment, pool, at=None):
     tags = {item["Key"]: item["Value"] for item in value["Tags"]}
     if tags.get("lab:deployment") != deployment or tags.get("lab:pool") != pool:
         raise ValueError("pool ownership mismatch")
-    instances = [{"id": item["InstanceId"], "pool": pool, "draining": item["LifecycleState"].startswith("Terminating"),
-                  "countedInTarget": not item["LifecycleState"].startswith("Terminating")} for item in value["Instances"]]
-    covered = sum(item["countedInTarget"] for item in instances)
-    for i in range(max(0, value["DesiredCapacity"] - covered)):
-        instances.append({"id": f"booting-{i}", "pool": pool})
+    instances = [(item["InstanceId"], item["LifecycleState"].startswith("Terminating")) for item in value["Instances"]]
     activities = asg.describe_scaling_activities(AutoScalingGroupName=group, MaxRecords=1)["Activities"]
-    failures = {pool: (activities[0].get("StatusMessage") or "capacity unavailable")[:500]} if activities and activities[0]["StatusCode"] == "Failed" else {}
-    return {"observedAt": int((time.time() if at is None else at) * 1000), "pools": [pool], "instances": instances, "failures": failures}
+    failure = (activities[0].get("StatusMessage") or "capacity unavailable") if activities and activities[0]["StatusCode"] == "Failed" else None
+    return observation(pool, instances, value["DesiredCapacity"], failure, at)
 
 
 
@@ -50,6 +48,9 @@ def definitions(config):
     pools = [config | pool for pool in config["pools"]] if "pools" in config else [config]
     if not pools or len({pool["pool"] for pool in pools}) != len(pools) or len({pool["group"] for pool in pools}) != len(pools):
         raise ValueError("configure distinct pools and groups")
+    # With the lab's pool contract (`eignex-lab capacity-export`), every pool configured here must be one of its pools.
+    for pool in pools:
+        check_contract(config.get("contract"), pool["pool"])
     return pools
 
 
@@ -60,10 +61,7 @@ def publish_inventory(config, asg):
     # collector's freshness bound before its next inventory can be published.
     with ThreadPoolExecutor(max_workers=min(4, len(pools))) as workers:
         observations = list(workers.map(lambda pool: inventory(asg, pool["group"], pool["deployment"], pool["pool"]), pools))
-    value = {"observedAt": min(item["observedAt"] for item in observations),
-             "pools": [pool["pool"] for pool in pools],
-             "instances": [instance for item in observations for instance in item["instances"]],
-             "failures": {pool: reason for item in observations for pool, reason in item["failures"].items()}}
+    value = merge(observations)
     if time.monotonic() - started > 20:
         raise ValueError("inventory request exceeded freshness bound")
     write_atomic(config["inventoryFile"], value)

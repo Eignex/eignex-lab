@@ -7,7 +7,7 @@ internal class NomadAllocationCleanup(
     private val nomad: NomadControl, private val store: Store, settings: NomadQueueSettings,
     private val clock: () -> Long = ::now,
 ) {
-    private val nativeClasses = settings.targets.filter { it.os == "mac" }.map { it.template.nodeClass }.toSet()
+    private val nativeClasses = settings.targets.filter { it.native }.map { it.template.nodeClass }.toSet()
     private val collected = mutableSetOf<String>()
 
     fun reconcile() {

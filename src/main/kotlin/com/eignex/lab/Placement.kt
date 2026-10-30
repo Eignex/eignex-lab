@@ -95,6 +95,50 @@ object Placement {
 
     /** Largest compatible provider-neutral cloud budget. */
     fun cloudCoreLimit(spec: ExperimentSpec, config: Config, cloudSchedule: Boolean = false): Int =
-        config.nomadQueue?.matching(spec, JobOrigin.Submitted(spec.name), cloudSchedule)?.filter { it.os == "linux" }
+        config.nomadQueue?.matching(spec, JobOrigin.Submitted(spec.name), cloudSchedule)?.filter { !it.native }
             ?.maxOfOrNull { it.template.budget.cpuMillis / 1000 } ?: 0
+
+    /** The most cores a case of [spec] can have where it may run: the local machine's when its tags match it. */
+    fun coreLimit(spec: ExperimentSpec, config: Config): Int =
+        if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) config.cores else cloudCoreLimit(spec, config)
+
+    /** A job that may run on a cloud node needs the lab's cloud settings, runs repository-owned work, and fits a node. */
+    fun requireFits(spec: ExperimentSpec, config: Config) {
+        require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
+            "host must be local, cloud or auto (or lab or aws, their older names)"
+        }
+        if (spec.host == Experiments.LAB_HOST) return
+        require(cloudCoreLimit(spec, config) >= Experiments.arms(spec).maxOf { it.cores }) { "no configured Nomad cloud worker fits its cases" }
+    }
+
+    /**
+     * Why a job of [origin] placed as [spec] may not run on a worker of [platform], null when it may: a job that stays
+     * local ([localOnlyReason]) never runs on a cloud one, and a cloud-only one never on the local machine.
+     */
+    fun refusal(platform: NomadPlatform, spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean): String? = when (platform) {
+        NomadPlatform.LINUX -> localOnlyReason(spec, origin, cloudSchedule)
+            ?: "experiment is placed on the local host".takeIf { spec.host == Experiments.LAB_HOST }
+        NomadPlatform.MAC -> "experiment is cloud-only".takeIf { spec.host == Experiments.AWS_HOST }
+    }
+
+    /** Whether the local machine may take [spec]'s work: it is not cloud-only, and its tags match [localTags]. */
+    fun localEligible(spec: ExperimentSpec, localTags: Set<String>): Boolean =
+        spec.host != Experiments.AWS_HOST && NodeTags.matches(spec.nodeTags, localTags)
+
+    /**
+     * Admit a session of [manifest] on a worker of [template], or fail saying why. A native one fits the local machine
+     * ([cores], [maxParallel]); a cloud one runs privately networked in its node class's pool ([ClusterSettings.poolOf])
+     * and fits it, the pool offering the tags and the market the experiment asks for.
+     */
+    fun admit(cluster: ClusterSettings, manifest: WorkManifest, template: NomadBatchJob, cores: Int, maxParallel: Int) {
+        if (template.platform == NomadPlatform.MAC) {
+            require(manifest.budget.cpuMillis <= cores * 1000 && manifest.budget.parallel <= maxParallel)
+            return
+        }
+        require(template.networkMode == null && template.statusHostVolume == "lab-status") { "cloud workers require private container networking and read-only interruption status" }
+        val pool = requireNotNull(cluster.poolOf(template)) { "cloud pool is not configured" }
+        require(manifest.budget.cpuMillis <= pool.cpuMillis && manifest.budget.memoryMiB <= pool.availableMemoryMiB && template.cpuCapacity.logicalCpus == pool.vcpus)
+        require(NodeTags.matches(manifest.experiment.nodeTags, pool.capabilities))
+        require(pool.market == NodeTags.market(manifest.experiment.nodeTags))
+    }
 }

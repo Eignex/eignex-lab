@@ -31,4 +31,3 @@ class DiskGuard(private val reason: () -> String?) {
 /** Usable bytes on the file store holding [path]. */
 fun freeBytes(path: Path): Long = Files.getFileStore(path).usableSpace
 
-const val BYTES_PER_GB = 1_000_000_000L

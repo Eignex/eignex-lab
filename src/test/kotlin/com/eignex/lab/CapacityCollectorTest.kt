@@ -39,6 +39,30 @@ class CapacityCollectorTest {
     private fun sample(instances: List<CapacityInstance> = emptyList()) {
         Files.writeString(inventory, Json.encodeToString(CapacityInventory(at, setOf(pool.id), instances)))
     }
+    /** What `capacity_grants.verify` (deploy/infra/common) makes of [grant] at [nowMs]: the pool and desired size, or why not. */
+    private fun pythonVerify(grant: CapacityGrant, pool: String, maxNodes: Int, nowMs: Long): String {
+        val script = """
+            import json, sys
+            sys.path.insert(0, 'deploy/infra/common')
+            import capacity_grants
+            grant, key, pool, max_nodes, now = json.loads(sys.stdin.read())
+            try:
+                value = capacity_grants.verify(grant, key, pool, max_nodes, now)
+                print(value['pool'], value['desired'])
+            except ValueError as error:
+                print(error)
+        """.trimIndent()
+        val process = ProcessBuilder("python3", "-c", script).redirectErrorStream(true).start()
+        process.outputStream.use {
+            it.write(Json.encodeToString(buildJsonArray {
+                add(buildJsonObject { put("payload", grant.payload); put("signature", grant.signature) })
+                add(token); add(pool); add(maxNodes); add(nowMs)
+            }).toByteArray())
+        }
+        val output = process.inputStream.bufferedReader().readText().trim()
+        check(process.waitFor() == 0) { output }
+        return output
+    }
     private fun collector() = CapacityCollector(settings, listOf(inventory), tokenFile, state, store, control, { writable }, setOf("local"), { at }, { nanos })
 
     @Test fun `unchanged historical nodes do not require full reads on every refresh`() {
@@ -81,10 +105,10 @@ class CapacityCollectorTest {
         assertEquals(at, payload.getValue("issuedAt").jsonPrimitive.long)
         assertEquals(pool.maxNodes, payload.getValue("maxNodes").jsonPrimitive.int)
         assertEquals(0, payload.getValue("desired").jsonPrimitive.int)
-        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
-        mac.init(javax.crypto.spec.SecretKeySpec(token.toByteArray(), "HmacSHA256"))
-        mac.update("eignex-capacity-v1\n".toByteArray())
-        assertEquals(mac.doFinal(raw).joinToString("") { "%02x".format(it.toInt() and 255) }, grant.signature)
+        // The provider side's own verifier accepts the grant as the coordinator issued it, and only it.
+        assertEquals("${pool.id} 0", pythonVerify(grant, pool.id, pool.maxNodes, at))
+        assertEquals("invalid capacity signature", pythonVerify(grant.copy(signature = "0".repeat(64)), pool.id, pool.maxNodes, at))
+        assertEquals("capacity grant expired", pythonVerify(grant, pool.id, pool.maxNodes, at + CapacityWire.FRESH_MS + 1))
         assertFailsWith<IllegalArgumentException> { c.grant("unknown") }
         nanos += 31_000_000_000
         assertFailsWith<IllegalStateException> { c.grant(pool.id) }
@@ -148,5 +172,31 @@ class CapacityCollectorTest {
         nanos += 31_000_000_000
         assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/capacity/grant/general") { bearerAuth(token) }.status)
         assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/capacity/metrics") { bearerAuth(token) }.status)
+    }
+
+    @Test fun `a stale provider holds its pools while a fresh one is still decided`() {
+        val other = CapacityPool("arm", "arm", 16, 65536, 4, setOf("arch:arm64", "simd:neon"), sustainedMs = 0)
+        val armInventory = root.resolve("arm-inventory.json")
+        fun armSample(instances: List<CapacityInstance>) =
+            Files.writeString(armInventory, Json.encodeToString(CapacityInventory(at, setOf(other.id), instances)))
+        val c = CapacityCollector(CapacitySettings(listOf(pool, other), 64), listOf(inventory, armInventory), tokenFile, state, store, control,
+            { writable }, setOf("local"), { at }, { nanos })
+        sample(); armSample(listOf(CapacityInstance("a1", other.id), CapacityInstance("a2", other.id)))
+        val lease = store.execution.requestCapacity(other.id, 2, 3_600_000, at)
+        c.collect()
+        assertEquals(2, c.snapshot().decision.desired.getValue(other.id))
+        // The arm provider stops reporting and nothing asks for its nodes any more: a fresh decision would drop them,
+        // but its pool keeps its two nodes while the general pool is still decided.
+        store.execution.releaseCapacity(lease.id)
+        at += 60_000; nanos += 60_000_000_000
+        sample()
+        c.collect()
+        val snapshot = c.snapshot()
+        assertEquals(0, snapshot.decision.desired.getValue(pool.id))
+        assertEquals(2, snapshot.decision.desired.getValue(other.id))
+        assertTrue(snapshot.failures.getValue(other.id).startsWith("inventory stale"), snapshot.failures.toString())
+        // Every provider stale: nothing is decided.
+        at += 60_000; nanos += 60_000_000_000
+        assertFailsWith<IllegalArgumentException> { c.collect() }
     }
 }

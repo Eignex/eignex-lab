@@ -8,12 +8,14 @@ data class HostReport(
     val host: String,
     val cores: Int,
     val java: String,
-    val cpu: CpuCapabilities = NodeTags.localCapabilities,
+    val cpu: CpuCapabilities = CpuCapabilities(),
     val nodeTags: Set<String> = emptySet(),
 )
 
-fun hostReport(): HostReport = HostReport(
+/** This host, its CPU as [cpu] says: what a service probed once, when it started ([NodeTags.probeLocal]). */
+fun hostReport(cpu: CpuCapabilities): HostReport = HostReport(
     host = "${System.getProperty("os.name")}/${System.getProperty("os.arch")}",
     cores = Runtime.getRuntime().availableProcessors(),
     java = "${System.getProperty("java.vendor")} ${System.getProperty("java.runtime.version")}",
+    cpu = cpu,
 )
