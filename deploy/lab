@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Client for the eignex lab server. Defaults to https://lab.eignex.com; LAB_URL overrides the API address.
-# LAB_HOST selects an SSH host for lab corpus and, unless LAB_URL is set, http://<LAB_HOST>:8420 for the API.
+# Consuming-repository agents use this HTTP client; server access belongs to eignex-lab operations.
 # Auto placement is preferred and is the default for ordinary jobs: omit tags.
 # The lab uses idle local capacity and adds cloud capacity with demand, respecting job priority.
+# Each workload/seed/repetition row runs all arms on the same machine in one attempt.
+# Different rows and preparation can use different machines; ordinary A/B jobs need no machine pin.
 #   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab profile [--tags expr --timeout sec --repo Eignex/name --build task --classpath path] <main> <ref> <description> -- [arg...]
@@ -86,13 +88,7 @@
 #                                                            however it ends (a killed fetch's hold lapses after 2 h). A
 #                                                            listed file it cannot download fails it: it fetches the rest,
 #                                                            writes lab-fetch-missing.json naming each one, and exits 1
-#   lab corpus                                               rsync the local bench corpus to the server's LAB_REMOTE_CORPUS
-#                                                            (default .cache/eignex-lab/corpus; set it to the server's
-#                                                            LAB_CORPUS when that is elsewhere, an external drive say)
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/eignex-lab/password.
-#                                                            running cloud job (an AWS instance), through the server with the
-#                                                            lab's own key and host keys; LAB_REMOTE_JOBS is the server's
-#                                                            LAB_JOBS when not $LAB_REMOTE_DATA/jobs
 set -euo pipefail
 host="${LAB_HOST:-}"
 url="${LAB_URL:-https://lab.eignex.com}"

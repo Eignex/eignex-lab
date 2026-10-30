@@ -2,6 +2,10 @@
 
 [Setup](../deploy/SETUP.md) · [Complete command list](../deploy/lab)
 
+Use `deploy/lab` and the authenticated HTTP API at `https://lab.eignex.com` from consuming repositories.
+SSH access, host discovery and server administration belong to agents explicitly working on eignex-lab
+operations. Report a concrete operational dependency to that owner instead of opening a server session.
+
 ## Experiments
 
 Submit one experiment per question. Save this as `experiment.json`:
@@ -31,6 +35,17 @@ deploy/lab fetch 7
 Replace `7` with the returned ID. `base` supplies shared arm values; `configs` overrides them and `grid` crosses
 combinations. `param.<key>` overrides an opaque repository request parameter. The repository manifest and
 planner own runtime controls and resource ceilings. The lab queues complete paired iterations automatically.
+
+Each case row groups one workload, seed and repetition across all configuration arms. Every arm in that
+row runs on the same machine within one worker attempt, under the row's resource budget. The scheduler
+may place other rows on different compatible machines; preparation can also run on a different machine
+from solving. A job's node changing between rows is normal and does not invalidate its paired comparison.
+Keep ordinary A/B placement automatic rather than pinning the entire job to a machine.
+
+If a worker is lost before accepting a complete row, the lab replaces that unfinished row as a whole.
+It does not combine arm A from one machine or attempt with arm B from another. Accepted rows remain
+accepted. Retain failed-attempt and preparation costs, and investigate repeated losses as an operational
+issue separately from the validity of completed same-machine pairs.
 
 Reference comparisons on a captured source require the same source identity and a recorded reference version.
 Historical rows without either stay visible as history but cannot establish coverage, disagreement or objective

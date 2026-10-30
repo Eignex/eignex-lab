@@ -268,6 +268,13 @@ exclude this gate. Local captures establish wiring, not performance or live sche
 Top-level `configs` and `grid` expand paired arms. Each arm selects a `ref` and can override
 opaque request values with `param.<key>`. Top-level `repeats` repeats each paired block; the
 suite owns seed expansion. Plans are resolved at each pinned commit and retained separately.
+
+One paired row contains the same workload, seed and repetition from every arm. The lab executes all
+arms of that row on one machine in one worker attempt and accepts the complete row together. Other rows
+and source preparation may use other compatible machines. A failed attempt is replaced as a complete
+row; arms from different machines or attempts are not joined into an accepted pair. Ordinary A/B jobs
+use automatic placement and do not require one machine for the entire experiment.
+
 `attributes.comparisonKey` optionally names the same workload across runtime variants; it defaults
 to the case id. Keys must be unique and all arms must select the same workload identities and
 input bytes. Directory contents are pinned too. Missing workloads and changed inputs fail preparation.
