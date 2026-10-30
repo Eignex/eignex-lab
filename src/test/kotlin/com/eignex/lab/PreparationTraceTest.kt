@@ -16,6 +16,38 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 class PreparationTraceTest {
+    @Test fun `last child keeps its arm and checkout identity after the next arm unwinds`() {
+        val root = java.nio.file.Files.createTempDirectory("preparation-child-evidence")
+        val out = root.resolve("build.out"); val err = root.resolve("build.err")
+        java.nio.file.Files.writeString(out, "x".repeat(5000) + "first arm compiled")
+        java.nio.file.Files.writeString(err, "")
+        val trace = PreparationTrace()
+        val budget = ResourceBudget(1000, 512)
+        val recorder = PreparationRecorder(ResourceObservation("advisory-native", budget, null, null, "test", "test", "test", emptyMap()), trace)
+        try {
+            trace.step("compilation") {
+                recorder.build(out, err, PreparationBuildDiagnostic(0, kind = "compilation", stage = trace.snapshot().stage, sourceCommit = "a".repeat(40)))
+            }
+            val first = recorder.snapshot(1000, 2000).build!!
+            assertEquals("a".repeat(40), first.sourceCommit); assertEquals("compilation", first.kind)
+            assertEquals(4096, first.stdout.length)
+            java.nio.file.Files.writeString(out, "second arm checkout succeeded")
+            assertFailsWith<IllegalStateException> {
+                trace.step("checkout") {
+                    recorder.build(out, err, PreparationBuildDiagnostic(0, kind = "checkout", stage = trace.snapshot().stage, sourceCommit = "b".repeat(40)))
+                    error("second arm failed before compilation")
+                }
+            }
+            deleteTree(root)
+            val final = recorder.snapshot(1000, 2000)
+            assertEquals("preparing", final.stage)
+            assertEquals("b".repeat(40), final.build!!.sourceCommit)
+            assertEquals("checkout", final.build.kind); assertEquals("checkout", final.build.stage)
+            assertEquals(0, final.build.exitCode)
+            assertEquals("second arm checkout succeeded", final.build.stdout)
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `nested phase timings are exclusive and failures restore the parent phase`() {
         var clock = 0L
         val trace = PreparationTrace { clock }

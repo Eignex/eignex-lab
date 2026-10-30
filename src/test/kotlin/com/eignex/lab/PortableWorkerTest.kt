@@ -403,6 +403,8 @@ PY
         val evidence = recorder.snapshot(10000, 10000).build!!
         assertEquals(3, evidence.exitCode)
         assertEquals(0, evidence.signal); assertEquals(false, evidence.runTimedOut)
+        assertEquals("compilation", evidence.kind); assertEquals("compilation", evidence.stage)
+        assertEquals(input.commit, evidence.sourceCommit)
         assertTrue(evidence.stderr.contains("expected-compile-failure"))
         assertTrue(failure.detail.contains("expected-compile-failure")); assertTrue(failure.detail.contains("exit 3"))
         assertTrue(Files.list(root.resolve("builds")).use { files -> files.noneMatch { Files.isDirectory(it) && it.fileName.toString().matches(SHA256) } })

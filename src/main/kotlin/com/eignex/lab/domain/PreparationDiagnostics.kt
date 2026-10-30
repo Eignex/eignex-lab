@@ -21,8 +21,14 @@ data class PreparationDiagnostics(val elapsedMs: Long, val stage: String, val bu
 
 @Serializable
 data class PreparationBuildDiagnostic(val exitCode: Int? = null, val stdout: String = "", val stderr: String = "",
-    val signal: Int? = null, val runTimedOut: Boolean? = null) {
-    init { require(stdout.length <= 4096 && stderr.length <= 4096 && (signal == null || signal >= 0)) }
+    val signal: Int? = null, val runTimedOut: Boolean? = null,
+    val kind: String? = null, val stage: String? = null, val sourceCommit: String? = null) {
+    init {
+        require(stdout.length <= 4096 && stderr.length <= 4096 && (signal == null || signal >= 0))
+        require(kind in setOf(null, "checkout", "compilation"))
+        require(stage == null || stage in PreparationTrace.labels)
+        require(sourceCommit == null || CommitSha.isValid(sourceCommit))
+    }
 }
 
 @Serializable

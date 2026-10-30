@@ -1,7 +1,6 @@
 package com.eignex.lab.worker
 
 import com.eignex.lab.domain.*
-import com.eignex.lab.util.ProcessTermination
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -13,9 +12,9 @@ internal class PreparationRecorder(private val observation: ResourceObservation,
     private var build: PreparationBuildDiagnostic? = null
     private val uploads = ArrayDeque<PreparationUploadDiagnostic>()
 
-    @Synchronized fun build(stdout: Path, stderr: Path, termination: ProcessTermination?) {
+    @Synchronized fun build(stdout: Path, stderr: Path, diagnostic: PreparationBuildDiagnostic) {
         this.stdout = stdout; this.stderr = stderr
-        build = PreparationBuildDiagnostic(termination?.exitCode, tail(stdout), tail(stderr), termination?.signal, termination?.runTimedOut)
+        build = diagnostic.copy(stdout = tail(stdout), stderr = tail(stderr))
     }
     @Synchronized fun upload(event: PreparationUploadDiagnostic) {
         if (uploads.size == 16) uploads.removeFirst()
