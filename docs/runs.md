@@ -220,6 +220,14 @@ labels controlled runtime/compiler series and historical records explicitly.
 Migrations start separate trend segments and need a retained bounded old/current
 bridge before a solver-only attribution. A seed change cannot count as recovery.
 
+The coordinator attaches `labExecution` from the accepted iteration's checksum-verified
+worker resource artifact. Its frame retains the lab release, CPU model/features,
+JDK/platform, literal cgroup CPU/memory ceilings, session budget, iteration concurrency
+and paired case count. Resource counters stay in the linked receipt and do not split
+a series. Different frames split controlled series; missing or advisory observations
+withhold revision attribution. Repository output cannot supply this authority.
+Preparation resources are separate from these solve observations.
+
 Every feasibility/proof/objective vote uses a complete matching seed/repeat block;
 failed, duplicate or absent blocks cannot vote and remain in the denominator.
 Confirmations preserve each affected source's solver seeds and repeat the paired

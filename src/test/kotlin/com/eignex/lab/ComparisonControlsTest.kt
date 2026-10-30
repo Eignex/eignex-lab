@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import com.eignex.lab.bench.BenchCase
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
@@ -24,7 +25,9 @@ class ComparisonControlsTest {
             "sourceHashes" to JsonObject(mapOf("model" to JsonPrimitive("source"))),
             "compiledInputHashes" to JsonObject(mapOf("flatzinc" to JsonPrimitive("fzn"), "flatzincContentV1" to JsonPrimitive("content"), "outputMapping" to JsonPrimitive("ozn")))))
         return CaseResult(repeat, Status.DONE, Problem("s", plan.id, format = format, benchCase = plan), "arm",
-            seed = seed, repeat = repeat, record = record)
+            seed = seed, repeat = repeat, record = Json.parseToJsonElement(ComparisonExecution.record(record.toString(),
+                ResourceObservation("cgroup-v2-hard", ResourceBudget(1000, 4608), "100000 100000", "4831838208",
+                    "25", "Linux", "amd64", emptyMap(), "c".repeat(64), 1, 2), "a".repeat(64), "release")!!))
     }
 
     @Test
@@ -69,6 +72,19 @@ class ComparisonControlsTest {
         val relocated = JsonObject(compiled + ("flatzinc" to JsonPrimitive("other raw path comments")))
 
         assertNull(ComparisonControls.mismatch(before, before.copy(record = JsonObject(record + ("compiledInputHashes" to relocated)))))
+    }
+
+    @Test
+    fun `absent or changed execution receipts withhold revision attribution`() {
+        val before = case()
+        val record = before.record as JsonObject
+        val receipt = record.getValue("labExecution") as JsonObject
+        val frame = receipt.getValue("frame") as JsonObject
+        val changed = JsonObject(record + ("labExecution" to JsonObject(receipt +
+            ("frame" to JsonObject(frame + ("cpuIdentity" to JsonPrimitive("d".repeat(64))))))))
+
+        assertNotNull(ComparisonControls.mismatch(before, before.copy(record = JsonObject(record - "labExecution"))))
+        assertNotNull(ComparisonControls.mismatch(before, before.copy(record = changed)))
     }
 
     @Test

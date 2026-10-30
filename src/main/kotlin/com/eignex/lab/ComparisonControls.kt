@@ -24,6 +24,9 @@ internal object ComparisonControls {
         if (text(x, "policy") != "matched-source-v1" || text(y, "policy") != "matched-source-v1") return "unknown comparison policy"
         if (REQUIRED.any { text(x, it).isNullOrBlank() || text(y, it).isNullOrBlank() }) return "incomplete controls"
         if (x != y) return "runtime, source dependency, seed or allowance migration"
+        val execution = ComparisonExecution.frame(left) ?: return "physical execution controls unavailable"
+        val otherExecution = ComparisonExecution.frame(right) ?: return "physical execution controls unavailable"
+        if (execution != otherExecution) return "physical execution migration"
         if (seed(a)?.toString() != text(x, "solverSeed") || seed(b)?.toString() != text(y, "solverSeed")) return "inconsistent seed"
         if (text(left, "seed") != text(x, "solverSeed") || text(right, "seed") != text(y, "solverSeed")) return "inconsistent recorded seed"
         for ((recordKey, controlKey) in listOf("budgetMs" to "solverBudgetMs", "processors" to "cpus")) {
@@ -43,9 +46,11 @@ internal object ComparisonControls {
     }
 
     fun series(case: CaseResult): String {
-        val controls = (case.record as? JsonObject)?.get("comparisonControls") as? JsonObject
+        val record = case.record as? JsonObject
+        val controls = record?.get("comparisonControls") as? JsonObject
         return listOfNotNull(text(controls, "series"), text(controls, "runtimeFingerprint"), text(controls, "compilerFingerprint"))
-            .takeIf { text(controls, "policy") == "matched-source-v1" }?.joinToString(":") ?: "historical-unqualified"
+            .takeIf { text(controls, "policy") == "matched-source-v1" }
+            ?.plus(record?.let(ComparisonExecution::series) ?: "execution-unqualified")?.joinToString(":") ?: "historical-unqualified"
     }
 
     private fun text(value: JsonObject?, key: String) = (value?.get(key) as? JsonPrimitive)?.content?.takeUnless { it == "null" }

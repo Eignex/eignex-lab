@@ -139,7 +139,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     } }
                 }
                 val resourceFile = directory.resolve("resource-observation.json")
-                Files.writeString(resourceFile, Json.encodeToString(observation.copy(counters = ResourceObservation.counters())))
+                Files.writeString(resourceFile, Json.encodeToString(observation.copy(counters = ResourceObservation.counters(),
+                    iterationParallel = claim.parallel, iterationCases = claim.indices.size)))
                 outputs["nomad/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}-resources.json"] = resourceFile
                 val mode = commitResult(claim.owner, result, outputs)
                 println("worker timing: session=$id iteration=${claim.owner.iteration} preparation=${manifest.preparationTimeoutSec != null} stagingMs=${(executionStarted - preparationStarted) / 1_000_000} executionMs=${(outputStarted - executionStarted) / 1_000_000} outputMs=${(System.nanoTime() - outputStarted) / 1_000_000} outputBytes=${outputs.values.sumOf(Files::size)} mode=$mode")

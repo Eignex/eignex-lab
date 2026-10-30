@@ -102,7 +102,11 @@ class CheckerInvariantTest {
             "objective":${shown.objective},"exactObjective":${shown.exact?.let { "\"$it\"" }},"proven":${shown.proven},
             "timeToBestMs":${if (!bench.withdrawn && claim.feasible) TIME_TO_BEST else null},"budgetMs":10000,
             "command":"klause-cli","validationPolicy":"${bench.policy}","finalWitness":"(\n(define-fun x () Int 5)\n)",
-            "sourceHashes":{"model":"${sha256(source)}"},"stats":{$stats}}"""
+            "sourceHashes":{"model":"${sha256(source)}"},"stats":{$stats}}""".let {
+            ComparisonExecution.record(it, ResourceObservation("cgroup-v2-hard", ResourceBudget(1000, 4608),
+                "100000 100000", "4831838208", "25", "Linux", "amd64", emptyMap(), "c".repeat(64), 1, 2),
+                "a".repeat(64), "fixture")!!
+        }
     }
 
     /** Each lab check state, by name: `none` for a case the lab has not checked, `exception` for an adapter that threw. */
