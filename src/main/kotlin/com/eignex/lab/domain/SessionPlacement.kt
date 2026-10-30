@@ -52,7 +52,7 @@ data class SessionPlacement(
     val nodeClass: String? = null,
     /** The CPU the node class's nodes have, as the job's constraints pinned it. */
     val cpuCapacity: NomadCpuCapacity? = null,
-    val preparationSlots: Int? = null,
+    @kotlinx.serialization.Transient val preparationSlots: Int? = null,
     /** Nodes it may not be placed on: those whose parallel slots its other sessions fill. */
     private val excludedNodes: Set<String> = emptySet(),
     /** The most cases a cloud node runs at once across sessions, when the queue limits it. */

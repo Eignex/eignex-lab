@@ -135,7 +135,9 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     /** Where session [id]'s worker was placed ([SessionPlacement]), as kept when it was created. */
     fun placement(id: String): SessionPlacement = store.executionRead { db ->
-        db.sqlRows("SELECT placement FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.singleOrNull()?.let(SessionPlacement::parse)
+        db.sqlRows("SELECT placement, preparation_slots FROM execution_sessions WHERE id = ?", id) { row ->
+            row.getString(1)?.let { value -> SessionPlacement.parse(value).copy(preparationSlots = row.getObject(2)?.let { row.getInt(2) }) }
+        }.singleOrNull()
     } ?: SessionPlacement.of(submission(id))
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
@@ -202,8 +204,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
             id, jobId, executionClass.stored, release, Json.encodeToString(budget), nomadId, digest(token), at)
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
-        db.sqlUpdate("UPDATE execution_sessions SET manifest = ?, placement = ?, cpu_enforcement = ? WHERE id = ?",
-            manifest, placement.json(), placement.enforcement?.stored, id)
+        db.sqlUpdate("UPDATE execution_sessions SET manifest = ?, placement = ?, cpu_enforcement = ?, preparation_slots = ? WHERE id = ?",
+            manifest, placement.json(), placement.enforcement?.stored, placement.preparationSlots, id)
         db.event(jobId, id, "session-created", at)
         db.session(id)!!
     }
@@ -700,6 +702,8 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("CREATE TABLE IF NOT EXISTS execution_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, session_id TEXT, detail TEXT NOT NULL, at INTEGER NOT NULL)")
                 val columns = s.executeQuery("PRAGMA table_info(execution_sessions)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 addColumn(db, "execution_sessions", "manifest", "TEXT", columns)
+                // Keep the old strict placement JSON readable after rollback.
+                addColumn(db, "execution_sessions", "preparation_slots", "INTEGER", columns)
                 s.execute("CREATE TABLE IF NOT EXISTS capacity_leases (id TEXT PRIMARY KEY, pool TEXT NOT NULL, nodes INTEGER NOT NULL, expires_at INTEGER NOT NULL)")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_ingestion (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, PRIMARY KEY (job_id, iteration_id))")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_checks (job_id INTEGER NOT NULL, idx INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (job_id, idx))")
