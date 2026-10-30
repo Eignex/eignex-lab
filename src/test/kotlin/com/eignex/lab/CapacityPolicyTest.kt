@@ -14,6 +14,28 @@ import com.eignex.lab.cli.*
 import kotlin.test.*
 
 class CapacityPolicyTest {
+    @Test fun `compiler slots place waiting preparations on an idle node while solves still share CPU`() {
+        val busy = CapacityNode("busy", pool.id, CapacityNodeState.READY,
+            List(2) { CapacityReservation("build-$it", it.toLong(), ResourceBudget(2000, 4096), CapacityWork.BUILD) })
+        val idle = CapacityNode("idle", pool.id, CapacityNodeState.READY)
+        val build = demand("next-build", 2000, 4096, work = CapacityWork.BUILD).copy(maxConcurrentBuildsPerNode = 2)
+        val solve = demand("solve", 1000, 4096)
+        val plan = CapacityPolicy.evaluate(settings, listOf(busy, idle), listOf(build, solve))
+        assertEquals("idle", plan.placements.single { it.request == build.id }.node)
+        assertEquals("busy", plan.placements.single { it.request == solve.id }.node)
+        assertEquals(2, plan.desired[pool.id])
+    }
+
+    @Test fun `compiler admission never raises the pool or physical CPU quota`() {
+        val busy = CapacityNode("busy", pool.id, CapacityNodeState.READY,
+            List(2) { CapacityReservation("build-$it", it.toLong(), ResourceBudget(2000, 4096), CapacityWork.BUILD) })
+        val build = demand("next-build", 2000, 4096, work = CapacityWork.BUILD).copy(maxConcurrentBuildsPerNode = 2)
+        val plan = CapacityPolicy.evaluate(settings.copy(maxVcpus = pool.vcpus), listOf(busy), listOf(build))
+        assertTrue(plan.placements.isEmpty())
+        assertEquals("capacity or vCPU limit", plan.waiting.single().reason)
+        assertEquals(1, plan.desired[pool.id])
+    }
+
     @Test fun `largest fitting cold pool wins but warm smaller capacity is reused`() {
         val large = pool.copy(id = "z-large")
         val small = pool.copy(id = "a-small", nodeClass = "small", vcpus = 2, memoryMiB = 8192)

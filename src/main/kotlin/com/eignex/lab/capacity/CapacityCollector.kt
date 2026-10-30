@@ -122,7 +122,8 @@ internal object CapacityObservation {
             else -> CapacityWork.SOLVE
         }
         return CapacityDemand(session.id, job.id, budget, job.priority, (placement.pool as? WorkerPool.Cloud)?.perHostParallel, experiment.nodeTags,
-            pool.market, Placement.localEligible(experiment, localTags), work, pool.id)
+            pool.market, Placement.localEligible(experiment, localTags), work, pool.id,
+            maxConcurrentBuildsPerNode = if (work == CapacityWork.BUILD) placement.preparationSlots ?: 2 else null)
     }
 }
 

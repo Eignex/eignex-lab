@@ -52,6 +52,7 @@ data class SessionPlacement(
     val nodeClass: String? = null,
     /** The CPU the node class's nodes have, as the job's constraints pinned it. */
     val cpuCapacity: NomadCpuCapacity? = null,
+    val preparationSlots: Int? = null,
     /** Nodes it may not be placed on: those whose parallel slots its other sessions fill. */
     private val excludedNodes: Set<String> = emptySet(),
     /** The most cases a cloud node runs at once across sessions, when the queue limits it. */
@@ -61,6 +62,7 @@ data class SessionPlacement(
     private val nativeMemoryLimit: Long? = null,
 ) {
     init {
+        require(preparationSlots == null || preparationSlots in 1..64)
         require(enforcement == CpuEnforcement.ADVISORY_NATIVE || nativeCpuLimit == null && nativeMemoryLimit == null) {
             "only the native worker has a native reservation"
         }
@@ -104,6 +106,7 @@ data class SessionPlacement(
                 enforcement = enforcement,
                 nodeClass = equal("\${node.class}"),
                 cpuCapacity = if (cpu != null && cores != null) NomadCpuCapacity(cpu, cores) else null,
+                preparationSlots = meta?.get("lab_preparation_slots")?.jsonPrimitive?.intOrNull,
                 excludedNodes = if (native) emptySet() else constraints.filter {
                     it["LTarget"]?.jsonPrimitive?.content == "\${node.unique.id}" && it["Operand"]?.jsonPrimitive?.content == "!="
                 }.mapNotNull { it["RTarget"]?.jsonPrimitive?.content }.toSet(),

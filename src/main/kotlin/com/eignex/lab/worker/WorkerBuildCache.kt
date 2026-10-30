@@ -199,19 +199,11 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     /** Node-local slots bound cold compilers across allocations; warm cache hits bypass this gate. */
     internal fun <T> compilationSlot(run: () -> Long?, lease: () -> Long, slots: Int =
         System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2, use: () -> T): T {
-        require(slots in 1..64)
-        // The slots are other processes' file locks, which cannot be waited on together: try them again, less often the
-        // longer they stay taken, up to half a second.
-        var pause = 50L
-        while (true) {
+        return CompilerAdmission(root).use(slots, {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
             if (lease() <= 0) throw LeaseLost("build lease expired while waiting for compiler")
-            for (slot in 0 until slots) {
-                ProcessFilePin.tryLock(root.resolve("compile-$slot.lock"))?.use { return use() }
-            }
-            Thread.sleep(pause)
-            pause = (pause * 2).coerceAtMost(500)
-        }
+            if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("compiler wait cancelled")
+        }, use)
     }
 
     private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest((listOf(

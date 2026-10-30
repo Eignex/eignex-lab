@@ -152,6 +152,10 @@ class ExecutionStore internal constructor(private val store: Store) {
             ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed, active?.third)
         }
     }
+    internal fun activePreparations(): List<ExecutionSession> = store.executionRead { db ->
+        db.sqlRows("SELECT * FROM execution_sessions WHERE desired != 'stop' AND execution_class IN ('prepare', 'build')", map = ::sessionRow)
+    }
+
     fun sessions(jobId: Long? = null): List<ExecutionSession> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_sessions" + if (jobId == null) " ORDER BY id" else " WHERE job_id = ? ORDER BY id",
             *listOfNotNull(jobId).toTypedArray(), map = ::sessionRow)
