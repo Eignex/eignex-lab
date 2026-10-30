@@ -10,13 +10,8 @@ internal object FixedGlobals {
 
     fun providerInput(text: String): String {
         val items = MiniZincPoint.items(text)
-        val arrays = items.mapNotNull { array.matchEntire(it) }.groupBy { it.groupValues[2] }
-        fun values(argument: String): List<Int>? {
-            if (argument.startsWith('[')) return literal(argument)
-            val declaration = arrays[argument]?.singleOrNull() ?: return null
-            val length = declaration.groupValues[1].toIntOrNull() ?: return null
-            return literal(declaration.groupValues[3])?.takeIf { it.size == length }
-        }
+        val arrays = FixedGlobals.arrays(items)
+        fun values(argument: String): List<Int>? = FixedGlobals.values(argument, arrays)
         var changed = false
         val derived = items.joinToString("\n", postfix = "\n") { item ->
             val call = constraint.matchEntire(item) ?: return@joinToString item
@@ -62,6 +57,17 @@ internal object FixedGlobals {
         return if (changed) derived else text
     }
 
+    internal fun arrays(items: List<String>): Map<String, List<Int>> =
+        items.mapNotNull { array.matchEntire(it) }.groupBy { it.groupValues[2] }.mapNotNull { (name, declarations) ->
+            val declaration = declarations.singleOrNull() ?: return@mapNotNull null
+            val length = declaration.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+            val values = literal(declaration.groupValues[3])?.takeIf { it.size == length } ?: return@mapNotNull null
+            name to values
+        }.toMap()
+
+    internal fun values(argument: String, arrays: Map<String, List<Int>>): List<Int>? =
+        if (argument.startsWith('[')) literal(argument) else arrays[argument]
+
     private fun literal(text: String): List<Int>? {
         if (!text.startsWith('[') || !text.endsWith(']')) return null
         val content = text.substring(1, text.lastIndex).trim()
@@ -71,7 +77,7 @@ internal object FixedGlobals {
 
     private fun format(values: List<Number>): String = values.joinToString(",", "[", "]")
 
-    private fun arguments(text: String): List<String>? {
+    internal fun arguments(text: String): List<String>? {
         val result = ArrayList<String>()
         var depth = 0
         var start = 0
