@@ -51,10 +51,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build/checker-test-results
-          cp build/test-results/test/TEST-com.eignex.lab.checker.ExactMpsCheckerTest.xml build/checker-test-results/
-          cp build/test-results/test/TEST-com.eignex.lab.checker.MpsReplayTest.xml build/checker-test-results/
-          cp build/test-results/test/TEST-com.eignex.lab.checker.DimacsCheckerTest.xml build/checker-test-results/
-          cp build/test-results/test/TEST-com.eignex.lab.checker.DimacsSourceEvaluationTest.xml build/checker-test-results/
+          cp build/test-results/test/TEST-com.eignex.lab.checker.*.xml build/checker-test-results/
       - name: Verify representative warm preparation work
         run: ./gradlew :verifyPreparationPerformance
         env:
