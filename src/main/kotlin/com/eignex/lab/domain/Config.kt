@@ -63,6 +63,8 @@ data class Config(
     val jobsTargetFreeBytes: Long = Defaults.JOBS_TARGET_FREE_GB * BYTES_PER_GB,
     /** How long after a job ended [JobTrim] trims it whatever the free space: longer on a roomy volume of its own. */
     val trimAgeMs: Long = Defaults.TRIM_AGE_DAYS * MS_PER_DAY,
+    /** How long after a job ended [JobRetention] forgets it, record and directory; 0 keeps every job. */
+    val jobRetentionMs: Long = 0,
     /** The longest an experiment may take, every case using its whole budget, before it needs `"confirm": true`. */
     val maxExperimentHours: Long = Defaults.MAX_EXPERIMENT_HOURS,
     /** Wait for `docker info` to succeed before taking jobs: set where reference solvers run in containers. */
@@ -170,6 +172,7 @@ data class Config(
                 trimCriticalFreeBytes = read.long("LAB_TRIM_CRITICAL_FREE_GB", minFreeGb, 0L..100_000) * BYTES_PER_GB,
                 jobsTargetFreeBytes = read.long("LAB_JOBS_TARGET_FREE_GB", Defaults.JOBS_TARGET_FREE_GB, 0L..100_000) * BYTES_PER_GB,
                 trimAgeMs = read.long("LAB_TRIM_AGE_DAYS", Defaults.TRIM_AGE_DAYS, 1L..3650) * MS_PER_DAY,
+                jobRetentionMs = read.long("LAB_JOB_RETENTION_DAYS", 0L, 0L..3650) * MS_PER_DAY,
                 maxExperimentHours = read.long("LAB_MAX_EXPERIMENT_HOURS", Defaults.MAX_EXPERIMENT_HOURS, 1L..24 * 365),
                 requireDocker = read.flag("LAB_REQUIRE_DOCKER", false),
                 dockerKeep = list(read.string("LAB_DOCKER_KEEP", Defaults.DOCKER_KEEP)),
