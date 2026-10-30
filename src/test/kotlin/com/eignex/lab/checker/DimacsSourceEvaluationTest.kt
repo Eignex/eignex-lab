@@ -11,6 +11,8 @@ import com.eignex.lab.nomad.*
 import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -52,9 +54,46 @@ class DimacsSourceEvaluationTest {
         assertContains(check("p cnf 2 2\n1 0\n2 0", "v 1 -2 0").reason, "clause 2 is false")
         for (source in listOf("1 0", "p wcnf 1 1\n1 1 0", "p cnf 1\n1 0", "p cnf 1 1 extra\n1 0", "p cnf -1 0",
             "p cnf 1 1\n1", "p cnf 1 2\n1 0", "p cnf 1 1\n1 0 1 0", "p cnf 1 1\n1 2 0", "p cnf 1 1\n1 junk 0",
-            "p cnf 1 1\n1 -2147483648 0", "p cnf 1 2\n-1 0\np cnf 1 1\n1 0", "p cnf 1 1\n1 0\n%\n0")) {
+            "p cnf 1 1\n1 -2147483648 0", "p cnf 1 2\n-1 0\np cnf 1 1\n1 0")) {
             assertEquals(LabCheck.UNSUPPORTED, check(source, "v 1").state, source)
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["\n%\n0\n", "\n%\n", "\n \t% \n0\n", "\n%\nc trailer\n0\n"])
+    fun `SATLIB trailers preserve every declared clause`(trailer: String) {
+        val source = "p cnf 2 2\n1 0\n-2 0$trailer"
+
+        val result = check(source, "v 1 -2 0")
+
+        assertEquals(LabCheck.VALID, result.state, result.reason)
+        assertEquals(2, result.constraints)
+    }
+
+    @Test
+    fun `a SATLIB end marker cannot conceal a false clause`() {
+        val source = "p cnf 1 1\n-1 0\n%\n0"
+
+        val result = check(source, "v 1 0")
+
+        assertEquals(LabCheck.INVALID, result.state)
+        assertContains(result.reason, "clause 1 is false")
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+        "p cnf 1 2\n1 0\n%\n0",
+        "p cnf 1 1\n1\n%\n0",
+        "p cnf 1 1\n1 0 %\n0",
+        "p cnf 1 1\n1 0\n-1 0\n%\n0",
+        "p cnf 1 1\n1 0\n%\n1 0",
+        "p cnf 1 1\n1 0\n%\n0\n0",
+        "p cnf 1 1\n1 0\n% 0",
+    ])
+    fun `a malformed end marker cannot bypass source coverage`(source: String) {
+        val result = check(source, "v 1")
+
+        assertEquals(LabCheck.UNSUPPORTED, result.state, result.reason)
     }
 
     @Test fun `resource refusals never become invalid or valid point evidence`() {
