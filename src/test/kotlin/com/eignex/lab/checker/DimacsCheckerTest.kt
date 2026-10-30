@@ -1,10 +1,21 @@
 package com.eignex.lab.checker
 
-import com.eignex.lab.Checkers
-import com.eignex.lab.DimacsCheckBench
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
 
-import com.eignex.lab.Config
-import com.eignex.lab.Problem
+import com.eignex.lab.execution.Checkers
+import com.eignex.lab.analysis.DimacsCheckBench
+
+import com.eignex.lab.domain.Config
+import com.eignex.lab.domain.Problem
 import com.eignex.lab.bench.BenchRequest
 import java.nio.file.Files
 import kotlinx.serialization.json.*

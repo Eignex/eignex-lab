@@ -1,5 +1,5 @@
 {
-  "main": "com.eignex.lab.DimacsCheckBenchKt",
+  "main": "com.eignex.lab.analysis.DimacsCheckBenchKt",
   "buildTasks": ["installDist"],
   "classpath": ["build/install/eignex-lab/lib/*"],
   "jvmArgs": ["-Xmx256m", "-XX:+UseSerialGC", "-XX:ActiveProcessorCount=1"],

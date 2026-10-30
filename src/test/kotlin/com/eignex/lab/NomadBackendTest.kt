@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -676,8 +687,8 @@ class NomadBackendTest {
         val sha = ExecutionStore.digest(String(bytes))
         artifacts.put(id, sha, bytes.size.toLong(), 0, ByteArrayInputStream(bytes))
         val prepared = manifest.bundles.single().copy(sha256 = sha)
-        val problem = benchProblem("p").let { p -> p.copy(benchCase = p.benchCase!!.copy(attributes = p.benchCase.attributes + ("labInputDigest" to ExecutionStore.digest("")))) }
-            .let { BenchRuns.problem(it.benchCase!!) }
+        val case = benchProblem("p").benchCase!!
+        val problem = BenchRuns.problem(case.copy(attributes = case.attributes + ("labInputDigest" to ExecutionStore.digest(""))))
         val outputs = mapOf("preparation/${prepared.commit}.zip" to sha)
         store.execution.phase(claim.owner, "preparing")
         val selected = backend().selectPreparation(claim.owner, listOf(listOf(problem)))
@@ -697,7 +708,7 @@ class NomadBackendTest {
         assertEquals(setOf("before", "after"), benchReplay(replay, spec.bench!!)!!.plans.keys)
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.bench.copy(request = com.eignex.lab.bench.BenchRequest(mapOf("mode" to "changed")))), arms) }
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec, arms.map { it.copy(sha = "f".repeat(40)) }) }
-        val missing = problem.benchCase.copy(attributes = mapOf("comparisonKey" to "missing"))
+        val missing = problem.benchCase!!.copy(attributes = mapOf("comparisonKey" to "missing"))
         assertFailsWith<IllegalArgumentException> { replaySources(store, spec.copy(bench = spec.bench.copy(frozenCases = listOf(missing))), arms) }
     }
 

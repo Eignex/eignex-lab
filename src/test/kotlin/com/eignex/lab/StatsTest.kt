@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import kotlinx.serialization.json.Json
 import kotlin.math.abs
 import kotlin.test.Test

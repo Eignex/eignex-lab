@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import kotlinx.serialization.json.Json
 import com.eignex.lab.bench.BenchRequest
 import kotlinx.serialization.json.jsonObject
@@ -83,8 +94,11 @@ class ExperimentsTest {
             analysis.copy(base = mapOf("ref" to "main")),
             analysis.copy(measurement = Measurement.JFR),
             analysis.copy(measurement = Measurement.RESOURCES),
-            analysis.copy(profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*"))),
         )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxParallel = 4) }
+        // An analysis that also names a profile cannot even be built: an experiment is one kind of work.
+        assertFailsWith<IllegalArgumentException> {
+            analysis.copy(profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
+        }
         val defaulted = Json.decodeFromJsonElement(ExperimentSpec.serializer(),
             analysisDefaults(Json.parseToJsonElement("""{"analyze": {"job": 9}}""").jsonObject))
         assertEquals("analyze-9", defaulted.name)

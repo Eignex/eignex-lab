@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
@@ -15,7 +26,7 @@ class HostCheckTest {
             val process = ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Xlog:class+load=info", "-cp", System.getProperty("java.class.path"),
-                "com.eignex.lab.MainKt", "check",
+                "com.eignex.lab.cli.MainKt", "check",
             ).apply {
                 listOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS").forEach { environment().remove(it) }
             }.redirectErrorStream(true).redirectOutput(output.toFile()).start()
@@ -23,7 +34,7 @@ class HostCheckTest {
                 assertTrue(process.waitFor(20, TimeUnit.SECONDS), "host check did not finish")
                 val log = Files.readString(output)
                 assertEquals(0, process.exitValue(), log.takeLast(4000))
-                assertTrue(log.contains("com.eignex.lab.HostCheckKt"), "host check must execute")
+                assertTrue(log.contains("com.eignex.lab.domain.HostCheckKt"), "host check must execute")
                 assertFalse(log.contains("com.eignex.koblas."), "coordinator host reporting must not load a benchmark backend")
             } finally { process.destroyForcibly() }
         } finally { Files.deleteIfExists(output) }

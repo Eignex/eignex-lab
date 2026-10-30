@@ -28,4 +28,4 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-include("xcsp3-tools", "lab-bench")
+include("xcsp3-tools", "lab-bench", "lab-model", "lab-solvers")

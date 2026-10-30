@@ -1,5 +1,16 @@
 package com.eignex.lab
 
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
@@ -104,7 +115,7 @@ class EstimatesTest {
         val first = doneRun(store, file, "ref@aaaaaaaaa", scheduled, cases = 30, caseMs = 120_000)
         val other = doneRun(store, file, "other", spec.copy(name = "other", description = "elsewhere"), cases = 12, caseMs = 60_000)
         doneRun(store, file, "slow", spec.copy(name = "slow", base = mapOf("timeout" to "720000")), cases = 50, caseMs = 1_000)
-        val history = EstimateHistory(store, cores = 8)
+        val history = EstimateHistory(EstimateData.of(store), cores = 8)
 
         val next = job(Status.QUEUED, CommandCounts(0, 0, 0, 0), name = "ref@bbbbbbbbb",
             experiment = scheduled.copy(name = "ref@bbbbbbbbb", base = spec.base + ("ref" to "b".repeat(40)), host = Experiments.LAB_HOST))
@@ -130,7 +141,7 @@ class EstimatesTest {
         val store = Store(file)
         val old = spec.copy(name = "ref@aaaaaaaaa", base = spec.base + ("ref" to "a".repeat(40)))
         val last = doneRun(store, file, "ref@aaaaaaaaa", old, cases = 30, caseMs = 120_000)
-        val history = EstimateHistory(store, cores = 8)
+        val history = EstimateHistory(EstimateData.of(store), cores = 8)
 
         val edited = old.copy(name = "ref@bbbbbbbbb", base = mapOf("timeout" to "1000", "ref" to "b".repeat(40)))
         val next = job(Status.QUEUED, CommandCounts(0, 0, 0, 0), name = "ref@bbbbbbbbb", experiment = edited)
@@ -145,7 +156,7 @@ class EstimatesTest {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)
         var clock = 0L
-        val history = EstimateHistory(store, cores = 8, clock = { clock })
+        val history = EstimateHistory(EstimateData.of(store), cores = 8, clock = { clock })
         val next = job(Status.QUEUED, CommandCounts(0, 0, 0, 0))
         assertNull(history.lookup(next))
 

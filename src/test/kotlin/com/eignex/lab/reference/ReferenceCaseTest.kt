@@ -1,6 +1,17 @@
 package com.eignex.lab.reference
 
-import com.eignex.lab.References
+import com.eignex.lab.util.*
+import com.eignex.lab.domain.*
+import com.eignex.lab.store.*
+import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
+import com.eignex.lab.execution.*
+import com.eignex.lab.worker.*
+import com.eignex.lab.nomad.*
+import com.eignex.lab.web.*
+import com.eignex.lab.cli.*
+
+import com.eignex.lab.analysis.References
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
