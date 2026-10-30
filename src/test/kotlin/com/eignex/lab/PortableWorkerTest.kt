@@ -165,7 +165,7 @@ class PortableWorkerTest {
             val (source, bytes) = bundle(mapOf("bench.json" to kotlinx.serialization.json.JsonObject(manifestJson +
                 ("runtime" to Json.parseToJsonElement(runtime))).toString(), "classes/placeholder" to "not a class"))
             val spec = ExperimentSpec("prerequisite-$index", bench = BenchSpec("bench.json"))
-            val case = com.eignex.lab.bench.BenchCase("prerequisite")
+            val case = com.eignex.lab.bench.BenchCase("prerequisite", resources = com.eignex.lab.bench.BenchResources(timeoutSeconds = 5))
             val manifest = WorkManifest("prerequisite-$index", "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
                 listOf(WorkCase(0, 0, BenchRuns.problem(case), null, 0, 5, case)), listOf(source), ResourceBudget(1000, 2048))
             val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("prerequisite-cache-$index")), { ByteArrayInputStream(bytes) },

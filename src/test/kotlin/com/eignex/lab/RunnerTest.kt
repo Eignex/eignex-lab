@@ -90,7 +90,7 @@ class RunnerTest {
             val spec = original.copy(name = "checked-sweep@$sha", base = mapOf("ref" to sha))
             val id = store.create(spec.name, sha, emptyList(), experiment = spec)
             store.plan(id, Experiments.arms(spec).map { PlannedArm(it, sha) }, workloads.map(BenchRuns::problem),
-                Experiments.cases(workloads.size, 1, emptyList()), workloads.map { "true" to 1L })
+                Experiments.cases(workloads.size, 1, emptyList()).map { it.copy(seed = workloads[it.problem].parameters.getValue("seed").toLong()) }, workloads.map { "true" to 1L })
             store.setup(id, sha)
             workloads.forEachIndexed { index, _ ->
                 store.caseRecord(id, index, """{"kind":"optimize","feasible":true,"proven":$proven,"exactObjective":"9007199254740993","budgetMs":1000}""")
