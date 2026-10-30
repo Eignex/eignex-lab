@@ -247,7 +247,7 @@ class NomadQueueTest {
         assertEquals(frozen, store.execution.manifest(pending.id))
         assertTrue(store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN }
             .all { store.execution.placement(it.id).native })
-        assertEquals(0, store.job(id)!!.runMs)
+        assertEquals(0L, store.job(id)!!.runMs)
         assertTrue(store.execution.events(id).any { it.detail == "lost:placement-native-capacity" })
     }
 
@@ -330,8 +330,8 @@ class NomadQueueTest {
         return WorkerBundle(sha, listOf(InputFile("fixture", ExecutionStore.digest(text), text.length.toLong())), Repositories.DEFAULT,
             "a".repeat(40), os, arch, "fixture")
     }
-    private fun queue(cores: Int = config.cores, policy: NomadQueueSettings = settings, allowed: () -> Boolean = { true },
-                      capacity: CapacitySettings? = null) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
+    private fun queue(cores: Int = config.cores, policy: NomadQueueSettings = settings, capacity: CapacitySettings? = null,
+                      allowed: () -> Boolean = { true }) = NomadQueue(config.copy(cores = cores), store, backend, artifacts, policy, allowed,
         completed = { completions++ }, nativeAllowed = { true }, capacitySettings = capacity, source = { job, targets, _ ->
             publications++
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
