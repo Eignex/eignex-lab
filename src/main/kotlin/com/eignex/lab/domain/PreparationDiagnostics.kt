@@ -1,5 +1,6 @@
 package com.eignex.lab.domain
 
+import com.eignex.lab.util.CommitSha
 import kotlinx.serialization.Serializable
 
 /** Provisional failure evidence, never an accepted build or performance result. No commands or credentials. */
