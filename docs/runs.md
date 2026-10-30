@@ -210,6 +210,8 @@ UNSAT or optimum proof. Resource and unavailable checks remain unchecked.
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,
 processor/memory/deadline controls and normalized runtime/compiler identities.
+Separate harness and library fingerprints retain bench class bytes and runtime dependencies;
+changing only the solver implementation does not substitute for either identity.
 Revision confirmations require equal complete controls, original-source hashes and,
 for MiniZinc, compiled-content/output-mapping hashes. FlatZinc raw hashes remain
 retained separately: content policy v1 elides only the two generated path-comment

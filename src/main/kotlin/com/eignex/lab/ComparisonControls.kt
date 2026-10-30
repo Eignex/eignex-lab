@@ -48,7 +48,8 @@ internal object ComparisonControls {
     fun series(case: CaseResult): String {
         val record = case.record as? JsonObject
         val controls = record?.get("comparisonControls") as? JsonObject
-        return listOfNotNull(text(controls, "series"), text(controls, "runtimeFingerprint"), text(controls, "compilerFingerprint"))
+        return listOfNotNull(text(controls, "series"), text(controls, "runtimeFingerprint"), text(controls, "compilerFingerprint"),
+            text(controls, "harnessFingerprint") ?: "harness-unqualified", text(controls, "libraryFingerprint") ?: "libraries-unqualified")
             .takeIf { text(controls, "policy") == "matched-source-v1" }
             ?.plus(record?.let(ComparisonExecution::series) ?: "execution-unqualified")?.joinToString(":") ?: "historical-unqualified"
     }
@@ -56,5 +57,5 @@ internal object ComparisonControls {
     private fun text(value: JsonObject?, key: String) = (value?.get(key) as? JsonPrimitive)?.content?.takeUnless { it == "null" }
     private val REQUIRED = setOf("series", "solverSeed", "compilerSeed", "solverBudgetMs", "compilerTimeoutSeconds",
         "caseTimeoutSeconds", "cpus", "memoryMiB", "heap-mib", "gc", "debug", "measurement", "exact",
-        "complete-assignment", "deadlinePolicy", "runtimeFingerprint", "inputDigest")
+        "complete-assignment", "deadlinePolicy", "runtimeFingerprint", "harnessFingerprint", "libraryFingerprint", "inputDigest")
 }
