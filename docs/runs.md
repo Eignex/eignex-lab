@@ -160,7 +160,7 @@ native solution and omit unrelated record statistics when it retains the origina
 description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
 The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
 extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
-Policy v6 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
+Policy v7 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
 It declares the no-argument `klause_symmetry` and `klause_redundant` annotations when the captured frame
 uses either without a declaration.
 Tagged constraints remain asserted exactly as captured. Other solver annotations and opaque predicates retain their
@@ -174,6 +174,13 @@ hashed, and the process receipt identifies the actual provider input. Unfixed, n
 remain unsupported. No variable is completed, and neither search nor propagation is invoked.
 The contracts come from [MiniZinc subcircuit](https://github.com/MiniZinc/libminizinc/blob/2.10.1/share/minizinc/std/subcircuit.mzn)
 and [Choco's pinned FlatZinc circuit binding](https://github.com/chocoteam/choco-solver/blob/v5.0.1/parsers/src/main/java/org/chocosolver/parser/flatzinc/ast/FConstraint.java).
+Fixed literal `klause_all_different_int`, `klause_circuit`, `klause_lex_less_int` and `klause_inverse_offsets`
+calls use the corresponding pinned Choco assignment APIs. Named arrays must have explicit literal values;
+metadata and all other constraints stay present. Circuit values are one-based. Inverse offsets name the original
+index sets: forward values subtract the inverse index offset, and inverse values subtract the forward index offset
+before calling the zero-based provider. Asymmetric-offset negative cases check this distinction. Lexicographic
+checking is strict and requires equal nonempty lengths; other shapes stay unsupported. Every translation keeps
+the original and actual derived input, with the same complete-variable guard and no solver completion.
 The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
 metadata and actual jar hashes identify the API; the existing XCSP checker dependency is preserved separately.
 The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.
