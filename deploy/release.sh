@@ -29,8 +29,9 @@ restart_services() {
   case "$(uname -s)" in
   Darwin)
     local pids
-    # -a: BSD pgrep leaves out its own ancestors, and the runner is one when its self-update runs this.
-    pids="$(pgrep -af 'com\.eignex\.lab\.MainKt (api|runner|nomad-coordinator)( |$)' || true)"
+    # -a: BSD pgrep leaves out its own ancestors, and the runner is one when its self-update runs this. The optional cli.
+    # package also matches services still running a release from before the layered packages.
+    pids="$(pgrep -af 'com\.eignex\.lab\.(cli\.)?MainKt (api|runner|nomad-coordinator)( |$)' || true)"
     [[ -n "$pids" ]] && kill $pids
     ;;
   Linux)
