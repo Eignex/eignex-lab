@@ -221,11 +221,15 @@ class NomadQueue(
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
             require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
         }
-        if (spec.work.bench?.sourceValidation == true) for (arm in recipe.arms.distinctBy { it.sha }) {
+        val checked = if (spec.work.bench?.sourceValidation == true)
+            checkedSourcePaths(problems + preparation.armPlans.values.flatMap { plan -> plan.cases.map(BenchRuns::problem) }) else null
+        if (checked != null) for (arm in recipe.arms.distinctBy { it.sha }) {
             val bundle = preparation.bundles.first { it.commit == arm.sha }
-            val root = VerifiedCache(config.dataDir.resolve("nomad/check-sources")).stage(bundle) { artifacts.open(job.id, bundle.sha256) }
+            val root = VerifiedCache(config.dataDir.resolve("nomad/check-sources")).stageSelected(bundle, checked) { artifacts.open(job.id, bundle.sha256) }
             val link = config.jobDir(job.id).resolve("nomad/prepared-source/${arm.sha}")
             Files.createDirectories(link.parent)
+            // A plan from before selected staging links the whole tree; the selected one holds the same checked files.
+            if (Files.isSymbolicLink(link) && Files.readSymbolicLink(link) != root.toAbsolutePath()) Files.delete(link)
             if (!Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) Files.createSymbolicLink(link, root.toAbsolutePath())
             require(Files.isSymbolicLink(link) && Files.readSymbolicLink(link) == root.toAbsolutePath())
         }
@@ -247,6 +251,19 @@ class NomadQueue(
             store.references.putFeatures(preparation.features.filter { ProblemKey(it.collection, it.problem) !in known })
         }
     }
+}
+
+/**
+ * The repository files a check reads from a job's source: each problem's model, data and include directories, and
+ * every file of a collection the repository itself ships, which a check may list. Null when checks read none.
+ */
+internal fun checkedSourcePaths(problems: List<Problem>): ((String) -> Boolean)? {
+    fun source(value: String) = value.takeIf { it.startsWith("lab-source/") }?.removePrefix("lab-source/")?.trimEnd('/')
+    val files = problems.flatMap { listOfNotNull(it.model, it.data) }.mapNotNull(::source).toSet()
+    val dirs = (problems.flatMap { it.includeDirs }.mapNotNull(::source) +
+        problems.map { it.collection.trimEnd('/') }.filter { it.startsWith(RepositoryFixtures.REPOSITORY_PREFIX) }).toSet()
+    if (files.isEmpty() && dirs.isEmpty()) return null
+    return { path -> path in files || dirs.any { path == it || path.startsWith("$it/") } }
 }
 
 /** Resolves and verifies source on the coordinator; all builds and selection run in preparation allocations. */
