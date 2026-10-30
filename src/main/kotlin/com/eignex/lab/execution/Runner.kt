@@ -55,6 +55,9 @@ class Runner(
             held = { store.holds.active().mapTo(HashSet()) { it.job } }, graceMs = config.trimGraceMs,
             criticalFreeBytes = config.trimCriticalFreeBytes, targetFreeBytes = config.jobsTargetFreeBytes,
             maxAgeMs = config.trimAgeMs).start()
+        if (config.jobRetentionMs > 0) JobRetention(store::ended, config.jobRetentionMs,
+            held = { store.holds.active().mapTo(HashSet()) { it.job } },
+            forget = { id -> store.deleteJob(id).also { if (it) deleteTree(config.jobDir(id)) } }).start()
         DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } }).start()
         periodic("schedules", SCHEDULE_POLL_MS) { if (!stopping) enqueueScheduled() }
         while (!stopping) {
