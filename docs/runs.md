@@ -165,6 +165,9 @@ slots are occupied. Other jobs wait before source publication and before startin
 their existing spent allowance is preserved. Capacity requests count compiler slots within the existing pool
 and physical-vCPU limits. Warm verified builds bypass the compiler gate. Cold compilers use arrival-ordered,
 process-owned tickets; cancelled or crashed waiters release their place without leaving a blocking lock file.
+Queue and placement time remains part of wall-clock turnaround, observable from job creation through completion.
+The whole-run allowance charges active worker attempts, including compiler waits after a claim; time before
+a claim is admission time. Moving a wait before admission does not reduce solver work or erase spent attempt time.
 
 Repository-specific recipes and named workload sets live with their consumers. Before removing a legacy
 schedule, translate its recipe using the owning repository tools and verify a bounded capture. The generic lab
