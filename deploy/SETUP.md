@@ -1,5 +1,8 @@
 # Setup
 
+This guide is for agents administering eignex-lab itself. Agents working in consuming repositories
+use the [HTTP client workflow](../docs/runs.md); SSH access and host discovery stay with the lab operator.
+
 Use macOS or Linux with Git and JDK 17+. Gradle provisions JDK 25. Benchmark runtimes and backend checks
 belong to each repository adapter.
 
@@ -26,8 +29,6 @@ thread evidence comes from the repository adapter's job artifacts; the health re
 old `koblasEngine`, `simd`, `candidates` or vendor fields.
 
 The client defaults to `https://lab.eignex.com`. Set `LAB_URL` for another API endpoint.
-For a direct connection, `LAB_HOST` retains the `http://<LAB_HOST>:8420` shorthand when `LAB_URL` is unset.
-`lab corpus` requires `LAB_HOST` explicitly set to the corpus server's SSH destination.
 
 ## Storage and updates
 
@@ -70,7 +71,7 @@ and archive existing settings before removing old infrastructure.
 
 ## Retiring old installations
 
-Experiment execution uses Nomad exclusively; there is no backend switch or AWS/SSH executor. The maintenance runner
+Experiment execution uses Nomad exclusively. The maintenance runner
 keeps schedules, confirmations, capture analysis and reference checking. Old job backend labels are retained as
 historical provenance, and those historical jobs remain readable without enabling an old executor.
 
