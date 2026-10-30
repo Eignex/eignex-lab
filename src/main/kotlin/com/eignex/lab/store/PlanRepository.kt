@@ -120,8 +120,24 @@ synchronized(lock) {
      * any earlier one. Every reader of the case sees it as its record's `labCheck` ([withLabCheck]).
      */
     fun caseCheck(jobId: Long, index: Int, check: String) {
-        synchronized(lock) { update("UPDATE cases SET lab_check = ? WHERE job_id = ? AND idx = ?", check, jobId, index) }
-        synchronized(scoring) { scoring.remove(jobId) }
+        val updated = synchronized(lock) { update("UPDATE cases SET lab_check = ? WHERE job_id = ? AND idx = ?", check, jobId, index) }
+        if (updated != 0) {
+            synchronized(scoring) { scoring.remove(jobId) }
+            synchronized(revisions) { revisions[jobId] = ++nextRevision }
+        }
+    }
+
+    internal fun caseRevision(jobId: Long): Long = synchronized(revisions) { revisions.getOrPut(jobId) { revisionFloor } }
+
+    private var nextRevision = 0L
+    private var revisionFloor = 0L
+    private val revisions = object : LinkedHashMap<Long, Long>(SCORING_JOBS, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Long>): Boolean {
+            if (size <= SCORING_JOBS) return false
+            // Evicting a changed job must not resurrect a cached point from before its check.
+            revisionFloor = maxOf(revisionFloor, eldest.value)
+            return true
+        }
     }
 
     /** [cases] without their records: what rendering a case's command for the host that runs it reads ([CasePlan]). */
@@ -146,19 +162,22 @@ synchronized(lock) {
      * [cases] with each record cut to what scoring and the trend read: its stats only [SCORING_STATS], and none of its
      * build provenance, final witness or attribution. A record runs to tens of kilobytes, nearly all of it provenance,
      * so SQLite cuts it before it is parsed here. A finished job's are kept between calls ([SCORING_JOBS] of them), its
-     * cases being final until it is queued again, which changes its finish time.
+     * cases being final until a recheck changes their revision or a retry changes the job's finish time.
      */
     fun scoringCases(jobId: Long): List<CaseResult> {
         val (status, finishedAt) = jobState(jobId) ?: return emptyList()
         val final = !status.isActive
-        if (final) synchronized(scoring) { scoring[jobId]?.takeIf { it.first == finishedAt }?.let { return it.second } }
+        val revision = caseRevision(jobId)
+        if (final) synchronized(scoring) {
+            scoring[jobId]?.takeIf { it.first == finishedAt && it.second == revision }?.let { return it.third }
+        }
         val cases = casesWith(SCORING_RECORD, jobId)
-        if (final) synchronized(scoring) { scoring[jobId] = finishedAt to cases }
+        if (final && caseRevision(jobId) == revision) synchronized(scoring) { scoring[jobId] = Triple(finishedAt, revision, cases) }
         return cases
     }
 
-    private val scoring = object : LinkedHashMap<Long, Pair<Long?, List<CaseResult>>>(SCORING_JOBS, LOAD_FACTOR, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Pair<Long?, List<CaseResult>>>) = size > SCORING_JOBS
+    private val scoring = object : LinkedHashMap<Long, Triple<Long?, Long, List<CaseResult>>>(SCORING_JOBS, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Triple<Long?, Long, List<CaseResult>>>) = size > SCORING_JOBS
     }
 
     private fun jobState(jobId: Long): Pair<Status, Long?>? =
