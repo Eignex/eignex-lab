@@ -82,9 +82,10 @@ set the shared collector's overall `maxVcpus` and pool limits consistently with 
    their values into Terraform state or user data. Use provider-managed encryption, or add narrowly scoped KMS
    decrypt permission if your secrets use a customer-managed key.
 4. Copy `aws/terraform.tfvars.example` outside version control; supply pinned IDs and a private subnet/security
-   group. Require only the Mac/private-network Nomad HTTP/RPC/Serf routes, outbound artifact/registry access,
-   DNS, Secrets Manager and time synchronization. No public Nomad endpoint, inbound SSH execution or public
-   worker address is required. Run `tofu init`, `tofu plan`, review, then `tofu apply` in `aws/`.
+   group. Workers need only outbound access: the Mac's Nomad RPC at `lab.eignex.com:4647` (the home router
+   forwards it; mutual TLS and ACLs guard it, and the server advertises the home address), the worker API at
+   `https://lab.eignex.com/worker/v1`, artifact/registry access, DNS, Secrets Manager and time synchronization.
+   Nothing in AWS runs between jobs, and no inbound SSH execution or public worker address is required. Run `tofu init`, `tofu plan`, review, then `tofu apply` in `aws/`.
 5. Copy `aws/adapter.example.json` into the lab's private configuration. Configure its AWS profile to assume
    `adapter_role_arn` with normal short-lived SDK credentials. Run the adapter as a supervised independent Mac
    service every ten seconds. Point the coordinator capacity settings at the resulting inventory file.

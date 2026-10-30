@@ -30,6 +30,15 @@ old `koblasEngine`, `simd`, `candidates` or vendor fields.
 
 The client defaults to `https://lab.eignex.com`. Set `LAB_URL` for another API endpoint.
 
+## Public access
+
+The lab Mac serves `lab.eignex.com` itself; nothing runs in the cloud between jobs. The home router (fixed
+address) forwards TCP 80 and 443 to Caddy on the Mac and TCP 4647 to its Nomad server, and the domain's A record
+points at the home address. `sudo deploy/proxy/install-proxy.sh` installs Caddy as a boot service: it renews its
+own certificate and forwards `/worker/v1/*` to the coordinator's worker API and everything else to the lab.
+The Nomad server advertises its RPC at the home address so cloud clients reach it directly; mutual TLS and ACLs
+guard it.
+
 ## Storage and updates
 
 Data defaults to `~/eignex-lab-data`; logs are under `logs/`, artifacts under `jobs/` (`LAB_JOBS`).
