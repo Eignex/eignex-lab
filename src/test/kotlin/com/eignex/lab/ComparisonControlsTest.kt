@@ -89,6 +89,19 @@ class ComparisonControlsTest {
     }
 
     @Test
+    fun `checking policy migrations split series and withhold revision attribution`() {
+        val base = case()
+        val record = base.record as JsonObject
+        val before = base.copy(record = JsonObject(record + ("labCheck" to JsonObject(mapOf(
+            "policy" to JsonPrimitive("policy-v1"), "state" to JsonPrimitive("valid"))))))
+        val after = base.copy(record = JsonObject(record + ("labCheck" to JsonObject(mapOf(
+            "policy" to JsonPrimitive("policy-v2"), "state" to JsonPrimitive("valid"))))))
+
+        assertNotNull(ComparisonControls.mismatch(before, after))
+        assertTrue(ComparisonControls.series(before) != ComparisonControls.series(after))
+    }
+
+    @Test
     fun `confirmation retains each solver seed once and repeats complete matched blocks`() {
         val cases = listOf(case(1, 0), case(1, 1), case(3, 0), case(3, 1))
         val flips = Flips(lost = listOf(cases.first().problem), gained = emptyList())

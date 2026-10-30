@@ -159,6 +159,9 @@ native solution and omit unrelated record statistics when it retains the origina
 description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
 The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
 extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
+Policy v4 declares the no-argument `klause_symmetry` annotation when the captured frame uses it without a declaration.
+Tagged constraints remain asserted exactly as captured. Other solver annotations and opaque predicates retain their
+ordinary compiler/provider handling; an unsupported predicate cannot be accepted by discarding it.
 The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
 metadata and actual jar hashes identify the API; the existing XCSP checker dependency is preserved separately.
 The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.
@@ -221,6 +224,7 @@ unqualified. Rates and historical fingerprints stay available; `comparisonSeries
 labels controlled runtime/compiler series and historical records explicitly.
 Migrations start separate trend segments and need a retained bounded old/current
 bridge before a solver-only attribution. A seed change cannot count as recovery.
+Different independent-checking policy labels also split controlled series and withhold revision attribution.
 
 The coordinator attaches `labExecution` from the accepted iteration's checksum-verified
 worker resource artifact. Its frame retains the lab release, CPU model/features,

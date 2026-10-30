@@ -1,7 +1,10 @@
 package com.eignex.lab.checker
 
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -23,6 +26,40 @@ class MiniZincPointTest {
         % klause-assignment-end
         ----------
     """.trimIndent()
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `symmetry metadata is declared without dropping the tagged constraint`(declared: Boolean) {
+        val constraint = "constraint int_lin_eq([2,-1], [x,hidden], 0) :: klause_symmetry;"
+        val source = (if (declared) "annotation klause_symmetry;\n" else "") +
+            fzn.replace("constraint int_lin_eq([2,-1], [x,hidden], 0);", constraint)
+
+        val bound = MiniZincPoint.bind(MiniZincFrame(source, "", stdout), "14")
+
+        assertEquals(1, MiniZincPoint.items(bound.model).count { it == "annotation klause_symmetry;" })
+        assertContains(bound.model, constraint)
+        assertContains(bound.model, "constraint hidden = 14;")
+    }
+
+    @Test
+    fun `quoted annotation text does not declare solver metadata`() {
+        val source = "string: note = \":: klause_symmetry\";\n$fzn"
+
+        val bound = MiniZincPoint.bind(MiniZincFrame(source, "", stdout), "14")
+
+        assertFalse("annotation klause_symmetry;" in bound.model)
+    }
+
+    @Test
+    fun `unknown annotations remain unchanged for the compiler to decide`() {
+        val constraint = "constraint int_lin_eq([2,-1], [x,hidden], 0) :: other_solver_metadata;"
+        val source = fzn.replace("constraint int_lin_eq([2,-1], [x,hidden], 0);", constraint)
+
+        val bound = MiniZincPoint.bind(MiniZincFrame(source, "", stdout), "14")
+
+        assertContains(bound.model, constraint)
+        assertFalse("annotation other_solver_metadata;" in bound.model)
+    }
 
     @Test
     fun `point binding preserves original aliases and domains while fixing hidden coordinates`() {

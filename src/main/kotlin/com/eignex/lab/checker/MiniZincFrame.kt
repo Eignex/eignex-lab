@@ -21,6 +21,9 @@ data class MiniZincFrame(val flatZinc: String, val outputModel: String, val stdo
 internal object MiniZincPoint {
     private val scalar = Regex("([^\\s=]+)\\s*=\\s*(-?[0-9]+|true|false);")
     private val objective = Regex("\\b(minimize|maximize)\\s+([A-Za-z_][A-Za-z0-9_]*|-?[0-9]+)\\s*;\\s*$")
+    private val quotedString = Regex("\"(?:\\\\.|[^\"\\\\])*\"")
+    private val symmetryUse = Regex("::\\s*klause_symmetry\\b")
+    private val symmetryDeclaration = Regex("annotation\\s+klause_symmetry\\b.*", RegexOption.DOT_MATCHES_ALL)
 
     data class Bound(val model: String, val native: String, val optimize: Boolean, val diagnosticCoordinates: Int)
 
@@ -63,6 +66,10 @@ internal object MiniZincPoint {
         val assignments = items(native.substringBefore("----------"))
         require(assignments.all { it.matches(Regex("[A-Za-z_][A-Za-z0-9_]*\\s*=.+;", RegexOption.DOT_MATCHES_ALL)) })
         val model = buildString {
+            if (items.any { symmetryUse.containsMatchIn(quotedString.replace(it, "\"\"")) } &&
+                items.none { symmetryDeclaration.matches(it) }) {
+                appendLine("annotation klause_symmetry;")
+            }
             items.filterNot { it == solve || it.startsWith("output ") }.forEach { appendLine(it) }
             for ((name, value) in point) if (name in variables) appendLine("constraint $name = $value;")
             for (assignment in assignments) {
