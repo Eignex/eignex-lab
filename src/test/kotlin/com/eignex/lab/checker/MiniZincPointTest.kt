@@ -12,6 +12,7 @@ import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
 import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -52,26 +53,27 @@ class MiniZincPointTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = [false, true])
-    fun `symmetry metadata is declared without dropping the tagged constraint`(declared: Boolean) {
-        val constraint = "constraint int_lin_eq([2,-1], [x,hidden], 0) :: klause_symmetry;"
-        val source = (if (declared) "annotation klause_symmetry;\n" else "") +
+    @CsvSource("klause_symmetry,false", "klause_symmetry,true", "klause_redundant,false", "klause_redundant,true")
+    fun `known metadata is declared without dropping the tagged constraint`(annotation: String, declared: Boolean) {
+        val constraint = "constraint int_lin_eq([2,-1], [x,hidden], 0) :: $annotation;"
+        val source = (if (declared) "annotation $annotation;\n" else "") +
             fzn.replace("constraint int_lin_eq([2,-1], [x,hidden], 0);", constraint)
 
         val bound = MiniZincPoint.bind(MiniZincFrame(source, "", stdout), "14")
 
-        assertEquals(1, MiniZincPoint.items(bound.model).count { it == "annotation klause_symmetry;" })
+        assertEquals(1, MiniZincPoint.items(bound.model).count { it == "annotation $annotation;" })
         assertContains(bound.model, constraint)
         assertContains(bound.model, "constraint hidden = 14;")
     }
 
-    @Test
-    fun `quoted annotation text does not declare solver metadata`() {
-        val source = "string: note = \":: klause_symmetry\";\n$fzn"
+    @ParameterizedTest
+    @ValueSource(strings = ["klause_symmetry", "klause_redundant"])
+    fun `quoted annotation text does not declare solver metadata`(annotation: String) {
+        val source = "string: note = \":: $annotation\";\n$fzn"
 
         val bound = MiniZincPoint.bind(MiniZincFrame(source, "", stdout), "14")
 
-        assertFalse("annotation klause_symmetry;" in bound.model)
+        assertFalse("annotation $annotation;" in bound.model)
     }
 
     @Test

@@ -70,6 +70,6 @@ object Policies {
     val XCSP3 = "lab-xcsp3-solution-checker-${Xcsp3Checker.VERSION}-v1"
     const val MPS_EXACT = "lab-mps-exact-rational-v1"
     const val MPS = "lab-mps-solchecker-1.0.4-longnum-v1"
-    const val MINIZINC = "lab-minizinc-choco-integer-point-v4"
+    const val MINIZINC = "lab-minizinc-choco-integer-point-v5"
     const val SMTLIB = "lab-smtlib-dolmen-0.10-v2"
 }
