@@ -156,6 +156,8 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
         val vectors = hashMapOf<String, String>()
         var integer = false
         var ended = false
+        var importances = false
+        val importanceColumns = hashSetOf<String>()
         var terms = 0
         fun vector(name: String) {
             val first = vectors.getOrPut(section) { name }
@@ -166,8 +168,14 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
             if (raw.length > 8190) ExactMpsChecker.unsupported("MPS line limit at ${lineNumber + 1}")
             val trimmed = raw.trim()
             if (trimmed.isEmpty() || trimmed.startsWith('*')) continue
-            if (ended) syntax("data after ENDATA")
             val t = trimmed.split(Regex("\\s+"))
+            if (ended) {
+                // Original MIPLIB dcmulti appends column importance annotations after the MPS model.
+                if (!importances && trimmed == "IMPORTANCES") { importances = true; continue }
+                if (importances && t.size == 2 && t[0] in columns && t[1].matches(Regex("[0-9]+")) &&
+                    importanceColumns.add(t[0])) continue
+                syntax("data after ENDATA")
+            }
             val header = !raw.first().isWhitespace()
             if (header) {
                 val next = t[0]
@@ -251,6 +259,7 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
                 else -> syntax("unexpected data at ${lineNumber + 1}")
             }
         }
+        if (importances && importanceColumns.isEmpty()) syntax("empty IMPORTANCES")
         if (!ended || "ROWS" !in seen || "COLUMNS" !in seen || objectiveRow == null || integer) syntax("incomplete MPS sections/markers")
         for (col in columns.values) if (col.integer && !col.bounded) col.upper = MpsQ.ONE
     }

@@ -58,6 +58,22 @@ class ExactMpsCheckerTest {
         expect(LabCheck.UNKNOWN, check(text.replace("ENDATA", "NAME SECOND\nENDATA")))
     }
 
+    @Test fun `MIPLIB importance trailer preserves model checks and rejects other trailing data`() {
+        val pure = source("pure-real-min")
+        val text = pure + "IMPORTANCES\nX           2\n\n\n"
+        val valid = expect(LabCheck.VALID, check(text))
+        assertEquals(sha256(text.toByteArray()), valid.sourceSha256["model"])
+        expect(LabCheck.INVALID, check(text, "v X=0"))
+        expect(LabCheck.INVALID, check(text, objective = "2/3"))
+        expect(LabCheck.NOT_RUN, check(text, hash = sha256(pure.toByteArray())))
+        for (trailer in listOf("X 2", "IMPORTANCES", "IMPORTANCES extra\nX 2", "IMPORTANCES\nY 2",
+            "IMPORTANCES\nX -2", "IMPORTANCES\nX 1.5", "IMPORTANCES\nX 2 extra", "IMPORTANCES\nX 2\nX 2",
+            "IMPORTANCES\nX 2\nIMPORTANCES", "IMPORTANCES\nX 2\nROWS", "NAME SECOND\nENDATA")) {
+            expect(LabCheck.UNKNOWN, check(pure + trailer + "\n"))
+        }
+        expect(LabCheck.UNSUPPORTED, check(text + "x".repeat(8191)))
+    }
+
     @Test fun `objective constant and sense retain original units including fixed-column layout`() {
         val text = """NAME          OFFSET
 OBJSENSE
