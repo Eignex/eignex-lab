@@ -230,11 +230,20 @@ native solution and omit unrelated record statistics when it retains the origina
 description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
 The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
 extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
-Policy v4 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
-Policy v5 declares the no-argument `klause_symmetry` and `klause_redundant` annotations when the captured frame
+Policy v6 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
+It declares the no-argument `klause_symmetry` and `klause_redundant` annotations when the captured frame
 uses either without a declaration.
 Tagged constraints remain asserted exactly as captured. Other solver annotations and opaque predicates retain their
 ordinary compiler/provider handling; an unsupported predicate cannot be accepted by discarding it.
+For `klause_subcircuit`, only literal integer arrays indexed from one are translated for the official circuit API.
+Self loops are inactive; the remaining indices are densely relabeled with their original successor edges.
+The resulting fixed `fzn_circuit(0, successors)` is equivalent to one cycle over all active indices. An empty active
+set is true; out-of-range successors or edges into inactive indices are false. Choco checks every remaining cycle
+and uniqueness obligation. The original `checked.fzn` and the derived `provider.fzn` are separately retained and
+hashed, and the process receipt identifies the actual provider input. Unfixed, non-one-based and unknown forms
+remain unsupported. No variable is completed, and neither search nor propagation is invoked.
+The contracts come from [MiniZinc subcircuit](https://github.com/MiniZinc/libminizinc/blob/2.10.1/share/minizinc/std/subcircuit.mzn)
+and [Choco's pinned FlatZinc circuit binding](https://github.com/chocoteam/choco-solver/blob/v5.0.1/parsers/src/main/java/org/chocosolver/parser/flatzinc/ast/FConstraint.java).
 The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
 metadata and actual jar hashes identify the API; the existing XCSP checker dependency is preserved separately.
 The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.
