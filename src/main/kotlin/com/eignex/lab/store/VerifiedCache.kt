@@ -14,6 +14,7 @@ import java.security.DigestInputStream
 import java.io.FilterInputStream
 import java.util.zip.ZipInputStream
 import com.eignex.lab.worker.WorkerTrees
+import kotlin.io.path.invariantSeparatorsPathString
 
 /** Bounded, locked, checksum-verified extraction with atomic publication. No archive-supplied links or modes. */
 class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
@@ -21,27 +22,33 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
     fun stage(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, false, download)
     internal fun stage(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace): Path = stage(bundle, checkActive, false, download, trace)
     internal fun seed(bundle: WorkerBundle, source: Path, sourceReceipt: Path, checkActive: () -> Unit, trace: PreparationTrace) =
-        stage(bundle, checkActive, false, { error("seed cannot download") }, trace, "prepared-input") { tree, receipt, verifier ->
+        stage(bundle, checkActive, false, { error("seed cannot download") }, trace, "prepared-input", seed = { tree, receipt, verifier ->
             // Missing/corrupt receipts take the checksum path before using filesystem-copy proof.
             require(verifier.valid(source, bundle.files, sourceReceipt, checkActive, exactExecutables = true)) { "seed source differs from approved files" }
             verifier.copy(source, sourceReceipt, tree, receipt, checkActive, copy = { WorkerTrees.copy(source, tree, checkActive) })
             true
-        }
+        })
+
+    /** Only the files [select] keeps, keyed by their content, so bundles that agree on them share one tree. */
+    fun stageSelected(bundle: WorkerBundle, select: (String) -> Boolean, download: () -> InputStream): Path =
+        stage(bundle, {}, false, download, select = select)
 
     internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit = {}, download: () -> InputStream): Path = stage(bundle, checkActive, true, download)
     internal fun stageRuntime(bundle: WorkerBundle, checkActive: () -> Unit, download: () -> InputStream, trace: PreparationTrace): Path = stage(bundle, checkActive, true, download, trace)
 
     private fun stage(bundle: WorkerBundle, checkActive: () -> Unit, runtimeOnly: Boolean, download: () -> InputStream,
-                      trace: PreparationTrace = PreparationTrace(), cacheName: String = "input", seed: ((Path, Path, TreeVerification) -> Boolean)? = null): Path {
+                      trace: PreparationTrace = PreparationTrace(), cacheName: String = "input", seed: ((Path, Path, TreeVerification) -> Boolean)? = null,
+                      select: ((String) -> Boolean)? = null): Path {
         checkActive()
-        val included = bundle.files.filter { !runtimeOnly || WorkerTrees.runtimePath(Path.of(it.path)) }
+        fun kept(path: String) = (!runtimeOnly || WorkerTrees.runtimePath(Path.of(path))) && select?.invoke(path) != false
+        val included = bundle.files.filter { kept(it.path) }
         val declaredBytes = bundle.files.fold(0L) { total, file ->
             require(file.bytes <= maxBytes - total) { "expanded archive exceeds cache limit" }
             total + file.bytes
         }
         require(declaredBytes <= maxBytes)
         Files.createDirectories(root)
-        val key = inputCacheKey(bundle, runtimeOnly)
+        val key = if (select == null) inputCacheKey(bundle, runtimeOnly) else selectedCacheKey(included)
         val destination = root.resolve(key)
         val receipt = root.resolve("$key.verified.json")
         var waitingNanos = 0L
@@ -108,12 +115,12 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                         val relative = safeRelative(entry.name.removeSuffix("/"))
                         val target = tree.resolve(relative)
                         if (entry.isDirectory) {
-                            if (!runtimeOnly || WorkerTrees.runtimePath(relative)) Files.createDirectories(target)
+                            if (kept(relative.invariantSeparatorsPathString)) Files.createDirectories(target)
                             continue
                         }
                         val file = requireNotNull(expected[entry.name]) { "undeclared archive entry" }
                         require(seen.add(entry.name)) { "duplicate archive entry" }
-                        val keep = !runtimeOnly || WorkerTrees.runtimePath(relative)
+                        val keep = kept(entry.name)
                         if (keep) Files.createDirectories(target.parent)
                         val fileDigest = MessageDigest.getInstance("SHA-256")
                         (if (keep) Files.newOutputStream(target, CREATE_NEW) else java.io.OutputStream.nullOutputStream()).use { output ->
@@ -153,6 +160,10 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
 
 private val localFileLocks = Array(256) { Any() }
 internal fun fileLockFor(path: Path): Any = localFileLocks[Math.floorMod(path.toAbsolutePath().normalize().toString().hashCode(), localFileLocks.size)]
+
+/** A selected tree's key: the files it holds, whatever bundle or commit they came from. */
+internal fun selectedCacheKey(files: List<InputFile>): String = ExecutionStore.digest("selected-inputs-v1\n" +
+    files.sortedBy { it.path }.joinToString("\n") { "${it.path}\u0000${it.sha256}\u0000${it.bytes}\u0000${it.executable}" })
 
 /** Keep full/source and reduced runtime layouts separate, while retaining existing keys when no files are omitted. */
 internal fun inputCacheKey(bundle: WorkerBundle, runtimeOnly: Boolean = false): String = ExecutionStore.digest(
