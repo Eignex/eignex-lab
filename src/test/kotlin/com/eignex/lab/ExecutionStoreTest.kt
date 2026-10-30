@@ -165,6 +165,33 @@ class ExecutionStoreTest {
         assertFailsWith<ExecutionFenced> { store.execution.preparationProgress(claim.owner, progress, 1801) }
     }
 
+    @Test fun `bounded preparation evidence survives failure without authorizing stale or mismatched writers`() {
+        val spec = ExperimentSpec("prepare-diagnostics")
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        store.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
+        store.execution.bind("prep", token, "allocation", "node", "release", 1000)
+        val claim = store.execution.claim("prep", token, "allocation", 1100)!!
+        store.execution.phase(claim.owner, "preparing", 1101)
+        val diagnostic = PreparationDiagnostics(500, "compilation", budget, "advisory-native", null, null, emptyMap(),
+            1000, 2000, 2, PreparationBuildDiagnostic(3, "compiler output", "compile failure"))
+        store.execution.preparationDiagnostics(claim.owner, diagnostic, 1600)
+        store.execution.preparationDiagnostics(claim.owner, diagnostic.copy(elapsedMs = 400), 1601)
+        assertEquals(diagnostic, Store(file).execution.reports(id).single().preparation!!.diagnostics)
+        assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner.copy(generation = 2), diagnostic, 1602) }
+        assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner.copy(token = "wrong"), diagnostic, 1602) }
+        assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner.copy(allocation = "wrong"), diagnostic, 1602) }
+        assertFailsWith<IllegalArgumentException> { store.execution.preparationDiagnostics(claim.owner, diagnostic.copy(budget = budget.copy(memoryMiB = 4096)), 1602) }
+        assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner, diagnostic, 1100 + ExecutionStore.LEASE_MS) }
+        store.execution.phase(claim.owner, "uploading", 1650)
+        assertFailsWith<IllegalArgumentException> { store.execution.preparationDiagnostics(claim.owner, diagnostic, 1651) }
+        store.execution.loseSession("prep", "infrastructure:lost", 1700)
+        assertFailsWith<ExecutionFenced> { store.execution.preparationDiagnostics(claim.owner, diagnostic.copy(elapsedMs = 600), 1701) }
+        assertEquals(diagnostic, Store(file).execution.reports(id).single().preparation!!.diagnostics)
+        assertEquals(emptyList(), store.execution.accepted(id))
+        assertFailsWith<IllegalArgumentException> { diagnostic.copy(uploads = List(17) { PreparationUploadDiagnostic("a".repeat(64), "GET", 503, null, 0, 0, 10) }) }
+        assertFailsWith<IllegalArgumentException> { PreparationBuildDiagnostic(stdout = "x".repeat(4097)) }
+    }
+
     @Test fun `profile allowance survives replacement and expires without another infrastructure retry`() {
         val id = profile(); bind(id, "first")
         val first = store.execution.claim("first", token, "alloc-first", 1100)!!

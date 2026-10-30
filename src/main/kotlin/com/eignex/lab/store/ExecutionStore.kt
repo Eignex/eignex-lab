@@ -140,11 +140,11 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)
-            val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at, preparation_caches FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
+            val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at, preparation_caches, preparation_diagnostics FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
                 Triple(attempt.getString(1), attempt.getInt(2), attempt.getString(3)?.let {
                     PreparationStatus(Json.decodeFromString<PreparationProgress>(it).copy(caches = attempt.getString(5)?.let { value ->
                         Json.decodeFromString<Map<String, PreparationCacheEvent>>(value)
-                    }.orEmpty()), attempt.getLong(4))
+                    }.orEmpty()), attempt.getLong(4), attempt.getString(6)?.let { value -> Json.decodeFromString<PreparationDiagnostics>(value) })
                 })
             }.singleOrNull()
             val done = db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE session_id = ? AND state = 'committed'", s.id) { it.getInt(1) }.single()
@@ -324,6 +324,19 @@ class ExecutionStore internal constructor(private val store: Store) {
             // Keep the original JSON shape readable by an older coordinator after rollback.
             Json.encodeToString(progress.copy(caches = emptyMap())), at, Json.encodeToString(progress.caches), attempt.jobId, owner.iteration, owner.generation)
         if (prior?.stage != progress.stage) db.event(attempt.jobId, owner.session, "preparation:${progress.stage}:${owner.generation}", at)
+    }
+
+    /** Keep failure observations independently of progress JSON so an older coordinator can still read progress. */
+    fun preparationDiagnostics(owner: AttemptOwner, diagnostics: PreparationDiagnostics, at: Long = now()) = store.executionTransaction { db ->
+        val attempt = db.attempt(owner, at)
+        require(attempt.iteration == "preparation" && attempt.state == AttemptState.PREPARING)
+        require(diagnostics.budget == db.session(owner.session)!!.budget) { "diagnostic budget differs from reservation" }
+        val prior = db.sqlRows("SELECT preparation_diagnostics FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            attempt.jobId, owner.iteration, owner.generation) { it.getString(1)?.let { value -> Json.decodeFromString<PreparationDiagnostics>(value) } }.single()
+        if (prior != null && prior.elapsedMs > diagnostics.elapsedMs) return@executionTransaction
+        db.sqlUpdate("UPDATE iteration_attempts SET preparation_diagnostics = ?, preparation_progress = COALESCE(preparation_progress, ?), preparation_updated_at = COALESCE(preparation_updated_at, ?) WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            Json.encodeToString(diagnostics), Json.encodeToString(PreparationProgress(diagnostics.stage, diagnostics.elapsedMs, 0, emptyMap())),
+            at, attempt.jobId, owner.iteration, owner.generation)
     }
 
     /** A source/build error is permanent work failure, not another infrastructure revocation. */
@@ -686,6 +699,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                 val attemptColumns = s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
                 addColumn(db, "iteration_attempts", "preparation_progress", "TEXT", attemptColumns)
                 addColumn(db, "iteration_attempts", "preparation_caches", "TEXT", attemptColumns)
+                addColumn(db, "iteration_attempts", "preparation_diagnostics", "TEXT", attemptColumns)
                 addColumn(db, "iteration_attempts", "preparation_updated_at", "INTEGER", attemptColumns)
                 addColumn(db, "iteration_attempts", "parallel_limit", "INTEGER NOT NULL DEFAULT 1", attemptColumns)
                 s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")

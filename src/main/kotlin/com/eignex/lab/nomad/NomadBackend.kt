@@ -316,9 +316,16 @@ class NomadBackend(
             if ((s.allocation != null && (bound == null || !bound.active)) ||
                 (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
                 val exited = bound ?: allocations.singleOrNull()
+                // Persist a bounded, credential-free receipt before retiring the attempt, including old worker releases.
+                val evidence = if (s.executionClass == ExecutionClass.PREPARE && exited != null)
+                    runCatching { nomad.allocation(exited.id) }.getOrNull() ?: exited else exited
+                if (s.executionClass == ExecutionClass.PREPARE) {
+                    val detail = evidence?.termination?.let { Json.encodeToString(it) } ?: "unavailable"
+                    store.execution.note(job.id, s.id, "preparation-termination:$detail")
+                }
                 if (!current.paused && s.desired == Desired.RUN && s.executionClass == ExecutionClass.PREPARE && exited?.client == "failed") {
                     // List stubs can omit task events. Fetch full evidence before classifying a worker crash.
-                    val exit = exited.workerExit ?: nomad.allocation(exited.id)?.workerExit
+                    val exit = exited.workerExit ?: evidence?.workerExit
                     if (exit?.code == WORKER_SOFTWARE_EXIT && store.execution.preparationExited(s.id, exit.code)?.count?.let { it >= 3 } == true) continue
                 }
                 store.execution.loseSession(s.id, when {

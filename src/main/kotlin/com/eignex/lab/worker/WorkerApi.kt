@@ -32,6 +32,7 @@ import java.net.URI
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
 @Serializable data class WorkerPhase(val owner: AttemptOwner, val phase: String)
 @Serializable data class WorkerPreparationProgress(val owner: AttemptOwner, val progress: PreparationProgress)
+@Serializable data class WorkerPreparationDiagnostics(val owner: AttemptOwner, val diagnostics: PreparationDiagnostics)
 @Serializable data class WorkerBuildError(val owner: AttemptOwner, val detail: String)
 @Serializable data class WorkerProgress(val owner: AttemptOwner, val index: Int)
 @Serializable data class LeaseReply(val leaseMs: Long, val runRemainingMs: Long? = null)
@@ -91,6 +92,11 @@ fun Application.workerApi(
                 val s = call.session; val body = Json.decodeFromString<WorkerPreparationProgress>(call.bodyText(16 * 1024))
                 s.requireOwns(body.owner)
                 store.execution.preparationProgress(body.owner, body.progress); call.respond(HttpStatusCode.NoContent)
+            }
+            post("/preparation-diagnostics") {
+                val s = call.session; val body = Json.decodeFromString<WorkerPreparationDiagnostics>(call.bodyText(128 * 1024))
+                s.requireOwns(body.owner)
+                store.execution.preparationDiagnostics(body.owner, body.diagnostics); call.respond(HttpStatusCode.NoContent)
             }
             post("/progress") {
                 // Lease and status updates must survive admission holds.

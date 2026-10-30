@@ -250,7 +250,8 @@ def serve_request(connection):
             cleaned = True
             process.wait(timeout=10)
             connection.sendall((json.dumps({"exitCode": code if code >= 0 else 128-code,
-                                            "runTimedOut": run_timed_out}) + "\n").encode())
+                                            "runTimedOut": run_timed_out,
+                                            "signal": -process.returncode if process.returncode < 0 else 0}) + "\n").encode())
             # Keep the read side open until the worker consumes the result. Closing with an unread
             # heartbeat can reset a Unix socket and hide an otherwise completed process's exit.
             connection.shutdown(socket.SHUT_WR)

@@ -43,8 +43,14 @@ interface NomadControl : ClusterNodes {
 
 data class NomadWorkerExit(val code: Int)
 
+/** Safe controller-side evidence, independent of the strict software-crash classifier. Unknown is null. */
+@kotlinx.serialization.Serializable
+data class NomadTaskTermination(val client: String?, val desired: String?, val task: String?,
+    val events: List<String>, val exitCode: Int?, val signal: Int?, val oomKilled: Boolean?,
+    val killReported: Boolean, val driverErrorReported: Boolean, val setupErrorReported: Boolean)
+
 data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0,
-                           val workerExit: NomadWorkerExit? = null) {
+                           val workerExit: NomadWorkerExit? = null, val termination: NomadTaskTermination? = null) {
     val active get() = client in setOf("pending", "running") && desired == "run"
 }
 
@@ -86,7 +92,26 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
         internal fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
         internal fun allocationRow(j: JsonObject) = NomadAllocation(j.getValue("ID").jsonPrimitive.content, j.getValue("JobID").jsonPrimitive.content,
             j.getValue("NodeID").jsonPrimitive.content, j.getValue("ClientStatus").jsonPrimitive.content, j.getValue("DesiredStatus").jsonPrimitive.content, j["CreateTime"]?.jsonPrimitive?.longOrNull ?: 0,
-            workerExit(j))
+            workerExit(j), termination(j))
+
+        private fun termination(j: JsonObject): NomadTaskTermination? {
+            val worker = j["TaskStates"]?.jsonObject?.get("worker")?.jsonObject ?: return null
+            val events = worker["Events"]?.jsonArray?.map { it.jsonObject }.orEmpty()
+            val ended = events.lastOrNull { it["Type"]?.jsonPrimitive?.contentOrNull == "Terminated" }
+            val details = ended?.get("Details")?.jsonObject
+            fun value(key: String, allowed: Set<String>) = j[key]?.jsonPrimitive?.contentOrNull?.takeIf { it in allowed }
+            val knownEvents = setOf("Received", "Task Setup", "Started", "Terminated", "Not Restarting", "Killing", "Killed",
+                "Driver Failure", "Failed Validation", "Setup Failure", "Restarting", "Client Reconnected")
+            fun reported(key: String) = events.any { !it[key]?.jsonPrimitive?.contentOrNull.isNullOrEmpty() }
+            return NomadTaskTermination(value("ClientStatus", setOf("pending", "running", "complete", "failed", "lost", "unknown")),
+                value("DesiredStatus", setOf("run", "stop", "evict")),
+                worker["State"]?.jsonPrimitive?.contentOrNull?.takeIf { it in setOf("pending", "running", "dead") },
+                events.takeLast(32).map { it["Type"]?.jsonPrimitive?.contentOrNull?.takeIf { type -> type in knownEvents } ?: "other" },
+                ended?.get("ExitCode")?.jsonPrimitive?.intOrNull ?: details?.get("exit_code")?.jsonPrimitive?.intOrNull,
+                ended?.get("Signal")?.jsonPrimitive?.intOrNull ?: details?.get("signal")?.jsonPrimitive?.intOrNull,
+                details?.get("oom_killed")?.jsonPrimitive?.booleanOrNull,
+                reported("KillReason"), reported("DriverError"), reported("SetupError"))
+        }
 
         private fun workerExit(j: JsonObject): NomadWorkerExit? {
             if (j["ClientStatus"]?.jsonPrimitive?.content != "failed" || j["DesiredStatus"]?.jsonPrimitive?.content != "run") return null
