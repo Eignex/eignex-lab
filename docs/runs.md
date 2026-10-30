@@ -58,6 +58,8 @@ issue separately from the validity of completed same-machine pairs.
 Reference comparisons on a captured source require the same source identity and a recorded reference version.
 Historical rows without either stay visible as history but cannot establish coverage, disagreement or objective
 quality on known bytes.
+Use `deploy/lab references --json <query> [solver] [verdict]` to retain complete reference metadata, including
+source bindings, versions, validation and stale status. The default output is a compact table.
 MiniZinc reference cases retain the compiler binary hash and version, the selected solver's canonical ID,
 registered version, executable hash and configuration. Missing versions fail preparation. Identity preparation
 spends the case's time allowance; the remaining allowance goes to compilation and solving. Reference completion
