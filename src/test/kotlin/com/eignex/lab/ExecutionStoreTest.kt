@@ -95,10 +95,10 @@ class ExecutionStoreTest {
         s.execution.createSession(name, id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000)
         return s.execution.bind(name, token, "alloc-$name", "node-$name", "release-1", 1000)
     }
-    private fun result(claim: IterationClaim) = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1010, 1020, "{}") })
-    private fun commit(claim: IterationClaim) {
-        store.execution.phase(claim.owner, "uploading", 1010)
-        store.execution.commit(claim.owner, result(claim), 1020)
+    private fun result(claim: IterationClaim, at: Long = 1010) = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, at, at + 10, "{}") })
+    private fun commit(claim: IterationClaim, at: Long = 1010) {
+        store.execution.phase(claim.owner, "uploading", at)
+        store.execution.commit(claim.owner, result(claim, at), at + 10)
     }
 
     @Test fun `done jobs lose their stopped sessions' manifests while failed jobs keep theirs for a retry`() {
@@ -356,6 +356,29 @@ class ExecutionStoreTest {
         assertFailsWith<ExecutionFenced> { store.execution.commit(lost.owner, result(lost), 1051) }
         assertTrue(store.job(id)!!.commands.filter { it.index in finished.indices }.all { it.status == Status.DONE })
         assertEquals(1, store.execution.intents().count { it.operation == IntentOp.STOP })
+    }
+
+    @Test fun `case comparison origins follow complete accepted rows across worker replacement`() {
+        val id = job(); bind(id)
+        assertTrue(store.plans.cases(id).all { it.origin == CaseOrigin(id, null) })
+        val finished = store.execution.claim("s", token, "alloc-s", 1001)!!; commit(finished)
+        val lost = store.execution.claim("s", token, "alloc-s", 1030)!!
+        store.execution.loseSession("s", "spot", 1040)
+        assertTrue(store.plans.cases(id).filter { it.index in lost.indices }.all { it.origin?.attempt == null })
+        bind(id, "replacement")
+        val replacement = store.execution.claim("replacement", token, "alloc-replacement", 1050)!!
+        commit(replacement, 1060)
+
+        val cases = store.plans.cases(id)
+        val first = assertNotNull(cases.filter { it.index in finished.indices }.map { it.origin }.distinct().single())
+        val second = assertNotNull(cases.filter { it.index in replacement.indices }.map { it.origin }.distinct().single())
+
+        assertEquals(id, first.job)
+        assertEquals(id, second.job)
+        assertNotNull(first.attempt)
+        assertNotNull(second.attempt)
+        assertNotEquals(first, second)
+        assertEquals(cases.map { it.origin }, Store(file).plans.scoringCases(id).map { it.origin })
     }
 
     @Test fun `lease expiry retires credential before fresh claims and repeated commit is accepted`() {

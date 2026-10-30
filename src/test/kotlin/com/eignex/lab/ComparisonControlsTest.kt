@@ -116,6 +116,58 @@ class ComparisonControlsTest {
     }
 
     @Test
+    fun `accepted paired rows qualify without worker metadata`() {
+        val before = case().let { it.copy(origin = CaseOrigin(7, "row"),
+            record = JsonObject((it.record as JsonObject) - "labExecution")) }
+        val after = before.copy(index = 1, arm = "after")
+
+        assertNull(ComparisonControls.mismatch(before, after))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["missing", "replacement"])
+    fun `cases from separate worker attempts cannot share a paired vote`(mode: String) {
+        val before = case().copy(origin = CaseOrigin(7, "accepted"), host = RecordedHost.of("node"))
+        val after = before.copy(index = 1, arm = "after",
+            origin = CaseOrigin(7, if (mode == "missing") null else "replacement"))
+
+        assertNotNull(ComparisonControls.mismatch(before, after))
+    }
+
+    @Test
+    fun `repository output cannot supply paired authority`() {
+        val original = case()
+        val claimed = JsonObject(mapOf("job" to JsonPrimitive(7), "attempt" to JsonPrimitive("row")))
+        val before = original.copy(record = JsonObject((original.record as JsonObject) - "labExecution" + ("origin" to claimed)))
+        val after = before.copy(index = 1, arm = "after")
+
+        assertNotNull(ComparisonControls.mismatch(before, after))
+    }
+
+    @Test
+    fun `attempt identity from another job cannot replace physical controls`() {
+        val before = case().let { it.copy(origin = CaseOrigin(7, "row"),
+            record = JsonObject((it.record as JsonObject) - "labExecution")) }
+        val after = before.copy(index = 1, arm = "after", origin = CaseOrigin(8, "row"))
+
+        assertNotNull(ComparisonControls.mismatch(before, after))
+    }
+
+    @Test
+    fun `confirmation accepts complete paired rows on different machines`() {
+        val rows = (0..1).flatMap { repeat ->
+            val original = case(repeat = repeat)
+            val record = JsonObject((original.record as JsonObject) - "labExecution")
+            val before = original.copy(index = repeat * 2, arm = Confirm.BEFORE, repeat = 0,
+                host = RecordedHost.of("node-$repeat"), origin = CaseOrigin(7, "row-$repeat"),
+                record = JsonObject(record + ("feasible" to JsonPrimitive(true))))
+            listOf(before, before.copy(index = before.index + 1, arm = Confirm.AFTER, record = record))
+        }
+
+        assertEquals(1, Confirm.confirmed(rows).lost.size)
+    }
+
+    @Test
     fun `confirmation retains each solver seed once and repeats complete matched blocks`() {
         val cases = listOf(case(1, 0), case(1, 1), case(3, 0), case(3, 1))
         val flips = Flips(lost = listOf(cases.first().problem), gained = emptyList())

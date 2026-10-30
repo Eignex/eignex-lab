@@ -354,8 +354,16 @@ worker resource artifact. Its frame retains the lab release, CPU model/features,
 JDK/platform, literal cgroup CPU/memory ceilings, session budget, iteration concurrency
 and paired case count. Resource counters stay in the linked receipt and do not split
 a series. Different frames split controlled series; missing or advisory observations
-withhold revision attribution. Repository output cannot supply this authority.
+withhold comparisons across runs. Repository output cannot supply this authority.
 Preparation resources are separate from these solve observations.
+
+Paired confirmations use the coordinator's accepted worker attempt for each row.
+All arms of one workload, seed and repetition run on the same machine in that attempt;
+missing CPU identity metadata does not invalidate this pairing. Automatic placement
+may use different compatible machines for different rows and preparation attempts.
+A replacement executes the complete unfinished row; arms from different attempts
+cannot vote together. Failed-attempt costs remain retained. The store supplies this
+pairing authority independently of repository records and worker protocol fields.
 
 Every feasibility/proof/objective vote uses a complete matching seed/repeat block;
 failed, duplicate or absent blocks cannot vote and remain in the denominator.

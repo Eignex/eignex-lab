@@ -191,16 +191,24 @@ synchronized(lock) {
     /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
     private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = synchronized(lock) {
         connection.prepareStatement(
-            """SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST, $LAB_DEBUG, c.stdout FROM cases c
+            """WITH accepted AS (
+                 SELECT i.value AS idx, json_array(t.session_id, t.allocation_id, t.iteration_id, t.generation) AS attempt,
+                        row_number() OVER (PARTITION BY i.value ORDER BY t.generation DESC) AS rn
+                 FROM iteration_attempts t, json_each(t.indices) i
+                 WHERE t.job_id = ? AND t.state = 'committed'
+               )
+               SELECT c.idx, m.status, p.problem, a.label, c.seed, $record AS record, c.repeat, $INSTRUMENTED, c.lab_check, $CASE_HOST, $LAB_DEBUG, c.stdout, accepted.attempt FROM cases c
                JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
                JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
                JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
                JOIN jobs j ON j.id = c.job_id
+               LEFT JOIN accepted ON accepted.idx = c.idx AND accepted.rn = 1
                WHERE c.job_id = ? AND c.idx >= ? ORDER BY c.idx LIMIT ?""",
         ).use { statement ->
             statement.setLong(1, jobId)
-            statement.setInt(2, from)
-            statement.setInt(3, limit)
+            statement.setLong(2, jobId)
+            statement.setInt(3, from)
+            statement.setInt(4, limit)
             statement.executeQuery().use { rows ->
                 generateSequence {
                     if (!rows.next()) return@generateSequence null
@@ -211,6 +219,7 @@ synchronized(lock) {
                             rows.getString(9)),
                         rows.getInt(7), rows.getInt(8) != 0, rows.getString(10)?.let(RecordedHost::of), rows.getObject(11)?.let { rows.getInt(11) != 0 },
                         rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
+                        if (record == "NULL") null else CaseOrigin(jobId, rows.getString(13)),
                     )
                 }.toList()
             }

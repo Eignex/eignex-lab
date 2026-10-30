@@ -4,6 +4,7 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonElement
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -124,6 +125,9 @@ data class HostProgress(val host: RecordedHost, val done: Int, val running: Int,
 @Serializable
 data class PlannedArm(val arm: Arm, val sha: String)
 
+/** The store's job and accepted worker attempt for comparison qualification. */
+data class CaseOrigin internal constructor(val job: Long, val attempt: String?)
+
 /** One case of an experiment, with the record its `solve-one` wrote once it ran. */
 @Serializable
 data class CaseResult(
@@ -152,6 +156,8 @@ data class CaseResult(
      * Empty for a case that left none, and for one finished before the lab recorded them.
      */
     val stdout: List<CaseFile> = emptyList(),
+    /** Coordinator-owned pairing authority stays outside repository-reported JSON. */
+    @Transient val origin: CaseOrigin? = null,
 )
 
 /** A file of a case under its job's directory: its [path] there, as `lab files` lists it, its size and its SHA-256. */
