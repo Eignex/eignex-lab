@@ -238,7 +238,7 @@ native solution and omit unrelated record statistics when it retains the origina
 description in `captureOrigin`. Source, compiler outputs, witness coordinates and objective remain exact.
 The retained FZN declarations determine the checked coordinates. Every original scalar variable must be present;
 extra parser-generated constant entries are retained as diagnostics and counted separately in the verdict.
-Policy v7 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
+Policy v8 binds annotated satisfaction goals with the same complete-coordinate obligations as optimization goals.
 It declares the no-argument `klause_symmetry` and `klause_redundant` annotations when the captured frame
 uses either without a declaration.
 Tagged constraints remain asserted exactly as captured. Other solver annotations and opaque predicates retain their
@@ -259,6 +259,12 @@ index sets: forward values subtract the inverse index offset, and inverse values
 before calling the zero-based provider. Asymmetric-offset negative cases check this distinction. Lexicographic
 checking is strict and requires equal nonempty lengths; other shapes stay unsupported. Every translation keeps
 the original and actual derived input, with the same complete-variable guard and no solver completion.
+Fixed strict `diffn`/`fzn_diffn` calls with equal-length literal arrays and positive dimensions bind directly to
+Choco's `Model.diffN` assertion. Redundant cumulative reasoning is disabled because it introduces unfixed helper
+variables; the official non-overlap assertion remains present and is checked by `Constraint.isSatisfied` alongside
+every other parsed constraint. The actual input file remains retained with the original rectangle call. Empty,
+unfixed, unequal-length, zero/negative-size and overflowing-endpoint forms stay unknown. No auxiliary variable
+is propagated or completed to obtain acceptance.
 The Choco parser and core jars are pinned to 5.0.1 and resolved as ordinary build dependencies. Their Maven version
 metadata and actual jar hashes identify the API; the existing XCSP checker dependency is preserved separately.
 The wrapper runs in a bounded child JVM, with its executable and complete classpath jar hashes in the receipt.

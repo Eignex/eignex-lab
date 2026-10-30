@@ -40,7 +40,8 @@ object FlatZincGroundCheckerMain {
                     throw ParseCancellationException("FlatZinc syntax error at $line:$charPositionInLine: $msg")
                 }
             }
-            val lexer = Flatzinc4Lexer(CharStreams.fromPath(path)).apply {
+            val frame = FixedDiffn.bind(java.nio.file.Files.readString(path), model)
+            val lexer = Flatzinc4Lexer(CharStreams.fromString(frame)).apply {
                 removeErrorListeners()
                 addErrorListener(errors)
             }
