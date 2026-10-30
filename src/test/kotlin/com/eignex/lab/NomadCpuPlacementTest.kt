@@ -17,6 +17,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
 class NomadCpuPlacementTest {
@@ -28,6 +29,20 @@ class NomadCpuPlacementTest {
     private fun cpu(job: kotlinx.serialization.json.JsonObject) =
         job.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
             .getValue("Resources").jsonObject.getValue("CPU").jsonPrimitive.int
+
+    @Test
+    fun `a session's pool keeps only what that pool has`() {
+        val cloud = NomadBatchJob("lab-2", NomadPlatform.LINUX, "general", asked, budget, listOf("worker"),
+            "registry/worker@sha256:" + "d".repeat(64), excludedNodes = setOf("n9"), perHostParallel = 4).render()
+        assertEquals(WorkerPool.Cloud(4, setOf("n9")), SessionPlacement.of(cloud).pool)
+        val native = NomadBatchJob("lab-3", NomadPlatform.MAC, "mac", asked, budget, listOf("worker"),
+            nativeCapacity = ResourceBudget(8000, 16_384), perHostParallel = 4).render()
+        assertEquals(WorkerPool.Native(8000, 16_384), SessionPlacement.of(native).pool)
+        assertEquals(8000L to 16_384L, (SessionPlacement.of(native).pool as WorkerPool.Native).limits)
+        assertFailsWith<IllegalArgumentException> {
+            SessionPlacement(CpuEnforcement.HARD_QUOTA, "general", nativeCpuLimit = 8000, nativeMemoryLimit = 16_384)
+        }
+    }
 
     @Test
     fun `a job that fits a node as its constraints say is left as it is`() {
