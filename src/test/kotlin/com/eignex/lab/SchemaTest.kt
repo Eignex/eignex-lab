@@ -77,6 +77,32 @@ class SchemaTest {
     }
 
     @Test
+    fun `version nine databases gain failure diagnostics without changing existing progress`() {
+        val file = file()
+        val spec = ExperimentSpec("existing-preparation")
+        val id = Store(file).create(spec.name, "main", emptyList(), experiment = spec)
+        val token = ExecutionStore.token()
+        val budget = ResourceBudget(1000, 512)
+        val store = Store(file)
+        store.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
+        store.execution.bind("prep", token, "allocation", "node", "release", 1000)
+        val claim = store.execution.claim("prep", token, "allocation", 1100)!!
+        store.execution.phase(claim.owner, "preparing", 1101)
+        val progress = PreparationProgress("compiler-wait", 500, 500, emptyMap())
+        store.execution.preparationProgress(claim.owner, progress, 1600)
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            it.execute("ALTER TABLE iteration_attempts DROP COLUMN preparation_diagnostics")
+            it.execute("PRAGMA user_version = 9")
+        } }
+        val upgraded = Store(file)
+        assertEquals(progress, upgraded.execution.reports(id).single().preparation!!.progress)
+        val diagnostic = PreparationDiagnostics(500, "compiler-wait", budget, "advisory-native", null, null, emptyMap(), 1000, 1000, 2)
+        upgraded.execution.preparationDiagnostics(claim.owner, diagnostic, 1601)
+        assertEquals(diagnostic, Store(file).execution.reports(id).single().preparation!!.diagnostics)
+        assertEquals(Schema.version, version(file))
+    }
+
+    @Test
     fun `the database refuses a job state the lab cannot be in`() {
         val file = file()
         val store = Store(file)
