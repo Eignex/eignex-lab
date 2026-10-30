@@ -34,6 +34,7 @@ internal object ComparisonControls {
         val execution = ComparisonExecution.frame(left) ?: return "physical execution controls unavailable"
         val otherExecution = ComparisonExecution.frame(right) ?: return "physical execution controls unavailable"
         if (execution != otherExecution) return "physical execution migration"
+        if (checkerPolicy(left) != checkerPolicy(right)) return "source checking policy migration"
         if (seed(a)?.toString() != text(x, "solverSeed") || seed(b)?.toString() != text(y, "solverSeed")) return "inconsistent seed"
         if (text(left, "seed") != text(x, "solverSeed") || text(right, "seed") != text(y, "solverSeed")) return "inconsistent recorded seed"
         for ((recordKey, controlKey) in listOf("budgetMs" to "solverBudgetMs", "processors" to "cpus")) {
@@ -58,8 +59,11 @@ internal object ComparisonControls {
         return listOfNotNull(text(controls, "series"), text(controls, "runtimeFingerprint"), text(controls, "compilerFingerprint"),
             text(controls, "harnessFingerprint") ?: "harness-unqualified", text(controls, "libraryFingerprint") ?: "libraries-unqualified")
             .takeIf { text(controls, "policy") == "matched-source-v1" }
-            ?.plus(record?.let(ComparisonExecution::series) ?: "execution-unqualified")?.joinToString(":") ?: "historical-unqualified"
+            ?.plus(record?.let(ComparisonExecution::series) ?: "execution-unqualified")
+            ?.plus(record?.let(::checkerPolicy) ?: "checking-unrequested")?.joinToString(":") ?: "historical-unqualified"
     }
+
+    private fun checkerPolicy(record: JsonObject): String? = text(record["labCheck"] as? JsonObject, "policy")
 
     private fun text(value: JsonObject?, key: String) = (value?.get(key) as? JsonPrimitive)?.content?.takeUnless { it == "null" }
     private val REQUIRED = setOf("series", "solverSeed", "compilerSeed", "solverBudgetMs", "compilerTimeoutSeconds",
