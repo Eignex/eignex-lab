@@ -20,22 +20,31 @@ object MpsReplay : BenchSuite {
         require(checks.size in 1..12) { "Replay requires 1..12 explicit checks" }
         return checks.mapIndexed { index, value ->
             val item = value.jsonObject
-            require(item.keys == setOf("model", "record", "expected", "origin", "control"))
+            val required = setOf("model", "record", "expected", "origin", "control")
+            require(item.keys == required || item.keys == required + "root")
             val model = item.getValue("model").jsonPrimitive.content
+            val root = item["root"]?.jsonPrimitive?.content?.let { BenchInputRoot.valueOf(it) } ?: BenchInputRoot.SOURCE
             val record = item.getValue("record").jsonObject
             val hash = record.getValue("sourceHashes").jsonObject.getValue("model").jsonPrimitive.content
             require(item.getValue("expected").jsonPrimitive.content in LabCheck.STATES)
             require(item.getValue("control").jsonObject.keys.all { it in setOf("finalWitness", "exactObjective") })
             BenchCase("mps-replay-$index", parameters = mapOf("check" to item.toString()),
                 resources = BenchResources(cpus = 1, memoryMiB = 512, timeoutSeconds = 150, requiredTags = setOf("platform:linux", "arch:x86_64")),
-                inputs = listOf(BenchInput(model, role = "model", sha256 = hash)))
+                inputs = listOf(BenchInput(model, root = root, role = "model", sha256 = hash)))
         }
     }
 
     override fun run(case: BenchCase, context: BenchContext): BenchResult {
         val item = Json.parseToJsonElement(case.parameters.getValue("check")).jsonObject
-        val source = requireNotNull(context.worktree).resolve(case.inputs.single().path).toFile()
-        require(sha256(source) == case.inputs.single().sha256) { "Frozen original source digest differs" }
+        val input = case.inputs.single()
+        val root = requireNotNull(when (input.root) {
+            BenchInputRoot.SOURCE -> context.worktree
+            BenchInputRoot.CORPUS -> context.corpusDirectory
+        }).toRealPath()
+        val path = root.resolve(input.path).toRealPath()
+        require(path.startsWith(root)) { "Frozen source escapes its declared input root" }
+        val source = path.toFile()
+        require(sha256(source) == input.sha256) { "Frozen original source digest differs" }
         val original = item.getValue("record").jsonObject
         val effective = JsonObject(original + item.getValue("control").jsonObject)
         val output = context.outputDirectory
@@ -46,7 +55,7 @@ object MpsReplay : BenchSuite {
         val scratch = output.resolve("scratch").toFile()
         // The same router used by Checkers.of; legacy tool setup is lazy, so exact rational checks need none.
         val adapter = RationalMpsChecker(MpsChecker(Solchecker(output.resolve("tools").toFile())::binary))
-        val verdict = SourceChecker(listOf(adapter), SourceLocator(requireNotNull(context.worktree).toFile()), scratch)
+        val verdict = SourceChecker(listOf(adapter), SourceLocator(root.toFile()), scratch)
             .check(Problem("mps-replay", source.nameWithoutExtension, format = "MPS", model = source.path), effective)
         output.resolve("lab-check.json").writeText(verdict?.json() ?: "null")
         val expected = item.getValue("expected").jsonPrimitive.content
