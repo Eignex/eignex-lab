@@ -40,8 +40,8 @@
 #                                                            arm's debug) and the full record, its finalWitness and the
 #                                                            lab's verdict (record.labCheck) included
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's results as CSV
-#   lab references <text> [solver] [verdict]                find reference results; verdict: optimum unproven
-#                                                            satisfied infeasible unknown
+#   lab references [--json] <text> [solver] [verdict]       find reference results; --json retains all metadata
+#                                                            verdict: optimum unproven satisfied infeasible unknown
 #   lab references retire <collection> <solver> [budget-sec]
 #                                                            retire a solver's reference rows on a collection, only those
 #                                                            of that budget when given: kept as history, left out of
@@ -224,10 +224,13 @@ references)
       curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/references/retire" | jq -r '"retired \(.retired) rows"'
     exit
   fi
-  curl -fsS -G "$url/references" --data-urlencode "q=$1" --data-urlencode "solver=${2:-}" \
-    --data-urlencode "verdict=${3:-}" -H 'Accept: application/json' | jq -r '.[] |
+  reference_format='.[] |
     [.collection, .problem, .reference.solver, (.reference.feasible|tostring), (.reference.objective|tostring),
-     (.reference.proven|tostring), "\(.reference.elapsedMs)ms/\(.reference.budgetMs)ms"] | @tsv' ;;
+     (.reference.proven|tostring), "\(.reference.elapsedMs)ms/\(.reference.budgetMs)ms"] | @tsv'
+  if [[ "${1:-}" == --json ]]; then reference_format='.'; shift; fi
+  [[ $# -ge 1 && $# -le 3 ]] || { echo 'usage: lab references [--json] <query> [solver] [verdict]' >&2; exit 2; }
+  curl -fsS -G "$url/references" --data-urlencode "q=$1" --data-urlencode "solver=${2:-}" \
+    --data-urlencode "verdict=${3:-}" -H 'Accept: application/json' | jq -r "$reference_format" ;;
 ls)
   # Every active job first, newest first however old, then the newest n jobs that are not among them.
   { curl -fsS "$url/jobs?active=true"; curl -fsS "$url/jobs?limit=${1:-30}"; } | jq -s -r '
