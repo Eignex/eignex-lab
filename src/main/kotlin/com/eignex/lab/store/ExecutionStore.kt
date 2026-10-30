@@ -135,7 +135,9 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     /** Where session [id]'s worker was placed ([SessionPlacement]), as kept when it was created. */
     fun placement(id: String): SessionPlacement = store.executionRead { db ->
-        db.sqlRows("SELECT placement FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.singleOrNull()?.let(SessionPlacement::parse)
+        db.sqlRows("SELECT placement, preparation_slots FROM execution_sessions WHERE id = ?", id) { row ->
+            row.getString(1)?.let { value -> SessionPlacement.parse(value).copy(preparationSlots = row.getObject(2)?.let { row.getInt(2) }) }
+        }.singleOrNull()
     } ?: SessionPlacement.of(submission(id))
     /** Executing claim concurrency and unallocated solve slots, without treating reserved arms as running CPUs. */
     internal fun parallelism(jobs: Collection<Long>, at: Long = now()): Map<Long, Pair<Int, Int>> {
@@ -167,6 +169,10 @@ class ExecutionStore internal constructor(private val store: Store) {
             ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed, active?.third)
         }
     }
+    internal fun activePreparations(): List<ExecutionSession> = store.executionRead { db ->
+        db.sqlRows("SELECT * FROM execution_sessions WHERE desired != 'stop' AND execution_class IN ('prepare', 'build')", map = ::sessionRow)
+    }
+
     fun sessions(jobId: Long? = null): List<ExecutionSession> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_sessions" + if (jobId == null) " ORDER BY id" else " WHERE job_id = ? ORDER BY id",
             *listOfNotNull(jobId).toTypedArray(), map = ::sessionRow)
@@ -213,8 +219,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
             id, jobId, executionClass.stored, release, Json.encodeToString(budget), nomadId, digest(token), at)
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
-        db.sqlUpdate("UPDATE execution_sessions SET manifest = ?, placement = ?, cpu_enforcement = ? WHERE id = ?",
-            manifest, placement.json(), placement.enforcement?.stored, id)
+        db.sqlUpdate("UPDATE execution_sessions SET manifest = ?, placement = ?, cpu_enforcement = ?, preparation_slots = ? WHERE id = ?",
+            manifest, placement.json(), placement.enforcement?.stored, placement.preparationSlots, id)
         db.event(jobId, id, "session-created", at)
         db.session(id)!!
     }

@@ -516,7 +516,12 @@ change finish their current iteration before retiring.
 Cold compilation uses the worker's CPU/memory reservation, Gradle worker and JVM
 processor limits, and at most `maxConcurrentBuildsPerNode` compilers per node
 (default 2). Shared cache locks deduplicate builds and warm hits bypass compiler
-slots. Oversized literal commands remain intact in `cases/<index>/command.sh`
+slots. Preparation placement reserves the same slot count across experiments, excluding full nodes until
+a preparation ends. One unbound preparation per cloud class prevents concurrent placement from overbooking
+those slots. Capacity packing respects that limit within the existing pool and global vCPU ceilings.
+Waiting jobs preserve spent costs and do not start their active clock before preparation is claimed.
+Process-owned tickets order cold compilers; a cancelled or dead waiter cannot retain its place indefinitely.
+Oversized literal commands remain intact in `cases/<index>/command.sh`
 artifacts without overflowing result metadata.
 
 Warm build and bundle caches walk their inventory and reuse checksums only while file identity, size,

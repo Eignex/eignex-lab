@@ -52,8 +52,13 @@ data class CapacityDemand(
     val id: String, val job: Long, val budget: ResourceBudget, val priority: Int,
     val perHostParallel: Int? = null, val selector: NodeSelector? = null, val market: CapacityMarket = CapacityMarket.SPOT,
     val localEligible: Boolean = true, val work: CapacityWork = CapacityWork.SOLVE, val pool: String? = null,
+    val maxConcurrentBuildsPerNode: Int? = null,
 ) {
-    init { require(id.isNotBlank() && (perHostParallel == null || perHostParallel > 0)); NodeTags.validate(selector) }
+    init {
+        require(id.isNotBlank() && (perHostParallel == null || perHostParallel > 0))
+        require(maxConcurrentBuildsPerNode == null || work == CapacityWork.BUILD && maxConcurrentBuildsPerNode in 1..64)
+        NodeTags.validate(selector)
+    }
     val caseParallel get() = if (work == CapacityWork.BUILD) 0 else budget.parallel
 }
 @Serializable
@@ -106,7 +111,8 @@ object CapacityPolicy {
             val p = pools.getValue(b.node.pool)
             return compatible(d, p) && b.allocations.sumOf { it.budget.cpuMillis.toLong() } + d.budget.cpuMillis <= p.cpuMillis &&
                 b.allocations.sumOf { it.budget.memoryMiB.toLong() } + d.budget.memoryMiB <= p.availableMemoryMiB &&
-                (d.perHostParallel == null || b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel)
+                (d.perHostParallel == null || b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel) &&
+                (d.maxConcurrentBuildsPerNode == null || b.allocations.count { it.work == CapacityWork.BUILD } < d.maxConcurrentBuildsPerNode)
         }
         val ordered = demands.sortedWith(compareByDescending<CapacityDemand> { it.priority }.thenBy { it.id })
         // Account for warm and already-booting capacity before starting the backlog timer.

@@ -140,7 +140,7 @@ object Trend {
             .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
             .associateBy { it.name }
         val stamp = cache?.sync(data)
-        // The previous finished run of each spec: its first arm's cases, loaded only when a run after it is computed.
+        // Compare only matching runtime/control series even when the chart joins the same experiment and problem set.
         val previous = HashMap<String, Long>()
         val ownCases = HashMap<Long, List<CaseResult>>()
         fun own(job: Long): List<CaseResult> = ownCases.getOrPut(job) {
@@ -177,14 +177,14 @@ object Trend {
                     pointless?.add(job.id)
                     return@mapNotNull null
                 }
-                val flips = previous[trend.spec]?.takeIf { job.status == Status.DONE }
+                val flips = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE }
                     ?.let { Confirm.flips(own(it), own(job.id)) }
                 trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
                     proofLost = flips?.proofLost?.size, proofGained = flips?.proofGained?.size,
                     objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size)
                     .also { if (finished) cache?.put(job.id, version, stamp, it, keys.toSet()) else cache?.putLive(job.id, it) }
             }
-            if (job.status == Status.DONE) previous[base.spec] = job.id
+            if (job.status == Status.DONE) previous[comparisonKey(base)] = job.id
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
             val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { done ->
                 cache?.confirmed(done.id) { Confirm.confirmed(data.scoringCases(done.id)) } ?: Confirm.confirmed(data.scoringCases(done.id))
@@ -204,6 +204,10 @@ object Trend {
         }
         return runs
     }
+
+    /** Statistical comparisons retain their stricter controls independently of visual chart grouping. */
+    private fun comparisonKey(run: TrendRun): String = run.spec +
+        if (run.comparisonSeries == listOf("historical-unqualified")) "" else ":" + ExecutionStore.digest(run.comparisonSeries.joinToString("\n"))
 
     /**
      * Every schedule's runs computed into [cache] before anyone asks, so the first trend load after a restart is quick:
@@ -258,8 +262,8 @@ object Trend {
         return TrendRun(
             job = job.id,
             sha = job.sha ?: job.ref,
-            spec = job.experiment.let { Experiments.trendFingerprint(it, raw.map { case -> case.problem }.distinct()) } +
-                if (controlSeries == listOf("historical-unqualified")) "" else ":" + ExecutionStore.digest(controlSeries.joinToString("\n")),
+            // Runtime/harness receipts describe the point; they do not redraw the requested problem set.
+            spec = job.experiment.let { Experiments.trendFingerprint(it, raw.map { case -> case.problem }.distinct()) },
             experiment = job.experiment.let(Experiments::trendFingerprint).orEmpty(),
             sourceChecked = job.experiment.let { SourceValidation.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,

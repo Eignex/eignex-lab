@@ -25,6 +25,35 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `cloud preparation waits before publication and charging until the preceding placement binds`() {
+        val first = job(ExperimentSpec("first-build", host = Experiments.AWS_HOST))
+        val second = job(ExperimentSpec("second-build", host = Experiments.AWS_HOST))
+        val third = job(ExperimentSpec("third-build", host = Experiments.AWS_HOST))
+        val cloud = settings.copy(targets = settings.targets.filter { !it.native })
+        val admission = queue(policy = cloud)
+        fun bind(job: Long, allocation: String) {
+            val session = store.execution.sessions(job).single()
+            val payload = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+            val env = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject.getValue("Env").jsonObject
+            store.execution.bind(session.id, env.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content, allocation, "busy", "release")
+        }
+        admission.reconcile()
+        assertEquals(1, publications)
+        assertTrue(store.execution.sessions(second).isEmpty())
+        assertEquals(0L, store.job(second)!!.runMs)
+        assertNull(store.job(second)!!.runningSince)
+        bind(first, "first-allocation")
+        admission.reconcile()
+        assertEquals(2, publications)
+        assertTrue(store.execution.sessions(third).isEmpty())
+        bind(second, "second-allocation")
+        admission.reconcile()
+        val payload = store.execution.submission(store.execution.sessions(third).single().id)
+        assertEquals(setOf("busy"), (SessionPlacement.of(payload).pool as WorkerPool.Cloud).excludedNodes)
+        assertEquals(0L, store.job(third)!!.runMs)
+        assertNull(store.job(third)!!.runningSince)
+    }
+
     @Test fun `retired persisted recipes fail before source publication or allocation`() {
         val spec = ExperimentSpec("status-sweep@old", problems = listOf(mapOf("set" to "sweep")), host = Experiments.LAB_HOST)
         val id = store.create(spec.name, "main", emptyList(), parallel = 1, experiment = spec)
