@@ -48,7 +48,7 @@ class PagesTest {
         dir.resolve("0.exit").toFile().writeText("timeout\n")
         Termination.record(Termination.file(dir, 0), "timeout: still running after its 7320 s limit, so the lab sent the case SIGTERM, and SIGKILL to what is left after 30 s")
 
-        val page = jobPage(config, store.job(id)!!, failedOnly = false)
+        val page = jobPage(config.status, store.job(id)!!, failedOnly = false)
 
         assertContains(page, "Time limit: 2 h")
         assertContains(page, "Capped: a timeout of 10 h was asked, capped at 2 h.")
@@ -68,7 +68,7 @@ class PagesTest {
         }
         val arms = listOf(PlannedArm(Arm("a", emptyMap()), "abc"))
 
-        val page = comparePage(config, emptyList(), arms, cases)
+        val page = comparePage(config.repoUrl, emptyList(), arms, cases)
 
         assertContains(page, "mixed provenance")
         assertContains(page, "build-a")
@@ -478,7 +478,7 @@ class PagesTest {
             assertEquals(HttpStatusCode.Created, created.status)
             assertEquals(listOf(Experiments.AUTO_HOST, "12", "6"), listOf(job.experiment!!.host, job.experiment!!.base["param.cpus"], "${job.parallel}"))
             assertEquals(listOf("capped: parallel=8 was asked, capped at the local machine's 6"), notes)
-            assertContains(jobPage(config, job, failedOnly = false), "parallel=8 was asked")
+            assertContains(jobPage(config.status, job, failedOnly = false), "parallel=8 was asked")
         }
     }
 
@@ -496,7 +496,7 @@ class PagesTest {
     )
 
     private fun summaryOf(config: Config, jobs: List<Job>) =
-        workSummary(config, jobs, jobs.associate { it.id to Estimates.estimate(it, { null }, config.cores)!! })
+        workSummary(config.status, jobs, jobs.associate { it.id to Estimates.estimate(it, { null }, config.cores)!! })
 
     @Test
     fun `the work summary links to Nomad capacity without the retired pressure gauge`() {
@@ -515,7 +515,7 @@ class PagesTest {
         val unplanned = work(2, Experiments.LAB_HOST, 0)
         val history = { job: Job -> CaseHistory(6659, 977, 9_600.0).takeIf { job.id == 2L } }
 
-        val page = indexPage(config, host, listOf(measured, unplanned), emptyList(), emptyList(), 50, null, null, listOf(2L), history)
+        val page = indexPage(config.status, host, listOf(measured, unplanned), emptyList(), emptyList(), 50, null, null, listOf(2L), history)
 
         // 80 cases of a minute, four at once.
         assertContains(page, "≈1.3 core-h · ~20 min locally <span class=\"muted\">(measured)</span></div>")
@@ -531,8 +531,8 @@ class PagesTest {
         fun job(id: Long, cancelRequested: Boolean) =
             Job(id, "e$id", "main", status = Status.QUEUED, cancelRequested = cancelRequested, setupDone = true, createdAt = 0, experiment = spec)
 
-        val waiting = indexPage(config, host, listOf(job(1, false)), emptyList(), emptyList(), 50, null, null)
-        val cancelling = indexPage(config, host, listOf(job(2, true)), emptyList(), emptyList(), 50, null, null)
+        val waiting = indexPage(config.status, host, listOf(job(1, false)), emptyList(), emptyList(), 50, null, null)
+        val cancelling = indexPage(config.status, host, listOf(job(2, true)), emptyList(), emptyList(), 50, null, null)
 
         assertContains(waiting, "waiting for a node")
         assertContains(cancelling, "cancelling")

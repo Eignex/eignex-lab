@@ -74,7 +74,8 @@ internal data class DiskUsageState(val report: DiskReport? = null, val jobs: Map
  * kept in [STATE_FILE] under `LAB_DATA`, so a restart shows the last numbers at once and measures no job again.
  */
 class DiskUsage internal constructor(
-    private val config: Config,
+    private val paths: DataPaths,
+    private val docker: DockerPolicy,
     /** The ids of the queued and running jobs. */
     private val active: () -> Set<Long>,
     private val du: DuRunner,
@@ -83,15 +84,15 @@ class DiskUsage internal constructor(
     /** Waits between two walks. */
     private val pause: () -> Unit = {},
 ) : AutoCloseable {
-    constructor(config: Config, active: () -> Set<Long> = { emptySet() }, pauseMs: Long = PAUSE_MS) :
-        this(config, active, DuRunner(config.dataDir.resolve(DuRunner.PID_DIR)), SETTLE_MS, System::currentTimeMillis,
+    constructor(paths: DataPaths, docker: DockerPolicy, active: () -> Set<Long> = { emptySet() }, pauseMs: Long = PAUSE_MS) :
+        this(paths, docker, active, DuRunner(paths.dataDir.resolve(DuRunner.PID_DIR)), SETTLE_MS, System::currentTimeMillis,
             { if (pauseMs > 0) Thread.sleep(pauseMs) })
 
     @Volatile var latest: DiskReport? = null
         private set
 
     private val home = System.getProperty("user.home")
-    private val stateFile = config.dataDir.resolve(STATE_FILE)
+    private val stateFile = paths.dataDir.resolve(STATE_FILE)
     private val lock = ReentrantLock()
     private var loaded = false
     private var jobs: MutableMap<Long, JobSize> = mutableMapOf()
@@ -99,14 +100,14 @@ class DiskUsage internal constructor(
 
     /** The places measured, each with a label; ones that do not exist are left out. */
     internal fun places(): List<Pair<String, Path>> {
-        val data = config.dataDir
+        val data = paths.dataDir
         // A `jobs` directory left in the data directory once LAB_JOBS points elsewhere is shown on its own.
-        val known = listOfNotNull("jobs".takeIf { config.jobsDir == data.resolve("jobs") }, "work", "shared", "releases", "repo.git", "logs",
+        val known = listOfNotNull("jobs".takeIf { paths.jobsDir == data.resolve("jobs") }, "work", "shared", "releases", "repo.git", "logs",
             "lab.db", "lab.db-wal")
         val rest = data.toFile().listFiles().orEmpty().map { it.name }
             .filter { it !in known && it != "lab.db-shm" && it != DuRunner.PID_DIR && !it.startsWith(STATE_FILE) }.sorted()
         return listOf(
-            "job files" to config.jobsDir,
+            "job files" to paths.jobsDir,
             "job worktrees" to data.resolve("work"),
             "shared worktree directories" to data.resolve("shared"),
             "releases" to data.resolve("releases"),
@@ -115,7 +116,7 @@ class DiskUsage internal constructor(
             "database" to data.resolve("lab.db"),
             "database log" to data.resolve("lab.db-wal"),
         ) + rest.map { "data: $it" to data.resolve(it) } + listOf(
-            "corpus cache" to config.corpusDir,
+            "corpus cache" to paths.corpusDir,
             "other caches" to Path(home, ".cache"),
             "Gradle" to Path(home, ".gradle"),
             "Colima VM" to Path(home, ".colima"),
@@ -144,12 +145,12 @@ class DiskUsage internal constructor(
             // The corpus sits under ~/.cache: the other caches are what is left of it.
             val corpus = places.firstOrNull { it.label == "corpus cache" }?.bytes ?: 0
             val adjusted = places.map { p ->
-                if (p.label == "other caches" && config.corpusDir.startsWith(Path(p.path))) p.copy(bytes = p.bytes?.let { maxOf(0, it - corpus) }) else p
+                if (p.label == "other caches" && paths.corpusDir.startsWith(Path(p.path))) p.copy(bytes = p.bytes?.let { maxOf(0, it - corpus) }) else p
             }
             val largest = jobs.entries.sortedByDescending { it.value.bytes }.take(TOP_JOBS).map { it.key to it.value.bytes }
             val report = DiskReport(
-                now, freeBytes(config.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 }, largest,
-                docker(), DockerCleanup.last(config.dockerCleanupState),
+                now, freeBytes(paths.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 }, largest,
+                docker(), DockerCleanup.last(paths.dockerCleanupState),
             )
             latest = report
             save()
@@ -182,7 +183,7 @@ class DiskUsage internal constructor(
      * chunks of [JOB_CHUNK], each saved, so a long first pass is not lost to a restart. The job directories' total.
      */
     private fun measureJobs(activeIds: Set<Long>, now: Long): Long {
-        val dirs = config.jobsDir.toFile().listFiles { f -> f.isDirectory && f.name.toLongOrNull() != null }.orEmpty()
+        val dirs = paths.jobsDir.toFile().listFiles { f -> f.isDirectory && f.name.toLongOrNull() != null }.orEmpty()
             .associate { it.name.toLong() to it }
         jobs.keys.retainAll(dirs.keys)
         val due = dirs.filter { (id, dir) ->
@@ -206,13 +207,13 @@ class DiskUsage internal constructor(
 
     /** What in the job files' directory is not a job directory, measured as a place. */
     private fun otherJobEntries(homeStore: FileStore?, now: Long): Long =
-        config.jobsDir.toFile().listFiles { f -> !(f.isDirectory && f.name.toLongOrNull() != null) }.orEmpty()
+        paths.jobsDir.toFile().listFiles { f -> !(f.isDirectory && f.name.toLongOrNull() != null) }.orEmpty()
             .sumOf { place("job files: ${it.name}", it.toPath(), homeStore, now).bytes ?: 0 }
 
     /** [path]'s last measurement when it is slow to walk and not yet [SLOW_INTERVAL_H] old, otherwise a new one. */
     private fun place(label: String, path: Path, homeStore: FileStore?, now: Long): DiskPlace {
         val last = placesAt[label]?.takeIf { it.path == path.toString() && it.bytes != null }
-        val slow = path.startsWith(config.corpusDir) || config.corpusDir.startsWith(path) || store(path) != homeStore
+        val slow = path.startsWith(paths.corpusDir) || paths.corpusDir.startsWith(path) || store(path) != homeStore
         if (last != null && slow && now - (last.at ?: 0) < SLOW_INTERVAL_H * HOUR_MS) return last
         pause()
         val bytes = du.run(listOf(path.toString()))?.let { parse(it).values.firstOrNull() }
@@ -223,7 +224,7 @@ class DiskUsage internal constructor(
     private fun store(path: Path): FileStore? = runCatching { Files.getFileStore(path) }.getOrNull()
 
     /** What Docker holds, by `docker system df`, when the lab uses it. */
-    private fun docker(): List<DockerUsage> = if (!config.requireDocker) emptyList() else runCatching {
+    private fun docker(): List<DockerUsage> = if (!docker.required) emptyList() else runCatching {
         val process = ProcessBuilder(Background.prefix + listOf("docker", "system", "df", "--format", "{{json .}}"))
             .redirectError(ProcessBuilder.Redirect.DISCARD).start()
         val out = process.inputStream.bufferedReader().readText()
@@ -235,7 +236,7 @@ class DiskUsage internal constructor(
      * minutes from now and then every [INTERVAL_MIN] minutes, on a daemon thread.
      */
     fun start() {
-        DuRunner.reapLeftovers(config.dataDir.resolve(DuRunner.PID_DIR))
+        DuRunner.reapLeftovers(paths.dataDir.resolve(DuRunner.PID_DIR))
         lock.lock()
         try { load() } finally { lock.unlock() }
         schedule.scheduleWithFixedDelay({ runCatching { measure() }.onFailure { println("disk usage: ${it.message}") } },

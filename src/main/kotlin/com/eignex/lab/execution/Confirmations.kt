@@ -9,7 +9,7 @@ import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
 /** Queues a confirmation when a scheduled run's results flip against the schedule's previous run of the same experiment. */
-internal class Confirmations(private val config: Config, private val store: Store) {
+internal class Confirmations(private val local: LocalNode, private val paths: DataPaths, private val store: Store) {
     fun queue(job: Job) {
         val spec = job.experiment
         val series = (job.origin as? JobOrigin.Scheduled)?.schedule ?: return
@@ -39,9 +39,9 @@ internal class Confirmations(private val config: Config, private val store: Stor
         val confirmation = Confirm.spec(series, spec.copy(priority = schedule.priority), before, after, flips, job.id, reference.id,
             sourceCases = currentCases)
         if (store.jobs(limit = 100, name = confirmation.name).any { it.name == confirmation.name && it.experiment == confirmation }) return
-        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: config.defaultParallel, confirmation.priority, confirmation,
+        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: local.defaultParallel, confirmation.priority, confirmation,
             JobOrigin.Confirmation(series))
-        logJob(config, job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
+        logJob(paths, job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
             "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +
             "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${reference.id}: queued confirmation job $id")
     }

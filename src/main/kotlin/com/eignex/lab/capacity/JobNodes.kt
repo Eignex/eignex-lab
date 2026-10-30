@@ -23,14 +23,14 @@ internal fun jobActivity(job: Job, nodes: List<JobNode>): String? = when {
 
 /** Resolve active bindings from local state without making Nomad requests on the page's refresh path. */
 internal fun jobNodes(
-    config: Config,
+    status: StatusSettings,
     store: Store,
     jobs: Collection<Long>,
     /** The capacity settings, from the API's cache ([ApiServices.capacitySettings]); read from their file when not given. */
-    settings: CapacitySettings? = runCatching { config.nomadCapacitySettings?.let { CapacitySettings.read(it) } }.getOrNull(),
+    settings: CapacitySettings? = runCatching { status.capacitySettings?.let { CapacitySettings.read(it) } }.getOrNull(),
 ): Map<Long, List<JobNode>> {
     if (jobs.isEmpty()) return emptyMap()
-    val snapshot = readCapacityReport(config)
+    val snapshot = readCapacityReport(status.paths.capacityReport)
     val allocations = snapshot?.nodes.orEmpty().flatMap { node -> node.reservations.map { it.id to node } }.toMap()
     val pools = (settings?.pools ?: snapshot?.pools).orEmpty()
     return store.execution.runningNodes(jobs).mapValues { (_, nodes) ->
@@ -41,7 +41,7 @@ internal fun jobNodes(
                 node.local -> "native · ${node.id.take(8)}"
                 capacity != null -> capacity.id
                 else -> "${node.nodeClass ?: "node"} · ${node.id.take(8)}"
-            }, if (node.local) NodeTags.hardwareProfile(config.localNodeTags) else pool?.let { NodeTags.hardwareProfile(it.tags) },
+            }, if (node.local) NodeTags.hardwareProfile(status.local.tags) else pool?.let { NodeTags.hardwareProfile(it.tags) },
                 node.local, if (node.local) "local-node" else capacity?.let { "node-${it.id}" })
         }.distinctBy { it.id }.sortedWith(compareBy<JobNode> { !it.local }.thenBy { it.name })
     }

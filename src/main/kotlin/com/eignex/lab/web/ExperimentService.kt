@@ -72,7 +72,7 @@ class ExperimentService internal constructor(private val services: ApiServices) 
             when (target) {
                 is AnalyzeTarget.OfJob -> if (target.kind == AnalyzeTarget.Kind.CHECK) CaseChecks.refusal(store.job(target.job))
                     else CompilationReports.refusal(store.job(target.job), config.jobDir(target.job))
-                is AnalyzeTarget.OfArchive -> CaptureArchives.refusal(analyze, config)
+                is AnalyzeTarget.OfArchive -> CaptureArchives.refusal(analyze, config.paths)
             }
         }
         val what = when (target) {

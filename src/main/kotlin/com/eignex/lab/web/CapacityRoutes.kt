@@ -30,11 +30,11 @@ internal fun Route.capacityRoutes(services: ApiServices) {
     val config = services.config
     val store = services.store
     get("/capacity") {
-        call.respond(io { readCapacityReport(config) } ?: throw ApiError.Unavailable("Nomad capacity has not reported"))
+        call.respond(io { readCapacityReport(config.nomadCapacityReport) } ?: throw ApiError.Unavailable("Nomad capacity has not reported"))
     }
     get("/nodes") {
         val page = io {
-            nodesPage(config, services.host, readCapacityReport(config), store.execution.capacityLeases(), services.capacitySettings.get(),
+            nodesPage(config.local, services.host, readCapacityReport(config.nomadCapacityReport), store.execution.capacityLeases(), services.capacitySettings.get(),
                 readResultJournalReport(config.dataDir))
         }
         call.respondText(page, ContentType.Text.Html)

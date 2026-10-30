@@ -12,12 +12,12 @@ import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
 
 /** Node inventory and temporary capacity controls for configured, provider-neutral pools. */
-internal fun nodesPage(config: Config, host: HostReport, snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>, settings: CapacitySettings?, journal: ResultJournalReport? = null): String = buildString {
+internal fun nodesPage(local: LocalNode, host: HostReport, snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>, settings: CapacitySettings?, journal: ResultJournalReport? = null): String = buildString {
     append(head("Nodes · eignex lab", live = true, tab = Tab.NODES))
     append("<header><h1>Nodes</h1><p class=\"muted\">Native execution and cloud workers</p></header>")
-    append("<section id=\"local-node\"><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${config.cores} cores available to the lab</p>")
-    val tags = config.localNodeTags.sorted()
-    append("<p>${esc(NodeTags.hardwareProfile(config.localNodeTags))}</p>")
+    append("<section id=\"local-node\"><h2>Local node</h2><p><b>${esc(host.host)}</b> · ${host.cores} logical CPUs · ${local.cores} cores available to the lab</p>")
+    val tags = local.tags.sorted()
+    append("<p>${esc(NodeTags.hardwareProfile(local.tags))}</p>")
     append("<details><summary>All ${tags.size} capability labels</summary><p class=\"muted small\">${esc(tags.joinToString(" · "))}</p></details>")
     append("</section>")
     if (journal != null) {

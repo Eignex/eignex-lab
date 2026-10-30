@@ -512,7 +512,7 @@ class NomadQueueTest {
     @Test fun `cloud selection needs no AWS settings and profiles use Spot unless explicitly on demand`() {
         val spec = ExperimentSpec("cloud", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60, classpath = listOf("tools/lib/*")), nodeTags = NodeSelector(require = setOf("cloud")))
         assertEquals(listOf(CapacityMarket.SPOT), settings.matching(spec, spec.name).map { it.market })
-        assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
+        assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config.workers))
         assertTrue(settings.matching(spec.copy(nodeTags = NodeSelector(require = setOf("on-demand"))), spec.name).isEmpty())
         assertFailsWith<IllegalArgumentException> { settings.solveOptions("-Xmx8g") }
         assertEquals("-Xmx256m", settings.solveOptions("-Xmx256m"))

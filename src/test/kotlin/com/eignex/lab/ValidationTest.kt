@@ -189,12 +189,12 @@ class ValidationTest {
 
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val arms = listOf(PlannedArm(Arm("6991", emptyMap()), "abc"), PlannedArm(Arm("7004", emptyMap()), "def"))
-        val page = comparePage(config, emptyList(), arms, before + after)
+        val page = comparePage(config.repoUrl, emptyList(), arms, before + after)
 
         assertContains(page, "These arms ran under different validation policies")
         assertContains(page, "<b>6991</b> <span class=\"muted\" title=\"2 unchecked Solver solutions")
         assertContains(page, "<b>7004</b> <span class=\"DONE\" title=\"1 checked, 1 invalid Solver solutions")
-        assertFalse("different validation policies" in comparePage(config, emptyList(), arms.take(1), before))
+        assertFalse("different validation policies" in comparePage(config.repoUrl, emptyList(), arms.take(1), before))
     }
 
     @Test

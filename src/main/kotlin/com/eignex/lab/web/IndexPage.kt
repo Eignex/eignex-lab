@@ -13,7 +13,7 @@ import com.eignex.lab.worker.*
 
 /** The queue's front page: what runs and waits, the schedules, and the history, newest first. */
 internal fun indexPage(
-    config: Config,
+    status: StatusSettings,
     host: HostReport,
     active: List<Job>,
     schedules: List<Schedule>,
@@ -33,20 +33,20 @@ internal fun indexPage(
     /** The cloud instances each job ran on ([JobDirView.instances]), by job. */
     instances: Map<Long, List<String>> = emptyMap(),
     /** Free on the data directory's volume, and why the runner holds its queue, read before rendering ([PageQueries.index]). */
-    free: Long? = runCatching { freeBytes(config.dataDir) }.getOrNull(),
-    held: String? = runCatching { Volumes.hold(config) }.getOrNull(),
+    free: Long? = runCatching { freeBytes(status.paths.dataDir) }.getOrNull(),
+    held: String? = runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(),
 ): String = buildString {
     val front = before == null && name == null
     append(head("eignex lab", live = before == null))
     append("<header><h1>Queue</h1>")
-    append("<p id=\"summary\" data-live class=\"muted\">${summary(config, host, active, nodes, free, held)}</p></header>")
+    append("<p id=\"summary\" data-live class=\"muted\">${summary(status, host, active, nodes, free, held)}</p></header>")
     if (front) {
         // One pass over the active jobs: the per-row estimates and the summary's totals read the same numbers.
         val estimates = active.mapNotNull { job ->
-            Estimates.estimate(job, caseHistory, config.cores, config.maxParallel)?.let { job.id to it }
+            Estimates.estimate(job, caseHistory, status.local.cores, status.local.maxParallel)?.let { job.id to it }
         }.toMap()
-        append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(config, active, estimates)}</div>")
-        append("<div id=\"active\" data-live>${activeTable(config, active, queueOrder, estimates, waiting, hosts, nodes, instances)}</div></section>")
+        append("<section><h2>Active</h2><div id=\"work\" data-live>${workSummary(status, active, estimates)}</div>")
+        append("<div id=\"active\" data-live>${activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes, instances)}</div></section>")
         if (schedules.isNotEmpty()) {
             append("<section><h2>Schedules</h2><div id=\"schedules\" data-live>${schedulesTable(schedules)}</div></section>")
         }
@@ -60,7 +60,7 @@ internal fun indexPage(
     }
     append("</div><div id=\"history\" data-live>")
     val shown = if (front) history.filter { it.status.isTerminal } else history
-    append(jobTable(config, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes, instances = instances))
+    append(jobTable(status, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes, instances = instances))
     append("<p class=\"pager\">")
     if (before != null) append("<a href=\"/${query("name" to name)}\">newest</a> ")
     if (history.size == limit) append("<a href=\"/${query("name" to name, "before" to history.last().id.toString())}\">older</a>")
@@ -76,7 +76,7 @@ private enum class WorkKind(val label: String) {
     CLOUD("cloud"),
 }
 
-private fun workKind(config: Config, job: Job): WorkKind = when (Placement.where(job.experiment.host)) {
+private fun workKind(status: StatusSettings, job: Job): WorkKind = when (Placement.where(job.experiment.host)) {
     Placement.LOCAL_OR_CLOUD ->
         WorkKind.TOWARD_CLOUD
     Placement.CLOUD -> WorkKind.CLOUD
@@ -89,11 +89,11 @@ private fun workKind(config: Config, job: Job): WorkKind = when (Placement.where
  * times, as the local machine runs one job at a time. Then, with cloud settings, the launch gauge ([launchGauge]).
  * Paused jobs and ones whose cancel was requested wait for nothing, so they are not counted.
  */
-internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long, WorkEstimate>): String = buildString {
+internal fun workSummary(status: StatusSettings, active: List<Job>, estimates: Map<Long, WorkEstimate>): String = buildString {
     val counted = active.filter { !it.paused && !it.cancelRequested }
-    val split = counted.groupBy { workKind(config, it) }.mapValues { (_, jobs) -> jobs.sumOf { estimates[it.id]?.coreHours ?: 0.0 } }
+    val split = counted.groupBy { workKind(status, it) }.mapValues { (_, jobs) -> jobs.sumOf { estimates[it.id]?.coreHours ?: 0.0 } }
     val total = split.values.sum()
-    val local = counted.filter { workKind(config, it) != WorkKind.CLOUD }.sumOf { estimates[it.id]?.localHours ?: 0.0 }
+    val local = counted.filter { workKind(status, it) != WorkKind.CLOUD }.sumOf { estimates[it.id]?.localHours ?: 0.0 }
     append("<div class=\"work\"><div><b>Work scheduled</b> ")
     if (total <= 0.0) {
         append("<span class=\"muted\">none</span>")
@@ -123,9 +123,9 @@ internal fun workSummary(config: Config, active: List<Job>, estimates: Map<Long,
  * A row's remaining work: its estimated core-hours, for work the local machine may run the time the local machine would
  * take at the job's own concurrency, and where the time a case came from ([WorkEstimate.note]).
  */
-private fun estimateText(config: Config, job: Job, estimate: WorkEstimate?): String {
+private fun estimateText(status: StatusSettings, job: Job, estimate: WorkEstimate?): String {
     if (estimate == null || estimate.coreHours <= 0) return ""
-    val local = if (workKind(config, job) == WorkKind.CLOUD) "" else " · ~${wallText(estimate.localHours)} locally"
+    val local = if (workKind(status, job) == WorkKind.CLOUD) "" else " · ~${wallText(estimate.localHours)} locally"
     val title = when (estimate.source) {
         EstimateSource.MEASURED -> "from the mean time of this job's finished cases"
         EstimateSource.HISTORY -> "from the case count and mean case time of run ${estimate.history}, the last done run of this experiment"
@@ -136,7 +136,7 @@ private fun estimateText(config: Config, job: Job, estimate: WorkEstimate?): Str
 }
 
 private fun activeTable(
-    config: Config, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>, waiting: Map<Long, String>,
+    status: StatusSettings, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>, waiting: Map<Long, String>,
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
     instances: Map<Long, List<String>> = emptyMap(),
@@ -146,12 +146,12 @@ private fun activeTable(
     // as the lab places jobs, each passing over those it may not run.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
-    return jobTable(config, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts, nodes = nodes,
+    return jobTable(status, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts, nodes = nodes,
         instances = instances)
 }
 
 private fun jobTable(
-    config: Config, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
+    status: StatusSettings, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
     waiting: Map<Long, String> = emptyMap(), hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
     instances: Map<Long, List<String>> = emptyMap(),
@@ -179,8 +179,8 @@ private fun jobTable(
             append("<div class=\"desc\" title=\"${esc(it)}\">${esc(it)}</div>")
         }
         append("</td>")
-        append("<td>${refText(config, job)}</td><td>${hostCell(config, job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty(), instances[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id], nodes[job.id].orEmpty())}</td>")
-        append("<td>${progress(job)}${estimates?.let { estimateText(config, job, it[job.id]) }.orEmpty()}</td>")
+        append("<td>${refText(status.repoUrl, job)}</td><td>${hostCell(job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty(), instances[job.id].orEmpty())}</td><td>${statusCell(job, positions[job.id], nodes[job.id].orEmpty())}</td>")
+        append("<td>${progress(job)}${estimates?.let { estimateText(status, job, it[job.id]) }.orEmpty()}</td>")
         append("<td>${ago(job.createdAt)}</td><td>${elapsed(job)}</td>")
         append("<td><a href=\"/jobs/${job.id}/files\">files</a></td></tr>")
     }

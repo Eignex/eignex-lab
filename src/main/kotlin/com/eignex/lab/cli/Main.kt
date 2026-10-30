@@ -64,7 +64,7 @@ fun main(args: Array<String>) {
     }
     val store = Store(config.database)
     // Every directory the lab uses is probed from here on, on a thread of its own: the pages and the runner only read.
-    Volumes.watch(config)
+    Volumes.watch(config.paths)
     println("eignex-lab $mode: data=${config.dataDir} repo=${config.repoUrl} corpus=${config.corpusDir}")
     when (mode) {
         "api" -> {
@@ -84,7 +84,7 @@ private fun dockerCleanupNow(): Int {
     val config = configOrExit()
     val store = config.database.takeIf { it.toFile().isFile }?.let { Store(it) }
     val cleanup = if (store != null) {
-        dockerCleanup(config, store, enabled = true, grep = mirrorGrep(config.mirror.toFile()))
+        dockerCleanup(config.paths, config.docker, config.jobsTargetFreeBytes, store, enabled = true, grep = mirrorGrep(config.mirror.toFile()))
     } else {
         DockerCleanup(
             true, config.dockerKeep, 0, config.dockerCleanupState, null, { emptySet() }, { freeBytes(config.dataDir) },

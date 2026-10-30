@@ -128,7 +128,7 @@ class BenchRunsTest {
                 artifacts = listOf(BenchArtifact("report/raw data.csv")))
             val cases = listOf(CaseResult(0, Status.DONE, BenchRuns.problem(BenchCase("p")), "base",
                 record = BenchProtocol.json.encodeToJsonElement(BenchResult.serializer(), result)))
-            val page = jobPage(config, job, false, cases = cases)
+            val page = jobPage(config.status, job, false, cases = cases)
             assertContains(page, "Bench results")
             assertContains(page, "ops/s")
             assertContains(page, "report/raw%20data.csv")

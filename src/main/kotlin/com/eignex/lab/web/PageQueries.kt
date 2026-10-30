@@ -56,20 +56,20 @@ internal class PageQueries(private val services: ApiServices) {
         val active = store.active(withCommands = false)
         val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
         // Only a job that may have run on the cloud has instances to read.
-        val instances = if (Volumes.jobFiles(config) != null) emptyMap() else (active + history)
+        val instances = if (Volumes.jobFiles(config.paths) != null) emptyMap() else (active + history)
             .filter { it.experiment.host == Experiments.AWS_HOST || it.experiment.host == Experiments.AUTO_HOST }
-            .associate { it.id to JobDirView.instances(config, it) }.filterValues { it.isNotEmpty() }
+            .associate { it.id to JobDirView.instances(config.paths, it) }.filterValues { it.isNotEmpty() }
         return IndexView(
             active, store.schedules.all(), history, before, name, store.queue(),
             store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
-            jobNodes(config, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }, services.capacitySettings.get()),
-            instances, runCatching { freeBytes(config.dataDir) }.getOrNull(), runCatching { Volumes.hold(config) }.getOrNull(),
+            jobNodes(config.status, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }, services.capacitySettings.get()),
+            instances, runCatching { freeBytes(config.dataDir) }.getOrNull(), runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(),
         )
     }
 
     fun disk() = DiskView(
         services.disk.latest, freeBytes(config.dataDir), store.holds.active(),
-        runCatching { store.maintenance.database() }.getOrNull(), Volumes.report(config), runCatching { Volumes.hold(config) }.getOrNull(),
+        runCatching { store.maintenance.database() }.getOrNull(), Volumes.report(config.paths), runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(),
     )
 
     /** The latest finished experiment queued by the same schedule before [job]. */

@@ -97,40 +97,36 @@ data class Config(
         nomadQueueSettings?.let { kotlinx.serialization.json.Json.decodeFromString<NomadQueueSettings>(Files.readString(it)) }
     }
     /** Where the lab keeps its files. */
-    val paths: DataPaths get() = DataPaths(dataDir, jobsDir)
+    val paths: DataPaths get() = DataPaths(dataDir, jobsDir, corpusDir, volumesRoot, volumeAccess)
     /** The local machine as the lab schedules work on it. */
     val local: LocalNode get() = LocalNode(cores, maxParallel, defaultParallel, localNodeTags)
+    /** What the status pages and the queue's read side show of the settings. */
+    val status: StatusSettings get() = StatusSettings(repoUrl, paths, local, minFreeBytes, nomadCapacitySettings)
+    /** The workers the lab places experiments on ([Placement]). */
+    val workers: Workers get() = Workers(local, nomadQueue)
     /** How the lab keeps its disks from filling. */
     val disk: DiskPolicy get() = DiskPolicy(minFreeBytes, trimGraceMs, trimCriticalFreeBytes, jobsTargetFreeBytes, trimAgeMs)
+    /** Whether and how the lab keeps Docker in check. */
+    val docker: DockerPolicy get() = DockerPolicy(requireDocker, dockerKeep, dockerCleanupDays)
+    /** The most a saved-capture archive may hold ([CaptureArchives]). */
+    val archives: ArchiveLimits get() = ArchiveLimits(archiveMaxBytes, archiveMaxUnpackedBytes)
 
     /** The queue and its capacity pools, checked together ([ClusterSettings]) once, when first read. */
     val cluster: ClusterSettings? by lazy { nomadQueue?.let { ClusterSettings(it, nomadCapacitySettings?.let(CapacitySettings::read)) } }
-    val nomadCapacityReport: Path get() = dataDir.resolve("nomad/capacity-report.json")
-    val nativeYield: Path get() = dataDir.resolve("nomad/update-pending")
+    val nomadCapacityReport: Path get() = paths.capacityReport
+    val nativeYield: Path get() = paths.nativeYield
 
     val localNodeTags: Set<String> get() = NodeTags.observed(cpuCapabilities, nodeTags)
-    /** Saved-capture archives an analysis job may name by a path under it ([CaptureArchives]). */
-    val archiveDir: Path get() = dataDir.resolve("archives")
+    val archiveDir: Path get() = paths.archives
 
     val database: Path get() = paths.database
-    /** A GitHub token the trust check reads the repository's activity with, when the file exists: without one GitHub
-     *  allows 60 calls an hour. Read again when it changes, so adding it needs no reinstall. */
-    val githubTokenFile: Path get() = dataDir.resolve("github-token")
+    val githubTokenFile: Path get() = paths.githubToken
     val mirror: Path get() = paths.mirror
-    /** Written by `lab update`: the runner checks for a lab update at once instead of at its interval. */
-    val updateRequest: Path get() = dataDir.resolve("update-requested")
-    /** Written by `lab docker-cleanup`: the runner cleans Docker up at its next free moment. */
-    val dockerCleanupRequest: Path get() = dataDir.resolve("docker-cleanup-requested")
-    /** The last Docker cleanup, as [DockerCleanup] wrote it. */
-    val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
+    val updateRequest: Path get() = paths.updateRequest
+    val dockerCleanupRequest: Path get() = paths.dockerCleanupRequest
+    val dockerCleanupState: Path get() = paths.dockerCleanupState
     fun jobDir(id: Long): Path = paths.jobDir(id)
-
-    /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
-     *  does not answer ([Volumes]). */
-    fun createJobDir(id: Long): Path {
-        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
-        return Files.createDirectories(jobDir(id))
-    }
+    fun createJobDir(id: Long): Path = paths.createJobDir(id)
     fun worktree(id: Long): Path = paths.worktree(id)
 
     companion object {
@@ -208,15 +204,68 @@ data class Config(
     }
 }
 
-/** Where the lab keeps its files ([Config.paths]): what a part that only reads and writes them needs of its settings. */
-data class DataPaths(val dataDir: Path, val jobsDir: Path) {
+/**
+ * Where the lab keeps its files ([Config.paths]): what a part that only reads and writes them needs of its settings,
+ * with the volumes they are on, which [createJobDir] checks first.
+ */
+data class DataPaths(
+    val dataDir: Path,
+    val jobsDir: Path,
+    /** The benchmark instances. */
+    val corpusDir: Path,
+    val volumesRoot: Path = Path.of("/Volumes"),
+    val volumeAccess: VolumeAccess = VolumeAccess(),
+) {
     val database: Path get() = dataDir.resolve("lab.db")
+    /** Saved-capture archives an analysis job may name by a path under it ([CaptureArchives]). */
+    val archives: Path get() = dataDir.resolve("archives")
+    val capacityReport: Path get() = dataDir.resolve("nomad/capacity-report.json")
+    val nativeYield: Path get() = dataDir.resolve("nomad/update-pending")
+    /** A GitHub token the trust check reads the repository's activity with, when the file exists: without one GitHub
+     *  allows 60 calls an hour. Read again when it changes, so adding it needs no reinstall. */
+    val githubToken: Path get() = dataDir.resolve("github-token")
+    /** Written by `lab update`: the runner checks for a lab update at once instead of at its interval. */
+    val updateRequest: Path get() = dataDir.resolve("update-requested")
+    /** Written by `lab docker-cleanup`: the runner cleans Docker up at its next free moment. */
+    val dockerCleanupRequest: Path get() = dataDir.resolve("docker-cleanup-requested")
+    /** The last Docker cleanup, as [DockerCleanup] wrote it. */
+    val dockerCleanupState: Path get() = dataDir.resolve("docker-cleanup.json")
     val mirror: Path get() = dataDir.resolve("repo.git")
     /** The lab's mirrors of the repositories it builds, one bare repository each ([Repositories.mirror]). */
     val repositories: Path get() = dataDir.resolve("repos")
     fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
+
+    /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
+     *  does not answer ([Volumes]). */
+    fun createJobDir(id: Long): Path {
+        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
+        return Files.createDirectories(jobDir(id))
+    }
 }
+
+/**
+ * What the lab's status views read of its settings ([Config.status]): the pages, the queue's waiting reasons and the
+ * nodes each job runs on.
+ */
+data class StatusSettings(
+    val repoUrl: String,
+    val paths: DataPaths,
+    val local: LocalNode,
+    /** The free space under which the queue holds ([Volumes.hold]). */
+    val minFreeBytes: Long,
+    /** The capacity pools' settings file, when the lab has cloud pools. */
+    val capacitySettings: Path?,
+)
+
+/** The workers the lab can place an experiment on ([Config.workers]): the local machine, and the queue's cloud targets when it has one. */
+data class Workers(val local: LocalNode, val queue: NomadQueueSettings?)
+
+/** Whether the lab needs Docker, and which images and how many days of them its cleanup keeps ([DockerCleanup]). */
+data class DockerPolicy(val required: Boolean, val keep: Set<String>, val cleanupDays: Long)
+
+/** The most a saved-capture archive may hold, packed and unpacked ([CaptureArchives]). */
+data class ArchiveLimits(val maxBytes: Long, val maxUnpackedBytes: Long)
 
 /** The local machine as the lab schedules work on it ([Config.local]). */
 data class LocalNode(val cores: Int, val maxParallel: Int, val defaultParallel: Int, val tags: Set<String>)

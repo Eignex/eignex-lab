@@ -19,7 +19,7 @@ import java.util.Locale
 
 /** An experiment's results: each arm's totals and score, the disagreements, and every problem across the arms. */
 internal fun experimentSection(
-    config: Config,
+    repoUrl: String,
     job: Long?,
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
@@ -69,7 +69,7 @@ internal fun experimentSection(
     for ((index, planned) in arms.withIndex()) {
         val summary = comparison.arms[index]
         val armStats = stats.arms[index]
-        val commit = commitLink(config.repoUrl, planned.sha)
+        val commit = commitLink(repoUrl, planned.sha)
         val versus = paired[summary.label]?.let(::versus) ?: "<span class=\"muted\">baseline</span>"
         val instrumented = if (summary.instrumented > 0) " <span class=\"PARTIAL\" title=\"compilation measurement: times are no runtime measurement\">instrumented</span>" else ""
         append("<tr><td><b>${esc(summary.label)}</b>$instrumented${witnessLabel(summary)}<br><small class=\"muted\">${esc(describe(planned.arm))}</small></td>")
@@ -368,7 +368,7 @@ internal fun shortError(error: String): String =
         ?: error.lineSequence().first().let { if (it.length > 120) it.take(120) + "…" else it }
 
 internal fun summary(
-    config: Config,
+    status: StatusSettings,
     host: HostReport,
     active: List<Job>,
     nodes: Map<Long, List<JobNode>>,
@@ -395,7 +395,6 @@ internal fun summary(
  * nodes) and each host's part of it ([hosts]).
  */
 internal fun hostCell(
-    config: Config,
     job: Job,
     hosts: List<HostProgress> = emptyList(),
     nodes: List<JobNode> = emptyList(),
@@ -474,12 +473,12 @@ internal fun statusCell(job: Job, position: Int?, nodes: List<JobNode>? = null):
 }
 
 /** The ref and the commit it ran, without repeating a ref that is the commit itself. */
-internal fun refText(config: Config, job: Job): String {
+internal fun refText(repoUrl: String, job: Job): String {
     val isSha = Regex("[0-9a-f]{7,40}").matches(job.ref)
     val sha = job.sha ?: job.ref.takeIf { isSha }
     val commit = sha?.let { full ->
         val spec = job.experiment
-        val repository = if (job.backend == Backend.LEGACY || !spec.isBench && !spec.isProfile) config.repoUrl
+        val repository = if (job.backend == Backend.LEGACY || !spec.isBench && !spec.isProfile) repoUrl
             else Repositories.url(spec.repository)
         commitLink(repository, full)
     }

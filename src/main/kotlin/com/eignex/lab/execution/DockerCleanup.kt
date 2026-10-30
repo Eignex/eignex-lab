@@ -281,25 +281,28 @@ internal fun referencedImages(jobs: List<Job>, arms: (Long) -> List<PlannedArm>,
 }
 
 /**
- * The lab's cleanup: on when Docker is ([Config.requireDocker], which `install.sh` sets unless `LAB_DOCKER=none`) and
- * due every [Config.dockerCleanupDays] (never on its own at 0), with the tags the active jobs need found by [grep] in the mirror.
+ * The lab's cleanup: on when Docker is ([DockerPolicy.required], which `install.sh` sets unless `LAB_DOCKER=none`) and
+ * due every [DockerPolicy.cleanupDays] (never on its own at 0), with the tags the active jobs need found by [grep] in the
+ * mirror; it cleans sooner while the data volume has under [lowFreeBytes] free.
  */
 internal fun dockerCleanup(
-    config: Config,
+    paths: DataPaths,
+    docker: DockerPolicy,
+    lowFreeBytes: Long,
     store: Store,
-    enabled: Boolean = config.requireDocker,
+    enabled: Boolean = docker.required,
     grep: (String, String) -> Pair<Int, String>,
 ) = DockerCleanup(
     enabled,
-    config.dockerKeep,
-    config.dockerCleanupDays * DockerCleanup.DAY_MS,
-    config.dockerCleanupState,
-    config.dockerCleanupRequest,
+    docker.keep,
+    docker.cleanupDays * DockerCleanup.DAY_MS,
+    paths.dockerCleanupState,
+    paths.dockerCleanupRequest,
     needed = {
-        referencedImages(store.active(withCommands = false), store.plans::arms, config.dockerKeep.map(DockerCleanup::repository).toSet(), grep)
+        referencedImages(store.active(withCommands = false), store.plans::arms, docker.keep.map(DockerCleanup::repository).toSet(), grep)
     },
-    freeBytes = { freeBytes(config.dataDir) },
-    lowFreeBytes = config.jobsTargetFreeBytes,
+    freeBytes = { freeBytes(paths.dataDir) },
+    lowFreeBytes = lowFreeBytes,
 )
 
 /** The `git grep` [referencedImages] runs in [mirror]. */

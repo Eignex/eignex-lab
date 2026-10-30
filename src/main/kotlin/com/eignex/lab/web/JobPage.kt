@@ -16,7 +16,7 @@ import java.time.Instant
 
 /** One job: its settings, controls while it is unfinished, and every command with its output. */
 internal fun jobPage(
-    config: Config,
+    status: StatusSettings,
     job: Job,
     failedOnly: Boolean,
     arms: List<PlannedArm> = emptyList(),
@@ -33,7 +33,7 @@ internal fun jobPage(
     nodes: List<JobNode> = emptyList(),
     preparation: List<ExecutionSessionReport> = emptyList(),
     /** What the job's directory holds ([JobDirView.read]); the route reads it before rendering, behind the volume probe. */
-    files: JobDirView = JobDirView.read(config, job),
+    files: JobDirView = JobDirView.read(status.paths, job),
 ): String = buildString {
     val active = job.status.isActive
     append(head("${job.id} ${job.name} · eignex lab", live = active))
@@ -48,13 +48,13 @@ internal fun jobPage(
         append("<dt>preparation</dt><dd>${preparationDetails(report)}</dd>")
     }
     append("<dt>repository</dt><dd>${esc(job.experiment.repository)}</dd>")
-    append("<dt>ref</dt><dd>${refText(config, job)}</dd>")
+    append("<dt>ref</dt><dd>${refText(status.repoUrl, job)}</dd>")
     append("<dt>progress</dt><dd>${progress(job)}</dd>")
     append("<dt>created</dt><dd>${ago(job.createdAt)}</dd>")
     if (job.startedAt != null) append("<dt>started</dt><dd>${ago(job.startedAt)}</dd>")
     if (job.finishedAt != null) append("<dt>finished</dt><dd>${ago(job.finishedAt)}</dd>")
     append("<dt>elapsed</dt><dd>${elapsed(job)}</dd>")
-    append("<dt>where</dt><dd>${hostCell(config, job, hosts, nodes, files.instances)}</dd>")
+    append("<dt>where</dt><dd>${hostCell(job, hosts, nodes, files.instances)}</dd>")
     job.experiment.nodeTags?.let { selector ->
         append("<dt>node tags</dt><dd>")
         if (selector.require.isNotEmpty()) append("require ${esc(selector.require.sorted().joinToString())}")
@@ -101,7 +101,7 @@ internal fun jobPage(
         )
         append("<label>priority <input id=\"priority\" type=\"number\" value=\"${job.priority}\"></label>")
         append("<button onclick=\"act('/jobs/$id/priority', {priority: +document.getElementById('priority').value})\">set</button>")
-        append("<label>parallel <input id=\"parallel\" type=\"number\" min=\"1\" max=\"${config.maxParallel}\" value=\"${job.parallel}\"></label>")
+        append("<label>parallel <input id=\"parallel\" type=\"number\" min=\"1\" max=\"${status.local.maxParallel}\" value=\"${job.parallel}\"></label>")
         append("<button onclick=\"act('/jobs/$id/parallel', {parallel: +document.getElementById('parallel').value})\">set</button>")
         if (!job.cancelRequested) {
             append("<button class=\"danger\" onclick=\"act('/jobs/$id/cancel', null, 'Cancel job $id?')\">cancel</button>")
@@ -118,11 +118,11 @@ internal fun jobPage(
         is Work.Analysis -> append(analysisSection(job, spec, files))
         is Work.Bench -> {
             if (cases.any { it.problem.benchCase?.attributes?.get("recordSchema") == "solver-v1" })
-                append(experimentSection(config, job.id, arms, cases, references))
+                append(experimentSection(status.repoUrl, job.id, arms, cases, references))
             append(benchSection(job, cases, arms))
         }
         is Work.Profile, is Work.Script -> append(singleCaseSection(job, spec, files))
-        Work.Recipe -> append(experimentSection(config, job.id, arms, cases, references))
+        Work.Recipe -> append(experimentSection(status.repoUrl, job.id, arms, cases, references))
     }
     if (!showCommands) {
         append("<p><a href=\"/jobs/${job.id}?commands\">every case's command</a></p></div>")

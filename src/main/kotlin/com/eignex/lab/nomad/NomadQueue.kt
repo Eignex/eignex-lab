@@ -21,7 +21,7 @@ class NomadQueue(
     private val config: Config, private val store: Store, private val backend: NomadBackend,
     private val artifacts: ArtifactStore, private val settings: NomadQueueSettings,
     private val allowed: () -> Boolean,
-    private val completed: (Job) -> Unit = Confirmations(config, store)::queue,
+    private val completed: (Job) -> Unit = Confirmations(config.local, config.paths, store)::queue,
     private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>>? =
         TrustedQueueSources(config, artifacts, store)::publish,

@@ -147,7 +147,7 @@ class CaptureArchivesTest {
         assertEquals(9, CompilationReports.readTasks(dir.resolve(checkNotNull(entry.tasks))).size)
         assertTrue(dir.resolve(CaptureArchives.ROOT).resolve(profile).resolve(CliMeasurements.COMPILATION_LOG).exists())
         assertTrue(archive.exists(), "a lab-local archive stays where it was")
-        val page = jobPage(config, store.job(job.id)!!, failedOnly = false)
+        val page = jobPage(config.status, store.job(job.id)!!, failedOnly = false)
         assertContains(page, "pinned archive <code>${archive.name}</code>")
         assertContains(page, "/jobs/${job.id}/files/${entry.report}")
         assertTrue(JobTrim.keeps(Path.of(entry.report)) && JobTrim.keeps(Path.of(checkNotNull(entry.tasks))))
@@ -186,12 +186,12 @@ class CaptureArchivesTest {
     fun `a manifest pin that differs, or a manifest of another archive, is refused`() {
         val (archive, manifest) = packed()
         val pinned = AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive), manifestSha256 = "1".repeat(64))
-        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(pinned, config, temp.resolve("job1")) }.message.orEmpty(),
+        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(pinned, config.paths, config.archives, temp.resolve("job1")) }.message.orEmpty(),
             "manifest's SHA-256")
         val (other, _) = crafted("cases/0/profile-a/cli.jfr")
         Files.copy(manifest, config.archiveDir.resolve("mixed.manifest.json"))
         val mixed = AnalyzeSpec(archive = other.name, sha256 = shaOf(other), manifest = "mixed.manifest.json")
-        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(mixed, config, temp.resolve("job2")) }.message.orEmpty(),
+        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(mixed, config.paths, config.archives, temp.resolve("job2")) }.message.orEmpty(),
             "manifest is of archive")
     }
 
@@ -201,7 +201,7 @@ class CaptureArchivesTest {
             "cases/0/profile-a/cli.jfr" to TarWriter.SYMLINK)) {
             val (archive, manifest) = crafted(name, type, link = "/etc/passwd")
             val dir = temp.resolve("job-${archive.name.hashCode()}")
-            val error = runCatching { CaptureArchives.fetch(AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive)), config, dir) }.exceptionOrNull()
+            val error = runCatching { CaptureArchives.fetch(AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive)), config.paths, config.archives, dir) }.exceptionOrNull()
             assertNotNull(error, name)
             assertTrue(error.message.orEmpty().let { "unsafe path" in it || "nonregular" in it }, "$name: ${error.message}")
             assertFalse(dir.resolve(CaptureArchives.ROOT).exists(), name)
@@ -222,25 +222,25 @@ class CaptureArchivesTest {
         Files.copy(archive, config.archiveDir.resolve(archive.name))
         Files.copy(manifest, config.archiveDir.resolve(manifest.name))
         val small = config.copy(archiveMaxBytes = 100)
-        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, small, temp.resolve("j1")) }.message.orEmpty(), "over the lab's")
+        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, small.paths, small.archives, temp.resolve("j1")) }.message.orEmpty(), "over the lab's")
         val unpacked = config.copy(archiveMaxUnpackedBytes = 100)
-        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, unpacked, temp.resolve("j2")) }.message.orEmpty(), "unpacks to")
+        assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, unpacked.paths, unpacked.archives, temp.resolve("j2")) }.message.orEmpty(), "unpacks to")
     }
 
     @Test
     fun `only a regular file under the lab's archive directory is analysed, never a URL`() {
         val sha = "a".repeat(64)
-        fun refusal(name: String) = CaptureArchives.refusal(AnalyzeSpec(archive = name, sha256 = sha), config)
+        fun refusal(name: String) = CaptureArchives.refusal(AnalyzeSpec(archive = name, sha256 = sha), config.paths)
         val (archive, manifest) = packed()
         assertNull(refusal(archive.name))
         assertContains(refusal("https://example.org/evidence/a.tar.gz")!!, "not a URL")
-        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name, sha256 = sha, manifest = "https://example.org/a.manifest.json"), config)!!,
+        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name, sha256 = sha, manifest = "https://example.org/a.manifest.json"), config.paths)!!,
             "not a URL")
         assertContains(refusal("a.zip")!!, "must end in .tar.gz")
         assertContains(refusal("../a.tar.gz")!!, "unsafe path")
         assertContains(refusal("/etc/a.tar.gz")!!, "unsafe path")
         assertContains(refusal("missing.tar.gz")!!, "no missing.tar.gz in the lab's archive directory")
-        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name), config)!!, "must pin")
+        assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name), config.paths)!!, "must pin")
         // A link out of the archive directory is not followed, and an archive needs its manifest beside it.
         val outside = temp.resolve("outside.tar.gz").also { Files.copy(archive, it) }
         Files.createSymbolicLink(config.archiveDir.resolve("linked.tar.gz"), outside)
@@ -294,7 +294,7 @@ class CaptureArchivesTest {
             """"compilerMs":12.5,"complete":true,"markers":[]}]}"""
         config.jobDir(id).createDirectories().resolve(CompilationReports.ANALYSIS).writeText(v1)
 
-        val page = jobPage(config, store.job(id)!!, failedOnly = false)
+        val page = jobPage(config.status, store.job(id)!!, failedOnly = false)
 
         assertContains(page, "retained captures of job <a href=\"/jobs/6971\">6971</a>")
         assertContains(page, "<a href=\"/jobs/6971/files/cases/0/profile-a/compilation-report.json\">")

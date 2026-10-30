@@ -31,7 +31,7 @@ internal fun Route.statusRoutes(services: ApiServices) {
             // The runs each active job's estimate learns from, read now: the renderer only formats them.
             val histories = view.active.associate { it.id to services.estimates.lookup(it) }
             // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
-            indexPage(config, services.host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
+            indexPage(config.status, services.host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
                 view.queue, { histories[it.id] }, emptyMap(), view.hosts, view.nodes, view.instances, view.free, view.held)
         }
         call.respondText(page, ContentType.Text.Html)
@@ -47,20 +47,20 @@ internal fun Route.statusRoutes(services: ApiServices) {
             val jobs = store.active(withCommands = false)
             Health(true, jobs.count { it.status == Status.QUEUED }, jobs.count { it.status == Status.RUNNING }, freeBytes(config.dataDir),
                 services.host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags),
-                runCatching { Volumes.hold(config) }.getOrNull(), Volumes.report(config), readResultJournalReport(config.dataDir))
+                runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(), Volumes.report(config.paths), readResultJournalReport(config.dataDir))
         })
     }
     // Where each active job may run and why a queued one waits ([Waiting]), by the rules the runner and the cloud
     // worker follow; read-only.
     get("/placement") {
-        call.respond(io { Waiting.report(config, store, services.estimates::lookup) })
+        call.respond(io { Waiting.report(config.status, store, services.estimates::lookup) })
     }
     get("/placement/{id}") {
         val id = call.longParam()
         val placement = io {
-            Waiting.report(config, store, services.estimates::lookup).jobs.firstOrNull { it.id == id }
+            Waiting.report(config.status, store, services.estimates::lookup).jobs.firstOrNull { it.id == id }
                 ?: store.jobsByIds(listOf(id)).firstOrNull()?.let {
-                    Waiting.placement(config, it, Waiting.view(config, store), null, services.estimates::lookup, store.hostProgress(listOf(id))[id].orEmpty())
+                    Waiting.placement(config.status, it, Waiting.view(config.status, store), null, services.estimates::lookup, store.hostProgress(listOf(id))[id].orEmpty())
                 }
         } ?: throw ApiError.NotFound("no such job $id")
         call.respond(placement)

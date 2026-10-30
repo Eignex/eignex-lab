@@ -16,7 +16,7 @@ import com.eignex.lab.worker.*
  * experiments over the same problems. Problems pair up by suite and name, seeds by value.
  */
 internal fun comparePage(
-    config: Config,
+    repoUrl: String,
     jobs: List<Job>,
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
@@ -26,7 +26,7 @@ internal fun comparePage(
     append("<header><h1>Compare ")
     append(jobs.joinToString(" · ") { "<a href=\"/jobs/${it.id}\">${it.id} ${esc(it.name)}</a>" })
     append("</h1></header><div>")
-    append(experimentSection(config, null, arms, cases, references))
+    append(experimentSection(repoUrl, null, arms, cases, references))
     append("</div>")
     append(SCRIPT)
     append("</body></html>")
