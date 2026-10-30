@@ -64,10 +64,10 @@ class PlacementTest {
         val config = config()
         val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.T", classpath = listOf("tools/lib/*")))
 
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST), "e", config))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(profile, "p", config))
-        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "e", config(cloud = false)) }
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.LAB_HOST), "e", config.workers))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(host = Experiments.AWS_HOST), "e", config.workers))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(profile, "p", config.workers))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "e", config(cloud = false).workers) }
     }
 
     @Test
@@ -75,13 +75,13 @@ class PlacementTest {
         val config = config()
         for (selector in listOf(NodeSelector(require = setOf("local")), NodeSelector(exclude = setOf("cloud")),
             NodeSelector(require = setOf("arch:arm64")))) {
-            val failure = assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = selector), spec.name, config) }
+            val failure = assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = selector), spec.name, config.workers) }
             assertContains(failure.message!!, Placement.LOCAL_RESERVED)
         }
         val pinned = spec.copy(nodeTags = NodeSelector(require = setOf("local")))
-        assertEquals(Experiments.LAB_HOST, Placement.host(pinned, "status-sweep@abc", config))
-        assertEquals(Experiments.LAB_HOST, Placement.host(pinned.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), "reference", config))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(pinned.copy(nodeTags = null), spec.name, config))
+        assertEquals(Experiments.LAB_HOST, Placement.host(pinned, "status-sweep@abc", config.workers))
+        assertEquals(Experiments.LAB_HOST, Placement.host(pinned.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs")), "reference", config.workers))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(pinned.copy(nodeTags = null), spec.name, config.workers))
     }
 
     @Test
@@ -96,7 +96,7 @@ class PlacementTest {
 
         assertEquals(listOf("8", 6), listOf(capped.base["processors"], capped.parallel))
         assertEquals(listOf("parallel=8 was asked, capped at the local machine's 6", "processors=12 was asked, capped at the local machine's 8 cores"), capped.capped)
-        assertEquals(Experiments.AUTO_HOST, Placement.host(capped, "e", config))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(capped, "e", config.workers))
         assertEquals(listOf("4", "8"), gridCapped.grid["processors"])
         assertEquals(8, Experiments.arms(gridCapped).maxOf { it.cores })
         assertEquals(spec, Experiments.capToLocal(spec, config.cores, config.maxParallel))
@@ -118,16 +118,16 @@ class PlacementTest {
         val schedules = store.schedules.all()
         val reference = spec.copy(base = mapOf("backend" to REFERENCE_BACKEND, "solver" to "highs"))
 
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "ref@abc123", config, schedules))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "aliased@abc123", config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "status-sweep@abc123", config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "pinned@abc123", config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(reference, "refs@abc123", config, schedules))
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, Confirm.name("ref", "abc123", 7), config, schedules))
-        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config, schedules))
-        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "ref@abc123", config(cloud = false), schedules) }
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "ref@abc123", config.workers, schedules))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec, "aliased@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "status-sweep@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "pinned@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(reference, "refs@abc123", config.workers, schedules))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, Confirm.name("ref", "abc123", 7), config.workers, schedules))
+        assertEquals(Experiments.AUTO_HOST, Placement.host(spec.copy(problemList = listOf(Problem("s", "p"))), "ref@abc123", config.workers, schedules))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec, "ref@abc123", config(cloud = false).workers, schedules) }
         // A submitted job is placed without the schedules: a name alone does not take it off the local machine.
-        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config))
+        assertEquals(Experiments.LAB_HOST, Placement.host(spec, "ref@abc123", config.workers))
     }
 
     @Test

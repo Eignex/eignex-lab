@@ -31,13 +31,13 @@ internal fun Route.fileRoutes(services: ApiServices) {
     val store = services.store
     get("/jobs/{id}/files") {
         val id = io { call.job(store) }.id
-        requireJobFiles(config)
+        requireJobFiles(config.paths)
         val files = io { jobFiles(config.jobDir(id)) }
-        if (call.wantsHtml()) call.respondText(filesPage(id, files), ContentType.Text.Html) else call.respond(files)
+        if (call.wantsHtml()) call.respondHtml(filesPage(id, files)) else call.respond(files)
     }
     get("/jobs/{id}/files/{path...}") {
         val id = io { call.job(store) }.id
-        requireJobFiles(config)
+        requireJobFiles(config.paths)
         val tail = call.parameters["tail"]?.let {
             it.toLongOrNull()?.takeIf { bytes -> bytes in 0..MAX_TAIL_BYTES } ?: throw ApiError.Invalid("tail must be 0 to $MAX_TAIL_BYTES bytes")
         }
@@ -58,8 +58,8 @@ internal fun Route.fileRoutes(services: ApiServices) {
  * missing, or does not answer within the probe's timeout ([VolumeAccess]). That is said at once while a probe is known
  * to be stuck, rather than leave a request thread blocked on the volume.
  */
-private suspend fun requireJobFiles(config: Config) {
-    io { Volumes.jobFiles(config) }?.let { throw ApiError.Unavailable("job files unavailable: $it") }
+private suspend fun requireJobFiles(paths: DataPaths) {
+    io { Volumes.jobFiles(paths) }?.let { throw ApiError.Unavailable("job files unavailable: $it") }
 }
 
 /** The last [bytes] of a file that may still be growing. */

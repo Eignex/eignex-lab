@@ -14,12 +14,14 @@ import kotlin.io.path.exists
 
 /** Queues a run of each schedule whose ref moved, or that was asked to launch, fetching its repository's mirror. */
 internal class Schedules(
-    private val config: Config,
+    private val paths: DataPaths,
+    private val workers: Workers,
+    private val retry: Backoff,
     private val store: Store,
     private val sourceUrl: (String) -> String = { Repositories.source(it) },
     private val stopping: () -> Boolean = { false },
 ) {
-    private fun mirror(repository: String) = Repositories.mirror(config.paths, repository)
+    private fun mirror(repository: String) = Repositories.mirror(paths, repository)
 
     fun enqueue() {
         fun regular(s: Schedule) = s.checkedAt?.let { now() - it >= s.intervalSec * 1000 } ?: true
@@ -46,7 +48,7 @@ internal class Schedules(
                     withMirrorLock(mirror) {
                         if (!mirror.exists()) {
                             mirror.parent.createDirectories()
-                            capture(config.dataDir.toFile(), "git clone --mirror ${quote(sourceUrl(repository))} ${quote(mirror.toString())}")
+                            capture(paths.dataDir.toFile(), "git clone --mirror ${quote(sourceUrl(repository))} ${quote(mirror.toString())}")
                         }
                         capture(mirror.toFile(), "git remote set-url origin ${quote(sourceUrl(repository))}")
                         capture(mirror.toFile(), "git fetch --prune origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'")
@@ -73,8 +75,8 @@ internal class Schedules(
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
             val origin = JobOrigin.Scheduled(schedule.name)
-            val spec = run.copy(host = Placement.host(run, origin, config, listOf(schedule)))
-            val id = store.create(name, sha, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec, origin)
+            val spec = run.copy(host = Placement.host(run, origin, workers, listOf(schedule)))
+            val id = store.create(name, sha, emptyList(), spec.parallel ?: workers.local.defaultParallel, spec.priority, spec, origin)
             store.schedules.ran(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }
@@ -83,12 +85,12 @@ internal class Schedules(
     /** The commit origin advertises for branch or tag [ref]; null when it names neither, or origin does not answer. */
     private fun advertised(ref: String, repository: String): String? = runCatching {
         capture(
-            config.dataDir.toFile(),
+            paths.dataDir.toFile(),
             "GIT_TERMINAL_PROMPT=0 git ls-remote ${quote(sourceUrl(repository))} ${quote("refs/heads/$ref")} ${quote("refs/tags/$ref")}",
         )
     }.getOrNull()?.lineSequence()?.map { it.substringBefore('\t').trim() }?.firstOrNull(CommitSha::isValid)
 
-    internal fun <T> withRetry(what: String, backoff: Backoff = config.retry, step: () -> T): T = retrying(
+    internal fun <T> withRetry(what: String, backoff: Backoff = retry, step: () -> T): T = retrying(
         backoff, onRetry = { attempt, wait, error ->
             println("$what failed (try $attempt): ${error.message}; retrying in ${wait / 1000} s")
         }, sleep = { wait ->

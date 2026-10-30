@@ -52,7 +52,7 @@ class ScheduleService internal constructor(private val services: ApiServices) {
         requireDescription(experiment)
         val local = NodeTags.matches(experiment.nodeTags, config.localNodeTags)
         val pinned = !Placement.cloudOptIn(experiment) || Placement.localOnly(experiment, JobOrigin.Submitted(experiment.name))
-        require(if (pinned) local else Placement.cloudCoreLimit(experiment, config, cloudSchedule = true) >= Experiments.arms(experiment).maxOf { it.cores }) {
+        require(if (pinned) local else Placement.cloudCoreLimit(experiment, config.workers, cloudSchedule = true) >= Experiments.arms(experiment).maxOf { it.cores }) {
             "the schedule's tags match no allowed worker; omit tags for auto placement or select configured capabilities"
         }
         val coreLimit = services.placement.coreLimit(experiment)

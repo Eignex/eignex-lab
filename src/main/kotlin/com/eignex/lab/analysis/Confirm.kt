@@ -198,7 +198,7 @@ object Confirm {
             repository = spec.repository,
             nodeTags = spec.nodeTags,
             host = spec.host,
-            bench = spec.bench?.copy(frozenCases = frozen,
+            bench = spec.work.bench?.copy(frozenCases = frozen,
                 replayJobs = beforeJob?.let { mapOf(BEFORE to it, AFTER to job) }.orEmpty()),
             configs = listOf(config + mapOf("label" to BEFORE, "ref" to before), config + mapOf("label" to AFTER, "ref" to after)),
             seeds = spec.seeds,

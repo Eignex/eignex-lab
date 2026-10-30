@@ -16,18 +16,18 @@ import com.eignex.lab.worker.*
  * experiments over the same problems. Problems pair up by suite and name, seeds by value.
  */
 internal fun comparePage(
-    config: Config,
+    repoUrl: String,
     jobs: List<Job>,
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
     references: Map<ProblemKey, Reference> = emptyMap(),
-): String = buildString {
+): Html = buildHtml {
     append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab", live = false))
-    append("<header><h1>Compare ")
-    append(jobs.joinToString(" · ") { "<a href=\"/jobs/${it.id}\">${it.id} ${esc(it.name)}</a>" })
-    append("</h1></header><div>")
-    append(experimentSection(config, null, arms, cases, references))
-    append("</div>")
-    append(SCRIPT)
-    append("</body></html>")
+    append(Html("<header><h1>Compare "))
+    append(jobs.joinHtml(Html(" · ")) { (Html("<a href=\"/jobs/") + it.id + Html("\">") + it.id + Html(" ") + esc(it.name) + Html("</a>")) })
+    append(Html("</h1></header><div>"))
+    append(experimentSection(repoUrl, null, arms, cases, references))
+    append(Html("</div>"))
+    append(Html(SCRIPT))
+    append(Html("</body></html>"))
 }

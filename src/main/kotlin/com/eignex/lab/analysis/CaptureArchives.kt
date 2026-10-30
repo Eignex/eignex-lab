@@ -74,21 +74,21 @@ object CaptureArchives {
      * Why [spec]'s archive cannot be analysed on this lab, or null when it can: it needs its SHA-256, a file under the
      * lab's archive directory, and a manifest beside it or named.
      */
-    fun refusal(spec: AnalyzeSpec, config: Config): String? = try {
-        locate(spec, config)
+    fun refusal(spec: AnalyzeSpec, paths: DataPaths): String? = try {
+        locate(spec, paths)
         null
     } catch (e: ArchiveException) {
         e.message
     }
 
-    private fun locate(spec: AnalyzeSpec, config: Config): Pair<Local, Local> {
+    private fun locate(spec: AnalyzeSpec, paths: DataPaths): Pair<Local, Local> {
         val archive = spec.archive ?: throw ArchiveException("analyze.archive names no archive")
         if (spec.sha256 == null || !SHA.matches(spec.sha256)) {
             throw ArchiveException("analyze.sha256 must pin the archive: its SHA-256 as 64 lowercase hex digits")
         }
         spec.manifestSha256?.let { if (!SHA.matches(it)) throw ArchiveException("analyze.manifestSha256 must be 64 lowercase hex digits") }
-        val source = source(archive, SUFFIX, config)
-        val manifest = spec.manifest?.let { source(it, MANIFEST_SUFFIX, config) }
+        val source = source(archive, SUFFIX, paths)
+        val manifest = spec.manifest?.let { source(it, MANIFEST_SUFFIX, paths) }
             ?: Local(source.path.resolveSibling(source.path.name.removeSuffix(SUFFIX) + MANIFEST_SUFFIX), source.shown.removeSuffix(SUFFIX) + MANIFEST_SUFFIX)
         if (!manifest.path.isRegularFile(LinkOption.NOFOLLOW_LINKS)) {
             throw ArchiveException("no manifest ${manifest.shown} beside the archive in the lab's archive directory")
@@ -97,16 +97,16 @@ object CaptureArchives {
     }
 
     /** [text] as a file under the lab's archive directory, its name ending in [suffix]. */
-    private fun source(text: String, suffix: String, config: Config): Local {
+    private fun source(text: String, suffix: String, paths: DataPaths): Local {
         if ("://" in text) {
             throw ArchiveException("archives are not downloaded: name a file under the lab's archive directory (\$LAB_DATA/archives), not a URL: $text")
         }
         val name = try { CampaignEvidence.safeName(text) } catch (e: EvidenceException) { throw ArchiveException("${e.message}: a lab-local archive is a path under the archive directory") }
         if (!name.endsWith(suffix)) throw ArchiveException("'$name' must end in $suffix")
-        val root = config.archiveDir
+        val root = paths.archives
         val path = root.resolve(name).normalize()
         if (!path.startsWith(root) || !Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-            throw ArchiveException("no $name in the lab's archive directory (\$LAB_DATA/${config.dataDir.relativize(root)})")
+            throw ArchiveException("no $name in the lab's archive directory (\$LAB_DATA/${paths.dataDir.relativize(root)})")
         }
         if (!path.isRegularFile(LinkOption.NOFOLLOW_LINKS) || !path.toRealPath().startsWith(root.toRealPath())) {
             throw ArchiveException("$name is not a regular file inside the lab's archive directory")
@@ -120,12 +120,12 @@ object CaptureArchives {
      * analysis job's directory. Throws [ArchiveException] (or [EvidenceException]) saying why it refused. The archive
      * stays where it is; the manifest is copied in as [MANIFEST].
      */
-    fun fetch(spec: AnalyzeSpec, config: Config, dir: Path): Fetched {
-        val (source, manifestSource) = locate(spec, config)
+    fun fetch(spec: AnalyzeSpec, paths: DataPaths, limits: ArchiveLimits, dir: Path): Fetched {
+        val (source, manifestSource) = locate(spec, paths)
         val pinned = checkNotNull(spec.sha256)
         val archive = source.path
         val bytes = Files.size(archive)
-        if (bytes > config.archiveMaxBytes) throw ArchiveException("the archive is $bytes bytes, over the lab's ${config.archiveMaxBytes} (LAB_ARCHIVE_MAX_MB)")
+        if (bytes > limits.maxBytes) throw ArchiveException("the archive is $bytes bytes, over the lab's ${limits.maxBytes} (LAB_ARCHIVE_MAX_MB)")
         val sha = CompilationReports.sha256(archive)
         if (sha != pinned) throw ArchiveException("the archive's SHA-256 is $sha, not the pinned $pinned")
         val manifest = manifestSource.path
@@ -137,13 +137,13 @@ object CaptureArchives {
         val named = ((document["archive"] as? JsonObject)?.get("sha256") as? JsonPrimitive)?.content
         if (named != pinned) throw ArchiveException("the manifest is of archive $named, not the pinned $pinned")
         val unpacked = (document["files"] as? JsonObject)?.values?.sumOf { ((it as? JsonObject)?.get("size") as? JsonPrimitive)?.longOrNull ?: 0L } ?: 0L
-        if (unpacked > config.archiveMaxUnpackedBytes) {
-            throw ArchiveException("the archive unpacks to $unpacked bytes, over the lab's ${config.archiveMaxUnpackedBytes} (LAB_ARCHIVE_MAX_UNPACKED_MB)")
+        if (unpacked > limits.maxUnpackedBytes) {
+            throw ArchiveException("the archive unpacks to $unpacked bytes, over the lab's ${limits.maxUnpackedBytes} (LAB_ARCHIVE_MAX_UNPACKED_MB)")
         }
         // Every member, its bytes and its name checked against the manifest, before a byte is extracted.
         val verified = CampaignEvidence.verify(archive, manifest)
         val root = dir.resolve(ROOT)
-        val profiles = extract(archive, root, config.archiveMaxUnpackedBytes)
+        val profiles = extract(archive, root, limits.maxUnpackedBytes)
         Files.copy(manifest, dir.resolve(MANIFEST), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         val campaign = ((document["catalog"] as? JsonObject)?.get("campaign") as? JsonPrimitive)?.content
         val provenance = ArchiveProvenance(source.shown, sha, bytes, archive.name, manifestSource.shown, manifestSha, campaign, verified)

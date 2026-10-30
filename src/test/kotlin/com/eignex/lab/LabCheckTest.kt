@@ -80,7 +80,7 @@ class LabCheckTest {
         assertEquals(WitnessCheck.INVALID, invalid.witness)
         assertNull(invalid.feasible)
         assertEquals(0, invalid.rank)
-        assertEquals("<span class=\"FAILED\" title=\"1 violated constraints: c_0 : circuit()\">invalid solution</span>", verdict(invalid, Status.DONE))
+        assertEquals("<span class=\"FAILED\" title=\"1 violated constraints: c_0 : circuit()\">invalid solution</span>", verdict(invalid, Status.DONE).markup)
 
         val unknown = outcome(claim, LabCheck.UNKNOWN, "the XCSP3 checker could not decide: x")
         assertEquals(WitnessCheck.INDETERMINATE, unknown.witness)
@@ -173,7 +173,7 @@ class LabCheckTest {
         store.finish(target, Status.DONE)
         val body = analysisDefaults(Json.parseToJsonElement("""{"recheck":{"job":$target}}""") as JsonObject)
         val spec = DefaultJson.decodeFromJsonElement(ExperimentSpec.serializer(), body)
-        assertEquals(AnalyzeSpec(target, kind = AnalyzeSpec.CHECK), spec.analyze)
+        assertEquals(AnalyzeSpec(target, kind = AnalyzeSpec.CHECK), spec.work.analysis)
         assertEquals("recheck-$target", spec.name)
         Experiments.validate(spec, 4)
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)

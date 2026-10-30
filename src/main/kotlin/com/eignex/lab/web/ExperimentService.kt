@@ -52,7 +52,7 @@ class ExperimentService internal constructor(private val services: ApiServices) 
         services.placement.requireFits(spec)
         val coreLimit = services.placement.coreLimit(spec)
         Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) coreLimit else config.maxParallel, coreLimit)
-        spec.analyze?.let { return analysis(spec, it) }
+        spec.work.analysis?.let { return analysis(spec, it) }
         // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
         Experiments.splitOf(spec, store.active(withCommands = false))?.let { return Submission.SplitConflict(Experiments.splitMessage(it)) }
         val arms = Experiments.arms(spec)
@@ -72,7 +72,7 @@ class ExperimentService internal constructor(private val services: ApiServices) 
             when (target) {
                 is AnalyzeTarget.OfJob -> if (target.kind == AnalyzeTarget.Kind.CHECK) CaseChecks.refusal(store.job(target.job))
                     else CompilationReports.refusal(store.job(target.job), config.jobDir(target.job))
-                is AnalyzeTarget.OfArchive -> CaptureArchives.refusal(analyze, config)
+                is AnalyzeTarget.OfArchive -> CaptureArchives.refusal(analyze, config.paths)
             }
         }
         val what = when (target) {

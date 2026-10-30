@@ -60,7 +60,7 @@ object DimacsCheckBench : BenchSuite {
         store.caseRecord(id, 0, effective.toString())
         store.commandFinished(id, 0, 0)
         val before = store.plans.caseRecordText(id, 0)
-        val checks = CaseChecks(store, { Checkers.of(config) }) { _, line -> System.err.println(line) }
+        val checks = CaseChecks(store, { Checkers.of(config.paths) }) { _, line -> System.err.println(line) }
         fun receipt(): LabCheck? = store.plans.cases(id).single().record?.jsonObject?.get("labCheck")?.let { LabCheck.parse(it.toString()) }
         checks.afterCase(id, 0)
         checks.await(id)

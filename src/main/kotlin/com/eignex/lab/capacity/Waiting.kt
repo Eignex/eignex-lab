@@ -77,33 +77,33 @@ object Waiting {
         else -> "Nomad: waiting for session admission or compatible capacity; lab execution ${job.id} shows allocations"
     }
 
-    fun view(config: Config, store: Store, at: Long = now()): QueueView {
+    fun view(status: StatusSettings, store: Store, at: Long = now()): QueueView {
         val active = store.active(withCommands = false)
         val analysis = active.filter { it.experiment.isAnalysis == true && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })
         val running = analysis.firstOrNull { it.status == Status.RUNNING }
         return QueueView(analysis.filter { it.status == Status.QUEUED }.map { it.id }, analysis.firstOrNull()?.id,
-            running?.let { localWork(it, null) }, config.cores, store.schedules.all(),
-            runCatching { Volumes.hold(config) }.getOrNull(), at)
+            running?.let { localWork(it, null) }, status.local.cores, store.schedules.all(),
+            runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(), at)
     }
 
-    fun report(config: Config, store: Store, history: (Job) -> CaseHistory?, at: Long = now()): PlacementReport {
-        val view = view(config, store, at)
+    fun report(status: StatusSettings, store: Store, history: (Job) -> CaseHistory?, at: Long = now()): PlacementReport {
+        val view = view(status, store, at)
         val positions = store.queue().withIndex().associate { (index, id) -> id to index + 1 }
         val active = store.active(withCommands = false)
         val progress = store.hostProgress(active.map { it.id })
-        val assignments = jobNodes(config, store, active.filter { it.backend == Backend.NOMAD }.map { it.id })
+        val assignments = jobNodes(status, store, active.filter { it.backend == Backend.NOMAD }.map { it.id })
         val jobs = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
-            .map { placement(config, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty()) }
-        val snapshot = readCapacityReport(config)
+            .map { placement(status, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty()) }
+        val snapshot = readCapacityReport(status.paths.capacityReport)
         val ready = snapshot?.takeIf { it.healthy && it.ageMs <= CapacityCollector.FRESH_MS }?.nodes.orEmpty().count { it.state == CapacityNodeState.READY }
         return PlacementReport(at, ready > 0, "Nomad: $ready ready cloud nodes; see /nodes", view.local, jobs, view.diskHeld)
     }
 
-    internal fun placement(config: Config, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
+    internal fun placement(status: StatusSettings, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
                   hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null): JobPlacement {
         val host = job.experiment.host
-        val estimate = if (job.status.isActive) Estimates.estimate(job, history, config.cores, config.maxParallel) else null
+        val estimate = if (job.status.isActive) Estimates.estimate(job, history, status.local.cores, status.local.maxParallel) else null
         val activity = nodes?.let { jobActivity(job, it) }
         return JobPlacement(job.id, job.name, job.status, Placement.where(host), host.word, job.priority,
             job.paused, job.cancelRequested, position.takeIf { job.status == Status.QUEUED },

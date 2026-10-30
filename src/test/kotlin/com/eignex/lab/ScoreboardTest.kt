@@ -175,7 +175,7 @@ class ScoreboardTest {
             val problems = Scoreboard.problems(mixedCases, arm, references, emptyMap(), Dimension.FORMAT, "all", "cp-sat")
             val view = ScoreboardView(listOf(job), job, listOf("candidate"), "candidate", Dimension.FORMAT, emptyMap(), Scoring.COMPLETE,
                 emptyMap(), board, "all" to "cp-sat", problems)
-            return referencesPage(emptyList(), ReferenceFilter(), emptyList(), 0, scoreboard = view)
+            return referencesPage(emptyList(), ReferenceFilter(), emptyList(), 0, scoreboard = view).markup
         }
         val equal = mixedReferences.mapValues { (_, rows) -> rows.map { it.copy(budgetMs = 10_000) } }
 

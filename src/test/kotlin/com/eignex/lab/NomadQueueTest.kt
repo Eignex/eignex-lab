@@ -279,7 +279,7 @@ class NomadQueueTest {
             Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
         })
     private fun job(spec: ExperimentSpec = ExperimentSpec("portable", host = HostPlacement.AUTO)): Long {
-        val generic = if (spec.isProfile || spec.bench != null) spec else spec.copy(problems = emptyList(), bench = BenchSpec("bench.json"))
+        val generic = if (spec.isProfile || spec.work.bench != null) spec else spec.copy(problems = emptyList(), bench = BenchSpec("bench.json"))
         return store.create(generic.name, "main", emptyList(), parallel = generic.parallel ?: 2, experiment = generic)
     }
     private fun prepare(id: Long, count: Int = 3) {
@@ -349,7 +349,7 @@ class NomadQueueTest {
         val job = store.active().single()
         assertEquals(Backend.NOMAD, job.backend)
         assertEquals(Experiments.AWS_HOST, job.experiment!!.host)
-        assertEquals(600L, job.experiment!!.profile!!.runTimeoutSec)
+        assertEquals(600L, job.experiment!!.work.profile!!.runTimeoutSec)
         Experiments.validate(job.experiment!!, 4)
     }
 
@@ -512,7 +512,7 @@ class NomadQueueTest {
     @Test fun `cloud selection needs no AWS settings and profiles use Spot unless explicitly on demand`() {
         val spec = ExperimentSpec("cloud", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60, classpath = listOf("tools/lib/*")), nodeTags = NodeSelector(require = setOf("cloud")))
         assertEquals(listOf(CapacityMarket.SPOT), settings.matching(spec, spec.name).map { it.market })
-        assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
+        assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config.workers))
         assertTrue(settings.matching(spec.copy(nodeTags = NodeSelector(require = setOf("on-demand"))), spec.name).isEmpty())
         assertFailsWith<IllegalArgumentException> { settings.solveOptions("-Xmx8g") }
         assertEquals("-Xmx256m", settings.solveOptions("-Xmx256m"))

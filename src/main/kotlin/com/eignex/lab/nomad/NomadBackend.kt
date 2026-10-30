@@ -342,10 +342,10 @@ class NomadBackend(
                     return
                 }
             }
-            val placement = store.execution.placement(previous.id)
-            if (placement.native && !nativeMayRun(job.id)) return
-            if (placement.native) {
-                val limit = nativeLimits(placement)
+            val pool = store.execution.placement(previous.id).pool
+            if (pool is WorkerPool.Native) {
+                if (!nativeMayRun(job.id)) return
+                val limit = nativeLimits(pool)
                 if (limit == null) {
                     if (store.execution.nativeOwnedByAnother(job.id)) return
                 } else {
@@ -370,10 +370,10 @@ class NomadBackend(
         if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
     }
 
-    /** The native reservation's limits a session placed as [placement] holds to: its own, else the native worker's capacity. */
-    private fun nativeLimits(placement: SessionPlacement): Pair<Long, Long>? {
-        val cpu = listOfNotNull(placement.nativeCpuLimit, nativeCapacity?.cpuMillis?.toLong()).minOrNull() ?: return null
-        val memory = listOfNotNull(placement.nativeMemoryLimit, nativeCapacity?.memoryMiB?.toLong()).minOrNull() ?: return null
+    /** The native reservation's limits a session on [pool] holds to: its own, else the native worker's capacity. */
+    private fun nativeLimits(pool: WorkerPool.Native): Pair<Long, Long>? {
+        val cpu = listOfNotNull(pool.cpuLimit, nativeCapacity?.cpuMillis?.toLong()).minOrNull() ?: return null
+        val memory = listOfNotNull(pool.memoryLimit, nativeCapacity?.memoryMiB?.toLong()).minOrNull() ?: return null
         return cpu to memory
     }
 
@@ -391,9 +391,9 @@ class NomadBackend(
             JsonObject(t + ("Env" to JsonObject(t.getValue("Env").jsonObject + mapOf("LAB_WORKER_SESSION" to JsonPrimitive(id), "LAB_WORKER_TOKEN" to JsonPrimitive(token)))))
         }))) }
         val originalMeta = (original.getValue("Meta").jsonObject - "lab_spec_hash").toMutableMap()
-        val placement = SessionPlacement.of(original)
-        if (placement.native) {
-            nativeLimits(placement)?.let { (cpu, memory) ->
+        val pool = SessionPlacement.of(original).pool
+        if (pool is WorkerPool.Native) {
+            nativeLimits(pool)?.let { (cpu, memory) ->
                 // New intent carries the same limits into the atomic reservation check; history remains immutable.
                 originalMeta["lab_native_cpu_limit"] = JsonPrimitive(cpu.toString())
                 originalMeta["lab_native_memory_limit"] = JsonPrimitive(memory.toString())

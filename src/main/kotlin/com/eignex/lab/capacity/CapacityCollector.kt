@@ -121,7 +121,7 @@ internal object CapacityObservation {
             experiment.measuresCli -> CapacityWork.MEASUREMENT
             else -> CapacityWork.SOLVE
         }
-        return CapacityDemand(session.id, job.id, budget, job.priority, placement.perHostParallel, experiment.nodeTags,
+        return CapacityDemand(session.id, job.id, budget, job.priority, (placement.pool as? WorkerPool.Cloud)?.perHostParallel, experiment.nodeTags,
             pool.market, Placement.localEligible(experiment, localTags), work, pool.id)
     }
 }

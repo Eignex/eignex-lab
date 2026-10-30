@@ -78,7 +78,7 @@ class BenchAdapterIntegrationTest {
             override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
         }
         val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), corpusDir = root.resolve("checker-corpus"), auth = Auth.Disabled)
-        val checks = CaseChecks(store, { Checkers.of(config) }) { id, line -> println("check $id: $line") }
+        val checks = CaseChecks(store, { Checkers.of(config.paths) }) { id, line -> println("check $id: $line") }
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { id, index ->
             val (problem, arm) = requireNotNull(store.plans.caseOf(id, index))
             if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"
@@ -203,11 +203,11 @@ class BenchAdapterIntegrationTest {
         val selectedValues = arms.first().arm.values - "ref"
         spec = spec.copy(name = Confirm.name("$name-replay", revision, originalJob), base = selectedValues, grid = emptyMap(), repeats = 1,
             configs = listOf(mapOf("label" to "before", "ref" to revision), mapOf("label" to "after", "ref" to revision)),
-            bench = spec.bench!!.copy(frozenCases = frozen, replayJobs = mapOf("before" to originalJob, "after" to originalJob)))
+            bench = spec.work.bench!!.copy(frozenCases = frozen, replayJobs = mapOf("before" to originalJob, "after" to originalJob)))
         Experiments.validate(spec, 4)
         job = store.create(spec.name, revision, emptyList(), experiment = spec)
         arms = Experiments.arms(spec).map { PlannedArm(it, revision) }
-        val replay = requireNotNull(benchReplay(replaySources(store, spec, arms), spec.bench!!))
+        val replay = requireNotNull(benchReplay(replaySources(store, spec, arms), spec.work.bench!!))
         for (input in preparation.bundles + listOfNotNull(preparation.corpus)) {
             artifacts.open(originalJob, input.sha256).use { stream -> artifacts.put(job, input.sha256, artifacts.size(originalJob, input.sha256), 0, stream) }
         }

@@ -49,7 +49,7 @@ class ExperimentsTest {
 
         Experiments.validate(spec, maxParallel = 4)
 
-        assertEquals(180L, spec.profile?.runTimeoutSec)
+        assertEquals(180L, spec.work.profile?.runTimeoutSec)
     }
 
     @Test
@@ -76,7 +76,7 @@ class ExperimentsTest {
         val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
 
         assertEquals(Experiments.fingerprint(spec), Experiments.fingerprint(
-            spec.copy(profile = spec.profile!!.copy(runTimeoutSec = 180)),
+            spec.copy(profile = spec.work.profile!!.copy(runTimeoutSec = 180)),
         ))
     }
 
@@ -102,7 +102,7 @@ class ExperimentsTest {
         val defaulted = Json.decodeFromJsonElement(ExperimentSpec.serializer(),
             analysisDefaults(Json.parseToJsonElement("""{"analyze": {"job": 9}}""").jsonObject))
         assertEquals("analyze-9", defaulted.name)
-        assertEquals(AnalyzeSpec(9, "compilation"), defaulted.analyze)
+        assertEquals(AnalyzeSpec(9, "compilation"), defaulted.work.analysis)
         assertTrue(defaulted.description.isNotBlank())
     }
 
@@ -361,7 +361,7 @@ class ExperimentsTest {
         assertTrue(Experiments.profileCaps(within).isEmpty())
         assertEquals(listOf("a timeout of 10 h was asked, capped at 2 h",
             "a runTimeoutSec of 86400 s was asked, capped at 7200 s"), Experiments.profileCaps(over))
-        assertEquals(7_200L, Experiments.profileRunTimeoutSec(over.profile!!))
+        assertEquals(7_200L, Experiments.profileRunTimeoutSec(over.work.profile!!))
         assertEquals(180L, Experiments.profileRunTimeoutSec(main.copy(runTimeoutSec = 180)))
         Experiments.validate(over, maxParallel = 4)
     }

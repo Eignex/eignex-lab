@@ -48,8 +48,8 @@ object NomadCoordinatorCli {
         val queueSettings = requireNotNull(config.nomadQueue) { "Nomad requires LAB_NOMAD_QUEUE_SETTINGS" }
         val nativeCapacity = queueSettings.targets.filter { it.native }.minOfOrNull { it.template.budget.memoryMiB }
             ?.let { ResourceBudget(config.cores * 1000, it) }
-        Volumes.watch(config)
-        val volumeHealth = VolumeHealth(reason = { Volumes.hold(config) })
+        Volumes.watch(config.paths)
+        val volumeHealth = VolumeHealth(reason = { Volumes.hold(config.paths, config.minFreeBytes) })
         volumeHealth.refresh()
         require(volumeHealth.problem() == null) { "coordinator volumes unavailable" }
         Files.createDirectories(config.dataDir)
@@ -64,7 +64,7 @@ object NomadCoordinatorCli {
         Files.createDirectories(journalRoot.parent)
         java.nio.channels.FileChannel.open(config.dataDir, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
         val artifacts = ResultJournal(journalRoot,
-            LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config) == null }),
+            LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config.paths, config.minFreeBytes) == null }),
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
         periodic("nomad-result-journal-status", 5_000) {
             writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)
@@ -74,7 +74,7 @@ object NomadCoordinatorCli {
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
-        val checks = CaseChecks(store, { Checkers.of(config) }, config::jobDir) { job, line ->
+        val checks = CaseChecks(store, { Checkers.of(config.paths) }, config::jobDir) { job, line ->
             config.createJobDir(job).resolve("setup.log").toFile().appendText("$line\n")
         }
         val checkPool = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "nomad-source-checks").apply { isDaemon = true } }

@@ -152,8 +152,8 @@ class DownloadHoldTest {
         val id = endedJob(config, store)
         val job = store.job(id)!!
 
-        assertFalse("held for download" in jobPage(config, job, failedOnly = false))
-        assertContains(jobPage(config, job, failedOnly = false, holds = listOf(store.holds.take(id, JobTrim.HOLD_MS))), "held for download until")
+        assertFalse("held for download" in jobPage(config.status, job, failedOnly = false))
+        assertContains(jobPage(config.status, job, failedOnly = false, holds = listOf(store.holds.take(id, JobTrim.HOLD_MS))), "held for download until")
     }
 
     @Test

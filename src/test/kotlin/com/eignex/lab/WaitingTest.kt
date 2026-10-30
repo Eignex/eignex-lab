@@ -19,10 +19,10 @@ class WaitingTest {
         val config = Config(dataDir = Files.createTempDirectory("waiting"), minFreeBytes = 0)
         val store = Store(config.database)
         val id = store.create("queued", "main", emptyList(), experiment = ExperimentSpec("queued"))
-        val report = Waiting.report(config, store, { null })
+        val report = Waiting.report(config.status, store, { null })
         assertContains(report.jobs.single().waiting!!, "Nomad")
         store.setPaused(id, true)
-        assertContains(Waiting.report(config, store, { null }).jobs.single().waiting!!, "paused")
+        assertContains(Waiting.report(config.status, store, { null }).jobs.single().waiting!!, "paused")
     }
     @Test fun `maintenance admission excludes ordinary jobs and resumes capture analysis`() {
         val config = Config(dataDir = Files.createTempDirectory("analysis"))

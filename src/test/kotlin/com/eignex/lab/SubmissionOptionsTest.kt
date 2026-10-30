@@ -140,13 +140,13 @@ class SubmissionOptionsTest {
             setBody("""{"name":"e","description":"record resources","bench":{"manifest":"bench.json","request":{"parameters":{"measurement":"resources"}}},"base":{"ref":"0123456789abcdef"}}""")
         }
         assertEquals(HttpStatusCode.Created, created.status)
-        assertEquals("resources", store.active().single().experiment!!.bench!!.request.parameters["measurement"])
+        assertEquals("resources", store.active().single().experiment!!.work.bench!!.request.parameters["measurement"])
         val updated = client.post("/schedules/$schedule") {
             contentType(ContentType.Application.Json)
             setBody("""{"experiment":{"name":"e","description":"record compilations","bench":{"manifest":"bench.json","request":{"parameters":{"measurement":"compilation+log"}}},"parallel":4}}""")
         }
         assertEquals(HttpStatusCode.OK, updated.status)
-        assertEquals("compilation+log", store.schedules.all().single().experiment.bench!!.request.parameters["measurement"])
+        assertEquals("compilation+log", store.schedules.all().single().experiment.work.bench!!.request.parameters["measurement"])
         assertEquals(4, store.schedules.all().single().experiment.parallel)
         val rejected = client.post("/experiments") {
             contentType(ContentType.Application.Json)

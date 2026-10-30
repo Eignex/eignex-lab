@@ -27,7 +27,7 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport) : 
     /** The finished runs the queue page's estimates learn from, reread at most once a minute. */
     val estimates = EstimateHistory(EstimateData.of(store), config.cores)
 
-    val disk = DiskUsage(config, active = { store.active(withCommands = false).map { it.id }.toSet() })
+    val disk = DiskUsage(config.paths, config.docker, active = { store.active(withCommands = false).map { it.id }.toSet() })
 
     /** The Nomad capacity settings, read again only when their file changes. */
     val capacitySettings = FileCache({ config.nomadCapacitySettings }, CapacitySettings::read)
@@ -43,8 +43,8 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport) : 
             github = { path -> Trust.githubApi(githubToken.get())(path) })
     }
 
-    val placement = PlacementPolicy(config) { store.schedules.all() }
-    val signals = RunnerSignals(config)
+    val placement = PlacementPolicy(config.workers) { store.schedules.all() }
+    val signals = RunnerSignals(config.paths, config.docker)
     val experiments = ExperimentService(this)
     val jobs = JobService(this)
     val schedules = ScheduleService(this)

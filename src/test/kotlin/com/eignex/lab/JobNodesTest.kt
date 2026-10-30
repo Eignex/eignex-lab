@@ -75,7 +75,7 @@ class JobNodesTest {
         }
         val queue = client.get("/").bodyAsText()
         assertContains(queue, "0 running · 0 queued · 1 waiting for capacity")
-        val report = Waiting.report(config, store, { null })
+        val report = Waiting.report(config.status, store, { null })
         assertFalse(report.nodesUp)
         assertNotNull(report.jobs.single().waiting)
         assertNull(report.jobs.single().doing)
@@ -87,7 +87,7 @@ class JobNodesTest {
         bind(id, "finished", "finished-allocation", "finished-node")
         store.execution.loseSession("finished", "completed")
         val checking = store.job(id)!!.copy(setupDone = true, counts = CommandCounts(2, 2, 0, 0))
-        val page = jobPage(config, checking, false)
+        val page = jobPage(config.status, checking, false)
         assertContains(page, ">CHECKING</span>")
         assertContains(page, "checking results")
         assertFalse(page.contains("waiting for a node"))
@@ -104,7 +104,7 @@ class JobNodesTest {
         val waiting = job()
         application { api(config, store, host) }
 
-        val nodes = jobNodes(config, store, listOf(id, waiting))
+        val nodes = jobNodes(config.status, store, listOf(id, waiting))
         assertEquals(listOf("native-node-uuid", "cloud-node-uuid"), nodes.getValue(id).map { it.id })
         assertNull(nodes[waiting])
         val page = client.get("/").bodyAsText()

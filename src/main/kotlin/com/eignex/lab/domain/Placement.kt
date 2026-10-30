@@ -79,12 +79,12 @@ object Placement {
     /** [host] with the lab's own limits: the cloud settings and the sizes within the quota. [schedules], the lab's
      *  schedules, say whether a scheduled run's schedule opts in to the cloud ([cloudSchedule]); a submitted job is
      *  placed without them, so its name alone never takes it off the local machine. */
-    fun host(spec: ExperimentSpec, origin: JobOrigin, config: Config, schedules: List<Schedule> = emptyList()): HostPlacement {
+    fun host(spec: ExperimentSpec, origin: JobOrigin, workers: Workers, schedules: List<Schedule> = emptyList()): HostPlacement {
         NodeTags.validate(spec.nodeTags)
         requireAutomatic(spec, origin)
-        val local = NodeTags.matches(spec.nodeTags, config.localNodeTags)
+        val local = NodeTags.matches(spec.nodeTags, workers.local.tags)
         val cores = runCatching { Experiments.arms(spec).maxOf { it.cores } }.getOrDefault(Int.MAX_VALUE)
-        val cloud = cloudCoreLimit(spec, config, cloudSchedule(origin, schedules)) >= cores
+        val cloud = cloudCoreLimit(spec, workers, cloudSchedule(origin, schedules)) >= cores
         val staysLocal = localOnly(spec, origin, cloudSchedule(origin, schedules))
         if (staysLocal) {
             require(local) { "this job stays local, but its node tags do not match the local node" }
@@ -95,25 +95,25 @@ object Placement {
     }
 
     /** [host] for a job known only by its [name] ([JobOrigin.of]). */
-    fun host(spec: ExperimentSpec, name: String, config: Config, schedules: List<Schedule> = emptyList()): HostPlacement =
-        host(spec, JobOrigin.of(name), config, schedules)
+    fun host(spec: ExperimentSpec, name: String, workers: Workers, schedules: List<Schedule> = emptyList()): HostPlacement =
+        host(spec, JobOrigin.of(name), workers, schedules)
 
     /** Largest compatible provider-neutral cloud budget. */
-    fun cloudCoreLimit(spec: ExperimentSpec, config: Config, cloudSchedule: Boolean = false): Int =
-        config.nomadQueue?.matching(spec, JobOrigin.Submitted(spec.name), cloudSchedule)?.filter { !it.native }
+    fun cloudCoreLimit(spec: ExperimentSpec, workers: Workers, cloudSchedule: Boolean = false): Int =
+        workers.queue?.matching(spec, JobOrigin.Submitted(spec.name), cloudSchedule)?.filter { !it.native }
             ?.maxOfOrNull { it.template.budget.cpuMillis / 1000 } ?: 0
 
     /** The most cores a case of [spec] can have where it may run: the local machine's when its tags match it. */
-    fun coreLimit(spec: ExperimentSpec, config: Config): Int =
-        if (NodeTags.matches(spec.nodeTags, config.localNodeTags)) config.cores else cloudCoreLimit(spec, config)
+    fun coreLimit(spec: ExperimentSpec, workers: Workers): Int =
+        if (NodeTags.matches(spec.nodeTags, workers.local.tags)) workers.local.cores else cloudCoreLimit(spec, workers)
 
     /** A job that may run on a cloud node needs the lab's cloud settings, runs repository-owned work, and fits a node. */
-    fun requireFits(spec: ExperimentSpec, config: Config) {
+    fun requireFits(spec: ExperimentSpec, workers: Workers) {
         require(spec.host in setOf(Experiments.LAB_HOST, Experiments.AWS_HOST, Experiments.AUTO_HOST)) {
             "host must be local, cloud or auto (or lab or aws, their older names)"
         }
         if (spec.host == Experiments.LAB_HOST) return
-        require(cloudCoreLimit(spec, config) >= Experiments.arms(spec).maxOf { it.cores }) { "no configured Nomad cloud worker fits its cases" }
+        require(cloudCoreLimit(spec, workers) >= Experiments.arms(spec).maxOf { it.cores }) { "no configured Nomad cloud worker fits its cases" }
     }
 
     /**

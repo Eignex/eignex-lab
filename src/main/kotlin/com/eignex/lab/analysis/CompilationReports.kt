@@ -438,7 +438,7 @@ object CompilationReports {
     fun refusal(job: Job?, jobDir: Path): String? {
         if (job == null) return "no such job"
         val spec = job.experiment
-        if (spec.isAnalysis) return "job ${job.id} is an analysis job itself; name the job it analysed (${spec.analyze?.job})"
+        if (spec.isAnalysis) return "job ${job.id} is an analysis job itself; name the job it analysed (${spec.work.analysis?.job})"
         if (!spec.recordsCliJfr) return "job ${job.id} ran without JFR measurement: it recorded no captures to analyse"
         if (job.status.isActive) return "job ${job.id} is ${job.status.name.lowercase()}: analyse it once it has ended"
         val trimmed = jobDir.resolve(JobFileNames.TRIMMED)

@@ -64,7 +64,7 @@ class DiskUsageTest {
         val data = dir.resolve("data").createDirectories()
         data.resolve("work").createDirectories()
         val config = Config(dataDir = data, corpusDir = dir.resolve("corpus"), auth = Auth.Disabled)
-        val usage = DiskUsage(config, { emptySet() }, DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
+        val usage = DiskUsage(config.paths, config.docker, { emptySet() }, DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
             0, System::currentTimeMillis)
 
         var first: DiskReport? = null
@@ -120,7 +120,7 @@ class DiskUsageTest {
         fun job(id: Long, ageMs: Long): Path =
             jobs.resolve("$id").createDirectories().also { Files.setLastModifiedTime(it, FileTime.fromMillis(now - ageMs)) }
         var active = setOf<Long>()
-        fun usage() = DiskUsage(config, { active }, DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
+        fun usage() = DiskUsage(config.paths, config.docker, { active }, DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
             0, System::currentTimeMillis)
         fun measured(): Set<String> = (if (log.exists()) log.readLines() else emptyList()).toSet().also { Files.deleteIfExists(log) }
         fun jobsMeasured(lines: Set<String>) = lines.filter { it.startsWith("$jobs/") }.map { it.substringAfterLast('/').toLong() }.toSet()
