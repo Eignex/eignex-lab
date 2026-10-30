@@ -73,8 +73,8 @@ data class TrendRun(
 object Trend {
     /**
      * Every run a schedule named [name] queued, oldest first; an experiment of several arms is read by its first. A
-     * finished run's point comes from [cache] when it has one: its cases never change, only the reference rows its
-     * disagreement and shortfall counts read, so a cached point is recomputed once the rows of one of its problems
+     * finished run's point comes from [cache] when its source-check revision matches. Reference rows can also change
+     * its disagreement and shortfall counts, so a cached point is recomputed once the rows of one of its problems
      * changed and it is older than [TrendCache.maxReferenceLagMs]. A finished run with no point, one whose setup failed
      * before any case ran, is remembered as such until the job changes. A confirmation's counts are read afresh, since
      * it can end after its run.
@@ -115,7 +115,7 @@ object Trend {
             // A stale point is still served, and refreshed off the request (see [TrendCache]); a refresh recomputes it.
             // A running one's point too, for [TrendCache.LIVE_MS]: its cases finish one by one, and a page load that
             // finds it older is served it while it is recomputed.
-            val version = TrendCache.version(job)
+            val version = TrendCache.version(job, store.plans.caseRevision(job.id))
             val cached = cache?.let { if (finished) it.lookup(job.id, version, stamp) else it.lookupLive(job.id) }?.takeIf { it.fresh || !refreshing }
             if (cached?.fresh == false) stale = true
             // Known to have no point: neither shown nor counted as being computed.
@@ -149,7 +149,8 @@ object Trend {
             if (job.status == Status.DONE) previous[base.spec] = job.id
             val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
             val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { done ->
-                cache?.confirmed(done.id) { Confirm.confirmed(store.plans.scoringCases(done.id)) } ?: Confirm.confirmed(store.plans.scoringCases(done.id))
+                cache?.confirmed(done.id, store.plans.caseRevision(done.id)) { Confirm.confirmed(store.plans.scoringCases(done.id)) }
+                    ?: Confirm.confirmed(store.plans.scoringCases(done.id))
             }
             base.copy(
                 confirmJob = confirmation?.id,
@@ -319,10 +320,10 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         live[job] = Entry("", null, clock(), run, emptySet())
     }
 
-    private val confirmations = Lru<Long, Flips>(MAX_JOBS)
+    private val confirmations = Lru<Pair<Long, Long>, Flips>(MAX_JOBS)
 
-    /** A finished confirmation's flips, which never change once it is done: computed once, by [compute]. */
-    fun confirmed(job: Long, compute: () -> Flips): Flips = confirmations.getOrPut(job, compute)
+    /** A finished confirmation's flips for its current source-check revision. */
+    fun confirmed(job: Long, revision: Long = 0, compute: () -> Flips): Flips = confirmations.getOrPut(job to revision, compute)
 
     /** Run [refresh] of [key] on the background thread, unless a refresh of it is already waiting or running. */
     fun refreshLater(key: String, refresh: () -> Unit) {
@@ -351,8 +352,8 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         /** The changed problems tracked before every point is recomputed instead. */
         private const val MAX_CHANGED = 100_000
 
-        /** What a finished job's cached point is valid for: a retry changes its status or when it finished. */
-        fun version(job: Job): String = "${job.status}/${job.finishedAt}"
+        /** A retry changes the job's finish state; a source recheck changes its case revision. */
+        fun version(job: Job, revision: Long = 0): String = "${job.status}/${job.finishedAt}" + if (revision == 0L) "" else "/checks-$revision"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L
         /** How long a running job's point is served before it is recomputed. */

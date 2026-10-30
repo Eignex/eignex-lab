@@ -226,6 +226,7 @@ labels controlled runtime/compiler series and historical records explicitly.
 Migrations start separate trend segments and need a retained bounded old/current
 bridge before a solver-only attribution. A seed change cannot count as recovery.
 Different independent-checking policy labels also split controlled series and withhold revision attribution.
+Retained-case rechecks invalidate finished trend points and confirmation counts without changing the original job's finish time.
 
 The coordinator attaches `labExecution` from the accepted iteration's checksum-verified
 worker resource artifact. Its frame retains the lab release, CPU model/features,
