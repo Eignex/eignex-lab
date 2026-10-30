@@ -85,9 +85,9 @@ class NodeTagsTest {
         val config = Config(dataDir = root, cpuCapabilities = arm, nomadQueueSettings = cloudQueue(root))
         val spec = ExperimentSpec("profile", profile = ProfileMain(script = "run.sh"), nodeTags = NodeSelector(require = setOf("simd:avx512")))
 
-        assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config))
-        assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("missing-host"))), spec.name, config) }
-        assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("simd:sme"))), spec.name, config) }
+        assertEquals(Experiments.AWS_HOST, Placement.host(spec, spec.name, config.workers))
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("missing-host"))), spec.name, config.workers) }
+        assertFailsWith<IllegalArgumentException> { Placement.host(spec.copy(nodeTags = NodeSelector(require = setOf("simd:sme"))), spec.name, config.workers) }
     }
 
     @Test

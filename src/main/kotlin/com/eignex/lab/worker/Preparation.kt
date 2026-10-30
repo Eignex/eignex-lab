@@ -108,7 +108,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             }
         }
         val spec = manifest.experiment
-        val bench = spec.bench
+        val bench = spec.work.bench
         val armPlans = linkedMapOf<String, com.eignex.lab.bench.BenchPlan>()
         val inputDigests = BenchInputDigests(::checkActive)
         var descriptor: com.eignex.lab.bench.BenchDescriptor? = replay?.descriptor

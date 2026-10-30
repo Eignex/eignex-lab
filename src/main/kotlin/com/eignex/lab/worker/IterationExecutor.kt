@@ -108,7 +108,7 @@ class IterationExecutor(
                                 BenchRuns.command(worktree, work.spec, case.index, corpus, manifest.experiment.repository)
                             }
                             is Work.Profile -> Experiments.profileCommand(worktree.toString(), work.main, case.index, corpus.toString(), arm.debug, manifest.experiment.repository)
-                            is Work.Analysis, Work.Script, Work.Recipe -> error("execution requires a repository bench manifest or explicit profile")
+                            is Work.Analysis, is Work.Script, Work.Recipe -> error("execution requires a repository bench manifest or explicit profile")
                         }
                     val env = environment() + mapOf("JOB_DIR" to directory.toString())
                     val start = now()

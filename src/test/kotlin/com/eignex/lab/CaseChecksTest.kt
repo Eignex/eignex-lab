@@ -26,14 +26,14 @@ class CaseChecksTest {
             val config = Config(dataDir = root)
             val historical = Json.decodeFromString<ExperimentSpec>("""{"name":"old","problems":[{"suite":"s"}]}""")
             assertNull(checkerRepository(historical))
-            assertEquals(config.mirror, checkerMirror(config, checkerRepository(historical)))
-            assertEquals(config.mirror, checkerMirror(config, "Eignex/klause"))
+            assertEquals(config.mirror, checkerMirror(config.paths, checkerRepository(historical)))
+            assertEquals(config.mirror, checkerMirror(config.paths, "Eignex/klause"))
             val bench = ExperimentSpec("new", repository = "Eignex/example", bench = BenchSpec("bench.json"))
             assertEquals(bench.repository, checkerRepository(bench))
-            assertEquals(Repositories.mirror(config.paths, bench.repository), checkerMirror(config, bench.repository))
+            assertEquals(Repositories.mirror(config.paths, bench.repository), checkerMirror(config.paths, bench.repository))
             val current = Repositories.mirror(config.paths, "Eignex/klause")
             Files.createDirectories(current)
-            assertEquals(current, checkerMirror(config, "Eignex/klause"))
+            assertEquals(current, checkerMirror(config.paths, "Eignex/klause"))
         } finally { root.toFile().deleteRecursively() }
     }
 

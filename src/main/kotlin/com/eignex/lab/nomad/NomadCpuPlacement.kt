@@ -49,11 +49,11 @@ internal class NomadCpuPlacement(private val nomad: NomadControl, private val na
          */
         fun calibrate(job: JsonObject, budget: ResourceBudget, nodes: List<Node>): JsonObject {
             val placement = SessionPlacement.of(job)
-            if (placement.enforcement != CpuEnforcement.HARD_QUOTA) return job
+            val cloud = placement.pool as? WorkerPool.Cloud ?: return job
             val constraints = job.getValue("Constraints").jsonArray.map { it.jsonObject }
             val nodeClass = placement.nodeClass ?: return job
             val capacity = placement.cpuCapacity ?: return job
-            val excluded = placement.excludedNodes
+            val excluded = cloud.excludedNodes
             val candidates = nodes.filter { it.nodeClass == nodeClass && it.capacity.logicalCpus == capacity.logicalCpus && it.id !in excluded }
             val fitting = candidates.filter { it.freeCpu >= budget.nomadCpuMHz(it.capacity) && it.freeMemory >= budget.memoryMiB }
             if (fitting.any { it.capacity == capacity }) return job

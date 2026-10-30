@@ -23,22 +23,22 @@ import com.eignex.lab.checker.SourceChecker
 class Runner(
     private val config: Config,
     private val store: Store,
-    sourceChecker: () -> SourceChecker = { Checkers.of(config) },
+    sourceChecker: () -> SourceChecker = { Checkers.of(config.paths) },
     private val selfUpdater: SelfUpdater? = null,
     sourceUrl: (String) -> String = { Repositories.source(it) },
 ) {
     internal val checks = CaseChecks(store, sourceChecker, config::jobDir, ::log)
     @Volatile private var stopping = false
-    private val schedules = Schedules(config, store, sourceUrl) { stopping }
-    private val confirmations = Confirmations(config, store)
-    private val analysis = AnalysisJobs(config, store, checks)
+    private val schedules = Schedules(config.paths, config.workers, config.retry, store, sourceUrl) { stopping }
+    private val confirmations = Confirmations(config.local, config.paths, store)
+    private val analysis = AnalysisJobs(config.paths, config.archives, store, checks)
     private val updater by lazy { selfUpdater ?: SelfUpdater(
         config.sourceDir.takeIf { config.updateCheckSec > 0 }, config.updateCheckSec * 1000,
         config.dataDir.resolve("logs/update.log").toFile(), requestFile = config.updateRequest.toFile()) }
     private val dockerCleanup by lazy {
-        dockerCleanup(config, store) { pattern, revision -> withMirrorLock(config.mirror) { mirrorGrep(config.mirror.toFile())(pattern, revision) } }
+        dockerCleanup(config.paths, config.docker, config.jobsTargetFreeBytes, store) { pattern, revision -> withMirrorLock(config.mirror) { mirrorGrep(config.mirror.toFile())(pattern, revision) } }
     }
-    internal val disk = DiskGuard { Volumes.hold(config) }
+    internal val disk = DiskGuard { Volumes.hold(config.paths, config.minFreeBytes) }
     @Volatile internal var recovered = false
         private set
     @Volatile internal var recoveryWaits: String? = null
@@ -88,7 +88,7 @@ class Runner(
 
     internal fun recover(): Boolean {
         if (recovered) return true
-        Volumes.jobFiles(config)?.let { recoveryWaits = it; return false }
+        Volumes.jobFiles(config.paths)?.let { recoveryWaits = it; return false }
         for (job in store.active(withCommands = false).filter { it.experiment.isAnalysis == true }) {
             if (job.cancelRequested) cancel(job.id)
             else if (job.status == Status.RUNNING) store.requeue(job.id)
@@ -104,7 +104,7 @@ class Runner(
         analysis.reportCompilation(jobId, index, dir, analyzeJob)
     internal fun analyze(job: Job) = analysis.analyze(job)
     internal fun cancel(jobId: Long) = analysis.cancel(jobId)
-    internal fun log(jobId: Long, message: String) = logJob(config, jobId, message)
+    internal fun log(jobId: Long, message: String) = logJob(config.paths, jobId, message)
 
     fun installShutdownHook() { Runtime.getRuntime().addShutdownHook(Thread { stop() }) }
     internal fun stop() { stopping = true }

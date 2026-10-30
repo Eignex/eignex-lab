@@ -96,7 +96,9 @@ consistency check and directory switch. Restart it promptly to preserve worker l
 reads and checking progress, and only then remove the internal copy.
 
 Use the same canonical external corpus directory for `LAB_CORPUS` and `LAB_SHARED_INPUT_ROOT`, including the
-coordinator service environment, native queue target and native-service configuration. Updating `LAB_CORPUS`
+coordinator service environment, native queue target and native-service configuration. The runner's `lab.env` needs
+`LAB_SHARED_INPUT_ROOT`, `LAB_SHARED_INPUT_URL` and `LAB_SHARED_INPUT_SIGNER` as well: it runs rechecks, which read
+the inputs a job's cases were prepared with. Updating `LAB_CORPUS`
 alone leaves native workers and source checking on their separate shared-input root. Merge and verify existing
 inputs before changing roots; drain native sessions and stop the coordinator for the switch so active input pins
 are not copied across filesystems. Keep a symlink at the old shared-input path for frozen worker recipes and saved

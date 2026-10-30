@@ -233,4 +233,5 @@ internal class SharedInputLease(val directory: Path, private val pin: AutoClosea
     override fun close() = pin.close()
 }
 
-internal class SharedCheckInputUnavailable(cause: Throwable) : IllegalStateException("shared checking input temporarily unavailable", cause)
+internal class SharedCheckInputUnavailable(cause: Throwable) :
+    IllegalStateException("shared checking input temporarily unavailable: ${cause.message ?: cause.javaClass.simpleName}", cause)

@@ -22,7 +22,7 @@ class StoredExperimentTest {
     @Test fun `a stored experiment is one kind of work`() {
         val json = Json { ignoreUnknownKeys = true }
         assertEquals(Work.Recipe, json.decodeFromString<ExperimentSpec>("{\"name\":\"old\",\"problems\":[{\"suite\":\"s\"}]}").work)
-        assertEquals(Work.Script, json.decodeFromString<ExperimentSpec>("{\"name\":\"old\",\"script\":\"echo\"}").work)
+        assertEquals(Work.Script("echo", null), json.decodeFromString<ExperimentSpec>("{\"name\":\"old\",\"script\":\"echo\"}").work)
         assertEquals(Work.Analysis(AnalyzeSpec(job = 3)), ExperimentSpec("a", analyze = AnalyzeSpec(job = 3)).work)
         assertEquals(Work.Bench(BenchSpec("bench.json")), ExperimentSpec("b", bench = BenchSpec("bench.json")).work)
         assertEquals(Work.Profile(ProfileMain("Main")), ExperimentSpec("p", profile = ProfileMain("Main")).work)

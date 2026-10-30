@@ -106,8 +106,8 @@ class ComparisonControlsTest {
         val spec = Confirm.spec("s", ExperimentSpec("s", emptyList(), bench = BenchSpec("bench.json")),
             "before", "after", flips, 7, sourceCases = cases)
 
-        assertEquals(2, spec.bench!!.frozenCases.size)
-        assertEquals(setOf("1", "3"), spec.bench!!.frozenCases.map { it.parameters["seed"] }.toSet())
+        assertEquals(2, spec.work.bench!!.frozenCases.size)
+        assertEquals(setOf("1", "3"), spec.work.bench!!.frozenCases.map { it.parameters["seed"] }.toSet())
         assertEquals(3, spec.repeats)
         assertTrue(spec.problemList.isEmpty())
     }

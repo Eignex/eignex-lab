@@ -25,7 +25,7 @@ class WeightedCheckBenchTest {
     @Test fun `production registry covers all weighted source formats`() {
         val work = Files.createTempDirectory("weighted-registry")
         try {
-            val checker = Checkers.of(Config(dataDir = work))
+            val checker = Checkers.of(Config(dataDir = work).paths)
             for (format in listOf("OPB", "WBO", "WCNF")) assertEquals(true, checker.covers(format))
         } finally { work.toFile().deleteRecursively() }
     }

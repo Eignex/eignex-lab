@@ -11,17 +11,17 @@ import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
 
-internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): String = buildString {
-    append(head("Execution · job $job", live = true))
-    append("<header><h1>Execution · job $job</h1></header><div id=\"execution\" data-live>")
-    append("<p><a href=\"/jobs/$job\">Experiment</a> · <a href=\"/jobs/$job/files/job.log\">Log</a> · <a href=\"/nodes\">Nodes</a></p>")
-    append("<table><thead><tr><th>Session / allocation</th><th>Node</th><th>Phase / generation</th><th>Budget</th><th>Accepted iterations</th></tr></thead><tbody>")
+internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): Html = buildHtml {
+    append(head("Execution · job ${job}", live = true))
+    append(Html("<header><h1>Execution · job ") + job + Html("</h1></header><div id=\"execution\" data-live>"))
+    append(Html("<p><a href=\"/jobs/") + job + Html("\">Experiment</a> · <a href=\"/jobs/") + job + Html("/files/job.log\">Log</a> · <a href=\"/nodes\">Nodes</a></p>"))
+    append(Html("<table><thead><tr><th>Session / allocation</th><th>Node</th><th>Phase / generation</th><th>Budget</th><th>Accepted iterations</th></tr></thead><tbody>"))
     for (report in reports) {
         val session = report.session
-        append("<tr><td>${esc(session.id)}<br>${esc(session.allocation ?: "pending")}</td><td>${esc(session.node ?: "pending")}</td>")
-        append("<td>${esc(report.phase ?: session.desired.stored)} / ${report.generation ?: 0}</td><td>${session.budget.cpuMillis / 1000.0} vCPU / ${session.budget.memoryMiB} MiB</td><td>${report.committed}</td></tr>")
-        report.preparation?.let { append("<tr><td colspan=\"5\">${preparationDetails(report)}</td></tr>") }
-        report.observation?.let { append("<tr><td colspan=\"5\">${esc(it)}</td></tr>") }
+        append(Html("<tr><td>") + esc(session.id) + Html("<br>") + esc(session.allocation ?: "pending") + Html("</td><td>") + esc(session.node ?: "pending") + Html("</td>"))
+        append(Html("<td>") + esc(report.phase ?: session.desired.stored) + Html(" / ") + (report.generation ?: 0) + Html("</td><td>") + (session.budget.cpuMillis / 1000.0) + Html(" vCPU / ") + session.budget.memoryMiB + Html(" MiB</td><td>") + report.committed + Html("</td></tr>"))
+        report.preparation?.let { append(Html("<tr><td colspan=\"5\">") + preparationDetails(report) + Html("</td></tr>")) }
+        report.observation?.let { append(Html("<tr><td colspan=\"5\">") + esc(it) + Html("</td></tr>")) }
     }
-    append("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>")
+    append(Html("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>"))
 }

@@ -49,16 +49,16 @@ data class ExperimentSpec(
      * An analysis job: the lab's own analyser run again over an ended job's retained captures, writing fresh reports.
      * Nothing is built and no consumer code runs. Its spec names nothing else.
      */
-    val analyze: AnalyzeSpec? = null,
+    private val analyze: AnalyzeSpec? = null,
     /**
      * A profile job: a committed JVM main or executable at the base `ref`, instead of problems and arms.
      * For measurements the experiments cannot express; not for the build's tests or lint gates, which CI runs.
      */
-    val profile: ProfileMain? = null,
+    private val profile: ProfileMain? = null,
     /** Retired: a shell script a job once ran. Kept so the jobs that did still read; a spec naming one is refused. */
-    val script: String? = null,
+    private val script: String? = null,
     /** Retired with [script]. */
-    val scriptFile: String? = null,
+    private val scriptFile: String? = null,
     /** What the lab cut down to fit the local machine when it took the job ([Experiments.capToLocal]), each in words;
      *  set by the lab, not the submitter. */
     val capped: List<String> = emptyList(),
@@ -67,21 +67,34 @@ data class ExperimentSpec(
     /** Internal selector in stored recipes. Public submissions use a flat tags array, decoded by [experimentInput]. */
     val nodeTags: NodeSelector? = null,
     /** Repository-owned benchmark plan and execution. */
-    val bench: BenchSpec? = null,
+    private val bench: BenchSpec? = null,
 ) {
     init {
-        require(listOf(analyze != null, bench != null, profile != null, isScript).count { it } <= 1) {
+        require(listOf(analyze != null, bench != null, profile != null, scripted).count { it } <= 1) {
             "an experiment is one kind of work: a bench, a profile or an analysis"
         }
     }
 
-    /** What [this] runs, as one kind ([Work]): the stored fields name at most one. */
+    private val scripted: Boolean get() = !script.isNullOrBlank() || !scriptFile.isNullOrBlank()
+
+    /**
+     * What [this] runs, as one kind ([Work]): the stored fields name at most one, and are read only through it. To
+     * change the work, [withWork].
+     */
     val work: Work get() = when {
         analyze != null -> Work.Analysis(analyze)
         bench != null -> Work.Bench(bench)
         profile != null -> Work.Profile(profile)
-        isScript -> Work.Script
+        scripted -> Work.Script(script?.takeIf { it.isNotBlank() }, scriptFile?.takeIf { it.isNotBlank() })
         else -> Work.Recipe
+    }
+
+    /** [this] doing [work] instead; a retired kind keeps the fields it was stored with. */
+    fun withWork(work: Work): ExperimentSpec = when (work) {
+        is Work.Bench -> copy(bench = work.spec, profile = null, analyze = null)
+        is Work.Profile -> copy(profile = work.main, bench = null, analyze = null)
+        is Work.Analysis -> copy(analyze = work.spec, bench = null, profile = null)
+        is Work.Script, Work.Recipe -> also { require(this.work == work) { "the lab no longer makes $work work" } }
     }
 }
 
@@ -99,17 +112,24 @@ sealed interface Work {
     /** The lab's analyser run again over an ended job's retained captures, in the coordinator. */
     data class Analysis(val spec: AnalyzeSpec) : Work
 
-    /** Retired: a shell script the job ran. */
-    data object Script : Work
+    /** Retired: a shell script the job ran, inline or as a repository file. */
+    data class Script(val script: String?, val file: String?) : Work
 
     /** Retired: the lab's own solver recipe over selected problems, from before benches. */
     data object Recipe : Work
 
-    companion object {
-        /** The kinds the lab no longer runs. */
-        val RETIRED: Set<Work> = setOf(Script, Recipe)
-    }
+    /** Whether [this] is a kind the lab no longer runs. */
+    val retired: Boolean get() = this is Script || this == Recipe
 }
+
+/** [this] bench's plan, when it is one. */
+val Work.bench: BenchSpec? get() = (this as? Work.Bench)?.spec
+
+/** What [this] profile runs, when it is one. */
+val Work.profile: ProfileMain? get() = (this as? Work.Profile)?.main
+
+/** The job [this] analysis reads, when it is one. */
+val Work.analysis: AnalyzeSpec? get() = (this as? Work.Analysis)?.spec
 
 @Serializable
 enum class Measurement {
@@ -231,7 +251,7 @@ val ExperimentSpec.isProfile: Boolean get() = work is Work.Profile
 val ExperimentSpec.isBench: Boolean get() = work is Work.Bench
 
 /** Whether [this] is one of the retired script jobs, which the lab no longer runs. */
-val ExperimentSpec.isScript: Boolean get() = !script.isNullOrBlank() || !scriptFile.isNullOrBlank()
+val ExperimentSpec.isScript: Boolean get() = work is Work.Script
 
 /** One configuration of an experiment: its [label] and the solve arguments, `ref` included. */
 @Serializable

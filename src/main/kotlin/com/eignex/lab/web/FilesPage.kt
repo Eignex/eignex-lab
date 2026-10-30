@@ -13,16 +13,16 @@ import com.eignex.lab.worker.*
 
 import java.net.URLEncoder
 
-internal fun filesPage(jobId: Long, files: List<FileEntry>): String = buildString {
-    append(head("$jobId files · eignex lab", live = false))
-    append("<header><h1><a href=\"/jobs/$jobId\">$jobId</a> / files</h1></header>")
-    if (files.isEmpty()) append("<p class=\"muted\">No files yet.</p>")
-    append("<div class=\"scroll\"><table><tr><th>path</th><th class=\"num\">size</th></tr>")
+internal fun filesPage(jobId: Long, files: List<FileEntry>): Html = buildHtml {
+    append(head("${jobId} files · eignex lab", live = false))
+    append(Html("<header><h1><a href=\"/jobs/") + jobId + Html("\">") + jobId + Html("</a> / files</h1></header>"))
+    if (files.isEmpty()) append(Html("<p class=\"muted\">No files yet.</p>"))
+    append(Html("<div class=\"scroll\"><table><tr><th>path</th><th class=\"num\">size</th></tr>"))
     for (file in files) {
-        append("<tr><td><a href=\"/jobs/$jobId/files/${pathUrl(file.path)}\"><code>${esc(file.path)}</code></a></td>")
-        append("<td class=\"num\">${size(file.bytes)}</td></tr>")
+        append(Html("<tr><td><a href=\"/jobs/") + jobId + Html("/files/") + pathUrl(file.path) + Html("\"><code>") + esc(file.path) + Html("</code></a></td>"))
+        append(Html("<td class=\"num\">") + size(file.bytes) + Html("</td></tr>"))
     }
-    append("</table></div></body></html>")
+    append(Html("</table></div></body></html>"))
 }
 
 internal fun pathUrl(path: String) =

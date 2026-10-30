@@ -29,37 +29,37 @@ import com.eignex.lab.worker.portablePath
 
 /** The lab's checkers as this machine provisions them: one adapter per format, the sources from its own corpus. */
 object Checkers {
-    fun of(config: Config): SourceChecker {
-        val solchecker = Solchecker(dir(config))
-        val dolmen = Dolmen(dir(config))
+    fun of(paths: DataPaths): SourceChecker {
+        val solchecker = Solchecker(dir(paths))
+        val dolmen = Dolmen(dir(paths))
         return SourceChecker(
         adapters = listOf(Xcsp3Checker(), RationalMpsChecker(MpsChecker(solchecker::binary)), MiniZincChecker(), SmtChecker(dolmen::binary), OpbChecker(), WboChecker(), WcnfChecker(), DimacsChecker()),
-        locator = SourceLocator(config.corpusDir.toFile(), fixtures = fixtures(config), problemPaths = { problem, revision ->
+        locator = SourceLocator(paths.corpusDir.toFile(), fixtures = fixtures(paths), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))
-                    portablePath(value, config.jobDir(revision.job).resolve("nomad/prepared-source/${revision.sha}").takeIf(java.nio.file.Files::exists) ?: config.worktree(revision.job), config.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
+                    portablePath(value, paths.jobDir(revision.job).resolve("nomad/prepared-source/${revision.sha}").takeIf(java.nio.file.Files::exists) ?: paths.worktree(revision.job), paths.jobDir(revision.job).resolve("nomad/prepared-corpus")).toString() else value
                 problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
             }
         }),
-        workRoot = dir(config).resolve("tmp"),
+        workRoot = dir(paths).resolve("tmp"),
     )
     }
 
     /** Repository files read at a case's commit: from its job's worktree of that commit, else from the lab's mirror.
      *  A planned path under the lab's or a cloud node's worktrees is a repository path. */
-    fun fixtures(config: Config): RepositoryFixtures = RepositoryFixtures(
-        mirror = config.mirror.toFile(),
-        mirrorFor = { revision -> checkerMirror(config, revision.repository).toFile() },
+    fun fixtures(paths: DataPaths): RepositoryFixtures = RepositoryFixtures(
+        mirror = paths.mirror.toFile(),
+        mirrorFor = { revision -> checkerMirror(paths, revision.repository).toFile() },
         worktrees = { (job, sha) ->
-            val own = config.worktree(job).toFile()
-            listOf(config.jobDir(job).resolve("nomad/prepared-source/$sha").toFile(), own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
+            val own = paths.worktree(job).toFile()
+            listOf(paths.jobDir(job).resolve("nomad/prepared-source/$sha").toFile(), own, own.resolveSibling("$job@${sha.take(SHA_DIR)}"))
         },
-        worktreeRoots = listOf(config.worktree(0).parent.toString(), "/home/ubuntu/work"),
+        worktreeRoots = listOf(paths.worktree(0).parent.toString(), "/home/ubuntu/work"),
     )
 
     /** Where the lab keeps its checker binaries (`$LAB_DATA/checkers`), and only those: scratch inputs go under `tmp`
      *  and are deleted after each check. */
-    fun dir(config: Config): File = config.dataDir.resolve("checkers").toFile()
+    fun dir(paths: DataPaths): File = paths.dataDir.resolve("checkers").toFile()
 
     /** How much of a commit names a job's worktree of it beside its own (`<job>@<sha>`), as the runner builds it. */
     private const val SHA_DIR = 12
@@ -70,11 +70,11 @@ internal fun checkerRepository(spec: ExperimentSpec?): String? = spec?.let {
     it.repository.takeUnless { repository -> !it.isBench && repository == Repositories.DEFAULT }
 }
 
-internal fun checkerMirror(config: Config, repository: String?): java.nio.file.Path {
-    if (repository == null) return config.mirror
-    val mirror = Repositories.mirror(config.paths, repository)
+internal fun checkerMirror(paths: DataPaths, repository: String?): java.nio.file.Path {
+    if (repository == null) return paths.mirror
+    val mirror = Repositories.mirror(paths, repository)
     // Old Klause checks used repo.git, including records that explicitly named the repository.
-    return if (repository == "Eignex/klause" && !java.nio.file.Files.exists(mirror)) config.mirror else mirror
+    return if (repository == "Eignex/klause" && !java.nio.file.Files.exists(mirror)) paths.mirror else mirror
 }
 
 /** What a recheck job ([CaseChecks.recheck]) did, written as `recheck.json` in its directory. */
@@ -133,7 +133,8 @@ class CaseChecks(
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
                 .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
-            requireNotNull(SharedInputs.environment()).acquire(inputs, required = required)
+            checkNotNull(SharedInputs.environment()) { "LAB_SHARED_INPUT_ROOT is not set in this service's environment" }
+                .acquire(inputs, required = required)
         } catch (failure: Exception) { throw SharedCheckInputUnavailable(failure) } else null
         val check = lease.use {
             val frame = if (problem.format.equals("MINIZINC", ignoreCase = true)) frame(jobId, index) else null
@@ -182,7 +183,7 @@ class CaseChecks(
         fun refusal(job: Job?): String? {
             if (job == null) return "no such job"
             val spec = job.experiment
-            if (spec.isAnalysis) return "job ${job.id} is an analysis or recheck job itself; name the job it checked (${spec.analyze?.job})"
+            if (spec.isAnalysis) return "job ${job.id} is an analysis or recheck job itself; name the job it checked (${spec.work.analysis?.job})"
             if (job.status.isActive) return "job ${job.id} is ${job.status.name.lowercase()}: check it again once it has ended"
             return null
         }

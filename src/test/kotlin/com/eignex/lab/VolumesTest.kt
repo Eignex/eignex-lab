@@ -68,7 +68,7 @@ class VolumesTest {
 
     @Test
     fun `each volume is reported once, with the lab's directories on it`() {
-        val volumes = Volumes.report(external(), space(100 * gb, 3000 * gb)) { true }
+        val volumes = Volumes.report(external().paths, space(100 * gb, 3000 * gb)) { true }
 
         assertEquals(listOf("/", "/Volumes/Ros"), volumes.map { it.mount })
         assertEquals(listOf("LAB_DATA"), volumes[0].paths.map { it.name })
@@ -81,9 +81,9 @@ class VolumesTest {
     fun `the queue is held when any volume the lab writes to runs low, naming that volume`() {
         val config = external()
 
-        assertNull(Volumes.hold(config, space(100 * gb, 3000 * gb)) { true })
-        val external = Volumes.hold(config, space(100 * gb, 5 * gb)) { true }
-        val internal = Volumes.hold(config, space(5 * gb, 3000 * gb)) { true }
+        assertNull(Volumes.hold(config.paths, config.minFreeBytes, space(100 * gb, 3000 * gb)) { true })
+        val external = Volumes.hold(config.paths, config.minFreeBytes, space(100 * gb, 5 * gb)) { true }
+        val internal = Volumes.hold(config.paths, config.minFreeBytes, space(5 * gb, 3000 * gb)) { true }
 
         assertTrue(external!!.contains("on /Volumes/Ros (job files, corpus)"), external)
         assertTrue(internal!!.contains("on / (data)"), internal)
@@ -92,11 +92,11 @@ class VolumesTest {
     @Test
     fun `everything on one disk is one volume, held by its free space alone`() {
         val config = Config(dataDir = Path("/Users/lab/data"), corpusDir = Path("/Users/lab/corpus"), auth = Auth.Disabled, volumeAccess = answers)
-        val volumes = Volumes.report(config, space(100 * gb, 0)) { true }
+        val volumes = Volumes.report(config.paths, space(100 * gb, 0)) { true }
 
         assertEquals(1, volumes.size)
         assertEquals(listOf("LAB_DATA", "LAB_JOBS", "LAB_CORPUS"), volumes.single().paths.map { it.name })
-        assertTrue(Volumes.hold(config, space(5 * gb, 0)) { true }!!.contains("(data, job files, corpus)"))
+        assertTrue(Volumes.hold(config.paths, config.minFreeBytes, space(5 * gb, 0)) { true }!!.contains("(data, job files, corpus)"))
     }
 
     @Test
@@ -105,8 +105,8 @@ class VolumesTest {
         val asked = mutableListOf<Path>()
         val space: (Path) -> VolumeSpace = { asked.add(it); space(100 * gb, 3000 * gb)(it) }
 
-        val hold = Volumes.hold(config, space) { false }
-        val volumes = Volumes.report(config, space) { false }
+        val hold = Volumes.hold(config.paths, config.minFreeBytes, space) { false }
+        val volumes = Volumes.report(config.paths, space) { false }
 
         assertEquals("job files volume /Volumes/Ros is not mounted", hold)
         assertEquals("job files volume /Volumes/Ros is not mounted", volumes.single { it.mount == "/Volumes/Ros" }.problem)
@@ -120,7 +120,7 @@ class VolumesTest {
         val config = external(root)
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
 
-        assertEquals("job files volume ${root.resolve("Ros")} is not mounted", Volumes.missing(config))
+        assertEquals("job files volume ${root.resolve("Ros")} is not mounted", Volumes.missing(config.paths))
         assertFailsWith<IllegalStateException> { config.createJobDir(1) }
         Runner(config, store).log(1, "a line for a job whose volume is gone")
         JobTrim(config.jobsDir, { listOf(1L to 0L) }, { 0L }, { _, _ -> }).run()
@@ -128,7 +128,7 @@ class VolumesTest {
 
         // A plain folder where the volume mounts lies on the same device as the volumes root: not a mounted volume.
         Files.createDirectories(root.resolve("Ros"))
-        assertEquals("job files volume ${root.resolve("Ros")} is not mounted", Volumes.missing(config))
+        assertEquals("job files volume ${root.resolve("Ros")} is not mounted", Volumes.missing(config.paths))
         assertFailsWith<IllegalStateException> { config.createJobDir(1) }
         assertFalse(Files.exists(root.resolve("Ros/eignex-lab")))
     }
@@ -142,8 +142,8 @@ class VolumesTest {
         val dir = Volumes.ensure(Volumes.JOB_FILES, config.jobsDir, root, config.volumeAccess) { true }
 
         assertTrue(Files.isDirectory(dir))
-        assertEquals("corpus volume ${root.resolve("Other")} is not mounted", Volumes.missing(config) { it.endsWith("Ros") })
-        assertNull(Volumes.missing(config) { true })
+        assertEquals("corpus volume ${root.resolve("Other")} is not mounted", Volumes.missing(config.paths) { it.endsWith("Ros") })
+        assertNull(Volumes.missing(config.paths) { true })
     }
 
     @Test
@@ -199,7 +199,7 @@ class VolumesTest {
         val lab = Blocked()
         val started = System.nanoTime()
 
-        val problem = Volumes.jobFiles(lab.config)
+        val problem = Volumes.jobFiles(lab.config.paths)
 
         val tookMs = (System.nanoTime() - started) / 1_000_000
         assertEquals(
@@ -209,8 +209,8 @@ class VolumesTest {
         )
         // The probe's deadline counts whole milliseconds, so the wait can end up to a few of them short of the timeout.
         assertTrue(tookMs in TIMEOUT_MS - 5..5_000, "$tookMs ms")
-        assertEquals(problem, Volumes.hold(lab.config))
-        val volume = Volumes.report(lab.config).single { volume -> volume.paths.any { it.name == "LAB_JOBS" } }
+        assertEquals(problem, Volumes.hold(lab.config.paths, lab.config.minFreeBytes))
+        val volume = Volumes.report(lab.config.paths).single { volume -> volume.paths.any { it.name == "LAB_JOBS" } }
         assertEquals(problem, volume.problem)
         assertNull(volume.freeBytes)
         // A job's directory, and so a job's log line, fails at once rather than block its thread.
@@ -223,7 +223,7 @@ class VolumesTest {
         val lab = Blocked(corpusRefused = true)
         lab.gate.countDown()
 
-        val problem = Volumes.hold(lab.config)!!
+        val problem = Volumes.hold(lab.config.paths, lab.config.minFreeBytes)!!
 
         assertTrue(problem.startsWith("cannot access corpus directory ${lab.corpus} ("), problem)
         assertTrue(problem.endsWith("grant Full Disk Access to $JAVA in System Settings → Privacy & Security → Full Disk Access"), problem)
@@ -244,7 +244,7 @@ class VolumesTest {
         lab.gate.countDown()
         // The stuck probe records what it found once its call returns: access was granted.
         assertTrue(eventually { lab.access.check(Volumes.JOB_FILES, lab.jobs) == null })
-        assertNull(Volumes.hold(lab.config))
+        assertNull(Volumes.hold(lab.config.paths, lab.config.minFreeBytes))
     }
 
     private companion object {

@@ -91,21 +91,20 @@ object SourceValidation {
 
     /** [spec] without the validation request, wherever it was set: what the solver itself was asked to do. */
     fun unrequested(spec: ExperimentSpec): ExperimentSpec {
-        spec.bench?.let { return spec.copy(bench = it.copy(sourceValidation = false)) }
+        spec.work.bench?.let { return spec.withWork(Work.Bench(it.copy(sourceValidation = false))) }
         val keys = SCHEDULED.keys
-        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys,
-            bench = spec.bench?.copy(sourceValidation = false))
+        return spec.copy(base = spec.base - keys, configs = spec.configs.map { it - keys }, grid = spec.grid - keys)
     }
 
     /** Whether an arm's [values] ask for source validation. */
     fun requested(values: Map<String, String>): Boolean = values[PARAM]?.toBooleanStrictOrNull() == true
 
     /** Whether [spec]'s first arm, the one a trend reads, asks for source validation. */
-    fun requested(spec: ExperimentSpec): Boolean = spec.bench?.sourceValidation
+    fun requested(spec: ExperimentSpec): Boolean = spec.work.bench?.sourceValidation
         ?: (Experiments.arms(spec).firstOrNull()?.let { requested(it.values) } == true)
 
     /** The coordinator's check policy for a stored case, including repository-owned bench results. */
-    fun requested(spec: ExperimentSpec?, values: Map<String, String>): Boolean = spec?.bench?.sourceValidation ?: requested(values)
+    fun requested(spec: ExperimentSpec?, values: Map<String, String>): Boolean = spec?.work?.bench?.sourceValidation ?: requested(values)
 
     /**
      * An arm's [values] as a case passes them to the bench: without the validation request, which the lab consumes

@@ -140,10 +140,10 @@ class ValidationTest {
 
     @Test
     fun `a verdict says whether its solution was source-checked, unchecked or indeterminate`() {
-        val checked = verdict(outcome(accepted), Status.DONE)
-        val reported = verdict(outcome(unchecked), Status.DONE)
-        val undecided = verdict(outcome(indeterminate), Status.DONE)
-        val restored = verdict(outcome(withdrawn), Status.DONE)
+        val checked = verdict(outcome(accepted), Status.DONE).markup
+        val reported = verdict(outcome(unchecked), Status.DONE).markup
+        val undecided = verdict(outcome(indeterminate), Status.DONE).markup
+        val restored = verdict(outcome(withdrawn), Status.DONE).markup
 
         assertTrue(checked.startsWith("8* <small class=\"DONE\""), checked)
         assertContains(checked, ">checked</small>")
@@ -157,7 +157,7 @@ class ValidationTest {
         assertTrue(restored.startsWith("892384.9959999999 <small class=\"PARTIAL\""), restored)
         assertContains(restored, "reported objective 892384.9959999999")
         assertEquals("<span class=\"FAILED\" title=\"source constraints reject candidate\">invalid solution</span>",
-            verdict(outcome(rejected), Status.DONE))
+            verdict(outcome(rejected), Status.DONE).markup)
     }
 
     @Test
@@ -168,9 +168,9 @@ class ValidationTest {
             "validationPolicy":"reported-result-v1","stats":{}}"""
         val infeasible = """{"solver":"klause","kind":"satisfy","feasible":false,"proven":true,"budgetMs":5000,"validationPolicy":"reported-result-v1"}"""
 
-        assertEquals("<span class=\"muted\">unknown</span>", verdict(outcome(undecided), Status.DONE))
-        assertContains(verdict(outcome(reference), Status.DONE), ">unchecked</small>")
-        assertEquals("infeasible", verdict(outcome(infeasible), Status.DONE))
+        assertEquals("<span class=\"muted\">unknown</span>", verdict(outcome(undecided), Status.DONE).markup)
+        assertContains(verdict(outcome(reference), Status.DONE).markup, ">unchecked</small>")
+        assertEquals("infeasible", verdict(outcome(infeasible), Status.DONE).markup)
     }
 
     @Test
@@ -189,18 +189,18 @@ class ValidationTest {
 
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val arms = listOf(PlannedArm(Arm("6991", emptyMap()), "abc"), PlannedArm(Arm("7004", emptyMap()), "def"))
-        val page = comparePage(config, emptyList(), arms, before + after)
+        val page = comparePage(config.repoUrl, emptyList(), arms, before + after)
 
         assertContains(page, "These arms ran under different validation policies")
         assertContains(page, "<b>6991</b> <span class=\"muted\" title=\"2 unchecked Solver solutions")
         assertContains(page, "<b>7004</b> <span class=\"DONE\" title=\"1 checked, 1 invalid Solver solutions")
-        assertFalse("different validation policies" in comparePage(config, emptyList(), arms.take(1), before))
+        assertFalse("different validation policies" in comparePage(config.repoUrl, emptyList(), arms.take(1), before))
     }
 
     @Test
     fun `a trend run says whether it asked for source validation`() {
         val spec = committed("status-sweep.json")
-        val saved = spec.copy(bench = spec.bench!!.copy(sourceValidation = false))
+        val saved = spec.copy(bench = spec.work.bench!!.copy(sourceValidation = false))
         fun run(experiment: ExperimentSpec) = Trend.run(
             Job(1, "status-sweep@abc", "main", "abc", Status.DONE, cancelRequested = false, setupDone = true, createdAt = 0,
                 experiment = experiment),

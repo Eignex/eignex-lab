@@ -186,8 +186,9 @@ class ExecutionStore internal constructor(private val store: Store) {
             return@executionTransaction old
         }
         val placement = SessionPlacement.of(payload)
-        if (placement.native) {
-            val limit = placement.nativeCpuLimit?.let { cpu -> placement.nativeMemoryLimit?.let { cpu to it } }
+        val pool = placement.pool
+        if (pool is WorkerPool.Native) {
+            val limit = pool.limits
             if (limit == null) check(!nativeOwnedByAnother(db, jobId)) { "native execution is reserved by another experiment" }
             else {
                 val held = nativeReservation(db)

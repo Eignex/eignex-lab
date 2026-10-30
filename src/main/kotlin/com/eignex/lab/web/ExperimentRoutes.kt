@@ -55,11 +55,11 @@ internal fun Route.experimentRoutes(services: ApiServices) {
             val arms = jobs.flatMap { job -> store.plans.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
             val cases = jobs.flatMap { job -> store.plans.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
             val references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
-            if (html) comparePage(config, jobs, arms, cases, references)
+            if (html) comparePage(config.repoUrl, jobs, arms, cases, references)
             else References.compare(arms.map { it.arm.label }, cases, references)
         }
         // A browser gets the page; an API client the same comparison `/experiments/{id}/reference` gives of one job.
-        if (compared is String) call.respondText(compared, ContentType.Text.Html) else call.respond(compared)
+        if (compared is Html) call.respondHtml(compared) else call.respond(compared)
     }
     get("/experiments/{id}/metrics.csv") {
         call.respondText(io { BenchRuns.metricsCsv(store.plans.cases(call.longParam())) }, ContentType.Text.CSV)

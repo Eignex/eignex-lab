@@ -53,10 +53,10 @@ object Volumes {
     const val CORPUS = "corpus"
 
     /** The lab's directories, each with its setting and the label a hold names it by. */
-    fun paths(config: Config): List<VolumePath> = listOf(
-        VolumePath("LAB_DATA", "data", config.dataDir.toString()),
-        VolumePath("LAB_JOBS", JOB_FILES, config.jobsDir.toString()),
-        VolumePath("LAB_CORPUS", CORPUS, config.corpusDir.toString()),
+    fun paths(paths: DataPaths): List<VolumePath> = listOf(
+        VolumePath("LAB_DATA", "data", paths.dataDir.toString()),
+        VolumePath("LAB_JOBS", JOB_FILES, paths.jobsDir.toString()),
+        VolumePath("LAB_CORPUS", CORPUS, paths.corpusDir.toString()),
     )
 
     /** The volume `<root>/<name>` that [path] lies under, or null when it lies elsewhere. */
@@ -117,13 +117,13 @@ object Volumes {
     }
 
     /** Why the job files cannot be used now ([problem]), or null when they can. */
-    fun jobFiles(config: Config, mounted: (Path) -> Boolean = ::isMounted): String? =
-        problem(JOB_FILES, config.jobsDir, config.volumesRoot, config.volumeAccess, mounted)
+    fun jobFiles(paths: DataPaths, mounted: (Path) -> Boolean = ::isMounted): String? =
+        problem(JOB_FILES, paths.jobsDir, paths.volumesRoot, paths.volumeAccess, mounted)
 
     /** Why the job files or the corpus cannot be used now ([problem]), or null when both can. */
-    fun missing(config: Config, mounted: (Path) -> Boolean = ::isMounted): String? {
-        if (!watching) probeAll(config, mounted)
-        return jobFiles(config, mounted) ?: problem(CORPUS, config.corpusDir, config.volumesRoot, config.volumeAccess, mounted)
+    fun missing(paths: DataPaths, mounted: (Path) -> Boolean = ::isMounted): String? {
+        if (!watching) probeAll(paths, mounted)
+        return jobFiles(paths, mounted) ?: problem(CORPUS, paths.corpusDir, paths.volumesRoot, paths.volumeAccess, mounted)
     }
 
     @Volatile private var watching = false
@@ -133,19 +133,19 @@ object Volumes {
      * [report], [missing] and [hold] only read outcomes and never start a probe themselves. A service starts it once,
      * when it starts; a one-shot caller without it has its directories probed side by side when it first asks.
      */
-    fun watch(config: Config, everyMs: Long = VolumeAccess.FRESH_MS / 2): Thread {
+    fun watch(paths: DataPaths, everyMs: Long = VolumeAccess.FRESH_MS / 2): Thread {
         watching = true
-        return periodic("volume-probes", everyMs) { probeAll(config, ::isMounted) }
+        return periodic("volume-probes", everyMs) { probeAll(paths, ::isMounted) }
     }
 
     /**
      * Start probing each of the lab's directories whose volume is mounted ([VolumeAccess.start]), so that directories
      * on a blocked volume wait out their timeouts side by side rather than one after another.
      */
-    fun probeAll(config: Config, mounted: (Path) -> Boolean = ::isMounted) {
-        for (entry in paths(config)) {
+    fun probeAll(paths: DataPaths, mounted: (Path) -> Boolean = ::isMounted) {
+        for (entry in paths(paths)) {
             val dir = Path.of(entry.path)
-            if (mountPointOf(dir, config.volumesRoot)?.let(mounted) != false) config.volumeAccess.start(entry.label, dir)
+            if (mountPointOf(dir, paths.volumesRoot)?.let(mounted) != false) paths.volumeAccess.start(entry.label, dir)
         }
     }
 
@@ -165,17 +165,17 @@ object Volumes {
      * space, which is then not asked for, since reading it could block as well.
      */
     fun report(
-        config: Config,
+        paths: DataPaths,
         space: (Path) -> VolumeSpace = ::space,
         mounted: (Path) -> Boolean = ::isMounted,
     ): List<VolumeReport> {
-        if (!watching) probeAll(config, mounted)
+        if (!watching) probeAll(paths, mounted)
         val volumes = LinkedHashMap<String, VolumeReport>()
-        for (entry in paths(config)) {
+        for (entry in paths(paths)) {
             val dir = Path.of(entry.path)
-            val problem = problem(entry.label, dir, config.volumesRoot, config.volumeAccess, mounted)
+            val problem = problem(entry.label, dir, paths.volumesRoot, paths.volumeAccess, mounted)
             val key = if (problem != null) {
-                (mountPointOf(dir, config.volumesRoot) ?: dir).toString()
+                (mountPointOf(dir, paths.volumesRoot) ?: dir).toString()
             } else {
                 runCatching { space(dir).mount }.getOrElse { dir.toString() }
             }
@@ -194,13 +194,13 @@ object Volumes {
      * missing or cannot be used ([missing]), the data directory cannot be used, or a volume the lab writes to has less
      * than [Config.minFreeBytes] free, named with the lab's directories on it.
      */
-    fun hold(config: Config, space: (Path) -> VolumeSpace = ::space, mounted: (Path) -> Boolean = ::isMounted): String? {
-        missing(config, mounted)?.let { return it }
-        for (volume in report(config, space, mounted)) {
+    fun hold(paths: DataPaths, minFreeBytes: Long, space: (Path) -> VolumeSpace = ::space, mounted: (Path) -> Boolean = ::isMounted): String? {
+        missing(paths, mounted)?.let { return it }
+        for (volume in report(paths, space, mounted)) {
             volume.problem?.let { return it }
             val free = volume.freeBytes ?: continue
-            if (free < config.minFreeBytes) {
-                return "${size(free)} free on ${volume.mount} (${volume.paths.joinToString { it.label }}), under the ${size(config.minFreeBytes)} it keeps"
+            if (free < minFreeBytes) {
+                return "${size(free)} free on ${volume.mount} (${volume.paths.joinToString { it.label }}), under the ${size(minFreeBytes)} it keeps"
             }
         }
         return null

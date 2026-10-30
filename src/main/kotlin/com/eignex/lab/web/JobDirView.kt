@@ -40,9 +40,9 @@ internal class JobDirView(
         private val lenient = Json { ignoreUnknownKeys = true }
 
         /** [job]'s directory as the pages show it; [NONE] while the jobs volume does not answer ([Volumes.jobFiles]). */
-        fun read(config: Config, job: Job): JobDirView {
-            if (Volumes.jobFiles(config) != null) return NONE
-            val dir = config.jobDir(job.id).toFile()
+        fun read(paths: DataPaths, job: Job): JobDirView {
+            if (Volumes.jobFiles(paths) != null) return NONE
+            val dir = paths.jobDir(job.id).toFile()
             val indices = job.commands.map { it.index }.ifEmpty { listOf(0) }
             return JobDirView(
                 logs = listOf("setup.log", "job.log").filter { dir.resolve(it).isFile }.toSet(),
@@ -55,12 +55,12 @@ internal class JobDirView(
                     ?.let { runCatching { lenient.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() },
                 analysis = dir.resolve(CompilationReports.ANALYSIS).takeIf { it.isFile }
                     ?.let { runCatching { lenient.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() },
-                instances = instances(config, job),
+                instances = instances(paths, job),
             )
         }
 
         /** Only the cloud instances [job] ran on: what the queue page shows of each job's directory. */
-        fun instances(config: Config, job: Job): List<String> =
-            config.jobDir(job.id).resolve("aws-instances").toFile().takeIf { it.isFile }?.readLines()?.filter { it.isNotBlank() }.orEmpty()
+        fun instances(paths: DataPaths, job: Job): List<String> =
+            paths.jobDir(job.id).resolve("aws-instances").toFile().takeIf { it.isFile }?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     }
 }

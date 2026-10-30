@@ -45,7 +45,7 @@ internal fun Route.jobRoutes(services: ApiServices) {
             val page = io {
                 val cases = store.plans.cases(job.id)
                 jobPage(
-                    config, job, "failed" in call.parameters,
+                    config.status, job, "failed" in call.parameters,
                     arms = store.plans.arms(job.id),
                     cases = cases,
                     preparation = if (job.backend == Backend.NOMAD) store.execution.reports(job.id).filter { it.session.executionClass == ExecutionClass.PREPARE }.takeLast(1) else emptyList(),
@@ -55,14 +55,14 @@ internal fun Route.jobRoutes(services: ApiServices) {
                     holds = store.holds.active().filter { it.job == job.id },
                     hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
                     nodes = if (job.backend == Backend.NOMAD && job.status.isActive)
-                        jobNodes(config, store, listOf(job.id), services.capacitySettings.get())[job.id].orEmpty() else emptyList(),
-                    files = JobDirView.read(config, job),
+                        jobNodes(config.status, store, listOf(job.id), services.capacitySettings.get())[job.id].orEmpty() else emptyList(),
+                    files = JobDirView.read(config.paths, job),
                 )
             }
-            call.respondText(page, ContentType.Text.Html)
+            call.respondHtml(page)
         } else {
             val dir = config.jobDir(job.id)
-            val terminations = io { Volumes.jobFiles(config) == null }
+            val terminations = io { Volumes.jobFiles(config.paths) == null }
             call.respond(if (!terminations) job else io { job.copy(commands = job.commands.map { it.copy(terminations = Termination.read(dir, it.index)) }) })
         }
     }

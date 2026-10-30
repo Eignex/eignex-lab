@@ -51,12 +51,15 @@ data class ErrorBody(val error: String, val detail: String? = null)
 /** A browser asks for a page; `?json` or any API client gets the data. */
 internal fun ApplicationCall.wantsHtml() = "json" !in parameters && request.accept()?.contains("text/html") == true
 
+/** Respond with a page the lab built ([buildHtml]). */
+internal suspend fun ApplicationCall.respondHtml(page: Html) = respondText(page.markup, ContentType.Text.Html)
+
 /**
  * Answer [status] with [message]: a small page for a browser ([wantsHtml]), else an [ErrorBody] as JSON. Every error
  * of the API goes out this way.
  */
 internal suspend fun ApplicationCall.respondError(status: HttpStatusCode, message: String) {
-    if (wantsHtml()) respondText(errorPage(status, message), ContentType.Text.Html, status)
+    if (wantsHtml()) respondText(errorPage(status, message).markup, ContentType.Text.Html, status)
     else respond(status, ErrorBody(message))
 }
 
@@ -87,6 +90,7 @@ internal fun ApplicationCall.longParam(name: String = "id"): Long =
 /** The job the `{id}` parameter names: a malformed id is [ApiError.Invalid], an unknown job [ApiError.NotFound]. */
 internal fun ApplicationCall.job(store: Store): Job = longParam().let { id -> store.job(id) ?: throw ApiError.NotFound("no such job $id") }
 
-private fun errorPage(status: HttpStatusCode, message: String) =
-    "<!doctype html><html><head><meta charset=\"utf-8\"><title>${status.value} ${esc(status.description)}</title></head>" +
-        "<body><h1>${status.value} ${esc(status.description)}</h1><p>${esc(message)}</p><p><a href=\"/\">Back to the queue</a></p></body></html>"
+private fun errorPage(status: HttpStatusCode, message: String): Html =
+    Html("<!doctype html><html><head><meta charset=\"utf-8\"><title>") + status.value + Html(" ") + status.description + Html("</title></head>") +
+        Html("<body><h1>") + status.value + Html(" ") + status.description + Html("</h1><p>") + message +
+        Html("</p><p><a href=\"/\">Back to the queue</a></p></body></html>")

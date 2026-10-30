@@ -40,7 +40,7 @@ class RunnerTest {
         val schedule = store.schedules.all().single()
         assertTrue(schedule.launchRequested)
         assertTrue(schedule.blockedReason()!!.contains("legacy solver recipes must be migrated"))
-        val page = indexPage(config, HostReport("fixture", 4, "java"), emptyList(), listOf(schedule), emptyList(), 50, null, null)
+        val page = indexPage(config.status, HostReport("fixture", 4, "java"), emptyList(), listOf(schedule), emptyList(), 50, null, null)
         assertTrue(page.contains("blocked: execution requires a repository bench manifest or explicit profile"))
         assertTrue(page.contains("edit schedule to resume"))
         application { api(config, store, HostReport("fixture", 4, "java")) }

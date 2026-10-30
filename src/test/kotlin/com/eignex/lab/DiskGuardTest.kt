@@ -46,7 +46,7 @@ class DiskGuardTest {
         data.resolve("work").toFile().mkdirs()
         data.resolve("work/small").toFile().writeBytes(ByteArray(10_000))
         data.resolve("stray").toFile().writeBytes(ByteArray(50_000))
-        val report = DiskUsage(Config(dataDir = data, corpusDir = data.resolve("corpus"), auth = Auth.Disabled), pauseMs = 0).measure()!!
+        val report = Config(dataDir = data, corpusDir = data.resolve("corpus"), auth = Auth.Disabled).let { DiskUsage(it.paths, it.docker, pauseMs = 0) }.measure()!!
         val ours = report.places.filter { it.path.startsWith(data.toString()) }
 
         assertEquals(listOf("job files", "data: stray", "job worktrees"), ours.map { it.label })
@@ -64,7 +64,7 @@ class DiskGuardTest {
             ), "job files volume /Volumes/Ros is not mounted"),
         )
 
-        val page = diskPage(null, volumes = volumes, held = "job files volume /Volumes/Ros is not mounted")
+        val page = diskPage(null, volumes = volumes, held = "job files volume /Volumes/Ros is not mounted").markup
 
         assertTrue("<h2>Volumes</h2>" in page, page)
         assertTrue("The queue is held: job files volume /Volumes/Ros is not mounted" in page, page)
@@ -82,7 +82,7 @@ class DiskGuardTest {
         data.resolve("jobs/1").toFile().mkdirs()
         val config = Config(dataDir = data, jobsDir = jobs, corpusDir = data.resolve("corpus"), auth = Auth.Disabled)
 
-        val report = DiskUsage(config, pauseMs = 0).measure()!!
+        val report = DiskUsage(config.paths, config.docker, pauseMs = 0).measure()!!
 
         assertEquals(jobs.toString(), report.places.single { it.label == "job files" }.path)
         assertTrue(report.places.any { it.label == "data: jobs" })

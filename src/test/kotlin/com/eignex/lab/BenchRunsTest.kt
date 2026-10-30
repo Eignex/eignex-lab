@@ -69,13 +69,13 @@ class BenchRunsTest {
 
     @Test fun `bench schedules retain their explicit check policy without legacy runtime options`() {
         val unchecked = ExperimentSpec("bench", bench = BenchSpec("bench.json"))
-        val checked = unchecked.copy(bench = unchecked.bench!!.copy(sourceValidation = true))
+        val checked = unchecked.copy(bench = unchecked.work.bench!!.copy(sourceValidation = true))
         for (spec in listOf(unchecked, checked)) {
             val scheduled = SourceValidation.scheduled(spec)
             assertEquals(spec, scheduled)
             Experiments.validate(scheduled, 4)
-            assertEquals(spec.bench!!.sourceValidation, SourceValidation.requested(scheduled))
-            assertEquals(spec.bench.sourceValidation, SourceValidation.requested(scheduled, emptyMap()))
+            assertEquals(spec.work.bench!!.sourceValidation, SourceValidation.requested(scheduled))
+            assertEquals(spec.work.bench!!.sourceValidation, SourceValidation.requested(scheduled, emptyMap()))
         }
         assertNotEquals(Experiments.fingerprint(unchecked), Experiments.fingerprint(checked))
         assertEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(checked))
@@ -128,7 +128,7 @@ class BenchRunsTest {
                 artifacts = listOf(BenchArtifact("report/raw data.csv")))
             val cases = listOf(CaseResult(0, Status.DONE, BenchRuns.problem(BenchCase("p")), "base",
                 record = BenchProtocol.json.encodeToJsonElement(BenchResult.serializer(), result)))
-            val page = jobPage(config, job, false, cases = cases)
+            val page = jobPage(config.status, job, false, cases = cases)
             assertContains(page, "Bench results")
             assertContains(page, "ops/s")
             assertContains(page, "report/raw%20data.csv")

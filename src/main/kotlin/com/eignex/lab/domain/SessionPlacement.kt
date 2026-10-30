@@ -28,6 +28,18 @@ enum class CpuEnforcement(val stored: String) {
     }
 }
 
+/** Which workers a session runs on, each with what only it has. */
+sealed interface WorkerPool {
+    /** The local machine's native worker, held to its budget by the lab's reservation, at most these limits. */
+    data class Native(val cpuLimit: Long?, val memoryLimit: Long?) : WorkerPool {
+        /** The reservation's (mCPU, MiB) limits, when it was submitted with both. */
+        val limits: Pair<Long, Long>? get() = cpuLimit?.let { cpu -> memoryLimit?.let { cpu to it } }
+    }
+
+    /** Cloud containers under a hard CPU quota, spread over nodes: at most [perHostParallel] cases on one, never on [excludedNodes]. */
+    data class Cloud(val perHostParallel: Int?, val excludedNodes: Set<String>) : WorkerPool
+}
+
 /**
  * Where a session's worker was placed, as its Nomad job was submitted: kept with the session ([ExecutionStore]), so
  * no part of the lab reads it back out of the submitted JSON by its constraint strings. [of] is the one place that
@@ -41,15 +53,28 @@ data class SessionPlacement(
     /** The CPU the node class's nodes have, as the job's constraints pinned it. */
     val cpuCapacity: NomadCpuCapacity? = null,
     /** Nodes it may not be placed on: those whose parallel slots its other sessions fill. */
-    val excludedNodes: Set<String> = emptySet(),
+    private val excludedNodes: Set<String> = emptySet(),
     /** The most cases a cloud node runs at once across sessions, when the queue limits it. */
-    val perHostParallel: Int? = null,
+    private val perHostParallel: Int? = null,
     /** The native reservation's CPU (mCPU) and memory (MiB) limits it was submitted with, when given. */
-    val nativeCpuLimit: Long? = null,
-    val nativeMemoryLimit: Long? = null,
+    private val nativeCpuLimit: Long? = null,
+    private val nativeMemoryLimit: Long? = null,
 ) {
+    init {
+        require(enforcement == CpuEnforcement.ADVISORY_NATIVE || nativeCpuLimit == null && nativeMemoryLimit == null) {
+            "only the native worker has a native reservation"
+        }
+    }
+
+    /** The workers it runs on, with what only they have; unknown for a session placed before enforcement was kept. */
+    val pool: WorkerPool? get() = when (enforcement) {
+        CpuEnforcement.ADVISORY_NATIVE -> WorkerPool.Native(nativeCpuLimit, nativeMemoryLimit)
+        CpuEnforcement.HARD_QUOTA -> WorkerPool.Cloud(perHostParallel, excludedNodes)
+        null -> null
+    }
+
     /** Whether it runs as the native worker on the local machine. */
-    val native: Boolean get() = enforcement == CpuEnforcement.ADVISORY_NATIVE
+    val native: Boolean get() = pool is WorkerPool.Native
 
     fun json(): String = Json.encodeToString(serializer(), this)
 
@@ -72,16 +97,19 @@ data class SessionPlacement(
                     "linux" -> CpuEnforcement.HARD_QUOTA
                     else -> null
                 }
+            val native = enforcement == CpuEnforcement.ADVISORY_NATIVE
+            // Each pool keeps only its own fields: the queue's per-host limit and node exclusions spread cloud sessions,
+            // and only the native worker has a reservation.
             return SessionPlacement(
                 enforcement = enforcement,
                 nodeClass = equal("\${node.class}"),
                 cpuCapacity = if (cpu != null && cores != null) NomadCpuCapacity(cpu, cores) else null,
-                excludedNodes = constraints.filter {
+                excludedNodes = if (native) emptySet() else constraints.filter {
                     it["LTarget"]?.jsonPrimitive?.content == "\${node.unique.id}" && it["Operand"]?.jsonPrimitive?.content == "!="
                 }.mapNotNull { it["RTarget"]?.jsonPrimitive?.content }.toSet(),
-                perHostParallel = meta?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull,
-                nativeCpuLimit = meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull,
-                nativeMemoryLimit = meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull,
+                perHostParallel = if (native) null else meta?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull,
+                nativeCpuLimit = if (native) meta?.get("lab_native_cpu_limit")?.jsonPrimitive?.longOrNull else null,
+                nativeMemoryLimit = if (native) meta?.get("lab_native_memory_limit")?.jsonPrimitive?.longOrNull else null,
             )
         }
 
