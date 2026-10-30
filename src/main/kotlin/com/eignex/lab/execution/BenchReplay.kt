@@ -19,11 +19,15 @@ internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<Planne
     return arms.associate { arm ->
         val job = requireNotNull(bench.replayJobs[arm.arm.label])
         val original = requireNotNull(store.job(job)) { "replay job is unavailable" }
-        require(original.status == Status.DONE && original.experiment.repository == spec.repository) { "replay requires a completed job in the same repository" }
+        require(original.status in listOf(Status.DONE, Status.FAILED) && original.experiment.repository == spec.repository) {
+            "replay requires a completed or failed job in the same repository"
+        }
         val originalBench = requireNotNull(original.experiment.work.bench)
-        val originalArm = requireNotNull(store.plans.arms(job).firstOrNull())
-        require(originalArm.sha == arm.sha && originalBench.manifest == bench.manifest &&
-            BenchRuns.request(originalBench, originalArm.arm) == BenchRuns.request(bench, arm.arm)) {
+        val request = BenchRuns.request(bench, arm.arm)
+        val originalArm = requireNotNull(store.plans.arms(job).firstOrNull {
+            it.sha == arm.sha && originalBench.manifest == bench.manifest &&
+                BenchRuns.request(originalBench, it.arm) == request
+        }) {
             "replay cannot change the original revision, entry point or runtime request"
         }
         val preparation = requireNotNull(store.execution.accepted(job).singleOrNull { it.second.preparation != null }?.second?.preparation) {
