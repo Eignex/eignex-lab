@@ -12,6 +12,7 @@ import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -155,6 +156,24 @@ class PortableWorkerTest {
         assertEquals(encoded, Files.readString(directory.resolve("cases/0/bench-case.json")))
         assertTrue(result.command!!.length < 8192)
         assertEquals("large", BenchRuns.result(result.record)!!.caseId)
+    }
+
+    @Test fun `committed benchmark Java and tool prerequisites fail before invoking the adapter`(): Unit = service { socket ->
+        for ((index, runtime) in listOf("{\"tools\":[\"definitely-missing-bench-fixture-tool\"]}", "{\"java\":8}").withIndex()) {
+            val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.MustNotRun", listOf("classes"), emptyList())
+            val manifestJson = Json.parseToJsonElement(com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry)).jsonObject
+            val (source, bytes) = bundle(mapOf("bench.json" to kotlinx.serialization.json.JsonObject(manifestJson +
+                ("runtime" to Json.parseToJsonElement(runtime))).toString(), "classes/placeholder" to "not a class"))
+            val spec = ExperimentSpec("prerequisite-$index", bench = BenchSpec("bench.json"))
+            val case = com.eignex.lab.bench.BenchCase("prerequisite")
+            val manifest = WorkManifest("prerequisite-$index", "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
+                listOf(WorkCase(0, 0, BenchRuns.problem(case), null, 0, 5, case)), listOf(source), ResourceBudget(1000, 2048))
+            val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("prerequisite-cache-$index")), { ByteArrayInputStream(bytes) },
+                "unused", source.os, source.arch).run(manifest, listOf(0), root.resolve("prerequisite-$index"), "fixture", 1, remainingLeaseMs = { 80000 }).cases.single()
+            assertEquals(69, result.exitCode)
+            assertEquals(com.eignex.lab.bench.BenchStatus.FAILED, BenchRuns.result(result.record)!!.status)
+            assertFalse(Files.readString(root.resolve("prerequisite-$index/0.err")).contains("Could not find or load main class"))
+        }
     }
 
     @Test fun `cache rejects corruption and traversal before publishing and verifies reuse`() {

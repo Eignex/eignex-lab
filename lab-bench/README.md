@@ -306,6 +306,20 @@ recipes are refused at admission; their owning repository supplies the translati
 Saved records and captures remain readable. The only retained consumer implementation dependency
 is the MPS parser within the independent checker boundary.
 
+## Workflow regression coverage
+
+The regular CI gate covers paired arm/input alignment, reference plans and source-check semantics,
+schedule completion and frozen two-revision confirmations. The Mac worker gate also runs
+`BenchWorkflowTest`, `BenchRunsTest` and `RunnerTest`. Portable worker tests execute declared Java
+and tool preflights, so missing prerequisites fail before entering a repository adapter.
+
+Retain the original accepted preparations and complete row receipts when validating a migration.
+A checked request does not mean every witness was checkable, and a valid witness does not prove
+optimality. Generic failed/skipped records remain separate from successful solver outcomes.
+`deploy/lab fetch` publishes a listed file only after a successful transfer with exactly the listed
+byte count. Interrupted or short downloads and failed case exports leave an incomplete receipt;
+rerunning the fetch repairs missing files without rerunning the experiment.
+
 ## Build and release
 
 ```sh
