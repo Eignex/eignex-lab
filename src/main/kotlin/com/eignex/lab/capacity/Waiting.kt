@@ -53,6 +53,10 @@ data class JobPlacement(
     val doing: String? = null,
     /** Each host's part of a running job, wherever its cases ran ([HostProgress]): a shared job may run on several. */
     val hosts: List<HostProgress> = emptyList(),
+    val requestedParallel: Int = 1,
+    val executingParallel: Int = 0,
+    val pendingParallel: Int = 0,
+    val parallelismReason: String? = null,
 )
 
 /** Nomad placement diagnostics plus the maintenance runner's local analysis. */
@@ -93,15 +97,16 @@ object Waiting {
         val active = store.active(withCommands = false)
         val progress = store.hostProgress(active.map { it.id })
         val assignments = jobNodes(status, store, active.filter { it.backend == Backend.NOMAD }.map { it.id })
+        val parallelism = store.execution.parallelism(active.map { it.id }, at)
         val jobs = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
-            .map { placement(status, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty()) }
+            .map { placement(status, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty(), parallelism[it.id] ?: (0 to 0)) }
         val snapshot = readCapacityReport(status.paths.capacityReport)
         val ready = snapshot?.takeIf { it.healthy && it.ageMs <= CapacityCollector.FRESH_MS }?.nodes.orEmpty().count { it.state == CapacityNodeState.READY }
         return PlacementReport(at, ready > 0, "Nomad: $ready ready cloud nodes; see /nodes", view.local, jobs, view.diskHeld)
     }
 
     internal fun placement(status: StatusSettings, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,
-                  hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null): JobPlacement {
+                  hosts: List<HostProgress> = emptyList(), nodes: List<JobNode>? = null, parallelism: Pair<Int, Int> = 0 to 0): JobPlacement {
         val host = job.experiment.host
         val estimate = if (job.status.isActive) Estimates.estimate(job, history, status.local.cores, status.local.maxParallel) else null
         val activity = nodes?.let { jobActivity(job, it) }
@@ -118,7 +123,12 @@ object Waiting {
                 !nodes.isNullOrEmpty() -> "running on ${nodes.joinToString { it.name }}"
                 else -> "Nomad sessions; accepted results and source checks determine completion"
             } else null,
-            hosts)
+            hosts, job.parallel, parallelism.first, parallelism.second,
+            if (!job.status.isActive || job.paused || job.cancelRequested || parallelism.first >= job.parallel) null else when {
+                !job.setupDone -> "Worker slots await input preparation"
+                parallelism.second > 0 -> "${parallelism.second} worker slots await a compatible allocation"
+                else -> "Additional slots await worker admission, resource availability or priority"
+            })
     }
 
     fun hostsText(local: Boolean, nodes: Int): String =

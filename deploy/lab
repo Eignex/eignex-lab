@@ -270,6 +270,8 @@ placement)
         + (if .queuePosition then ", #\(.queuePosition) in the queue" else "" end)
         + (if .localPosition then ", #\(.localPosition) in the local queue" else "" end),
       (if .estimate then "estimate: \(est)" else empty end),
+      "parallel: \(.executingParallel // 0) executing / \(.requestedParallel // 1) requested; \(.pendingParallel // 0) awaiting allocation",
+      (if .parallelismReason then "slots: \(.parallelismReason)" else empty end),
       (if .waiting then "waiting: \(.waiting)" else empty end),
       (if .doing then "doing: \(.doing)" else empty end),
       (if (.hosts // []) | length > 0 then "hosts: " + ([.hosts[] | "\(.host) \(.done) done, \(.running) running"] | join("; ")) else empty end)' <<< "$placement"; fi
