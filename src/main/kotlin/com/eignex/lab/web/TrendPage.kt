@@ -54,8 +54,7 @@ internal fun trendPage(
     }
     val specs = runs.map { it.spec }.distinct().size
     if (runs.any { it.sourceChecked } && runs.any { !it.sourceChecked }) {
-        append(Html(" · runs marked unchecked report the solver's own claims; checked ones asked for source-witness validation, "))
-        append(Html("a separate experiment"))
+        append(Html(" · runs marked unchecked report the solver's own claims; checked ones asked for source-witness validation"))
     }
     if (all && specs > 1) {
         append(Html(" · ") + specs + Html(" experiments, each change marked by a dashed line: <a href=\"/trend") + query("name" to name) + Html("\">current only</a>"))

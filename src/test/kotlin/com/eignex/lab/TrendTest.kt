@@ -15,8 +15,46 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlinx.serialization.json.*
 
 class TrendTest {
+    @Test
+    fun `sweep and reference charts retain one problem set across harness changes without comparing incompatible controls`() {
+        for (name in listOf("status-sweep", "klause-reference", "klause-reference-ls", "klause-reference-bt", "klause-reference-parallel")) {
+            val store = Store(Files.createTempDirectory("trend-series").resolve("lab.db"))
+            val spec = ExperimentSpec(name, listOf(mapOf("suite" to "a")))
+            store.schedules.create(name, "main", spec, 3600)
+            val first = run(store, "$name@aaa", listOf(true))
+            val second = run(store, "$name@bbb", listOf(false))
+            fun controlled(id: Long, harness: String) {
+                val record = store.plans.cases(id).single().record as JsonObject
+                val controls = buildJsonObject {
+                    put("policy", "matched-source-v1"); put("series", "sdk-v1")
+                    put("runtimeFingerprint", "same-runtime"); put("compilerFingerprint", "same-compiler")
+                    put("harnessFingerprint", harness); put("libraryFingerprint", "same-libraries")
+                }
+                store.caseRecord(id, 0, JsonObject(record + ("comparisonControls" to controls)).toString())
+            }
+            controlled(first, "harness-before"); controlled(second, "harness-after")
+            val runs = Trend.runs(TrendData.of(store), name)
+            assertEquals(2, runs.size)
+            assertEquals(runs.first().experiment, runs.last().experiment)
+            assertEquals(runs.first().spec, runs.last().spec)
+            assertNotEquals(runs.first().comparisonSeries, runs.last().comparisonSeries)
+            assertEquals(null, runs.last().lost); assertEquals(null, runs.last().gained)
+            assertEquals(null, runs.last().flipP)
+            // Warm the finished points before checking the default current-only view.
+            val cache = TrendCache()
+            Trend.runs(TrendData.of(store), name, cache)
+            assertEquals(listOf(first, second), trendView(store, cache, name, false).shown.map { it.job })
+            assertFalse("experiments, each change" in trendPage(name, runs, "https://example.com/repo", all = true))
+            val changedSet = run(store, "$name@ccc", listOf(true), first = 1)
+            val third = Trend.runs(TrendData.of(store), name).single { it.job == changedSet }
+            assertNotEquals(runs.last().spec, third.spec)
+        }
+    }
+
     @Test
     fun `controlled multi seed baselines count sources rather than runtime case ids`() {
         val cases = listOf(1L, 3L).flatMap { seed -> (0..1).map { repeat ->

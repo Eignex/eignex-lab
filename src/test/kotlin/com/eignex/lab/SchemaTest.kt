@@ -61,6 +61,22 @@ class SchemaTest {
     }
 
     @Test
+    fun `version eight databases gain compiler admission storage and retain existing jobs`() {
+        val file = file()
+        val id = Store(file).create("existing", "main", emptyList(), experiment = ExperimentSpec("existing"))
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            it.execute("ALTER TABLE execution_sessions DROP COLUMN preparation_slots")
+            it.execute("PRAGMA user_version = 8")
+        } }
+        val upgraded = Store(file)
+        assertEquals("existing", upgraded.job(id)!!.name)
+        assertEquals(Schema.version, version(file))
+        upgraded.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", ResourceBudget(1000, 512), ExecutionStore.token(),
+            """{"Meta":{"lab_preparation_slots":"3"}}""", 1000)
+        assertEquals(3, Store(file).execution.placement("prep").preparationSlots)
+    }
+
+    @Test
     fun `the database refuses a job state the lab cannot be in`() {
         val file = file()
         val store = Store(file)
