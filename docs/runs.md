@@ -216,7 +216,8 @@ schedule, translate its recipe using the owning repository tools and verify a bo
 has no implicit solver executable, build layout, corpus selections or JVM profile classpath.
 
 MiniZinc integer/Boolean points can be replayed through `checker/minizinc.json` using the bench protocol.
-The request contains `record`, `model`, `fzn`, `ozn` and `stdout` as frozen UTF-8 text from one retained solve.
+The request contains `record`, `model`, optional `data`, `fzn`, `ozn` and `stdout` as frozen UTF-8 text from one retained solve.
+A record naming a data digest requires the matching original model/data pair.
 The source must match the record's digest. Native stdout and the model witness must retain the same complete
 `flatzinc-integer-v1` comment frame. The adapter adds equality constraints to the original FlatZinc declarations,
 including their aliases and domains, and checks the claimed objective in the original solve variable's units.
