@@ -38,3 +38,19 @@ class InputStoreTest(unittest.TestCase):
         for key in ('corpus/../../secret', 'corpus//model', 'builds/private', 'corpus\\private'):
             with self.assertRaises(ValueError):
                 signer.signature_request(dict(method='GET', key=key), 'cache')
+
+    def test_build_archives_are_signed_by_content_hash_and_expire(self):
+        signer, store = module('input_signer'), module('input_store')
+        sha = 'b' * 64
+        operation, params, headers = signer.signature_request(dict(method='PUT', key='build-blobs/' + sha, sha256=sha), 'cache')
+        self.assertEqual(('put_object', '*', sha), (operation, params['IfNoneMatch'], headers['x-amz-meta-sha256']))
+        self.assertEqual('head_object', signer.signature_request(dict(method='HEAD', key='build-blobs/' + sha), 'cache')[0])
+        for key, digest in (('build-blobs/' + sha, 'c' * 64), ('build-blobs/bad', sha), ('build-blobs/' + sha + '/x', sha)):
+            with self.assertRaises(ValueError):
+                signer.signature_request(dict(method='PUT', key=key, sha256=digest), 'cache')
+        reads = store.statements('input-bucket', 'vpce-test')[0]['Resource']
+        self.assertIn('arn:aws:s3:::input-bucket/build-blobs/*', reads)
+        kept = dict(ID='other', Status='Enabled', Filter=dict(Prefix='logs/'), Expiration=dict(Days=3))
+        rules = store.lifecycle([kept, dict(ID=store.BUILD_ARCHIVE_RULE, Status='Disabled')])
+        self.assertEqual([kept], rules[:-1])
+        self.assertEqual(('build-blobs/', 30, 'Enabled'), (rules[-1]['Filter']['Prefix'], rules[-1]['Expiration']['Days'], rules[-1]['Status']))

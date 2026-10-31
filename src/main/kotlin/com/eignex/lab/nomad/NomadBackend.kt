@@ -440,6 +440,8 @@ class NomadBackend(
     private fun project(job: Long, result: IterationResult) {
         val directory = jobDirectory(job).toAbsolutePath().normalize(); Files.createDirectories(directory)
         for ((name, sha) in result.artifacts) {
+            // A build archive kept in the regional store stays there: copying it here is what it avoids.
+            if (name.startsWith("preparation/") && name.endsWith(".zip") && artifacts.regional(job, sha)) continue
             val target = directory.resolve(safeRelative(name)); Files.createDirectories(target.parent)
             // Directory symlinks are never supplied by workers and cannot redirect ingestion.
             var parent = target.parent

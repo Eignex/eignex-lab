@@ -223,7 +223,8 @@ class NomadQueue(
         val checked = if (spec.work.bench?.sourceValidation == true)
             checkedSourcePaths(problems + preparation.armPlans.values.flatMap { plan -> plan.cases.map(BenchRuns::problem) }) else null
         if (checked != null) for (arm in recipe.arms.distinctBy { it.sha }) {
-            val bundle = preparation.bundles.first { it.commit == arm.sha }
+            val built = preparation.bundles.first { it.commit == arm.sha }
+            val bundle = checkSource(built, recipe.bundles, checked) { artifacts.regional(job.id, it) }
             val root = VerifiedCache(config.dataDir.resolve("nomad/check-sources")).stageSelected(bundle, checked) { artifacts.open(job.id, bundle.sha256) }
             val link = config.jobDir(job.id).resolve("nomad/prepared-source/${arm.sha}")
             Files.createDirectories(link.parent)
@@ -250,6 +251,18 @@ class NomadQueue(
             store.references.putFeatures(preparation.features.filter { ProblemKey(it.collection, it.problem) !in known })
         }
     }
+}
+
+/**
+ * The archive to stage [built]'s [checked] files from. A build archive kept only in the regional store is replaced by
+ * this machine's own source archive of the same commit when that holds every checked file with the same content, so
+ * checking a cloud job never fetches its whole build; the staged files, and so their cache, are identical.
+ */
+internal fun checkSource(built: WorkerBundle, sources: List<WorkerBundle>, checked: (String) -> Boolean, regional: (String) -> Boolean): WorkerBundle {
+    if (!regional(built.sha256)) return built
+    val wanted = built.files.filter { checked(it.path) }.toSet()
+    return sources.firstOrNull { source -> source.commit == built.commit && !regional(source.sha256) &&
+        source.files.filter { checked(it.path) }.toSet() == wanted } ?: built
 }
 
 /**
@@ -334,6 +347,8 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         run {
             val sources = replay.values.flatMap { source -> source.preparation.bundles.map { source.job to it } + listOfNotNull(source.preparation.corpus?.let { source.job to it }) }
             for ((jobId, bundle) in sources.distinctBy { it.second.sha256 }) {
+                // Workers read a regional build archive by its hash whichever job it came from; nothing to copy.
+                if (artifacts.regional(jobId, bundle.sha256)) continue
                 // An artifact that is gone refuses the replay; one the store cannot read just now is retried.
                 val bytes = try { artifacts.size(jobId, bundle.sha256) }
                 catch (failure: java.io.IOException) { throw failure }

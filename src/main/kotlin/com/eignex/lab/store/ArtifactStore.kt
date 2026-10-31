@@ -21,6 +21,8 @@ interface ArtifactStore {
     /** Optional reuse of immutable, checksum-verified preparation archives across jobs. */
     fun reuse(job: Long, sha: String): Long? = null
     fun remember(job: Long, sha: String) { }
+    /** Whether [sha] is held only by the regional build store, which readers here would have to fetch it from. */
+    fun regional(job: Long, sha: String): Boolean = false
     fun putAll(job: Long, blobs: Map<String, ByteArray>) {
         for ((sha, bytes) in blobs) put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
     }
