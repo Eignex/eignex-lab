@@ -510,12 +510,13 @@ class ExecutionStore internal constructor(private val store: Store) {
         WHERE job_id = ? AND detail LIKE 'lost:infrastructure:%' AND id > COALESCE(
             (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""", job, job) { it.getInt(1) }.single() }
     fun pendingProjectionJobs(): List<Long> = store.executionRead { db -> db.sqlRows("""
-        SELECT DISTINCT a.job_id FROM iteration_attempts a JOIN jobs j ON j.id = a.job_id
-        WHERE a.state = 'committed' AND j.backend = 'nomad' AND (
-          NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id)
-          OR EXISTS (SELECT 1 FROM commands c WHERE c.job_id = a.job_id AND c.status IN ('DONE', 'FAILED')
+        SELECT j.id FROM jobs j
+        WHERE j.backend = 'nomad' AND EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = j.id AND a.state = 'committed') AND (
+          EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = j.id AND a.state = 'committed'
+            AND NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id))
+          OR EXISTS (SELECT 1 FROM commands c WHERE c.job_id = j.id AND c.status IN ('DONE', 'FAILED')
             AND NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx)))
-        ORDER BY a.job_id
+        ORDER BY j.id
     """.trimIndent()) { it.getLong(1) } }
     fun ingested(job: Long): Set<String> = store.executionRead { db -> db.sqlRows("SELECT iteration_id FROM execution_ingestion WHERE job_id = ?", job) { it.getString(1) }.toSet() }
     fun markIngested(job: Long, iteration: String) = store.executionTransaction { db -> db.sqlUpdate("INSERT OR IGNORE INTO execution_ingestion (job_id, iteration_id) VALUES (?, ?)", job, iteration) }
@@ -737,6 +738,11 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("CREATE TABLE IF NOT EXISTS execution_ingestion (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, PRIMARY KEY (job_id, iteration_id))")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_checks (job_id INTEGER NOT NULL, idx INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (job_id, idx))")
                 s.execute("CREATE INDEX IF NOT EXISTS session_experiment ON execution_sessions (job_id)")
+                // The coordinator's passes look attempts and events up by session and job; without these each lookup scans
+                // the whole table and a pass grows with history instead of with the active jobs.
+                s.execute("CREATE INDEX IF NOT EXISTS attempt_session ON iteration_attempts (session_id, generation)")
+                s.execute("CREATE INDEX IF NOT EXISTS attempt_job ON iteration_attempts (job_id, state)")
+                s.execute("CREATE INDEX IF NOT EXISTS event_job ON execution_events (job_id, detail)")
             }
         }
     }

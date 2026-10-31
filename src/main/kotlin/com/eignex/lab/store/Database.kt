@@ -152,22 +152,40 @@ class Tx internal constructor(private val connection: Connection) {
     fun <T> sqlRows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = connection.sqlRows(sql, *values, map = map)
 
     /** Run the INSERT [sql] with [values] bound in order; the row id it generated. */
-    fun sqlInsert(sql: String, vararg values: Any?): Long = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS).use { s ->
-        values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
-        s.executeUpdate()
-        s.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
+    fun sqlInsert(sql: String, vararg values: Any?): Long = timed(sql) {
+        connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS).use { s ->
+            values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
+            s.executeUpdate()
+            s.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
+        }
     }
 }
 
 /** Run [sql] with [values] bound in order; how many rows it changed. */
-internal fun Connection.sqlUpdate(sql: String, vararg values: Any?): Int = prepareStatement(sql).use { s ->
-    values.forEachIndexed { i, value -> s.setObject(i + 1, value) }; s.executeUpdate()
+internal fun Connection.sqlUpdate(sql: String, vararg values: Any?): Int = timed(sql) {
+    prepareStatement(sql).use { s -> values.forEachIndexed { i, value -> s.setObject(i + 1, value) }; s.executeUpdate() }
 }
 
 /** The rows [sql] with [values] bound in order returns, each read by [map]. */
-internal fun <T> Connection.sqlRows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = prepareStatement(sql).use { s ->
-    values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
-    s.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
+internal fun <T> Connection.sqlRows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = timed(sql) {
+    prepareStatement(sql).use { s ->
+        values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
+        s.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
+    }
+}
+
+/** Longest a statement, rows read included, may take before it is reported; at the lab's scale none should come close. */
+internal const val SLOW_QUERY_MS = 100L
+
+/** Run [block], reporting [sql] (never its values: they can carry tokens) when it takes over [SLOW_QUERY_MS]. */
+internal inline fun <T> timed(sql: String, block: () -> T): T {
+    val started = System.nanoTime()
+    try {
+        return block()
+    } finally {
+        val ms = (System.nanoTime() - started) / 1_000_000
+        if (ms > SLOW_QUERY_MS) System.err.println("slow query: ${ms}ms ${sql.replace(Regex("\\s+"), " ").trim().take(240)}")
+    }
 }
 
 /** The names of [table]'s columns. */
