@@ -881,7 +881,7 @@ class NomadBackendTest {
         val legacy = manifest.experiment.copy(bench = null, problems = listOf(mapOf("set" to "sweep")))
         store.executionTransaction { db ->
             db.sqlUpdate("UPDATE jobs SET experiment = ? WHERE id = ?", Json.encodeToString(legacy), id)
-            db.sqlUpdate("UPDATE execution_sessions SET manifest = ? WHERE id = ?", Json.encodeToString(manifest.copy(experiment = legacy, schemaVersion = 1)), session.id)
+            db.sqlUpdate("UPDATE execution_manifests SET manifest = ? WHERE session_id = ?", Json.encodeToString(manifest.copy(experiment = legacy, schemaVersion = 1)), session.id)
         }
         register()
         val claim = backend().claim(session.id, token, "allocation")!!
@@ -905,7 +905,7 @@ class NomadBackendTest {
         val id = setup(preparation = true)
         val legacy = manifest.experiment.copy(bench = null)
         store.executionTransaction { db ->
-            db.sqlUpdate("UPDATE execution_sessions SET manifest = ? WHERE id = ?", Json.encodeToString(manifest.copy(experiment = legacy, schemaVersion = 1)), session.id)
+            db.sqlUpdate("UPDATE execution_manifests SET manifest = ? WHERE session_id = ?", Json.encodeToString(manifest.copy(experiment = legacy, schemaVersion = 1)), session.id)
         }
         store.execution.loseSession(session.id, "infrastructure:failed")
         repeat(3) { backend().reconcile() }

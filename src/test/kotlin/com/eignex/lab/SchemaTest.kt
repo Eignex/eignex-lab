@@ -61,6 +61,31 @@ class SchemaTest {
     }
 
     @Test
+    fun `version eleven databases move session manifests out of the session rows`() {
+        val file = file()
+        val store = Store(file)
+        val id = store.create("existing", "main", emptyList(), experiment = ExperimentSpec("existing"))
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            it.execute("DROP TRIGGER session_manifest_cascade")
+            it.execute("DROP TABLE execution_manifests")
+            it.execute("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at, manifest) " +
+                "VALUES ('s', $id, 1, 'solve', 'r', '{}', 'n', 'run', 'h', 1, '{\"m\":1}')")
+            it.execute("PRAGMA user_version = 11")
+        } }
+
+        val reopened = Store(file)
+        assertEquals(Schema.version, version(file))
+        assertEquals(1, reopened.execution.moveManifests())
+        assertEquals(0, reopened.execution.moveManifests())
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            it.executeQuery("SELECT manifest FROM execution_manifests WHERE session_id = 's'").use { r -> assertTrue(r.next()); assertEquals("""{"m":1}""", r.getString(1)) }
+            it.executeQuery("SELECT manifest FROM execution_sessions WHERE id = 's'").use { r -> assertTrue(r.next()); assertEquals(null, r.getString(1)) }
+            it.execute("DELETE FROM execution_sessions WHERE id = 's'")
+            it.executeQuery("SELECT COUNT(*) FROM execution_manifests").use { r -> r.next(); assertEquals(0, r.getInt(1)) }
+        } }
+    }
+
+    @Test
     fun `version ten databases gain the coordinator lookup indexes`() {
         val file = file()
         Store(file)
