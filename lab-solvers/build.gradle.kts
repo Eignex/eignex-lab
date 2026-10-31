@@ -19,14 +19,14 @@ dependencies {
     implementation(project(":xcsp3-tools"))
     implementation("org.choco-solver:choco-parsers:5.0.1") {
         exclude(group = "org.xcsp", module = "xcsp3-tools")
+        // Choco asks for slf4j as a version range, which Gradle resolves against Maven Central on every fresh build.
+        exclude(group = "org.slf4j", module = "slf4j-api")
     }
     implementation("com.github.luben:zstd-jni:1.5.7-24")
     // Retained MPS source-checker parser; consumer execution uses only repository manifests.
     implementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
-    constraints {
-        // Choco asks for slf4j 1.7; the application runs the 2.0 that logback brings, so this module builds against it too.
-        implementation("org.slf4j:slf4j-api:2.0.17")
-    }
+    // Choco's slf4j 1.7 range is excluded above; the application runs the 2.0 that logback brings, so this module builds against it too.
+    implementation("org.slf4j:slf4j-api:2.0.17")
 }
 
 // The exact checkers name the hash of their own source in each verdict, so the source ships beside the classes.
