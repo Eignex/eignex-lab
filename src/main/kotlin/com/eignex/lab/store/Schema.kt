@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -276,6 +276,20 @@ internal object Schema {
             it.execute("CREATE INDEX IF NOT EXISTS attempt_session ON iteration_attempts (session_id, generation)")
             it.execute("CREATE INDEX IF NOT EXISTS attempt_job ON iteration_attempts (job_id, state)")
             it.execute("CREATE INDEX IF NOT EXISTS event_job ON execution_events (job_id, detail)")
+        }
+    }
+
+    /**
+     * Step 12: a session's manifest, often megabytes, gets its own table. In the session row it sits before the
+     * placement columns, so every read of those walks through it. The rows already there move in small batches after
+     * startup ([ExecutionStore.moveManifests]), not here, where gigabytes would hold the write lock for minutes.
+     * A session's deletion takes its manifest along.
+     */
+    private fun sessionManifests(db: Connection) {
+        db.createStatement().use {
+            it.execute("CREATE TABLE IF NOT EXISTS execution_manifests (session_id TEXT PRIMARY KEY, manifest TEXT NOT NULL)")
+            it.execute("CREATE TRIGGER IF NOT EXISTS session_manifest_cascade AFTER DELETE ON execution_sessions BEGIN " +
+                "DELETE FROM execution_manifests WHERE session_id = OLD.id; END")
         }
     }
 

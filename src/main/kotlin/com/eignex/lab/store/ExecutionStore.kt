@@ -181,7 +181,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Current assignments, including preparation before any case has started; stopped generations are omitted. */
     internal fun runningNodes(jobs: Collection<Long>): Map<Long, List<RunningNode>> {
         if (jobs.isEmpty()) return emptyMap()
-        return store.executionTransaction { db ->
+        return store.executionRead { db ->
             db.sqlRows("""SELECT s.job_id, s.node_id, s.allocation_id, s.placement, o.payload
                 FROM execution_sessions s JOIN execution_outbox o ON o.id = s.id || ':submit'
                 WHERE s.job_id IN (${jobs.joinToString(",") { "?" }}) AND s.desired != 'stop' AND s.node_id IS NOT NULL
@@ -219,8 +219,9 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("INSERT INTO execution_sessions (id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, token_hash, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'run', ?, ?)",
             id, jobId, executionClass.stored, release, Json.encodeToString(budget), nomadId, digest(token), at)
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
-        db.sqlUpdate("UPDATE execution_sessions SET manifest = ?, placement = ?, cpu_enforcement = ?, preparation_slots = ? WHERE id = ?",
-            manifest, placement.json(), placement.enforcement?.stored, placement.preparationSlots, id)
+        db.sqlUpdate("UPDATE execution_sessions SET placement = ?, cpu_enforcement = ?, preparation_slots = ? WHERE id = ?",
+            placement.json(), placement.enforcement?.stored, placement.preparationSlots, id)
+        if (manifest != null) db.sqlUpdate("INSERT INTO execution_manifests (session_id, manifest) VALUES (?, ?)", id, manifest)
         db.event(jobId, id, "session-created", at)
         db.session(id)!!
     }
@@ -496,7 +497,10 @@ class ExecutionStore internal constructor(private val store: Store) {
         attempt.jobId
     }
     fun manifest(id: String): WorkManifest = store.executionRead { db ->
-        val text = db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
+        require(db.sqlRows("SELECT 1 FROM execution_sessions WHERE id = ?", id) { true }.isNotEmpty()) { "unknown session $id" }
+        val text = db.sqlRows("SELECT manifest FROM execution_manifests WHERE session_id = ?", id) { it.getString(1) }.singleOrNull()
+            // Not yet moved ([moveManifests]).
+            ?: db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
         Json.decodeFromString(requireNotNull(text) { "session $id: its manifest was dropped after its job was done" })
     }
 
@@ -505,10 +509,21 @@ class ExecutionStore internal constructor(private val store: Store) {
      * sessions; how many went. Only a done job: a failed or cancelled one may be retried, and a retry replaces its
      * sessions from their manifests. A small batch keeps each write short; call again until it returns 0.
      */
+    /** Move at most [batch] manifests still in their session rows to `execution_manifests`; how many moved. Call again
+     *  until it returns 0. */
+    fun moveManifests(batch: Int = 5): Int = store.executionTransaction { db ->
+        val ids = db.sqlRows("SELECT id FROM execution_sessions WHERE manifest IS NOT NULL LIMIT ?", batch) { it.getString(1) }
+        for (id in ids) {
+            db.sqlUpdate("INSERT OR IGNORE INTO execution_manifests (session_id, manifest) SELECT id, manifest FROM execution_sessions WHERE id = ?", id)
+            db.sqlUpdate("UPDATE execution_sessions SET manifest = NULL WHERE id = ?", id)
+        }
+        ids.size
+    }
+
     fun dropDoneManifests(doneBefore: Long, batch: Int = 5): Int = store.executionTransaction { db ->
-        db.sqlUpdate("""UPDATE execution_sessions SET manifest = NULL WHERE id IN (
-            SELECT s.id FROM execution_sessions s JOIN jobs j ON j.id = s.job_id
-            WHERE s.manifest IS NOT NULL AND s.desired = 'stop' AND j.status = 'DONE' AND j.finished_at < ? LIMIT ?)""", doneBefore, batch)
+        db.sqlUpdate("""DELETE FROM execution_manifests WHERE session_id IN (
+            SELECT s.id FROM execution_manifests m JOIN execution_sessions s ON s.id = m.session_id JOIN jobs j ON j.id = s.job_id
+            WHERE s.desired = 'stop' AND j.status = 'DONE' AND j.finished_at < ? LIMIT ?)""", doneBefore, batch)
     }
     fun drain(id: String) = store.executionTransaction { db -> db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain' WHERE id = ? AND desired = 'run'", id) }
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->

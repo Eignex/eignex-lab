@@ -61,6 +61,9 @@ class Runner(
         DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } }).start()
         periodic("schedules", SCHEDULE_POLL_MS) { if (!stopping) enqueueScheduled() }
         periodic("session-manifests", MS_PER_HOUR) {
+            var moved = 0
+            while (!stopping) { val batch = store.execution.moveManifests(); if (batch == 0) break; moved += batch; Thread.sleep(200) }
+            if (moved > 0) println("moved $moved session manifests to their own table")
             val before = System.currentTimeMillis() - MS_PER_DAY
             var dropped = 0
             while (!stopping) { val batch = store.execution.dropDoneManifests(before); if (batch == 0) break; dropped += batch; Thread.sleep(200) }
