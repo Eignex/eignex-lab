@@ -11,6 +11,7 @@ internal class PreparationRecorder(private val observation: ResourceObservation,
     private var stderr: Path? = null
     private var build: PreparationBuildDiagnostic? = null
     private val uploads = ArrayDeque<PreparationUploadDiagnostic>()
+    private var error: String? = null
 
     @Synchronized fun build(stdout: Path, stderr: Path, diagnostic: PreparationBuildDiagnostic) {
         this.stdout = stdout; this.stderr = stderr
@@ -19,6 +20,11 @@ internal class PreparationRecorder(private val observation: ResourceObservation,
     @Synchronized fun upload(event: PreparationUploadDiagnostic) {
         if (uploads.size == 16) uploads.removeFirst()
         uploads.addLast(event)
+    }
+    /** Record what ended the preparation, with its causes: the coordinator otherwise sees only the exit code. */
+    @Synchronized fun failed(failure: Throwable) {
+        error = generateSequence(failure) { it.cause.takeIf { cause -> cause !== it } }.take(4)
+            .joinToString(" <- ") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }.take(PreparationDiagnostics.ERROR_CHARS)
     }
     @Synchronized fun snapshot(leaseMs: Long, runMs: Long?): PreparationDiagnostics {
         val progress = trace.snapshot()
@@ -29,7 +35,7 @@ internal class PreparationRecorder(private val observation: ResourceObservation,
         return PreparationDiagnostics(progress.elapsedMs, progress.stage, observation.budget, observation.enforcement,
             observation.cpuMax, observation.memoryMax, ResourceObservation.counters().mapValues { it.value.take(2048) },
             leaseMs.coerceAtLeast(0), runMs?.coerceAtLeast(0),
-            (System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2).coerceIn(1, 64), latest, uploads.toList(), ++sequence)
+            (System.getenv("LAB_WORKER_MAX_CONCURRENT_BUILDS")?.toIntOrNull() ?: 2).coerceIn(1, 64), latest, uploads.toList(), ++sequence, error)
     }
     companion object {
         private fun tail(path: Path): String = runCatching {

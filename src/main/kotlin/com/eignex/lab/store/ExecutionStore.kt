@@ -406,8 +406,13 @@ class ExecutionStore internal constructor(private val store: Store) {
         val count = db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
             (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
             session.jobId, detail, session.jobId) { it.getInt(1) }.single()
+        // The worker reports what ended it before exiting; carry it into the failure, which is all the job log shows.
+        val error = db.sqlRows("""SELECT json_extract(preparation_diagnostics, '$.error') FROM iteration_attempts
+            WHERE job_id = ? AND iteration_id = 'preparation' AND json_extract(preparation_diagnostics, '$.error') IS NOT NULL
+            ORDER BY generation DESC LIMIT 1""", session.jobId) { it.getString(1) }.singleOrNull()
         if (count >= 3) db.failActive(session.jobId,
-            "Nomad preparation stopped after $count worker exits without acceptance at stage $stage (exit $code, release ${session.release}); inspect the worker log and retry after fixing the cause", at)
+            "Nomad preparation stopped after $count worker exits without acceptance at stage $stage (exit $code, release ${session.release})" +
+                if (error != null) ": $error" else "; inspect the worker log and retry after fixing the cause", at)
         PreparationExitFailure(count, stage, session.release)
     }
 

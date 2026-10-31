@@ -635,6 +635,9 @@ class NomadBackendTest {
             val claim = backend().claim(session.id, token, allocation)!!
             store.execution.phase(claim.owner, "preparing")
             store.execution.preparationProgress(claim.owner, PreparationProgress("selection", 60_000, 60_000, emptyMap()))
+            // The worker reports the exception that ends it before it exits.
+            store.execution.preparationDiagnostics(claim.owner, PreparationDiagnostics(60_000, "selection", session.budget, "advisory-native",
+                null, null, emptyMap(), 1000, null, 2, error = "IllegalStateException: corpus pack $index unavailable"))
             control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "failed", workerExit = NomadWorkerExit(WORKER_SOFTWARE_EXIT))
             backend(Store(file)).reconcile()
             if (index < 2) {
@@ -645,7 +648,7 @@ class NomadBackendTest {
         }
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertContains(store.job(id)!!.error!!, "3 worker exits without acceptance at stage selection")
-        assertContains(store.job(id)!!.error!!, "exit 70, release release")
+        assertContains(store.job(id)!!.error!!, "exit 70, release release): IllegalStateException: corpus pack 2 unavailable")
         assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
         repeat(3) { backend().reconcile() }
         assertEquals(3, store.execution.sessions(id).size)

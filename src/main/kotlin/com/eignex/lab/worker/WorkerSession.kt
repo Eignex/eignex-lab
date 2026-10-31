@@ -169,6 +169,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         }
                         reportPreparation()
                         IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
+                    } catch (failure: Exception) {
+                        recorder.failed(failure)
+                        throw failure
                     } finally {
                         reporter.shutdownNow()
                         reportDiagnostics()
