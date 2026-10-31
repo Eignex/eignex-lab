@@ -43,9 +43,13 @@ and still binds it; keep it as a loopback alias with a boot service that runs `i
 ## Storage and updates
 
 Data defaults to `~/eignex-lab-data`; logs are under `logs/`, artifacts under `jobs/` (`LAB_JOBS`).
-Corpora use `~/.cache/eignex-lab/corpus` (`LAB_CORPUS`). On macOS, external volumes must mount at boot and
-allow the services' Java binary Full Disk Access. The configuration example includes the mount setting.
+Corpora use `~/.cache/eignex-lab/corpus` (`LAB_CORPUS`). On macOS, external volumes must mount at boot, and the
+programs launchd starts need Full Disk Access to read them: grant it to `/bin/sh` and `/usr/bin/caffeinate`. Every
+service starts through one of them (the launcher is a shell script; native services run via `/bin/sh -c`), so these
+two grants cover releases, corpora and job files on an external volume. The configuration example includes the mount
+setting. A launchd plist edited by hand takes effect only after `launchctl bootout` and `bootstrap`, not `kickstart`.
 Fetch raw artifacts promptly: ended jobs trim after seven days or sooner on low disk. Results remain stored.
+Set `LAB_JOB_RETENTION_DAYS` to also forget ended jobs' records and directories that many days after they end.
 
 Use `deploy/lab update` for code updates between cases. Check `logs/update.log` if an update fails.
 
@@ -54,6 +58,8 @@ Each local build cache has a 2 GiB target; eviction waits for Gradle's cache loc
 Stopped daemons' logs rotate above 20 MiB, retaining three compressed tails and expiring logs after seven days.
 Active logs stay intact until the daemon exits. These are periodic limits; active logs and busy caches may temporarily
 exceed them. Configure `LAB_GRADLE_CACHE_GIB` and `LAB_GRADLE_LOG_MIB` in `lab.env` and rerun installation.
+The same run bounds the lab services' own logs under `$LAB_DATA/logs` to `LAB_GRADLE_LOG_MIB` in place, keeping
+three compressed tails, and removes logs of removed services after seven days without writes.
 The latest report is `$LAB_DATA/maintenance/gradle-maintenance.json`. Other caches, dependencies and JDKs are preserved.
 
 ## Native and cloud execution with Nomad

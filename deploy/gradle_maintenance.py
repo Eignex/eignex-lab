@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bound local Gradle output caches and rotate stopped daemons' logs.
+"""Bound local Gradle output caches, rotate stopped daemons' logs, and bound the lab services' own logs.
 
 Run periodically as the lab user. Cache eviction uses Gradle's POSIX byte-range
 lock without modifying its lock protocol. Active daemons' logs are left alone:
@@ -111,6 +111,27 @@ def clean_home(home, active, cache_bytes, log_bytes, copies, age_days, now):
     return report
 
 
+def clean_service_logs(logs, log_bytes, copies, age_days, now):
+    """The lab services' logs under [logs]: launchd appends to them, so an in-place truncation is safe while they run.
+    A log nothing has written to for [age_days] belongs to a removed service and goes, with its rotated tails."""
+    report = {"path": str(logs), "rotated": [], "removed": []}
+    if not logs.is_dir():
+        return report
+    for path in sorted(logs.iterdir()):
+        if not regular(path):
+            continue
+        tail = re.fullmatch(r"(.+\.log)\.[1-9]\d*\.gz", path.name)
+        base = logs / tail[1] if tail else path
+        if not (tail or path.name.endswith(".log")):
+            continue
+        if not base.exists() or now - base.lstat().st_mtime > age_days * 86400:
+            path.unlink()
+            report["removed"].append(path.name)
+        elif not tail and rotate(path, log_bytes, copies):
+            report["rotated"].append(path.name)
+    return report
+
+
 def run(data, homes, cache_bytes=2 * 1024**3, log_bytes=20 * 1024**2, copies=3, age_days=7):
     directory = data / "maintenance"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -127,6 +148,10 @@ def run(data, homes, cache_bytes=2 * 1024**3, log_bytes=20 * 1024**2, copies=3, 
                 report["homes"].append(clean_home(home, active, cache_bytes, log_bytes, copies, age_days, now))
             except (OSError, subprocess.SubprocessError) as failure:
                 report["errors"].append({"home": str(home), "error": str(failure)})
+        try:
+            report["logs"] = clean_service_logs(data / "logs", log_bytes, copies, age_days, now)
+        except OSError as failure:
+            report["errors"].append({"logs": str(data / "logs"), "error": str(failure)})
         with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as out:
             json.dump(report, out, indent=2)
             temporary = Path(out.name)

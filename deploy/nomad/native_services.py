@@ -78,6 +78,9 @@ def render(settings):
     plists = {}
     for role, command in commands.items():
         label = "com.eignex.lab." + role
+        # macOS grants an external volume (where releases may live) per responsible program, and a daemon is its own:
+        # starting each through /bin/sh lets one Full Disk Access grant to /bin/sh cover every service and its children.
+        command = ["/bin/sh", "-c", 'exec "$0" "$@"'] + command
         values = {
             "Label": label, "UserName": user, "ProgramArguments": command, "WorkingDirectory": str(data),
             "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 30,
