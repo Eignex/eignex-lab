@@ -149,9 +149,10 @@ class CaseChecks(
         val root = jobDirectory?.invoke(jobId) ?: return null
         val prefix = "cases/$index/out/report/"
         val names = listOf("model.fzn", "model.ozn", "cli.stdout").map { prefix + it }
-        val accepted = store.execution.accepted(jobId).firstOrNull { (_, result) ->
-            names.all { it in result.artifacts }
-        }?.second ?: return null
+        // Only the iterations that ran case [index] can hold its report; read just those results.
+        val accepted = store.execution.acceptedIndices(jobId).asSequence().filter { (_, indices) -> index in indices }
+            .mapNotNull { (iteration, _) -> store.execution.accepted(jobId, iteration) }
+            .firstOrNull { result -> names.all { it in result.artifacts } } ?: return null
         return MiniZincFrame.read(root, prefix, accepted.artifacts)
     }
 
