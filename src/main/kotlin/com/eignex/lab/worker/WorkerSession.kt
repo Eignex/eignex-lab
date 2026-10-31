@@ -161,8 +161,10 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                                 }) { file ->
                                     val regional = if (file.fileName.toString().endsWith(".zip")) BuildArchives.worker(publishSignature = ::signature) else null
-                                    if (regional != null) publishBuild(regional, file, trace)
-                                    else upload(file, claim.owner, reusable = file.fileName.toString().endsWith(".zip"), trace = trace)
+                                    // A store that refuses the archive (not yet granted, say) leaves it to the coordinator.
+                                    regional?.let { runCatching { publishBuild(it, file, trace) }
+                                        .onFailure { failure -> println("regional build archive refused, using the coordinator: ${failure.message}") }.getOrNull() }
+                                        ?: upload(file, claim.owner, reusable = file.fileName.toString().endsWith(".zip"), trace = trace)
                                 }
                         }
                         reportPreparation()
