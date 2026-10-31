@@ -216,6 +216,14 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         val etag = response.headers().firstValue("ETag").orElse("").trim('"')
         return length == file.bytes && (checksum == file.sha256 || etag == md5)
     }
+    /** The size of the object at [key] when it was published with content hash [sha], else null. */
+    fun stored(key: String, sha: String): Long? {
+        val response = client.send(request("HEAD", key).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding())
+        if (response.statusCode() == 404) return null
+        check(response.statusCode() == 200) { "shared input metadata unavailable (${response.statusCode()})" }
+        if (response.headers().firstValue("x-amz-meta-sha256").orElse("") != sha) return null
+        return response.headers().firstValue("Content-Length").orElse("").toLongOrNull()
+    }
     override fun put(key: String, source: Path, sha: String) {
         val digest = sha.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         val request = request("PUT", key, sha).setHeader("If-None-Match", "*").setHeader("x-amz-meta-sha256", sha)
@@ -227,6 +235,43 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         val response = client.send(request("GET", key).GET().build(), HttpResponse.BodyHandlers.ofFile(destination))
         check(response.statusCode() == 200) { "shared input download unavailable (${response.statusCode()})" }
     }
+}
+
+/**
+ * Build archives of cloud preparations, kept by content hash in the regional store beside the shared inputs. Cloud
+ * workers write and read them over the free regional route, so the archives never cross the internet; the store's
+ * lifecycle expires them.
+ */
+internal interface BuildArchives {
+    /** The size of archive [sha] when the store holds it, else null. */
+    fun size(sha: String): Long?
+    fun put(source: Path, sha: String)
+    fun get(sha: String, destination: Path)
+
+    companion object {
+        const val PREFIX = "build-blobs"
+
+        /** A cloud worker's view: unsigned regional reads, writes signed through its session. Null on the local machine. */
+        fun worker(environment: Map<String, String> = System.getenv(), publishSignature: ((InputSignature) -> SignedInput)? = null): BuildArchives? {
+            if (environment["LAB_SHARED_INPUT_SIGNER"] != null) return null
+            val base = environment["LAB_SHARED_INPUT_URL"] ?: return null
+            return RegionalBuildArchives(HttpInputTransport(URI(base), publishSignature = publishSignature))
+        }
+
+        /** The coordinator's view: reads signed by its loopback signer. Null when no regional store is configured. */
+        fun coordinator(environment: Map<String, String> = System.getenv()): BuildArchives? {
+            val base = environment["LAB_SHARED_INPUT_URL"] ?: return null
+            val signer = environment["LAB_SHARED_INPUT_SIGNER"] ?: return null
+            return RegionalBuildArchives(HttpInputTransport(URI(base), URI(signer)))
+        }
+    }
+}
+
+internal class RegionalBuildArchives(private val transport: HttpInputTransport) : BuildArchives {
+    private fun key(sha: String): String { require(sha.matches(SHA256)); return "${BuildArchives.PREFIX}/$sha" }
+    override fun size(sha: String): Long? = transport.stored(key(sha), sha)
+    override fun put(source: Path, sha: String) = transport.put(key(sha), source, sha)
+    override fun get(sha: String, destination: Path) = transport.get(key(sha), destination)
 }
 
 internal class SharedInputLease(val directory: Path, private val pin: AutoCloseable) : AutoCloseable {

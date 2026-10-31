@@ -159,7 +159,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                                 SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")))
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
-                                }) { file -> upload(file, claim.owner, reusable = file.fileName.toString().endsWith(".zip"), trace = trace) }
+                                }) { file ->
+                                    val regional = if (file.fileName.toString().endsWith(".zip")) BuildArchives.worker(publishSignature = ::signature) else null
+                                    if (regional != null) publishBuild(regional, file, trace)
+                                    else upload(file, claim.owner, reusable = file.fileName.toString().endsWith(".zip"), trace = trace)
+                                }
                         }
                         reportPreparation()
                         IterationResult(emptyList(), artifacts = preparation.artifacts, preparation = preparation)
@@ -230,7 +234,33 @@ class WorkerSession(private val api: URI, private val id: String, private val to
 
     /** Range retries retain only one response chunk. Extraction verifies the entire object and every file as it writes. */
     internal fun download(bundle: WorkerBundle): java.io.InputStream = download(bundle, null)
-    private fun download(bundle: WorkerBundle, trace: PreparationTrace?): java.io.InputStream = object : java.io.InputStream() {
+    private fun download(bundle: WorkerBundle, trace: PreparationTrace?): java.io.InputStream =
+        regionalDownload(bundle, trace) ?: coordinatorDownload(bundle, trace)
+
+    private val regionalBuilds: BuildArchives? by lazy { BuildArchives.worker() }
+
+    /** A build archive from the regional store when this cloud worker can reach it; null leaves it to the coordinator. */
+    private fun regionalDownload(bundle: WorkerBundle, trace: PreparationTrace?): java.io.InputStream? {
+        // Coordinator-published sources carry their build recipe; only built archives go to the regional store.
+        val regional = regionalBuilds?.takeIf { bundle.build == null } ?: return null
+        Files.createDirectories(root)
+        val file = Files.createTempFile(root, ".build-", ".zip")
+        val fetched = runCatching {
+            checkRun()
+            if (regional.size(bundle.sha256) == null) false
+            else {
+                if (trace != null) trace.step("download") { regional.get(bundle.sha256, file) } else regional.get(bundle.sha256, file)
+                true
+            }
+        }.getOrElse { failure -> println("regional build archive unavailable, using the coordinator: ${failure.message}"); false }
+        if (!fetched) { Files.deleteIfExists(file); return null }
+        // Extraction verifies the whole archive against [bundle] as it reads it.
+        return object : java.io.FilterInputStream(Files.newInputStream(file)) {
+            override fun close() { try { super.close() } finally { Files.deleteIfExists(file) } }
+        }
+    }
+
+    private fun coordinatorDownload(bundle: WorkerBundle, trace: PreparationTrace?): java.io.InputStream = object : java.io.InputStream() {
         private var chunk = java.io.ByteArrayInputStream(byteArrayOf())
         private var offset = 0L
         private var total: Long? = null
@@ -286,6 +316,19 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         for ((name, file) in files) outputs[name] = upload(file, owner)
         retry { json("commit", Json.encodeToString(WorkerCommit(owner, result.copy(artifacts = outputs)))) }
         return "resumable"
+    }
+
+    /** Keep a cloud build archive in the regional store, by content hash, instead of sending it to the coordinator. */
+    private fun publishBuild(regional: BuildArchives, file: Path, trace: PreparationTrace): String {
+        val verificationStarted = System.nanoTime()
+        val sha = hashFile(file); val size = Files.size(file)
+        val verificationMs = (System.nanoTime() - verificationStarted) / 1_000_000
+        val present = retry { regional.size(sha) } == size
+        if (!present) retry { regional.put(file, sha) }
+        check(retry { regional.size(sha) } == size) { "regional build archive unavailable after publication" }
+        trace.cache("upload", if (present) "hit" else "miss", if (present) "regional-present" else "regional-absent",
+            verificationMs = verificationMs, bytes = size, checkedFiles = 1, hashedFiles = 1, hashedBytes = size)
+        return sha
     }
 
     internal fun upload(file: Path, owner: AttemptOwner, reusable: Boolean = false, trace: PreparationTrace? = null): String {

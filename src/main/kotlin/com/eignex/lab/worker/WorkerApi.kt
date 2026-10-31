@@ -144,7 +144,8 @@ fun Application.workerApi(
                     require(owner.session == session.id && owner.allocation == session.allocation); store.execution.authorize(owner)
                     val signature = Json.decodeFromString<InputSignature>(call.bodyText(8192))
                     require(signature.method == "PUT" && signature.sha256?.matches(SHA256) == true)
-                    require(signature.key == "input-blobs/${signature.sha256}" || signature.key.matches(Regex("corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\\.tar")))
+                    require(signature.key == "input-blobs/${signature.sha256}" || signature.key == "${BuildArchives.PREFIX}/${signature.sha256}" ||
+                        signature.key.matches(Regex("corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\\.tar")))
                     val signer = inputSigner ?: throw IllegalStateException("no shared input signer is configured")
                     call.respond(signInput(signer, signature))
                 }

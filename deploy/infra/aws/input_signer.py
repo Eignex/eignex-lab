@@ -15,7 +15,8 @@ def signature_request(body, bucket):
     parts = key.split('/')
     if any(part in ('', '.', '..') for part in parts) or '\\' in key or '\x00' in key:
         raise ValueError('invalid key')
-    blob = re.fullmatch(r'input-blobs/([a-f0-9]{64})', key)
+    # Content-addressed shared inputs and cloud build archives (which the bucket lifecycle expires).
+    blob = re.fullmatch(r'(?:input-blobs|build-blobs)/([a-f0-9]{64})', key)
     pack = re.fullmatch(r'corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\.tar', key)
     if not blob and not pack and not key.startswith('corpus/'):
         raise ValueError('key outside input cache')

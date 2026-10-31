@@ -63,8 +63,10 @@ object NomadCoordinatorCli {
         val journalRoot = config.dataDir.resolve("nomad/result-journal")
         Files.createDirectories(journalRoot.parent)
         java.nio.channels.FileChannel.open(config.dataDir, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
+        val localArtifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config.paths, config.minFreeBytes) == null })
+        // Cloud preparations leave their build archives in the regional store; this machine fetches one only to read it.
         val artifacts = ResultJournal(journalRoot,
-            LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config.paths, config.minFreeBytes) == null }),
+            BuildArchives.coordinator()?.let { RegionalArtifactStore(localArtifacts, it, config.dataDir.resolve("nomad/build-fetches")) } ?: localArtifacts,
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
         periodic("nomad-result-journal-status", 5_000) {
             writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)

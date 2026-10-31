@@ -22,6 +22,12 @@ Cloud preparations obtain upload URLs through their authenticated, leased worker
 loopback relay lets consumer cache publishers request the same capabilities without receiving the worker token.
 The coordinator signs metadata only; native and cloud uploads send bytes directly to the regional store.
 
+Cloud preparations keep their build archives there too, under `build-blobs/<sha256>`, and cloud solves read them over
+the gateway endpoint, so a build never crosses the internet. The coordinator checks such an archive by its content
+hash and fetches it only when it reads one itself; source checks stage their files from its own source archive of the
+same commit. Native preparations keep uploading to the coordinator. `input_store.py` grants the prefix and adds a
+lifecycle rule expiring it after 30 days, keeping the bucket's other rules; rerun it once to apply both.
+
 AWS networking and signing are deployment adapters. Portable workers use an HTTPS store and paths/checksums;
 another provider can supply the same HTTP operations and its own regional routing/signing adapter.
 
