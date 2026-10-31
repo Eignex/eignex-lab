@@ -143,9 +143,10 @@ private fun activeTable(
 ): Html {
     if (active.isEmpty()) return Html("<p class=\"muted\">Nothing running or queued.</p>")
     // One queue by priority, whatever runs each job: the local machine and the cloud nodes take from it in this order
-    // as the lab places jobs, each passing over those it may not run.
+    // as the lab places jobs, each passing over those it may not run. Higher priority lists first, running or not.
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
-    val ordered = active.sortedWith(compareBy<Job> { it.status != Status.RUNNING }.thenBy { positions[it.id] ?: Int.MAX_VALUE })
+    val ordered = active.sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.status != Status.RUNNING }
+        .thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
     return jobTable(status, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts, nodes = nodes,
         instances = instances)
 }

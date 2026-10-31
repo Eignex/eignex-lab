@@ -525,6 +525,22 @@ class PagesTest {
     }
 
     @Test
+    fun `active jobs list by priority before status and id`() {
+        val config = lab(cores = 8, aws = null)
+        val jobs = listOf(
+            work(1, Experiments.LAB_HOST, 10, status = Status.RUNNING, priority = -2),
+            work(2, Experiments.LAB_HOST, 10, status = Status.RUNNING, priority = 0),
+            work(3, Experiments.LAB_HOST, 10, priority = 5),
+            work(4, Experiments.LAB_HOST, 10, status = Status.RUNNING, priority = 0),
+        )
+
+        val page = indexPage(config.status, host, jobs, emptyList(), emptyList(), 50, null, null).toString()
+
+        val rows = listOf(3, 2, 4, 1).map { page.indexOf(">e$it<") }
+        assertTrue(rows.all { it >= 0 } && rows == rows.sorted(), "rows at $rows")
+    }
+
+    @Test
     fun `a queued AWS job waits for a node unless its cancel was requested`() {
         val config = Config(dataDir = Files.createTempDirectory("lab"), auth = Auth.Disabled)
         val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST)
