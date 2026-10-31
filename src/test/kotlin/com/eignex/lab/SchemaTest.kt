@@ -61,6 +61,23 @@ class SchemaTest {
     }
 
     @Test
+    fun `version ten databases gain the coordinator lookup indexes`() {
+        val file = file()
+        Store(file)
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            for (index in listOf("attempt_session", "attempt_job", "event_job")) it.execute("DROP INDEX $index")
+            it.execute("PRAGMA user_version = 10")
+        } }
+
+        Store(file)
+        assertEquals(Schema.version, version(file))
+        val indexes = DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use { s ->
+            s.executeQuery("SELECT name FROM sqlite_master WHERE type = 'index'").use { r -> buildSet { while (r.next()) add(r.getString(1)) } }
+        } }
+        assertTrue(indexes.containsAll(listOf("attempt_session", "attempt_job", "event_job")), "indexes: $indexes")
+    }
+
+    @Test
     fun `version eight databases gain compiler admission storage and retain existing jobs`() {
         val file = file()
         val id = Store(file).create("existing", "main", emptyList(), experiment = ExperimentSpec("existing"))
