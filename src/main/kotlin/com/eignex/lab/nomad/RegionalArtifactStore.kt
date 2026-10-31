@@ -18,7 +18,8 @@ internal class RegionalArtifactStore(private val local: ArtifactStore, private v
     private val fetches = ConcurrentHashMap<Pair<Long, String>, Any>()
     private fun held(job: Long, sha: String) = runCatching { local.readFile(job, sha) }.isSuccess
 
-    override fun regional(job: Long, sha: String): Boolean = !held(job, sha) && builds.size(sha) != null
+    // An unreachable store holds nothing usable just now; readers then fail as they would without it.
+    override fun regional(job: Long, sha: String): Boolean = !held(job, sha) && runCatching { builds.size(sha) }.getOrNull() != null
     override fun verify(job: Long, sha: String) {
         if (held(job, sha)) local.verify(job, sha) else checkNotNull(builds.size(sha)) { "artifact missing" }
     }

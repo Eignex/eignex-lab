@@ -57,6 +57,19 @@ class RegionalBuildArchivesTest {
         } finally { root.toFile().deleteRecursively() }
     }
 
+    @Test fun `an unreachable regional store holds nothing`() {
+        val root = Files.createTempDirectory("regional-unreachable")
+        try {
+            val unreachable = object : BuildArchives {
+                override fun size(sha: String): Long? = error("input signing unavailable")
+                override fun put(source: Path, sha: String) = error("input signing unavailable")
+                override fun get(sha: String, destination: Path) = error("input signing unavailable")
+            }
+            val store = RegionalArtifactStore(LocalArtifactStore(root.resolve("artifacts")), unreachable, root.resolve("fetches"))
+            assertFalse(store.regional(5, "e".repeat(64)))
+        } finally { root.toFile().deleteRecursively() }
+    }
+
     @Test fun `checks of a regional build stage the same files from the local source archive`() {
         val commit = "a".repeat(40)
         fun file(path: String, text: String) = InputFile(path, sha(text.toByteArray()), text.length.toLong())
