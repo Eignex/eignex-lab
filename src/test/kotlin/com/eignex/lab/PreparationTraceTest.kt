@@ -98,4 +98,13 @@ class PreparationTraceTest {
         assertEquals(Int.MAX_VALUE, bounded.checkedFiles); assertEquals(Long.MAX_VALUE, bounded.hashedBytes)
         assertEquals(86_400_000, bounded.verificationMs)
     }
+
+    @Test fun `regional build archive uploads are traceable cache outcomes`() {
+        val trace = PreparationTrace()
+        // An unknown reason throws, which once sent every regional archive to the coordinator as well.
+        trace.cache("upload", "miss", "regional-absent", bytes = 10, checkedFiles = 1, hashedFiles = 1, hashedBytes = 10)
+        trace.cache("upload", "hit", "regional-present", bytes = 10, checkedFiles = 1, hashedFiles = 1, hashedBytes = 10)
+        val upload = trace.snapshot().caches.getValue("upload")
+        assertEquals(1 to 1, upload.hits to upload.misses)
+    }
 }
