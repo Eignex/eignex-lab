@@ -587,15 +587,18 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun nativeReservation(): Pair<Long, Long> = store.executionTransaction(::nativeReservation)
 
+    // Only active jobs' sessions hold the Mac: an ended job's session left unstopped (its stop not yet observed) must not
+    // keep every other job off it.
     private fun nativeReservation(db: Tx): Pair<Long, Long> =
         db.sqlRows("""SELECT COALESCE(SUM(json_extract(s.budget, '$.cpuMillis')),0), COALESCE(SUM(json_extract(s.budget, '$.memoryMiB')),0)
-            FROM execution_sessions s WHERE s.desired != 'stop' AND s.cpu_enforcement = ?""".trimIndent(), CpuEnforcement.ADVISORY_NATIVE.stored) {
+            FROM execution_sessions s JOIN jobs j ON j.id = s.job_id
+            WHERE s.desired != 'stop' AND s.cpu_enforcement = ? AND j.status IN ('QUEUED', 'RUNNING')""".trimIndent(), CpuEnforcement.ADVISORY_NATIVE.stored) {
             it.getLong(1) to it.getLong(2)
         }.single()
     fun nativeOwnedByAnother(job: Long): Boolean = store.executionRead { db -> nativeOwnedByAnother(db, job) }
 
     private fun nativeOwnedByAnother(db: Tx, job: Long): Boolean =
-        db.sqlRows("SELECT 1 FROM execution_sessions s WHERE s.job_id != ? AND s.desired != 'stop' AND s.cpu_enforcement = ? LIMIT 1",
+        db.sqlRows("SELECT 1 FROM execution_sessions s JOIN jobs j ON j.id = s.job_id WHERE s.job_id != ? AND s.desired != 'stop' AND s.cpu_enforcement = ? AND j.status IN ('QUEUED', 'RUNNING') LIMIT 1",
             job, CpuEnforcement.ADVISORY_NATIVE.stored) { true }.isNotEmpty()
 
     fun queueRecipe(job: Long, proposed: NomadQueueSettings): NomadQueueSettings = store.executionTransaction { db ->

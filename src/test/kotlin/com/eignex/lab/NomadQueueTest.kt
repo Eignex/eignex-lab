@@ -526,6 +526,17 @@ class NomadQueueTest {
         assertTrue(Store(root.resolve("lab.db")).execution.pendingDomainCompletion().isEmpty())
     }
 
+    @Test fun `an ended job's unstopped native session no longer holds the native budget`() {
+        val ended = job(ExperimentSpec("ended-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val live = job(ExperimentSpec("live-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        queue(cores = 2).reconcile()
+        assertEquals(2000L to 1024L, store.execution.nativeReservation())
+        // Ended without its session being stopped, as when observing the job keeps failing.
+        store.finish(ended, Status.FAILED, "lost")
+        assertEquals(1000L to 512L, store.execution.nativeReservation())
+        assertTrue(store.execution.sessions(live).isNotEmpty())
+    }
+
     @Test fun `native preparations share CPU and memory budgets and overflow spills to Spot`() {
         val first = job(ExperimentSpec("first-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
         val second = job(ExperimentSpec("second-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
