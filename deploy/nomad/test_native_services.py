@@ -56,7 +56,7 @@ class NativeServicesTest(unittest.TestCase):
             settings["labEnvironment"]["LAB_SHARED_INPUT_SIGNER"] = "http://127.0.0.1:8093/"
             plists, _, _ = render(settings)
             signer = plistlib.loads(plists["com.eignex.lab.input-signer"])
-            self.assertEqual(["/cache/venv/bin/python", "/cache/input_signer.py", "--config", "/cache/signer.json"], signer["ProgramArguments"])
+            self.assertEqual(["/bin/sh", "-c", 'exec "$0" "$@"', "/cache/venv/bin/python", "/cache/input_signer.py", "--config", "/cache/signer.json"], signer["ProgramArguments"])
             self.assertNotIn("LAB_SHARED_INPUT_SIGNER", signer["EnvironmentVariables"])
 
     def test_rejects_development_or_unprotected_agent(self):

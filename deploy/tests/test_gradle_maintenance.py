@@ -9,7 +9,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gradle_maintenance import clean_home
+from gradle_maintenance import clean_home, clean_service_logs
 
 
 def hold_lock(path, ready, release):
@@ -107,6 +107,27 @@ class GradleMaintenanceTest(unittest.TestCase):
         (self.cache / "a").write_bytes(b"x" * 20)
         self.assertEqual(0, self.clean()["cacheBytesRemoved"])
         self.assertFalse(self.lock.exists())
+
+
+class ServiceLogTest(unittest.TestCase):
+    def test_service_logs_are_bounded_in_place_and_removed_services_logs_expire(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            logs = Path(temporary)
+            live = logs / "runner.log"
+            live.write_bytes(b"x" * 20)
+            inode = live.stat().st_ino
+            old = logs / "relay.log"
+            old.write_bytes(b"old")
+            (logs / "relay.log.1.gz").write_bytes(b"tail")
+            month_ago = time.time() - 30 * 86400
+            os.utime(old, (month_ago, month_ago))
+            report = clean_service_logs(logs, 8, 3, 7, time.time())
+            self.assertEqual(["runner.log"], report["rotated"])
+            self.assertEqual(["relay.log", "relay.log.1.gz"], report["removed"])
+            self.assertEqual(inode, live.stat().st_ino)
+            self.assertEqual(0, live.stat().st_size)
+            self.assertEqual(b"x" * 8, gzip.decompress((logs / "runner.log.1.gz").read_bytes()))
+            self.assertEqual(["runner.log", "runner.log.1.gz"], sorted(p.name for p in logs.iterdir()))
 
 
 if __name__ == "__main__":
