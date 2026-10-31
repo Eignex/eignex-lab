@@ -69,6 +69,8 @@ class ProfileRunsTest {
         assertContains(command, "'/work/tools/build/install/tools/lib/*'")
         assertContains(command, "'-Xmx1g'")
         assertContains(command, "StartFlightRecording")
+        // The Vector API and native access are there for every profiled main, before the profile's own options.
+        assertContains(command, "'--enable-native-access=ALL-UNNAMED' '--add-modules=jdk.incubator.vector' '-Xmx1g'")
         assertFalse("klause" in command)
     }
 
