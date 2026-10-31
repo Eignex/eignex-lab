@@ -514,6 +514,20 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->
         db.sqlRows("SELECT iteration_id, result FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) { it.getString(1) to Json.decodeFromString<IterationResult>(it.getString(2)) }
     }
+    /** The job's accepted result of [iteration], read alone: results are large, and most readers want one of them. */
+    fun accepted(jobId: Long, iteration: String): IterationResult? = store.executionRead { db ->
+        db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND state = 'committed'", jobId, iteration) {
+            Json.decodeFromString<IterationResult>(it.getString(1))
+        }.singleOrNull()
+    }
+    /** The job's accepted preparation, the one iteration whose result carries one. */
+    fun acceptedPreparation(jobId: Long): PreparationResult? = accepted(jobId, PREPARATION)?.preparation
+    /** Each accepted iteration's case indices, without reading its result. */
+    fun acceptedIndices(jobId: Long): List<Pair<String, List<Int>>> = store.executionRead { db ->
+        db.sqlRows("SELECT iteration_id, indices FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) {
+            it.getString(1) to Json.decodeFromString<List<Int>>(it.getString(2))
+        }
+    }
     fun submission(id: String): String = store.executionRead { db -> db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single() }
     fun hasActiveAttempt(session: String): Boolean = store.executionRead { db -> db.sqlRows("SELECT 1 FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", session) { true }.isNotEmpty() }
     internal fun retryIn(db: Tx, job: Long, at: Long) { db.event(job, null, "manual-retry", at) }
@@ -695,6 +709,8 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     companion object {
         const val LEASE_MS = 90_000L
+        /** The iteration id of a job's preparation: the one accepted result that carries a [PreparationResult]. */
+        const val PREPARATION = "preparation"
         private val ACTIVE_ATTEMPTS = AttemptState.ACTIVE_SQL
         private val random = SecureRandom()
         fun token(): String = ByteArray(32).also(random::nextBytes).joinToString("") { "%02x".format(it) }

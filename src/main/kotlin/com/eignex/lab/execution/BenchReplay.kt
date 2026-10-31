@@ -30,7 +30,7 @@ internal fun replaySources(store: Store, spec: ExperimentSpec, arms: List<Planne
         }) {
             "replay cannot change the original revision, entry point or runtime request"
         }
-        val preparation = requireNotNull(store.execution.accepted(job).singleOrNull { it.second.preparation != null }?.second?.preparation) {
+        val preparation = requireNotNull(store.execution.acceptedPreparation(job)) {
             "replay preparation was not retained"
         }
         require(preparation.bundles.all { it.build == null })

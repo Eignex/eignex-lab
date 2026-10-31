@@ -274,10 +274,14 @@ class NomadBackend(
     }
 
     private fun observe(job: Job) {
-        val accepted = store.execution.accepted(job.id)
         val checked = store.execution.checksComplete(job.id)
         val ingested = store.execution.ingested(job.id)
-        for ((iteration, result) in accepted) {
+        val acceptedIndices = store.execution.acceptedIndices(job.id)
+        val prepared = acceptedIndices.any { it.first == ExecutionStore.PREPARATION }
+        // Results are large: read only those an iteration still needs, its projection or a case check.
+        for ((iteration, indices) in acceptedIndices) {
+            if (iteration in ingested && indices.all { it in checked }) continue
+            val result = store.execution.accepted(job.id, iteration) ?: continue
             if (iteration !in ingested) {
                 if (!projectResult(job.id, iteration) { project(job.id, result) }) continue
                 store.execution.markIngested(job.id, iteration)
@@ -298,7 +302,7 @@ class NomadBackend(
             return
         }
         for (s in store.execution.sessions(job.id).filter { it.desired != Desired.STOP }) {
-            if (s.executionClass == ExecutionClass.PREPARE && accepted.any { it.second.preparation != null }) {
+            if (s.executionClass == ExecutionClass.PREPARE && prepared) {
                 store.execution.loseSession(s.id, "prepared")
                 continue
             }
@@ -349,11 +353,11 @@ class NomadBackend(
         }
         if (store.job(job.id)?.status?.isActive != true) return
         val sessions = store.execution.sessions(job.id)
-        if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && accepted.none { it.second.preparation != null } && sessions.any { it.executionClass == ExecutionClass.PREPARE }) && sessions.isNotEmpty() && sessions.all { it.desired == Desired.STOP }) {
+        if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && !prepared && sessions.any { it.executionClass == ExecutionClass.PREPARE }) && sessions.isNotEmpty() && sessions.all { it.desired == Desired.STOP }) {
             store.execution.pauseClock(job.id)
             // Once preparation is accepted, only admission may create the first solve session. Replacing a
             // stopped preparation here races plan publication and recreates already accepted preparation.
-            val previous = sessions.lastOrNull { accepted.none { it.second.preparation != null } || it.executionClass == ExecutionClass.SOLVE } ?: return
+            val previous = sessions.lastOrNull { !prepared || it.executionClass == ExecutionClass.SOLVE } ?: return
             if (previous.executionClass == ExecutionClass.PREPARE) {
                 try { Experiments.requireExecutable(store.execution.manifest(previous.id).experiment) }
                 catch (failure: IllegalArgumentException) {

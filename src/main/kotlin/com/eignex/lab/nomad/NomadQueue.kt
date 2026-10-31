@@ -47,7 +47,7 @@ class NomadQueue(
                 val spec = checkNotNull(job.experiment)
                 // Persisted jobs predate submission validation; refuse retired recipes before publishing or allocating.
                 Experiments.requireExecutable(spec)
-                val acceptedPreparation = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null }?.second?.preparation
+                val acceptedPreparation = store.execution.acceptedPreparation(job.id)
                 val preparedBench = acceptedPreparation?.let { preparation ->
                     val plans = preparation.armPlans.values.ifEmpty { listOfNotNull(preparation.benchPlan) }
                     plans.takeIf { it.isNotEmpty() }?.let { com.eignex.lab.bench.BenchPlan(it.flatMap { plan -> plan.cases }.mapIndexed { index, case -> case.copy(id = index.toString()) }) }
@@ -81,8 +81,7 @@ class NomadQueue(
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     continue
                 }
-                val accepted = store.execution.accepted(job.id).singleOrNull { it.second.preparation != null } ?: continue
-                val preparation = checkNotNull(accepted.second.preparation)
+                val preparation = store.execution.acceptedPreparation(job.id) ?: continue
                 val recipe = store.execution.manifest(sessions.first { it.executionClass == ExecutionClass.PREPARE }.id)
                 if (!job.setupDone && !preparationPlan(job.id) { plan(job, recipe, preparation) }) continue
                 val current = store.job(job.id) ?: continue

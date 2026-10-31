@@ -129,7 +129,7 @@ class CaseChecks(
         val text = store.plans.caseRecordText(jobId, index) ?: return null
         val record = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
         val revision = store.plans.caseSha(jobId, index)?.let { Revision(jobId, it, checkerRepository(store.job(jobId)?.experiment)) }
-        val inputs = store.execution.accepted(jobId).firstOrNull { it.second.preparation != null }?.second?.preparation?.sharedInputs.orEmpty()
+        val inputs = store.execution.acceptedPreparation(jobId)?.sharedInputs.orEmpty()
         val lease = if (inputs.isNotEmpty()) try {
             val required = (listOfNotNull(problem.model, problem.data) + problem.includeDirs)
                 .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }
