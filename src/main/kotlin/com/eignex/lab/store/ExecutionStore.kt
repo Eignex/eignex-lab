@@ -496,7 +496,19 @@ class ExecutionStore internal constructor(private val store: Store) {
         attempt.jobId
     }
     fun manifest(id: String): WorkManifest = store.executionRead { db ->
-        Json.decodeFromString(db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single())
+        val text = db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
+        Json.decodeFromString(requireNotNull(text) { "session $id: its manifest was dropped after its job was done" })
+    }
+
+    /**
+     * Drop the manifests, often megabytes each, of stopped sessions of jobs done before [doneBefore], at most [batch]
+     * sessions; how many went. Only a done job: a failed or cancelled one may be retried, and a retry replaces its
+     * sessions from their manifests. A small batch keeps each write short; call again until it returns 0.
+     */
+    fun dropDoneManifests(doneBefore: Long, batch: Int = 20): Int = store.executionTransaction { db ->
+        db.sqlUpdate("""UPDATE execution_sessions SET manifest = NULL WHERE id IN (
+            SELECT s.id FROM execution_sessions s JOIN jobs j ON j.id = s.job_id
+            WHERE s.manifest IS NOT NULL AND s.desired = 'stop' AND j.status = 'DONE' AND j.finished_at < ? LIMIT ?)""", doneBefore, batch)
     }
     fun drain(id: String) = store.executionTransaction { db -> db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain' WHERE id = ? AND desired = 'run'", id) }
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->

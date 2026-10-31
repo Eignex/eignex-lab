@@ -76,6 +76,19 @@ class ExecutionStoreTest {
         store.execution.commit(claim.owner, result(claim), 1020)
     }
 
+    @Test fun `done jobs lose their stopped sessions' manifests while failed jobs keep theirs for a retry`() {
+        val done = job(); val failed = job()
+        store.execution.createSession("done", done, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000, manifest = "{}")
+        store.execution.createSession("failed", failed, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000, manifest = "{}")
+        store.execution.loseSession("done", "test"); store.execution.loseSession("failed", "test")
+        store.finish(done, Status.DONE); store.finish(failed, Status.FAILED, "boom")
+
+        assertEquals(0, store.execution.dropDoneManifests(doneBefore = 0))
+        assertEquals(1, store.execution.dropDoneManifests(doneBefore = Long.MAX_VALUE))
+        assertEquals(0, store.execution.dropDoneManifests(doneBefore = Long.MAX_VALUE))
+        assertFailsWith<IllegalArgumentException> { store.execution.manifest("done") }
+    }
+
     @Test fun `coordinator record metadata preserves the accepted manifest for acknowledgement retries`() {
         val id = job(); bind(id)
         val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
