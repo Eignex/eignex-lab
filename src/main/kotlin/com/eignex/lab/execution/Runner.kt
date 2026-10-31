@@ -60,6 +60,12 @@ class Runner(
             forget = { id -> store.deleteJob(id).also { if (it) deleteTree(config.jobDir(id)) } }).start()
         DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } }).start()
         periodic("schedules", SCHEDULE_POLL_MS) { if (!stopping) enqueueScheduled() }
+        periodic("session-manifests", MS_PER_HOUR) {
+            val before = System.currentTimeMillis() - MS_PER_DAY
+            var dropped = 0
+            while (!stopping) { val batch = store.execution.dropDoneManifests(before); if (batch == 0) break; dropped += batch; Thread.sleep(200) }
+            if (dropped > 0) println("dropped the manifests of $dropped sessions of jobs done over a day ago")
+        }
         while (!stopping) {
             val ownership = NativeExecutionLock.tryAcquire(config.nativeExecutionLock)
             if (ownership == null) {
