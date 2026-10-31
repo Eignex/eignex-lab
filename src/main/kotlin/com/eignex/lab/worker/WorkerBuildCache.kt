@@ -79,7 +79,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     }
                     return minOf(remainingLeaseMs(), (deadline - at) / 1_000_000)
                 }
-                val heap = (budget.memoryMiB / 3).coerceAtLeast(16)
+                val heap = buildHeapMiB(budget.memoryMiB)
                 val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, buildToolchain(bundle.toolchain), bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
                 val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                     "LAB_SOURCE_COMMIT" to bundle.commit)
@@ -453,3 +453,10 @@ private fun dependencyTreeBytes(path: Path): Long {
     })
     return bytes
 }
+
+/**
+ * The heap each build JVM may take within a preparation's [memoryMiB]. Gradle compiles Kotlin in its own JVM, which
+ * needs most of the budget: a third (1.3 GiB of 4 GiB) left klause's compiler out of memory. Three fifths leave room
+ * for that JVM's metaspace, code cache and threads and for the small wrapper JVM inside the container limit.
+ */
+internal fun buildHeapMiB(memoryMiB: Int): Int = (memoryMiB * 3 / 5).coerceAtLeast(16)

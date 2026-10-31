@@ -259,7 +259,7 @@ class PortableWorkerTest {
             set -eu
             printf 'build\n' >> '${count}'
             [[ "${'$'}GRADLE_USER_HOME" != "${'$'}HOME/.gradle" ]]
-            [[ "${'$'}JAVA_TOOL_OPTIONS" == *'-Xmx170m'* ]]
+            [[ "${'$'}JAVA_TOOL_OPTIONS" == *'-Xmx${buildHeapMiB(512)}m'* ]]
             [[ " ${'$'}* " == *' --max-workers=2 '* ]]
             mkdir -p build
             echo prepared > build/output
@@ -586,5 +586,12 @@ PY
         else ProcessBuilder("ps", "-p", pid.toString(), "-o", "stat=").start().let { process ->
             val state = process.inputStream.bufferedReader().readText().trim(); process.waitFor(); state.isNotEmpty() && !state.startsWith("Z")
         }
+    }
+
+    @Test fun `build JVMs get most of a preparation's memory`() {
+        // A third of the cloud preparation's 4 GiB ran klause's Kotlin compiler out of heap.
+        assertEquals(2457, buildHeapMiB(4096))
+        assertTrue(buildHeapMiB(4096) > 4096 / 3)
+        assertEquals(16, buildHeapMiB(8))
     }
 }
