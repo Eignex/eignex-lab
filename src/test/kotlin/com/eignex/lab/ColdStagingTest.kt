@@ -57,7 +57,8 @@ class ColdStagingTest {
             val identity = WorkerBundle("a".repeat(64), listOf(InputFile("file", ExecutionStore.digest("hello"), 5)),
                 Repositories.DEFAULT, "b".repeat(40), "linux", "amd64", "fixture")
             val bundle = archive(tree, zip, identity) {}
-            val cacheRoot = root.resolve("cache"); val cache = WorkerInputCache(cacheRoot, maxBytes = 0)
+            // Cleanup inline: a background reaper still deleting entries would race the final deleteTree.
+            val cacheRoot = root.resolve("cache"); val cache = WorkerInputCache(cacheRoot, maxBytes = 0, cleanupExecutor = { it.run() })
             cache.use(bundle, {}, { Files.newInputStream(zip) }) { staged ->
                 repeat(3) { cache.maintain() }
                 val pin = Files.list(cacheRoot.resolve("pins")).use { it.toList().single() }
