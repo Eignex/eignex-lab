@@ -501,6 +501,7 @@ PY
         assertTrue(System.nanoTime() < deadline + 2_000_000_000)
     }
 
+    @Test fun `zz repeat`() { repeat(500) { println("ITER $it"); Files.deleteIfExists(root.resolve("escaped.pid")); Files.deleteIfExists(root.resolve("supervisor.sock")); `independent supervisor kills detached children after client connection closes`() } }
     @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { socket ->
         val pid = root.resolve("escaped.pid")
         val code = "import subprocess,time; p=subprocess.Popen(['sleep','60'],start_new_session=True); open('${pid}','w').write(str(p.pid)); time.sleep(60)"
@@ -509,12 +510,14 @@ PY
         val future = executor.submit<Int> { supervisor.run(listOf("python3", "-c", code), root, System.getenv(), root.resolve("out"), root.resolve("err"), 60) { 10000 } }
         try {
             val until = System.nanoTime() + 5_000_000_000
-            while (!Files.exists(pid)) { check(System.nanoTime() < until); Thread.sleep(20) }
-            val child = Files.readString(pid).toLong()
+            // Python creates the file before its buffered write lands, so wait for a complete pid.
+            var child: Long? = null
+            while (child == null) { check(System.nanoTime() < until) { "done=${future.isDone} " + runCatching { future.get() }.exceptionOrNull() + " err=" + runCatching { Files.readString(root.resolve("err")) + Files.readString(root.resolve("service.err")) }.getOrNull() }; child = runCatching { Files.readString(pid).toLongOrNull() }.getOrNull(); if (child == null) Thread.sleep(20) }
             future.cancel(true) // Socket closes exactly as it does on a killed worker; service survives.
             val stopped = System.nanoTime() + 5_000_000_000
-            while (live(child) && System.nanoTime() < stopped) Thread.sleep(20)
-            assertFalse(live(child), "detached child survived worker loss")
+            var alive = live(child)
+            while (alive && System.nanoTime() < stopped) { Thread.sleep(20); alive = live(child) }
+            assertFalse(alive, "detached child survived worker loss")
         } finally { future.cancel(true); executor.shutdownNow() }
     }
 
@@ -574,7 +577,8 @@ PY
     private fun live(pid: Long): Boolean {
         if (!ProcessHandle.of(pid).map { it.isAlive }.orElse(false)) return false
         val stat = Path.of("/proc/$pid/stat")
-        return if (!CliMeasurements.localMacOs) runCatching { Files.readString(stat).substringAfterLast(")").trim().first() != 'Z' }.getOrDefault(false)
+        // A reaped zombie passes through X (EXIT_DEAD) before /proc forgets it; neither state is running.
+        return if (!CliMeasurements.localMacOs) runCatching { Files.readString(stat).substringAfterLast(")").trim().first() !in "ZX" }.getOrDefault(false)
         else ProcessBuilder("ps", "-p", pid.toString(), "-o", "stat=").start().let { process ->
             val state = process.inputStream.bufferedReader().readText().trim(); process.waitFor(); state.isNotEmpty() && !state.startsWith("Z")
         }
