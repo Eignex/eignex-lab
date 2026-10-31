@@ -107,6 +107,12 @@ deploy/lab run --tags 'arch:x86_64,simd:avx2,!spot' experiment.json
 `--tags` requires comma-separated labels; `!` excludes one. Detected architecture/SIMD tags and custom node labels
 are supported. Capability tags do not prove which instructions a benchmark executed.
 
+To hold the CPU fixed across a comparison, require a `cpu:` tag. Each names one microarchitecture and is carried
+only by pools of a single instance type: `cpu:apple-m4` (the local Mac), `cpu:zen2` (AVX2 pools), `cpu:graviton2`
+(NEON), `cpu:graviton3` (SVE) and `cpu:graviton4` (SVE2). The AVX-512 pools mix Ice Lake and Sapphire Rapids
+instances and carry no `cpu:` tag, so `simd:avx512` alone can place one job's rows on either; read each case's CPU
+model from its metadata there.
+
 The API and experiment JSON files use the same flat array:
 
 ```json
