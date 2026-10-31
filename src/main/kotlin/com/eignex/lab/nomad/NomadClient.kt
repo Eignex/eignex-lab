@@ -95,10 +95,10 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
             workerExit(j), termination(j))
 
         private fun termination(j: JsonObject): NomadTaskTermination? {
-            val worker = j["TaskStates"]?.jsonObject?.get("worker")?.jsonObject ?: return null
-            val events = worker["Events"]?.jsonArray?.map { it.jsonObject }.orEmpty()
+            val worker = (j["TaskStates"] as? JsonObject)?.get("worker") as? JsonObject ?: return null
+            val events = (worker["Events"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
             val ended = events.lastOrNull { it["Type"]?.jsonPrimitive?.contentOrNull == "Terminated" }
-            val details = ended?.get("Details")?.jsonObject
+            val details = ended?.get("Details") as? JsonObject
             fun value(key: String, allowed: Set<String>) = j[key]?.jsonPrimitive?.contentOrNull?.takeIf { it in allowed }
             val knownEvents = setOf("Received", "Task Setup", "Started", "Terminated", "Not Restarting", "Killing", "Killed",
                 "Driver Failure", "Failed Validation", "Setup Failure", "Restarting", "Client Reconnected")
@@ -115,15 +115,15 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
 
         private fun workerExit(j: JsonObject): NomadWorkerExit? {
             if (j["ClientStatus"]?.jsonPrimitive?.content != "failed" || j["DesiredStatus"]?.jsonPrimitive?.content != "run") return null
-            val worker = j["TaskStates"]?.jsonObject?.get("worker")?.jsonObject ?: return null
+            val worker = (j["TaskStates"] as? JsonObject)?.get("worker") as? JsonObject ?: return null
             if (worker["State"]?.jsonPrimitive?.content != "dead" || worker["Failed"]?.jsonPrimitive?.booleanOrNull != true) return null
-            val events = worker["Events"]?.jsonArray?.map { it.jsonObject } ?: return null
+            val events = (worker["Events"] as? JsonArray)?.map { it.jsonObject } ?: return null
             // Positive process-exit evidence only. Kill/eviction, signals, driver/setup errors, OOM and unknown
             // event sequences remain infrastructure recovery, rather than spending a deterministic-error budget.
             val ordinary = setOf("Received", "Task Setup", "Started", "Terminated", "Not Restarting")
             if (events.any { it["Type"]?.jsonPrimitive?.content !in ordinary } || events.none { it["Type"]?.jsonPrimitive?.content == "Started" }) return null
             val ended = events.lastOrNull { it["Type"]?.jsonPrimitive?.content == "Terminated" } ?: return null
-            val details = ended["Details"]?.jsonObject
+            val details = ended["Details"] as? JsonObject
             val code = ended["ExitCode"]?.jsonPrimitive?.intOrNull ?: details?.get("exit_code")?.jsonPrimitive?.intOrNull ?: return null
             val signal = ended["Signal"]?.jsonPrimitive?.intOrNull ?: details?.get("signal")?.jsonPrimitive?.intOrNull ?: return null
             if (code == 0 || signal != 0 || details?.get("oom_killed")?.jsonPrimitive?.booleanOrNull != false ||

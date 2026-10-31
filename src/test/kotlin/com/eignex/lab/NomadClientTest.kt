@@ -51,6 +51,9 @@ class NomadClientTest {
             assertNull(NomadClient.allocationRow(infra).workerExit)
         }
         assertNull(NomadClient.allocationRow(JsonObject(allocation() - "TaskStates")).workerExit)
+        // A pending allocation's task has not started: Nomad sends null, not an absent key.
+        val pending = NomadClient.allocationRow(JsonObject(allocation() + ("TaskStates" to JsonNull)))
+        assertNull(pending.workerExit); assertNull(pending.termination)
     }
 
     @Test fun `client GC handles already removed allocations without hiding other server failures`() {
