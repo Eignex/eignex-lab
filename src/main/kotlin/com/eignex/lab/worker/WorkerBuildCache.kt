@@ -39,7 +39,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
         checkRun()
         val build = requireNotNull(bundle.build)
-        val identity = identity(bundle, budget)
+        val identity = identity(bundle)
         Files.createDirectories(root)
         val destination = root.resolve(identity)
         var waitingMs = 0L
@@ -159,7 +159,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         Files.createDirectories(root)
         return trace.step("build-cache") {
             var waitingMs = 0L
-            locked(root.resolve("${identity(bundle, budget)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
+            locked(root.resolve("${identity(bundle)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
                 var acquired = false
                 val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs, waitingMs)
                 if (!acquired) trace.cache("input", "bypass", "build-hit")
@@ -214,7 +214,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }, use)
     }
 
-    private fun identity(bundle: WorkerBundle, budget: ResourceBudget): String = ExecutionStore.digest((listOf(
+    private fun identity(bundle: WorkerBundle): String = ExecutionStore.digest((listOf(
         // Existing recipes keep their warm trees; only manifest-driven builds need the SDK identity extension.
         if (bundle.build?.benchManifest == null) "build-cache-v4" else "build-cache-v5",
         bundle.repository, bundle.commit, bundle.os, bundle.arch, buildToolchain(bundle.toolchain),
@@ -223,7 +223,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
         if (bundle.build?.gitBundle == null) bundle.sha256 else "approved-git-commit",
         Json.encodeToString(bundle.files.filter { it.path != bundle.build?.gitBundle }.sortedBy { it.path }),
-        Json.encodeToString(budget), System.getProperty("java.vendor"), System.getProperty("java.version"),
+        // Budgets only bound build heap and parallelism, so jobs at one commit share a tree across budgets.
+        System.getProperty("java.vendor"), System.getProperty("java.version"),
         System.getProperty("os.name"), System.getProperty("os.arch"),
         ExecutionStore.digest(requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText()),
     )).joinToString("\n"))

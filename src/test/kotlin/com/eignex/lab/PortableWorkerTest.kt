@@ -281,7 +281,7 @@ class PortableWorkerTest {
         assertFailsWith<LeaseLost> { cache.prepare(bundle, source, budget, System.getenv()) { 0 } }
     }
 
-    @Test fun `shared builds single flight across allocations and preserve dependency caches across commits`(): Unit = service { socket ->
+    @Test fun `shared builds single flight across allocations and budgets and preserve dependency caches across commits`(): Unit = service { socket ->
         val count = root.resolve("shared-count")
         val script = """set -eu
             echo build >> '$count'
@@ -304,6 +304,10 @@ class PortableWorkerTest {
             val updated = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
                 .prepare(built.copy(toolchain = "jdk25:" + "2".repeat(40)), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
             assertEquals(jobs[0].get(), updated)
+            assertEquals(1, Files.readAllLines(count).size)
+            val resized = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
+                .prepare(built, source, ResourceBudget(4000, 4096), System.getenv()) { 10000 }
+            assertEquals(jobs[0].get(), resized)
             assertEquals(1, Files.readAllLines(count).size)
             val next = WorkerBuildCache(root.resolve("shared"), ProcessSupervisor(socket))
                 .prepare(built.copy(commit = "b".repeat(40), toolchain = "jdk25"), source, ResourceBudget(1000, 512), System.getenv()) { 10000 }
