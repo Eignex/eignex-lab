@@ -10,6 +10,9 @@ import com.eignex.lab.util.*
 
 /** Build and launch committed entry points without assuming a particular repository's module layout. */
 object ProfileRuns {
+    /** The options every profiled JVM starts with, as the lab's own JVMs do; a profile's jvmArgs follow and may add to them. */
+    val DEFAULT_JVM_ARGS = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
+
     private val MAIN = Regex("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
     private val TASK = Regex(":?[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)*")
     private val OPTION = Regex("--?[A-Za-z][A-Za-z0-9-]*")
@@ -53,7 +56,7 @@ object ProfileRuns {
                 "exec \"\$entry\" " + profile.args.joinToString(" ", transform = ::quote) +
                 (entry.outputArgument?.let { " ${quote(it)} \"\$OUT/report\"" } ?: "")
             is ProfileEntry.JvmMain -> {
-                val jvm = entry.jvmArgs + listOf("-cp", entry.classpath.joinToString(":") { "$worktree/$it" })
+                val jvm = DEFAULT_JVM_ARGS + entry.jvmArgs + listOf("-cp", entry.classpath.joinToString(":") { "$worktree/$it" })
                 "exec \"\${JAVA_HOME:+\$JAVA_HOME/bin/}java\" " +
                     "\"-XX:StartFlightRecording=filename=\$OUT/profile.jfr,settings=profile,dumponexit=true\" " +
                     (jvm + entry.main + profile.args).joinToString(" ", transform = ::quote)
