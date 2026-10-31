@@ -107,4 +107,14 @@ class PreparationTraceTest {
         val upload = trace.snapshot().caches.getValue("upload")
         assertEquals(1 to 1, upload.hits to upload.misses)
     }
+
+    @Test fun `a failed preparation reports its exception and causes, bounded`() {
+        val budget = ResourceBudget(1000, 512)
+        val recorder = PreparationRecorder(ResourceObservation("advisory-native", budget, null, null, "test", "test", "test", emptyMap()), PreparationTrace())
+        assertEquals(null, recorder.snapshot(1000, null).error)
+        recorder.failed(IllegalStateException("pack unavailable", java.io.IOException("connection reset")))
+        assertEquals("IllegalStateException: pack unavailable <- IOException: connection reset", recorder.snapshot(1000, null).error)
+        recorder.failed(IllegalStateException("x".repeat(5000)))
+        assertEquals(PreparationDiagnostics.ERROR_CHARS, recorder.snapshot(1000, null).error!!.length)
+    }
 }
