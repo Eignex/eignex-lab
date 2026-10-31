@@ -505,7 +505,7 @@ class ExecutionStore internal constructor(private val store: Store) {
      * sessions; how many went. Only a done job: a failed or cancelled one may be retried, and a retry replaces its
      * sessions from their manifests. A small batch keeps each write short; call again until it returns 0.
      */
-    fun dropDoneManifests(doneBefore: Long, batch: Int = 20): Int = store.executionTransaction { db ->
+    fun dropDoneManifests(doneBefore: Long, batch: Int = 5): Int = store.executionTransaction { db ->
         db.sqlUpdate("""UPDATE execution_sessions SET manifest = NULL WHERE id IN (
             SELECT s.id FROM execution_sessions s JOIN jobs j ON j.id = s.job_id
             WHERE s.manifest IS NOT NULL AND s.desired = 'stop' AND j.status = 'DONE' AND j.finished_at < ? LIMIT ?)""", doneBefore, batch)
@@ -753,11 +753,6 @@ class ExecutionStore internal constructor(private val store: Store) {
                 s.execute("CREATE TABLE IF NOT EXISTS execution_ingestion (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, PRIMARY KEY (job_id, iteration_id))")
                 s.execute("CREATE TABLE IF NOT EXISTS execution_checks (job_id INTEGER NOT NULL, idx INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (job_id, idx))")
                 s.execute("CREATE INDEX IF NOT EXISTS session_experiment ON execution_sessions (job_id)")
-                // The coordinator's passes look attempts and events up by session and job; without these each lookup scans
-                // the whole table and a pass grows with history instead of with the active jobs.
-                s.execute("CREATE INDEX IF NOT EXISTS attempt_session ON iteration_attempts (session_id, generation)")
-                s.execute("CREATE INDEX IF NOT EXISTS attempt_job ON iteration_attempts (job_id, state)")
-                s.execute("CREATE INDEX IF NOT EXISTS event_job ON execution_events (job_id, detail)")
             }
         }
     }

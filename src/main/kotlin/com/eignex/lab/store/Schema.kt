@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -264,6 +264,18 @@ internal object Schema {
         db.createStatement().use {
             if ("preparation_diagnostics" !in it.columns("iteration_attempts"))
                 it.execute("ALTER TABLE iteration_attempts ADD COLUMN preparation_diagnostics TEXT")
+        }
+    }
+
+    /**
+     * Step 11: the coordinator's passes look attempts and events up by session and by job; without these indexes each
+     * lookup scans the whole table, so a pass grows with history instead of with the active jobs.
+     */
+    private fun coordinatorIndexes(db: Connection) {
+        db.createStatement().use {
+            it.execute("CREATE INDEX IF NOT EXISTS attempt_session ON iteration_attempts (session_id, generation)")
+            it.execute("CREATE INDEX IF NOT EXISTS attempt_job ON iteration_attempts (job_id, state)")
+            it.execute("CREATE INDEX IF NOT EXISTS event_job ON execution_events (job_id, detail)")
         }
     }
 
