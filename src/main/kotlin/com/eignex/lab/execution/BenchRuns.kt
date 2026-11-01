@@ -7,7 +7,6 @@ import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
-import com.eignex.lab.worker.AdapterResources
 
 import com.eignex.lab.bench.*
 import kotlinx.serialization.Serializable
