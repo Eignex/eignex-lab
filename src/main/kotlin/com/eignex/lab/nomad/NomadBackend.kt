@@ -169,7 +169,15 @@ class NomadBackend(
                 require(bundle.sha256 in preparation.artifacts.values)
                 bundle.tree?.let {
                     require(store.execution.placement(session.id).native && it.job == session.jobId) { "prepared tree must belong to the native job" }
-                    require(requireNotNull(NativePreparedTrees.environment()).valid(bundle) { store.execution.authorize(owner) })
+                    var nextOwnershipCheck = Long.MIN_VALUE
+                    require(requireNotNull(NativePreparedTrees.environment()).valid(bundle) {
+                        val at = System.nanoTime()
+                        if (at >= nextOwnershipCheck) {
+                            store.execution.authorize(owner)
+                            nextOwnershipCheck = at + 1_000_000_000
+                        }
+                    })
+                    store.execution.authorize(owner)
                 }
             }
             require(manifest.experiment.isBench == (preparation.benchPlan != null))
