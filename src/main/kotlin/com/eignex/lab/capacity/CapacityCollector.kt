@@ -175,18 +175,19 @@ class CapacityCollector(
         val stalePools = stale.flatMap { it.pools }.toSet()
         val instances = fresh.flatMap { it.instances }
         require(instances.all { it.pool in pools } && instances.map { it.pool to it.id }.distinct().size == instances.size)
-        val sessions = store.execution.sessions()
-        val byJob = sessions.associateBy { it.nomadJobId }
         val classes = instances.map { pools.getValue(it.pool).nodeClass }.toSet()
         val nodes = nomadNodes(classes)
         val byInstance = nodes.filter { (it["Meta"] as? JsonObject)?.get(CapacityWire.CAPACITY_ID_META) != null }.associate {
             (it.getValue("NodeClass").jsonPrimitive.content to it.getValue("Meta").jsonObject.getValue(CapacityWire.CAPACITY_ID_META).jsonPrimitive.content) to
                 CapacityObservation.NodeView.of(it)
         }
+        // Only the sessions this decision reads: those owning the nodes' allocations, and those not yet stopped.
+        val allocations = byInstance.values.associate { node -> node.id to nomad.nodeAllocations(node.id).map(CapacityObservation.AllocationView::of) }
+        val byJob = store.execution.sessionsOfNomadJobs(allocations.values.flatten().map { it.job }).associateBy { it.nomadJobId }
         val (observations, idle) = CapacityObservation.observeNodes(instances, pools, byInstance, { node ->
-            nomad.nodeAllocations(node).map(CapacityObservation.AllocationView::of)
+            allocations[node] ?: nomad.nodeAllocations(node).map(CapacityObservation.AllocationView::of)
         }, byJob, state.idleSince, at)
-        val pending = sessions.filter { s -> s.desired == Desired.RUN && (s.executionClass != ExecutionClass.SOLVE || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
+        val pending = store.execution.liveSessions().filter { s -> s.desired == Desired.RUN && (s.executionClass != ExecutionClass.SOLVE || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
             !nomad.hasActiveAllocation(s.nomadJobId) }
         val demands = pending.mapNotNull { s ->
             val job = store.job(s.jobId) ?: return@mapNotNull null

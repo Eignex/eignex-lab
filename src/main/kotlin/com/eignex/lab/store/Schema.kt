@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -306,6 +306,14 @@ internal object Schema {
             it.execute("CREATE TRIGGER IF NOT EXISTS bench_selection_cascade AFTER DELETE ON jobs BEGIN " +
                 "DELETE FROM bench_selections WHERE job_id = OLD.id; END")
         }
+    }
+
+    /**
+     * Step 14: the few sessions not yet stopped, indexed apart from the thousands that are, so capacity collection
+     * reads live sessions without scanning every session the lab ever ran.
+     */
+    private fun liveSessionIndex(db: Connection) {
+        db.createStatement().use { it.execute("CREATE INDEX IF NOT EXISTS session_live ON execution_sessions (id) WHERE desired != 'stop'") }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */

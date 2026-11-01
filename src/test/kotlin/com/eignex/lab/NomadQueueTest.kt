@@ -455,6 +455,15 @@ class NomadQueueTest {
             db.sqlRows("EXPLAIN QUERY PLAN DELETE FROM bench_selections WHERE job_id = ?", first) { it.getString(4) }
         }
         assertTrue(cascade.single().contains("USING INDEX bench_selection_job"), cascade.toString())
+        // Capacity collection reads live sessions and the sessions of observed allocations, never the whole table.
+        val live = store.execution.liveSessions()
+        assertTrue(live.isNotEmpty() && live.all { it.desired != Desired.STOP })
+        assertEquals(live.map { it.id }.toSet(), store.execution.sessionsOfNomadJobs(live.map { it.nomadJobId } + "unknown").map { it.id }.toSet())
+        for (query in listOf("SELECT id FROM execution_sessions INDEXED BY session_live WHERE desired != 'stop'",
+                "SELECT id FROM execution_sessions WHERE nomad_job_id IN (?)")) {
+            val sessionPlan = store.executionRead { db -> db.sqlRows("EXPLAIN QUERY PLAN $query", *(if ("?" in query) arrayOf<Any>("x") else emptyArray())) { it.getString(4) } }
+            assertTrue(sessionPlan.none { it.startsWith("SCAN execution_sessions") && "INDEX" !in it }, "$query: $sessionPlan")
+        }
 
         // An offered plan that is not the accepted one is refused with the whole commit.
         val third = job(); queue().reconcile(); queue().reconcile()
