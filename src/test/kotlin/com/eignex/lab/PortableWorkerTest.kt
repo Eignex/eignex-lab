@@ -234,6 +234,40 @@ class PortableWorkerTest {
         assertEquals("large", BenchRuns.result(result.record)!!.caseId)
     }
 
+    @Test fun `concurrent cases of one commit build in separate trees`(): Unit = service { socket ->
+        // A case that writes into its tree, as a consumer build does, must not meet another running case there.
+        val java = """package fixture;
+            import java.nio.file.*;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    Path claim = Path.of("case-running");
+                    Files.createFile(claim);
+                    Thread.sleep(1500);
+                    Files.delete(claim);
+                    Files.writeString(Path.of(System.getenv("OUT"), "tree.txt"), Path.of("").toAbsolutePath().toString());
+                    Files.writeString(Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"shared\"}");
+                }
+            }
+        """.trimIndent()
+        val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
+        val (source, bytes) = bundle(mapOf("Bench.java" to java,
+            "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val built = source.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("shared-tree", bench = BenchSpec("bench.json"))
+        val case = com.eignex.lab.bench.BenchCase("shared", resources = com.eignex.lab.bench.BenchResources(timeoutSeconds = 30))
+        val arms = listOf("a", "b").map { PlannedArm(Arm(it, mapOf("variant" to it)), source.commit) }
+        val manifest = WorkManifest("shared-tree", "release", spec, arms,
+            listOf(0, 1).map { WorkCase(it, it, BenchRuns.problem(case), null, 0, 30, case) }, listOf(built), ResourceBudget(2000, 2048, 2))
+        val directory = root.resolve("shared-tree-run")
+        val result = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) },
+            "unused", source.os, source.arch, buildCache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
+            .run(manifest, listOf(0, 1), directory, "fixture", 1, remainingLeaseMs = { 80000 })
+        for (case in result.cases) assertEquals(0, case.exitCode, Files.readString(directory.resolve("${case.index}.err")))
+        val trees = result.cases.map { Files.readString(directory.resolve("cases/${it.index}/out/tree.txt")) }
+        assertEquals(2, trees.toSet().size)
+    }
+
     @Test fun `committed benchmark Java and tool prerequisites fail before invoking the adapter`(): Unit = service { socket ->
         for ((index, runtime) in listOf("{\"tools\":[\"definitely-missing-bench-fixture-tool\"]}", "{\"java\":8}").withIndex()) {
             val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.MustNotRun", listOf("classes"), emptyList())
