@@ -11,6 +11,27 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class BenchSelectionsTest {
+    @Test fun `declared selection identities reuse verified build checksums without changing keys`() {
+        val base = tree("verified-inputs", """{"main":"a.B","planInputs":["bench"]}""",
+            mapOf("bench/build/classes/Plan.class" to "compiled", "bench/build/install/lib/runtime.jar" to "x".repeat(2 * 1024 * 1024)))
+        val expected = key(base)
+        val proof = base.resolveSibling("proof.json")
+        TreeVerification().capture(base, proof)
+        val reused = BenchInputDigests(hash = { _, _ -> error("selection reread a verified build file") })
+        reused.receipt(base, proof)
+        assertEquals(expected, BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), commit,
+            base, "local", digests = reused))
+        assertEquals(0, reused.hashedFiles)
+        assertTrue(reused.reusedFiles >= 3)
+        val file = base.resolve("bench/build/classes/Plan.class"); val modified = Files.getLastModifiedTime(file)
+        Files.writeString(file, "modified"); Files.setLastModifiedTime(file, modified)
+        val changed = BenchInputDigests(); changed.receipt(base, proof)
+        val observed = BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), commit,
+            base, "local", digests = changed)
+        assertEquals(key(base), observed)
+        assertNotEquals(expected, observed)
+        assertEquals(1, changed.hashedFiles)
+    }
     private val root = Files.createTempDirectory("bench-selections").toAbsolutePath()
     private val commit = "a".repeat(40)
     private fun tree(name: String, manifest: String, files: Map<String, String> = emptyMap()): Path =

@@ -17,15 +17,25 @@ internal class BenchInputDigests(private val checkActive: () -> Unit = {},
     private data class Entry(val stamp: Stamp, val sha: String)
     private val roots = mutableMapOf<Path, Boolean>()
     private val files = mutableMapOf<Path, Entry>()
+    private val receipts = mutableMapOf<Path, (Path) -> String?>()
     var hashedFiles = 0; private set
     var reusedFiles = 0; private set
     var hashedBytes = 0L; private set
+
+    fun receipt(root: Path, path: Path) {
+        checkActive()
+        receipts[root.toAbsolutePath().normalize()] = TreeVerification().checksums(root, path)
+    }
 
     fun checksum(root: Path, file: Path): String {
         checkActive()
         val reliable = roots.getOrPut(root) { reliableRoot(root) }
         val before = if (reliable) stamp(file) else null
         files[file]?.takeIf { before != null && it.stamp == before }?.let { reusedFiles++; return it.sha }
+        if (before != null) receipts[root.toAbsolutePath().normalize()]?.invoke(file)?.let { sha ->
+            require(stamp(file) == before) { "bench input changed during verification" }
+            files[file] = Entry(before, sha); reusedFiles++; return sha
+        }
         val sha = hash(file, checkActive)
         hashedFiles++; hashedBytes = Math.addExact(hashedBytes, before?.size ?: Files.size(file))
         if (before != null) {
