@@ -756,6 +756,30 @@ class NomadBackendTest {
         armPlans = manifest.arms.associate { it.arm.label to com.eignex.lab.bench.BenchPlan(selections.flatten().map { it.benchCase!! }) })
 
     @ParameterizedTest
+    @EnumSource(NomadPlatform::class)
+    fun `native snapshots cannot name another job or be supplied by a cloud allocation`(platform: NomadPlatform) {
+        val id = setup(1, ExperimentSpec("snapshot-owner", bench = BenchSpec("bench.json"), host = HostPlacement.AUTO),
+            platform = platform, preparation = true)
+        register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val original = manifest.bundles.single()
+        val directories = listOf("bin")
+        val metadata = preparedTreeManifest(original.files, directories).toByteArray()
+        val sha = preparedTreeDigest(original.files, directories)
+        val bundle = original.copy(sha256 = sha, tree = PreparedTree(if (platform == NomadPlatform.MAC) id + 1 else id, directories))
+        artifacts.put(id, sha, metadata.size.toLong(), 0, metadata.inputStream())
+        store.execution.phase(claim.owner, "preparing")
+        val selected = backend().selectPreparation(claim.owner, listOf(listOf(benchProblem("p"))))
+        val outputs = mapOf(preparationArtifact(bundle) to sha)
+        store.execution.phase(claim.owner, "uploading")
+        assertFailsWith<IllegalArgumentException> {
+            backend().commit(claim.owner, IterationResult(emptyList(), outputs,
+                preparation = benchPreparation(selected, listOf(bundle), artifacts = outputs)))
+        }
+        assertNull(store.execution.acceptedPreparation(id))
+    }
+
+    @ParameterizedTest
     @EnumSource(value = Status::class, names = ["DONE", "FAILED"])
     fun `bench replay pins accepted builds and refuses changed revisions requests and inputs`(status: Status) {
         val originalSpec = ExperimentSpec("original", bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("mode" to "original"))), host = HostPlacement.AUTO)
