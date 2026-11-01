@@ -18,7 +18,7 @@ internal class NativePreparedTrees(private val jobs: Path) {
         .resolve("${JobFileNames.PREPARED_TREES}/${bundle.sha256}")
 
     fun publish(job: Long, source: Path, receipt: Path, identity: WorkerBundle, check: () -> Unit,
-                force: (Path) -> Unit = { path -> FileChannel.open(path, WRITE).use { it.force(true) } }): Pair<Path, WorkerBundle> {
+                force: ((Path) -> Unit)? = null): Pair<Path, WorkerBundle> {
         val directories = mutableListOf<String>()
         val verification = TreeVerification()
         val files = verification.capture(source, receipt, check, directories)
@@ -27,27 +27,34 @@ internal class NativePreparedTrees(private val jobs: Path) {
         val target = directory(bundle)
         Files.createDirectories(target.parent)
         locked(target.resolveSibling("${bundle.sha256}.lock"), check) {
+            val batch = force == null && MacVolumeSync.supported
+            val flush = force ?: { path: Path -> FileChannel.open(path, WRITE).use { it.force(true) } }
             if (Files.isDirectory(target, NOFOLLOW_LINKS)) {
                 require(valid(bundle, check)) { "existing prepared snapshot is corrupt" }
             } else {
                 require(Files.getFileStore(source) == Files.getFileStore(target.parent)) { "native handoff requires one filesystem" }
-                // Flush newly built files without reading them again. Publish the receipt and metadata last.
-                for (file in files) { check(); force(source.resolve(file.path)) }
+                // Native APFS publication uses one volume barrier below. Other filesystems retain per-file fsync.
+                if (!batch) for (file in files) { check(); flush(source.resolve(file.path)) }
                 val staging = Files.createTempDirectory(target.parent, ".handoff-")
                 try {
                     check(); Files.move(source, staging.resolve("tree"), ATOMIC_MOVE)
                     Files.move(receipt, staging.resolve("verified.json"), REPLACE_EXISTING)
                     val manifest = staging.resolve("manifest.json")
                     Files.writeString(manifest, preparedTreeManifest(files, directories))
-                    force(manifest)
-                    Files.walk(staging.resolve("tree")).use { paths -> paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { dir ->
-                        check(); FileChannel.open(dir, READ).use { it.force(true) }
-                    } }
-                    FileChannel.open(staging, READ).use { it.force(true) }
+                    if (!batch) {
+                        flush(manifest)
+                        Files.walk(staging.resolve("tree")).use { paths -> paths.filter { Files.isDirectory(it, NOFOLLOW_LINKS) }.forEach { dir ->
+                            check(); FileChannel.open(dir, READ).use { it.force(true) }
+                        } }
+                        FileChannel.open(staging, READ).use { it.force(true) }
+                    }
                     Files.move(staging, target, ATOMIC_MOVE)
-                    FileChannel.open(target.parent, READ).use { it.force(true) }
+                    if (!batch) FileChannel.open(target.parent, READ).use { it.force(true) }
                 } finally { if (Files.exists(staging)) deleteTree(staging) }
             }
+            // Returning (and uploading metadata) is the publication boundary, after the renamed tree is durable.
+            // A crash before it can leave a reusable tree; the next publisher validates and flushes it again.
+            if (batch) MacVolumeSync.flush(target, check)
         }
         return target.resolve("manifest.json") to bundle
     }
