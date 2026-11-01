@@ -203,7 +203,7 @@ class ConfirmTest {
 
     @Test
     fun `a confirmation preserves ordinary CLI resource measurement`() {
-        val sweep = ExperimentSpec("s", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.RESOURCES)
+        val sweep = ExperimentSpec("s", listOf(mapOf("suite" to "s")), vcpus = 1, measurement = Measurement.RESOURCES)
         val flips = Flips(lost = listOf(Problem("s", "p")), gained = emptyList())
 
         val spec = Confirm.spec("s", sweep, "before", "after", flips, job = 7)

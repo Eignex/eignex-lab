@@ -22,8 +22,8 @@ class EstimatesTest {
     /** A six-minute timeout on one core: 0.1 core-hours a case at most. */
     private val spec = ExperimentSpec("e", listOf(mapOf("suite" to "s", "max" to "10")), base = mapOf("timeout" to "360000"))
 
-    private fun job(status: Status, counts: CommandCounts?, experiment: ExperimentSpec = spec, parallel: Int = 1, name: String = "e") =
-        Job(1, name, "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, parallel = parallel,
+    private fun job(status: Status, counts: CommandCounts?, experiment: ExperimentSpec = spec, vcpus: Int = 1, name: String = "e") =
+        Job(1, name, "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, vcpus = vcpus,
             experiment = experiment, counts = counts)
 
     private val none: (Job) -> CaseHistory? = { null }
@@ -63,21 +63,23 @@ class EstimatesTest {
     }
 
     @Test
-    fun `the local machine's time for a job runs its parallel cases at once, as many as fit the cores`() {
+    fun `the local machine's time for a job runs the cases its vcpus hold at once, as many as fit the cores`() {
         val portfolio = spec.copy(base = spec.base + ("processors" to "4"))
-        fun localHours(parallel: Int, cores: Int, experiment: ExperimentSpec = portfolio) = Estimates.estimate(
-            job(Status.QUEUED, CommandCounts(40, 0, 0, 0, timed = 0), experiment, parallel = parallel), { CaseHistory(7, 40, 600_000.0) }, cores,
+        fun localHours(vcpus: Int, cores: Int, experiment: ExperimentSpec = portfolio) = Estimates.estimate(
+            job(Status.QUEUED, CommandCounts(40, 0, 0, 0, timed = 0), experiment, vcpus = vcpus), { CaseHistory(7, 40, 600_000.0) }, cores,
         )!!.localHours
 
-        // 40 cases of ten minutes: four at once would take 100 min, but two four-core cases fill eight cores.
-        assertEquals(40 * 10 / 2 / 60.0, localHours(parallel = 4, cores = 8), 1e-9)
-        assertEquals(40 * 10 / 4 / 60.0, localHours(parallel = 4, cores = 16), 1e-9)
-        assertEquals(40 * 10 / 60.0, localHours(parallel = 1, cores = 16), 1e-9)
+        // 40 cases of ten minutes: 16 vCPUs hold three four-core cases beside the worker's one, but eight cores only two.
+        assertEquals(40 * 10 / 2 / 60.0, localHours(vcpus = 16, cores = 8), 1e-9)
+        assertEquals(40 * 10 / 4 / 60.0, localHours(vcpus = 17, cores = 16), 1e-9)
+        assertEquals(40 * 10 / 60.0, localHours(vcpus = 1, cores = 16), 1e-9)
+        // Four vCPUs leave three for cases: one four-core case still runs.
+        assertEquals(40 * 10 / 60.0, localHours(vcpus = 4, cores = 16), 1e-9)
         // A case larger than the local machine still runs, one at a time.
-        assertEquals(40 * 10 / 60.0, localHours(parallel = 4, cores = 2), 1e-9)
-        assertEquals(40 * 10 / 4 / 60.0, localHours(parallel = 4, cores = 8, experiment = spec), 1e-9)
+        assertEquals(40 * 10 / 60.0, localHours(vcpus = 9, cores = 2), 1e-9)
+        assertEquals(40 * 10 / 3.0 / 60.0, localHours(vcpus = 4, cores = 8, experiment = spec), 1e-9)
         // Core-hours count every core a case holds.
-        assertEquals(40 * 10 * 4 / 60.0, Estimates.estimate(job(Status.QUEUED, CommandCounts(40, 0, 0, 0), portfolio, parallel = 4),
+        assertEquals(40 * 10 * 4 / 60.0, Estimates.estimate(job(Status.QUEUED, CommandCounts(40, 0, 0, 0), portfolio, vcpus = 4),
             { CaseHistory(7, 40, 600_000.0) }, 8)!!.coreHours, 1e-9)
     }
 
@@ -88,7 +90,7 @@ class EstimatesTest {
 
         // 4 h of running at two cases at once over 960 cases: 30 s a case.
         val portfolio = spec.copy(base = spec.base + ("processors" to "4"))
-        val untimed = job(Status.DONE, CommandCounts(960, 960, 0, 0), portfolio, parallel = 4).copy(id = 4, runMs = 4 * 3_600_000L)
+        val untimed = job(Status.DONE, CommandCounts(960, 960, 0, 0), portfolio, vcpus = 9).copy(id = 4, runMs = 4 * 3_600_000L)
         assertEquals(CaseHistory(4, 960, 30_000.0), Estimates.history(untimed, 8))
         assertNull(Estimates.history(job(Status.DONE, CommandCounts(0, 0, 0, 0)), 8))
     }

@@ -76,7 +76,7 @@ internal class Schedules(
             // ([Placement.cloudOptIn]): its host says only whether it opted in, and the run is placed by the rules.
             val origin = JobOrigin.Scheduled(schedule.name)
             val spec = run.copy(host = Placement.host(run, origin, workers, listOf(schedule)))
-            val id = store.create(name, sha, emptyList(), spec.parallel ?: workers.local.defaultParallel, spec.priority, spec, origin)
+            val id = store.create(name, sha, emptyList(), spec.vcpus ?: workers.local.defaultParallel, spec.priority, spec, origin)
             store.schedules.ran(schedule.id, sha, id)
             println("schedule ${schedule.name}: queued job $id for ${sha.take(9)}")
         }

@@ -49,7 +49,9 @@
 #                                                            selections, and replaced by the solver's next row on each
 #                                                            problem whatever its budget. Prints how many rows it retired
 #   lab compare <id> <id>...                                the address of a page comparing experiments side by side
-#   lab parallel <id> <n>                                    let a job run n commands at once, also while it runs
+#   lab vcpus <id> <n>                                       dedicate n vCPUs to a job, also while it runs: each worker
+#                                                            runs n-1 cases at once (one if n is 1) and its preparation
+#                                                            builds with them; `lab parallel` is the retired name
 #   lab priority <id> <n>                                    reorder a queued job; a running one yields to a higher one
 #   lab pause <id> | lab resume <id>                         hold a job; a running one stops between its commands
 #   lab wait <id>...                                         block until every job given has ended; prints each end
@@ -236,7 +238,7 @@ ls)
   { curl -fsS "$url/jobs?active=true"; curl -fsS "$url/jobs?limit=${1:-30}"; } | jq -s -r '
     (.[0] | sort_by(-.id)) as $active | ($active | map(.id)) as $ids
     | ($active + (.[1] | map(select(.id | IN($ids[]) | not))))[] | [.id, .status,
-      "\(.counts.done)/\(.counts.total)", "\(.counts.failed) failed", "x\(.parallel // 1)",
+      "\(.counts.done)/\(.counts.total)", "\(.counts.failed) failed", "\(.vcpus // .parallel // 1) vCPU",
       "p\(.priority // 0)\(if .paused then " paused" else "" end)", .ref, .name] | @tsv' ;;
 show)
   # A queued job comes with where it may run and why it waits (GET /placement/<id>).
@@ -273,7 +275,7 @@ placement)
         + (if .queuePosition then ", #\(.queuePosition) in the queue" else "" end)
         + (if .localPosition then ", #\(.localPosition) in the local queue" else "" end),
       (if .estimate then "estimate: \(est)" else empty end),
-      "parallel: \(.executingParallel // 0) executing / \(.requestedParallel // 1) requested; \(.pendingParallel // 0) awaiting allocation",
+      "vcpus: \(.vcpus // "-"); cases: \(.executingParallel // 0) executing / \(.requestedParallel // 1) requested; \(.pendingParallel // 0) awaiting allocation",
       (if .parallelismReason then "slots: \(.parallelismReason)" else empty end),
       (if .waiting then "waiting: \(.waiting)" else empty end),
       (if .doing then "doing: \(.doing)" else empty end),
@@ -291,8 +293,8 @@ placement)
         est, (.waiting // .doing // "")] | @tsv)' <<< "$report"; fi
   fi ;;
 cancel) curl -sS -X POST "$url/jobs/$1/cancel"; echo ;;
-parallel) jq -n --argjson parallel "$2" '{parallel: $parallel}' |
-  curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/parallel"; echo ;;
+vcpus|parallel) jq -n --argjson vcpus "$2" '{vcpus: $vcpus}' |
+  curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/vcpus"; echo ;;
 priority) jq -n --argjson priority "$2" '{priority: $priority}' |
   curl -sS -H 'Content-Type: application/json' --data-binary @- "$url/jobs/$1/priority"; echo ;;
 wait)

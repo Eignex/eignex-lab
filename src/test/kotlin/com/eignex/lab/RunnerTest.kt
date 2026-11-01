@@ -143,7 +143,7 @@ class RunnerTest {
 
     /** A finished compilation measurement job whose case 0 left [log] as its HotSpot log; returns its id. */
     private fun profiledJob(config: Config, store: Store, log: String = sampleLog): Long {
-        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.COMPILATION_LOG)
+        val spec = ExperimentSpec("cli", listOf(mapOf("suite" to "s")), vcpus = 1, measurement = Measurement.COMPILATION_LOG)
         val id = store.create("cli", "main", emptyList(), experiment = spec)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "abc123") }, listOf(Problem("s", "p")),
             Experiments.cases(1, 1, emptyList()), listOf("recorded" to 60L))

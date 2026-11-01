@@ -27,8 +27,14 @@ data class ExperimentSpec(
     val seeds: List<Long> = emptyList(),
     /** Runs of each (problem, configuration, seed), identical but for the machine's noise, which they measure. */
     val repeats: Int = 1,
-    /** Cases run at once; unset, as many as the lab allows, within its core budget either way. */
-    val parallel: Int? = null,
+    /**
+     * vCPUs dedicated to the job: each of its worker sessions runs `max(1, vcpus - 1)` cases at once (divided by a case's
+     * CPUs, at least one), leaving one for the worker JVM, and its preparation builds with at least as many. Unset, the
+     * lab's default. Submissions may still say `parallel`, its retired name ([experimentInput]); the stored recipe keeps
+     * that key so pinned workers and fingerprints read it unchanged.
+     */
+    @SerialName("parallel")
+    val vcpus: Int? = null,
     val priority: Int = 0,
     /** Run even when the estimate is over [Config.maxExperimentHours]. */
     val confirm: Boolean = false,

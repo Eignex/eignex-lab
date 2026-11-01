@@ -85,21 +85,22 @@ class PlacementTest {
     }
 
     @Test
-    fun `cores and parallel over the local machine's are cut down to it, so such a job goes local first like any other`() {
+    fun `cores and vcpus over the local machine's are cut down to it, so such a job goes local first like any other`() {
         val config = config()
-        val big = spec.copy(base = mapOf("processors" to "12"), parallel = 8)
+        val big = spec.copy(base = mapOf("processors" to "12"), vcpus = 12)
         val grid = spec.copy(configs = listOf(mapOf("label" to "a"), mapOf("label" to "b", "processors" to "20")),
             grid = mapOf("processors" to listOf("4", "12", "16")))
 
-        val capped = Experiments.capToLocal(big, config.cores, config.maxParallel)
-        val gridCapped = Experiments.capToLocal(grid, config.cores, config.maxParallel)
+        val capped = Experiments.capToLocal(big, config.cores)
+        val gridCapped = Experiments.capToLocal(grid, config.cores)
 
-        assertEquals(listOf("8", 6), listOf(capped.base["processors"], capped.parallel))
-        assertEquals(listOf("parallel=8 was asked, capped at the local machine's 6", "processors=12 was asked, capped at the local machine's 8 cores"), capped.capped)
+        assertEquals(listOf("8", 8), listOf(capped.base["processors"], capped.vcpus))
+        assertEquals(listOf("vcpus=12 was asked, capped at the local machine's 8 cores", "processors=12 was asked, capped at the local machine's 8 cores"), capped.capped)
+        assertEquals(spec.copy(vcpus = 8), Experiments.capToLocal(spec.copy(vcpus = 8), config.cores))
         assertEquals(Experiments.AUTO_HOST, Placement.host(capped, "e", config.workers))
         assertEquals(listOf("4", "8"), gridCapped.grid["processors"])
         assertEquals(8, Experiments.arms(gridCapped).maxOf { it.cores })
-        assertEquals(spec, Experiments.capToLocal(spec, config.cores, config.maxParallel))
+        assertEquals(spec, Experiments.capToLocal(spec, config.cores))
         assertEquals(Experiments.fingerprint(capped), Experiments.fingerprint(capped.copy(capped = emptyList())))
     }
 

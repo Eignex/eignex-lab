@@ -491,9 +491,8 @@ Admission fills native capacity first and spills compatible work into provider-n
 an explicit node selector; profiles do not imply it. Nomad also permits exact problem inputs and whole-run profile
 limits on cloud workers. Reference solvers and schedules that remain local still respect those placement rules.
 `caseMemoryMiB` includes each solve's heap/native allowance and `sessionMemoryMiB` covers worker/helpers. An explicit
-solve heap must fit rather than being silently changed. Reservations are bounded by the cases a paired iteration can
-actually run, the job's per-host parallel cap, and each target's CPU/memory ceiling. A template `parallel` of one gives
-small reservations that pack between experiments; larger values let one paired iteration run its arms concurrently.
+solve heap must fit rather than being silently changed. Reservations are bounded by the job's vCPUs, the job's
+per-host parallel cap, and each target's CPU/memory ceiling; a session claims whole paired rows to fill its case slots.
 The existing global provider vCPU limit bounds capacity growth, independent of provider and Spot pool count.
 
 Queue settings are snapshotted per admitted experiment, and source SHAs, inputs, release and templates remain pinned
@@ -505,8 +504,11 @@ Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations)
 immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
 state is considered disposable; historical job results and provenance are never runtime-pruning candidates.
 
-Job `parallel` determines its total solve CPU request across the cluster (parallel
-cases times the largest arm's CPU request). Each worker reserves its own share. Sessions from the
+Job `vcpus` (formerly `parallel`) determines its total solve CPU request across the cluster. Each worker session
+reserves the job's vCPUs, or the most its target offers, and runs `max(1, vcpus - 1)` cases at once divided by the
+largest case's CPUs, claiming whole paired rows to fill them; a target template's `parallel` no longer limits that.
+The native worker runs at most `LAB_MAX_PARALLEL` cases a session. Preparation reserves the job's vCPUs too, at least
+`preparationBudget`, with memory scaled from it, within the target's budget and the local cores. Sessions from the
 same experiment share a node whenever those resources fit. Operator queue settings
 `maxVcpusPerJob` (default 16) and `maxSessionsPerJob` bound job expansion;
 `perHostParallel` optionally caps same-job cases on each node and is unset by

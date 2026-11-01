@@ -55,11 +55,12 @@ object Estimates {
     const val MIN_MEASURED = 10
     private const val MS_PER_HOUR = 3_600_000.0
 
-    /** Cases of [spec] that run at once on a host of [cores] cores: the job's [parallel] within [maxParallel], as long
-     *  as its largest case's cores fit beside each other; one case always may run. */
-    fun concurrency(spec: ExperimentSpec, parallel: Int, cores: Int, maxParallel: Int = Int.MAX_VALUE): Int {
+    /** Cases of [spec] that run at once on a host of [cores] cores: those the job's [vcpus] run
+     *  ([Experiments.caseConcurrency]) within [maxParallel], as long as its largest case's cores fit beside each other;
+     *  one case always may run. */
+    fun concurrency(spec: ExperimentSpec, vcpus: Int, cores: Int, maxParallel: Int = Int.MAX_VALUE): Int {
         val caseCores = Experiments.arms(spec).maxOf { it.cores }
-        return minOf(parallel.coerceIn(1, maxParallel.coerceAtLeast(1)), (cores / caseCores).coerceAtLeast(1))
+        return minOf(Experiments.caseConcurrency(vcpus, caseCores).coerceAtMost(maxParallel.coerceAtLeast(1)), (cores / caseCores).coerceAtLeast(1))
     }
 
     /** The mean wall time [job], a finished run, measured a case: its finished cases' own times, or else its running
@@ -69,7 +70,7 @@ object Estimates {
         if (job.total == 0) return null
         val mean = when {
             job.timed > 0 -> job.timedMs.toDouble() / job.timed
-            job.runMs > 0 -> runCatching { job.runMs.toDouble() * concurrency(spec, job.parallel, cores) / job.total }.getOrNull()
+            job.runMs > 0 -> runCatching { job.runMs.toDouble() * concurrency(spec, job.vcpus, cores) / job.total }.getOrNull()
             else -> null
         }
         return CaseHistory(job.id, job.total, mean)
@@ -114,7 +115,7 @@ object Estimates {
             }.coerceAtLeast(0)
             val fromEarlier = earlier?.takeIf { !planned && !spec.isProfile || it.meanCaseMs != null }
             val guessed = !planned && fromEarlier == null && !exact(spec)
-            val concurrent = concurrency(spec, job.parallel, cores, maxParallel)
+            val concurrent = concurrency(spec, job.vcpus, cores, maxParallel)
             val (ms, source) = when {
                 measured != null -> measured to EstimateSource.MEASURED
                 earlier?.meanCaseMs != null -> earlier.meanCaseMs to EstimateSource.HISTORY

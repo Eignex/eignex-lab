@@ -22,15 +22,18 @@ object Experiments {
 
     /**
      * What [spec] measures, as a short hash: its problems, arms, seeds and repeats. Its name, the ref a schedule pins
-     * on each run, and how it is run (parallel, priority, confirm) are left out, so every run of an unchanged schedule
+     * on each run, and how it is run (vcpus, priority, confirm) are left out, so every run of an unchanged schedule
      * shares one fingerprint and an edited one starts another. Where it runs ([ExperimentSpec.host]) is left out
      * too: a schedule moved between the local machine and the cloud, or a run taken
      * by either, still measures the same thing, and a stored spec that names any host matches one that names another.
      * An arm's `debug` is measured: `debug=false` turns the CLI's runtime statistics off, which changes what a solve
      * runs and records, so it starts another fingerprint. `debug=true` is the default, so saying it changes nothing.
      * A bench request with `comparison-series` also measures parallelism: its aggregate CPU grant affects CLI/JIT work.
+     * Its stored key is still `parallel`, which counted cases at once before it counted vCPUs: one vCPU runs one case
+     * as one case at once did, so that keeps its fingerprint, while a larger value starts another.
      */
     fun fingerprint(spec: ExperimentSpec): String {
+        val series = spec.work.bench?.request?.parameters?.containsKey("comparison-series") == true
         fun measured(values: Map<String, String>) = (if (values[DEBUG_KEY] == "true") values - DEBUG_KEY else values).toSortedMap()
         val measured = spec.copy(
             name = "",
@@ -39,7 +42,7 @@ object Experiments {
             base = measured(spec.base - "ref"),
             configs = spec.configs.map(::measured),
             grid = spec.grid.toSortedMap(),
-            parallel = spec.parallel.takeIf { spec.work.bench?.request?.parameters?.containsKey("comparison-series") == true },
+            vcpus = spec.vcpus.takeIf { series },
             priority = 0,
             confirm = false,
             host = LAB_HOST,
@@ -49,8 +52,17 @@ object Experiments {
             nodeTags = spec.nodeTags?.let { it.copy(require = it.require.toSortedSet(), exclude = it.exclude.toSortedSet()) }
                 ?.takeIf { it.require.isNotEmpty() || it.exclude.isNotEmpty() },
         )
-        return hash(Json.encodeToString(ExperimentSpec.serializer(), measured))
+        val text = Json.encodeToString(ExperimentSpec.serializer(), measured)
+        return hash(if (series && (spec.vcpus ?: 1) > 1) "$text\nvcpus" else text)
     }
+
+    /** Cases a worker session of [vcpus] vCPUs runs at once, each holding [caseCpus]: all but one vCPU, which the
+     *  worker JVM and its helpers keep, divided between them; always at least one. */
+    fun caseConcurrency(vcpus: Int, caseCpus: Int): Int =
+        ((vcpus - 1).coerceAtLeast(1) / caseCpus.coerceAtLeast(1)).coerceAtLeast(1)
+
+    /** The CPUs [spec]'s largest arm asks of a case, before a bench plan states its own; one for a spec without arms. */
+    fun caseCpus(spec: ExperimentSpec): Int = arms(spec).maxOfOrNull { it.cores } ?: 1
 
     /** What a run of [spec] measured over [problems], the ones it planned: its [fingerprint] and its problem set,
      *  so a named set redrawn or a selection the reference filter shifts tells runs apart as an edited spec does. */
@@ -137,11 +149,11 @@ object Experiments {
 
     /**
      * [spec] cut down to fit the local machine, which every job the lab accepts must: each `processors` over [cores]
-     * becomes [cores], and a `parallel` over [maxParallel] becomes [maxParallel]. The cloud is only overflow for the
+     * becomes [cores], and `vcpus` over [cores] becomes [cores]. The cloud is only overflow for the
      * local machine's queue, so no job needs a node. A grid axis whose values the cap makes equal keeps one of them.
      * What was cut is added to [ExperimentSpec.capped], which the submit response, the job log and the job page show.
      */
-    fun capToLocal(spec: ExperimentSpec, cores: Int, maxParallel: Int): ExperimentSpec {
+    fun capToLocal(spec: ExperimentSpec, cores: Int): ExperimentSpec {
         val notes = mutableListOf<String>()
         fun capCores(value: String): String {
             val asked = value.toIntOrNull()?.takeIf { it > cores } ?: return value
@@ -151,11 +163,11 @@ object Experiments {
         fun cap(values: Map<String, String>): Map<String, String> =
             values["processors"]?.let { values + ("processors" to capCores(it)) } ?: values
         val grid = spec.grid.mapValues { (key, values) -> if (key == "processors") values.map(::capCores).distinct() else values }
-        val parallel = spec.parallel?.takeIf { it > maxParallel }?.let {
-            notes += "parallel=$it was asked, capped at the local machine's $maxParallel"
-            maxParallel
-        } ?: spec.parallel
-        val capped = spec.copy(base = cap(spec.base), configs = spec.configs.map(::cap), grid = grid, parallel = parallel)
+        val vcpus = spec.vcpus?.takeIf { it > cores }?.let {
+            notes += "vcpus=$it was asked, capped at the local machine's $cores cores"
+            cores
+        } ?: spec.vcpus
+        val capped = spec.copy(base = cap(spec.base), configs = spec.configs.map(::cap), grid = grid, vcpus = vcpus)
         return if (notes.isEmpty()) spec else capped.copy(capped = spec.capped + notes.distinct())
     }
 
@@ -176,13 +188,13 @@ object Experiments {
     }
 
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
-    fun validate(spec: ExperimentSpec, maxParallel: Int, cores: Int = Int.MAX_VALUE) {
+    fun validate(spec: ExperimentSpec, maxVcpus: Int, cores: Int = Int.MAX_VALUE) {
         require(spec.name.isNotBlank()) { "name is required" }
         NodeTags.validate(spec.nodeTags)
         if (!spec.isAnalysis) Repositories.requireAllowed(spec.repository)
         requireExecutable(spec)
         when (val work = spec.work) {
-            is Work.Bench -> validateBench(spec, work, maxParallel)
+            is Work.Bench -> validateBench(spec, work, maxVcpus)
             is Work.Analysis -> { requireOptions(spec); validateAnalysis(spec, work.spec) }
             is Work.Profile -> { requireOptions(spec); validateProfile(spec, work.main, cores) }
             // Refused by [requireExecutable] above.
@@ -190,7 +202,7 @@ object Experiments {
         }
     }
 
-    private fun validateBench(spec: ExperimentSpec, work: Work.Bench, maxParallel: Int) {
+    private fun validateBench(spec: ExperimentSpec, work: Work.Bench, maxVcpus: Int) {
         val bench = work.spec
         require(!bench.adapterResources || spec.nodeTags?.require?.contains("platform:linux") == true) {
             "adapter resources require an explicit platform:linux tag"
@@ -225,7 +237,7 @@ object Experiments {
                 require(arm.values["fixed"] == null || arm.values["fixed"]?.toBooleanStrictOrNull() != null)
             }
         }
-        require(spec.parallel == null || spec.parallel in 1..maxParallel)
+        require(spec.vcpus == null || spec.vcpus in 1..maxVcpus) { "vcpus must be between 1 and $maxVcpus" }
     }
 
     private fun validateAnalysis(spec: ExperimentSpec, analyze: AnalyzeSpec) {
@@ -355,7 +367,7 @@ object Experiments {
         ProfileRuns.command(worktree, repository, profile, index, corpus, debug)
 
     /** Hours [cases] take, each using its full budget, run [parallel] at once within [cores]: the cost of a run where
-     *  nothing solves early. The tighter of the two limits sets it. */
+     *  nothing solves early. The tighter of the two limits sets it. [parallel] counts cases ([caseConcurrency]). */
     fun estimateHours(cases: List<Case>, arms: List<Arm>, parallel: Int, cores: Int = Int.MAX_VALUE): Double {
         val byCount = cases.sumOf { arms[it.arm].timeoutMs } / parallel.toDouble()
         val byCores = cases.sumOf { arms[it.arm].timeoutMs * arms[it.arm].cores } / cores.toDouble()

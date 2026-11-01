@@ -56,7 +56,7 @@ class ScheduleService internal constructor(private val services: ApiServices) {
             "the schedule's tags match no allowed worker; omit tags for auto placement or select configured capabilities"
         }
         val coreLimit = services.placement.coreLimit(experiment)
-        Experiments.validate(experiment, if (local) config.maxParallel else coreLimit, coreLimit)
+        Experiments.validate(experiment, if (local) config.cores else coreLimit, coreLimit)
         require(Experiments.arms(experiment).none { "ref" in it.values }) {
             "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"
         }
