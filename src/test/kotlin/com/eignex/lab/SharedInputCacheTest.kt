@@ -16,6 +16,71 @@ import java.nio.file.attribute.FileTime
 import kotlin.test.*
 
 class SharedInputCacheTest {
+    @Test fun `unchanged idle views reuse inode inventories and a touched view is inventoried again`() {
+        val root = Files.createTempDirectory("input-inventory-reuse")
+        val view = Files.createDirectories(root.resolve("views/${ExecutionStore.digest("cached")}"))
+        Files.writeString(view.resolve("model"), "model")
+        var scans = 0
+        val cache = SharedInputCache(root, beforeInventory = { scans++ })
+        cache.maintain(force = true)
+        cache.maintain(force = true)
+        assertEquals(1, scans, "unchanged views must not be recursively scanned again")
+        Files.writeString(view.resolve("other"), "other")
+        Files.setLastModifiedTime(view, FileTime.fromMillis(now() + 2000))
+        cache.maintain(force = true)
+        assertEquals(2, scans)
+        SharedInputCache(root, maxBytes = 0).maintain(force = true)
+        assertFalse(Files.exists(view), "cached inventories still enforce eviction")
+    }
+
+    @Test fun `slow cache inventory never blocks acquiring or releasing a reader`() {
+        val root = Files.createTempDirectory("input-background-inventory")
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        var maintenance: Thread? = null
+        val cache = SharedInputCache(root, maxBytes = 0, startMaintenance = {
+            maintenance = it; it.start()
+        }, beforeInventory = { entered.countDown(); release.await() })
+        val view = Files.createDirectories(root.resolve("views/${ExecutionStore.digest("active")}"))
+        Files.writeString(view.resolve("model"), "model")
+        val first = cache.pin(view)
+        val foreground = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            foreground.submit {
+                cache.pin(view).use { assertEquals("model", Files.readString(view.resolve("model"))) }
+                first.close()
+            }.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(maintenance!!.isAlive, "foreground finished while inventory was still blocked")
+        } finally {
+            release.countDown(); first.close(); maintenance?.join(5000)
+            foreground.shutdownNow()
+        }
+        assertFalse(maintenance!!.isAlive)
+        cache.maintain(force = true)
+        assertFalse(Files.exists(view), "the asynchronous path must still enforce the cache quota")
+    }
+
+    @Test fun `a reader acquired after inventory discovery remains protected from eviction`() {
+        val root = Files.createTempDirectory("input-concurrent-pin")
+        val view = Files.createDirectories(root.resolve("views/${ExecutionStore.digest("late-reader")}"))
+        Files.writeString(view.resolve("model"), "model")
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val cache = SharedInputCache(root, maxBytes = 0, beforeInventory = { entered.countDown(); release.await() })
+        val sweep = Thread { cache.maintain(force = true) }.apply { start() }
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            cache.pin(view).use {
+                release.countDown(); sweep.join(5000)
+                assertFalse(sweep.isAlive)
+                assertEquals("model", Files.readString(view.resolve("model")))
+            }
+        } finally { release.countDown(); sweep.join(5000) }
+        cache.maintain(force = true)
+        assertFalse(Files.exists(view))
+    }
+
     @Test fun `evicting an old blob and view stops when enough space has been reclaimed`() {
         val root = Files.createTempDirectory("input-blob-lru")
         val blobs = Files.createDirectories(root.resolve("blobs"))
