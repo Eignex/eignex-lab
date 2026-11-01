@@ -55,35 +55,40 @@ class IterationExecutor(
             withInput(manifest.inputCorpus, ::checkRun) { input -> copyTree(input, corpus, ::checkRun) }
         } else Files.createDirectories(corpus)
         val inputsReady = System.nanoTime()
-        val fresh = mutableSetOf<String>()
-        val worktrees = selected.map { manifest.arms[it.arm].sha }.distinct().associateWith { sha ->
+        val fresh = mutableListOf<Pair<String, Path>>()
+        val concurrent = minOf(manifest.budget.parallel, selected.size)
+        // Cases running at once each get their own copy of their commit's tree: a consumer's case may build in it (a
+        // koblas vendor comparison runs Gradle there), and builds sharing one tree corrupt each other. Slot 0 keeps the
+        // tree's existing key, so a serial session is unchanged.
+        val worktrees = selected.groupingBy { manifest.arms[it.arm].sha }.eachCount().mapValues { (sha, count) ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            val key = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
-            privateWorkspaces?.reuse(key, ::checkRun)?.let { return@associateWith it }
-            fresh += sha
-            fun copy(cached: Path): Path {
-                fun stage(destination: Path) { copyTree(cached, destination, ::checkRun) }
-                // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                return privateWorkspaces?.copy(key, cached, ::checkRun, false)
-                    ?: directory.resolve("worktrees").resolve(sha).also(::stage)
-            }
-            withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
-                if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
-                    .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
-            }
+            val base = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
+            val slots = minOf(count, concurrent)
+            java.util.concurrent.ArrayBlockingQueue<Path>(slots).also { pool -> repeat(slots) { slot ->
+                val key = if (slot == 0) base else ExecutionStore.digest("$base\nslot=$slot")
+                pool.add(privateWorkspaces?.reuse(key, ::checkRun) ?: run {
+                    fun copy(cached: Path): Path {
+                        fun stage(destination: Path) { copyTree(cached, destination, ::checkRun) }
+                        // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
+                        return privateWorkspaces?.copy(key, cached, ::checkRun, false)
+                            ?: directory.resolve("worktrees").resolve(if (slot == 0) sha else "$sha-$slot").also(::stage)
+                    }
+                    withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
+                        if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
+                            .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
+                    }.also { fresh += key to it }
+                })
+            } }
         }
         val workspacesReady = System.nanoTime()
         val setupReady = System.nanoTime()
-        if (privateWorkspaces != null) for (sha in fresh) {
-            val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            privateWorkspaces.seal(ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle)), worktrees.getValue(sha), ::checkRun)
-        }
+        if (privateWorkspaces != null) for ((key, tree) in fresh) privateWorkspaces.seal(key, tree, ::checkRun)
         val sealed = System.nanoTime()
         prepared()
         println("worker staging timing: inputsMs=${(inputsReady-stagingStart)/1_000_000} workspaceMs=${(workspacesReady-inputsReady)/1_000_000} setupMs=${(setupReady-workspacesReady)/1_000_000} sealMs=${(sealed-setupReady)/1_000_000} notifyMs=${(System.nanoTime()-sealed)/1_000_000} fresh=${fresh.size}")
         val timedOut = java.util.concurrent.atomic.AtomicBoolean()
         val cpu = Semaphore(manifest.budget.cpuMillis)
-        val threads = Executors.newFixedThreadPool(minOf(manifest.budget.parallel, selected.size))
+        val threads = Executors.newFixedThreadPool(concurrent)
         try {
             val results = threads.invokeAll(selected.map { case -> Callable {
                 val arm = manifest.arms[case.arm].arm
@@ -92,11 +97,12 @@ class IterationExecutor(
                 val permits = Math.multiplyExact(benchCase?.resources?.cpus ?: arm.cores, 1000)
                 require(permits <= manifest.budget.cpuMillis) { "bench case exceeds the session CPU budget" }
                 cpu.acquire(permits)
+                val trees = worktrees.getValue(manifest.arms[case.arm].sha)
+                val worktree = trees.take()
                 try {
                     checkRun()
                     check(remainingLeaseMs() > 0) { "lease expired before starting case" }
                     starting(case)
-                    val worktree = worktrees.getValue(manifest.arms[case.arm].sha)
                     val problem = case.problem.copy(model = case.problem.model?.let { portablePath(it, worktree, corpus).toString() },
                         data = case.problem.data?.let { portablePath(it, worktree, corpus).toString() },
                         includeDirs = case.problem.includeDirs.map { portablePath(it, worktree, corpus).toString() })
@@ -132,7 +138,7 @@ class IterationExecutor(
                     } else directory.resolve("cases/${case.index}").toFile().listFiles { f -> f.extension == "json" }?.singleOrNull()?.readText()
                     Files.writeString(directory.resolve("${case.index}.exit"), "$exit\n")
                     ExecutionCaseResult(case.index, exit, start, finish, record, recordedCommand(directory, case.index, command))
-                } finally { cpu.release(permits) }
+                } finally { trees.put(worktree); cpu.release(permits) }
             } }).map { future ->
                 try { future.get() } catch (error: java.util.concurrent.ExecutionException) {
                     if (error.cause is RunDeadlineExceeded) throw error.cause!!
