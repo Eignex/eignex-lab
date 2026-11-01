@@ -325,9 +325,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun expireRunDeadlines(at: Long = now()) = store.executionTransaction { db ->
         store.active(withCommands = false).filter { it.backend == Backend.NOMAD }.forEach { job ->
             val remaining = job.runRemainingMs(at)
-            if (remaining != null && (remaining <= 0 || db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND state = 'committed'", job.id) {
-                Json.decodeFromString<IterationResult>(it.getString(1)).runTimedOut
-            }.any { it })) db.failRunDeadline(job.id, at)
+            // A timed-out receipt fails its job atomically in commit(). Retained receipts cannot
+            // exhaust the fresh allowance granted by an explicit retry.
+            if (remaining != null && remaining <= 0) db.failRunDeadline(job.id, at)
         }
     }
 
