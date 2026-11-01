@@ -54,7 +54,7 @@ class SourceInputs(private val requireTrusted: (repository: String, commit: Stri
             }.sortedBy { it.path }
             require(declared.sumOf { it.bytes } in 1..maxBytes) { "source archive exceeds disk budget" }
             val inputPaths = mapOf(bundleName to gitBundle) + files
-            ZipOutputStream(Files.newOutputStream(output, CREATE_NEW)).use { zip ->
+            ZipOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(output, CREATE_NEW), 256 * 1024)).use { zip ->
                 for (file in declared) {
                     zip.putNextEntry(ZipEntry(file.path).apply { time = 0 })
                     Files.newInputStream(inputPaths.getValue(file.path)).use { it.copyTo(zip) }
