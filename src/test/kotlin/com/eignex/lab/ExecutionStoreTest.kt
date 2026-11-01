@@ -15,7 +15,7 @@ import java.nio.file.Files
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.ValueSource
+import org.junit.jupiter.params.provider.CsvSource
 import kotlin.test.*
 
 class ExecutionStoreTest {
@@ -49,8 +49,9 @@ class ExecutionStoreTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["true", "false", "missing", "null", "malformed"])
-    fun `adapter resource projection follows the frozen session contract`(mode: String) {
+    @CsvSource("true,false", "false,false", "missing,false", "null,false", "malformed,false",
+        "true,true", "false,true", "missing,true", "null,true", "malformed,true")
+    fun `adapter resource projection follows the frozen session contract`(mode: String, legacy: Boolean) {
         val id = job()
         val manifest = when (mode) {
             "missing" -> """{"experiment":{"bench":{}}}"""
@@ -59,6 +60,13 @@ class ExecutionStoreTest {
             else -> """{"experiment":{"bench":{"adapterResources":$mode}}}"""
         }
         store.execution.createSession("s", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000, manifest)
+        if (legacy) java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.prepareStatement("UPDATE execution_sessions SET manifest = ? WHERE id = 's'").use { statement ->
+                statement.setString(1, manifest)
+                statement.executeUpdate()
+            }
+            db.createStatement().use { it.executeUpdate("DELETE FROM execution_manifests WHERE session_id = 's'") }
+        }
 
         assertEquals(mode == "true", store.execution.adapterResources("s"))
     }
