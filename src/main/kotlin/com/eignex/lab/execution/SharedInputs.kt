@@ -28,14 +28,48 @@ import java.util.Base64
 
 internal interface InputTransport {
     fun matches(key: String, file: InputFile, md5: String): Boolean
+    /** The size of the object at [key] when it was published with content hash [sha], else null. */
+    fun stored(key: String, sha: String): Long?
     fun put(key: String, source: Path, sha: String)
     fun get(key: String, destination: Path)
 }
 
 internal class SharedInputs(val root: Path, private val transport: InputTransport, private val existingPrefix: String = "corpus",
                            private val maxBytes: Long = 8L * 1024 * 1024 * 1024) {
-    fun publish(paths: List<String>, checkActive: () -> Unit = {}): List<SharedInput> {
+    /** Declared inputs whose bytes are neither in the regional store nor on this worker. */
+    class MissingInputs(val paths: List<String>) :
+        IllegalStateException("${paths.size} declared input(s) are neither stored nor local, first ${paths.first()}")
+
+    /**
+     * Publishes [paths] under the shared root and returns their inventory. A file in [declared] (path to sha256, from
+     * the bench plan) is resolved by content hash first: when `input-blobs/<sha>` already exists its local bytes are
+     * neither required nor read, so a planner that selected from a corpus index never has to materialize it. Otherwise
+     * the local bytes are hashed, must equal the declaration, and are uploaded. A declared input that is in neither
+     * place fails with [MissingInputs], naming all of them, so the caller can have the bench materialize the bytes and
+     * publish again. Iterations still verify every fetched byte against the hash.
+     */
+    fun publish(paths: List<String>, checkActive: () -> Unit = {}, declared: Map<String, String> = emptyMap()): List<SharedInput> {
         val canonical = root.toRealPath()
+        val missing = mutableListOf<String>()
+        val stored = declared.filterKeys { it in paths }.toSortedMap().mapNotNull { (relative, sha) ->
+            checkActive()
+            require(sha.matches(SHA256))
+            val key = "input-blobs/$sha"
+            val path = root.resolve(safeRelative(relative))
+            val size = transport.stored(key, sha) ?: if (Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical)) {
+                require(hashFile(path) == sha) { "declared input checksum mismatch: $relative" }
+                transport.put(key, path, sha)
+                Files.size(path)
+            } else { missing += relative; null }
+            size?.let { SharedInput(InputFile(relative, sha, it), key, "identity", sha, it) }
+        }
+        if (missing.isNotEmpty()) throw MissingInputs(missing)
+        // A declared file can also lie inside an undeclared include directory; its declared entry wins.
+        val local = publishLocal(paths.filterNot { it in declared }, canonical, checkActive).filterNot { it.file.path in declared }
+        return if (stored.isEmpty()) local else (stored + local).sortedBy { it.file.path }
+    }
+
+    private fun publishLocal(paths: List<String>, canonical: Path, checkActive: () -> Unit): List<SharedInput> {
         val files = paths.flatMap { relative ->
             val path = root.resolve(safeRelative(relative))
             require(path.toRealPath().startsWith(canonical)) { "input escapes shared root" }
@@ -216,8 +250,7 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         val etag = response.headers().firstValue("ETag").orElse("").trim('"')
         return length == file.bytes && (checksum == file.sha256 || etag == md5)
     }
-    /** The size of the object at [key] when it was published with content hash [sha], else null. */
-    fun stored(key: String, sha: String): Long? {
+    override fun stored(key: String, sha: String): Long? {
         val response = client.send(request("HEAD", key).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding())
         if (response.statusCode() == 404) return null
         check(response.statusCode() == 200) { "shared input metadata unavailable (${response.statusCode()})" }

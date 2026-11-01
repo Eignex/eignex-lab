@@ -84,9 +84,20 @@ internal object BenchRuns {
         })
     }
 
-    fun pinned(case: BenchCase, source: Path, corpus: Path, runtime: Runtime = Runtime(), digests: BenchInputDigests = BenchInputDigests()): BenchCase {
-        validateInputs(case, source, corpus, digests)
+    /**
+     * Pins [case]'s input bytes into `labInputDigest`. With [trustDeclared], a file input that declares its sha256 is
+     * inventoried from that declaration without reading or even requiring the file: a planner can then select from a
+     * corpus index instead of materializing the corpus. The inventory line is the one a read would produce, so the
+     * digest (and every comparison keyed on it) is unchanged. Only callers whose bytes are verified against the
+     * declaration later may trust it: shared-input publication checks local bytes before upload and every iteration
+     * checks fetched bytes before the case runs.
+     */
+    fun pinned(case: BenchCase, source: Path, corpus: Path, runtime: Runtime = Runtime(), digests: BenchInputDigests = BenchInputDigests(),
+               trustDeclared: Boolean = false): BenchCase {
+        validateInputs(case, source, corpus, digests, trustDeclared)
         val inventory = case.inputs.flatMap { input ->
+            val declared = input.sha256?.takeIf { trustDeclared }
+            if (declared != null) return@flatMap listOf("${input.root}/${input.path}/:$declared")
             val base = if (input.root == BenchInputRoot.SOURCE) source else corpus
             val root = base.resolve(input.path)
             val files = if (Files.isDirectory(root)) Files.walk(root).use { it.sorted().toList() } else listOf(root)
@@ -146,10 +157,12 @@ internal object BenchRuns {
     private fun portableInput(input: BenchInput): String =
         (if (input.root == BenchInputRoot.CORPUS) "lab-corpus/" else "lab-source/") + input.path
 
-    fun validateInputs(case: BenchCase, source: Path, corpus: Path, digests: BenchInputDigests = BenchInputDigests()) {
+    fun validateInputs(case: BenchCase, source: Path, corpus: Path, digests: BenchInputDigests = BenchInputDigests(),
+                       trustDeclared: Boolean = false) {
         for (input in case.inputs) {
             val root = if (input.root == BenchInputRoot.SOURCE) source else corpus
             val path = root.resolve(safeRelative(input.path))
+            if (trustDeclared && input.sha256 != null) continue
             require(path.toRealPath().startsWith(root.toRealPath())) { "bench input escapes its root" }
             input.sha256?.let { require(Files.isRegularFile(path) && digests.checksum(root, path) == it) { "bench input checksum mismatch" } }
         }
