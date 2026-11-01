@@ -7,7 +7,7 @@ import kotlin.test.*
 
 class ProcessSupervisorWriteTest {
     @Test fun `lease callback work is not mistaken for a blocked socket write`() {
-        val root = Files.createTempDirectory("supervisor-write-budget")
+        val root = Files.createTempDirectory("sup-write")
         val socket = root.resolve("supervisor.sock")
         val script = root.resolve("supervisor.py")
         javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, script) }
