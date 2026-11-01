@@ -150,13 +150,15 @@ class AdapterResourcesTest {
     }
 
     @Test
-    fun `a requested missing measurement withholds an otherwise qualified physical frame`() {
+    fun `a missing optional measurement preserves the physical comparison frame`() {
         val observation = ResourceObservation("cgroup-v2-hard", ResourceBudget(1000, 4608, 1), "100000 100000", "4831838208",
             "25", "Linux", "amd64", emptyMap(), "b".repeat(64), 1, 2)
         val physical = ComparisonExecution.record("""{"solver":"klause"}""", observation, "c".repeat(64), "release")
 
+        val expected = assertNotNull(ComparisonExecution.frame(Json.parseToJsonElement(physical!!).jsonObject))
+
         val projected = AdapterResources.project(physical, true, null, null, null, null, "adapter")
 
-        assertNull(ComparisonExecution.frame(Json.parseToJsonElement(projected!!).jsonObject))
+        assertEquals(expected, ComparisonExecution.frame(Json.parseToJsonElement(projected!!).jsonObject))
     }
 }
