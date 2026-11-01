@@ -32,14 +32,34 @@ data class WorkerBundle(
     val sha256: String, val files: List<InputFile>, val repository: String, val commit: String,
     val os: String, val arch: String, val toolchain: String, val buildOptions: List<String> = emptyList(),
     val build: WorkerBuild? = null,
+    val tree: PreparedTree? = null,
 ) {
     init {
         require(sha256.matches(SHA256) && CommitSha.isValid(commit))
         Repositories.requireAllowed(repository)
         require(os in setOf("linux", "mac") && arch in setOf("amd64", "arm64") && toolchain.isNotBlank())
         require(files.isNotEmpty() && files.map { it.path }.distinct().size == files.size)
+        tree?.let { require(build == null && sha256 == preparedTreeDigest(files, it.directories)) { "invalid prepared tree identity" } }
     }
 }
+
+/** A job-owned immutable snapshot, retained with the job rather than a disposable worker cache. */
+@Serializable
+data class PreparedTree(val job: Long, val directories: List<String>) {
+    init { require(job > 0 && directories == directories.distinct().sorted()); directories.forEach(::safeRelative) }
+}
+
+@Serializable
+private data class PreparedTreeInventory(val format: String, val files: List<InputFile>, val directories: List<String>)
+
+internal fun preparedTreeManifest(files: List<InputFile>, directories: List<String>): String =
+    kotlinx.serialization.json.Json.encodeToString(PreparedTreeInventory.serializer(),
+        PreparedTreeInventory("prepared-tree-v1", files.sortedBy { it.path }, directories.sorted()))
+
+internal fun preparedTreeDigest(files: List<InputFile>, directories: List<String>): String =
+    java.security.MessageDigest.getInstance("SHA-256").digest(preparedTreeManifest(files, directories).toByteArray(Charsets.UTF_8)).hex()
+
+internal fun preparationArtifact(bundle: WorkerBundle): String = "preparation/${bundle.commit}." + if (bundle.tree == null) "zip" else "tree.json"
 
 @Serializable
 data class WorkCase(val index: Int, val arm: Int, val problem: Problem, val seed: Long?, val repeat: Int, val timeoutSec: Long,
@@ -56,6 +76,7 @@ data class WorkManifest(
     val solveJavaOptions: String = "",
     @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
         !experiment.isBench -> 1
+        bundles.any { it.tree != null } -> 5
         experiment.work.bench?.adapterResources == true -> 4
         else -> 3
     },
@@ -64,7 +85,8 @@ data class WorkManifest(
     val benchReplay: BenchReplay? = null,
 ) {
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..4) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..5) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(bundles.none { it.tree != null } || schemaVersion >= 5) { "prepared trees require worker protocol 5" }
         require(schemaVersion >= 4 || experiment.work.bench?.adapterResources != true) { "adapter resources require worker protocol 4" }
         require(preparationTimeoutSec == null || preparationTimeoutSec in 1..7200)
         require(arms.isNotEmpty() && (cases.isNotEmpty() || preparationTimeoutSec != null) && cases.map { it.index }.distinct().size == cases.size)

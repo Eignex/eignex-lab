@@ -202,11 +202,12 @@ fun Application.workerApi(
                 withContext(CoordinatorIo.artifacts) {
                     check(workAllowed()); val s = call.session; val sha = call.parameters["sha"]!!
                     val manifest = store.execution.manifest(s.id)
-                    require((manifest.bundles + listOfNotNull(manifest.inputCorpus)).any { it.sha256 == sha })
+                    val bundle = requireNotNull((manifest.bundles + listOfNotNull(manifest.inputCorpus)).firstOrNull { it.sha256 == sha })
+                    val exported = if (bundle.tree == null) null else requireNotNull(NativePreparedTrees.environment()).archive(bundle) { check(workAllowed()) }
                     val range = call.request.headers[HttpHeaders.Range] ?: "bytes=0-"
                     val match = requireNotNull(Regex("bytes=([0-9]+)-([0-9]*)").matchEntire(range))
                     val from = match.groupValues[1].toLong()
-                    val total = artifacts.size(s.jobId, sha); require(from in 0 until total)
+                    val total = exported?.let(java.nio.file.Files::size) ?: artifacts.size(s.jobId, sha); require(from in 0 until total)
                     val requestedEnd = match.groupValues[2].toLongOrNull() ?: total - 1
                     val end = minOf(requestedEnd, total - 1, from + 8L * 1024 * 1024 - 1); require(end >= from)
                     call.response.status(HttpStatusCode.PartialContent)
@@ -214,7 +215,7 @@ fun Application.workerApi(
                     call.response.header(HttpHeaders.AcceptRanges, "bytes")
                     call.respondOutputStream(ContentType.Application.OctetStream) {
                         withContext(CoordinatorIo.artifacts) {
-                            artifacts.open(s.jobId, sha, verify = false).use { input ->
+                            (exported?.let { java.nio.file.Files.newInputStream(it) } ?: artifacts.open(s.jobId, sha, verify = false)).use { input ->
                                 input.skipNBytes(from); var left = end - from + 1; val buffer = ByteArray(64 * 1024)
                                 while (left > 0) { val n = input.read(buffer, 0, minOf(left, buffer.size.toLong()).toInt()); check(n > 0); write(buffer, 0, n); left -= n }
                             }

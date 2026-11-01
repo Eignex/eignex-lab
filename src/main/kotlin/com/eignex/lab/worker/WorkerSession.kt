@@ -156,7 +156,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         val preparation = InputSigningRelay(::signature).use { relay ->
                             PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                                 builds, { download(it, trace) }, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
-                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")))
+                                SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")),
+                                nativeTrees = NativePreparedTrees.environment(), nativeJob = System.getenv("LAB_WORKER_EXPERIMENT")?.toLong())
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                                 }, cachedSelections = { keys ->
@@ -249,7 +250,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     /** A build archive from the regional store when this cloud worker can reach it; null leaves it to the coordinator. */
     private fun regionalDownload(bundle: WorkerBundle, trace: PreparationTrace?): java.io.InputStream? {
         // Coordinator-published sources carry their build recipe; only built archives go to the regional store.
-        val regional = regionalBuilds?.takeIf { bundle.build == null } ?: return null
+        val regional = regionalBuilds?.takeIf { bundle.build == null && bundle.tree == null } ?: return null
         Files.createDirectories(root)
         val file = Files.createTempFile(root, ".build-", ".zip")
         val fetched = runCatching {

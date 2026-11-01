@@ -18,6 +18,35 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class PreparedArchiveFilesTest {
+    @Test fun `native snapshots export only on explicit request and use the ZIP checksum`() {
+        val config = Config(dataDir = Files.createTempDirectory("native-export"))
+        val store = Store(config.database)
+        val job = store.create("native", "main", emptyList(), experiment = ExperimentSpec("native"))
+        val snapshots = NativePreparedTrees(config.jobsDir)
+        val source = Files.createDirectories(config.dataDir.resolve("source"))
+        Files.writeString(source.resolve("model"), "source")
+        val proof = config.dataDir.resolve("proof.json")
+        val files = TreeVerification().capture(source, proof)
+        val identity = WorkerBundle("0".repeat(64), files, Repositories.DEFAULT, "a".repeat(40), "mac", "arm64", "jdk25")
+        val (metadata, bundle) = snapshots.publish(job, source, proof, identity, {})
+        val token = ExecutionStore.token()
+        store.execution.createSession("native", job, ExecutionClass.PREPARE, "release", ResourceBudget(1000, 1024), token, "{}", 1000)
+        store.execution.bind("native", token, "allocation", "node", "release", 1001)
+        val owner = store.execution.claim("native", token, "allocation", 1002)!!.owner
+        store.execution.phase(owner, "uploading", 1003)
+        val artifacts = mapOf(preparationArtifact(bundle) to bundle.sha256)
+        store.execution.commit(owner, IterationResult(emptyList(), artifacts,
+            preparation = PreparationResult(emptyList(), listOf(bundle), artifacts = artifacts)), 1004)
+        val reader = PreparedArchiveFiles(config, store, LocalArtifactStore(config.dataDir.resolve("artifacts")), { snapshots })
+        assertTrue(reader.entries(job).isEmpty())
+        assertFalse(Files.exists(metadata.parent.resolve("export-data")))
+        val exported = assertNotNull(reader.resolve(job, listOf("preparation", "${bundle.commit}.zip")))
+        assertEquals(hashFile(exported.file), exported.sha256)
+        assertNotEquals(bundle.sha256, exported.sha256)
+        assertTrue(store.holds.active().isEmpty())
+        Files.writeString(config.jobDir(job).resolve(JobFileNames.TRIMMED), "trimmed")
+        assertNull(reader.resolve(job, listOf("preparation", "${bundle.commit}.zip")))
+    }
     private class Archives : BuildArchives {
         val objects = mutableMapOf<String, ByteArray>()
         val gets = mutableListOf<String>()
