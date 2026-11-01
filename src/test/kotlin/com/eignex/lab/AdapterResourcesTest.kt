@@ -88,7 +88,7 @@ class AdapterResourcesTest {
 
         assertEquals("complete", record.getValue("labAdapterResources").jsonObject.getValue("state").jsonPrimitive.content)
         assertNotNull(ComparisonExecution.frame(record))
-        assertNotEquals(ComparisonExecution.series(Json.parseToJsonElement(physical!!).jsonObject), ComparisonExecution.series(record))
+        assertEquals(ComparisonExecution.series(Json.parseToJsonElement(physical!!).jsonObject), ComparisonExecution.series(record))
     }
 
     @ParameterizedTest
