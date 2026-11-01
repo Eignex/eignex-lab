@@ -63,20 +63,15 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             val lease = trace.step("cache-cleanup") { storage.create(::checkRun) }
             // Create and pin staging before our background sweep can take its discovery lock.
             val staging = lease.directory
+            val disk = BuildDiskBudget(root, staging, maxBytes)
             try {
                 requestMaintenance()
                 val tree = staging.resolve("tree")
                 val log = staging.resolve("build.out"); val errors = staging.resolve("build.err")
                 var deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
-                var nextDiskCheck = 0L
                 fun remaining(): Long {
+                    disk.check()
                     val at = System.nanoTime()
-                    if (at >= nextDiskCheck) {
-                        check(Files.getFileStore(root).usableSpace >= 1024L * 1024 * 1024) { "build disk held" }
-                        val used = Files.walk(staging).use { it.filter { file -> Files.isRegularFile(file, NOFOLLOW_LINKS) }.mapToLong(Files::size).sum() }
-                        require(used <= maxBytes) { "build staging exceeds disk budget" }
-                        nextDiskCheck = at + 30_000_000_000
-                    }
                     return minOf(remainingLeaseMs(), (deadline - at) / 1_000_000)
                 }
                 val heap = buildHeapMiB(budget.memoryMiB)
@@ -144,7 +139,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files)))
                 storage.publish(lease, destination, ::checkRun)
                 destination.resolve("tree")
-            } finally { storage.close(lease) }
+            } finally { disk.close(); storage.close(lease) }
         }
     }
     fun <T> withPrepared(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
