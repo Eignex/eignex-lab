@@ -376,12 +376,13 @@ fetch)
         echo "lab fetch: could not renew the hold on job $id" >&2
       renewed=$SECONDS
     fi
-    [[ -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
+    # A size of -1 is unknown (an archive the lab could not size just now): any complete 200 response is accepted.
+    [[ "$bytes" -ge 0 && -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
     mkdir -p "$dest/$(dirname "$path")"
     curl_status=0
     code=$(curl -sS -o "$dest/$path.part" -w '%{http_code}' "$url/jobs/$id/files/$path") || curl_status=$?
     received=0; [[ ! -f "$dest/$path.part" ]] || received=$(wc -c < "$dest/$path.part" | tr -d '[:space:]')
-    if [[ "$curl_status" -eq 0 && "$code" == 200 && "$received" -eq "$bytes" ]]; then
+    if [[ "$curl_status" -eq 0 && "$code" == 200 && ( "$bytes" -lt 0 || "$received" -eq "$bytes" ) ]]; then
       mv "$dest/$path.part" "$dest/$path"
     else
       rm -f "$dest/$path.part"

@@ -110,11 +110,18 @@ class PreparedArchiveFilesTest {
         assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/jobs/${lab.job}/files/${lab.names[0]}").status)
     }
 
-    @Test fun `unavailable accepted archives are not silently omitted from the listing`() = testApplication {
+    @Test fun `unavailable accepted archives stay listed with unknown size without failing the listing`() = testApplication {
         val lab = Lab()
         lab.archives.objects.remove(lab.hashes[0])
         application { api(lab.services) }
-        assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/jobs/${lab.job}/files").status)
+        val listing = client.get("/jobs/${lab.job}/files")
+        assertEquals(HttpStatusCode.OK, listing.status)
+        val entries = Json.decodeFromString<List<FileEntry>>(listing.bodyAsText())
+        val unavailable = entries.single { it.path == lab.names[0] }
+        assertEquals(FileEntry.UNKNOWN_BYTES, unavailable.bytes)
+        assertEquals(lab.hashes[0], unavailable.sha256)
+        assertTrue(entries.any { it.path == lab.names[1] && it.bytes >= 0 })
+        assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/jobs/${lab.job}/files/${lab.names[0]}").status)
         assertTrue(lab.archives.gets.isEmpty())
     }
 
