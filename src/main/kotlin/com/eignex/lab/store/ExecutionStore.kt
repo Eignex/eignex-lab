@@ -555,15 +555,20 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun failureCount(job: Long): Int = store.executionRead { db -> db.sqlRows("""SELECT COUNT(*) FROM execution_events
         WHERE job_id = ? AND detail LIKE 'lost:infrastructure:%' AND id > COALESCE(
             (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""", job, job) { it.getInt(1) }.single() }
-    fun pendingProjectionJobs(): List<Long> = store.executionRead { db -> db.sqlRows("""
+    /**
+     * Jobs with accepted work not yet projected or checked. With [endedSince], only active jobs and those that ended
+     * since then: an ended job gains no work until a retry makes it active again, and the scan of every job's cases
+     * is what makes the full form slow.
+     */
+    fun pendingProjectionJobs(endedSince: Long? = null): List<Long> = store.executionRead { db -> db.sqlRows("""
         SELECT j.id FROM jobs j
-        WHERE j.backend = 'nomad' AND EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = j.id AND a.state = 'committed') AND (
+        WHERE j.backend = 'nomad' AND (? IS NULL OR j.status IN ('QUEUED', 'RUNNING') OR j.finished_at >= ?) AND EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = j.id AND a.state = 'committed') AND (
           EXISTS (SELECT 1 FROM iteration_attempts a WHERE a.job_id = j.id AND a.state = 'committed'
             AND NOT EXISTS (SELECT 1 FROM execution_ingestion i WHERE i.job_id = a.job_id AND i.iteration_id = a.iteration_id))
           OR EXISTS (SELECT 1 FROM commands c WHERE c.job_id = j.id AND c.status IN ('DONE', 'FAILED')
             AND NOT EXISTS (SELECT 1 FROM execution_checks e WHERE e.job_id = c.job_id AND e.idx = c.idx)))
         ORDER BY j.id
-    """.trimIndent()) { it.getLong(1) } }
+    """.trimIndent(), endedSince, endedSince) { it.getLong(1) } }
     fun ingested(job: Long): Set<String> = store.executionRead { db -> db.sqlRows("SELECT iteration_id FROM execution_ingestion WHERE job_id = ?", job) { it.getString(1) }.toSet() }
     fun markIngested(job: Long, iteration: String) = store.executionTransaction { db -> db.sqlUpdate("INSERT OR IGNORE INTO execution_ingestion (job_id, iteration_id) VALUES (?, ?)", job, iteration) }
     fun observed(id: String, detail: String, at: Long = now()) = store.executionTransaction { db ->
