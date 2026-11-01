@@ -11,6 +11,8 @@ import java.nio.file.Path
 object JobFileNames {
     /** Written when a job's files were trimmed ([JobTrim]), saying when and how much: its raw captures are gone. */
     const val TRIMMED = "trimmed"
+    /** Internal immutable inputs are retained with the job, but are not individual result downloads. */
+    const val PREPARED_TREES = "nomad/prepared-trees"
 }
 
 /** A listed job file; [bytes] is [UNKNOWN_BYTES] when its size cannot be read just now (a regional archive). */
@@ -25,11 +27,17 @@ data class FileEntry(val path: String, val bytes: Long, val sha256: String? = nu
  */
 internal fun jobFiles(root: Path): List<FileEntry> {
     if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return emptyList()
-    return Files.walk(root).use { paths ->
-        paths.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
-            .map { FileEntry(root.relativize(it).joinToString("/"), Files.size(it)) }
-            .toList()
-    }.sortedBy { it.path }
+    val files = mutableListOf<FileEntry>()
+    Files.walkFileTree(root, object : java.nio.file.SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult =
+            if (root.relativize(dir).joinToString("/") == JobFileNames.PREPARED_TREES) java.nio.file.FileVisitResult.SKIP_SUBTREE
+            else java.nio.file.FileVisitResult.CONTINUE
+        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            if (attrs.isRegularFile) files += FileEntry(root.relativize(file).joinToString("/"), attrs.size())
+            return java.nio.file.FileVisitResult.CONTINUE
+        }
+    })
+    return files.sortedBy { it.path }
 }
 
 /**
@@ -41,7 +49,8 @@ internal fun jobFile(root: Path, segments: List<String>): Path? {
     require(segments.isNotEmpty() && segments.none { it in setOf("", ".", "..") || it.any { c -> c in "/\\\u0000" } }) {
         "bad file path"
     }
+    if (segments.take(2).joinToString("/") == JobFileNames.PREPARED_TREES) return null
     val realRoot = runCatching { root.toRealPath() }.getOrNull() ?: return null
     val file = runCatching { realRoot.resolve(segments.joinToString("/")).toRealPath() }.getOrNull() ?: return null
-    return file.takeIf { it.startsWith(realRoot) && Files.isRegularFile(it) }
+    return file.takeIf { it.startsWith(realRoot) && !it.startsWith(realRoot.resolve(JobFileNames.PREPARED_TREES)) && Files.isRegularFile(it) }
 }

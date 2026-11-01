@@ -97,6 +97,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 Files.createDirectory(tree)
                 val expected = bundle.files.associateBy { it.path }; require(expected.size == bundle.files.size)
                 val seen = mutableSetOf<String>()
+                val seenDirectories = mutableSetOf<String>()
                 val verifier = localVerification; val written = mutableListOf<TreeVerification.Written>()
                 val digest = MessageDigest.getInstance("SHA-256")
                 download().use { input ->
@@ -117,6 +118,8 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                         val relative = safeRelative(entry.name.removeSuffix("/"))
                         val target = tree.resolve(relative)
                         if (entry.isDirectory) {
+                            bundle.tree?.let { require(relative.invariantSeparatorsPathString in it.directories &&
+                                seenDirectories.add(relative.invariantSeparatorsPathString)) { "undeclared or duplicate snapshot directory" } }
                             if (kept(relative.invariantSeparatorsPathString)) Files.createDirectories(target)
                             continue
                         }
@@ -146,6 +149,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 } }
                 require(bundle.tree != null || digest.digest().hex() == bundle.sha256) { "archive checksum mismatch" }
                 require(seen == expected.keys) { "archive is incomplete" }
+                bundle.tree?.let { require(seenDirectories == it.directories.toSet()) { "snapshot directories are incomplete" } }
                 val recordingAt = System.nanoTime()
                 try { verifier.record(tree, written, receipt, checkActive) }
                 finally { verifier.stats.verificationNanos += System.nanoTime() - recordingAt }

@@ -24,6 +24,43 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class PortableWorkerTest {
+    @Test fun `native bench preparation hands off a sealed tree without archiving or seeding another input copy`(): Unit = service { socket ->
+        val program = """package fixture;
+            public class Bench {
+                public static void main(String[] args) {
+                    if (args[0].equals("describe")) System.out.print("{\"id\":\"native\",\"description\":\"native handoff\"}");
+                    else if (args[0].equals("plan")) System.out.print("{\"cases\":[{\"id\":\"p\",\"inputs\":[{\"path\":\"model.txt\",\"role\":\"model\"}]}]}");
+                    else throw new IllegalArgumentException(args[0]);
+                }
+            }""".trimIndent()
+        val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
+        val (source, bytes) = bundle(mapOf("Bench.java" to program, "model.txt" to "source",
+            "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val input = source.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("native", bench = BenchSpec("bench.json"))
+        val manifest = WorkManifest("native", "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
+            emptyList(), listOf(input), ResourceBudget(1000, 2048), preparationTimeoutSec = 120)
+        val snapshots = NativePreparedTrees(root.resolve("jobs"))
+        val trace = PreparationTrace()
+        val result = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, source.os, source.arch,
+            shared = null, trace = trace, nativeTrees = snapshots, nativeJob = 1).run(manifest, root.resolve("preparing"), { null }, { 80000 }) { file ->
+                assertFalse(file.fileName.toString().endsWith(".zip"), "native preparation must not upload a ZIP")
+                hashFile(file)
+            }
+        val built = result.bundles.single()
+        assertEquals(1L, built.tree?.job)
+        assertEquals(built.sha256, result.artifacts[preparationArtifact(built)])
+        assertTrue(snapshots.valid(built, {}))
+        assertFalse("archive" in trace.snapshot().timings)
+        assertFalse("cache-publication" in trace.snapshot().timings)
+        val case = result.benchPlan!!.cases.single()
+        val solving = WorkManifest("solve", "release", spec, manifest.arms, listOf(WorkCase(0, 0, result.selections.single().single(), null, 0,
+            case.resources.timeoutSeconds, case)), listOf(built), manifest.budget)
+        assertEquals(5, solving.schemaVersion)
+        assertFailsWith<IllegalArgumentException> { solving.copy(schemaVersion = 4) }
+    }
     @Test fun `consumer caches use the Linux host volume and preserve native or explicit cache homes`() {
         val environment = mapOf("HOME" to "/home/worker", "LAB_WORKER_CACHE_ROOT" to "/lab-cache", "UNRELATED_SECRET" to "private")
         assertEquals("/lab-cache/consumer", workerEnvironment(false, environment)["XDG_CACHE_HOME"])

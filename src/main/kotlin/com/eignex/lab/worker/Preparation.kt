@@ -118,7 +118,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 if (inputCache != null) inputCache.use(bundle, ::checkActive, { download(bundle) }, trace, consume)
                 else consume(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
             }
-            if (bundle.build != null) builds.withPreparedSource(bundle, manifest.budget, env, remainingRunMs, ::remaining, trace, ::acquireSource, ::copy)
+            if (bundle.tree != null && nativeTrees != null) nativeTrees.use(bundle, ::checkActive) { tree, _ -> copy(tree) }
+            else if (bundle.build != null) builds.withPreparedSource(bundle, manifest.budget, env, remainingRunMs, ::remaining, trace, ::acquireSource, ::copy)
             else trace.step("inputs") {
                 inputCache?.use(bundle, ::checkActive, { download(bundle) }, trace, ::copy)
                     ?: copy(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
@@ -288,7 +289,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             }
         }
         val corpusBundle = if (sharing == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
-            trace.step("archive") { archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), checkActive = ::checkActive) }
+            trace.step("archive") { archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, tree = null, toolchain = "corpus-v1"), checkActive = ::checkActive) }
                 .also { artifacts["preparation/corpus.zip"] = transfer(directory.resolve("corpus.zip")) }
         } else null
         for (name in Files.list(directory).use { paths -> paths.map { it.fileName.toString() }.filter { it in setOf("setup.log", "setup.err") || it.endsWith(".jsonl") }.toList() }) {

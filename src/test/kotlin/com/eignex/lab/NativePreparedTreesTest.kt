@@ -33,6 +33,8 @@ class NativePreparedTreesTest {
         assertEquals(bundle.sha256, hashFile(manifest))
         assertEquals("preparation/${bundle.commit}.tree.json", preparationArtifact(bundle))
         assertFalse(Files.exists(manifest.parent.resolve("export-data")))
+        assertTrue(jobFiles(jobs.resolve("1")).isEmpty(), "internal inputs must not become thousands of result downloads")
+        assertNull(jobFile(jobs.resolve("1"), listOf("nomad", "prepared-trees", bundle.sha256, "tree", "model.txt")))
         val restarted = NativePreparedTrees(jobs)
         assertTrue(restarted.valid(bundle, {}))
         val target = root.resolve("new-worker")

@@ -15,7 +15,7 @@ import java.nio.file.StandardOpenOption.WRITE
  * input-cache copy. Consumers still receive private filesystem clones; a missing cache never loses the snapshot. */
 internal class NativePreparedTrees(private val jobs: Path) {
     private fun directory(bundle: WorkerBundle): Path = jobs.resolve(requireNotNull(bundle.tree).job.toString())
-        .resolve("nomad/prepared-trees/${bundle.sha256}")
+        .resolve("${JobFileNames.PREPARED_TREES}/${bundle.sha256}")
 
     fun publish(job: Long, source: Path, receipt: Path, identity: WorkerBundle, check: () -> Unit,
                 force: (Path) -> Unit = { path -> FileChannel.open(path, WRITE).use { it.force(true) } }): Pair<Path, WorkerBundle> {

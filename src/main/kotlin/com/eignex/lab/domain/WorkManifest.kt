@@ -3,8 +3,6 @@ package com.eignex.lab.domain
 import com.eignex.lab.util.*
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.builtins.serializer
 import java.nio.file.Path
 import com.eignex.lab.bench.BenchDescriptor
 import com.eignex.lab.bench.BenchPlan
@@ -51,9 +49,12 @@ data class PreparedTree(val job: Long, val directories: List<String>) {
     init { require(job > 0 && directories == directories.distinct().sorted()); directories.forEach(::safeRelative) }
 }
 
+@Serializable
+private data class PreparedTreeInventory(val format: String, val files: List<InputFile>, val directories: List<String>)
+
 internal fun preparedTreeManifest(files: List<InputFile>, directories: List<String>): String =
-    "prepared-tree-v1\n" + kotlinx.serialization.json.Json.encodeToString(ListSerializer(InputFile.serializer()), files.sortedBy { it.path }) +
-        "\n" + kotlinx.serialization.json.Json.encodeToString(ListSerializer(String.serializer()), directories.sorted())
+    kotlinx.serialization.json.Json.encodeToString(PreparedTreeInventory.serializer(),
+        PreparedTreeInventory("prepared-tree-v1", files.sortedBy { it.path }, directories.sorted()))
 
 internal fun preparedTreeDigest(files: List<InputFile>, directories: List<String>): String =
     java.security.MessageDigest.getInstance("SHA-256").digest(preparedTreeManifest(files, directories).toByteArray(Charsets.UTF_8)).hex()
