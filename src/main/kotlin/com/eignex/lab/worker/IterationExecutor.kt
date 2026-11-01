@@ -19,13 +19,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 
 /** Runs only coordinator-approved domain work. No Store, provider client, source resolution or capacity credentials. */
-class IterationExecutor(
+internal class IterationExecutor(
     private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
     private val bundleInput: (WorkerBundle) -> java.io.InputStream,
     private val launcher: String, private val os: String, private val arch: String,
     private val buildCache: WorkerBuildCache? = null,
     private val inputCache: WorkerInputCache? = null,
     private val privateWorkspaces: WorkerWorkspaces? = null,
+    private val nativeTrees: NativePreparedTrees? = NativePreparedTrees.environment(),
 ) {
     fun run(manifest: WorkManifest, indices: List<Int>, directory: Path, host: String, generation: Int,
             prepared: () -> Unit = {}, starting: (WorkCase) -> Unit = {}, remainingRunMs: () -> Long? = { null },
@@ -75,12 +76,14 @@ class IterationExecutor(
                         return privateWorkspaces?.copy(key, cached, ::checkRun, false)
                             ?: directory.resolve("worktrees").resolve(if (slot == 0) sha else "$sha-$slot").also(::stage)
                     }
-                    val local = if (bundle.tree == null) null else NativePreparedTrees.environment()
-                    if (local != null) local.use(bundle, ::checkRun) { source, _ -> copy(source) }
+                    val local = if (bundle.tree == null) null else nativeTrees
+                    val tree = if (local != null) local.use(bundle, ::checkRun) { source, _ -> copy(source) }
                     else withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
                         if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                             .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
-                    }.also { fresh += key to it }
+                    }
+                    fresh += key to tree
+                    tree
                 })
             } }
         }

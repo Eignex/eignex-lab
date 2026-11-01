@@ -27,9 +27,11 @@ class PortableWorkerTest {
     @Test fun `native bench preparation hands off a sealed tree without archiving or seeding another input copy`(): Unit = service { socket ->
         val program = """package fixture;
             public class Bench {
-                public static void main(String[] args) {
+                public static void main(String[] args) throws Exception {
                     if (args[0].equals("describe")) System.out.print("{\"id\":\"native\",\"description\":\"native handoff\"}");
                     else if (args[0].equals("plan")) System.out.print("{\"cases\":[{\"id\":\"p\",\"inputs\":[{\"path\":\"model.txt\",\"role\":\"model\"}]}]}");
+                    else if (args[0].equals("run")) java.nio.file.Files.writeString(
+                        java.nio.file.Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"p\"}");
                     else throw new IllegalArgumentException(args[0]);
                 }
             }""".trimIndent()
@@ -60,6 +62,31 @@ class PortableWorkerTest {
             case.resources.timeoutSeconds, case)), listOf(built), manifest.budget)
         assertEquals(5, solving.schemaVersion)
         assertFailsWith<IllegalArgumentException> { solving.copy(schemaVersion = 4) }
+        val workspaces = WorkerWorkspaces(root.resolve("private"))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("solve-cache")),
+            { error("a local native snapshot must not download a ZIP") }, "unused", source.os, source.arch,
+            privateWorkspaces = workspaces, nativeTrees = snapshots)
+        fun solve(attempt: Int) {
+            val directory = root.resolve("solve-$attempt")
+            val solved = executor.run(solving, listOf(0), directory, "native", attempt, remainingLeaseMs = { 80000 })
+            assertEquals(0, solved.cases.single().exitCode, Files.readString(directory.resolve("0.err")))
+        }
+        solve(1)
+        val key = ExecutionStore.digest(Json.encodeToString(WorkerBundle.serializer(), built))
+        val tree = assertNotNull(workspaces.reuse(key) {})
+        val model = tree.resolve("model.txt")
+        val inode = Files.readAttributes(model, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey()
+        Files.writeString(tree.resolve("generated-output"), "discard me")
+        solve(2)
+        assertEquals(inode, Files.readAttributes(model, java.nio.file.attribute.BasicFileAttributes::class.java).fileKey(),
+            "a second row must retain the verified private copy")
+        assertFalse(Files.exists(tree.resolve("generated-output")))
+        val modified = Files.getLastModifiedTime(model)
+        Files.writeString(model, "broken")
+        Files.setLastModifiedTime(model, modified)
+        solve(3)
+        assertEquals("source", Files.readString(model), "changed input must restore a new private copy")
+        assertTrue(snapshots.valid(built, {}), "consumer changes cannot mutate the retained snapshot")
     }
     @Test fun `consumer caches use the Linux host volume and preserve native or explicit cache homes`() {
         val environment = mapOf("HOME" to "/home/worker", "LAB_WORKER_CACHE_ROOT" to "/lab-cache", "UNRELATED_SECRET" to "private")
