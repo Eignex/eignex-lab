@@ -22,12 +22,15 @@ internal class NomadAllocationCleanup(
 
     fun reconcile() {
         if (nativeClasses.isEmpty()) return
-        val jobs = store.execution.sessions().map { it.nomadJobId }.toSet()
         val seen = mutableSetOf<String>()
-        for (node in nomad.nodes().filter {
+        val nodeAllocations = nomad.nodes().filter {
             it["NodeClass"]?.jsonPrimitive?.content in nativeClasses && it["Status"]?.jsonPrimitive?.content == "ready"
-        }) {
-            for (allocation in nomad.nodeAllocations(node.getValue("ID").jsonPrimitive.content)) {
+        }.map { node -> nomad.nodeAllocations(node.getValue("ID").jsonPrimitive.content) }
+        // Only the lab's own sessions' allocations are reaped; look up just the jobs these allocations name.
+        val jobs = store.execution.sessionsOfNomadJobs(nodeAllocations.flatten().mapNotNull { it["JobID"]?.jsonPrimitive?.content })
+            .map { it.nomadJobId }.toSet()
+        for (allocations in nodeAllocations) {
+            for (allocation in allocations) {
                 val id = allocation.getValue("ID").jsonPrimitive.content
                 seen += id
                 if (id in collected || allocation["JobID"]?.jsonPrimitive?.content !in jobs) continue

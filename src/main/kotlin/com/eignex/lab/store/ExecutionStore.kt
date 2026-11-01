@@ -173,6 +173,17 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE desired != 'stop' AND execution_class IN ('prepare', 'build')", map = ::sessionRow)
     }
 
+    /** Sessions not yet stopped, through the partial index on them. */
+    fun liveSessions(): List<ExecutionSession> = store.executionRead { db ->
+        db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions INDEXED BY session_live WHERE desired != 'stop' ORDER BY id", map = ::sessionRow)
+    }
+    /** Sessions of these Nomad jobs, by their unique Nomad job id: the ones a node's allocations belong to. */
+    fun sessionsOfNomadJobs(ids: Collection<String>): List<ExecutionSession> = store.executionRead { db ->
+        ids.distinct().chunked(500).flatMap { chunk ->
+            db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE nomad_job_id IN (${chunk.joinToString(",") { "?" }})",
+                *chunk.toTypedArray(), map = ::sessionRow)
+        }
+    }
     fun sessions(jobId: Long? = null): List<ExecutionSession> = store.executionRead { db ->
         db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions" + if (jobId == null) " ORDER BY id" else " WHERE job_id = ? ORDER BY id",
             *listOfNotNull(jobId).toTypedArray(), map = ::sessionRow)
