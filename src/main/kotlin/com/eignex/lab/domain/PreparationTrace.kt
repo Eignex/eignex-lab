@@ -77,7 +77,7 @@ class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {
     fun ready() { change("ready") }
     companion object {
         val cacheLabels = linkedMapOf("build" to "Build", "input" to "Inputs", "prepared-input" to "Prepared inputs", "archive" to "Archive",
-            "upload" to "Upload", "workspace" to "Workspace", "dependencies" to "Gradle dependencies", "selection" to "Bench selection")
+            "upload" to "Upload", "workspace" to "Workspace", "dependencies" to "Gradle dependencies", "selection" to "Bench selection", "handoff" to "Local handoff")
         val cacheReasons = linkedMapOf("absent" to "entry absent", "verification-failed" to "verification failed",
             "verified" to "verified local entry", "verified-local" to "verified local entry",
             "coordinator-present" to "identical artifact already on coordinator", "unsupported" to "reuse unsupported",
@@ -86,12 +86,12 @@ class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {
             "build-hit" to "verified build makes source acquisition unnecessary",
             "receipt-missing" to "missing verification receipt rebuilt", "receipt-rebuilt" to "missing or stale verification receipt rebuilt",
             "regional-present" to "identical build archive already in the regional store", "regional-absent" to "build archive published to the regional store",
-            "accepted-selection" to "reused an accepted plan with the same selection inputs")
+            "accepted-selection" to "reused an accepted plan with the same selection inputs", "job-owned-snapshot" to "prepared files retained with the job")
         val labels: Map<String, String> = linkedMapOf("preparing" to "Preparing", "inputs" to "Verifying inputs", "download" to "Downloading inputs",
             "build-cache" to "Checking build cache", "cache-cleanup" to "Cleaning build cache", "checkout" to "Checking out source", "compiler-wait" to "Waiting for compiler",
             "compilation" to "Compiling", "build-verification" to "Verifying build outputs", "workspace" to "Creating workspace",
             "selection" to "Selecting problems", "classification" to "Classifying problems", "archive" to "Creating archives",
-            "cache-publication" to "Publishing local inputs", "shared-inputs" to "Publishing shared inputs", "upload" to "Uploading artifacts",
+            "local-handoff" to "Keeping prepared files locally", "cache-publication" to "Publishing local inputs", "shared-inputs" to "Publishing shared inputs", "upload" to "Uploading artifacts",
             "ready" to "Ready")
     }
 }
