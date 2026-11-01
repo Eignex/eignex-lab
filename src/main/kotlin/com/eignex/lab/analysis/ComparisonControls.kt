@@ -23,6 +23,9 @@ internal object ComparisonControls {
     fun mismatch(a: CaseResult, b: CaseResult): String? {
         val left = a.record as? JsonObject ?: return "missing record"
         val right = b.record as? JsonObject ?: return "missing record"
+        val controlled = "comparisonControls" in left || "comparisonControls" in right ||
+            text(left, "solver") == "klause" || text(right, "solver") == "klause"
+        if (!controlled) return null
         val originA = a.origin
         val originB = b.origin
         val paired = when {
@@ -31,9 +34,6 @@ internal object ComparisonControls {
             originA.attempt.isNullOrBlank() || originA.attempt != originB.attempt -> return "accepted worker attempt unavailable or changed"
             else -> true
         }
-        val controlled = "comparisonControls" in left || "comparisonControls" in right ||
-            text(left, "solver") == "klause" || text(right, "solver") == "klause"
-        if (!controlled) return null
         val x = left["comparisonControls"] as? JsonObject ?: return "historical controls unavailable"
         val y = right["comparisonControls"] as? JsonObject ?: return "historical controls unavailable"
         if (text(x, "policy") != "matched-source-v1" || text(y, "policy") != "matched-source-v1") return "unknown comparison policy"
