@@ -86,6 +86,26 @@ class SchemaTest {
     }
 
     @Test
+    fun `version twelve databases gain the bench selection cache and keep existing jobs`() {
+        val file = file()
+        val id = Store(file).create("existing", "main", emptyList(), experiment = ExperimentSpec("existing"))
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            it.execute("DROP TRIGGER bench_selection_cascade")
+            it.execute("DROP TABLE bench_selections")
+            it.execute("PRAGMA user_version = 12")
+        } }
+
+        val reopened = Store(file)
+        assertEquals(Schema.version, version(file))
+        assertEquals("existing", reopened.job(id)!!.name)
+        DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.createStatement().use {
+            it.execute("INSERT INTO bench_selections (selection_key, job_id, entry, created_at) VALUES ('k', $id, '{}', 1)")
+            it.execute("DELETE FROM jobs WHERE id = $id")
+            it.executeQuery("SELECT COUNT(*) FROM bench_selections").use { r -> r.next(); assertEquals(0, r.getInt(1)) }
+        } }
+    }
+
+    @Test
     fun `version ten databases gain the coordinator lookup indexes`() {
         val file = file()
         Store(file)

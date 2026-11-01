@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -290,6 +290,21 @@ internal object Schema {
             it.execute("CREATE TABLE IF NOT EXISTS execution_manifests (session_id TEXT PRIMARY KEY, manifest TEXT NOT NULL)")
             it.execute("CREATE TRIGGER IF NOT EXISTS session_manifest_cascade AFTER DELETE ON execution_sessions BEGIN " +
                 "DELETE FROM execution_manifests WHERE session_id = OLD.id; END")
+        }
+    }
+
+    /**
+     * Step 13: accepted bench planner outputs by selection key ([com.eignex.lab.execution.BenchSelections]), so a
+     * preparation whose plan inputs are unchanged reuses one instead of planning and hashing its corpus again. Read by
+     * key only; deleting the job that produced a row deletes the row, through its own trigger and job index.
+     */
+    private fun benchSelections(db: Connection) {
+        db.createStatement().use {
+            it.execute("CREATE TABLE IF NOT EXISTS bench_selections (selection_key TEXT PRIMARY KEY, job_id INTEGER NOT NULL, " +
+                "entry TEXT NOT NULL, created_at INTEGER NOT NULL)")
+            it.execute("CREATE INDEX IF NOT EXISTS bench_selection_job ON bench_selections (job_id)")
+            it.execute("CREATE TRIGGER IF NOT EXISTS bench_selection_cascade AFTER DELETE ON jobs BEGIN " +
+                "DELETE FROM bench_selections WHERE job_id = OLD.id; END")
         }
     }
 

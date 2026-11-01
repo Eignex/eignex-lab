@@ -121,6 +121,82 @@ class PortableWorkerTest {
         assertEquals(bundle.sha256, result.artifacts["preparation/${bundle.commit}.zip"])
     }
 
+    @Test fun `an accepted selection with the same key skips describe plan and pinning`(): Unit = service { socket ->
+        fun source(program: String, data: String): Pair<WorkerBundle, ByteArray> {
+            val java = """package fixture;
+                public class Bench {
+                    public static void main(String[] args) throws Exception {
+                        $program
+                    }
+                }
+            """.trimIndent()
+            val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
+            val (bundle, bytes) = bundle(mapOf("Bench.java" to java, "data/p.txt" to data,
+                "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+                "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+            return bundle.copy(build = WorkerBuild(listOf("installDist"))) to bytes
+        }
+        val planner = """switch (args[0]) {
+                case "describe": System.out.print("{\"id\":\"fixture\",\"description\":\"selection cache\"}"); break;
+                case "plan": System.out.print("{\"cases\":[{\"id\":\"p\",\"inputs\":[{\"path\":\"data/p.txt\",\"role\":\"model\"}]}]}"); break;
+                default: throw new Exception("unexpected " + args[0]);
+            }"""
+        val single = ExperimentSpec("cached", bench = BenchSpec("bench.json"))
+        fun prepare(name: String, source: Pair<WorkerBundle, ByteArray>, spec: ExperimentSpec = single,
+                    cached: (List<String>) -> List<BenchSelectionEntry>): Pair<PreparationResult, Path> {
+            val (bundle, bytes) = source
+            val manifest = WorkManifest(name, "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) },
+                emptyList(), listOf(bundle), ResourceBudget(1000, 2048), preparationTimeoutSec = 120)
+            val directory = root.resolve(name)
+            val result = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+                WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) },
+                bundle.os, bundle.arch, shared = null).run(manifest, directory, { null }, { 80000 }, cachedSelections = cached) { hashFile(it) }
+            return result to directory
+        }
+        fun outcome(directory: Path) = Json.decodeFromString<Map<String, PreparationCacheEvent>>(
+            Files.readString(directory.resolve("preparation-cache.json"))).getValue("selection")
+
+        val (planned, first) = prepare("planned", source(planner, "model")) { emptyList() }
+        assertTrue(Files.exists(first.resolve("bench-plan-0.jsonl")))
+        assertEquals("absent", outcome(first).reason)
+        val entry = planned.selectionCache.single()
+        assertEquals(planned.armPlans.values.single(), entry.plan)
+        assertNotNull(entry.plan.cases.single().attributes["labInputDigest"])
+
+        // The same commit and request: the adapter must not run at all.
+        val refusing = source("throw new Exception(\"describe and plan must not run on a hit\");", "model")
+        var asked = emptyList<String>()
+        val (reused, second) = prepare("reused", refusing) { keys -> asked = keys; listOf(entry) }
+        assertEquals(listOf(entry.key), asked)
+        assertFalse(Files.exists(second.resolve("bench-plan-0.jsonl")) || Files.exists(second.resolve("bench-descriptor-0.jsonl")))
+        assertEquals(planned.armPlans, reused.armPlans)
+        assertEquals(planned.benchPlan, reused.benchPlan)
+        assertEquals(planned.benchDescriptor, reused.benchDescriptor)
+        assertEquals(planned.selections, reused.selections)
+        assertTrue(reused.selectionCache.isEmpty())
+        assertEquals("hit" to "accepted-selection", outcome(second).let { it.outcome to it.reason })
+
+        // Changed source input bytes under the same key fail verification and plan again.
+        val (replanned, third) = prepare("replanned", source(planner, "changed model")) { listOf(entry) }
+        assertTrue(Files.exists(third.resolve("bench-plan-0.jsonl")))
+        assertEquals("verification-failed", outcome(third).reason)
+        assertNotEquals(entry.plan.cases.single().attributes["labInputDigest"], replanned.armPlans.values.single().cases.single().attributes["labInputDigest"])
+
+        // A reused plan whose input digest disagrees with an arm that planned is planned again rather than failing the job.
+        val paired = ExperimentSpec("cached-pair", bench = BenchSpec("bench.json"), grid = mapOf("param.x" to listOf("a", "b")))
+        val stale = entry.plan.copy(cases = entry.plan.cases.map { it.copy(attributes = it.attributes + ("labInputDigest" to "0".repeat(64))) })
+        var pairKeys = emptyList<String>()
+        val (recovered, fourth) = prepare("recovered", source(planner, "model"), paired) { keys ->
+            pairKeys = keys; listOf(entry.copy(key = keys.first(), plan = stale))
+        }
+        assertEquals(2, pairKeys.size)
+        assertTrue(Files.exists(fourth.resolve("bench-plan-0.jsonl")) && Files.exists(fourth.resolve("bench-plan-1.jsonl")))
+        assertEquals(setOf(entry.plan.cases.single().attributes["labInputDigest"]),
+            recovered.armPlans.values.map { it.cases.single().attributes["labInputDigest"] }.toSet())
+        assertEquals(listOf(1, 2, 0), outcome(fourth).let { listOf(it.hits, it.misses, it.bypasses) })
+        assertEquals(pairKeys.toSet(), recovered.selectionCache.map { it.key }.toSet())
+    }
+
     @Test fun `multi megabyte bench cases launch through files instead of shell arguments`(): Unit = service { socket ->
         val case = com.eignex.lab.bench.BenchCase("large", mapOf("opaque" to ("literal '$ value'\n" + "x".repeat(4 * 1024 * 1024))),
             resources = com.eignex.lab.bench.BenchResources(timeoutSeconds = 5))

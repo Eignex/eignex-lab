@@ -187,7 +187,19 @@ class NomadBackend(
             // Consumer name filters may also classify substring matches; annotations never expand the approved work.
             accepted = result.copy(preparation = preparation.copy(features = preparation.features.filter {
                 (it.collection to it.problem) in approvedKeys
-            }))
+            }, selectionCache = emptyList()))
+            // An offered plan must be the one this job accepted, and its corpus inputs ones this job retained.
+            require(preparation.selectionCache.map { it.arm }.distinct().size == preparation.selectionCache.size)
+            val retained = preparation.sharedInputs.toSet()
+            for (entry in preparation.selectionCache) {
+                require(manifest.arms.any { it.arm.label == entry.arm && it.arm.values["backend"] != REFERENCE_BACKEND })
+                val armPlan = requireNotNull(preparation.armPlans[entry.arm]) { "selection cache names an unplanned arm" }
+                require(entry.descriptor.id == preparation.benchDescriptor?.id)
+                BenchRuns.resources(entry.plan)
+                require(BenchRuns.align(armPlan.cases, entry.plan) == armPlan) { "selection cache differs from the accepted plan" }
+                require(retained.containsAll(entry.sharedInputs))
+                require(BenchSelections.covering(entry.sharedInputs, BenchSelections.corpusPaths(entry.plan)) != null)
+            }
             require(preparation.corpus == null || preparation.sharedInputs.isEmpty())
             require(preparation.sharedInputs.map { it.file.path }.distinct().size == preparation.sharedInputs.size)
             require(preparation.sharedInputs.fold(0L) { total, input -> Math.addExact(total, input.file.bytes) } in 0..32L * 1024 * 1024 * 1024)
@@ -214,7 +226,7 @@ class NomadBackend(
         } else emptyMap()
         return store.execution.commit(owner, accepted, projectRecord = { case ->
             if (case.index in projected) projected[case.index] else case.record
-        }).also { changed() }
+        }, benchSelections = result.preparation?.selectionCache.orEmpty()).also { changed() }
     }
 
     /**

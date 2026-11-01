@@ -369,13 +369,17 @@ class NomadQueueTest {
         val generic = if (spec.isProfile || spec.work.bench != null) spec else spec.copy(problems = emptyList(), bench = BenchSpec("bench.json"))
         return store.create(generic.name, "main", emptyList(), parallel = generic.parallel ?: 2, experiment = generic)
     }
-    private fun prepare(id: Long, count: Int = 3) {
+    private fun preparing(id: Long): Pair<IterationClaim, WorkManifest> {
         val session = store.execution.sessions(id).single { it.executionClass == ExecutionClass.PREPARE }
         val recipe = store.execution.manifest(session.id)
         val submission = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
         val token = submission.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
-        store.execution.bind(session.id, token, "prep-allocation", "native", "release")
-        val claim = store.execution.claim(session.id, token, "prep-allocation")!!
+        store.execution.bind(session.id, token, "prep-allocation-$id", "native", "release")
+        return store.execution.claim(session.id, token, "prep-allocation-$id")!! to recipe
+    }
+    private fun prepare(id: Long, count: Int = 3,
+                        selections: (WorkManifest, com.eignex.lab.bench.BenchPlan) -> List<BenchSelectionEntry> = { _, _ -> emptyList() }) {
+        val (claim, recipe) = preparing(id)
         val bundle = recipe.bundles.first { it.os == "mac" || recipe.bundles.none { it.os == "mac" } }
         val outputs = mapOf("preparation/${bundle.commit}.zip" to bundle.sha256)
         store.execution.phase(claim.owner, "preparing")
@@ -384,7 +388,7 @@ class NomadQueueTest {
         val selected = backend.selectPreparation(claim.owner, listOf(plan.cases.map(BenchRuns::problem)))
         val result = PreparationResult(selected, listOf(bundle), artifacts = outputs, benchPlan = plan,
             benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "generic queue fixture"),
-            armPlans = recipe.arms.associate { it.arm.label to plan })
+            armPlans = recipe.arms.associate { it.arm.label to plan }, selectionCache = selections(recipe, plan))
         store.execution.phase(claim.owner, "uploading")
         backend.commit(claim.owner, IterationResult(emptyList(), outputs, preparation = result))
     }
@@ -412,6 +416,43 @@ class NomadQueueTest {
         assertTrue(solves.all { store.execution.manifest(it.id).solveJavaOptions == "-Xmx256m" })
         queue().reconcile(); assertEquals(2, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE })
         assertEquals(1, publications)
+    }
+
+    @Test fun `accepted selections are found by key from a later preparation and leave with their job`() {
+        val descriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "generic queue fixture")
+        fun entries(key: Char) = { recipe: WorkManifest, plan: com.eignex.lab.bench.BenchPlan ->
+            recipe.arms.mapIndexed { index, arm -> BenchSelectionEntry("$key$index".padEnd(64, key), arm.arm.label, descriptor, plan, "e".repeat(64)) }
+        }
+        val first = job(); queue().reconcile(); queue().reconcile()
+        prepare(first, selections = entries('c'))
+        val stored = entries('c')(store.execution.manifest(store.execution.sessions(first).first().id),
+            com.eignex.lab.bench.BenchPlan(List(3) { com.eignex.lab.bench.BenchCase("p$it",
+                resources = com.eignex.lab.bench.BenchResources(1, 512, 1)) }))
+        // The accepted preparation keeps no copy; the cache table does.
+        assertTrue(store.execution.acceptedPreparation(first)!!.selectionCache.isEmpty())
+
+        val second = job(); queue().reconcile(); queue().reconcile()
+        val (claim, _) = preparing(second)
+        store.execution.phase(claim.owner, "preparing")
+        assertEquals(stored.take(1), store.execution.benchSelections(claim.owner, listOf(stored.first().key, "d".repeat(64))))
+        val plan = store.executionRead { db ->
+            db.sqlRows("EXPLAIN QUERY PLAN SELECT entry FROM bench_selections WHERE selection_key = ?", stored.first().key) { it.getString(4) }
+        }
+        assertTrue(plan.single().contains("USING INDEX"), plan.toString())
+        val cascade = store.executionRead { db ->
+            db.sqlRows("EXPLAIN QUERY PLAN DELETE FROM bench_selections WHERE job_id = ?", first) { it.getString(4) }
+        }
+        assertTrue(cascade.single().contains("USING INDEX bench_selection_job"), cascade.toString())
+
+        // An offered plan that is not the accepted one is refused with the whole commit.
+        val third = job(); queue().reconcile(); queue().reconcile()
+        assertFailsWith<IllegalArgumentException> { prepare(third, selections = { recipe, plan ->
+            entries('f')(recipe, plan.copy(cases = plan.cases.drop(1))) }) }
+
+        // Deleting the job row (its sessions need not stop here) fires this table's own cascade.
+        store.finish(first, Status.CANCELLED)
+        store.executionTransaction { db -> db.sqlUpdate("DELETE FROM jobs WHERE id = ?", first) }
+        assertEquals(emptyList(), store.execution.benchSelections(claim.owner, stored.map { it.key }))
     }
 
     @Test fun `normal API submissions choose Nomad and provider neutral cloud placement without AWS settings`() = testApplication {
