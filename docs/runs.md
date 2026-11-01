@@ -32,6 +32,14 @@ deploy/lab cases 7
 deploy/lab fetch 7
 ```
 
+`deploy/lab files 7 --json` includes the accepted preparation archives' stored `sha256` alongside their sizes.
+Regional archives are listed without downloading them. Reading their usual `preparation/<commit>.zip` file URL
+fetches and verifies the accepted bytes on demand; the response ETag carries that same SHA-256. A trimmed job
+does not regain its archives through this route. An unavailable accepted archive fails explicitly rather than
+silently disappearing from a supposedly complete listing.
+The HTTP service needs the same `LAB_SHARED_INPUT_URL` and loopback `LAB_SHARED_INPUT_SIGNER` configuration
+as the coordinator to retrieve regional archives. Already projected archives remain readable without that store.
+
 Replace `7` with the returned ID. `base` supplies shared arm values; `configs` overrides them and `grid` crosses
 combinations. `param.<key>` overrides an opaque repository request parameter. The repository manifest and
 planner own runtime controls and resource ceilings. The lab queues complete paired iterations automatically.

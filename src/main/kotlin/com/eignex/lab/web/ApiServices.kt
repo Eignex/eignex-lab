@@ -20,7 +20,8 @@ import java.util.concurrent.ConcurrentHashMap
  * that act on jobs, experiments and schedules, and the background threads that keep the caches warm. [close] stops
  * every thread; the API closes it when the application stops.
  */
-class ApiServices(val config: Config, val store: Store, val host: HostReport) : AutoCloseable {
+class ApiServices(val config: Config, val store: Store, val host: HostReport,
+                  private val archiveArtifacts: ArtifactStore? = null) : AutoCloseable {
     val trends = TrendCache()
     internal val references = ReferenceCache(store)
 
@@ -48,6 +49,15 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport) : 
     val experiments = ExperimentService(this)
     val jobs = JobService(this)
     val schedules = ScheduleService(this)
+
+    internal val preparedArchives by lazy {
+        val local = archiveArtifacts ?: LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"),
+            writable = { Volumes.hold(config.paths, config.minFreeBytes) == null })
+        val artifacts = if (archiveArtifacts != null) local else BuildArchives.coordinator()?.let {
+            RegionalArtifactStore(local, it, config.dataDir.resolve("nomad/build-fetches"))
+        } ?: local
+        PreparedArchiveFiles(config, store, artifacts)
+    }
 
     /** Start the disk measurements and compute the pages' slow reads before anyone asks, so the first load is quick. */
     fun start() {

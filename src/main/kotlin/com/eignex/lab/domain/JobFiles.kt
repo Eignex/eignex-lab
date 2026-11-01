@@ -14,7 +14,7 @@ object JobFileNames {
 }
 
 @Serializable
-data class FileEntry(val path: String, val bytes: Long)
+data class FileEntry(val path: String, val bytes: Long, val sha256: String? = null)
 
 /**
  * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a

@@ -87,7 +87,11 @@ fun serveApi(config: Config, store: Store, host: HostReport) {
  * started here and closed when the application stops.
  */
 fun Application.api(config: Config, store: Store, host: HostReport) {
-    val services = ApiServices(config, store, host)
+    api(ApiServices(config, store, host))
+}
+
+internal fun Application.api(services: ApiServices) {
+    val config = services.config
     monitor.subscribe(ApplicationStopped) { services.close() }
     install(ContentNegotiation) { json() }
     installPassword(config)
