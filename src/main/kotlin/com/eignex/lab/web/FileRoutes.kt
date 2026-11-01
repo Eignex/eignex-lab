@@ -12,11 +12,13 @@ import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.withCharset
 import io.ktor.server.http.content.LocalFileContent
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondFile
 import io.ktor.server.response.respondText
+import io.ktor.server.response.header
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import java.io.File
@@ -32,7 +34,10 @@ internal fun Route.fileRoutes(services: ApiServices) {
     get("/jobs/{id}/files") {
         val id = io { call.job(store) }.id
         requireJobFiles(config.paths)
-        val files = io { jobFiles(config.jobDir(id)) }
+        val files = io {
+            (jobFiles(config.jobDir(id)).associateBy { it.path } + services.preparedArchives.entries(id).associateBy { it.path })
+                .values.sortedBy { it.path }
+        }
         if (call.wantsHtml()) call.respondHtml(filesPage(id, files)) else call.respond(files)
     }
     get("/jobs/{id}/files/{path...}") {
@@ -42,10 +47,13 @@ internal fun Route.fileRoutes(services: ApiServices) {
             it.toLongOrNull()?.takeIf { bytes -> bytes in 0..MAX_TAIL_BYTES } ?: throw ApiError.Invalid("tail must be 0 to $MAX_TAIL_BYTES bytes")
         }
         val segments = call.parameters.getAll("path").orEmpty()
-        val file = io { (jobFile(config.jobDir(id), segments) ?: WorkerLogs.resolve(store, config.jobDir(id), id, segments))?.toFile() }
+        val archive = io { services.preparedArchives.resolve(id, segments) }
+        val file = archive?.file?.toFile() ?: io { (jobFile(config.jobDir(id), segments) ?: WorkerLogs.resolve(store, config.jobDir(id), id, segments))?.toFile() }
             ?: throw ApiError.NotFound("no such file")
+        if (tail == null) archive?.let { call.response.header(HttpHeaders.ETag, "\"${it.sha256}\"") }
         when {
             tail != null -> call.respondText(io { tail(file, tail) }, ContentType.Text.Plain)
+            archive != null -> call.respond(LocalFileContent(file, ContentType("application", "zip")))
             // Logs and command output open in the browser instead of downloading.
             file.extension in TEXT_FILES -> call.respond(LocalFileContent(file, ContentType.Text.Plain.withCharset(Charsets.UTF_8)))
             else -> call.respondFile(file)
