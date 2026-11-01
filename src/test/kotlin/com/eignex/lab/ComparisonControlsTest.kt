@@ -116,6 +116,16 @@ class ComparisonControlsTest {
     }
 
     @Test
+    fun `historical records without comparison controls retain confirmation behavior`() {
+        val record = Json.parseToJsonElement("""{"kind":"optimize","feasible":true,"exactObjective":"7"}""")
+        val before = CaseResult(0, Status.DONE, Problem("s", "p"), Confirm.BEFORE, record = record,
+            origin = CaseOrigin(7, null))
+        val after = before.copy(index = 1, arm = Confirm.AFTER)
+
+        assertNull(ComparisonControls.mismatch(before, after))
+    }
+
+    @Test
     fun `accepted paired rows qualify without worker metadata`() {
         val before = case().let { it.copy(origin = CaseOrigin(7, "row"),
             record = JsonObject((it.record as JsonObject) - "labExecution")) }
