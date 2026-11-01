@@ -268,6 +268,37 @@ class PortableWorkerTest {
         assertEquals(2, trees.toSet().size)
     }
 
+    @Test fun `a claim of several whole rows runs every case and a partial row is refused`(): Unit = service { socket ->
+        val java = """package fixture;
+            import java.nio.file.*;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    Files.writeString(Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"row\"}");
+                }
+            }
+        """.trimIndent()
+        val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
+        val (source, bytes) = bundle(mapOf("Bench.java" to java,
+            "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val built = source.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("rows", bench = BenchSpec("bench.json"))
+        val case = com.eignex.lab.bench.BenchCase("row", resources = com.eignex.lab.bench.BenchResources(timeoutSeconds = 30))
+        val arms = listOf("a", "b").map { PlannedArm(Arm(it, mapOf("variant" to it)), source.commit) }
+        // Two rows (repeats 0 and 1) of two arms each.
+        val cases = (0..3).map { WorkCase(it, it % 2, BenchRuns.problem(case), null, it / 2, 30, case) }
+        val manifest = WorkManifest("rows", "release", spec, arms, cases, listOf(built), ResourceBudget(4000, 2048, 3))
+        val executor = IterationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")), { ByteArrayInputStream(bytes) },
+            "unused", source.os, source.arch, buildCache = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)))
+        val directory = root.resolve("rows-run")
+        val result = executor.run(manifest, listOf(0, 1, 2, 3), directory, "fixture", 1, remainingLeaseMs = { 80000 })
+        assertEquals(listOf(0, 1, 2, 3), result.cases.map { it.index }.sorted())
+        for (row in result.cases) assertEquals(0, row.exitCode, Files.readString(directory.resolve("${row.index}.err")))
+        assertFailsWith<IllegalArgumentException> {
+            executor.run(manifest, listOf(0, 1, 2), root.resolve("partial-run"), "fixture", 1, remainingLeaseMs = { 80000 })
+        }
+    }
+
     @Test fun `committed benchmark Java and tool prerequisites fail before invoking the adapter`(): Unit = service { socket ->
         for ((index, runtime) in listOf("{\"tools\":[\"definitely-missing-bench-fixture-tool\"]}", "{\"java\":8}").withIndex()) {
             val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.MustNotRun", listOf("classes"), emptyList())

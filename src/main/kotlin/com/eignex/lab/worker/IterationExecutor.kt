@@ -40,8 +40,9 @@ class IterationExecutor(
         checkRun()
         require(indices.isNotEmpty() && indices.distinct().size == indices.size)
         val selected = indices.map { index -> manifest.cases.single { it.index == index } }
-        require(selected.map { Triple(it.problem, it.seed, it.repeat) }.distinct().size == 1) { "one whole paired iteration per execution" }
-        val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) == Triple(selected.first().problem, selected.first().seed, selected.first().repeat) }
+        // A claim holds whole paired rows: one, or several when the session runs more cases at once than a row has arms.
+        val rows = selected.map { Triple(it.problem, it.seed, it.repeat) }.toSet()
+        val expected = manifest.cases.filter { Triple(it.problem, it.seed, it.repeat) in rows }
         require(expected.map { it.index }.toSet() == indices.toSet()) { "partial paired iteration" }
         Files.createDirectories(directory)
         val stagingStart = System.nanoTime()
