@@ -94,26 +94,8 @@ internal object AdapterResources {
             receiptSha256?.let { put("receiptSha256", it) }
             if (receipt != null) put("receipt", json.encodeToJsonElement(receipt))
         }
-        var projected = JsonObject(clean + ("labAdapterResources" to details))
-        val execution = projected["labExecution"] as? JsonObject
-        val frame = execution?.get("frame") as? JsonObject
-        if (execution != null && frame != null) {
-            val control = buildJsonObject {
-                put("policy", POLICY); put("scope", SCOPE)
-                put("state", if (verified != null) "complete" else "unavailable")
-                verified?.timerSha256?.let { put("timerSha256", it) }
-            }
-            val marked = JsonObject(frame + ("adapterResources" to control))
-            val observed = JsonObject(execution + ("frame" to marked))
-            projected = JsonObject(projected + ("labExecution" to observed))
-        }
-        return projected.toString()
+        return JsonObject(clean + ("labAdapterResources" to details)).toString()
     }
-
-    fun qualified(control: JsonElement): Boolean = (control as? JsonObject)?.let {
-        (it["policy"] as? JsonPrimitive)?.content == POLICY && (it["scope"] as? JsonPrimitive)?.content == SCOPE &&
-            (it["state"] as? JsonPrimitive)?.content == "complete" && (it["timerSha256"] as? JsonPrimitive)?.content?.matches(sha) == true
-    } ?: false
 
     private fun digest(text: String): String = java.security.MessageDigest.getInstance("SHA-256")
         .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

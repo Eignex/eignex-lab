@@ -160,8 +160,9 @@ Verify the effective stored option and accepted receipt before using a measureme
 The case keeps `adapter-resources.txt` and `adapter-resources.json` beside its output directory. The coordinator
 projects them as `labAdapterResources` only after checking their accepted artifact hashes and command identity.
 Interrupted, missing, malformed or mismatched receipts stay unavailable, with raw partial captures retained.
-The accepted timer identity and measurement scope split physical comparison frames; an unavailable requested
-receipt withholds comparability. The opaque suite request and case allowances stay fixed.
+Optional adapter measurements remain separate from physical comparison frames. An unavailable receipt does not
+invalidate an otherwise valid accepted paired row. Adapter CPU claims require complete verified receipts with
+matching timer identity and measurement scope. The opaque suite request and case allowances stay fixed.
 
 The receipt records user/system CPU and elapsed seconds at GNU time's 0.01-second resolution. Its maximum
 process RSS is the largest individual process value, not simultaneous tree memory. It does not measure detached
