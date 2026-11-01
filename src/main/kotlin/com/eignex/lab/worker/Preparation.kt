@@ -27,6 +27,8 @@ data class PreparationResult(
     val benchPlan: com.eignex.lab.bench.BenchPlan? = null,
     val benchDescriptor: com.eignex.lab.bench.BenchDescriptor? = null,
     val armPlans: Map<String, com.eignex.lab.bench.BenchPlan> = emptyMap(),
+    /** Planner outputs offered for reuse; the coordinator moves them to its selection cache on acceptance. */
+    val selectionCache: List<BenchSelectionEntry> = emptyList(),
 )
 
 /** Relative roots in the domain plan have the same meaning on every worker. */
@@ -57,8 +59,13 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                           private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
                           private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null,
                           private val trace: PreparationTrace = PreparationTrace(), private val archives: WorkerArchiveCache? = null) {
+    /**
+     * [cachedSelections] looks accepted planner outputs up by selection key ([BenchSelections]). A verified hit skips that
+     * arm's `describe`, `plan` and input pinning; a failed lookup is a miss, so the coordinator never blocks preparation.
+     */
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
-            selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it }, upload: (Path) -> String): PreparationResult {
+            selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it },
+            cachedSelections: (List<String>) -> List<BenchSelectionEntry> = { emptyList() }, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
         val timeout = requireNotNull(manifest.preparationTimeoutSec)
         val expires = System.nanoTime() + timeout * 1_000_000_000
@@ -112,6 +119,9 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val armPlans = linkedMapOf<String, com.eignex.lab.bench.BenchPlan>()
         val inputDigests = BenchInputDigests(::checkActive)
         var descriptor: com.eignex.lab.bench.BenchDescriptor? = replay?.descriptor
+        val reusedSelections = linkedMapOf<String, BenchSelectionEntry>()
+        val plannedSelections = linkedMapOf<String, BenchSelectionEntry>()
+        var planned = false
         if (replay != null) {
             armPlans.putAll(replay.plans)
             for (arm in manifest.arms) for (case in armPlans.getValue(arm.arm.label).cases) {
@@ -119,8 +129,28 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 require(current.attributes["labInputDigest"] == case.attributes["labInputDigest"]) { "replay input bytes changed" }
             }
         } else if (bench != null) {
-            for ((index, arm) in manifest.arms.filter { it.arm.values["backend"] != REFERENCE_BACKEND }.ifEmpty { listOf(manifest.arms.first()) }.withIndex()) {
+            val repositoryArms = manifest.arms.filter { it.arm.values["backend"] != REFERENCE_BACKEND }.ifEmpty { listOf(manifest.arms.first()) }
+            val keys = trace.step("selection") { repositoryArms.associate { arm -> arm.arm.label to try {
+                BenchSelections.key(manifest.release, spec.repository, bench, BenchRuns.request(bench, arm.arm), arm.sha,
+                    prepared.getValue(arm.sha), sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive)
+            } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null } } }
+            val found = keys.values.filterNotNull().distinct().takeIf { it.isNotEmpty() }?.let { wanted -> trace.step("selection") {
+                try { cachedSelections(wanted).filter { it.key in wanted }.associateBy { it.key } }
+                catch (failure: Exception) {
+                    if (failure is ExecutionFenced || failure is LeaseLost || failure is RunDeadlineExceeded) throw failure
+                    println("worker selection cache unavailable: ${failure.javaClass.simpleName}"); emptyMap()
+                }
+            } }.orEmpty()
+            // Corpus bytes of a reused plan come from its shared inputs, checked on fetch; source bytes are checked here.
+            fun reusable(entry: BenchSelectionEntry, tree: Path): Boolean = try {
+                BenchRuns.resources(entry.plan)
+                val corpusPaths = BenchSelections.corpusPaths(entry.plan)
+                (corpusPaths.isEmpty() || sharing != null && BenchSelections.covering(entry.sharedInputs, corpusPaths) != null) &&
+                    BenchSelections.sourceDigest(entry.plan, tree, inputDigests) == entry.sourceDigest
+            } catch (_: IllegalArgumentException) { false } catch (_: java.io.IOException) { false }
+            fun plan(index: Int, arm: PlannedArm, key: String?) {
                 val tree = prepared.getValue(arm.sha)
+                planned = true
                 val request = directory.resolve("bench-request-$index.json")
                 Files.writeString(request, com.eignex.lab.bench.BenchProtocol.json.encodeToString(
                     com.eignex.lab.bench.BenchRequest.serializer(), BenchRuns.request(bench, arm.arm)))
@@ -128,20 +158,48 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 val descriptionFile = directory.resolve("bench-descriptor-$index.jsonl")
                 run(tree, prefix + BenchRuns.invocation(tree, bench, "describe"), descriptionFile)
                 val current = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchDescriptor>(Files.readString(descriptionFile))
-                require(descriptor == null || descriptor.id == current.id) { "bench arms name different suites" }
+                descriptor?.let { require(it.id == current.id) { "bench arms name different suites" } }
                 descriptor = current
                 val planFile = directory.resolve("bench-plan-$index.jsonl")
                 run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), planFile)
                 val plan = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchPlan>(Files.readString(planFile))
                 BenchRuns.resources(plan)
                 val runtime = BenchRuns.runtime(tree, bench)
-                armPlans[arm.arm.label] = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, runtime, inputDigests) })
+                val pinned = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, runtime, inputDigests) })
+                armPlans[arm.arm.label] = pinned
+                if (key != null) plannedSelections[arm.arm.label] = BenchSelectionEntry(key, arm.arm.label, current, pinned,
+                    BenchSelections.sourceDigest(pinned, tree, inputDigests))
             }
-            val first = armPlans.values.firstOrNull() ?: error("a bench experiment needs at least one repository arm")
-            val canonical = bench.frozenCases.ifEmpty { first.cases }
-            for ((label, plan) in armPlans.toMap()) {
-                if (bench.frozenCases.isEmpty()) require(plan.cases.map(BenchRuns::key).toSet() == canonical.map(BenchRuns::key).toSet()) { "bench arms selected different workloads" }
-                armPlans[label] = BenchRuns.align(canonical, plan)
+            for ((index, arm) in repositoryArms.withIndex()) {
+                val key = keys[arm.arm.label]
+                val hit = key?.let(found::get)?.takeIf { trace.step("selection") { reusable(it, prepared.getValue(arm.sha)) } }
+                if (hit != null) {
+                    descriptor?.let { require(it.id == hit.descriptor.id) { "bench arms name different suites" } }
+                    descriptor = hit.descriptor
+                    armPlans[arm.arm.label] = hit.plan
+                    reusedSelections[arm.arm.label] = hit
+                    trace.cache("selection", "hit", "accepted-selection")
+                } else {
+                    if (key != null) trace.cache("selection", "miss", if (key in found) "verification-failed" else "absent")
+                    plan(index, arm, key)
+                }
+            }
+            fun align() {
+                val first = armPlans.values.firstOrNull() ?: error("a bench experiment needs at least one repository arm")
+                val canonical = bench.frozenCases.ifEmpty { first.cases }
+                for ((label, plan) in armPlans.toMap()) {
+                    if (bench.frozenCases.isEmpty()) require(plan.cases.map(BenchRuns::key).toSet() == canonical.map(BenchRuns::key).toSet()) { "bench arms selected different workloads" }
+                    armPlans[label] = BenchRuns.align(canonical, plan)
+                }
+            }
+            try { align() } catch (failure: IllegalArgumentException) {
+                // A planning arm disagrees with a reused plan: plan those arms too, so the cache never fails a job alone.
+                if (reusedSelections.isEmpty() || !planned) throw failure
+                for ((index, arm) in repositoryArms.withIndex()) if (reusedSelections.remove(arm.arm.label) != null) {
+                    trace.cache("selection", "miss", "verification-failed")
+                    plan(index, arm, keys[arm.arm.label])
+                }
+                align()
             }
             val selected = armPlans.values.first()
             for (arm in manifest.arms.filter { it.arm.values["backend"] == REFERENCE_BACKEND })
@@ -158,7 +216,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             benchPlan = benchPlan.copy(cases = benchPlan.cases.filter { BenchRuns.key(it) in keys })
         } else require(selections == raw)
 
-        println("worker selection verification: hashedFiles=${inputDigests.hashedFiles} reusedFiles=${inputDigests.reusedFiles} hashedBytes=${inputDigests.hashedBytes}")
+        println("worker selection verification: hashedFiles=${inputDigests.hashedFiles} reusedFiles=${inputDigests.reusedFiles} hashedBytes=${inputDigests.hashedBytes} reusedPlans=${reusedSelections.size}")
         val features = emptyList<ProblemFeatures>()
         val artifacts = mutableMapOf<String, String>()
         fun transfer(file: Path): String = trace.step("upload") { upload(file) }
@@ -186,7 +244,19 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
             .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.plus(
                 armPlans.values.flatMap { it.cases }.flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
-        val sharedInputs = trace.step("shared-inputs") { if (sharing != null) sharing.publish(inputPaths, ::checkActive) else emptyList() }
+        // When no arm planned, the corpus was never fetched here: its accepted shared inputs stand in for publication.
+        // Aligned arms resolved identical input digests, so any arm that did plan left every selected input local.
+        val sharedInputs = trace.step("shared-inputs") { when {
+            sharing == null -> emptyList()
+            reusedSelections.isNotEmpty() && !planned -> requireNotNull(BenchSelections.covering(
+                reusedSelections.values.flatMap { it.sharedInputs }, inputPaths)) { "accepted selection omitted a selected input" }
+            else -> sharing.publish(inputPaths, ::checkActive)
+        } }
+        val selectionCache = plannedSelections.values.mapNotNull { entry ->
+            val corpusPaths = BenchSelections.corpusPaths(entry.plan)
+            if (corpusPaths.isEmpty()) entry
+            else BenchSelections.covering(sharedInputs, corpusPaths)?.let { entry.copy(sharedInputs = it) }
+        }
         val corpusBundle = if (sharing == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
             trace.step("archive") { archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), checkActive = ::checkActive) }
                 .also { artifacts["preparation/corpus.zip"] = transfer(directory.resolve("corpus.zip")) }
@@ -205,7 +275,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         trace.ready()
         val timings = trace.snapshot().timings
         println("worker preparation timing: " + timings.entries.joinToString(" ") { "${it.key}Ms=${it.value}" })
-        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs, benchPlan, descriptor, armPlans)
+        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs, benchPlan, descriptor, armPlans, selectionCache)
     }
 }
 

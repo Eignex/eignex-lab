@@ -29,6 +29,7 @@ import java.net.URI
 
 @Serializable data class WorkerRegistration(val release: String)
 @Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
+@Serializable data class WorkerBenchSelections(val owner: AttemptOwner, val keys: List<String>)
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
 @Serializable data class WorkerPhase(val owner: AttemptOwner, val phase: String)
 @Serializable data class WorkerPreparationProgress(val owner: AttemptOwner, val progress: PreparationProgress)
@@ -135,6 +136,15 @@ fun Application.workerApi(
                     require(body.owner.session == session.id && body.owner.allocation == session.allocation)
                     call.respond(backend.selectPreparation(body.owner, body.selections))
                 }
+            }
+            post("/bench-selections") {
+                // Read-only: accepted planner outputs by selection key, for the preparing attempt that asks.
+                check(workAllowed()); val session = call.session
+                require(session.executionClass == ExecutionClass.PREPARE)
+                val body = Json.decodeFromString<WorkerBenchSelections>(call.bodyText(64 * 1024))
+                require(body.owner.session == session.id && body.owner.allocation == session.allocation)
+                require(body.keys.size in 1..BenchSelections.MAX_KEYS && body.keys.all { it.matches(SHA256) })
+                call.respond(store.execution.benchSelections(body.owner, body.keys.distinct()))
             }
             post("/input-signature") {
                 withContext(CoordinatorIo.artifacts) {
