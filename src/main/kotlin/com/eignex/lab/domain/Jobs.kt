@@ -78,6 +78,8 @@ data class Job(
     val runMs: Long = 0,
     /** When the current running stretch began; null while the job waits. */
     val runningSince: Long? = null,
+    /** Run time already spent when it was last retried by hand: its whole-run limit counts from there. */
+    val deadlineFromMs: Long = 0,
     /** Set instead of [commands] by a list that leaves them out ([Store.jobs]). */
     val counts: CommandCounts? = null,
     /** Whether the local machine works on it now: it took the job, or joined it while cloud nodes ran it. */
@@ -96,6 +98,8 @@ data class Job(
 
     /** Time the job has spent running, so far or in all; waiting in the queue, paused or yielded, does not count. */
     fun elapsedMs(now: Long): Long = runMs + (runningSince?.let { now - it } ?: 0)
+    /** Run time counted against the whole-run limit: since the last manual retry, which grants the limit afresh. */
+    fun deadlineElapsedMs(now: Long): Long = (elapsedMs(now) - deadlineFromMs).coerceAtLeast(0)
 
     val total: Int get() = counts?.total ?: commands.size
     val done: Int get() = counts?.done ?: commands.count { it.status == Status.DONE || it.status == Status.FAILED }

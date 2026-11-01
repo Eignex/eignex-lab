@@ -244,6 +244,54 @@ class NomadBackendTest {
         assertEquals(0, store.execution.failureCount(id))
     }
 
+    @Test fun `paused solve stops its clock after draining and resumes without losing accepted rows`() {
+        val spec = ExperimentSpec("paused", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60,
+            classpath = listOf("tools/lib/*")), host = HostPlacement.AUTO)
+        val id = setup(problems = 3, spec = spec); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        store.setPaused(id, true)
+        backend().reconcile()
+        assertEquals(Desired.DRAIN, store.execution.session(session.id)!!.desired)
+        assertNotNull(store.job(id)!!.runningSince, "a draining row still consumes its allowance")
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now() - 1, now()) })))
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        backend(Store(file)).reconcile()
+        val paused = store.job(id)!!
+        assertNull(paused.runningSince)
+        assertEquals(paused.runMs, paused.elapsedMs(now() + 120_000))
+        store.execution.expireRunDeadlines(now() + 120_000)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertEquals(claim.indices.toSet(), store.job(id)!!.commands.filter { it.status == Status.DONE }.map { it.index }.toSet())
+
+        store.setPaused(id, false)
+        backend(Store(file)).reconcile()
+        useReplacement(id, "resumed", "node")
+        assertNotNull(store.job(id)!!.runningSince)
+        assertEquals(paused.runMs, store.job(id)!!.runMs)
+        assertTrue(store.execution.remainingRunMs(session.id)!! in 1L..60_000L)
+        val resumed = backend().claim(session.id, token, "resumed")!!
+        assertTrue(resumed.indices.none { it in claim.indices })
+    }
+
+    @Test fun `paused preparation freezes its clock after the worker drains across a restart`() {
+        val spec = ExperimentSpec("paused-preparation", bench = BenchSpec("bench.json", runTimeoutSec = 60), host = HostPlacement.AUTO)
+        val id = setup(spec = spec, preparation = true); register()
+        assertNotNull(backend().claim(session.id, token, "allocation"))
+        store.setPaused(id, true)
+        backend().reconcile()
+        assertNotNull(store.job(id)!!.runningSince)
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        backend(Store(file)).reconcile()
+        val paused = store.job(id)!!
+        assertNull(paused.runningSince)
+        assertEquals(paused.runMs, paused.elapsedMs(now() + 120_000))
+        store.execution.expireRunDeadlines(now() + 120_000)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
+        assertEquals(1, store.execution.sessions(id).size)
+    }
+
     @Test fun `reprioritization releases an unbound native reservation`() {
         val id = setup(platform = NomadPlatform.MAC)
         val waiting = store.create("urgent", "main", emptyList(), priority = 10,

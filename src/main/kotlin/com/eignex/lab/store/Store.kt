@@ -407,6 +407,7 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         storedExperiment(rows.getString("experiment")),
         runMs = rows.getLong("run_ms"),
         runningSince = rows.longOrNull("running_since"),
+        deadlineFromMs = rows.getLong("deadline_from_ms"),
         local = rows.getInt("local") == 1,
         backend = Backend.of(rows.getString("backend")),
         origin = JobOrigin.stored(rows.getString("origin"), rows.getString("series") ?: rows.getString("name")),

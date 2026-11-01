@@ -190,6 +190,13 @@ class ExecutionStoreTest {
         assertEquals(200L, Store(file).execution.remainingRunMs("replacement", 1800))
         store.execution.expireRunDeadlines(2000)
         assertEquals(Status.FAILED, store.job(id)!!.status)
+        // A manual retry grants the whole-run limit afresh, while the job keeps its full run time as cost.
+        val spent = store.job(id)!!.runMs
+        assertTrue(spent > 0 && store.retry(id))
+        assertEquals(spent, store.job(id)!!.runMs)
+        assertEquals(0L, store.job(id)!!.deadlineElapsedMs(3000))
+        store.execution.expireRunDeadlines(3000)
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
         val unlimited = bench(null); bind(unlimited, "unlimited")
         val claim = store.execution.claim("unlimited", token, "alloc-unlimited", 1100)!!
         store.execution.phase(claim.owner, "uploading", 1700)
@@ -313,6 +320,14 @@ class ExecutionStoreTest {
         assertEquals(emptyList(), store.execution.pendingProjectionJobs(endedSince = 1801))
         assertTrue(store.retry(id))
         store.execution.expireRunDeadlines(1802)
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
+        assertEquals(result, store.execution.accepted(id).single().second)
+        val spent = store.job(id)!!.runMs
+        store.execution.createSession("retried", id, ExecutionClass.SOLVE, "release", budget, token, "{}", 3000)
+        store.execution.bind("retried", token, "retried-allocation", "node", "release", 3000)
+        assertEquals(800L, Store(file).execution.remainingRunMs("retried", 3200))
+        assertEquals(spent, store.job(id)!!.runMs)
+        store.execution.expireRunDeadlines(4000)
         assertEquals(Status.FAILED, store.job(id)!!.status)
     }
 

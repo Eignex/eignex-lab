@@ -384,6 +384,12 @@ class NomadBackend(
         }
         if (store.job(job.id)?.status?.isActive != true) return
         val sessions = store.execution.sessions(job.id)
+        if (current.paused && sessions.all { it.desired == Desired.STOP }) {
+            // The current row consumes the allowance until every worker has drained. Binding a
+            // replacement starts the clock again after the user resumes the job.
+            store.execution.pauseClock(job.id)
+            return
+        }
         if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && !prepared && sessions.any { it.executionClass == ExecutionClass.PREPARE }) && sessions.isNotEmpty() && sessions.all { it.desired == Desired.STOP }) {
             store.execution.pauseClock(job.id)
             // Once preparation is accepted, only admission may create the first solve session. Replacing a

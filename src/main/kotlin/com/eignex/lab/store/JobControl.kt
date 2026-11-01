@@ -34,12 +34,13 @@ fun Store.requestCancel(jobId: Long): CancelOutcome = executionTransaction { db 
 
 /**
  * Put a failed or cancelled job back in the queue: its error is cleared, its unfinished cases are queued again
- * and its finished ones kept. Its worktree is gone, so the runner sets it up afresh, planning it only if it never
+ * and its finished ones kept, and its whole-run limit counts again from now. Its worktree is gone, so the runner sets it up afresh, planning it only if it never
  * was. False when there is no such job or it did not fail or get cancelled.
  */
 fun Store.retry(jobId: Long): Boolean = executionTransaction { db ->
     val reopened = db.sqlUpdate(
-        "UPDATE jobs SET status = ?, error = NULL, finished_at = NULL, cancel_requested = 0, paused = 0, running_since = NULL " +
+        // A retry grants the whole-run limit afresh; run_ms itself keeps the job's full cost.
+        "UPDATE jobs SET status = ?, error = NULL, finished_at = NULL, cancel_requested = 0, paused = 0, running_since = NULL, deadline_from_ms = run_ms " +
             "WHERE id = ? AND backend = 'nomad' AND status IN (?, ?)",
         Status.QUEUED.name, jobId, Status.FAILED.name, Status.CANCELLED.name,
     ) == 1
