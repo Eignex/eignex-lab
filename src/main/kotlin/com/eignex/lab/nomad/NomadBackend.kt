@@ -247,7 +247,11 @@ class NomadBackend(
             }
         }
         if (!workAllowed()) return
-        logJobs += store.execution.pendingProjectionJobs()
+        // Recently ended and active jobs each pass; every job at startup and hourly, which covers the rest.
+        val at = System.currentTimeMillis()
+        val full = at - fullProjectionScanAt >= FULL_PROJECTION_SCAN_MS
+        logJobs += store.execution.pendingProjectionJobs(if (full) null else at - FULL_PROJECTION_SCAN_MS)
+        if (full) fullProjectionScanAt = at
         for (job in store.jobsByIds(logJobs.toList()).filter { it.runsOnNomad }) {
             try { observe(job) }
             catch (failure: Exception) { println("nomad job ${job.id} observation failed: ${describeFailure(failure)}") }
@@ -453,7 +457,11 @@ class NomadBackend(
         }
     }
 
+    private var fullProjectionScanAt = 0L
+
     companion object {
+        /** How often projection scans every job rather than only active and recently ended ones. */
+        internal const val FULL_PROJECTION_SCAN_MS = 3_600_000L
         /** Delivery attempts after which an intent Nomad keeps refusing is recorded and given up on. */
         internal const val MAX_INTENT_ATTEMPTS = 20
 

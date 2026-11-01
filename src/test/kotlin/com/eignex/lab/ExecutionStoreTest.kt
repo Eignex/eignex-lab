@@ -264,6 +264,9 @@ class ExecutionStoreTest {
         assertEquals(1, store.execution.accepted(id).size)
         assertEquals(Status.FAILED, store.job(id)!!.commands.single().status)
         assertEquals(listOf(id), store.execution.pendingProjectionJobs())
+        // Routine scans skip jobs that ended before their window; the full scan still finds them.
+        assertEquals(listOf(id), store.execution.pendingProjectionJobs(endedSince = 1800))
+        assertEquals(emptyList(), store.execution.pendingProjectionJobs(endedSince = 1801))
         assertTrue(store.retry(id))
         store.execution.expireRunDeadlines(1802)
         assertEquals(Status.FAILED, store.job(id)!!.status)
