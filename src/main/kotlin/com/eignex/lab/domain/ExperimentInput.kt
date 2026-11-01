@@ -51,13 +51,25 @@ internal fun experimentInput(body: JsonObject): JsonObject {
     val retired = body.keys.intersect(RETIRED_PLACEMENT)
     require(retired.isEmpty()) { "unsupported placement fields: ${retired.sorted().joinToString()}; use tags: [\"arch:x86_64\", \"!spot\"], or omit tags for auto placement" }
     val selector = inputTags(body["tags"])
-    var canonical = JsonObject((body - "tags") + if (NodeTags.labels(selector).isEmpty()) emptyMap() else
-        mapOf("nodeTags" to Json.encodeToJsonElement(NodeSelector.serializer(), selector)))
-    // Recording modes default to one case at a time.
+    var canonical = JsonObject((body - "tags" - VCPUS) + inputVcpus(body).let { if (it == null) emptyMap() else mapOf(STORED_VCPUS to it) } +
+        if (NodeTags.labels(selector).isEmpty()) emptyMap() else mapOf("nodeTags" to Json.encodeToJsonElement(NodeSelector.serializer(), selector)))
+    // Recording modes default to one vCPU, so one case at a time.
     val input = canonical["measurement"] ?: return canonical
     val mode = Json.decodeFromJsonElement(Measurement.serializer(), input)
-    if (mode != Measurement.NONE && "parallel" !in canonical) canonical = JsonObject(canonical + ("parallel" to JsonPrimitive(1)))
+    if (mode != Measurement.NONE && STORED_VCPUS !in canonical) canonical = JsonObject(canonical + (STORED_VCPUS to JsonPrimitive(1)))
     return canonical
+}
+
+/** The public field: [ExperimentSpec.vcpus]. */
+private const val VCPUS = "vcpus"
+/** Its retired name, still accepted with the same meaning and kept as the stored recipe's key. */
+private const val STORED_VCPUS = "parallel"
+
+/** [body]'s `vcpus`, or its retired alias `parallel`; both may be given only when they agree. */
+private fun inputVcpus(body: JsonObject): JsonElement? {
+    val given = listOfNotNull(body[VCPUS], body[STORED_VCPUS]).filter { it != JsonNull }
+    require(given.distinct().size <= 1) { "vcpus and its retired alias parallel differ; set only vcpus" }
+    return given.firstOrNull()
 }
 
 /** Schedules use exactly the same input vocabulary as immediate runs. */
@@ -81,7 +93,8 @@ internal fun scheduleExperiment(spec: ExperimentSpec): JsonObject {
     val selector = if (spec.host == Experiments.LAB_HOST)
         (spec.nodeTags ?: NodeSelector()).let { it.copy(require = it.require + "local") } else spec.nodeTags
     val labels = NodeTags.labels(selector)
-    val body = Json.encodeToJsonElement(ExperimentSpec.serializer(), spec).jsonObject - RETIRED_PLACEMENT
+    val stored = Json.encodeToJsonElement(ExperimentSpec.serializer(), spec).jsonObject
+    val body = JsonObject(stored.mapKeys { (key, _) -> if (key == STORED_VCPUS) VCPUS else key }) - RETIRED_PLACEMENT
     return JsonObject(body + if (labels.isEmpty()) emptyMap() else
         mapOf("tags" to JsonArray(labels.map(::JsonPrimitive))))
 }

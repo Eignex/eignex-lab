@@ -188,7 +188,7 @@ class PagesTest {
 
     /** A finished compilation measurement A/B whose two cases have compilation reports from the committed HotSpot log sample. */
     private fun instrumentedJob(config: Config, store: Store): Long {
-        val spec = ExperimentSpec("compile-ab", listOf(mapOf("suite" to "s")), parallel = 1, measurement = Measurement.COMPILATION_LOG)
+        val spec = ExperimentSpec("compile-ab", listOf(mapOf("suite" to "s")), vcpus = 1, measurement = Measurement.COMPILATION_LOG)
         val id = store.create("compile-ab", "main", emptyList(), experiment = spec)
         val arms = listOf(PlannedArm(Arm("baseline", emptyMap()), "abc"), PlannedArm(Arm("candidate", emptyMap()), "def"))
         store.plan(id, arms, listOf(Problem("s", "p")), Experiments.cases(1, 2, emptyList()), listOf("true" to 1L, "true" to 1L))
@@ -460,7 +460,7 @@ class PagesTest {
     }
 
     @Test
-    fun `parallelism is capped without rewriting opaque repository CPU settings`() {
+    fun `vcpus are capped at the local cores without rewriting opaque repository CPU settings`() {
         val config = lab(cores = 8).copy(maxParallel = 6)
         val store = Store(config.database)
         testApplication {
@@ -469,16 +469,16 @@ class PagesTest {
             val created = client.post("/experiments") {
                 header(HttpHeaders.ContentType, "application/json")
                 setBody("""{"name": "e", "description": "d", "bench":{"manifest":"bench.json"},
-                    "base": {"ref": "0123456789abcdef", "param.cpus": "12"}, "parallel": 8}""")
+                    "base": {"ref": "0123456789abcdef", "param.cpus": "12"}, "vcpus": 12}""")
             }
             val body = Json.parseToJsonElement(created.bodyAsText()).jsonObject
             val job = store.job(body["id"]!!.jsonPrimitive.content.toLong())!!
             val notes = body["notes"]!!.jsonArray.map { it.jsonPrimitive.content }
 
             assertEquals(HttpStatusCode.Created, created.status)
-            assertEquals(listOf(Experiments.AUTO_HOST, "12", "6"), listOf(job.experiment!!.host, job.experiment!!.base["param.cpus"], "${job.parallel}"))
-            assertEquals(listOf("capped: parallel=8 was asked, capped at the local machine's 6"), notes)
-            assertContains(jobPage(config.status, job, failedOnly = false), "parallel=8 was asked")
+            assertEquals(listOf(Experiments.AUTO_HOST, "12", "8"), listOf(job.experiment!!.host, job.experiment!!.base["param.cpus"], "${job.vcpus}"))
+            assertEquals(listOf("capped: vcpus=12 was asked, capped at the local machine's 8 cores"), notes)
+            assertContains(jobPage(config.status, job, failedOnly = false), "vcpus=12 was asked")
         }
     }
 
@@ -490,7 +490,7 @@ class PagesTest {
     }
 
     private fun work(id: Long, host: HostPlacement, cases: Int, done: Int = 0, status: Status = Status.QUEUED, priority: Int = 0) = Job(
-        id, "e$id", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, parallel = 4, priority = priority,
+        id, "e$id", "main", status = status, cancelRequested = false, setupDone = true, createdAt = 0, vcpus = 5, priority = priority,
         experiment = ExperimentSpec("e", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "360000"), host = host),
         counts = CommandCounts(cases, done, 0, 0),
     )

@@ -56,7 +56,7 @@ class NomadQueueTest {
 
     @Test fun `retired persisted recipes fail before source publication or allocation`() {
         val spec = ExperimentSpec("status-sweep@old", problems = listOf(mapOf("set" to "sweep")), host = Experiments.LAB_HOST)
-        val id = store.create(spec.name, "main", emptyList(), parallel = 1, experiment = spec)
+        val id = store.create(spec.name, "main", emptyList(), vcpus = 1, experiment = spec)
         repeat(3) { queue().reconcile() }
         assertEquals(Status.FAILED, store.job(id)!!.status)
         assertContains(store.job(id)!!.error!!, "legacy solver recipes must be migrated")
@@ -223,15 +223,15 @@ class NomadQueueTest {
         assertContains(store.execution.submission(store.execution.sessions(id).single().id), "\"RTarget\":\"small\"")
     }
 
-    @Test fun `six cloud solve workers select the large pool and share a node`() {
+    @Test fun `a cloud job's vcpus select the large pool in one session`() {
         val large = target(NomadPlatform.LINUX, "large").let {
             it.copy(template = it.template.copy(cpuCapacity = NomadCpuCapacity(16000, 16), budget = ResourceBudget(16000, 64512)))
         }
         val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 5120)))
         val policy = settings.copy(targets = listOf(small, large), caseMemoryMiB = 4096, sessionMemoryMiB = 512, maxSessionsPerJob = 6)
-        val id = job(ExperimentSpec("large-solves", problems = listOf(mapOf("suite" to "s")), parallel = 6, host = Experiments.AWS_HOST))
+        val id = job(ExperimentSpec("large-solves", problems = listOf(mapOf("suite" to "s")), vcpus = 6, host = Experiments.AWS_HOST))
         queue(policy = policy).reconcile(); prepare(id, 6); backend.reconcile()
-        repeat(6) {
+        repeat(1) {
             queue(policy = policy).reconcile()
             val session = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE && it.node == null }
             val submission = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
@@ -243,9 +243,11 @@ class NomadQueueTest {
                 .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
             store.execution.bind(session.id, token, "allocation-${session.id}", "large-node", "release")
         }
+        repeat(2) { queue(policy = policy).reconcile() }
         val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
-        assertEquals(6, solves.size)
-        assertTrue(solves.all { it.budget == ResourceBudget(1000, 1024) })
+        // Six vCPUs: one session of five cases, not six single-case workers.
+        assertEquals(1, solves.size)
+        assertEquals(ResourceBudget(6000, 512 + 5 * 512, 5), solves.single().budget)
         assertEquals(setOf("large-node"), solves.map { it.node }.toSet())
     }
 
@@ -253,21 +255,21 @@ class NomadQueueTest {
         setOf("arch:x86_64"), minPriority = 0)), 16)
 
     @Test fun `low priority local work does not reserve cloud slots that cannot grow capacity`() {
-        val id = job(ExperimentSpec("background", parallel = 4, priority = -2, host = HostPlacement.AUTO))
+        val id = job(ExperimentSpec("background", vcpus = 8, priority = -2, host = HostPlacement.AUTO))
         store.setPriority(id, -2)
         queue(capacity = pools()).reconcile(); prepare(id, 8); backend.reconcile()
-        queue(cores = 1, capacity = pools()).reconcile()
+        queue(cores = 4, capacity = pools()).reconcile()
         val active = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
         assertEquals(1, active.size)
         assertTrue(active.all { store.execution.placement(it.id).native })
     }
 
     @Test fun `unbound cloud intent yields its slot to native capacity without touching bound workers`() {
-        val id = job(ExperimentSpec("reclaim", parallel = 4, priority = -2, host = HostPlacement.AUTO))
+        val id = job(ExperimentSpec("reclaim", vcpus = 8, priority = -2, host = HostPlacement.AUTO))
         store.setPriority(id, -2)
         queue().reconcile(); prepare(id, 8); backend.reconcile()
         // Initial policy predates capacity-aware admission and fills the remaining slot with a cloud intent.
-        queue(cores = 1).reconcile()
+        queue(cores = 4).reconcile()
         val pending = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE &&
             it.desired == Desired.RUN && !store.execution.placement(it.id).native }
         val frozen = store.execution.manifest(pending.id)
@@ -281,9 +283,9 @@ class NomadQueueTest {
     }
 
     @Test fun `a cloud row that bound before native handoff keeps its owner and complete attempt`() {
-        val id = job(ExperimentSpec("bound-cloud", parallel = 4, priority = -2, host = HostPlacement.AUTO))
+        val id = job(ExperimentSpec("bound-cloud", vcpus = 8, priority = -2, host = HostPlacement.AUTO))
         store.setPriority(id, -2)
-        queue().reconcile(); prepare(id, 8); backend.reconcile(); queue(cores = 1).reconcile()
+        queue().reconcile(); prepare(id, 8); backend.reconcile(); queue(cores = 4).reconcile()
         val cloud = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE &&
             it.desired == Desired.RUN && !store.execution.placement(it.id).native }
         val submitted = Json.parseToJsonElement(store.execution.submission(cloud.id)).jsonObject
@@ -299,7 +301,7 @@ class NomadQueueTest {
     }
 
     @Test fun `cloud only background work can still request capacity below the native priority floor`() {
-        val id = job(ExperimentSpec("cloud-background", parallel = 1, priority = -2, host = Experiments.AWS_HOST))
+        val id = job(ExperimentSpec("cloud-background", vcpus = 1, priority = -2, host = Experiments.AWS_HOST))
         store.setPriority(id, -2)
         queue(capacity = pools()).reconcile()
         assertTrue(store.execution.sessions(id).isNotEmpty())
@@ -341,6 +343,12 @@ class NomadQueueTest {
             if (mac) listOf("/releases/fixture/bin/eignex-lab", "worker") else listOf("worker"),
             if (mac) null else "registry/worker@sha256:" + "d".repeat(64)), setOf(if (mac) "arch:arm64" else "arch:x86_64"), market)
     }
+    /** Eight vCPUs: more than one four-vCPU worker holds. */
+    private val wide = ExperimentSpec("portable", vcpus = 8, host = HostPlacement.AUTO)
+    /** [settings] with workers of [cpuMillis] each, so a job's vCPUs spread over several single-case sessions. */
+    private fun narrow(cpuMillis: Int) = settings.copy(targets = settings.targets.map {
+        it.copy(template = it.template.copy(budget = it.template.budget.copy(cpuMillis = cpuMillis)))
+    }, preparationBudget = ResourceBudget(cpuMillis, 512))
     private val settings = NomadQueueSettings("release", "http://127.0.0.1:8091",
         listOf(target(NomadPlatform.MAC, "native"), target(NomadPlatform.LINUX, "portable-spot")),
         ResourceBudget(1000, 512), caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 4)
@@ -367,7 +375,7 @@ class NomadQueueTest {
         })
     private fun job(spec: ExperimentSpec = ExperimentSpec("portable", host = HostPlacement.AUTO)): Long {
         val generic = if (spec.isProfile || spec.work.bench != null) spec else spec.copy(problems = emptyList(), bench = BenchSpec("bench.json"))
-        return store.create(generic.name, "main", emptyList(), parallel = generic.parallel ?: 2, experiment = generic)
+        return store.create(generic.name, "main", emptyList(), vcpus = generic.vcpus ?: 2, experiment = generic)
     }
     private fun prepare(id: Long, count: Int = 3) {
         val session = store.execution.sessions(id).single { it.executionClass == ExecutionClass.PREPARE }
@@ -397,18 +405,22 @@ class NomadQueueTest {
     }
 
     @Test fun `queue automatically prepares once publishes its plan and shares native and Spot workers`() {
-        val id = job(); queue().reconcile()
+        val id = job(wide); queue().reconcile()
         assertEquals(listOf(ExecutionClass.PREPARE), store.execution.sessions(id).map { it.executionClass })
+        // The preparation holds the job's vCPUs within its worker's four, with memory scaled from the configured floor.
+        assertEquals(ResourceBudget(4000, 2048), store.execution.sessions(id).single().budget)
         queue().reconcile(); assertEquals(1, publications)
-        prepare(id); queue().reconcile()
+        prepare(id, 6); queue().reconcile()
         val planned = store.job(id)!!
-        assertTrue(planned.setupDone); assertEquals(3, planned.commands.size)
+        assertTrue(planned.setupDone); assertEquals(6, planned.commands.size)
         assertEquals("a".repeat(40), planned.sha)
         val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
+        // Eight vCPUs over four-vCPU workers: two sessions, each running three cases beside the worker's vCPU. The
+        // preparation still holds four native vCPUs until it stops, so the second spills to Spot.
         assertEquals(2, solves.size)
-        assertEquals(2, solves.count { store.execution.submission(it.id).contains("advisory-native") })
-        assertEquals(0, solves.count { store.execution.submission(it.id).contains("hard-quota") })
-        assertTrue(solves.all { it.budget.cpuMillis == 1000 && it.budget.memoryMiB == 768 && it.budget.parallel == 1 })
+        assertEquals(1, solves.count { store.execution.submission(it.id).contains("advisory-native") })
+        assertEquals(1, solves.count { store.execution.submission(it.id).contains("hard-quota") })
+        assertTrue(solves.all { it.budget == ResourceBudget(4000, 256 + 3 * 512, 3) })
         assertTrue(solves.all { store.execution.manifest(it.id).solveJavaOptions == "-Xmx256m" })
         queue().reconcile(); assertEquals(2, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE })
         assertEquals(1, publications)
@@ -441,13 +453,15 @@ class NomadQueueTest {
     }
 
     @Test fun `one case cannot reserve a nonexistent parallel slot and native saturation spills to Spot`() {
-        val id = job(); queue().reconcile(); prepare(id); backend.reconcile()
-        NomadQueue(config.copy(cores = 1), store, backend, artifacts, settings, { true }, nativeAllowed = { true },
+        val id = job(wide); queue().reconcile(); prepare(id, 6); backend.reconcile()
+        NomadQueue(config.copy(cores = 4), store, backend, artifacts, settings, { true }, nativeAllowed = { true },
             source = { _, _, _ -> error("source already pinned") }).reconcile()
         val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
         assertEquals(1, solves.count { store.execution.submission(it.id).contains("advisory-native") })
         assertEquals(1, solves.count { store.execution.submission(it.id).contains("hard-quota") })
-        assertTrue(solves.all { it.budget.parallel == 1 && it.budget.cpuMillis == 1000 })
+        assertTrue(solves.all { it.budget.parallel == 3 && it.budget.cpuMillis == 4000 })
+        // Two vCPUs leave one case slot whatever the template allows.
+        assertEquals(ResourceBudget(2000, 768, 1), settings.solveBudget(settings.targets.first(), store.job(job())!!))
     }
 
     @Test fun `restart preserves admitted templates release and budgets when operator settings change`() {
@@ -462,8 +476,9 @@ class NomadQueueTest {
     }
 
     @Test fun `explicit cloud per host cap is independent of worker CPU requests`() {
-        val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), parallel = 4, host = Experiments.AWS_HOST))
-        queue(policy = settings.copy(perHostParallel = 2)).reconcile(); prepare(id, 4); backend.reconcile(); queue(policy = settings.copy(perHostParallel = 2)).reconcile()
+        val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), vcpus = 8, host = Experiments.AWS_HOST))
+        val narrow = narrow(1000)
+        queue(policy = narrow.copy(perHostParallel = 2)).reconcile(); prepare(id, 4); backend.reconcile(); queue(policy = narrow.copy(perHostParallel = 2)).reconcile()
         fun solves() = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
         fun bind(session: ExecutionSession, node: String) {
             val spec = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
@@ -491,9 +506,9 @@ class NomadQueueTest {
     }
 
     @Test fun `default cloud workers share nodes and a live vCPU limit bounds frozen jobs`() {
-        val id = job(ExperimentSpec("sharing", problems = listOf(mapOf("suite" to "s")), parallel = 4, host = Experiments.AWS_HOST))
-        queue().reconcile(); prepare(id, 4); backend.reconcile()
-        val policy = settings.copy(maxVcpusPerJob = 2)
+        val id = job(ExperimentSpec("sharing", problems = listOf(mapOf("suite" to "s")), vcpus = 4, host = Experiments.AWS_HOST))
+        queue(policy = narrow(1000)).reconcile(); prepare(id, 4); backend.reconcile()
+        val policy = narrow(1000).copy(maxVcpusPerJob = 2)
         repeat(4) {
             queue(policy = policy).reconcile()
             store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.node == null }.forEach { session ->
@@ -510,7 +525,7 @@ class NomadQueueTest {
     }
 
     @Test fun `parallel one requests one worker across the cluster without reserving a node`() {
-        val id = job(ExperimentSpec("one-vcpu", problems = listOf(mapOf("suite" to "s")), parallel = 1, host = Experiments.AWS_HOST))
+        val id = job(ExperimentSpec("one-vcpu", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.AWS_HOST))
         queue().reconcile(); prepare(id, 8); backend.reconcile()
         repeat(3) { queue().reconcile() }
         val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
@@ -527,8 +542,8 @@ class NomadQueueTest {
     }
 
     @Test fun `an ended job's unstopped native session no longer holds the native budget`() {
-        val ended = job(ExperimentSpec("ended-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
-        val live = job(ExperimentSpec("live-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        val ended = job(ExperimentSpec("ended-native", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.LAB_HOST))
+        val live = job(ExperimentSpec("live-native", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.LAB_HOST))
         queue(cores = 2).reconcile()
         assertEquals(2000L to 1024L, store.execution.nativeReservation())
         // Ended without its session being stopped, as when observing the job keeps failing.
@@ -538,10 +553,10 @@ class NomadQueueTest {
     }
 
     @Test fun `native preparations share CPU and memory budgets and overflow spills to Spot`() {
-        val first = job(ExperimentSpec("first-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
-        val second = job(ExperimentSpec("second-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
-        val waiting = job(ExperimentSpec("waiting-native", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
-        val automatic = job(ExperimentSpec("automatic", problems = listOf(mapOf("suite" to "s")), host = Experiments.AUTO_HOST))
+        val first = job(ExperimentSpec("first-native", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.LAB_HOST))
+        val second = job(ExperimentSpec("second-native", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.LAB_HOST))
+        val waiting = job(ExperimentSpec("waiting-native", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.LAB_HOST))
+        val automatic = job(ExperimentSpec("automatic", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.AUTO_HOST))
         queue(cores = 2).reconcile()
         assertEquals(1, store.execution.sessions(first).size)
         assertEquals(1, store.execution.sessions(second).size)
@@ -581,12 +596,12 @@ class NomadQueueTest {
     }
 
     @Test fun `repeated Spot losses replenish workers without failing healthy siblings or republishing source`() {
-        val id = job(); queue().reconcile(); prepare(id); backend.reconcile(); queue(cores = 1).reconcile()
+        val id = job(wide); queue().reconcile(); prepare(id, 6); backend.reconcile(); queue(cores = 4).reconcile()
         val siblings = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && store.execution.submission(it.id).contains("advisory-native") }.map { it.id }.toSet()
         repeat(8) {
             val active = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP && store.execution.submission(it.id).contains("hard-quota") }
             store.execution.loseSession(active.id, "infrastructure:spot")
-            queue(cores = 1).reconcile()
+            queue(cores = 4).reconcile()
             assertEquals(Status.RUNNING, store.job(id)!!.status)
             assertNull(store.job(id)!!.error)
             assertEquals(2, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
@@ -617,12 +632,12 @@ class NomadQueueTest {
     }
 
     @Test fun `a lost worker is replenished while other sessions keep solving without publishing source again`() {
-        val id = job(); queue().reconcile(); prepare(id); queue().reconcile()
+        val id = job(wide); queue().reconcile(); prepare(id, 6); queue().reconcile()
         val solve = store.execution.sessions(id).first { it.executionClass == ExecutionClass.SOLVE }
         store.execution.loseSession(solve.id, "infrastructure:spot")
         queue().reconcile()
         assertEquals(2, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
         assertEquals(1, publications)
-        assertEquals(3, store.job(id)!!.commands.size)
+        assertEquals(6, store.job(id)!!.commands.size)
     }
 }

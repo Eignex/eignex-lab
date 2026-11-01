@@ -203,7 +203,7 @@ object Confirm {
             configs = listOf(config + mapOf("label" to BEFORE, "ref" to before), config + mapOf("label" to AFTER, "ref" to after)),
             seeds = spec.seeds,
             repeats = REPEATS,
-            parallel = spec.parallel,
+            vcpus = spec.vcpus,
             measurement = if (spec.measurement == Measurement.RESOURCES) Measurement.RESOURCES else Measurement.NONE,
             // One above its run's schedule, so it settles the run before that schedule's next run starts.
             priority = spec.priority + 1,

@@ -263,18 +263,24 @@ class ExecutionStore internal constructor(private val store: Store) {
                 db.event(session.jobId, id, "claimed:$iteration:$generation", at)
                 return@executionTransaction IterationClaim(AttemptOwner(id, allocation, iteration, generation, claimToken), emptyList(), at + leaseMs)
             }
-            val next = db.iterations(session.jobId).entries.firstOrNull { (_, rows) -> rows.all { it.status == "QUEUED" && it.host == null } }
-                ?: return@executionTransaction null
-            val iteration = next.key
-            val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
-            val claimToken = claimToken(token, iteration, generation)
-            val indices = next.value.map { it.index }
+            val free = db.iterations(session.jobId).entries.filter { (_, rows) -> rows.all { it.status == "QUEUED" && it.host == null } }
+            if (free.isEmpty()) return@executionTransaction null
             val placement = Json.parseToJsonElement(db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single()).jsonObject
             val perHost = placement["Meta"]?.jsonObject?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull
             val heldParallel = if (perHost == null) 0 else db.sqlRows("SELECT COALESCE(SUM(a.parallel_limit), 0) FROM iteration_attempts a JOIN execution_sessions s ON s.id = a.session_id WHERE a.job_id = ? AND s.node_id = ? AND a.state IN $ACTIVE_ATTEMPTS", session.jobId, session.node) { it.getInt(1) }.single()
-            val available = perHost?.let { (it - heldParallel).coerceAtLeast(0) } ?: session.budget.parallel
-            val parallel = minOf(session.budget.parallel, indices.size, available)
-            if (parallel == 0) return@executionTransaction null
+            val slots = minOf(session.budget.parallel, perHost?.let { (it - heldParallel).coerceAtLeast(0) } ?: session.budget.parallel)
+            if (slots == 0) return@executionTransaction null
+            // Whole rows until they fill the session's case slots: every arm of a row runs here, in this one attempt, and
+            // a lost attempt gives all its rows back. One row keeps its own key, so single-row attempts read as before.
+            val rows = mutableListOf(free.first())
+            for (row in free.drop(1)) { if (rows.sumOf { it.value.size } >= slots) break; rows += row }
+            val iteration = rows.singleOrNull()?.key ?: rows.map { it.key }.let { keys ->
+                "${keys.first()}+${keys.size - 1}~${digest(keys.joinToString(",")).take(12)}"
+            }
+            val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
+            val claimToken = claimToken(token, iteration, generation)
+            val indices = rows.flatMap { row -> row.value.map { it.index } }
+            val parallel = minOf(slots, indices.size)
             db.sqlUpdate("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at, parallel_limit) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?)",
                 session.jobId, iteration, generation, id, allocation, digest(claimToken), at + leaseMs, Json.encodeToString(indices), at, parallel)
             for (index in indices) db.sqlUpdate("UPDATE commands SET host = ? WHERE job_id = ? AND idx = ?", session.node, session.jobId, index)

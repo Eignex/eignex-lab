@@ -69,7 +69,7 @@ class ConnectedNomadTest {
         val sha = git("rev-parse", "HEAD")
         val spec = ExperimentSpec("automatic-http", bench = BenchSpec("bench.json"), grid = mapOf("param.x" to listOf("a", "b")),
             repeats = 2, host = Experiments.AWS_HOST)
-        val job = store.create(spec.name, "main", emptyList(), parallel = 2, experiment = spec)
+        val job = store.create(spec.name, "main", emptyList(), vcpus = 2, experiment = spec)
         val budget = ResourceBudget(2000, 2048, 2)
         val template = NomadBatchJob("template", NomadPlatform.LINUX, "lab-prototype-linux",
             NomadCpuCapacity(System.getenv("LAB_NOMAD_TEST_MHZ").toInt(), System.getenv("LAB_NOMAD_TEST_CPUS").toInt()), budget,

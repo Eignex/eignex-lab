@@ -222,7 +222,7 @@ class SchemaTest {
             }
         }
         val job = store.job(id)!!
-        assertEquals(0 to 1, job.priority to job.parallel)
+        assertEquals(0 to 1, job.priority to job.vcpus)
         assertEquals(1, store.reading { store.job(id)!!.commands.size })
     }
 }

@@ -222,7 +222,7 @@ private fun schedulesTable(schedules: List<Schedule>): Html = buildHtml {
         if (blocked != null) append(Html("<br><small>blocked: ") + esc(blocked) + Html("</small>"))
         append(Html("</td><td><code>") + esc(schedule.ref) + Html("</code></td><td>") + span(schedule.intervalSec) + Html("</td>"))
         val arms = runCatching { Experiments.arms(schedule.experiment).size }.getOrNull()?.toString() ?: "invalid"
-        append(Html("<td>") + arms + (if (schedule.parallel > 1) " ×${schedule.parallel}" else "") + Html("</td><td>"))
+        append(Html("<td>") + arms + (if (schedule.vcpus > 0) " ${schedule.vcpus} vCPU" else "") + Html("</td><td>"))
         if (schedule.lastJob != null) {
             append(Html("<a href=\"/jobs/") + schedule.lastJob + Html("\">") + schedule.lastJob + Html("</a> <code>") + (schedule.lastSha?.take(9) ?: "") + Html("</code>"))
         } else {

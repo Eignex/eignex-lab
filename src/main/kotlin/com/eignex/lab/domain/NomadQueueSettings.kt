@@ -31,7 +31,8 @@ data class NomadQueueSettings(
     val release: String, val workerApi: String, val targets: List<NomadQueueTarget>,
     val preparationBudget: ResourceBudget = ResourceBudget(2000, 4096), val preparationTimeoutSec: Long = 3600,
     val caseMemoryMiB: Int = 4096, val sessionMemoryMiB: Int = 512, val maxSessionsPerJob: Int = 64,
-    /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. */
+    /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. [preparationBudget] is
+     *  the least a preparation gets; one grows with its job's vCPUs ([preparationBudget]). */
     val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
     /** Explicitly approved infrastructure releases this worker can replace, preserving consumer inputs. */
     val workerReplaces: Set<String> = emptySet(),
@@ -65,15 +66,42 @@ data class NomadQueueSettings(
         require(bytes <= (caseMemoryMiB - 256).toLong() * 1024 * 1024) { "configured solve heap exceeds the per-case memory budget" }
         return options
     }
-    fun solveBudget(target: NomadQueueTarget, job: Job, plan: com.eignex.lab.bench.BenchPlan? = null): ResourceBudget? {
+    /**
+     * What a solve session of [job] reserves on [target]: the job's vCPUs ([ExperimentSpec.vcpus], at least its largest
+     * case's CPUs), within the target's CPU ceiling, running [Experiments.caseConcurrency] cases, each with its memory,
+     * at most [maxCases] and as many as the target's memory holds; [cpuCeiling] is the local cores for the native worker.
+     * A session claims whole paired rows until they fill those case slots ([ExecutionStore.claim]); null when not one
+     * case fits.
+     */
+    fun solveBudget(target: NomadQueueTarget, job: Job, plan: com.eignex.lab.bench.BenchPlan? = null, maxCases: Int = Int.MAX_VALUE,
+                    cpuCeiling: Int = Int.MAX_VALUE): ResourceBudget? {
         val resources = plan?.let(BenchRuns::resources)
         val largest = resources?.cpus ?: Experiments.arms(checkNotNull(job.experiment)).maxOf { it.cores }
         val memory = resources?.memoryMiB?.let(Math::toIntExact) ?: caseMemoryMiB
         if (resources != null && !NodeTags.matches(NodeSelector(require = resources.requiredTags), target.capabilities)) return null
         val maximum = target.template.budget
-        val parallel = minOf(job.parallel, Experiments.arms(checkNotNull(job.experiment)).size, maximum.parallel, maximum.cpuMillis / 1000 / largest,
-            (maximum.memoryMiB - sessionMemoryMiB) / memory)
-        if (parallel < 1) return null
-        return ResourceBudget(Math.multiplyExact(Math.multiplyExact(largest, parallel), 1000), sessionMemoryMiB + parallel * memory, parallel)
+        val vcpus = maxOf(job.vcpus, largest).coerceAtMost(minOf(maximum.cpuMillis, cpuCeiling) / 1000)
+        if (vcpus < largest) return null
+        val concurrency = Experiments.caseConcurrency(vcpus, largest)
+        val cases = minOf(concurrency, maxCases, (maximum.memoryMiB - sessionMemoryMiB) / memory)
+        if (cases < 1) return null
+        // Memory may hold fewer cases than the vCPUs would run: then reserve only their CPUs and the worker's one.
+        val cpus = if (cases == concurrency) vcpus else minOf(vcpus, Math.addExact(Math.multiplyExact(cases, largest), 1))
+        return ResourceBudget(Math.multiplyExact(cpus, 1000), sessionMemoryMiB + cases * memory, cases)
+    }
+
+    /**
+     * What [job]'s preparation reserves on [target]: the job's vCPUs, at least [preparationBudget]'s, with memory scaled
+     * from it in proportion; both within the target's ceilings and [cpuCeiling] (the local machine's cores for its
+     * native worker), never above [maxVcpusPerJob]. Builds take their heap and Gradle workers from it
+     * ([WorkerBuildCache]), so a job that asks for more vCPUs also prepares faster.
+     */
+    fun preparationBudget(target: NomadQueueTarget, job: Job, cpuCeiling: Int = Int.MAX_VALUE): ResourceBudget {
+        val base = preparationBudget
+        val maximum = target.template.budget
+        val asked = Math.multiplyExact(job.vcpus.coerceAtMost(maxVcpusPerJob), 1000)
+        val cpu = minOf(maxOf(base.cpuMillis, asked), maximum.cpuMillis, cpuCeiling)
+        val memory = (base.memoryMiB.toLong() * cpu / base.cpuMillis).coerceIn(1, maximum.memoryMiB.toLong()).toInt()
+        return ResourceBudget(cpu, memory)
     }
 }
