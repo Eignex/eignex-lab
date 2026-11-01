@@ -13,8 +13,11 @@ object JobFileNames {
     const val TRIMMED = "trimmed"
 }
 
+/** A listed job file; [bytes] is [UNKNOWN_BYTES] when its size cannot be read just now (a regional archive). */
 @Serializable
-data class FileEntry(val path: String, val bytes: Long, val sha256: String? = null)
+data class FileEntry(val path: String, val bytes: Long, val sha256: String? = null) {
+    companion object { const val UNKNOWN_BYTES = -1L }
+}
 
 /**
  * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a

@@ -18,9 +18,17 @@ internal class PreparedArchiveFiles(private val config: Config, private val stor
         }.also { archives -> archives.keys.forEach { safeRelative(it) } }
     }
 
+    /**
+     * The accepted archives as listed files. One whose size cannot be read just now (its regional store unreachable)
+     * is listed with unknown size rather than failing the whole listing: every other file of the job stays fetchable,
+     * and a fetch of that archive reports its own failure.
+     */
     fun entries(job: Long): List<FileEntry> = accepted(job).map { (name, sha) ->
         val projected = jobFile(config.jobDir(job), name.split('/'))
-        val bytes = available { projected?.let(Files::size) ?: artifacts.size(job, sha) }
+        val bytes = try { projected?.let(Files::size) ?: artifacts.size(job, sha) } catch (failure: Exception) {
+            System.err.println("job $job archive $name size unavailable: ${failure.javaClass.simpleName}: ${failure.message}")
+            FileEntry.UNKNOWN_BYTES
+        }
         FileEntry(name, bytes, sha)
     }
 
@@ -34,7 +42,8 @@ internal class PreparedArchiveFiles(private val config: Config, private val stor
         return Archive(file, sha)
     }
 
-    private fun <T> available(read: () -> T): T = try { read() } catch (_: Exception) {
+    private fun <T> available(read: () -> T): T = try { read() } catch (failure: Exception) {
+        System.err.println("accepted preparation archive unavailable: ${failure.javaClass.simpleName}: ${failure.message}")
         throw ApiError.Unavailable("accepted preparation archive unavailable")
     }
 }
