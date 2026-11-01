@@ -1,8 +1,14 @@
-// Lab preparation produces JVM binaries. Native release packaging requires a
-// Kotlin/Native compiler host, which Linux ARM64 workers do not provide.
+// Ordinary JVM preparation avoids native release configuration, which unsupported
+// compiler hosts (for example Linux ARM64) cannot provide. An explicitly requested
+// native CLI task needs that configuration: the CLI plugin registers its executable
+// binaries only while release assets are enabled.
+def nativeCliRequested = gradle.startParameter.taskNames.any { path ->
+    def name = path.tokenize(':').last()
+    name == 'releaseAssets' || name ==~ /link(Debug|Release)Executable[A-Z].*/
+}
 gradle.beforeProject { project ->
     project.pluginManager.withPlugin('com.eignex.cli') {
-        project.extensions.getByName('eignexCli').releaseAssetsEnabled.set(false)
+        if (!nativeCliRequested) project.extensions.getByName('eignexCli').releaseAssetsEnabled.set(false)
     }
 }
 
