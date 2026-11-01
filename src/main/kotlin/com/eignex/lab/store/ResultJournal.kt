@@ -121,7 +121,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             var published = false
             try {
                 val manifest = Manifest(job, pending.map { ResultBlob(it.key, it.value.size.toLong()) })
-                ZipOutputStream(Files.newOutputStream(temporary)).use { zip ->
+                ZipOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(temporary), 256 * 1024)).use { zip ->
                     zip.setLevel(0)
                     zip.putNextEntry(ZipEntry("manifest.json").apply { time = 0 })
                     zip.write(Json.encodeToString(manifest).toByteArray()); zip.closeEntry()
@@ -172,7 +172,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         try {
             temporary = Files.createTempFile(root, ".pending-", ".tmp")
             val manifest = Manifest(job, blobs)
-            ZipOutputStream(Files.newOutputStream(temporary)).use { zip ->
+            ZipOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(temporary), 256 * 1024)).use { zip ->
                 zip.setLevel(0)
                 zip.putNextEntry(ZipEntry("manifest.json").apply { time = 0 })
                 zip.write(Json.encodeToString(manifest).toByteArray()); zip.closeEntry()

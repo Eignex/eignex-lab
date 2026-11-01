@@ -107,11 +107,11 @@ class SharedInputCacheTest {
         val at = now()
         Files.setLastModifiedTime(partial, FileTime.fromMillis(at - 48L * 60 * 60 * 1000))
         val cache = SharedInputCache(root)
-        java.nio.channels.FileChannel.open(blobs.resolve("$sha.lock"), java.nio.file.StandardOpenOption.CREATE,
-            java.nio.file.StandardOpenOption.WRITE).use { channel -> channel.lock().use {
+        checkNotNull(ProcessFilePin.tryLock(blobs.resolve("$sha.lock"))).use {
             cache.maintain(at, force = true)
             assertTrue(Files.exists(partial))
-        } }
+            assertNull(ProcessFilePin.tryLock(blobs.resolve("$sha.lock")), "cleanup must retain the writer's ownership")
+        }
         cache.maintain(at, force = true)
         assertFalse(Files.exists(partial))
     }

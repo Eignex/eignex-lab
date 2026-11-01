@@ -16,12 +16,9 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
-import java.nio.channels.FileChannel
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardOpenOption.CREATE
-import java.nio.file.StandardOpenOption.WRITE
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Base64
@@ -142,7 +139,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                     val blob = root.resolve(".lab-inputs/blobs/${file.sha256}")
                     Files.createDirectories(blob.parent)
                     require(blob.parent.toRealPath().startsWith(canonical))
-                    FileChannel.open(blob.resolveSibling("${file.sha256}.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
+                    blobPin(blob.resolveSibling("${file.sha256}.lock"), checkActive).use {
                         if (!valid(blob, file)) {
                             val staging = Files.createTempFile(blob.parent, ".${file.sha256}-input-", ".partial")
                             try {
@@ -154,7 +151,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                         }
                         link(blob)
                         Files.setLastModifiedTime(blob, java.nio.file.attribute.FileTime.fromMillis(now()))
-                    } }
+                    }
                 }
             }
         }
@@ -162,6 +159,14 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     }
 
     private fun Path.toRealPathOrNull(): Path? = runCatching { toRealPath() }.getOrNull()
+
+    private fun blobPin(path: Path, checkActive: () -> Unit): ProcessFilePin {
+        while (true) {
+            checkActive()
+            ProcessFilePin.tryLock(path)?.let { return it }
+            Thread.sleep(10)
+        }
+    }
 
     private fun matchesPacked(path: Path, file: InputFile): Boolean = runCatching {
         ZstdInputStreamNoFinalizer(Files.newInputStream(path)).use { input ->

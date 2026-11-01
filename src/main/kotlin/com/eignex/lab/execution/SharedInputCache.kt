@@ -9,7 +9,6 @@ import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
 import java.nio.channels.FileChannel
-import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
@@ -175,10 +174,7 @@ internal class SharedInputCache(private val root: Path, private val maxBytes: Lo
             for (entry in entries.filter { it.blob }.sortedBy { it.used }) {
                 if (entry.path in removed || size <= maxBytes && at - entry.used <= maxAgeMs ||
                     entry.files.any { references.getValue(it.key) > 1 }) continue
-                FileChannel.open(entry.path.resolveSibling("${entry.path.fileName}.lock"), CREATE, WRITE).use { channel ->
-                    val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
-                    lock?.use { remove(entry) }
-                }
+                ProcessFilePin.tryLock(entry.path.resolveSibling("${entry.path.fileName}.lock"))?.use { remove(entry) }
             }
         }
         unreferencedBlobs()
@@ -193,10 +189,7 @@ internal class SharedInputCache(private val root: Path, private val maxBytes: Lo
             val sha = name.removePrefix(".").substringBefore('-')
             if (name.startsWith('.') && name.endsWith(".partial") && SHA256.matches(sha) &&
                 at - Files.getLastModifiedTime(path).toMillis() > 24L * 60 * 60 * 1000) {
-                FileChannel.open(blobs.resolve("$sha.lock"), CREATE, WRITE).use { channel ->
-                    val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
-                    lock?.use { Files.deleteIfExists(path) }
-                }
+                ProcessFilePin.tryLock(blobs.resolve("$sha.lock"))?.use { Files.deleteIfExists(path) }
             }
         } }
         Files.list(root).use { paths -> paths.filter { it.fileName.toString().startsWith(".evict-") }.forEach(::deleteTree) }

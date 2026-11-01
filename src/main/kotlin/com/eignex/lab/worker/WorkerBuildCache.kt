@@ -128,7 +128,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                                 Files.createDirectories(dependencyHome)
                                 trace.step("compilation") {
                                     run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "-q"), tree,
+                                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain"), tree,
                                         env + ("GRADLE_USER_HOME" to dependencyHome.toString()), kind = "compilation")
                                 }
                                 Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
