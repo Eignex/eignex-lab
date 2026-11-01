@@ -190,6 +190,13 @@ class ExecutionStoreTest {
         assertEquals(200L, Store(file).execution.remainingRunMs("replacement", 1800))
         store.execution.expireRunDeadlines(2000)
         assertEquals(Status.FAILED, store.job(id)!!.status)
+        // A manual retry grants the whole-run limit afresh, while the job keeps its full run time as cost.
+        val spent = store.job(id)!!.runMs
+        assertTrue(spent > 0 && store.retry(id))
+        assertEquals(spent, store.job(id)!!.runMs)
+        assertEquals(0L, store.job(id)!!.deadlineElapsedMs(3000))
+        store.execution.expireRunDeadlines(3000)
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
         val unlimited = bench(null); bind(unlimited, "unlimited")
         val claim = store.execution.claim("unlimited", token, "alloc-unlimited", 1100)!!
         store.execution.phase(claim.owner, "uploading", 1700)

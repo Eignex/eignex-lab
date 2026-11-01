@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -314,6 +314,11 @@ internal object Schema {
      */
     private fun liveSessionIndex(db: Connection) {
         db.createStatement().use { it.execute("CREATE INDEX IF NOT EXISTS session_live ON execution_sessions (id) WHERE desired != 'stop'") }
+    }
+
+    /** Step 15: where a manually retried job's whole-run limit counts from, so a retry is not out of time at once. */
+    private fun retryDeadlines(db: Connection) {
+        db.createStatement().use { if ("deadline_from_ms" !in it.columns("jobs")) it.execute("ALTER TABLE jobs ADD COLUMN deadline_from_ms INTEGER NOT NULL DEFAULT 0") }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */

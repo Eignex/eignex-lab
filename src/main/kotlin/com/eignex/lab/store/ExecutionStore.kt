@@ -312,7 +312,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         job.runRemainingMs(at)
     }
 
-    private fun Job.runRemainingMs(at: Long): Long? = experiment.let(Experiments::runTimeoutSec)?.let { it * 1000 - elapsedMs(at) }
+    private fun Job.runRemainingMs(at: Long): Long? = experiment.let(Experiments::runTimeoutSec)?.let { it * 1000 - deadlineElapsedMs(at) }
 
     fun runTimedOut(owner: AttemptOwner, at: Long = now()) = store.executionTransaction { db ->
         val prior = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
