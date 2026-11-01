@@ -45,6 +45,18 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
     }.getOrNull()?.takeIf { it.version == 1 && it.rootKey != null &&
         it.rootKey == Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString() }
 
+    /** An individually unchanged file may reuse its verified-copy checksum. Missing, stale or unsupported proof
+     * returns a hint miss, leaving the caller's ordinary byte-hashing path intact. */
+    fun checksums(tree: Path, receipt: Path): (Path) -> String? {
+        val root = tree.toAbsolutePath().normalize()
+        val proof = if (reliable(root)) previous(root, receipt)?.files?.associateBy { it.file.path }.orEmpty() else emptyMap()
+        return { file ->
+            val path = file.toAbsolutePath().normalize()
+            val entry = if (path.startsWith(root)) proof[root.relativize(path).toString().replace('\\', '/')] else null
+            entry?.takeIf { it.stamp.reusable && stamp(path) == it.stamp }?.file?.sha256
+        }
+    }
+
     /** Proof of bytes just verified while writing. Retain that exact inode/ctime through publication. */
     fun written(path: Path, file: InputFile): Written = Written(file, stamp(path))
 

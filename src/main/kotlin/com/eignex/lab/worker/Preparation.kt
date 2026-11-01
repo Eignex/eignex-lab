@@ -129,6 +129,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val bench = spec.work.bench
         val armPlans = linkedMapOf<String, com.eignex.lab.bench.BenchPlan>()
         val inputDigests = BenchInputDigests(::checkActive)
+        if (bench != null) for (tree in prepared.values) inputDigests.receipt(tree, tree.resolveSibling("${tree.fileName}.verified.json"))
         var descriptor: com.eignex.lab.bench.BenchDescriptor? = replay?.descriptor
         var materialize: () -> Unit = {}
         val reusedSelections = linkedMapOf<String, BenchSelectionEntry>()
@@ -144,7 +145,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             val repositoryArms = manifest.arms.filter { it.arm.values["backend"] != REFERENCE_BACKEND }.ifEmpty { listOf(manifest.arms.first()) }
             val keys = trace.step("selection") { repositoryArms.associate { arm -> arm.arm.label to try {
                 BenchSelections.key(manifest.release, spec.repository, bench, BenchRuns.request(bench, arm.arm), arm.sha,
-                    prepared.getValue(arm.sha), sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive)
+                    prepared.getValue(arm.sha), sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive, inputDigests)
             } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null } } }
             val found = keys.values.filterNotNull().distinct().takeIf { it.isNotEmpty() }?.let { wanted -> trace.step("selection") {
                 try { cachedSelections(wanted).filter { it.key in wanted }.associateBy { it.key } }

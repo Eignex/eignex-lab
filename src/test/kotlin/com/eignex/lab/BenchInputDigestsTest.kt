@@ -17,6 +17,48 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlin.test.*
 
 class BenchInputDigestsTest {
+    @Test fun `verified private copy receipts avoid byte reads across fresh digest instances`() {
+        val parent = Files.createTempDirectory("bench-proof")
+        val source = Files.createDirectory(parent.resolve("source"))
+        Files.writeString(source.resolve("model"), "original")
+        val proof = parent.resolve("source.json")
+        val verifier = TreeVerification(); verifier.capture(source, proof)
+        val copied = parent.resolve("copy"); val copyProof = parent.resolve("copy.json")
+        verifier.copy(source, proof, copied, copyProof, copy = { copyPrivateTree(source, copied, {}) })
+        val unread = BenchInputDigests(hash = { _, _ -> error("verified bytes reread") })
+        unread.receipt(copied, copyProof)
+        assertEquals(ExecutionStore.digest("original"), unread.checksum(copied, copied.resolve("model")))
+        assertEquals(0, unread.hashedFiles); assertEquals(1, unread.reusedFiles)
+
+        val file = copied.resolve("model"); val mtime = Files.getLastModifiedTime(file)
+        Files.writeString(file, "modified"); Files.setLastModifiedTime(file, mtime)
+        val changed = BenchInputDigests(); changed.receipt(copied, copyProof)
+        assertEquals(ExecutionStore.digest("modified"), changed.checksum(copied, file))
+        assertEquals(1, changed.hashedFiles)
+        val replacement = parent.resolve("replacement")
+        Files.writeString(replacement, "original"); Files.setLastModifiedTime(replacement, mtime)
+        Files.move(replacement, file, REPLACE_EXISTING)
+        assertEquals(ExecutionStore.digest("original"), changed.checksum(copied, file))
+        assertEquals(2, changed.hashedFiles, "a replacement inode must be checked")
+    }
+
+    @Test fun `missing corrupt wrong root and unreliable receipts fall back to byte verification`() {
+        val parent = Files.createTempDirectory("bench-proof-fallback")
+        val source = Files.createDirectory(parent.resolve("source"))
+        val file = source.resolve("model"); Files.writeString(file, "model")
+        val proof = parent.resolve("proof.json"); TreeVerification().capture(source, proof)
+        val saved = Files.readString(proof)
+        for (kind in listOf("missing", "corrupt", "wrong-root", "unreliable")) {
+            var reads = 0
+            val root = if (kind == "wrong-root") parent.resolve(kind).also { copyPrivateTree(source, it, {}) } else source
+            val receipt = if (kind == "missing") parent.resolve("absent.json") else proof
+            Files.writeString(proof, if (kind == "corrupt") "broken" else saved)
+            val digests = BenchInputDigests(hash = { path, check -> reads++; hashFile(path, check) }, reliableRoot = { kind != "unreliable" })
+            digests.receipt(root, receipt)
+            assertEquals(ExecutionStore.digest("model"), digests.checksum(root, root.resolve("model")))
+            assertEquals(1, reads, kind)
+        }
+    }
     @Test fun `shared compiler and include bytes are hashed once without changing pinned identities`() {
         val root = Files.createTempDirectory("bench-shared-digests")
         try {

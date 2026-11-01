@@ -55,16 +55,16 @@ internal object BenchSelections {
     }
 
     fun key(release: String, repository: String, spec: BenchSpec, request: BenchRequest, commit: String, tree: Path,
-            corpus: String, checkActive: () -> Unit = {}): String {
+            corpus: String, checkActive: () -> Unit = {}, digests: BenchInputDigests = BenchInputDigests(checkActive)): String {
         require(CommitSha.isValid(commit))
-        val source = planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive) } ?: "commit:$commit"
+        val source = planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive, digests) } ?: "commit:$commit"
         val canonical = BenchProtocol.json.encodeToString(BenchRequest.serializer(), request.copy(parameters = request.parameters.toSortedMap()))
         return ExecutionStore.digest(listOf(VERSION, "release=$release", "repository=$repository", "manifest=${spec.manifest}",
             "request=$canonical", "corpus=$corpus", "source=$source").joinToString("\n"))
     }
 
     /** Path and checksum of every file under [paths]; a missing path is part of the identity, a link is refused. */
-    private fun inventory(tree: Path, paths: List<String>, checkActive: () -> Unit): String {
+    private fun inventory(tree: Path, paths: List<String>, checkActive: () -> Unit, digests: BenchInputDigests): String {
         val canonical = tree.toRealPath()
         val lines = paths.distinct().sorted().flatMap { relative ->
             val root = tree.resolve(safeRelative(relative))
@@ -73,7 +73,7 @@ internal object BenchSelections {
             Files.walk(root).use { it.sorted().toList() }.map { file ->
                 checkActive()
                 require(!Files.isSymbolicLink(file)) { "plan input contains a link" }
-                "$relative/${root.relativize(file)}:" + if (Files.isDirectory(file, NOFOLLOW_LINKS)) "directory" else hashFile(file, checkActive)
+                "$relative/${root.relativize(file)}:" + if (Files.isDirectory(file, NOFOLLOW_LINKS)) "directory" else digests.checksum(tree, file)
             }
         }
         return ExecutionStore.digest(lines.joinToString("\n"))
