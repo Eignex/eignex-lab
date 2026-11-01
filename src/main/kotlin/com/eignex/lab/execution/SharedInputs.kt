@@ -34,8 +34,9 @@ internal interface InputTransport {
     fun get(key: String, destination: Path)
 }
 
+/** [identity] names the remote store (its URL): a cached selection's inputs are reused only against the store that holds them. */
 internal class SharedInputs(val root: Path, private val transport: InputTransport, private val existingPrefix: String = "corpus",
-                           private val maxBytes: Long = 8L * 1024 * 1024 * 1024) {
+                           private val maxBytes: Long = 8L * 1024 * 1024 * 1024, val identity: String = "") {
     /** Declared inputs whose bytes are neither in the regional store nor on this worker. */
     class MissingInputs(val paths: List<String>) :
         IllegalStateException("${paths.size} declared input(s) are neither stored nor local, first ${paths.first()}")
@@ -203,7 +204,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
             val root = environment["LAB_SHARED_INPUT_ROOT"] ?: return null
             val base = requireNotNull(environment["LAB_SHARED_INPUT_URL"])
             return SharedInputs(Path.of(root), HttpInputTransport(URI(base), environment["LAB_SHARED_INPUT_SIGNER"]?.let(URI::create), publishSignature),
-                maxBytes = environment["LAB_SHARED_INPUT_MAX_BYTES"]?.toLong() ?: 8L * 1024 * 1024 * 1024)
+                maxBytes = environment["LAB_SHARED_INPUT_MAX_BYTES"]?.toLong() ?: 8L * 1024 * 1024 * 1024, identity = base)
         }
     }
 }

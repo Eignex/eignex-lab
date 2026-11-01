@@ -163,6 +163,20 @@ During one preparation, repeated compiler/include files reuse checksums only whi
 ctime remain unchanged on a supported filesystem. Directory membership is walked again for every input;
 changed files and unsupported filesystems take the checksum path. Reuse ends with that preparation.
 The worker logs `worker selection verification` counters for hashed/reused files and hashed bytes.
+
+Preparation also reuses accepted planner output across jobs. Before running `describe` and `plan`, the worker computes
+one selection key per repository arm: the SHA-256 of the worker release, repository, manifest path, the arm's request
+(sorted parameters), the corpus transport (shared input store URL, or `local`) and a source identity. The source
+identity is the arm's commit unless the manifest declares top-level `planInputs` (relative paths): then it is the
+content of the manifest and of every file under those paths, and different commits with the same plan inputs share a
+plan. Declaring `planInputs` asserts that the plan is a function of those files, the request and the corpus; include
+the planner's own sources. Coordinator selection filters and `bench.frozenCases` apply afterwards and are not keyed.
+A hit skips `describe`, `plan` and input pinning for that arm. It is used only when its source-root input bytes
+still match and its corpus inputs are held by the same shared input store, whose checksums solve workers verify.
+When every arm hits, the accepted shared inputs replace corpus publication; otherwise the planning arm's fresh
+digests must equal the reused ones. A plan is offered for reuse only when its job's accepted shared inputs hold all its
+corpus inputs, so a selection filter that dropped cases, or a worker without a shared input store, leaves nothing to
+reuse. The preparation's cache report shows `Bench selection` hits and misses.
 Build staging is pinned before background cleanup begins, and cleanup filters unrelated cache entries by
 name before reading their metadata. Input/archive quota eviction renames unused entries to tombstones;
 background workers delete those trees under one process-owned garbage lock per cache root. Publication

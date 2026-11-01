@@ -424,7 +424,8 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     /** Artifacts must have been checksum-verified before this transaction. A lost acknowledgement is idempotent. */
     internal fun commit(owner: AttemptOwner, result: IterationResult, at: Long = now(),
-                        projectRecord: (ExecutionCaseResult) -> String? = { it.record }): Boolean = store.executionTransaction { db ->
+                        projectRecord: (ExecutionCaseResult) -> String? = { it.record },
+                        benchSelections: List<com.eignex.lab.execution.BenchSelectionEntry> = emptyList()): Boolean = store.executionTransaction { db ->
         val a = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (a.state == AttemptState.COMMITTED) {
             if (a.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
@@ -448,8 +449,25 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
             Json.encodeToString(result), at, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "committed:${owner.iteration}:${owner.generation}", at)
+        // The newest acceptance owns a key: its inputs are the likeliest to remain, and the older job may be deleted.
+        for (entry in benchSelections) db.sqlUpdate("INSERT OR REPLACE INTO bench_selections (selection_key, job_id, entry, created_at) VALUES (?, ?, ?, ?)",
+            entry.key, a.jobId, Json.encodeToString(entry), at)
         if (result.runTimedOut) db.failRunDeadline(a.jobId, at)
         true
+    }
+
+    /**
+     * Accepted planner outputs under [keys], for the preparing attempt [owner]. Primary key lookups only. A key is a
+     * digest of the repository and plan inputs ([com.eignex.lab.execution.BenchSelections]), so it names one plan.
+     */
+    fun benchSelections(owner: AttemptOwner, keys: List<String>, at: Long = now()): List<com.eignex.lab.execution.BenchSelectionEntry> = store.executionRead { db ->
+        val attempt = db.attempt(owner, at)
+        require(attempt.iteration == PREPARATION && attempt.state == AttemptState.PREPARING)
+        keys.flatMap { key ->
+            db.sqlRows("SELECT entry FROM bench_selections WHERE selection_key = ?", key) {
+                Json.decodeFromString<com.eignex.lab.execution.BenchSelectionEntry>(it.getString(1))
+            }
+        }
     }
 
     /** Retire this credential before allowing a replacement session. Completed attempts remain accepted. */

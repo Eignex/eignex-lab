@@ -159,6 +159,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                                 SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")))
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
+                                }, cachedSelections = { keys ->
+                                    retry { Json.decodeFromString<List<BenchSelectionEntry>>(String(json("bench-selections", Json.encodeToString(WorkerBenchSelections(claim.owner, keys))).body())) }
                                 }) { file ->
                                     val regional = if (file.fileName.toString().endsWith(".zip")) BuildArchives.worker(publishSignature = ::signature) else null
                                     // A store that refuses the archive (not yet granted, say) leaves it to the coordinator.
