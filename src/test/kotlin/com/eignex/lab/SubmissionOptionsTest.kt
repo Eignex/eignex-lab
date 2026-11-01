@@ -121,7 +121,7 @@ class SubmissionOptionsTest {
     fun `bench instrumentation belongs to the repository request`() {
         val bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("measurement" to "jfr")))
         for (mode in Measurement.entries) {
-            val experiment = ExperimentSpec("e", bench = bench, measurement = mode, parallel = 4)
+            val experiment = ExperimentSpec("e", bench = bench, measurement = mode, vcpus = 4)
             if (mode == Measurement.NONE) Experiments.validate(experiment, 4)
             else assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, 4) }
         }
@@ -147,7 +147,7 @@ class SubmissionOptionsTest {
         }
         assertEquals(HttpStatusCode.OK, updated.status)
         assertEquals("compilation+log", store.schedules.all().single().experiment.work.bench!!.request.parameters["measurement"])
-        assertEquals(4, store.schedules.all().single().experiment.parallel)
+        assertEquals(4, store.schedules.all().single().experiment.vcpus)
         val rejected = client.post("/experiments") {
             contentType(ContentType.Application.Json)
             setBody("""{"name":"bad","description":"d","bench":{"manifest":"bench.json"},"measurement":"jfr"}""")

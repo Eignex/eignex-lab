@@ -7,7 +7,7 @@ import com.eignex.lab.nomad.NomadPlatform
 
 /**
  * Where a job may run, decided by the lab: ordinary jobs go to the local machine first, then a cloud node
- * (Nomad workers). Jobs eligible for the local machine have cores and `parallel` capped to it at submit
+ * (Nomad workers). Jobs eligible for the local machine have cores and `vcpus` capped to it at submit
  * ([Experiments.capToLocal]); explicit node selectors can instead require a compatible cloud node. Its
  * [ExperimentSpec.host] records the decision for the queue: `lab` for a job only the local machine runs, `auto` for one
  * the local machine and cloud nodes share, each running whole iterations of it, or `aws` for cloud-only work.

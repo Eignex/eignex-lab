@@ -46,18 +46,18 @@ class ExperimentService internal constructor(private val services: ApiServices) 
         val submitted = Json.decodeFromJsonElement(ExperimentSpec.serializer(), body).copy(capped = emptyList())
         Experiments.requirePlainName(submitted.name)
         val given = if (NodeTags.matches(submitted.nodeTags, config.localNodeTags))
-            Experiments.capToLocal(submitted, config.cores, config.maxParallel) else submitted
+            Experiments.capToLocal(submitted, config.cores) else submitted
         val spec = given.copy(host = services.placement.resolve(given, JobOrigin.Submitted(given.name), checked = false))
         requireDescription(spec)
         services.placement.requireFits(spec)
         val coreLimit = services.placement.coreLimit(spec)
-        Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) coreLimit else config.maxParallel, coreLimit)
+        Experiments.validate(spec, if (spec.host == Experiments.AWS_HOST) coreLimit else config.cores, coreLimit)
         spec.work.analysis?.let { return analysis(spec, it) }
         // One question is one experiment: a batch of an active one is refused ([Experiments.splitOf]).
         Experiments.splitOf(spec, store.active(withCommands = false))?.let { return Submission.SplitConflict(Experiments.splitMessage(it)) }
         val arms = Experiments.arms(spec)
         for (ref in arms.map { it.ref }.distinct()) requireRef(ref, Repositories.source(spec.repository), services.trust(spec.repository))
-        val id = store.create(spec.name, arms.first().ref, emptyList(), spec.parallel ?: config.defaultParallel, spec.priority, spec)
+        val id = store.create(spec.name, arms.first().ref, emptyList(), spec.vcpus ?: config.defaultParallel, spec.priority, spec)
         val notes = (if (spec.isProfile) {
             listOf("time limit: ${Experiments.profileLimitText(spec)}, at most ${Experiments.duration(Experiments.PROFILE_MAX_TIMEOUT_MS)}") +
                 Experiments.profileCaps(spec).map { "capped: $it" }

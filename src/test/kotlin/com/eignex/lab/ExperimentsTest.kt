@@ -29,16 +29,16 @@ class ExperimentsTest {
     @Test
     fun `controlled series distinguish aggregate execution capacity`() {
         val sweep = ExperimentSpec("sweep", bench = BenchSpec("bench.json",
-            BenchRequest(parameters = mapOf("comparison-series" to "sdk-linux-v1"))), parallel = 1)
+            BenchRequest(parameters = mapOf("comparison-series" to "sdk-linux-v1"))), vcpus = 1)
 
-        assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(parallel = 2)))
+        assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(vcpus = 2)))
     }
 
     @Test
     fun `historical bench capacity changes preserve their existing fingerprint`() {
-        val sweep = ExperimentSpec("sweep", bench = BenchSpec("bench.json"), parallel = 1)
+        val sweep = ExperimentSpec("sweep", bench = BenchSpec("bench.json"), vcpus = 1)
 
-        assertEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(parallel = 2)))
+        assertEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(sweep.copy(vcpus = 2)))
     }
 
     @Test
@@ -47,7 +47,7 @@ class ExperimentsTest {
             """{"name":"bounded","host":"lab","profile":{"main":"com.eignex.tools.profile.Tool","classpath":["tools/lib/*"],"runTimeoutSec":180}}""",
         )
 
-        Experiments.validate(spec, maxParallel = 4)
+        Experiments.validate(spec, maxVcpus = 4)
 
         assertEquals(180L, spec.work.profile?.runTimeoutSec)
     }
@@ -57,7 +57,7 @@ class ExperimentsTest {
         for (limit in listOf(0L, -1L, Long.MAX_VALUE)) {
             val spec = ExperimentSpec("bounded", profile = ProfileMain("com.eignex.tools.profile.Tool", runTimeoutSec = limit, classpath = listOf("tools/lib/*")))
 
-            assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
+            assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxVcpus = 4) }
         }
     }
 
@@ -67,7 +67,7 @@ class ExperimentsTest {
             val spec = ExperimentSpec("bounded", host = host,
                 profile = ProfileMain("com.eignex.tools.profile.Tool", runTimeoutSec = 180, classpath = listOf("tools/lib/*")))
 
-            Experiments.validate(spec, maxParallel = 4)
+            Experiments.validate(spec, maxVcpus = 4)
         }
     }
 
@@ -84,7 +84,7 @@ class ExperimentsTest {
     fun `an analysis job names a job and a kind and nothing an experiment runs, and stays on the local machine`() {
         val analysis = ExperimentSpec("analyze-9", description = "again", analyze = AnalyzeSpec(9))
 
-        Experiments.validate(analysis, maxParallel = 4)
+        Experiments.validate(analysis, maxVcpus = 4)
         assertTrue(analysis.isAnalysis)
         assertTrue(Placement.localOnly(analysis, analysis.name))
         for (wrong in listOf(
@@ -94,7 +94,7 @@ class ExperimentsTest {
             analysis.copy(base = mapOf("ref" to "main")),
             analysis.copy(measurement = Measurement.JFR),
             analysis.copy(measurement = Measurement.RESOURCES),
-        )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxParallel = 4) }
+        )) assertFailsWith<IllegalArgumentException>(wrong.toString()) { Experiments.validate(wrong, maxVcpus = 4) }
         // An analysis that also names a profile cannot even be built: an experiment is one kind of work.
         assertFailsWith<IllegalArgumentException> {
             analysis.copy(profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
@@ -136,7 +136,7 @@ class ExperimentsTest {
     @Test
     fun `an invalid exact policy is refused`() {
         assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(spec(base = mapOf("exact" to "yes")), maxParallel = 4)
+            Experiments.validate(spec(base = mapOf("exact" to "yes")), maxVcpus = 4)
         }
     }
 
@@ -190,7 +190,7 @@ class ExperimentsTest {
     @Test
     fun `a spec with an unknown key is refused`() {
         val error = assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(spec(configs = listOf(mapOf("cmd" to "rm"))), maxParallel = 4)
+            Experiments.validate(spec(configs = listOf(mapOf("cmd" to "rm"))), maxVcpus = 4)
         }
 
         assertContains(error.message.orEmpty(), "execution requires a repository bench manifest")
@@ -199,7 +199,7 @@ class ExperimentsTest {
     @Test
     fun `a value with whitespace is refused`() {
         assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(spec(base = mapOf("engine" to "cp; rm -rf /")), maxParallel = 4)
+            Experiments.validate(spec(base = mapOf("engine" to "cp; rm -rf /")), maxVcpus = 4)
         }
     }
 
@@ -263,7 +263,7 @@ class ExperimentsTest {
         val sweep = spec(base = mapOf("timeout" to "10000"))
 
         assertEquals(Experiments.fingerprint(sweep),
-            Experiments.fingerprint(sweep.copy(name = "x@abc", base = sweep.base + ("ref" to "abc"), priority = -1, parallel = 3)))
+            Experiments.fingerprint(sweep.copy(name = "x@abc", base = sweep.base + ("ref" to "abc"), priority = -1, vcpus = 3)))
         assertNotEquals(Experiments.fingerprint(sweep), Experiments.fingerprint(spec(base = mapOf("timeout" to "60000"))))
     }
 
@@ -287,23 +287,23 @@ class ExperimentsTest {
     fun `a script job is refused, inline or from a file`() {
         val script = ExperimentSpec("s", emptyList(), script = "echo hi", description = "d")
 
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(script, maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(script = null, scriptFile = "tools/bench.sh"), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(script, maxVcpus = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(script.copy(script = null, scriptFile = "tools/bench.sh"), maxVcpus = 4) }
     }
 
     @Test
     fun `a profile job names an Eignex main and no problems configs seeds or repeats`() {
         val profile = ExperimentSpec("p", emptyList(), profile = ProfileMain("com.eignex.tools.profile.Timing", listOf("a=1"), classpath = listOf("tools/lib/*")), description = "d")
 
-        Experiments.validate(profile, maxParallel = 4)
+        Experiments.validate(profile, maxVcpus = 4)
         for (main in listOf("unqualified", "9bad.Class", "com.eignex.tools.profile.X; rm -rf /", "com.eignex.bad-name.Main")) {
-            assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main, classpath = listOf("tools/lib/*"))), maxParallel = 4) }
+            assertFailsWith<IllegalArgumentException>(main) { Experiments.validate(profile.copy(profile = ProfileMain(main, classpath = listOf("tools/lib/*"))), maxVcpus = 4) }
         }
         assertFailsWith<IllegalArgumentException> {
-            Experiments.validate(profile.copy(problems = listOf(mapOf("suite" to "s"))), maxParallel = 4)
+            Experiments.validate(profile.copy(problems = listOf(mapOf("suite" to "s"))), maxVcpus = 4)
         }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(repeats = 2), maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(measurement = Measurement.JFR), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(repeats = 2), maxVcpus = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(profile.copy(measurement = Measurement.JFR), maxVcpus = 4) }
     }
 
     @Test
@@ -363,7 +363,7 @@ class ExperimentsTest {
             "a runTimeoutSec of 86400 s was asked, capped at 7200 s"), Experiments.profileCaps(over))
         assertEquals(7_200L, Experiments.profileRunTimeoutSec(over.work.profile!!))
         assertEquals(180L, Experiments.profileRunTimeoutSec(main.copy(runTimeoutSec = 180)))
-        Experiments.validate(over, maxParallel = 4)
+        Experiments.validate(over, maxVcpus = 4)
     }
 
     @Test
@@ -371,7 +371,7 @@ class ExperimentsTest {
         for (timeout in listOf("0", "-5", "soon")) {
             val spec = ExperimentSpec("p", base = mapOf("timeout" to timeout), profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
 
-            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxParallel = 4) }
+            val error = assertFailsWith<IllegalArgumentException> { Experiments.validate(spec, maxVcpus = 4) }
             assertContains(error.message!!, "10 min unless it says")
         }
     }
@@ -383,7 +383,7 @@ class ExperimentsTest {
         )
         val old = Json.decodeFromString<ExperimentSpec>("""{"name":"s","description":"d","script":"echo hi","base":{"ref":"main"}}""")
 
-        Experiments.validate(spec, maxParallel = 4)
+        Experiments.validate(spec, maxVcpus = 4)
         assertTrue(spec.isProfile && spec.problems.isEmpty())
         assertTrue(old.isScript && !old.isProfile)
     }
@@ -392,13 +392,13 @@ class ExperimentsTest {
     fun `an experiment may not set what a case solves or where it writes, nor odd option names`() {
         val spec = ExperimentSpec("e", bench = BenchSpec("bench.json"), description = "d")
 
-        Experiments.validate(spec, maxParallel = 4)
+        Experiments.validate(spec, maxVcpus = 4)
         for (base in listOf(mapOf("out" to "/tmp/x"), mapOf("problem" to "p"), mapOf("suite" to "s"), mapOf("a b" to "1"), mapOf("x" to "a\nb"))) {
-            assertFailsWith<IllegalArgumentException>(base.toString()) { Experiments.validate(spec.copy(base = base), maxParallel = 4) }
+            assertFailsWith<IllegalArgumentException>(base.toString()) { Experiments.validate(spec.copy(base = base), maxVcpus = 4) }
         }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(configs = listOf(mapOf("out" to "/x"))), maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(grid = mapOf("out" to listOf("/x"))), maxParallel = 4) }
-        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(problems = listOf(mapOf("suite" to "s", "out" to "/x"))), maxParallel = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(configs = listOf(mapOf("out" to "/x"))), maxVcpus = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(grid = mapOf("out" to listOf("/x"))), maxVcpus = 4) }
+        assertFailsWith<IllegalArgumentException> { Experiments.validate(spec.copy(problems = listOf(mapOf("suite" to "s", "out" to "/x"))), maxVcpus = 4) }
     }
 
     private val batched = ExperimentSpec(
@@ -433,8 +433,8 @@ class ExperimentsTest {
             batched.copy(repeats = 5),
             batched.copy(base = mapOf("timeout" to "20000")),
             batched.copy(base = emptyMap()),
-            batched.copy(measurement = Measurement.JFR, parallel = 1),
-            batched.copy(measurement = Measurement.RESOURCES, parallel = 1),
+            batched.copy(measurement = Measurement.JFR, vcpus = 1),
+            batched.copy(measurement = Measurement.RESOURCES, vcpus = 1),
         )) assertNull(Experiments.splitOf(spec, active), spec.toString())
     }
 

@@ -63,8 +63,9 @@ data class Job(
     val startedAt: Long? = null,
     val finishedAt: Long? = null,
     val error: String? = null,
-    /** How many of the job's commands may run at once. The runner rereads it, so it can change mid-job. */
-    val parallel: Int = 1,
+    /** vCPUs dedicated to the job ([ExperimentSpec.vcpus]), the stored `parallel` column. The queue rereads it, so it can
+     *  change mid-job. Jobs from before it counted vCPUs counted cases at once: they now run one case fewer. */
+    val vcpus: Int = 1,
     /** The runner takes the highest priority first, the oldest first within one. */
     val priority: Int = 0,
     /** A paused job is not started, and a running one stops starting commands and goes back to the queue. */
@@ -198,8 +199,8 @@ data class Schedule(
     val name: String,
     val ref: String,
     val experiment: ExperimentSpec,
-    /** [experiment]'s parallel (0 when it leaves it to the lab) and priority, which the schedule's runs take. */
-    val parallel: Int,
+    /** [experiment]'s vCPUs (0 when it leaves them to the lab) and priority, which the schedule's runs take. */
+    val vcpus: Int,
     val priority: Int,
     val intervalSec: Long,
     val lastSha: String? = null,

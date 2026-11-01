@@ -491,8 +491,8 @@ internal fun progress(job: Job): Html {
     val running = job.running
     fun part(cls: String, count: Int) = if (count == 0) "" else (Html("<i class=\"") + cls + Html("\" style=\"width:") + (100.0 * count / total) + Html("%\"></i>"))
     val bar = (Html("<span class=\"bar\">") + part("ok", job.done - job.failed) + part("bad", job.failed) + part("run", running) + Html("</span>"))
-    val parallel = if (job.parallel > 1) " ×${job.parallel}" else ""
-    return (Html("") + bar + Html("<small>") + job.done + Html("/") + job.total + parallel + Html("</small>"))
+    val vcpus = if (job.vcpus > 1) " ${job.vcpus} vCPU" else ""
+    return (Html("") + bar + Html("<small>") + job.done + Html("/") + job.total + vcpus + Html("</small>"))
 }
 
 internal fun output(jobId: Long, files: JobDirView, name: String, running: Boolean): Html {

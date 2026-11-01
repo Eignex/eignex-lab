@@ -41,7 +41,7 @@ internal class Confirmations(private val local: LocalNode, private val paths: Da
         val origin = JobOrigin.Confirmation(series)
         // The name filter selects the stored confirmation series, including its ~confirm suffix.
         if (store.jobs(limit = 100, name = origin.series).any { it.name == confirmation.name && it.experiment == confirmation }) return
-        val id = store.create(confirmation.name, after, emptyList(), confirmation.parallel ?: local.defaultParallel, confirmation.priority, confirmation,
+        val id = store.create(confirmation.name, after, emptyList(), confirmation.vcpus ?: local.defaultParallel, confirmation.priority, confirmation,
             origin)
         logJob(paths, job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
             "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +

@@ -53,6 +53,8 @@ data class JobPlacement(
     val doing: String? = null,
     /** Each host's part of a running job, wherever its cases ran ([HostProgress]): a shared job may run on several. */
     val hosts: List<HostProgress> = emptyList(),
+    /** The job's vCPUs ([Job.vcpus]); [requestedParallel] is the cases a session of them runs at once. */
+    val vcpus: Int = 1,
     val requestedParallel: Int = 1,
     val executingParallel: Int = 0,
     val pendingParallel: Int = 0,
@@ -110,6 +112,7 @@ object Waiting {
         val host = job.experiment.host
         val estimate = if (job.status.isActive) Estimates.estimate(job, history, status.local.cores, status.local.maxParallel) else null
         val activity = nodes?.let { jobActivity(job, it) }
+        val requested = Experiments.caseConcurrency(job.vcpus, Experiments.caseCpus(job.experiment))
         return JobPlacement(job.id, job.name, job.status, Placement.where(host), host.word, job.priority,
             job.paused, job.cancelRequested, position.takeIf { job.status == Status.QUEUED },
             view.localQueue.indexOf(job.id).takeIf { it >= 0 }?.plus(1),
@@ -123,8 +126,8 @@ object Waiting {
                 !nodes.isNullOrEmpty() -> "running on ${nodes.joinToString { it.name }}"
                 else -> "Nomad sessions; accepted results and source checks determine completion"
             } else null,
-            hosts, job.parallel, parallelism.first, parallelism.second,
-            if (!job.status.isActive || job.paused || job.cancelRequested || parallelism.first >= job.parallel) null else when {
+            hosts, job.vcpus, requested, parallelism.first, parallelism.second,
+            if (!job.status.isActive || job.paused || job.cancelRequested || parallelism.first >= requested) null else when {
                 !job.setupDone -> "Worker slots await input preparation"
                 parallelism.second > 0 -> "${parallelism.second} worker slots await a compatible allocation"
                 else -> "Additional slots await worker admission, resource availability or priority"

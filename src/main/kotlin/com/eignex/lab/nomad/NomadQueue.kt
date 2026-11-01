@@ -52,8 +52,15 @@ class NomadQueue(
                     val plans = preparation.armPlans.values.ifEmpty { listOfNotNull(preparation.benchPlan) }
                     plans.takeIf { it.isNotEmpty() }?.let { com.eignex.lab.bench.BenchPlan(it.flatMap { plan -> plan.cases }.mapIndexed { index, case -> case.copy(id = index.toString()) }) }
                 }
+                // The native worker shares the local machine: its sessions run at most the cases its memory allows
+                // ([Config.maxParallel]), and neither they nor its preparation hold more than its cores.
+                fun solveBudget(target: NomadQueueTarget, of: Job) = if (target.native)
+                    settings.solveBudget(target, of, preparedBench, config.maxParallel, config.cores * 1000)
+                else settings.solveBudget(target, of, preparedBench)
+                fun preparationBudget(target: NomadQueueTarget) =
+                    settings.preparationBudget(target, job, if (target.native) config.cores * 1000 else Int.MAX_VALUE)
                 val targets = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
-                    .filter { settings.solveBudget(it, job, preparedBench) != null }
+                    .filter { solveBudget(it, job) != null }
                     .filter { if (it.native) spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
                 require(targets.isNotEmpty()) { "no configured Nomad worker can run this experiment within its resource budget" }
                 var sessions = store.execution.sessions(job.id)
@@ -69,14 +76,14 @@ class NomadQueue(
                     val compatible = fitting.filter { target -> NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
-                    val target = ordered(compatible) { settings.preparationBudget }.firstOrNull {
-                        cloudMayRun(it, job, settings.preparationBudget) && backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) && (!it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
-                            held.first + settings.preparationBudget.cpuMillis <= config.cores * 1000L &&
-                                held.second + settings.preparationBudget.memoryMiB <= it.template.budget.memoryMiB
+                    val target = ordered(compatible, ::preparationBudget).firstOrNull {
+                        cloudMayRun(it, job, preparationBudget(it)) && backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) && (!it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
+                            held.first + preparationBudget(it).cpuMillis <= config.cores * 1000L &&
+                                held.second + preparationBudget(it).memoryMiB <= it.template.budget.memoryMiB
                         })
                     } ?: continue
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
-                        settings.preparationBudget, solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
+                        preparationBudget(target), solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
                         benchReplay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     continue
@@ -95,15 +102,19 @@ class NomadQueue(
                 }
                 val pending = store.plans.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
-                val minimumCpu = targets.minOf { checkNotNull(settings.solveBudget(it, current, preparedBench)).cpuMillis }
-                val requestedCpu = Math.multiplyExact(Math.multiplyExact(current.parallel, preparedBench?.let(BenchRuns::resources)?.cpus ?: recipe.arms.maxOf { it.arm.cores }), 1000)
+                val smallest = targets.map { checkNotNull(solveBudget(it, current)) }.minBy { it.cpuMillis }
+                val minimumCpu = smallest.cpuMillis
+                // The job's vCPUs are its whole solve reservation; sessions split it only where one target cannot hold it.
+                val requestedCpu = Math.multiplyExact(current.vcpus, 1000)
                 val cpuLimit = maxOf(minOf(this.settings.maxVcpusPerJob * 1000, requestedCpu), minimumCpu)
-                val limit = minOf(this.settings.maxSessionsPerJob, pending, cpuLimit / minimumCpu)
+                // A session claims whole rows until they fill the cases it runs at once ([ExecutionStore.claim]).
+                val rowsPerSession = (smallest.parallel + recipe.arms.size - 1) / recipe.arms.size
+                val limit = minOf(this.settings.maxSessionsPerJob, (pending + rowsPerSession - 1) / rowsPerSession, cpuLimit / minimumCpu)
                 // Unbound cloud intent must not occupy the last slot while compatible native capacity is idle.
                 // Retirement races registration under the store lock: a bound/claimed attempt is never moved.
                 val native = targets.firstOrNull { it.native && mayUseNative(job.id, it) }
                 if (native != null) {
-                    val budget = checkNotNull(settings.solveBudget(native, current, preparedBench))
+                    val budget = checkNotNull(solveBudget(native, current))
                     val held = store.execution.nativeReservation()
                     var cpu = held.first; var memory = held.second
                     var nativeWorkers = sessions.count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP &&
@@ -130,16 +141,16 @@ class NomadQueue(
                 val bundles = recipe.bundles.map { original -> preparation.bundles.singleOrNull {
                     it.commit == original.commit && it.os == original.os && it.arch == original.arch
                 } ?: original }
-                val ordered = ordered(targets) { checkNotNull(settings.solveBudget(it, current, preparedBench)) }
+                val ordered = ordered(targets) { checkNotNull(solveBudget(it, current)) }
                 fun solving(enforcement: CpuEnforcement) = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE &&
                     session.desired != Desired.STOP && store.execution.placement(session.id).enforcement == enforcement }
                 fun cloudSessions() = solving(CpuEnforcement.HARD_QUOTA)
                 for (index in active.size until limit) {
                     val remainingCpu = cpuLimit - sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }.sumOf { it.budget.cpuMillis }
-                    val available = ordered.filter { checkNotNull(settings.solveBudget(it, current, preparedBench)).cpuMillis <= remainingCpu }.filter { target ->
+                    val available = ordered.filter { checkNotNull(solveBudget(it, current)).cpuMillis <= remainingCpu }.filter { target ->
                         // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
                         if (!target.native) cloudSessions().none { it.node == null } else {
-                            val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
+                            val budget = checkNotNull(solveBudget(target, current))
                             val nativeSessions = solving(CpuEnforcement.ADVISORY_NATIVE)
                             val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
                             mayUseNative(job.id, target) && nativeSessions.size < maximum
@@ -147,13 +158,13 @@ class NomadQueue(
                     }
                     val reserved = store.execution.nativeReservation()
                     val target = available.firstOrNull { target ->
-                        if (!target.native) cloudMayRun(target, current, checkNotNull(settings.solveBudget(target, current, preparedBench))) else {
-                            val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
+                        if (!target.native) cloudMayRun(target, current, checkNotNull(solveBudget(target, current))) else {
+                            val budget = checkNotNull(solveBudget(target, current))
                             reserved.first + budget.cpuMillis <= config.cores * 1000L &&
                                 reserved.second + budget.memoryMiB <= target.template.budget.memoryMiB
                         }
                     } ?: break
-                    val budget = checkNotNull(settings.solveBudget(target, current, preparedBench))
+                    val budget = checkNotNull(solveBudget(target, current))
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, recipe.arms, cases, bundles, budget,
                         solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus, sharedInputs = preparation.sharedInputs)
                     val excluded = if (target.native || this.settings.perHostParallel == null) emptySet() else cloudSessions().filter { it.node != null }
@@ -201,10 +212,11 @@ class NomadQueue(
         val cases = Experiments.cases(problems.size, recipe.arms.size, spec.seeds, spec.repeats).map { case ->
             case.copy(seed = problems[case.problem].benchCase?.attributes?.get("seed")?.toLongOrNull() ?: case.seed)
         }
+        val concurrency = Experiments.caseConcurrency(job.vcpus, recipe.arms.maxOf { it.arm.cores })
         val hours = preparation.benchPlan?.let { plan ->
-            maxOf(cases.sumOf { case -> (preparation.armPlans[recipe.arms[case.arm].arm.label]?.cases?.get(case.problem) ?: plan.cases[case.problem]).resources.timeoutSeconds.toDouble() } / job.parallel,
+            maxOf(cases.sumOf { case -> (preparation.armPlans[recipe.arms[case.arm].arm.label]?.cases?.get(case.problem) ?: plan.cases[case.problem]).resources.timeoutSeconds.toDouble() } / concurrency,
                 cases.sumOf { case -> val resources = (preparation.armPlans[recipe.arms[case.arm].arm.label]?.cases?.get(case.problem) ?: plan.cases[case.problem]).resources; resources.timeoutSeconds.toDouble() * resources.cpus } / config.cores) / 3600
-        } ?: Experiments.estimateHours(cases, recipe.arms.map { it.arm }, job.parallel, config.cores)
+        } ?: Experiments.estimateHours(cases, recipe.arms.map { it.arm }, concurrency, config.cores)
         require(spec.confirm || hours <= config.maxExperimentHours) { "${cases.size} cases could take $hours h; resubmit with confirm=true" }
         preparation.corpus?.let { bundle ->
             val root = VerifiedCache(config.dataDir.resolve("nomad/check-inputs")).stage(bundle) { artifacts.open(job.id, bundle.sha256) }

@@ -75,7 +75,7 @@ internal fun jobPage(
         append(Html("<dt>instrumented</dt><dd><span class=\"PARTIAL\">") + recording + Html("</span>: every compilation of each "))
         append(Html("case's CLI is recorded, so its times are no runtime measurement</dd>"))
     }
-    append(Html("<dt>parallel</dt><dd>") + job.parallel + Html("</dd><dt>priority</dt><dd>") + job.priority + Html("</dd>"))
+    append(Html("<dt>vcpus</dt><dd>") + job.vcpus + Html("</dd><dt>priority</dt><dd>") + job.priority + Html("</dd>"))
     append(Html("<dt>files</dt><dd><a href=\"/jobs/") + job.id + Html("/files\">all files</a>"))
     for (log in listOf("setup.log", "job.log")) {
         if (log in files.logs) append(Html(" · <a href=\"/jobs/") + job.id + Html("/files/") + log + Html("\">") + log + Html("</a>"))
@@ -86,7 +86,7 @@ internal fun jobPage(
     }
     append(Html("</dl>"))
     parallelism?.takeIf { active }?.let { (executing, pending) ->
-        append(Html("<p>") + executing + Html(" executing / ") + job.parallel + Html(" requested slots"))
+        append(Html("<p>") + executing + Html(" executing / ") + Experiments.caseConcurrency(job.vcpus, Experiments.caseCpus(job.experiment)) + Html(" requested slots"))
         if (pending > 0) append(Html(" · ") + pending + Html(" awaiting allocation"))
         append(Html(" · <a href=\"/jobs/") + job.id + Html("/execution\">worker details</a></p>"))
     }
@@ -107,8 +107,8 @@ internal fun jobPage(
         )
         append(Html("<label>priority <input id=\"priority\" type=\"number\" value=\"") + job.priority + Html("\"></label>"))
         append(Html("<button onclick=\"act('/jobs/") + id + Html("/priority', {priority: +document.getElementById('priority').value})\">set</button>"))
-        append(Html("<label>parallel <input id=\"parallel\" type=\"number\" min=\"1\" max=\"") + status.local.maxParallel + Html("\" value=\"") + job.parallel + Html("\"></label>"))
-        append(Html("<button onclick=\"act('/jobs/") + id + Html("/parallel', {parallel: +document.getElementById('parallel').value})\">set</button>"))
+        append(Html("<label>vcpus <input id=\"vcpus\" type=\"number\" min=\"1\" value=\"") + job.vcpus + Html("\"></label>"))
+        append(Html("<button onclick=\"act('/jobs/") + id + Html("/vcpus', {vcpus: +document.getElementById('vcpus').value})\">set</button>"))
         if (!job.cancelRequested) {
             append(Html("<button class=\"danger\" onclick=\"act('/jobs/") + id + Html("/cancel', null, 'Cancel job ") + id + Html("?')\">cancel</button>"))
         }
