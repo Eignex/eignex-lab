@@ -1,6 +1,6 @@
 package com.eignex.lab
 
-import com.eignex.lab.capacity.ResourceBudget
+import com.eignex.lab.domain.ResourceBudget
 import com.eignex.lab.util.hashFile
 import com.eignex.lab.worker.AdapterResources
 import com.eignex.lab.worker.ComparisonExecution
