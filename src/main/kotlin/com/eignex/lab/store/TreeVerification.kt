@@ -104,14 +104,15 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
     }
 
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},
-              exactExecutables: Boolean = false, removeUndeclared: Boolean = false, allowUndeclared: Boolean = false): Boolean {
+              exactExecutables: Boolean = false, removeUndeclared: Boolean = false, allowUndeclared: Boolean = false,
+              expectedDirectories: List<String>? = null): Boolean {
         val started = System.nanoTime()
-        try { return validTree(tree, expected, receipt, checkActive, exactExecutables, removeUndeclared, allowUndeclared) }
+        try { return validTree(tree, expected, receipt, checkActive, exactExecutables, removeUndeclared, allowUndeclared, expectedDirectories) }
         finally { stats.verificationNanos += System.nanoTime() - started }
     }
 
     private fun validTree(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit,
-                          exactExecutables: Boolean, removeUndeclared: Boolean, allowUndeclared: Boolean): Boolean {
+                          exactExecutables: Boolean, removeUndeclared: Boolean, allowUndeclared: Boolean, expectedDirectories: List<String>?): Boolean {
         checkActive()
         if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return false
         // Coarse timestamp filesystems (for example HFS+/FAT) cannot distinguish a quick write/mtime restore.
@@ -122,8 +123,9 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
         val wanted = expected.associateBy { it.path }
         if (wanted.size != expected.size) return false
         val verified = mutableListOf<Written>()
+        val directories = expectedDirectories?.let { mutableListOf<String>() }
         try { readAhead(tree, expected.map { it.path }, checkActive) {
-            walk(tree, checkActive) { file, observed ->
+            walk(tree, checkActive, directories = directories) { file, observed ->
                 val name = tree.relativize(file).toString().replace('\\', '/')
                 val entry = wanted[name]
                 if (entry == null) {
@@ -143,6 +145,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
             }
         } } catch (_: Invalid) { return false } catch (_: IOException) { return false }
         if (verified.size != expected.size) return false
+        if (expectedDirectories != null && directories?.sorted() != expectedDirectories.sorted()) return false
         val result = Receipt(1, rootKey, verified.sortedBy { it.file.path })
         if (result != previous) {
             checkActive()

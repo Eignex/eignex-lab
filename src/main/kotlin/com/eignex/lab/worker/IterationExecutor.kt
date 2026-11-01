@@ -75,7 +75,9 @@ class IterationExecutor(
                         return privateWorkspaces?.copy(key, cached, ::checkRun, false)
                             ?: directory.resolve("worktrees").resolve(if (slot == 0) sha else "$sha-$slot").also(::stage)
                     }
-                    withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
+                    val local = if (bundle.tree == null) null else NativePreparedTrees.environment()
+                    if (local != null) local.use(bundle, ::checkRun) { source, _ -> copy(source) }
+                    else withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
                         if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                             .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
                     }.also { fresh += key to it }

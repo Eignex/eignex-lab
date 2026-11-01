@@ -85,7 +85,9 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
             val staging = Files.createTempDirectory(root, "$key-")
             val tree = staging.resolve("tree")
             try {
-                if (seed?.invoke(tree, receipt, localVerification) == true || runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
+                if (seed?.invoke(tree, receipt, localVerification) == true ||
+                    bundle.tree != null && (NativePreparedTrees.environment()?.materialize(bundle, included, tree, receipt, checkActive) == true ||
+                        materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) || runtimeOnly && materialize?.invoke(bundle, included, tree, receipt, checkActive) == true) {
                     require(localVerification.valid(tree, included, receipt, checkActive, exactExecutables = true)) { "local distribution does not match approved input files" }
                     checkActive(); Files.move(tree, destination, ATOMIC_MOVE)
                     observed("miss", "verified-local")
@@ -142,7 +144,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                     val buffer = ByteArray(64 * 1024)
                     while (raw.read(buffer) >= 0) checkActive()
                 } }
-                require(digest.digest().hex() == bundle.sha256) { "archive checksum mismatch" }
+                require(bundle.tree != null || digest.digest().hex() == bundle.sha256) { "archive checksum mismatch" }
                 require(seen == expected.keys) { "archive is incomplete" }
                 val recordingAt = System.nanoTime()
                 try { verifier.record(tree, written, receipt, checkActive) }
