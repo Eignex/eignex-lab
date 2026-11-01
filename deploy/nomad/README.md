@@ -584,7 +584,8 @@ a default runtime cache miss searches the node's pinned build cache for an ident
 build can be cloned directly, avoiding archive download and extraction entirely; changed or unmatched builds fall back
 to the verified stream. The cache limit still accounts for every materialized distribution. Trusted private copies bind
 verified source inode/ctime before and after copying and record the new private inode metadata. Unchanged copied files
-need no checksum reread; trusted setup changes are hashed during sealing. Filesystems without reliable identity/ctime
+need no checksum reread; trusted setup changes are hashed during sealing. Warm checks of trees with 512 or more files issue their
+no-follow stats concurrently ahead of the walk, overlapping cold-metadata latency; only the walk's own stats decide validity. Filesystems without reliable identity/ctime
 retain full checksum verification. Runtime bundles retain the complete approved inventory. Cache layouts have separate identities,
 and existing full cache hits remain reusable.
 

@@ -13,11 +13,14 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.BasicFileAttributes
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /** A local receipt avoids rereading unchanged bytes, including across worker processes. Every hit still
  * walks the tree. Unix ctime and inode identity detect replacement and writes with a restored mtime.
  * Filesystems without those attributes always take the checksum path. Receipts are disposable cache state. */
-internal class TreeVerification(private val hash: (Path, () -> Unit) -> String = ::hashFile) {
+internal class TreeVerification(private val readAheadFiles: Int = 512,
+                                private val hash: (Path, () -> Unit) -> String = ::hashFile) {
     @Serializable internal data class Stamp(val bytes: Long, val modified: String, val changed: String?,
                                           val key: String?, val executable: Boolean) {
         val reusable get() = changed != null && key != null
@@ -25,7 +28,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
     @Serializable internal data class Written(val file: InputFile, val stamp: Stamp)
     @Serializable private data class Receipt(val version: Int, val rootKey: String?, val files: List<Written>)
     internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0,
-                              var verificationNanos: Long = 0)
+                              var verificationNanos: Long = 0, var readAheadFiles: Int = 0)
     val stats = Stats()
     private fun checksum(path: Path, checkActive: () -> Unit, bytes: Long): String {
         stats.hashedFiles++; stats.hashedBytes = Math.addExact(stats.hashedBytes, bytes)
@@ -119,7 +122,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         val wanted = expected.associateBy { it.path }
         if (wanted.size != expected.size) return false
         val verified = mutableListOf<Written>()
-        try {
+        try { readAhead(tree, expected.map { it.path }, checkActive) {
             walk(tree, checkActive) { file, observed ->
                 val name = tree.relativize(file).toString().replace('\\', '/')
                 val entry = wanted[name]
@@ -138,7 +141,7 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
                     verified += Written(entry, before)
                 }
             }
-        } catch (_: Invalid) { return false } catch (_: IOException) { return false }
+        } } catch (_: Invalid) { return false } catch (_: IOException) { return false }
         if (verified.size != expected.size) return false
         val result = Receipt(1, rootKey, verified.sortedBy { it.file.path })
         if (result != previous) {
@@ -167,6 +170,30 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         }
         checkActive(); writeReceipt(receipt, Receipt(1, rootKey, files.sortedBy { it.file.path }))
         return files.map { it.file }
+    }
+
+    /** Cold metadata, not hashing, dominates a warm hit on a loaded node: a Mac spent 77 s (7 ms per file) on the first
+     * no-follow stats of an 11k-file cached build whose cached walk takes 30 µs per file, and hashed nothing. One
+     * sequential walk waits for each read in turn. Concurrent stats of the expected paths overlap that latency.
+     * Their results are discarded: the walk below still decides validity from its own observations alone. */
+    private fun <T> readAhead(tree: Path, paths: List<String>, checkActive: () -> Unit, use: () -> T): T {
+        if (paths.size < readAheadFiles) return use()
+        checkActive()
+        val next = AtomicInteger(); val stop = AtomicBoolean(); val read = AtomicInteger()
+        val threads = List(READ_AHEAD_THREADS) { Thread.ofPlatform().daemon().name("tree-read-ahead").start {
+            while (!stop.get()) {
+                val index = next.getAndIncrement(); if (index >= paths.size) break
+                try { Files.readAttributes(tree.resolve(safeRelative(paths[index])), BasicFileAttributes::class.java, NOFOLLOW_LINKS); read.incrementAndGet() }
+                catch (_: IOException) { } catch (_: IllegalArgumentException) { } catch (_: UnsupportedOperationException) { }
+            }
+        } }
+        try { return use() } finally {
+            stop.set(true)
+            var interrupted = false
+            for (thread in threads) while (thread.isAlive) try { thread.join() } catch (_: InterruptedException) { interrupted = true }
+            if (interrupted) Thread.currentThread().interrupt()
+            stats.readAheadFiles += read.get()
+        }
     }
 
     private fun writeReceipt(receipt: Path, result: Receipt) {
@@ -219,3 +246,6 @@ internal class TreeVerification(private val hash: (Path, () -> Unit) -> String =
         if (include(tree.relativize(tree))) directory(tree)
     }
 }
+
+/** Enough outstanding reads to overlap SSD latency under contention, few enough to stay a bounded side load. */
+private const val READ_AHEAD_THREADS = 16

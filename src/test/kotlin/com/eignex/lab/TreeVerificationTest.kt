@@ -147,4 +147,25 @@ class TreeVerificationTest {
             "copy execution was incorrectly counted as verification")
     }
 
+    @Test fun `metadata read-ahead keeps warm hits checksum free and leaves every rejection to the walk`() {
+        val many = (0 until 64).map { index ->
+            val name = "dir${index % 4}/file$index"
+            Files.createDirectories(tree.resolve(name).parent); Files.writeString(tree.resolve(name), "bytes $index")
+            InputFile(name, ExecutionStore.digest("bytes $index"), "bytes $index".length.toLong())
+        } + expected
+        fun ahead() = TreeVerification(readAheadFiles = 1) { path, check -> reads++; hashFile(path, check) }
+        val cold = ahead(); assertTrue(cold.valid(tree, many, receipt)); assertEquals(many.size, reads)
+        val warm = ahead(); assertTrue(warm.valid(tree, many, receipt))
+        assertEquals(0, warm.stats.hashedFiles); assertEquals(many.size, warm.stats.readAheadFiles)
+        val changed = tree.resolve("dir1/file1"); val modified = Files.getLastModifiedTime(changed)
+        Files.writeString(changed, "BYTES 1"); Files.setLastModifiedTime(changed, modified)
+        assertFalse(ahead().valid(tree, many, receipt))
+        Files.writeString(changed, "bytes 1"); assertTrue(ahead().valid(tree, many, receipt))
+        Files.writeString(tree.resolve("dir2/extra"), "undeclared"); assertFalse(ahead().valid(tree, many, receipt))
+        Files.delete(tree.resolve("dir2/extra")); Files.delete(tree.resolve("dir3/file3"))
+        assertFalse(ahead().valid(tree, many, receipt))
+        assertTrue(ahead().valid(tree, many - many.single { it.path == "dir3/file3" }, receipt))
+        assertFailsWith<CancellationException> { ahead().valid(tree, many, receipt, { throw CancellationException("lease ended") }) }
+        assertTrue(Thread.getAllStackTraces().keys.none { it.name == "tree-read-ahead" && it.isAlive })
+    }
 }
