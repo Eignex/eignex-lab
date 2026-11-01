@@ -371,7 +371,13 @@ internal class TrustedQueueSources(private val config: Config, private val artif
                 }
             }
             return arms to replay.values.flatMap { it.preparation.bundles }.filter { bundle -> arms.any { it.sha == bundle.commit } }
-                .map { bundle -> if (bundle.tree == null) bundle else requireNotNull(NativePreparedTrees.environment()).retain(bundle, job.id) }
+                .map { bundle ->
+                    if (bundle.tree == null) bundle else {
+                        val hold = store.holds.take(bundle.tree.job, JobTrim.HOLD_MS)
+                        try { requireNotNull(NativePreparedTrees.environment()).retain(bundle, job.id) }
+                        finally { store.holds.release(hold.job, hold.id) }
+                    }
+                }
                 .distinctBy { Triple(it.commit, it.os, it.arch) }
         }
         error("unreachable replay")

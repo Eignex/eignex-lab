@@ -99,11 +99,11 @@ internal class NativePreparedTrees(private val jobs: Path) {
         Files.createDirectories(target.parent)
         if (Files.isDirectory(target, NOFOLLOW_LINKS)) require(valid(targetBundle, check))
         else {
-                val staging = Files.createTempDirectory(target.parent, ".handoff-")
-                try {
-                    materialize(bundle, bundle.files, staging.resolve("tree"), staging.resolve("verified.json"), check)
-                    publish(job, staging.resolve("tree"), staging.resolve("verified.json"), targetBundle, check)
-                } finally { deleteTree(staging) }
+            val staging = Files.createTempDirectory(target.parent, ".handoff-")
+            try {
+                materialize(bundle, bundle.files, staging.resolve("tree"), staging.resolve("verified.json"), check)
+                publish(job, staging.resolve("tree"), staging.resolve("verified.json"), targetBundle, check)
+            } finally { deleteTree(staging) }
         }
         return targetBundle
     }

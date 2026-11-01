@@ -66,6 +66,25 @@ class NativePreparedTreesTest {
         assertFalse(Files.exists(checked.resolve("bin")))
     }
 
+    @Test fun `portable snapshots reject extra directories and changed file bytes`() {
+        val (_, bundle) = publish()
+        for (alterFile in listOf(false, true)) {
+            val bytes = java.io.ByteArrayOutputStream().also { output -> java.util.zip.ZipOutputStream(output).use { zip ->
+                for (dir in bundle.tree!!.directories + if (alterFile) emptyList() else listOf("undeclared")) {
+                    zip.putNextEntry(java.util.zip.ZipEntry("$dir/")); zip.closeEntry()
+                }
+                store.use(bundle, {}) { tree, _ -> for (file in bundle.files) {
+                    zip.putNextEntry(java.util.zip.ZipEntry(file.path))
+                    zip.write(if (alterFile && file.path == "model.txt") "broken".toByteArray() else Files.readAllBytes(tree.resolve(file.path)))
+                    zip.closeEntry()
+                } }
+            } }.toByteArray()
+            assertFailsWith<IllegalArgumentException> {
+                VerifiedCache(root.resolve("invalid-$alterFile")).stage(bundle) { bytes.inputStream() }
+            }
+        }
+    }
+
     @Test fun `corruption restored timestamps and directory changes fail closed`() {
         val (manifest, bundle) = publish()
         val file = manifest.parent.resolve("tree/model.txt")
