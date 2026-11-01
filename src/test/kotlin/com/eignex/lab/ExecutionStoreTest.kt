@@ -31,6 +31,25 @@ class ExecutionStoreTest {
         assertEquals(0 to 0, store.execution.parallelism(listOf(id), 1107)[id])
     }
 
+    @Test fun `a session claims whole rows until they fill its case slots and a loss returns them all`() {
+        val id = job(problems = 4)
+        store.execution.createSession("wide", id, ExecutionClass.SOLVE, "release-1", ResourceBudget(4000, 2048, 3), token, "{}", 1000)
+        store.execution.bind("wide", token, "alloc-wide", "node", "release-1", 1000)
+        val claim = store.execution.claim("wide", token, "alloc-wide", 1001)!!
+        // Two arms a row: three slots take two whole rows, never one arm of a third.
+        assertEquals(4, claim.indices.size)
+        assertEquals(3, claim.parallel)
+        val rows = store.plans.casePlan(id).filter { it.index in claim.indices }.map { it.problem }.distinct()
+        assertEquals(2, rows.size)
+        assertTrue(rows.all { problem -> store.plans.casePlan(id).count { it.problem == problem } == 2 })
+        store.execution.loseSession("wide", "infrastructure:test", 1002)
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED })
+        bind(id, "next")
+        val retry = store.execution.claim("next", token, "alloc-next", 1003)!!
+        store.execution.phase(retry.owner, "uploading", 1004)
+        assertTrue(store.execution.commit(retry.owner, result(retry), 1005))
+    }
+
     @Test fun `compiler admission limit survives restart without changing strict placement JSON`() {
         val spec = ExperimentSpec("compiler-admission")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
@@ -61,7 +80,7 @@ class ExecutionStoreTest {
 
     private fun job(problems: Int = 2): Long {
         val spec = ExperimentSpec("ab", listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("1", "2")), seeds = listOf(1), host = HostPlacement.AUTO)
-        val id = store.create("ab", "main", emptyList(), parallel = 2, experiment = spec)
+        val id = store.create("ab", "main", emptyList(), vcpus = 2, experiment = spec)
         val cases = Experiments.cases(problems, 2, spec.seeds)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, List(problems) { Problem("s", "p$it") }, cases, cases.map { "true" to 10L })
         return id

@@ -42,6 +42,16 @@ may place other rows on different compatible machines; preparation can also run 
 from solving. A job's node changing between rows is normal and does not invalidate its paired comparison.
 Keep ordinary A/B placement automatic rather than pinning the entire job to a machine.
 
+`vcpus` is the number of vCPUs dedicated to the job. Each worker session of the job reserves that many and runs
+`max(1, vcpus - 1)` cases at once, divided by a case's CPUs when it needs more than one (at least one case), leaving
+one vCPU for the worker JVM and its helpers. A session claims whole rows until they fill those case slots.
+A session larger than a worker can hold is split into sessions that fit; the queue's `maxVcpusPerJob` caps the total.
+The job's preparation gets the same vCPUs, at least the queue's `preparationBudget`, with memory scaled in proportion,
+both within what the chosen worker offers, so a larger `vcpus` also builds faster. Jobs the local machine may run
+have `vcpus` capped at its cores. Without `vcpus` the lab's default (4) applies; recording modes default to 1.
+`parallel` is its retired name and still means the same; a spec that gives both must give them equal.
+`lab vcpus <id> <n>` changes it for a running job.
+
 If a worker is lost before accepting a complete row, the lab replaces that unfinished row as a whole.
 It does not combine arm A from one machine or attempt with arm B from another. Accepted rows remain
 accepted. Retain failed-attempt and preparation costs, and investigate repeated losses as an operational
@@ -314,8 +324,9 @@ retained baseline in two successive runs; the bounded confirmation compares that
 baseline with the latest run, even when the worse objective plateaus. At most40
 sources are selected; other losses remain unconfirmed. Occasional fixed multi-seed
 baselines are repository-owned recipes, separate from per-commit trend lines.
-Requests with `comparison-series` retain explicit parallelism in their measurement
-fingerprint. Canonical CPU1 controls use `parallel=1`; preparation and solve grants
+Requests with `comparison-series` retain explicit `vcpus` in their measurement
+fingerprint; `vcpus=1` keeps the fingerprint `parallel=1` had, while larger values start new
+series because they now run one case fewer. Canonical CPU1 controls use `vcpus=1`; preparation and solve grants
 are separate, and the actual iteration cgroup receipt controls physical accounting.
 Parallel CLI/JIT/harness processes share the aggregate group grant. Cgroup CPU
 counters can accumulate across iterations; sampled current memory is not a peak.

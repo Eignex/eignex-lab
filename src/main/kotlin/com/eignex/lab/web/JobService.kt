@@ -81,9 +81,13 @@ class JobService internal constructor(private val services: ApiServices) {
         else Action.Refused("only a queued job that has not been planned or admitted can change tags")
     }
 
-    fun setParallel(id: Long, parallel: Int): Action {
-        require(parallel in 1..config.maxParallel) { "parallel must be between 1 and ${config.maxParallel}" }
-        return if (store.setParallel(id, parallel)) Action.Done("parallel $parallel") else Action.Missing("no such job")
+    /** Set job [id]'s vCPUs within the limit a submission has: the local machine's cores, or a cloud node's for one
+     *  that is cloud-only. */
+    fun setVcpus(id: Long, vcpus: Int): Action {
+        val job = store.job(id) ?: return Action.Missing("no such job")
+        val limit = if (job.experiment.host == Experiments.AWS_HOST) services.placement.coreLimit(job.experiment) else config.cores
+        require(vcpus in 1..limit) { "vcpus must be between 1 and $limit" }
+        return if (store.setVcpus(id, vcpus)) Action.Done("vcpus $vcpus") else Action.Missing("no such job")
     }
 
     fun setPriority(id: Long, priority: Int): Action =

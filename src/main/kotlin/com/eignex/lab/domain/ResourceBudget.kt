@@ -4,7 +4,11 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.Serializable
 
-/** Total budget of an execution session, including every concurrent case, helper JVM, and build it starts. */
+/**
+ * Total budget of an execution session, including every concurrent case, helper JVM, and build it starts. [parallel] is
+ * the cases it runs at once: for a solve session its job's vCPUs less the worker's one, divided by a case's CPUs
+ * ([NomadQueueSettings.solveBudget]); a preparation's is one.
+ */
 @Serializable
 data class ResourceBudget(val cpuMillis: Int, val memoryMiB: Int, val parallel: Int = 1) {
     init {

@@ -85,9 +85,10 @@ internal fun Route.jobRoutes(services: ApiServices) {
     post("/jobs/{id}/retry") { call.respondAction(jobs.retry(call.longParam())) }
     // Its directory goes too, and any worktree a failed setup left; the mirror forgets those at its next prune.
     post("/jobs/{id}/delete") { call.respondAction(jobs.delete(call.longParam())) }
-    post("/jobs/{id}/parallel") {
+    // `parallel` is the retired name of `vcpus`, kept for older clients.
+    for (path in listOf("/jobs/{id}/vcpus", "/jobs/{id}/parallel")) post(path) {
         val id = call.longParam()
-        call.respondAction(io { jobs.setParallel(id, call.receive<ParallelSpec>().parallel) })
+        call.respondAction(io { jobs.setVcpus(id, call.receive<VcpusSpec>().value) })
     }
     post("/jobs/{id}/tags") {
         val id = call.longParam()

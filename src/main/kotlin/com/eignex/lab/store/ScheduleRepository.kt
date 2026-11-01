@@ -17,7 +17,7 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
         ).use {
             it.setString(1, name)
             it.setString(2, ref)
-            it.setInt(3, experiment.parallel ?: 0)
+            it.setInt(3, experiment.vcpus ?: 0)
             it.setInt(4, experiment.priority)
             it.setLong(5, intervalSec)
             it.setString(6, Json.encodeToString(experiment))
@@ -35,7 +35,7 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
                     val experiment = storedExperiment(rows.getString("experiment"))
                     Schedule(
                         rows.getLong("id"), rows.getString("name"), rows.getString("ref"), experiment,
-                        experiment.parallel ?: 0, experiment.priority,
+                        experiment.vcpus ?: 0, experiment.priority,
                         rows.getLong("interval_sec"), rows.getString("last_sha"), rows.longOrNull("last_job"),
                         rows.longOrNull("checked_at"), rows.getInt("launch") == 1,
                     )
@@ -62,7 +62,7 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
                     Experiments.fingerprint(SourceValidation.scheduled(old)) != Experiments.fingerprint(SourceValidation.scheduled(experiment))
                 update(
                     "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?" + (if (changed) ", last_sha = NULL" else "") + " WHERE id = ?",
-                    Json.encodeToString(experiment), experiment.parallel ?: 0, experiment.priority, id,
+                    Json.encodeToString(experiment), experiment.vcpus ?: 0, experiment.priority, id,
                 )
             }
             // A schedule is due one interval after its last check, so its next check sets the last one back by an interval.

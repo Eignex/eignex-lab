@@ -57,7 +57,7 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         name: String,
         ref: String,
         commands: List<Pair<String, Long>>,
-        parallel: Int = 1,
+        vcpus: Int = 1,
         priority: Int = 0,
         experiment: ExperimentSpec,
         origin: JobOrigin = JobOrigin.of(name),
@@ -71,7 +71,7 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
             it.setString(2, ref)
             it.setString(3, Status.QUEUED.name)
             it.setLong(4, now())
-            it.setInt(5, parallel)
+            it.setInt(5, vcpus)
             it.setInt(6, priority)
             it.setString(7, experiment.let { spec -> Json.encodeToString(spec) })
             it.setString(8, "nomad")
@@ -358,10 +358,10 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         // One statement: a write to another field of the experiment, in this process or another, is never lost.
         update("UPDATE jobs SET experiment = json_set(experiment, '$.description', ?) WHERE id = ?", description, jobId) == 1
 
-    /** Set how many of [jobId]'s commands may run at once; false when there is no such job. */
+    /** Set the vCPUs [jobId] holds ([Job.vcpus]); false when there is no such job. */
     @Synchronized
-    fun setParallel(jobId: Long, parallel: Int): Boolean {
-        return update("UPDATE jobs SET parallel = ? WHERE id = ?", parallel, jobId) == 1
+    fun setVcpus(jobId: Long, vcpus: Int): Boolean {
+        return update("UPDATE jobs SET parallel = ? WHERE id = ?", vcpus, jobId) == 1
     }
 
     fun cancelRequested(jobId: Long): Boolean = reading {

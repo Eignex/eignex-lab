@@ -26,8 +26,12 @@ import io.ktor.server.request.httpMethod
 import io.ktor.server.routing.routing
 import kotlinx.serialization.Serializable
 
+/** A job's new vCPUs: `vcpus`, or `parallel`, its retired name. */
 @Serializable
-data class ParallelSpec(val parallel: Int)
+data class VcpusSpec(val vcpus: Int? = null, val parallel: Int? = null) {
+    init { require(vcpus != null || parallel != null) { "vcpus is required" }; require(vcpus == null || parallel == null || vcpus == parallel) }
+    val value: Int get() = checkNotNull(vcpus ?: parallel)
+}
 
 @Serializable
 data class PrioritySpec(val priority: Int)

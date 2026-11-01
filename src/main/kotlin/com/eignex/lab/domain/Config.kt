@@ -37,12 +37,13 @@ data class Config(
     val javaHome: String = System.getenv("JAVA_HOME") ?: "",
     /** JVM flags for lab-owned reference solver processes. */
     val solveJavaOpts: String = Defaults.SOLVE_JAVA_OPTS,
-    /** The most cases one job may run at once, whatever it asks for: each holds its own solve heap, so memory bounds
-     *  this, where [cores] bounds the threads. */
+    /** The most cases one native worker session runs at once, whatever vCPUs its job has: each holds its own solve
+     *  heap, so memory bounds this, where [cores] bounds the threads and a job's `vcpus`. */
     val maxParallel: Int = Defaults.MAX_PARALLEL,
-    /** Cases at once for an experiment that sets no `parallel`: the local machine's performance cores. A solve that
-     *  lands on an efficiency core runs at a fraction of the speed, and which ones do changes from run to run, so
-     *  running more than there are performance cores trades timing noise for throughput. */
+    /** vCPUs for an experiment that sets no `vcpus`: the local machine's performance cores, one of which its worker
+     *  keeps, so it runs one case fewer. A solve that lands on an efficiency core runs at a fraction of the speed, and
+     *  which ones do changes from run to run, so running more than there are performance cores trades timing noise
+     *  for throughput. */
     val defaultParallel: Int = Defaults.DEFAULT_PARALLEL.coerceAtMost(maxParallel),
     /** Cores the running cases may hold together, a case holding its arm's `processors`; two are left for the JVMs
      *  around the solves and the machine itself. */

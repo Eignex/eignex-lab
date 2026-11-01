@@ -530,7 +530,7 @@ class NomadBackendTest {
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
         val cases = Experiments.cases(problems, arms.size, spec.seeds)
         val plannedProblems = List(problems) { Problem("s", "p$it") }
-        val id = store.create(name, "main", emptyList(), parallel = 2, experiment = spec)
+        val id = store.create(name, "main", emptyList(), vcpus = 2, experiment = spec)
         if (!preparation) store.plan(id, arms, plannedProblems, cases, cases.map { "true" to 5L })
         val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("bin/bench", "c".repeat(64), 5)), Repositories.DEFAULT, "a".repeat(40), "linux", "amd64", "test")
         manifest = WorkManifest(sessionId, "release", spec, arms, if (preparation) emptyList() else cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2), preparationTimeoutSec = if (preparation) 60 else null)
