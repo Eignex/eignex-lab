@@ -88,11 +88,13 @@ class ProcessSupervisor(private val socket: Path, private val experiment: String
             ChannelWait(channel).use { wait ->
                 fun write(value: String) {
                     val buffer = ByteBuffer.wrap(value.toByteArray())
-                    val deadline = System.nanoTime() + 5_000_000_000
+                    var writingNanos = 0L
                     while (buffer.hasRemaining()) {
                         remaining()
-                        if (System.nanoTime() >= deadline) error("supervisor write timeout")
+                        val started = System.nanoTime()
                         if (channel.write(buffer) == 0) wait.await(SelectionKey.OP_WRITE, 10)
+                        writingNanos += System.nanoTime() - started
+                        if (buffer.hasRemaining() && writingNanos >= 5_000_000_000) error("supervisor write timeout")
                     }
                 }
                 write(Json.encodeToString(Request(argv, directory.toString(), environment, stdout.toString(), stderr.toString(), timeoutSec, graceMs, remaining(), experiment, runRemainingMs)) + "\n")
