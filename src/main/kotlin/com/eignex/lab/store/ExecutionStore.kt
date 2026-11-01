@@ -550,7 +550,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
     /** Whether session [id]'s frozen contract requests external adapter resource receipts. */
     fun adapterResources(id: String): Boolean = store.executionRead { db ->
-        db.sqlRows("SELECT CASE WHEN json_valid(manifest) THEN COALESCE(json_extract(manifest, '$.experiment.bench.adapterResources'), 0) ELSE 0 END FROM execution_sessions WHERE id = ?", id) {
+        db.sqlRows("""SELECT CASE WHEN json_valid(manifest) THEN COALESCE(json_extract(manifest, '$.experiment.bench.adapterResources'), 0) ELSE 0 END
+            FROM (SELECT COALESCE(m.manifest, s.manifest) AS manifest FROM execution_sessions s
+                  LEFT JOIN execution_manifests m ON m.session_id = s.id WHERE s.id = ?)""", id) {
             it.getInt(1) != 0
         }.single()
     }
