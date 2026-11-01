@@ -100,7 +100,9 @@ class PreparedArchiveFilesTest {
         application { api(lab.services) }
         val response = client.get("/jobs/${lab.job}/files/${lab.names[0]}")
         assertEquals(HttpStatusCode.ServiceUnavailable, response.status)
-        assertEquals("{\"error\":\"accepted preparation archive unavailable\"}", response.bodyAsText())
+        val error = Json.decodeFromString<ErrorBody>(response.bodyAsText())
+        assertEquals("accepted preparation archive unavailable", error.error)
+        assertNull(error.detail)
         assertFalse(Files.exists(lab.config.dataDir.resolve("nomad/artifacts/${lab.job}/${lab.hashes[0]}")))
         val projected = lab.config.jobDir(lab.job).resolve(lab.names[0])
         Files.createDirectories(projected.parent)
@@ -113,6 +115,23 @@ class PreparedArchiveFilesTest {
         lab.archives.objects.remove(lab.hashes[0])
         application { api(lab.services) }
         assertEquals(HttpStatusCode.ServiceUnavailable, client.get("/jobs/${lab.job}/files").status)
+        assertTrue(lab.archives.gets.isEmpty())
+    }
+
+    @Test fun `projected accepted archives remain readable when regional storage is unavailable`() = testApplication {
+        val lab = Lab()
+        lab.archives.objects.clear()
+        for ((name, text) in lab.names.zip(lab.contents)) {
+            val file = lab.config.jobDir(lab.job).resolve(name)
+            Files.createDirectories(file.parent)
+            Files.writeString(file, text)
+        }
+        application { api(lab.services) }
+        val listed = Json.decodeFromString<List<FileEntry>>(client.get("/jobs/${lab.job}/files").bodyAsText())
+        assertEquals(lab.hashes, listed.map { it.sha256 })
+        for ((name, text) in lab.names.zip(lab.contents)) {
+            assertEquals(text, client.get("/jobs/${lab.job}/files/$name").bodyAsText())
+        }
         assertTrue(lab.archives.gets.isEmpty())
     }
 }
