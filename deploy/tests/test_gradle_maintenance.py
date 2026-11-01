@@ -9,7 +9,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from gradle_maintenance import clean_home, clean_service_logs
+from gradle_maintenance import clean_home, clean_service_logs, follow_public_ip
 
 
 def hold_lock(path, ready, release):
@@ -129,6 +129,49 @@ class ServiceLogTest(unittest.TestCase):
             self.assertEqual(b"x" * 8, gzip.decompress((logs / "runner.log.1.gz").read_bytes()))
             self.assertEqual(["runner.log", "runner.log.1.gz"], sorted(p.name for p in logs.iterdir()))
 
+
+
+class PublicAddressTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.data = Path(self.temporary.name)
+        (self.data / "nomad").mkdir()
+        self.server = self.data / "nomad/server.json"
+        self.server.write_text('{"advertise": {"http": "127.0.0.1:4646", "rpc": "31.208.146.176:4647", "serf": "10.44.0.2:4648"}}')
+        self.server.chmod(0o600)
+        self.settings = {"token": "t", "domain": "eignex.com", "name": "lab"}
+        self.calls, self.restarts = [], []
+
+    def api(self, record):
+        def call(token, method, path, body=None):
+            self.calls.append((method, path, body))
+            return {"domain_records": [{"id": 7, "data": record}]} if method == "GET" else {}
+        return call
+
+    def test_a_changed_address_updates_dns_and_the_advertised_server_address(self):
+        report = follow_public_ip(self.data, self.settings, lambda: "31.208.146.145", self.api("31.208.146.176"), self.restarts.append)
+        self.assertEqual(("PUT", "domains/eignex.com/records/7", {"data": "31.208.146.145"}), self.calls[-1])
+        self.assertIn('"rpc": "31.208.146.145:4647"', self.server.read_text())
+        self.assertIn('"serf": "10.44.0.2:4648"', self.server.read_text())
+        self.assertEqual(0o600, self.server.stat().st_mode & 0o777)
+        self.assertEqual([self.data / "nomad"], self.restarts)
+        self.assertEqual({"from": "31.208.146.176", "to": "31.208.146.145"}, report["dns"])
+
+    def test_an_unchanged_address_touches_nothing(self):
+        before = self.server.read_text()
+        report = follow_public_ip(self.data, self.settings, lambda: "31.208.146.176", self.api("31.208.146.176"), self.restarts.append)
+        self.assertEqual(["GET"], [method for method, _, _ in self.calls])
+        self.assertEqual(before, self.server.read_text())
+        self.assertEqual([], self.restarts)
+        self.assertEqual({"ip": "31.208.146.176"}, report)
+
+    def test_an_ambiguous_record_is_refused(self):
+        def two(token, method, path, body=None):
+            return {"domain_records": [{"id": 1, "data": "a"}, {"id": 2, "data": "b"}]}
+        with self.assertRaises(ValueError):
+            follow_public_ip(self.data, self.settings, lambda: "31.208.146.145", two, self.restarts.append)
+        self.assertEqual([], self.restarts)
 
 if __name__ == "__main__":
     unittest.main()

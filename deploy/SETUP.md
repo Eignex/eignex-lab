@@ -40,6 +40,14 @@ The Nomad server advertises its RPC at the home address so cloud clients reach i
 guard it. A server first set up on the earlier private network keeps that address in its Raft configuration
 and still binds it; keep it as a loopback alias with a boot service that runs `ifconfig lo0 alias ADDRESS/32`.
 
+The home address is not guaranteed to stay fixed: when it changes, the A record and the server's advertised RPC
+address both go stale, and the public API, cloud workers and this machine's own Nomad client all stop. The periodic
+maintenance job follows it when `~/.config/eignex-lab/dynamic-dns.json` (mode 600) holds
+`{"token": "...", "domain": "eignex.com", "name": "lab"}` with a DigitalOcean token limited to the domain's
+records: every five minutes it reads the address from OpenDNS's resolver, updates the A record when it differs,
+rewrites `advertise.rpc` in the Nomad server configuration, and restarts the server and client agents. Without
+the file it does nothing.
+
 ## Storage and updates
 
 Data defaults to `~/eignex-lab-data`; logs are under `logs/`, artifacts under `jobs/` (`LAB_JOBS`).

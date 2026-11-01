@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Bound local Gradle output caches, rotate stopped daemons' logs, and bound the lab services' own logs.
+"""Bound local Gradle output caches, rotate stopped daemons' logs, bound the lab services' own logs, and follow the
+connection's public address when a dynamic DNS settings file is present.
 
 Run periodically as the lab user. Cache eviction uses Gradle's POSIX byte-range
 lock without modifying its lock protocol. Active daemons' logs are left alone:
@@ -132,7 +133,66 @@ def clean_service_logs(logs, log_bytes, copies, age_days, now):
     return report
 
 
-def run(data, homes, cache_bytes=2 * 1024**3, log_bytes=20 * 1024**2, copies=3, age_days=7):
+def public_ip():
+    """This connection's public IPv4 address, asked of OpenDNS's resolver rather than of a web service."""
+    output = subprocess.run(["dig", "+short", "+time=5", "+tries=2", "myip.opendns.com", "@resolver1.opendns.com"],
+                            check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+    if not re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})", output) or \
+            any(int(part) > 255 for part in output.split(".")):
+        raise ValueError("no public IPv4 address in resolver answer")
+    return output
+
+
+def digitalocean(token, method, path, body=None):
+    import urllib.request
+    request = urllib.request.Request("https://api.digitalocean.com/v2/" + path, method=method,
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read() or b"null")
+
+
+def restart_nomad_agents(nomad):
+    """Stop the server and client agents; launchd starts them again with the rewritten configuration."""
+    output = subprocess.run(["ps", "-axo", "pid=,command="], check=True, capture_output=True, text=True, timeout=10).stdout
+    for line in output.splitlines():
+        match = re.match(r"\s*(\d+)\s+(.+)", line)
+        if match and " agent " in match[2] and any(str(nomad / name) in match[2] for name in ("server.json", "client.json")):
+            os.kill(int(match[1]), 15)
+
+
+def follow_public_ip(data, settings, address=public_ip, api=digitalocean, restart=restart_nomad_agents):
+    """
+    Keep the lab reachable after the connection's public address changes: point the DNS record at it, and make the
+    Nomad server advertise it, since cloud clients and this machine's client reach the server through it. A client
+    keeps dialing the old address it learned, so both agents restart; running allocations survive that.
+    """
+    ip = address()
+    report = {"ip": ip}
+    domain, name = settings["domain"], settings["name"]
+    records = api(settings["token"], "GET", f"domains/{domain}/records?type=A&name={name}.{domain}")["domain_records"]
+    if len(records) != 1:
+        raise ValueError(f"expected one A record for {name}.{domain}, found {len(records)}")
+    if records[0]["data"] != ip:
+        api(settings["token"], "PUT", f"domains/{domain}/records/{records[0]['id']}", {"data": ip})
+        report["dns"] = {"from": records[0]["data"], "to": ip}
+    server = data / "nomad" / "server.json"
+    if server.exists():
+        config = json.loads(server.read_text())
+        rpc = config.get("advertise", {}).get("rpc", "")
+        host, _, port = rpc.rpartition(":")
+        if host and host != ip:
+            config["advertise"]["rpc"] = f"{ip}:{port}"
+            temporary = server.with_name(server.name + ".tmp")
+            temporary.write_text(json.dumps(config, indent=2) + "\n")
+            temporary.chmod(stat.S_IMODE(server.stat().st_mode))
+            temporary.replace(server)
+            restart(server.parent)
+            report["nomad"] = {"from": rpc, "to": config["advertise"]["rpc"]}
+    return report
+
+
+def run(data, homes, cache_bytes=2 * 1024**3, log_bytes=20 * 1024**2, copies=3, age_days=7, dns_settings=None):
     directory = data / "maintenance"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (directory / "gradle-maintenance.lock").open("a+b") as lock:
@@ -152,6 +212,11 @@ def run(data, homes, cache_bytes=2 * 1024**3, log_bytes=20 * 1024**2, copies=3, 
             report["logs"] = clean_service_logs(data / "logs", log_bytes, copies, age_days, now)
         except OSError as failure:
             report["errors"].append({"logs": str(data / "logs"), "error": str(failure)})
+        if dns_settings is not None:
+            try:
+                report["publicAddress"] = follow_public_ip(data, dns_settings)
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as failure:
+                report["errors"].append({"publicAddress": str(failure)})
         with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as out:
             json.dump(report, out, indent=2)
             temporary = Path(out.name)
@@ -168,11 +233,14 @@ def main():
     parser.add_argument("--copies", type=int, default=3)
     parser.add_argument("--log-age-days", type=int, default=7)
     parser.add_argument("--quiet", action="store_true")
+    # {"token": ..., "domain": "eignex.com", "name": "lab"}: a DigitalOcean token scoped to DNS. Absent: no updates.
+    parser.add_argument("--dns-settings", type=Path, default=Path.home() / ".config/eignex-lab/dynamic-dns.json")
     args = parser.parse_args()
     if min(args.cache_gib, args.log_mib, args.copies, args.log_age_days) <= 0:
         parser.error("retention limits must be positive")
     report = run(args.data, args.gradle_home or [args.data / "gradle", Path.home() / ".gradle"],
-                 int(args.cache_gib * 1024**3), int(args.log_mib * 1024**2), args.copies, args.log_age_days)
+                 int(args.cache_gib * 1024**3), int(args.log_mib * 1024**2), args.copies, args.log_age_days,
+                 json.loads(args.dns_settings.read_text()) if args.dns_settings.is_file() else None)
     if not args.quiet or report.get("errors"):
         print(json.dumps(report))
     return 1 if report.get("errors") else 0
