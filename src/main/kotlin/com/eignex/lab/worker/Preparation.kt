@@ -50,6 +50,12 @@ internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = 
         (if (environment["LAB_SHARED_INPUT_ROOT"] != null) mapOf("LAB_CORPUS_KEEP_PACKED" to "true") else emptyMap())
 }
 
+/**
+ * Set for a bench's `describe` and `plan` when the lab accepts declared input hashes in place of local bytes. A bench
+ * that understands it may plan from an index and leave inputs unmaterialized; one that does not simply ignores it.
+ */
+internal const val DECLARED_INPUTS = "LAB_DECLARED_INPUTS"
+
 /** Preparation is a worker operation under the same supervisor, cgroup and ownership lease as solves. */
 internal class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
@@ -82,10 +88,13 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             requireNotNull(shared) { "replay shared inputs require configured transport" }.acquire(replay.sharedInputs, ::checkActive).use { restoreCorpus(it.directory) }
         }
         val env = workerEnvironment(os == "mac") + (inputSigner?.let { mapOf("LAB_INPUT_SIGNER" to it) } ?: emptyMap())
+        // Shared inputs are published by content hash and verified on every fetch, so the bench may plan from a corpus
+        // index: it declares each input's sha256 and leaves the bytes unmaterialized (see SharedInputs.publish).
+        val planEnv = if (sharing != null) env + (DECLARED_INPUTS to "true") else env
         val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
-        fun run(tree: Path, command: String, output: Path = log) {
+        fun run(tree: Path, command: String, output: Path = log, environment: Map<String, String> = env) {
             checkActive()
-            val exit = trace.step(if (output.fileName.toString().startsWith("features-")) "classification" else "selection") { supervisor.run(listOf("bash", "-c", command), tree, env, output, errors, timeout,
+            val exit = trace.step(if (output.fileName.toString().startsWith("features-")) "classification" else "selection") { supervisor.run(listOf("bash", "-c", command), tree, environment, output, errors, timeout,
                 graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining) }
             checkPreparationExit(exit) { "preparation command failed (exit $exit): " + Files.readString(errors).takeLast(8192) }
         }
@@ -112,6 +121,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val armPlans = linkedMapOf<String, com.eignex.lab.bench.BenchPlan>()
         val inputDigests = BenchInputDigests(::checkActive)
         var descriptor: com.eignex.lab.bench.BenchDescriptor? = replay?.descriptor
+        var materialize: () -> Unit = {}
         if (replay != null) {
             armPlans.putAll(replay.plans)
             for (arm in manifest.arms) for (case in armPlans.getValue(arm.arm.label).cases) {
@@ -126,16 +136,19 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                     com.eignex.lab.bench.BenchRequest.serializer(), BenchRuns.request(bench, arm.arm)))
                 val prefix = "export LAB_WORKTREE=${quote(tree.toString())} LAB_CORPUS=${quote(corpus.toString())} LAB_REPOSITORY=${quote(spec.repository)} && "
                 val descriptionFile = directory.resolve("bench-descriptor-$index.jsonl")
-                run(tree, prefix + BenchRuns.invocation(tree, bench, "describe"), descriptionFile)
+                run(tree, prefix + BenchRuns.invocation(tree, bench, "describe"), descriptionFile, planEnv)
                 val current = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchDescriptor>(Files.readString(descriptionFile))
                 require(descriptor == null || descriptor.id == current.id) { "bench arms name different suites" }
                 descriptor = current
                 val planFile = directory.resolve("bench-plan-$index.jsonl")
-                run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), planFile)
+                run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), planFile, planEnv)
+                if (index == 0) materialize = {
+                    run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), directory.resolve("bench-materialized-plan.jsonl"))
+                }
                 val plan = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchPlan>(Files.readString(planFile))
                 BenchRuns.resources(plan)
                 val runtime = BenchRuns.runtime(tree, bench)
-                armPlans[arm.arm.label] = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, runtime, inputDigests) })
+                armPlans[arm.arm.label] = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, runtime, inputDigests, trustDeclared = sharing != null) })
             }
             val first = armPlans.values.firstOrNull() ?: error("a bench experiment needs at least one repository arm")
             val canonical = bench.frozenCases.ifEmpty { first.cases }
@@ -186,7 +199,14 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
             .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.plus(
                 armPlans.values.flatMap { it.cases }.flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
-        val sharedInputs = trace.step("shared-inputs") { if (sharing != null) sharing.publish(inputPaths, ::checkActive) else emptyList() }
+        val declared = armPlans.values.flatMap { it.cases }.flatMap { it.inputs }
+            .filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS && it.sha256 != null }.associate { it.path to it.sha256!! }
+        val sharedInputs = trace.step("shared-inputs") { if (sharing != null) try { sharing.publish(inputPaths, ::checkActive, declared) }
+            catch (missing: SharedInputs.MissingInputs) {
+                // First use of these bytes: plan once more without declared inputs so the bench materializes them here.
+                println("worker shared inputs: ${missing.paths.size} declared input(s) unstored, materializing")
+                materialize(); sharing.publish(inputPaths, ::checkActive, declared)
+            } else emptyList() }
         val corpusBundle = if (sharing == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {
             trace.step("archive") { archive(corpus, directory.resolve("corpus.zip"), manifest.bundles.first().copy(os = os, arch = arch, build = null, toolchain = "corpus-v1"), checkActive = ::checkActive) }
                 .also { artifacts["preparation/corpus.zip"] = transfer(directory.resolve("corpus.zip")) }

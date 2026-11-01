@@ -35,6 +35,21 @@ class BenchInputDigestsTest {
         } finally { deleteTree(root) }
     }
 
+    @Test fun `trusted declared checksums pin the same digest without reading or requiring files`() {
+        val root = Files.createTempDirectory("bench-declared-digests")
+        try {
+            Files.writeString(root.resolve("model"), "model")
+            val case = BenchCase("fixture", inputs = listOf(BenchInput("model", BenchInputRoot.CORPUS, "model", ExecutionStore.digest("model"))))
+            val unread = BenchInputDigests(hash = { _, _ -> error("declared input bytes were read") })
+            val verified = BenchRuns.pinned(case, root, root)
+            assertEquals(verified, BenchRuns.pinned(case, root, root, digests = unread, trustDeclared = true))
+            Files.delete(root.resolve("model"))
+            assertEquals(verified, BenchRuns.pinned(case, root, root, digests = unread, trustDeclared = true))
+            assertEquals(0, unread.hashedFiles)
+            assertFails { BenchRuns.pinned(case, root, root) }
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `restored mtimes replacements and nested changes invalidate reused checksums`() {
         val root = Files.createTempDirectory("bench-changed-digests")
         try {

@@ -43,8 +43,49 @@ class SharedInputsTest {
         override fun matches(key: String, file: InputFile, md5: String) = objects[key]?.let {
             it.size.toLong() == file.bytes && java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() == file.sha256
         } ?: false
+        override fun stored(key: String, sha: String) = objects[key]?.takeIf {
+            java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() == sha
+        }?.size?.toLong()
         override fun put(key: String, source: Path, sha: String) { puts += key; objects[key] = Files.readAllBytes(source) }
         override fun get(key: String, destination: Path) { gets += key; Files.write(destination, objects.getValue(key)) }
+    }
+
+    @Test fun `declared inputs already stored by content hash publish without local bytes`() {
+        val root = Files.createTempDirectory("declared-inputs")
+        val transport = Transport()
+        val sha = ExecutionStore.digest("model"); val key = "input-blobs/$sha"
+        transport.objects[key] = "model".toByteArray()
+        val path = "collection/model.cnf.zst"
+        val published = SharedInputs(root, transport).publish(listOf(path), declared = mapOf(path to sha))
+        assertEquals(listOf(SharedInput(InputFile(path, sha, 5), key, "identity", sha, 5)), published)
+        assertFalse(Files.exists(root.resolve(path)), "publication must not materialize a stored input")
+        assertEquals(emptyList(), transport.puts)
+        assertEquals(emptyList(), transport.gets)
+        SharedInputs(Files.createTempDirectory("declared-fetch"), transport).acquire(published).use { lease ->
+            assertEquals("model", Files.readString(lease.directory.resolve(path)))
+        }
+    }
+
+    @Test fun `unstored declared inputs upload verified local bytes or name every missing path`() {
+        val root = Files.createTempDirectory("declared-local")
+        val transport = Transport()
+        Files.createDirectories(root.resolve("collection"))
+        Files.writeString(root.resolve("collection/local"), "local")
+        val sha = ExecutionStore.digest("local")
+        val inputs = SharedInputs(root, transport)
+        val missing = assertFailsWith<SharedInputs.MissingInputs> {
+            inputs.publish(listOf("collection/local", "collection/absent"),
+                declared = mapOf("collection/local" to sha, "collection/absent" to ExecutionStore.digest("absent")))
+        }
+        assertEquals(listOf("collection/absent"), missing.paths)
+        assertEquals(listOf("input-blobs/$sha"), transport.puts)
+        assertEquals(listOf(SharedInput(InputFile("collection/local", sha, 5), "input-blobs/$sha", "identity", sha, 5)),
+            inputs.publish(listOf("collection/local"), declared = mapOf("collection/local" to sha)))
+        assertEquals(1, transport.puts.size, "a stored declared input is not uploaded again")
+        Files.writeString(root.resolve("collection/changed"), "changed")
+        assertFailsWith<IllegalArgumentException> {
+            inputs.publish(listOf("collection/changed"), declared = mapOf("collection/changed" to ExecutionStore.digest("other")))
+        }
     }
 
     @Test fun `planning transfers no bytes and checking fetches only the case inputs`() {
