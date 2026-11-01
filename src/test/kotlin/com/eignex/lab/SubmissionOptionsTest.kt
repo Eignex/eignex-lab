@@ -131,7 +131,8 @@ class SubmissionOptionsTest {
     fun `opaque recording requests survive immediate submissions and schedule edits`() = testApplication {
         val root = Files.createTempDirectory("measurement api")
         val queue = root.resolve("queue.json").also { it.writeText(java.io.File("deploy/nomad/queue.example.json").readText()) }
-        val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue)
+        // vcpus are capped at the local cores; fix them so the assertion does not depend on the runner's size.
+        val config = Config(dataDir = root, auth = Auth.Disabled, nomadQueueSettings = queue, cores = 8)
         val store = Store(config.database)
         val schedule = store.schedules.create("nightly", "main", ExperimentSpec("e", description = "d", bench = BenchSpec("bench.json")), 3600)
         application { api(config, store, HostReport("test", 4, "java")) }
