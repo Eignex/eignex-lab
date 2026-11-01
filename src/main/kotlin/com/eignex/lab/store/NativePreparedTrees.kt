@@ -136,6 +136,12 @@ internal class NativePreparedTrees(private val jobs: Path) {
         }
     }
 
+    fun archiveIdentity(bundle: WorkerBundle): Pair<Path, String> {
+        val file = archive(bundle)
+        val exported = kotlinx.serialization.json.Json.decodeFromString<WorkerBundle>(Files.readString(directory(bundle).resolve("export.json")))
+        return file to exported.sha256
+    }
+
     private fun <T> locked(path: Path, check: () -> Unit, action: () -> T): T {
         while (true) { check(); val pin = ProcessFilePin.tryLock(path); if (pin != null) return pin.use { action() }; Thread.sleep(10) }
     }

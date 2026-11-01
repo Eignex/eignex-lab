@@ -1,13 +1,15 @@
 package com.eignex.lab.web
 
 import com.eignex.lab.domain.*
+import com.eignex.lab.execution.JobTrim
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import java.nio.file.Files
 import java.nio.file.Path
 
 /** Accepted preparation archives remain listable without copying regional bytes onto the coordinator. */
-internal class PreparedArchiveFiles(private val config: Config, private val store: Store, private val artifacts: ArtifactStore) {
+internal class PreparedArchiveFiles(private val config: Config, private val store: Store, private val artifacts: ArtifactStore,
+                                   private val nativeTrees: () -> NativePreparedTrees? = { NativePreparedTrees.environment() }) {
     data class Archive(val file: Path, val sha256: String)
 
     private fun accepted(job: Long): Map<String, String> {
@@ -35,7 +37,19 @@ internal class PreparedArchiveFiles(private val config: Config, private val stor
     fun resolve(job: Long, segments: List<String>): Archive? {
         if (segments.firstOrNull() != "preparation" || segments.lastOrNull()?.endsWith(".zip") != true) return null
         val projected = jobFile(config.jobDir(job), segments) // Validate request paths before looking up any blob.
-        val sha = accepted(job)[segments.joinToString("/")] ?: return null
+        val sha = accepted(job)[segments.joinToString("/")]
+        if (sha == null) {
+            if (Files.exists(config.jobDir(job).resolve(JobFileNames.TRIMMED))) return null
+            val snapshot = store.execution.acceptedPreparation(job)?.bundles?.singleOrNull {
+                it.tree != null && segments == listOf("preparation", "${it.commit}.zip")
+            } ?: return null
+            // An explicit export stays available without making every ordinary result fetch create a ZIP.
+            val hold = store.holds.take(job, JobTrim.HOLD_MS)
+            try { return available {
+                val (file, digest) = requireNotNull(nativeTrees()).archiveIdentity(snapshot)
+                Archive(file, digest)
+            } } finally { store.holds.release(job, hold.id) }
+        }
         val file = available {
             projected?.also { check(hashFile(it) == sha) { "archive checksum mismatch" } } ?: artifacts.file(job, sha)
         }
