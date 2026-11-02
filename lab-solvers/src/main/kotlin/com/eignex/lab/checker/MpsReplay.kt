@@ -48,9 +48,11 @@ object MpsReplay : BenchSuite {
         val source = path.toFile()
         require(sha256(source) == input.sha256) { "Frozen original source digest differs" }
         val original = item.getValue("record").jsonObject
-        require("numericalSemantics" !in item || original["numericalSemantics"] == null) { "Cannot replace retained semantics" }
+        require("numericalSemantics" !in item || (original["numericalSemantics"] == null || original["numericalSemantics"] == JsonNull)) { "Cannot replace retained semantics" }
         val effective = JsonObject(original + item.getValue("control").jsonObject +
-            item["numericalSemantics"]?.let { mapOf("numericalSemantics" to it) }.orEmpty())
+            item["numericalSemantics"]?.let { mapOf("numericalSemantics" to it,
+                "numericalSemanticsOrigin" to JsonPrimitive("conditional-replay"),
+                "numericalSemanticsEvidence" to item.getValue("semanticsOrigin")) }.orEmpty())
         val output = context.outputDirectory
         output.resolve("original-record.json").writeText(original.toString())
         output.resolve("effective-record.json").writeText(effective.toString())

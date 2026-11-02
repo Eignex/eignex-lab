@@ -41,6 +41,8 @@ class MpsPolicyChecksTest {
         for (result in results) {
             assertEquals(LabCheck.INVALID, result.exact.state)
             assertEquals(LabCheck.VALID, result.configured.state)
+            assertTrue(result.semanticsQualified)
+            assertEquals("solver-record", result.declarationOrigin)
             assertEquals("20000001/20000000", result.reconstructedObjective)
             assertEquals("MIN", result.objectiveSense)
             assertEquals(emptyList(), result.assumptions)

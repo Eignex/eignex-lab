@@ -111,5 +111,7 @@
     "cliJarSha256": "9157e65a05dc6ec2def9ddb889343fbedea5ec926d774022d09d08b777333613",
     "libraryJarSha256": "ec06c959919fc0048420a167d6f13c6da690d337629c68aad443a0771a6b23af",
     "limitation": "Historical record has no machine-readable declaration; supplemental policy is a separately identified replay condition, never a replacement declaration."
-  }
+  },
+  "expectedExact": "invalid",
+  "expectedConfigured": "valid"
 }
