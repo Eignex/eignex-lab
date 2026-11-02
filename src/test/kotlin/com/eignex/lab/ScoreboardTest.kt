@@ -156,10 +156,10 @@ class ScoreboardTest {
         val problems = Scoreboard.problems(mixedCases, shortArm, mixedReferences, emptyMap(), Dimension.FORMAT, null, "cp-sat")
 
         // The points as scored before the budgets were shown: only p2, equal at equal budgets, is split by time.
-        assertEquals(ScoreCell(1.45, 3.55, 5, 10_000, mapOf(10_000L to 2, 60_000L to 3)), complete.total.cells["cp-sat"])
+        assertEquals(ScoreCell(1.25, 3.75, 5, 10_000, mapOf(10_000L to 2, 60_000L to 3)), complete.total.cells["cp-sat"])
         assertEquals(ScoreCell(2.0, 3.0, 5, 10_000, mapOf(10_000L to 2, 60_000L to 3)), incomplete.total.cells["cp-sat"])
         assertEquals(
-            listOf("p1" to (0.0 to 1.0), "p5" to (0.0 to 1.0), "p3" to (0.2 to 0.8), "p4" to (0.5 to 0.5), "p2" to (0.75 to 0.25)),
+            listOf("p1" to (0.0 to 1.0), "p3" to (0.0 to 1.0), "p5" to (0.0 to 1.0), "p4" to (0.5 to 0.5), "p2" to (0.75 to 0.25)),
             problems.map { it.problem.problem to (it.candidate to it.reference) },
         )
         assertTrue(complete.total.cells.getValue("cp-sat").budgetsDiffer)

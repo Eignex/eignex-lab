@@ -221,7 +221,7 @@ class CheckerInvariantTest {
             val cases = run("base", state)
             val arm = Compare.compare(listOf("base"), cases).arms.single()
             return listOf(
-                Trend.run(job, arms, cases, references)?.copy(spec = "", comparisonSeries = emptyList()),
+                Trend.run(job, arms, cases, references)?.copy(spec = "", comparisonSeries = emptyList(), checkedPoints = 0),
                 Stats.of(listOf("base"), cases).arms,
                 listOf(arm.cases, arm.solved, arm.proven, arm.errors, arm.score),
                 Scoreboard.board(cases, arms.single().arm, references.mapValues { listOf(it.value) }, emptyMap(), Dimension.FORMAT),

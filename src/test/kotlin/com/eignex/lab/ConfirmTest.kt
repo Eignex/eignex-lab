@@ -11,7 +11,8 @@ import com.eignex.lab.nomad.*
 import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
+import com.eignex.lab.checker.sha256
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -54,7 +55,27 @@ class ConfirmTest {
         record = Json.parseToJsonElement("""{"kind":"optimize","feasible":true,"proven":$proven,
             "maximize":$maximize,"objective":9007199254740992${value?.let { ",\"exactObjective\":\"$it\"" } ?: ""}$extra}"""),
         repeat = repeat,
-    )
+    ).let { case ->
+        val scope = buildJsonObject {
+            put("schema", "original-source-optimum-v1"); put("semanticsSha256", "e".repeat(64))
+            put("objective", buildJsonObject {
+                put("sense", if (maximize) "max" else "min"); put("units", "fixture"); put("identity", "source-objective")
+            })
+            put("assumptions", JsonArray(emptyList()))
+        }
+        val witness = "v x=$value"
+        val sources = buildJsonObject { put("model", "a".repeat(64)) }
+        val record = case.record!!.jsonObject
+        val check = buildJsonObject {
+            put("policy", "fixture-v1")
+            put("state", if (record["stats"]?.jsonObject?.get("sourceValidation")?.jsonPrimitive?.content == "invalid") "invalid" else "valid")
+            put("checkerSha256", "b".repeat(64)); put("sourceSha256", sources)
+            put("witnessSha256", sha256(witness.toByteArray()))
+            put("optimumEvidence", buildJsonObject { put("scope", scope); put("objective", value) })
+        }
+        case.copy(record = JsonObject(record + mapOf("optimalityScope" to scope, "sourceHashes" to sources,
+            "finalWitness" to JsonPrimitive(witness), "labCheck" to check)))
+    }
 
     @Test
     fun `still solved proof losses and gains are selected separately from feasibility`() {
