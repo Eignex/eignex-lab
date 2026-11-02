@@ -14,7 +14,9 @@ class BenchSelectionsTest {
     @Test fun `declared selection identities reuse verified build checksums without changing keys`() {
         val base = tree("verified-inputs", """{"main":"a.B","planInputs":["bench"]}""",
             mapOf("bench/build/classes/Plan.class" to "compiled", "bench/build/install/lib/runtime.jar" to "x".repeat(2 * 1024 * 1024)))
-        val expected = key(base)
+        Files.createDirectories(base.resolve("bench/empty/deep"))
+        val expected = BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), commit,
+            base, "local", bulkMetadata = false)
         val proof = base.resolveSibling("proof.json")
         TreeVerification().capture(base, proof)
         val reused = BenchInputDigests(hash = { _, _ -> error("selection reread a verified build file") })
@@ -23,6 +25,7 @@ class BenchSelectionsTest {
             base, "local", digests = reused))
         assertEquals(0, reused.hashedFiles)
         assertTrue(reused.reusedFiles >= 3)
+        if (MacDirectoryEntries.supported(base)) assertTrue(reused.bulkFiles >= 3)
         val file = base.resolve("bench/build/classes/Plan.class"); val modified = Files.getLastModifiedTime(file)
         Files.writeString(file, "modified"); Files.setLastModifiedTime(file, modified)
         val changed = BenchInputDigests(); changed.receipt(base, proof)

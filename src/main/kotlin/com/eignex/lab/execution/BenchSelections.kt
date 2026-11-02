@@ -55,25 +55,43 @@ internal object BenchSelections {
     }
 
     fun key(release: String, repository: String, spec: BenchSpec, request: BenchRequest, commit: String, tree: Path,
-            corpus: String, checkActive: () -> Unit = {}, digests: BenchInputDigests = BenchInputDigests(checkActive)): String {
+            corpus: String, checkActive: () -> Unit = {}, digests: BenchInputDigests = BenchInputDigests(checkActive), bulkMetadata: Boolean = true): String {
         require(CommitSha.isValid(commit))
-        val source = planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive, digests) } ?: "commit:$commit"
+        val source = planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive, digests, bulkMetadata) } ?: "commit:$commit"
         val canonical = BenchProtocol.json.encodeToString(BenchRequest.serializer(), request.copy(parameters = request.parameters.toSortedMap()))
         return ExecutionStore.digest(listOf(VERSION, "release=$release", "repository=$repository", "manifest=${spec.manifest}",
             "request=$canonical", "corpus=$corpus", "source=$source").joinToString("\n"))
     }
 
     /** Path and checksum of every file under [paths]; a missing path is part of the identity, a link is refused. */
-    private fun inventory(tree: Path, paths: List<String>, checkActive: () -> Unit, digests: BenchInputDigests): String {
+    private fun inventory(tree: Path, paths: List<String>, checkActive: () -> Unit, digests: BenchInputDigests, bulkMetadata: Boolean): String {
         val canonical = tree.toRealPath()
         val lines = paths.distinct().sorted().flatMap { relative ->
             val root = tree.resolve(safeRelative(relative))
             if (!Files.exists(root, NOFOLLOW_LINKS)) return@flatMap listOf("$relative:absent")
             require(root.toRealPath().startsWith(canonical)) { "plan input escapes source" }
-            Files.walk(root).use { it.sorted().toList() }.map { file ->
-                checkActive()
+            val native = if (bulkMetadata && Files.isDirectory(root, NOFOLLOW_LINKS) && !Files.isSymbolicLink(root) && MacDirectoryEntries.supported(root)) {
+                val entries = mutableListOf(Triple(root, true, null as MacDirectoryEntries.Entry?))
+                fun directory(path: Path): Boolean {
+                    checkActive()
+                    val batch = MacDirectoryEntries.read(path, checkActive) ?: return false
+                    for (entry in batch) {
+                        checkActive(); require(entry.directory || entry.regular) { "plan input contains a link or unsupported file" }
+                        val file = path.resolve(entry.name)
+                        entries += Triple(file, entry.directory, entry)
+                        if (entry.directory && !directory(file)) return false
+                    }
+                    return true
+                }
+                if (directory(root)) entries.sortedBy { it.first } else null
+            } else null
+            val entries = native ?: Files.walk(root).use { it.sorted().toList() }.map { file ->
                 require(!Files.isSymbolicLink(file)) { "plan input contains a link" }
-                "$relative/${root.relativize(file)}:" + if (Files.isDirectory(file, NOFOLLOW_LINKS)) "directory" else digests.checksum(tree, file)
+                Triple(file, Files.isDirectory(file, NOFOLLOW_LINKS), null)
+            }
+            entries.map { (file, directory, observed) ->
+                checkActive()
+                "$relative/${root.relativize(file)}:" + if (directory) "directory" else digests.checksum(tree, file, observed)
             }
         }
         return ExecutionStore.digest(lines.joinToString("\n"))

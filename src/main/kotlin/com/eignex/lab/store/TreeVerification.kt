@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /** A local receipt avoids rereading unchanged bytes, including across worker processes. Every hit still
  * walks the tree. Unix ctime and inode identity detect replacement and writes with a restored mtime.
  * Filesystems without those attributes always take the checksum path. Receipts are disposable cache state. */
-internal class TreeVerification(private val readAheadFiles: Int = 512,
+internal class TreeVerification(private val readAheadFiles: Int = 512, private val bulkMetadata: Boolean = true,
                                 private val hash: (Path, () -> Unit) -> String = ::hashFile) {
     @Serializable internal data class Stamp(val bytes: Long, val modified: String, val changed: String?,
                                           val key: String?, val executable: Boolean) {
@@ -28,7 +28,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
     @Serializable internal data class Written(val file: InputFile, val stamp: Stamp)
     @Serializable private data class Receipt(val version: Int, val rootKey: String?, val files: List<Written>)
     internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0,
-                              var verificationNanos: Long = 0, var readAheadFiles: Int = 0)
+                              var verificationNanos: Long = 0, var readAheadFiles: Int = 0, var bulkFiles: Int = 0)
     val stats = Stats()
     private fun checksum(path: Path, checkActive: () -> Unit, bytes: Long): String {
         stats.hashedFiles++; stats.hashedBytes = Math.addExact(stats.hashedBytes, bytes)
@@ -47,13 +47,16 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
 
     /** An individually unchanged file may reuse its verified-copy checksum. Missing, stale or unsupported proof
      * returns a hint miss, leaving the caller's ordinary byte-hashing path intact. */
-    fun checksums(tree: Path, receipt: Path): (Path) -> String? {
+    fun checksums(tree: Path, receipt: Path): (Path, MacDirectoryEntries.Entry?) -> String? {
         val root = tree.toAbsolutePath().normalize()
         val proof = if (reliable(root)) previous(root, receipt)?.files?.associateBy { it.file.path }.orEmpty() else emptyMap()
-        return { file ->
+        return { file, observed ->
             val path = file.toAbsolutePath().normalize()
             val entry = if (path.startsWith(root)) proof[root.relativize(path).toString().replace('\\', '/')] else null
-            entry?.takeIf { it.stamp.reusable && stamp(path) == it.stamp }?.file?.sha256
+            entry?.takeIf { it.stamp.reusable && (observed?.let { value ->
+                require(value.regular && value.name == path.fileName.toString())
+                Stamp(value.bytes, value.modified, value.changed, value.key, value.executable)
+            } ?: stamp(path)) == it.stamp }?.file?.sha256
         }
     }
 
@@ -85,8 +88,19 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
 
     private fun copyTree(source: Path, sourceReceipt: Path, destination: Path, receipt: Path,
                          checkActive: () -> Unit, include: (Path) -> Boolean, copy: () -> Unit) {
-        val proof = if (reliable(source)) previous(source, sourceReceipt)?.let { it.copy(files = it.files.filter { file -> include(Path.of(file.file.path)) }) } else null
+        val original = if (reliable(source)) previous(source, sourceReceipt) else null
+        val proof = original?.let { it.copy(files = it.files.filter { file -> include(Path.of(file.file.path)) }) }
         fun unchanged() {
+            if (bulkMetadata && proof != null && proof.files.size == original?.files?.size && MacDirectoryEntries.supported(source)) {
+                val expected = proof.files.associateBy { it.file.path }; var count = 0
+                walk(source, checkActive) { path, observed ->
+                    val entry = expected[source.relativize(path).toString().replace('\\', '/')]
+                    require(entry != null && observed.stamp() == entry.stamp) { "verified copy source changed" }
+                    count++
+                }
+                require(count == expected.size) { "verified copy source changed" }
+                return
+            }
             for (entry in proof?.files.orEmpty()) {
                 checkActive()
                 val path = source.resolve(entry.file.path)
@@ -192,7 +206,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
      * sequential walk waits for each read in turn. Concurrent stats of the expected paths overlap that latency.
      * Their results are discarded: the walk below still decides validity from its own observations alone. */
     private fun <T> readAhead(tree: Path, paths: List<String>, checkActive: () -> Unit, use: () -> T): T {
-        if (paths.size < readAheadFiles) return use()
+        if (paths.size < readAheadFiles || bulkMetadata && MacDirectoryEntries.supported(tree)) return use()
         checkActive()
         val next = AtomicInteger(); val stop = AtomicBoolean(); val read = AtomicInteger()
         val threads = List(READ_AHEAD_THREADS) { Thread.ofPlatform().daemon().name("tree-read-ahead").start {
@@ -224,10 +238,11 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
     /** One no-follow stat per entry instead of walkFileTree's basic stat followed by another Unix stat.
      * Keep access(2) for effective-user/ACL executable semantics, even when ctime/inode are unchanged. */
     private class Observed(val file: Path, val directory: Boolean, val regular: Boolean,
-                           val bytes: Long, val modified: String, val changed: String?, val key: String?) {
+                           val bytes: Long, val modified: String, val changed: String?, val key: String?,
+                           private val executable: Boolean? = null) {
         fun stamp(): Stamp {
             if (!regular) throw IOException("verification requires a regular file")
-            return Stamp(bytes, modified, changed, key, Files.isExecutable(file))
+            return Stamp(bytes, modified, changed, key, executable ?: Files.isExecutable(file))
         }
     }
 
@@ -249,6 +264,18 @@ internal class TreeVerification(private val readAheadFiles: Int = 512,
         fun directory(path: Path) {
             checkActive()
             if (path != tree) directories?.add(tree.relativize(path).toString().replace('\\', '/'))
+            val bulk = if (bulkMetadata) MacDirectoryEntries.read(path, checkActive) else null
+            if (bulk != null) {
+                for (entry in bulk) {
+                    checkActive(); val file = path.resolve(entry.name)
+                    if (!include(tree.relativize(file))) continue
+                    if (entry.directory) directory(file) else {
+                        stats.checkedFiles++; stats.bulkFiles++
+                        visit(file, Observed(file, false, entry.regular, entry.bytes, entry.modified, entry.changed, entry.key, entry.executable))
+                    }
+                }
+                return
+            }
             Files.newDirectoryStream(path).use { entries ->
                 for (file in entries) {
                     checkActive()
