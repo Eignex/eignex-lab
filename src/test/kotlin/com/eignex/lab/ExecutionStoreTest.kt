@@ -19,6 +19,65 @@ import org.junit.jupiter.params.provider.CsvSource
 import kotlin.test.*
 
 class ExecutionStoreTest {
+    private fun checkpoint(elapsed: Long, cpu: Long, retirement: String? = null) = ResourceCheckpoint(elapsed,
+        ResourceObservation("cgroup-v2-hard", budget, "200000 100000", (budget.memoryMiB * 1024L * 1024).toString(),
+            "25", "Linux", "amd64", mapOf("cpu.stat" to "usage_usec $cpu")), "worker-cumulative-lower-bound", retirement)
+
+    @Test fun `interruption retains accepted pairs checkpoints and spent allowance while replacing the unfinished row`() {
+        val id = job(); bind(id)
+        val finished = store.execution.claim("s", token, "alloc-s", 1001)!!; commit(finished)
+        val lost = store.execution.claim("s", token, "alloc-s", 1030)!!
+        store.execution.resourceCheckpoint(lost.owner, checkpoint(30, 100), 1031)
+        store.execution.resourceCheckpoint(lost.owner, checkpoint(40, 200, "provider-interruption"), 1040)
+        assertEquals(Desired.STOP, store.execution.session("s")!!.desired)
+        assertEquals("interrupted:provider-interruption", store.execution.reports(id).single().observation)
+        assertEquals(200L, Store(file).execution.reports(id).single().resources!!.cpuUsec)
+        assertEquals(40L, store.job(id)!!.runMs)
+        assertTrue(store.job(id)!!.commands.filter { it.index in finished.indices }.all { it.status == Status.DONE })
+        assertTrue(store.job(id)!!.commands.filter { it.index in lost.indices }.all { it.status == Status.QUEUED })
+        assertEquals(1, store.execution.accepted(id).size)
+        assertFailsWith<ExecutionFenced> { store.execution.renew(lost.owner, 1041) }
+        assertFailsWith<ExecutionFenced> { store.execution.commit(lost.owner, result(lost), 1041) }
+        store.execution.resourceCheckpoint(lost.owner, checkpoint(50, 250), 1050)
+        store.execution.resourceCheckpoint(lost.owner, checkpoint(35, 150), 1051)
+        val resources = Store(file).execution.reports(id).single().resources!!
+        assertEquals(250L, resources.cpuUsec); assertEquals("provider-interruption", resources.retirement)
+        assertEquals(40L, store.job(id)!!.runMs, "late evidence must not restart the charged clock")
+        bind(id, "replacement")
+        val replacement = store.execution.claim("replacement", token, "alloc-replacement", 1060)!!
+        assertEquals(lost.indices, replacement.indices)
+    }
+
+    @Test fun `resource evidence checks attempt token allocation budget expiry and superseded retirement`() {
+        val id = job(); bind(id)
+        val first = store.execution.claim("s", token, "alloc-s", 1001)!!; commit(first)
+        val next = store.execution.claim("s", token, "alloc-s", 1030)!!
+        assertFailsWith<ExecutionFenced> { store.execution.resourceCheckpoint(next.owner.copy(token = "wrong"), checkpoint(30, 100), 1031) }
+        assertFailsWith<ExecutionFenced> { store.execution.resourceCheckpoint(next.owner.copy(allocation = "other"), checkpoint(30, 100), 1031) }
+        val badBudget = checkpoint(30, 100).let { it.copy(observation = it.observation.copy(budget = ResourceBudget(1000, 512))) }
+        assertFailsWith<IllegalArgumentException> { store.execution.resourceCheckpoint(next.owner, badBudget, 1031) }
+        assertFailsWith<IllegalArgumentException> { store.execution.resourceCheckpoint(first.owner, checkpoint(30, 100, "worker-shutdown"), 1031) }
+        assertEquals(Desired.RUN, store.execution.session("s")!!.desired)
+        store.execution.loseSession("s", "infrastructure:lost", 1040)
+        assertFailsWith<ExecutionFenced> { store.execution.resourceCheckpoint(next.owner, checkpoint(40, 200), next.leaseUntil + 120001) }
+        assertNull(store.execution.reports(id).single().resources)
+    }
+
+    @Test fun `pending preparation node hints reserve placement without granting claims or charging queue time`() {
+        val spec = ExperimentSpec("pending-preparation")
+        val id = store.create(spec.name, "main", emptyList(), experiment = spec)
+        store.execution.createSession("pending", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
+        assertFalse(PreparationAdmission(store).allows(null, false, 2))
+        store.execution.preparationNode("pending", "node")
+        assertTrue(PreparationAdmission(store).allows(null, false, 2))
+        assertNull(store.execution.session("pending")!!.allocation)
+        assertNull(store.job(id)!!.runningSince)
+        assertFailsWith<ExecutionFenced> { store.execution.claim("pending", token, "allocation", 1001) }
+        store.execution.bind("pending", token, "allocation", "node", "release", 1002)
+        store.execution.preparationNode("pending", "wrong-node")
+        assertEquals("node", store.execution.session("pending")!!.node)
+    }
+
     @Test fun `parallelism reports executing live claims separately from unallocated reservations`() {
         val id = job(); bind(id)
         store.execution.createSession("pending", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000)

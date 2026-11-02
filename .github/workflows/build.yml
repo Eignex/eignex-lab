@@ -129,6 +129,8 @@ jobs:
         run: ./gradlew :test --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
       - name: Verify cold build scope and cache compatibility
         run: ./gradlew :test --tests com.eignex.lab.ColdBuildVerificationTest --tests com.eignex.lab.WarmBuildSourceTest
+      - name: Verify interruption deadlines and bounded cost evidence
+        run: ./gradlew :test --tests com.eignex.lab.WorkerInterruptionTest
       - name: Verify accepted artifact names on the native filesystem
         run: ./gradlew :test --tests com.eignex.lab.AcceptedArtifactFilesTest --tests com.eignex.lab.PreparedArchiveFilesTest
       - name: Verify native worker, detached process cleanup and durable ownership

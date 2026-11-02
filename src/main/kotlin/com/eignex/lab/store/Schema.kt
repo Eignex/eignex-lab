@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -336,6 +336,11 @@ internal object Schema {
             it.execute("CREATE TRIGGER IF NOT EXISTS check_revision_delete AFTER DELETE ON cases " +
                 "WHEN OLD.lab_check IS NOT NULL BEGIN $advance END")
         }
+    }
+
+    /** Step 17: one bounded cumulative resource snapshot per worker, independent of result acceptance. */
+    private fun resourceCheckpoints(db: Connection) {
+        db.createStatement().use { if ("resource_checkpoint" !in it.columns("execution_sessions")) it.execute("ALTER TABLE execution_sessions ADD COLUMN resource_checkpoint TEXT") }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */

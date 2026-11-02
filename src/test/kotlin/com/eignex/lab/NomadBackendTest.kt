@@ -39,6 +39,46 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `pending placed preparations release cloud admission before image pull and worker registration`() {
+        val id = setup(preparation = true)
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "pending")
+        backend().reconcile()
+        val pending = store.execution.sessions(id).single()
+        assertEquals("node", pending.node); assertNull(pending.allocation)
+        assertNull(store.job(id)!!.runningSince)
+        assertTrue(PreparationAdmission(store).allows("fixture", false, 2))
+        assertFailsWith<ExecutionFenced> { store.execution.claim(session.id, token, "allocation") }
+    }
+
+    @Test fun `scheduler retirement replaces unfinished work without calling a running task a software failure`() {
+        val id = setup(); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(desired = "stop")
+        backend().reconcile()
+        assertEquals("retired:allocation-stopped", store.execution.reports(id).first().observation)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertTrue(store.execution.sessions(id).any { it.id != session.id && it.desired == Desired.RUN })
+        assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+    }
+
+    @Test fun `authenticated cost evidence survives fencing without permitting late work or foreign attempts`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        application { workerApi(store, backend(), artifacts) { false } }
+        store.execution.loseSession(session.id, "infrastructure:lost")
+        val snapshot = ResourceCheckpoint(10, ResourceObservation("cgroup-v2-hard", session.budget, "200000 100000", "1073741824",
+            "25", "Linux", "amd64", mapOf("cpu.stat" to "usage_usec 100")), "worker-cumulative-lower-bound")
+        suspend fun send(owner: AttemptOwner): HttpResponse = client.post("/worker/v1/sessions/session/resource-checkpoint") {
+            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(WorkerResourceCheckpoint(owner, snapshot)))
+        }
+        assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(token = "wrong")).status)
+        assertEquals(HttpStatusCode.NoContent, send(claim.owner).status)
+        assertEquals(100L, store.execution.reports(id).single().resources!!.cpuUsec)
+        assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+        assertTrue(store.execution.accepted(id).isEmpty())
+    }
+
     @ParameterizedTest @ValueSource(booleans = [false, true])
     fun `large result paths retain complete records and enforce fenced idempotent acceptance`(packed: Boolean) = testApplication {
         val id = setup(1); register()

@@ -22,6 +22,12 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): Ht
         append(Html("<td>") + esc(report.phase ?: session.desired.stored) + Html(" / ") + (report.generation ?: 0) + Html("</td><td>") + (session.budget.cpuMillis / 1000.0) + Html(" vCPU / ") + session.budget.memoryMiB + Html(" MiB</td><td>") + report.committed + Html("</td></tr>"))
         report.preparation?.let { append(Html("<tr><td colspan=\"5\">") + preparationDetails(report) + Html("</td></tr>")) }
         report.observation?.let { append(Html("<tr><td colspan=\"5\">") + esc(it) + Html("</td></tr>")) }
+        report.resources?.let { resource ->
+            append(Html("<tr><td colspan=\"5\">Worker cumulative CPU: ") +
+                (resource.cpuUsec?.let { esc("at least ${it / 1_000_000.0} s") } ?: Html("unavailable")))
+            resource.retirement?.let { append(Html(" · ") + esc(it)) }
+            append(Html(" · snapshot excludes later cleanup and delivery; additional CPU unknown</td></tr>"))
+        }
     }
     append(Html("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>"))
 }
