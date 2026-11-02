@@ -27,6 +27,26 @@ class TreeVerificationTest {
     private var reads = 0
     private fun verifier() = TreeVerification { path, check -> reads++; hashFile(path, check) }
 
+    @Test fun `rejection diagnostics distinguish changed bytes missing files and generated outputs`() {
+        val verification = verifier()
+        assertTrue(verification.valid(tree, expected, receipt))
+        Files.writeString(tree.resolve("generated"), "output")
+        assertFalse(verification.valid(tree, expected, receipt))
+        assertEquals(TreeVerification.Rejection.UNDECLARED_FILE, verification.stats.rejection)
+        assertTrue(verification.valid(tree, expected, receipt, removeUndeclared = true))
+        assertEquals(TreeVerification.Rejection.NONE, verification.stats.rejection)
+        assertEquals(1, verification.stats.removedFiles)
+        Files.writeString(file, "wrong")
+        assertFalse(verification.valid(tree, expected, receipt))
+        assertEquals(TreeVerification.Rejection.CHECKSUM, verification.stats.rejection)
+        Files.writeString(file, "longer")
+        assertFalse(verification.valid(tree, expected, receipt))
+        assertEquals(TreeVerification.Rejection.SIZE, verification.stats.rejection)
+        Files.delete(file)
+        assertFalse(verification.valid(tree, expected, receipt))
+        assertEquals(TreeVerification.Rejection.MISSING_FILE, verification.stats.rejection)
+    }
+
     @Test fun `fresh sealing hashes once and creates a reusable receipt without weakening tamper checks`() {
         val captured = verifier().capture(tree, receipt)
         assertEquals(1, reads)

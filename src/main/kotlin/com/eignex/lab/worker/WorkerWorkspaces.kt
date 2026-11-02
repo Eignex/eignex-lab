@@ -13,17 +13,29 @@ import com.eignex.lab.util.*
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.util.UUID
+import java.util.concurrent.Executor
 
 /** Mutable trees belong to one serial worker session, never to the node-shared cache. */
-class WorkerWorkspaces(private val root: Path) {
+class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null,
+                       private val detach: (Path, Path) -> Unit = { from, to -> Files.move(from, to, ATOMIC_MOVE) }) {
     private data class Ready(val tree: Path, val files: List<InputFile>, val receipt: Path)
     private val ready = mutableMapOf<String, Ready>()
+    private val cleanup = WorkerCacheCleanup(root, cleanupExecutor)
 
     internal fun reuse(key: String, checkActive: () -> Unit): Path? {
-        val entry = ready[key] ?: return null
+        val entry = ready[key] ?: run {
+            println("worker workspace reuse: outcome=0 reason=0 elapsedMs=0 checkedFiles=0 hashedFiles=0 hashedBytes=0 removedFiles=0")
+            return null
+        }
+        val verification = TreeVerification(); val started = System.nanoTime()
         // Prune consumer-generated caches and verify sealed inputs in the same walk, without following links.
-        if (TreeVerification().valid(entry.tree, entry.files, entry.receipt, checkActive,
-                exactExecutables = true, removeUndeclared = true)) return entry.tree
+        val valid = verification.valid(entry.tree, entry.files, entry.receipt, checkActive,
+            exactExecutables = true, removeUndeclared = true)
+        val stats = verification.stats
+        println("worker workspace reuse: outcome=${if (valid) 1 else 2} reason=${stats.rejection.code} elapsedMs=${(System.nanoTime()-started)/1_000_000} checkedFiles=${stats.checkedFiles} hashedFiles=${stats.hashedFiles} hashedBytes=${stats.hashedBytes} removedFiles=${stats.removedFiles}")
+        if (valid) return entry.tree
         ready.remove(key)
         return null
     }
@@ -31,11 +43,31 @@ class WorkerWorkspaces(private val root: Path) {
     internal fun create(key: String, checkActive: () -> Unit, copy: (Path) -> Unit): Path {
         require(SHA256.matches(key)); checkActive(); Files.createDirectories(root)
         val tree = root.resolve(key)
-        if (Files.exists(tree, NOFOLLOW_LINKS)) deleteTree(tree)
+        ready.remove(key)
+        val started = System.nanoTime()
         Files.deleteIfExists(root.resolve("$key.verified.json"))
+        val receiptDeleted = System.nanoTime()
+        var detached = false
+        if (Files.exists(tree, NOFOLLOW_LINKS)) {
+            // Retain at most one extra old tree in this pinned session. A failed or slow reaper cannot accumulate
+            // generations; further replacements keep the ordinary synchronous deletion path until it catches up.
+            val pending = Files.list(root).use { entries -> entries.anyMatch { it.fileName.toString().startsWith(".evict-") } }
+            if (!pending) {
+                checkActive()
+                val garbage = root.resolve(".evict-${UUID.randomUUID()}")
+                try { detach(tree, garbage); detached = true }
+                catch (_: java.io.IOException) { /* Unsupported atomic moves retain ordinary deletion. */ }
+            }
+            if (detached) cleanup.request() else deleteTree(tree)
+        }
+        val deleted = System.nanoTime()
+        checkActive()
         copy(tree)
+        println("worker workspace create: detached=${if (detached) 1 else 0} deleteMs=${(deleted-receiptDeleted)/1_000_000} receiptMs=${(receiptDeleted-started)/1_000_000} copyMs=${(System.nanoTime()-deleted)/1_000_000}")
         return tree
     }
+
+    internal fun awaitCleanupIdle(timeoutMs: Long = 10_000): Boolean = cleanup.awaitIdle(timeoutMs)
 
     internal fun copy(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean, paths: List<String>? = null): Path =
         create(key, checkActive) { destination ->
