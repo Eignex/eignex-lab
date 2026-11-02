@@ -292,6 +292,7 @@ internal fun checkedSourcePaths(problems: List<Problem>): ((String) -> Boolean)?
 
 /** Resolves and verifies source on the coordinator; all builds and selection run in preparation allocations. */
 internal class TrustedQueueSources(private val config: Config, private val artifacts: ArtifactStore, private val store: Store) {
+    private val sourceCache = SourceBundleCache(config.dataDir.resolve("nomad/source-inputs"), artifacts)
     fun publish(job: Job, targets: List<NomadQueueTarget>, settings: NomadQueueSettings): Pair<List<PlannedArm>, List<WorkerBundle>> {
         val spec = checkNotNull(job.experiment); val mirror = Repositories.mirror(config.paths, spec.repository)
         val directory = config.createJobDir(job.id).resolve("nomad/source"); Files.createDirectories(directory)
@@ -342,12 +343,27 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             benchManifest = spec.work.bench?.manifest, requiredTags = requirements)
         val platforms = targets.distinctBy { it.os to it.arch }
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
+            val first = platforms.first()
+            val reused = sourceCache.reuse(job.id, spec.repository, sha, first.os, first.arch, "jdk25", build,
+                authorize = { require(sha in approved); trust.requireRepository() }) {
+                store.active(withCommands = false).asSequence().filter { it.id != job.id && it.experiment?.repository == spec.repository }.take(32).flatMap { other ->
+                    store.execution.sessions(other.id).asSequence().filter { it.executionClass == ExecutionClass.PREPARE }.mapNotNull { session ->
+                        runCatching { other.id to store.execution.manifest(session.id) }.getOrNull()
+                    }.flatMap { (owner, manifest) -> manifest.bundles.asSequence().map { owner to it } }
+                }
+            }
+            if (reused != null) {
+                println("nomad source reuse: job=${job.id} commit=${sha.take(9)}")
+                return@flatMap platforms.map { reused.copy(os = it.os, arch = it.arch) }
+            }
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
             try {
-                val first = platforms.first()
                 val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output)
-                val offset = artifacts.offset(job.id, bundle.sha256)
-                Files.newInputStream(output).use { stream -> stream.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, Files.size(output), offset, stream) }
+                if (artifacts.reuse(job.id, bundle.sha256) == null) {
+                    val offset = artifacts.offset(job.id, bundle.sha256)
+                    Files.newInputStream(output).use { stream -> stream.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, Files.size(output), offset, stream) }
+                }
+                sourceCache.remember(job.id, bundle, Files.size(output))
                 platforms.map { bundle.copy(os = it.os, arch = it.arch) }
             } finally { Files.deleteIfExists(output) }
         }
