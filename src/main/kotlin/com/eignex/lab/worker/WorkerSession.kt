@@ -53,7 +53,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val builder = HttpRequest.newBuilder(URI.create(api.toString().trimEnd('/') + "/worker/v1/sessions/${NomadClient.encode(id)}/$path"))
             .timeout(Duration.ofMillis(timeout)).header("Authorization", "Bearer $token").header("X-Lab-Allocation", allocation)
             .header("X-Lab-Identity", Files.readString(identityFile).trim())
-            .header("Content-Type", if (path == "commit-packed") "application/octet-stream" else "application/json")
+            .header("Content-Type", if (path.startsWith("commit-packed")) "application/octet-stream" else "application/json")
         if (owner != null) builder.header("X-Lab-Attempt", Json.encodeToString(owner))
         if (range > 0) builder.header("Range", "bytes=$range-")
         val upload = Regex("uploads/([0-9a-f]{64})(?:\\?(.*))?").matchEntire(path)
@@ -71,7 +71,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val elapsed = (System.nanoTime()-started)/1_000_000
         if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
-        if (path in setOf("commit-inline", "commit-packed") && response.statusCode() in setOf(404, 405)) return response
+        if (path in setOf("commit-inline", "commit-packed", "commit-packed-large") && response.statusCode() in setOf(404, 405)) return response
         if (response.statusCode() in setOf(429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
         return response
@@ -304,8 +304,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
                 outputs[name] = sha; blobs[sha] = Base64.getEncoder().encodeToString(bytes)
             }
-            val reply = retry { json("commit-inline", Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))) }
-            if (reply.statusCode() in 200..299) return "inline"
+            val body = Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))
+            // File bytes alone do not bound the request: full assignment records can exceed them by megabytes.
+            if (body.toByteArray().size <= PACKED_HEADER_BYTES) {
+                val reply = retry { json("commit-inline", body) }
+                if (reply.statusCode() in 200..299) return "inline"
+            }
         }
         if (result.preparation == null && files.size in 1..INLINE_FILES && files.values.sumOf(Files::size) <= PACKED_BYTES) {
             val outputs = result.artifacts.toMutableMap()
@@ -313,16 +317,22 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             for ((name, file) in files) { val sha = hashFile(file); outputs[name] = sha; sources.putIfAbsent(sha, file) }
             val manifest = WorkerPackedCommit(owner, result.copy(artifacts = outputs), sources.map { ResultBlob(it.key, Files.size(it.value)) })
             manifest.validate()
-            val header = Json.encodeToString(manifest).toByteArray(); require(header.size <= PACKED_HEADER_BYTES)
+            val header = Json.encodeToString(manifest).toByteArray()
+            require(header.size <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
+            val path = if (header.size <= PACKED_HEADER_BYTES) "commit-packed" else "commit-packed-large"
             val prefix = java.nio.ByteBuffer.allocate(4 + header.size).putInt(header.size).put(header).array()
             val body = HttpRequest.BodyPublishers.concat(HttpRequest.BodyPublishers.ofByteArray(prefix),
                 *sources.values.map { HttpRequest.BodyPublishers.ofFile(it) }.toTypedArray())
-            val reply = retry { request("commit-packed", "POST", body) }
+            val reply = retry { request(path, "POST", body) }
             if (reply.statusCode() in 200..299) return "packed"
         }
         val outputs = result.artifacts.toMutableMap()
         for ((name, file) in files) outputs[name] = upload(file, owner)
-        retry { json("commit", Json.encodeToString(WorkerCommit(owner, result.copy(artifacts = outputs)))) }
+        val body = Json.encodeToString(WorkerCommit(owner, result.copy(artifacts = outputs)))
+        val bytes = body.toByteArray().size
+        require(bytes <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
+        val path = if (result.preparation == null && bytes > PACKED_HEADER_BYTES) "commit-large" else "commit"
+        retry { json(path, body) }
         return "resumable"
     }
 

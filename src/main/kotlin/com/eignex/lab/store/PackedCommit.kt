@@ -9,6 +9,8 @@ import java.io.InputStream
 
 internal const val PACKED_BYTES = 64 * 1024 * 1024
 internal const val PACKED_HEADER_BYTES = 4 * 1024 * 1024
+/** Large solver records have a separate, bounded acceptance path; ordinary requests keep their small limit. */
+internal const val LARGE_RESULT_BYTES = 64 * 1024 * 1024
 
 @Serializable data class ResultBlob(val sha: String, val bytes: Long)
 
@@ -20,9 +22,10 @@ internal const val PACKED_HEADER_BYTES = 4 * 1024 * 1024
         require(blobs.all { it.sha in result.artifacts.values })
     }
     companion object {
-        fun read(input: InputStream): WorkerPackedCommit {
+        fun read(input: InputStream, headerLimit: Int = PACKED_HEADER_BYTES): WorkerPackedCommit {
+            require(headerLimit in 1..LARGE_RESULT_BYTES)
             val prefix = input.readNBytes(4); require(prefix.size == 4)
-            val size = java.nio.ByteBuffer.wrap(prefix).int; require(size in 1..PACKED_HEADER_BYTES)
+            val size = java.nio.ByteBuffer.wrap(prefix).int; require(size in 1..headerLimit)
             val header = input.readNBytes(size); require(header.size == size)
             return Json.decodeFromString<WorkerPackedCommit>(String(header)).also { it.validate() }
         }
