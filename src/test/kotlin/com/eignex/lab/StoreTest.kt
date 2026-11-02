@@ -28,6 +28,7 @@ class StoreTest {
     fun `queue and estimate reads complete while the writer lock is held`() {
         val store = store()
         val id = store.create("queued", "main", listOf("true" to 10L), experiment = ExperimentSpec("queued"))
+        val scheduleId = store.schedules.create("sweep", "main", ExperimentSpec("sweep"), 120)
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val writer = thread {
@@ -39,9 +40,10 @@ class StoreTest {
         val reader = Executors.newSingleThreadExecutor()
         try {
             assertTrue(entered.await(2, TimeUnit.SECONDS))
-            val reads = reader.submit<List<List<Job>>> {
-                listOf(store.active(), store.active(withCommands = false), store.jobsByIds(listOf(id)))
+            val (reads, schedules) = reader.submit<Pair<List<List<Job>>, List<Schedule>>> {
+                listOf(store.active(), store.active(withCommands = false), store.jobsByIds(listOf(id))) to store.schedules.all()
             }.get(2, TimeUnit.SECONDS)
+            assertEquals(listOf(scheduleId), schedules.map { it.id })
             assertEquals(listOf(id), reads[0].map { it.id })
             assertEquals(1, reads[0].single().commands.size)
             for (jobs in reads.drop(1)) {
