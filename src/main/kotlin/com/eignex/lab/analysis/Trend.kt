@@ -246,10 +246,10 @@ object Trend {
     ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
         val raw = cases.filter { it.arm == label }
-        val own = raw.map { case ->
+        val own = OptimumClaims.local(raw.map { case ->
             if ((case.record as? kotlinx.serialization.json.JsonObject)?.get("comparisonControls") == null) case
             else case.copy(problem = case.problem.copy(problem = ComparisonControls.problem(case).second, benchCase = null))
-        }
+        })
         val stats = Stats.of(listOf(label), own).arms.single()
         if (stats.problems == 0) return null
         val summary = Compare.compare(listOf(label), own).arms.single()

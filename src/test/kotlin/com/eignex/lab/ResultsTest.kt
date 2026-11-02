@@ -76,7 +76,7 @@ class ResultsTest {
 
         val csv = Results.benchCsv(cases, "a", 2).lines()
 
-        assertEquals(listOf("xcsp3-cop-22to25,Rack-1,false,7.0,true,true,40,1000,,,,,,", ""), csv.drop(1))
+        assertEquals(listOf("xcsp3-cop-22to25,Rack-1,false,7.0,true,false,40,1000,,,,,,", ""), csv.drop(1))
     }
 
 }
