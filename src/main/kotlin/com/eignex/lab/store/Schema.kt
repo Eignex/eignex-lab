@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -319,6 +319,23 @@ internal object Schema {
     /** Step 15: where a manually retried job's whole-run limit counts from, so a retry is not out of time at once. */
     private fun retryDeadlines(db: Connection) {
         db.createStatement().use { if ("deadline_from_ms" !in it.columns("jobs")) it.execute("ALTER TABLE jobs ADD COLUMN deadline_from_ms INTEGER NOT NULL DEFAULT 0") }
+    }
+
+    /** Step 16: receipt revisions visible across runner/API connections; key zero is the global evidence generation. */
+    private fun checkRevisions(db: Connection) {
+        db.createStatement().use {
+            it.execute("CREATE TABLE check_revisions (job_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)")
+            it.execute("INSERT INTO check_revisions VALUES (0, 0)")
+            val advance = "UPDATE check_revisions SET revision = revision + 1 WHERE job_id = 0; "
+            val own = "INSERT INTO check_revisions VALUES (NEW.job_id, 1) ON CONFLICT(job_id) " +
+                "DO UPDATE SET revision = revision + 1; "
+            it.execute("CREATE TRIGGER check_revision_update AFTER UPDATE OF lab_check ON cases " +
+                "WHEN OLD.lab_check IS NOT NEW.lab_check BEGIN $advance $own END")
+            it.execute("CREATE TRIGGER check_revision_insert AFTER INSERT ON cases " +
+                "WHEN NEW.lab_check IS NOT NULL BEGIN $advance $own END")
+            it.execute("CREATE TRIGGER check_revision_delete AFTER DELETE ON cases " +
+                "WHEN OLD.lab_check IS NOT NULL BEGIN $advance END")
+        }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */
