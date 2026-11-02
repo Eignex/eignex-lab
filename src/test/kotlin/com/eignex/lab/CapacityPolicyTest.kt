@@ -14,6 +14,25 @@ import com.eignex.lab.cli.*
 import kotlin.test.*
 
 class CapacityPolicyTest {
+    @Test fun `cross build demand requests the preparation host pool and retains its purchasing policy`() {
+        val spec = ExperimentSpec("cross-build", bench = BenchSpec("bench.json"), host = Experiments.AWS_HOST,
+            nodeTags = NodeSelector(require = setOf("arch:arm64", "simd:sve")))
+        val job = Job(1, spec.name, "main", status = Status.QUEUED, cancelRequested = false, setupDone = false, createdAt = 1, experiment = spec)
+        val budget = ResourceBudget(2000, 4096)
+        val session = ExecutionSession("prepare", job.id, 1, ExecutionClass.PREPARE, "release", budget, "nomad-prepare", Desired.RUN, null, null)
+        val placement = SessionPlacement(CpuEnforcement.HARD_QUOTA, pool.nodeClass, NomadCpuCapacity(pool.cpuMillis, pool.vcpus))
+        val contract = WorkerPreparation(setOf("platform:linux", "arch:x86_64"), WorkerBuildTarget("linux", "arm64"))
+        val demand = assertNotNull(CapacityObservation.deriveDemand(session, budget, placement, job, settings, emptySet(), contract.selector(spec.nodeTags)))
+        assertEquals(setOf("platform:linux", "arch:x86_64"), demand.selector!!.require)
+        assertEquals(CapacityWork.BUILD, demand.work); assertEquals(pool.market, demand.market)
+        val decision = CapacityPolicy.evaluate(settings, emptyList(), listOf(demand))
+        assertEquals(pool.id, decision.placements.single().pool)
+        assertEquals(1, decision.desired.getValue(pool.id))
+        assertFailsWith<IllegalArgumentException> {
+            CapacityObservation.deriveDemand(session, budget, placement, job, settings, emptySet(), NodeSelector(exclude = setOf("spot")))
+        }
+    }
+
     @Test fun `compiler slots place waiting preparations on an idle node while solves still share CPU`() {
         val busy = CapacityNode("busy", pool.id, CapacityNodeState.READY,
             List(2) { CapacityReservation("build-$it", it.toLong(), ResourceBudget(2000, 4096), CapacityWork.BUILD) })

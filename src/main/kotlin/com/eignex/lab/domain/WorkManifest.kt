@@ -16,13 +16,15 @@ data class InputFile(val path: String, val sha256: String, val bytes: Long, val 
 /** A trusted source build runs inside the session's existing CPU/memory reservation. */
 @Serializable
 data class WorkerBuild(val tasks: List<String> = emptyList(), val timeoutSec: Long = 1800, val gitBundle: String? = null,
-                       val benchManifest: String? = null, val requiredTags: Set<String> = emptySet()) {
+                       val benchManifest: String? = null, val requiredTags: Set<String> = emptySet(),
+                       val preparation: WorkerPreparation? = null) {
     init {
         require(tasks.all { it.matches(Regex(":?[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)*")) && !it.startsWith("-") })
         require(timeoutSec in 1..7200)
         gitBundle?.let(::safeRelative)
         benchManifest?.let(::safeRelative)
         NodeTags.validate(NodeSelector(require = requiredTags))
+        preparation?.let { require(benchManifest != null); it.target.validateRequirements(requiredTags) }
     }
 }
 
@@ -76,6 +78,7 @@ data class WorkManifest(
     val solveJavaOptions: String = "",
     @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
         !experiment.isBench -> 1
+        bundles.any { it.build?.preparation != null } -> 6
         bundles.any { it.tree != null } -> 5
         experiment.work.bench?.adapterResources == true -> 4
         else -> 3
@@ -84,8 +87,14 @@ data class WorkManifest(
     val sharedInputs: List<SharedInput> = emptyList(),
     val benchReplay: BenchReplay? = null,
 ) {
+    /** Frozen phase placement: ordinary recipes keep their original selector unchanged. */
+    val placementTags: NodeSelector? get() = if (preparationTimeoutSec == null) experiment.nodeTags else
+        bundles.firstOrNull()?.build?.preparation?.selector(experiment.nodeTags) ?: experiment.nodeTags
+
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..5) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..6) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(bundles.none { it.build?.preparation != null } || schemaVersion >= 6) { "separate preparation platforms require worker protocol 6" }
+        require(bundles.map { it.build?.preparation }.distinct().size <= 1) { "preparation contracts differ between source bundles" }
         require(bundles.none { it.tree != null } || schemaVersion >= 5) { "prepared trees require worker protocol 5" }
         require(schemaVersion >= 4 || experiment.work.bench?.adapterResources != true) { "adapter resources require worker protocol 4" }
         require(preparationTimeoutSec == null || preparationTimeoutSec in 1..7200)

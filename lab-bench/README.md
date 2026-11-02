@@ -288,6 +288,37 @@ execution; Java and tools are checked before entry-point invocation. Environment
 cannot override lab custody variables, PATH, HOME or the Java executable/options. This is lab
 manifest metadata; it does not change the SDK 0.1.0 entry-point or result protocol.
 
+A repository can explicitly separate the preparation host from its output architecture. For example, a Linux x86-64
+compiler can produce an ARM64 runtime that later executes only on SVE workers:
+
+```json
+{
+  "preparation": {
+    "requiredTags": ["platform:linux", "arch:x86_64"],
+    "target": {"os": "linux", "arch": "arm64"}
+  },
+  "runtime": {"requiredTags": ["platform:linux", "arch:arm64", "simd:sve"]}
+}
+```
+
+Add these fields to the usual committed entry-point manifest; HTTP submissions still name that manifest through
+`bench.manifest`. `buildTasks` must actually produce the declared target, and the JVM entry point's `describe` and
+`plan` commands must run on the preparation host. The lab supplies no compiler flags or emulation. Runtime Java,
+tool and environment checks still apply to entry-point invocation.
+
+Without `preparation`, existing `runtime.requiredTags` and submitted tags constrain both phases. With this explicit
+contract, submitted hardware tags (`arch:`, `simd:`, `platform:`, `instance:` and `hardware:unknown`) constrain execution;
+`preparation.requiredTags` selects the compiler/planner host. Other submitted labels and all location, market and
+priority controls remain binding. The declaration cannot include `local`, `cloud`, `spot` or `on-demand` overrides.
+Both sides must use the same OS; `target.os` is `linux` or `mac`, and `target.arch` is `amd64` or `arm64`. Conflicting
+runtime/target requirements and differing declarations between comparison arms are refused.
+
+The resolved contract is frozen with the source build recipe under worker manifest protocol 6. Preparation acceptance
+checks the declared output platform; solve workers receive only that accepted target archive, with its approved file
+hashes. Existing saved manifests and accepted results keep their original identities. Deploy protocol-6 workers before
+submitting jobs with this declaration. An ordinary A/B row still executes every arm on the same compatible solve
+machine in one attempt; the compilation host is independent of that guarantee.
+
 For solver-v1 workloads, reference arms use `backend=reference`, `solver`, `timeout` in ms,
 `processors` and optional `fixed`. The repository planner still resolves the frozen files, including
 in a reference-only run. Checkers and independent reference executables remain lab-owned.

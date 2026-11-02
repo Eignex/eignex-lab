@@ -459,6 +459,14 @@ open as documented in the migration plan.
 
 ### Allocation-scoped preparation
 
+Committed bench manifests may opt into independent preparation capabilities and an explicit same-OS output platform
+through the `preparation` contract documented in [`lab-bench`](../../lab-bench/README.md#paired-runs-and-runtime-declarations).
+Worker protocol 6 freezes that contract. Admission and autoscaling use its host selector for preparation while preserving
+the job's location and purchasing policy; solves use the accepted output platform and their original selectors. Manifests
+without this declaration retain the existing shared preparation/execution constraints. Cross-build recipes must themselves
+produce the declared architecture; changing placement never converts a host binary into a target binary.
+
+
 A preparation manifest sets `preparationTimeoutSec` and has no cases. The worker uses its existing allocation
 identity, renewable attempt lease, process supervisor and CPU/memory reservation to build approved source inputs,
 resolve selections, and publish checksummed source and corpus bundles. The result records portable `lab-source/`
