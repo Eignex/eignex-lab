@@ -41,6 +41,8 @@ class StoreTest {
         try {
             assertTrue(entered.await(2, TimeUnit.SECONDS))
             val (reads, schedules) = reader.submit<Pair<List<List<Job>>, List<Schedule>>> {
+                assertTrue(store.jobExists(id))
+                assertFalse(store.jobExists(Long.MAX_VALUE))
                 listOf(store.active(), store.active(withCommands = false), store.jobsByIds(listOf(id))) to store.schedules.all()
             }.get(2, TimeUnit.SECONDS)
             assertEquals(listOf(scheduleId), schedules.map { it.id })

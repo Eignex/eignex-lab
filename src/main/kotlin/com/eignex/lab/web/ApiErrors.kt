@@ -90,6 +90,11 @@ internal fun ApplicationCall.longParam(name: String = "id"): Long =
 /** The job the `{id}` parameter names: a malformed id is [ApiError.Invalid], an unknown job [ApiError.NotFound]. */
 internal fun ApplicationCall.job(store: Store): Job = longParam().let { id -> store.job(id) ?: throw ApiError.NotFound("no such job $id") }
 
+/** Validate a job path without materializing the job when a route only needs its id. */
+internal fun ApplicationCall.existingJobId(store: Store): Long = longParam().also { id ->
+    if (!store.jobExists(id)) throw ApiError.NotFound("no such job $id")
+}
+
 private fun errorPage(status: HttpStatusCode, message: String): Html =
     Html("<!doctype html><html><head><meta charset=\"utf-8\"><title>") + status.value + Html(" ") + status.description + Html("</title></head>") +
         Html("<body><h1>") + status.value + Html(" ") + status.description + Html("</h1><p>") + message +

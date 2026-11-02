@@ -205,6 +205,14 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         if (ids.isEmpty()) emptyList() else jobsWhere("id IN (${ids.joinToString(",") { "?" }}) ORDER BY id", *ids.toTypedArray(), withCommands = false)
     }
 
+    /** Existence alone, without decoding an experiment or loading its potentially large command list. */
+    fun jobExists(id: Long): Boolean = reading {
+        connection.prepareStatement("SELECT 1 FROM jobs WHERE id = ?").use { statement ->
+            statement.setLong(1, id)
+            statement.executeQuery().use { it.next() }
+        }
+    }
+
     /** Job [id] with its commands, both read from one snapshot. */
     fun job(id: Long): Job? = reading {
         connection.prepareStatement("SELECT * FROM jobs WHERE id = ?").use { statement ->

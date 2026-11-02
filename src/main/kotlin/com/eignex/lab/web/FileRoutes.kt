@@ -32,7 +32,7 @@ internal fun Route.fileRoutes(services: ApiServices) {
     val config = services.config
     val store = services.store
     get("/jobs/{id}/files") {
-        val id = io { call.job(store) }.id
+        val id = io { call.existingJobId(store) }
         requireJobFiles(config.paths)
         val files = io {
             (services.acceptedFiles.entries(id, jobFiles(config.jobDir(id))).associateBy { it.path } + services.preparedArchives.entries(id).associateBy { it.path })
@@ -41,7 +41,7 @@ internal fun Route.fileRoutes(services: ApiServices) {
         if (call.wantsHtml()) call.respondHtml(filesPage(id, files)) else call.respond(files)
     }
     get("/jobs/{id}/files/{path...}") {
-        val id = io { call.job(store) }.id
+        val id = io { call.existingJobId(store) }
         requireJobFiles(config.paths)
         val tail = call.parameters["tail"]?.let {
             it.toLongOrNull()?.takeIf { bytes -> bytes in 0..MAX_TAIL_BYTES } ?: throw ApiError.Invalid("tail must be 0 to $MAX_TAIL_BYTES bytes")
