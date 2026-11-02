@@ -52,6 +52,11 @@ internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = 
         (if (environment["LAB_SHARED_INPUT_ROOT"] != null) mapOf("LAB_CORPUS_KEEP_PACKED" to "true") else emptyMap())
 }
 
+/** Read-only Git provenance/status calls must not rewrite a sealed case workspace's index stat cache.
+ * Required writes still take their locks, and explicit process or repository runtime exports retain precedence. */
+internal fun workerExecutionEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> =
+    workerEnvironment(mac, environment) + ("GIT_OPTIONAL_LOCKS" to (environment["GIT_OPTIONAL_LOCKS"] ?: "0"))
+
 /**
  * Set for a bench's `describe` and `plan` when the lab accepts declared input hashes in place of local bytes. A bench
  * that understands it may plan from an index and leave inputs unmaterialized; one that does not simply ignores it.
