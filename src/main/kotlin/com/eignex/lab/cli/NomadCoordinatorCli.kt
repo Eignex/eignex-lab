@@ -123,17 +123,22 @@ object NomadCoordinatorCli {
             }
         }, placementPolicy = NomadPlacementPolicy(queueSettings)::apply, workerRuntime = NomadWorkerRuntime(queueSettings)::replace, nativeMayClaim = { _ -> !Files.exists(config.nativeYield) }, nativeCapacity = nativeCapacity, admit = { manifest, template -> Placement.admit(cluster, manifest, template, config.cores, config.maxParallel) }, nativeNodeTags = config.localNodeTags)
         // Git mirror publication stays serial; it must not block admission of already prepared experiments.
-        val sourceWork = CoordinatorWork<Long, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
+        val sourceWork = CoordinatorWork<QueueSourceKey, Pair<List<PlannedArm>, List<WorkerBundle>>>("nomad-source-publication", 1, admissionSignal::wake)
         val planWork = CoordinatorWork<Long, Unit>("nomad-preparation-plan", completed = admissionSignal::wake)
         val sources = TrustedQueueSources(config, artifacts, store)
         val queue = NomadQueue(config, store, backend, artifacts, queueSettings, disk::allowsWork,
-            source = { job, targets, settings -> sourceWork.poll(job.id) { sources.publish(job, targets, settings) } },
+            source = { job, targets, settings ->
+                val key = QueueSourceKey(job.id, checkNotNull(job.experiment), targets, settings)
+                sourceWork.retainWhere { it.job != job.id || it == key }
+                sourceWork.poll(key) { sources.publish(job, targets, settings) }
+            },
             preparationPlan = { job, work -> planWork.poll(job, work) != null }, capacitySettings = capacitySettings)
         val buildVolumes = NomadBuildVolumes(client, queueSettings)
         periodic("nomad-admission", admissionSignal::await) {
             queue.reconcile()
             val active = store.active(withCommands = false)
-            sourceWork.retain(active.map { it.id }.toSet())
+            val sourceJobs = active.filter { !it.paused && !it.cancelRequested }.associateBy { it.id }
+            sourceWork.retainWhere { key -> sourceJobs[key.job]?.experiment == key.experiment }
             planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
         }
         val capacity = settings.capacity?.let { integration ->

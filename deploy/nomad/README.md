@@ -181,17 +181,20 @@ as a workload timeout. Accepted timeout captures still ingest after failure. Ord
 timeouts retain the existing 30-second shutdown grace for JVM/JFR output.
 
 Uploads resume from the confirmed byte offset and publish only after size/checksum verification and filesystem sync.
-Small inline results (at most 1 MiB and 128 files per request) first sync one packed batch into
+Small inline results (at most 1 MiB and 128 distinct blobs per request) first sync one packed batch into
 `LAB_DATA/nomad/result-journal` on the coordinator's internal SSD. Acceptance still validates ownership, checksums
 and the durable database commit. Reads and result projection can use pending batches immediately. Two background
 workers copy them to the external artifact store; a batch is reclaimed only after every external blob is durable.
 The journal reserves rounded file blocks and metadata within a fixed 128 MiB budget, also enforces the internal
 free-space guard, and returns retryable backpressure when full. It never evicts pending accepted data. Captures up to
-64 MiB and 128 files use `/commit-packed`: one length-prefixed JSON manifest followed by raw checksum-addressed blobs.
+64 MiB and 128 distinct blobs use `/commit-packed`: one length-prefixed JSON manifest followed by raw checksum-addressed blobs.
 The receiver reserves its complete worst-case disk charge before streaming, hashes each blob, and syncs the completed
 pack before acceptance. Slow senders have separate I/O slots and never hold the small-result journal lock. Retries reuse
-pending blobs; older coordinators return 404/405 and workers fall back to resumable uploads. Preparation bundles, larger
-captures and requests with more files continue directly to the external store. Keep `LAB_DATA` on the internal SSD; external artifact and job paths
+pending blobs. Larger iterations stream `/uploads-packed` batches, each bounded to 64 MiB and 128 distinct blobs, then
+send one final commit for the complete iteration. A data-batch acknowledgement accepts no cases; the final commit still
+checks the original attempt and complete paired rows. Artifact aliases retain all their names while transferring their
+bytes once. Older coordinators return 404/405 and workers fall back to one resumable upload per distinct blob. Preparation
+bundles and individual captures larger than 64 MiB continue directly to the external store. Keep `LAB_DATA` on the internal SSD; external artifact and job paths
 can remain symlinks. Startup verifies and replays pending batches under an exclusive ownership lock. Before rolling
 back to a coordinator without support for its pending pack sizes, stop acceptance and let all journal `.zip` files drain; preserve the
 journal on a failed rollout rather than hiding acknowledged results behind an older binary.
@@ -591,9 +594,10 @@ no-follow stats concurrently ahead of the walk, overlapping cold-metadata latenc
 retain full checksum verification. Runtime bundles retain the complete approved inventory. Cache layouts have separate identities,
 and existing full cache hits remain reusable.
 
-Solve results totaling at most 1 MiB across 128 files use `/commit-inline`: one authenticated request publishes verified,
-filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger captures retain
-resumable uploads; successful chunk acknowledgements supply the next offset, while ambiguous responses re-query progress.
+Solve results totaling at most 1 MiB across 128 distinct blobs use `/commit-inline`: one authenticated request publishes verified,
+filesystem-synced blobs and accepts the iteration durably. Empty and duplicate blobs are supported. Larger iterations use
+the bounded packed paths described above; individual captures above the packed byte limit retain resumable uploads.
+Successful chunk acknowledgements supply the next offset, while ambiguous responses re-query progress.
 Workers fall back to the original protocol when a coordinator does not support inline acceptance. Storage is freshly
 validated before each bounded batch, and accepted-manifest retries retain the same fencing and idempotency rules.
 Small commits use a separate bounded I/O dispatcher so bulk input/output streams cannot occupy all their execution slots.

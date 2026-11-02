@@ -277,7 +277,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     private fun drainSelected(grouped: Boolean): Boolean {
         val selected = synchronized(monitor) {
             if (closed) return false
-            batches.values.filter { it.flushed && it.retryAt <= retryClock() }.toList().forEach(::cleanup)
+            cleanup(batches.values.filter { it.flushed && it.retryAt <= retryClock() }.toList())
             val first = batches.values.firstOrNull { eligible(it) } ?: return false
             val group = mutableListOf(first)
             var bytes = first.manifest.blobs.sumOf { it.bytes }
@@ -334,9 +334,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             synchronized(monitor) {
                 // Release every reservation even if one reclamation fails after successful publication.
                 group.forEach { it.busy = false; it.readers-- }
-                val failures = mutableListOf<Exception>()
-                for (batch in group) try { cleanup(batch) } catch (failure: Exception) { failures.add(failure) }
-                failures.firstOrNull()?.let { first -> failures.drop(1).filter { it !== first }.forEach(first::addSuppressed); throw first }
+                cleanup(group)
             }
         }
     }
@@ -353,17 +351,33 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             }
         }
     }
-    private fun cleanup(batch: Batch) {
-        if (!batch.flushed || batch.readers != 0 || batch.path !in batches) return
-        try {
-            Files.deleteIfExists(batch.path)
-            syncDirectory(root)
-        } catch (failure: Exception) {
-            batch.retryAt = retryClock() + 5000; batch.error = failure.javaClass.simpleName; lastError = batch.error; drainErrors++
-            throw failure
+    private fun cleanup(batch: Batch) = cleanup(listOf(batch))
+    private fun cleanup(candidates: List<Batch>) {
+        val removable = candidates.filter { it.flushed && it.readers == 0 && it.path in batches }
+        if (removable.isEmpty()) return
+        val deleted = mutableListOf<Batch>()
+        val failures = mutableListOf<Exception>()
+        fun failed(batch: Batch, failure: Exception) {
+            batch.retryAt = retryClock() + 5000; batch.error = failure.javaClass.simpleName
+            lastError = batch.error; drainErrors++
         }
-        batches.remove(batch.path); used -= batch.charge
+        for (batch in removable) try {
+            Files.deleteIfExists(batch.path)
+            deleted.add(batch)
+        } catch (failure: Exception) {
+            failed(batch, failure); failures.add(failure)
+        }
+        if (deleted.isNotEmpty()) {
+            try {
+                // One barrier makes every successful deletion durable before any capacity is reclaimed.
+                syncDirectory(root)
+                for (batch in deleted) { batches.remove(batch.path); used -= batch.charge }
+            } catch (failure: Exception) {
+                deleted.forEach { failed(it, failure) }; failures.add(failure)
+            }
+        }
         if (batches.values.none { it.error != null }) { lastError = null; loggedError = null }
+        failures.firstOrNull()?.let { first -> failures.drop(1).filter { it !== first }.forEach(first::addSuppressed); throw first }
     }
     private fun read(batch: Batch, sha: String): ByteArray = ZipFile(batch.path.toFile()).use { zip ->
         val blob = batch.manifest.blobs.single { it.sha == sha }

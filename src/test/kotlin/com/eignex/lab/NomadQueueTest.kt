@@ -322,6 +322,98 @@ class NomadQueueTest {
         }
     }
 
+    @Test fun `deferred committed runtime does not repeatedly take the source lane from later jobs`() {
+        val first = job(); val second = job()
+        listOf(first, second).forEach { store.setPriority(it, 100) }
+        val cloud = job(ExperimentSpec("later-cloud", host = Experiments.AWS_HOST))
+        val calls = java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger>()
+        var nativeAvailable = false
+        CoordinatorWork<QueueSourceKey, Pair<List<PlannedArm>, List<WorkerBundle>>>("source-test", 1).use { work ->
+            val admission = NomadQueue(config, store, backend, artifacts, settings, { true }, nativeAllowed = { nativeAvailable },
+                source = { job, targets, frozen ->
+                    val key = QueueSourceKey(job.id, job.experiment, targets, frozen)
+                    work.poll(key) {
+                        calls.computeIfAbsent(job.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                        val arms = Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) }
+                        val bundles = targets.distinctBy { it.os to it.arch }.map { target ->
+                            input(job.id, target.os, target.arch).let { bundle ->
+                                if (job.id == cloud) bundle else bundle.copy(build = WorkerBuild(requiredTags = setOf("platform:mac", "arch:arm64")))
+                            }
+                        }
+                        arms to bundles
+                    }
+                })
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (store.execution.sessions(cloud).isEmpty() && System.nanoTime() < deadline) { admission.reconcile(); Thread.yield() }
+            assertEquals(ExecutionClass.PREPARE, store.execution.sessions(cloud).single().executionClass)
+            repeat(3) { admission.reconcile() }
+            assertTrue(store.execution.sessions(first).isEmpty())
+            assertTrue(store.execution.sessions(second).isEmpty())
+            assertEquals(mapOf(first to 1, second to 1, cloud to 1), calls.mapValues { it.value.get() })
+            // Mutable priority and vCPU decisions do not rerun trusted publication or resolve its ref again.
+            store.setPriority(first, 101)
+            store.setVcpus(first, 1)
+            nativeAvailable = true
+            admission.reconcile()
+            val session = store.execution.sessions(first).single()
+            assertEquals("a".repeat(40), store.execution.manifest(session.id).arms.single().sha)
+            assertEquals(ResourceBudget(1000, 512), session.budget)
+            assertEquals(1, calls.getValue(first).get())
+        }
+    }
+
+    @Test fun `retained publication invalidates recipe changes and inactive jobs within bounded metadata`() {
+        val first = job(); val second = job()
+        fun key(id: Long) = QueueSourceKey(id, store.job(id)!!.experiment, settings.targets, settings)
+        val publication = Experiments.arms(store.job(first)!!.experiment).map { PlannedArm(it, "a".repeat(40)) } to
+            listOf(input(first, "mac", "arm64"))
+        val cache = QueueSourcePublications(maxEntries = 2)
+        val original = key(first)
+        cache.put(original, publication)
+        assertEquals(publication, cache.get(original))
+        assertNull(cache.get(original.copy(experiment = original.experiment.copy(base = mapOf("ref" to "changed")))))
+        assertNull(cache.get(original))
+        cache.put(original, publication)
+        assertNull(cache.get(original.copy(settings = settings.copy(preparationTimeoutSec = 60))))
+        cache.put(original, publication)
+        assertNull(cache.get(original.copy(targets = settings.targets.filter { it.native })))
+        cache.put(original, publication)
+        store.setPaused(first, true)
+        cache.retain(store.active())
+        assertNull(cache.get(original))
+        store.setPaused(first, false)
+        cache.put(original, publication)
+        store.requestCancel(first)
+        cache.retain(store.active())
+        assertNull(cache.get(original))
+
+        val limited = QueueSourcePublications(maxEntries = 1)
+        limited.put(original, publication); limited.put(key(second), publication)
+        assertNull(limited.get(original))
+        assertEquals(publication, limited.get(key(second)))
+        limited.forget(second)
+        assertNull(limited.get(key(second)))
+        val tiny = QueueSourcePublications(maxBytes = 1)
+        tiny.put(key(second), publication)
+        assertNull(tiny.get(key(second)))
+    }
+
+    @Test fun `source publication failures remain retryable while successful deferrals are reused`() {
+        val id = job()
+        var calls = 0
+        val admission = NomadQueue(config, store, backend, artifacts, settings, { true }, nativeAllowed = { false },
+            source = { job, targets, _ ->
+                calls++
+                if (calls == 1) throw java.io.IOException("transient source failure")
+                Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) } to
+                    targets.map { input(job.id, it.os, it.arch).copy(build = WorkerBuild(requiredTags = setOf("platform:mac", "arch:arm64"))) }
+            })
+        repeat(4) { admission.reconcile() }
+        assertEquals(2, calls)
+        assertTrue(store.execution.sessions(id).isEmpty())
+        assertEquals(Status.QUEUED, store.job(id)!!.status)
+    }
+
     @Test fun `higher priority sweep takes native capacity before an older auto job`() {
         val ordinary = job()
         val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST, priority = 100))

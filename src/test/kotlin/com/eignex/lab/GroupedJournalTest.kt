@@ -159,7 +159,7 @@ class GroupedJournalTest {
         }
     }
 
-    @Test fun `post barrier cleanup failures release all reservations without republishing flushed members`() {
+    @Test fun `a failed shared cleanup barrier retains all charges without republishing flushed members`() {
         var failCleanup = false; var clock = 1000L; var barriers = 0
         ResultJournal(path, destination { barriers++ }, start = false, retryClock = { clock }, syncDirectory = {
             if (failCleanup) { failCleanup = false; throw IOException("injected cleanup barrier failure") }
@@ -167,10 +167,10 @@ class GroupedJournalTest {
             repeat(3) { n -> store.putAll(1, blobs("value-$n")) }
             failCleanup = true
             assertFailsWith<IOException> { store.drainGroup() }
-            assertEquals(1, barriers); assertEquals(1, store.status().batches)
-            assertEquals(1L, store.status().drainErrors)
+            assertEquals(1, barriers); assertEquals(3, store.status().batches)
+            assertEquals(3L, store.status().drainErrors)
             assertTrue(store.status().bytes > 8192)
-            assertFalse(store.drainGroup()); assertEquals(1, store.status().batches)
+            assertFalse(store.drainGroup()); assertEquals(3, store.status().batches)
             clock += 5000
             assertFalse(store.drainGroup()); assertEquals(0, store.status().batches)
             assertEquals(8192L, store.status().bytes); assertEquals(1, barriers)

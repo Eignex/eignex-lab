@@ -17,6 +17,8 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.nio.file.Files
@@ -66,8 +68,16 @@ class PageEscapingTest {
             application { api(config, store, host) }
             for (path in listOf("/", "/jobs/$id", "/jobs/$id?commands", "/compare?jobs=$id,$other", "/jobs/$id/files", "/trend", "/references",
                 "/problem?collection=collection$hostile&problem=problem$hostile", "/disk", "/nodes", "/jobs/$id/execution")) {
-                val response = client.get(path.replace("\"", "%22").replace("<", "%3C").replace(">", "%3E").replace(" ", "%20")) {
+                suspend fun readPage() = client.get(path.replace("\"", "%22").replace("<", "%3C").replace(">", "%3E").replace(" ", "%20")) {
                     header(HttpHeaders.Accept, "text/html")
+                }
+                var response = readPage()
+                // The root intentionally returns immediately while its first display snapshot loads.
+                // Check escaping on the populated page rather than racing the background refresh.
+                if (path == "/") withTimeout(5_000) {
+                    while ("Queue snapshot is loading;" in response.bodyAsText()) {
+                        delay(10); response = readPage()
+                    }
                 }
                 assertEquals(HttpStatusCode.OK, response.status, path)
                 val body = if (path == "/") client.queuePage() else response.bodyAsText()

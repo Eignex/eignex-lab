@@ -39,6 +39,76 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `packed data batches retain ownership and durability without accepting a partial row`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val journal = ResultJournal(root.resolve("batch-journal"), artifacts, start = false)
+        val durableBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
+        application { workerApi(store, durableBackend, journal) { true } }
+        val outputs = listOf("first capture", "second capture").associate { ExecutionStore.digest(it) to it.toByteArray() }
+        suspend fun send(owner: AttemptOwner, sha: String, bytes: ByteArray): HttpResponse {
+            val header = Json.encodeToString(WorkerPackedArtifacts(owner, listOf(ResultBlob(sha, bytes.size.toLong())))).toByteArray()
+            return client.post("/worker/v1/sessions/${session.id}/uploads-packed") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(java.nio.ByteBuffer.allocate(4 + header.size + bytes.size).putInt(header.size).put(header).put(bytes).array())
+            }
+        }
+        try {
+            val first = outputs.entries.first()
+            assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(token = "wrong"), first.key, first.value).status)
+            assertEquals(HttpStatusCode.BadRequest, send(claim.owner, first.key, ByteArray(first.value.size)).status)
+            assertEquals(0, journal.status().batches); assertEquals(8192, journal.status().bytes)
+            for ((sha, bytes) in outputs) {
+                assertEquals(HttpStatusCode.NoContent, send(claim.owner, sha, bytes).status)
+                assertEquals(HttpStatusCode.NoContent, send(claim.owner, sha, bytes).status)
+                assertTrue(store.execution.accepted(id).isEmpty())
+                assertFailsWith<IllegalArgumentException> { artifacts.file(id, sha) }
+                journal.open(id, sha).use { assertContentEquals(bytes, it.readAllBytes()) }
+            }
+            assertEquals(2, journal.status().batches)
+            val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) },
+                mapOf("0.out" to outputs.keys.first(), "0.err" to outputs.keys.last()))
+            repeat(2) {
+                assertEquals(HttpStatusCode.NoContent, client.post("/worker/v1/sessions/${session.id}/commit") {
+                    header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                    setBody(Json.encodeToString(WorkerCommit(claim.owner, result)))
+                }.status)
+            }
+            assertEquals(result, store.execution.accepted(id).single().second)
+            assertTrue(journal.drainGroup()); assertEquals(0, journal.status().batches)
+            outputs.forEach { (sha, bytes) -> artifacts.open(id, sha).use { assertContentEquals(bytes, it.readAllBytes()) } }
+        } finally { journal.close() }
+    }
+
+    @Test fun `data batches reject invalid bounds and fenced attempts without accepting cases`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        val journal = ResultJournal(root.resolve("bounded-batch-journal"), artifacts, start = false)
+        application { workerApi(store, backend(), journal) { true } }
+        suspend fun send(blobs: List<ResultBlob>, bytes: ByteArray = byteArrayOf()): HttpResponse {
+            val header = Json.encodeToString(WorkerPackedArtifacts(claim.owner, blobs)).toByteArray()
+            return client.post("/worker/v1/sessions/${session.id}/uploads-packed") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(java.nio.ByteBuffer.allocate(4 + header.size + bytes.size).putInt(header.size).put(header).put(bytes).array())
+            }
+        }
+        val bytes = "capture".toByteArray(); val sha = ExecutionStore.digest(String(bytes)); val blob = ResultBlob(sha, bytes.size.toLong())
+        try {
+            for (blobs in listOf(emptyList(), List(129) { blob }, listOf(blob, blob), listOf(blob.copy(bytes = PACKED_BYTES + 1L)))) {
+                assertEquals(HttpStatusCode.BadRequest, send(blobs).status)
+            }
+            for (content in listOf(byteArrayOf(), bytes + byteArrayOf(1))) {
+                assertEquals(HttpStatusCode.BadRequest, send(listOf(blob), content).status)
+            }
+            assertEquals(0, journal.status().batches); assertEquals(8192, journal.status().bytes)
+            assertEquals(HttpStatusCode.NoContent, send(listOf(blob), bytes).status)
+            store.execution.loseSession(session.id, "infrastructure:lost")
+            assertEquals(HttpStatusCode.Conflict, send(listOf(blob), bytes).status)
+            assertTrue(store.execution.accepted(id).isEmpty()); assertEquals(1, journal.status().batches)
+        } finally { journal.close() }
+    }
+
     @Test fun `pending placed preparations release cloud admission before image pull and worker registration`() {
         val id = setup(preparation = true)
         control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "pending")

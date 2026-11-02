@@ -23,6 +23,153 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class WorkerTransferTest {
+    @Test fun `packed data batches also split at the byte limit without buffering their payloads`() {
+        val root = Files.createTempDirectory("worker-byte-batches")
+        val files = (0 until 17).associate { index -> "cases/$index/capture" to root.resolve("capture-$index").also {
+            Files.write(it, ByteArray(4 * 1024 * 1024).apply { this[0] = index.toByte() })
+        } }
+        val counts = mutableListOf<Int>(); val sizes = mutableListOf<Long>(); var committed = false
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/uploads-packed") { exchange ->
+            try {
+                val body = WorkerPackedArtifacts.read(exchange.requestBody)
+                counts += body.blobs.size; sizes += body.blobs.sumOf { it.bytes }
+                for (blob in body.blobs) {
+                    val digest = java.security.MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024); var left = blob.bytes
+                    while (left > 0) {
+                        val n = exchange.requestBody.read(buffer, 0, minOf(left, buffer.size.toLong()).toInt())
+                        check(n > 0); digest.update(buffer, 0, n); left -= n
+                    }
+                    assertEquals(blob.sha, digest.digest().hex())
+                }
+                assertEquals(-1, exchange.requestBody.read()); exchange.sendResponseHeaders(204, -1)
+            } finally { exchange.close() }
+        }
+        server.createContext("/worker/v1/sessions/session/commit") { exchange ->
+            val body = Json.decodeFromString<WorkerCommit>(String(exchange.requestBody.readAllBytes()))
+            assertEquals(files.keys, body.result.artifacts.keys); assertEquals(2, counts.size)
+            committed = true; exchange.sendResponseHeaders(204, -1); exchange.close()
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            assertEquals("packed-batches", worker.commitResult(AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"),
+                IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
+            assertEquals(listOf(16, 1), counts); assertEquals(listOf(PACKED_BYTES.toLong(), 4L * 1024 * 1024), sizes); assertTrue(committed)
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `many artifact aliases still use one bounded acceptance request`(large: Boolean) {
+        val root = Files.createTempDirectory("worker-aliases")
+        val file = root.resolve("capture").also { Files.write(it, ByteArray(if (large) 2 * 1024 * 1024 else 32) { 7 }) }
+        val files = (0 until 200).associate { "cases/$it/capture" to file }
+        val calls = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/" + if (large) "commit-packed" else "commit-inline") { exchange ->
+            try {
+                val result = if (large) {
+                    val body = WorkerPackedCommit.read(exchange.requestBody)
+                    assertEquals(1, body.blobs.size)
+                    assertContentEquals(Files.readAllBytes(file), exchange.requestBody.readAllBytes())
+                    body.result
+                } else {
+                    val body = Json.decodeFromString<WorkerInlineCommit>(String(exchange.requestBody.readAllBytes()))
+                    assertEquals(1, body.decoded().size); body.result
+                }
+                assertEquals(files.keys, result.artifacts.keys)
+                assertEquals(setOf(hashFile(file)), result.artifacts.values.toSet())
+                calls.incrementAndGet(); exchange.sendResponseHeaders(204, -1)
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            assertEquals(if (large) "packed" else "inline", worker.commitResult(AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"),
+                IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
+            assertEquals(1, calls.get())
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
+    @Test fun `many distinct outputs stream bounded retryable batches before one complete acceptance`() {
+        val root = Files.createTempDirectory("worker-batches")
+        val distinct = (0 until 257).associate { index -> "cases/$index/capture" to root.resolve("capture-$index").also { Files.writeString(it, "capture-$index") } }
+        val files = distinct + (0 until 100).associate { "aliases/$it" to distinct.values.first() }
+        val uploaded = mutableMapOf<String, ByteArray>(); val counts = mutableListOf<Int>(); var commits = 0
+        val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/uploads-packed") { exchange ->
+            try {
+                val body = WorkerPackedArtifacts.read(exchange.requestBody); assertEquals(owner, body.owner)
+                counts += body.blobs.size
+                for (blob in body.blobs) {
+                    val bytes = exchange.requestBody.readNBytes(blob.bytes.toInt())
+                    assertEquals(blob.sha, java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex())
+                    uploaded[blob.sha] = bytes
+                }
+                assertEquals(-1, exchange.requestBody.read())
+                exchange.sendResponseHeaders(if (counts.size == 1) 503 else 204, -1)
+            } finally { exchange.close() }
+        }
+        server.createContext("/worker/v1/sessions/session/commit") { exchange ->
+            try {
+                val body = Json.decodeFromString<WorkerCommit>(String(exchange.requestBody.readAllBytes()))
+                assertEquals(owner, body.owner); assertEquals(files.keys, body.result.artifacts.keys)
+                assertEquals(257, uploaded.size)
+                for ((name, sha) in body.result.artifacts) assertContentEquals(Files.readAllBytes(files.getValue(name)), uploaded.getValue(sha))
+                assertEquals(listOf(ExecutionCaseResult(0, 0, 1, 2)), body.result.cases)
+                commits++; exchange.sendResponseHeaders(204, -1)
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            assertEquals("packed-batches", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
+            assertEquals(listOf(128, 128, 128, 1), counts); assertEquals(1, commits)
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
+    @ParameterizedTest @ValueSource(ints = [404, 405])
+    fun `older coordinators fall back once per distinct blob and retain all aliases`(unsupported: Int) {
+        val root = Files.createTempDirectory("worker-batch-fallback")
+        val distinct = (0 until 129).associate { index -> "cases/$index/capture" to root.resolve("capture-$index").also { Files.writeString(it, "capture-$index") } }
+        val files = distinct + (0 until 100).associate { "aliases/$it" to distinct.values.first() }
+        val batchCalls = AtomicInteger(); val offsets = AtomicInteger(); val commits = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/uploads-packed") { exchange ->
+            exchange.requestBody.readAllBytes(); batchCalls.incrementAndGet(); exchange.sendResponseHeaders(unsupported, -1); exchange.close()
+        }
+        val sizes = distinct.values.associate { hashFile(it) to Files.size(it) }
+        server.createContext("/worker/v1/sessions/session/uploads/") { exchange ->
+            try {
+                assertEquals("GET", exchange.requestMethod); offsets.incrementAndGet()
+                val sha = exchange.requestURI.path.substringAfterLast('/')
+                val reply = """{"offset":${sizes.getValue(sha)}}""".toByteArray()
+                exchange.sendResponseHeaders(200, reply.size.toLong()); exchange.responseBody.write(reply)
+            } finally { exchange.close() }
+        }
+        server.createContext("/worker/v1/sessions/session/commit") { exchange ->
+            val body = Json.decodeFromString<WorkerCommit>(String(exchange.requestBody.readAllBytes()))
+            assertEquals(files.keys, body.result.artifacts.keys)
+            commits.incrementAndGet(); exchange.sendResponseHeaders(204, -1); exchange.close()
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            assertEquals("resumable", worker.commitResult(AttemptOwner("session", "allocation", "iteration", 1, "attempt-token"),
+                IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), files))
+            assertEquals(1, batchCalls.get()); assertEquals(129, offsets.get()); assertEquals(1, commits.get())
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
     @Test fun `request timeouts preserve the same completed row for idempotent publication`() {
         val root = Files.createTempDirectory("worker-publication-timeout")
         val calls = AtomicInteger()

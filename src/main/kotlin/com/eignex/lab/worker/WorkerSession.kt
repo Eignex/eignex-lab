@@ -56,7 +56,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val builder = HttpRequest.newBuilder(URI.create(api.toString().trimEnd('/') + "/worker/v1/sessions/${NomadClient.encode(id)}/$path"))
             .timeout(Duration.ofMillis(timeout)).header("Authorization", "Bearer $token").header("X-Lab-Allocation", allocation)
             .header("X-Lab-Identity", Files.readString(identityFile).trim())
-            .header("Content-Type", if (path.startsWith("commit-packed")) "application/octet-stream" else "application/json")
+            .header("Content-Type", if (path.startsWith("commit-packed") || path == "uploads-packed") "application/octet-stream" else "application/json")
         if (owner != null) builder.header("X-Lab-Attempt", Json.encodeToString(owner))
         if (range > 0) builder.header("Range", "bytes=$range-")
         val upload = Regex("uploads/([0-9a-f]{64})(?:\\?(.*))?").matchEntire(path)
@@ -74,7 +74,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val elapsed = (System.nanoTime()-started)/1_000_000
         if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
-        if (path in setOf("commit-inline", "commit-packed", "commit-packed-large") && response.statusCode() in setOf(404, 405)) return response
+        if (path in setOf("commit-inline", "commit-packed", "commit-packed-large", "uploads-packed") && response.statusCode() in setOf(404, 405)) return response
         if (response.statusCode() in setOf(408, 429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
         return response
@@ -328,14 +328,16 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         override fun close() { closed = true; chunk = java.io.ByteArrayInputStream(byteArrayOf()) }
     }
     internal fun commitResult(owner: AttemptOwner, result: IterationResult, files: Map<String, Path>): String {
-        if (result.preparation == null && files.size <= INLINE_FILES && files.values.sumOf(Files::size) <= INLINE_BYTES) {
-            val blobs = linkedMapOf<String, String>()
-            val outputs = result.artifacts.toMutableMap()
-            for ((name, file) in files) {
-                val bytes = Files.readAllBytes(file)
-                val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
-                outputs[name] = sha; blobs[sha] = Base64.getEncoder().encodeToString(bytes)
-            }
+        val outputs = result.artifacts.toMutableMap()
+        val sources = linkedMapOf<String, Path>()
+        val hashes = mutableMapOf<Path, String>()
+        if (result.preparation == null) for ((name, file) in files) {
+            val sha = hashes.getOrPut(file) { hashFile(file) }; outputs[name] = sha; sources.putIfAbsent(sha, file)
+        }
+        val uniqueBytes = sources.values.sumOf(Files::size)
+        // Transport limits count distinct blobs, not all the artifact names that may refer to the same bytes.
+        if (result.preparation == null && sources.size <= INLINE_FILES && uniqueBytes <= INLINE_BYTES) {
+            val blobs = sources.mapValues { Base64.getEncoder().encodeToString(Files.readAllBytes(it.value)) }
             val body = Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))
             // File bytes alone do not bound the request: full assignment records can exceed them by megabytes.
             if (body.toByteArray().size <= PACKED_HEADER_BYTES) {
@@ -343,29 +345,54 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 if (reply.statusCode() in 200..299) return "inline"
             }
         }
-        if (result.preparation == null && files.size in 1..INLINE_FILES && files.values.sumOf(Files::size) <= PACKED_BYTES) {
-            val outputs = result.artifacts.toMutableMap()
-            val sources = linkedMapOf<String, Path>()
-            for ((name, file) in files) { val sha = hashFile(file); outputs[name] = sha; sources.putIfAbsent(sha, file) }
+        if (result.preparation == null && sources.size in 1..INLINE_FILES && uniqueBytes <= PACKED_BYTES) {
             val manifest = WorkerPackedCommit(owner, result.copy(artifacts = outputs), sources.map { ResultBlob(it.key, Files.size(it.value)) })
             manifest.validate()
             val header = Json.encodeToString(manifest).toByteArray()
             require(header.size <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
             val path = if (header.size <= PACKED_HEADER_BYTES) "commit-packed" else "commit-packed-large"
-            val prefix = java.nio.ByteBuffer.allocate(4 + header.size).putInt(header.size).put(header).array()
-            val body = HttpRequest.BodyPublishers.concat(HttpRequest.BodyPublishers.ofByteArray(prefix),
-                *sources.values.map { HttpRequest.BodyPublishers.ofFile(it) }.toTypedArray())
-            val reply = publicationRetry { request(path, "POST", body) }
+            val reply = publicationRetry { request(path, "POST", packedBody(header, sources)) }
             if (reply.statusCode() in 200..299) return "packed"
         }
-        val outputs = result.artifacts.toMutableMap()
-        for ((name, file) in files) outputs[name] = upload(file, owner, publication = result.preparation == null)
+        var mode = "resumable"
+        if (result.preparation == null) {
+            val remaining = sources.toMutableMap()
+            val batch = linkedMapOf<String, Path>(); var batchBytes = 0L
+            fun flushBatch(): Boolean {
+                if (batch.isEmpty()) return true
+                val header = Json.encodeToString(WorkerPackedArtifacts(owner,
+                    batch.map { ResultBlob(it.key, Files.size(it.value)) })).toByteArray()
+                require(header.size <= PACKED_HEADER_BYTES)
+                val reply = publicationRetry { request("uploads-packed", "POST", packedBody(header, batch)) }
+                if (reply.statusCode() !in 200..299) return false // Older coordinators retain ordinary uploads.
+                batch.keys.forEach { remaining.remove(it) }; batch.clear(); batchBytes = 0; mode = "packed-batches"
+                return true
+            }
+            var supported = true
+            for ((sha, file) in sources) {
+                val size = Files.size(file)
+                if (size > PACKED_BYTES) continue // Large individual files retain resumable range uploads.
+                if (batch.size == INLINE_FILES || size > PACKED_BYTES - batchBytes) {
+                    if (!flushBatch()) { supported = false; break }
+                }
+                batch[sha] = file; batchBytes += size
+            }
+            if (supported) flushBatch()
+            // Deduplicate fallback requests too, including when the coordinator lacks the packed upload route.
+            for ((sha, file) in remaining) uploadVerified(file, owner, sha, Files.size(file), 0, publication = true)
+        } else for ((name, file) in files) outputs[name] = upload(file, owner)
         val body = Json.encodeToString(WorkerCommit(owner, result.copy(artifacts = outputs)))
         val bytes = body.toByteArray().size
         require(bytes <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
         val path = if (result.preparation == null && bytes > PACKED_HEADER_BYTES) "commit-large" else "commit"
         if (result.preparation == null) publicationRetry { json(path, body) } else retry { json(path, body) }
-        return "resumable"
+        return mode
+    }
+
+    private fun packedBody(header: ByteArray, sources: Map<String, Path>): HttpRequest.BodyPublisher {
+        val prefix = java.nio.ByteBuffer.allocate(4 + header.size).putInt(header.size).put(header).array()
+        return HttpRequest.BodyPublishers.concat(HttpRequest.BodyPublishers.ofByteArray(prefix),
+            *sources.values.map { HttpRequest.BodyPublishers.ofFile(it) }.toTypedArray())
     }
 
     /** Keep a cloud build archive in the regional store, by content hash, instead of sending it to the coordinator. */
@@ -385,6 +412,10 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val verificationStarted = System.nanoTime()
         val sha = hashFile(file); val size = Files.size(file)
         val verificationMs = (System.nanoTime() - verificationStarted) / 1_000_000
+        return uploadVerified(file, owner, sha, size, verificationMs, reusable, trace, publication)
+    }
+    private fun uploadVerified(file: Path, owner: AttemptOwner, sha: String, size: Long, verificationMs: Long,
+                               reusable: Boolean = false, trace: PreparationTrace? = null, publication: Boolean = false): String {
         var sent = false
         var resumed = false
         val reuse = if (reusable) "reuse=true&" else ""

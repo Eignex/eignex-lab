@@ -14,6 +14,18 @@ internal const val LARGE_RESULT_BYTES = 64 * 1024 * 1024
 
 @Serializable data class ResultBlob(val sha: String, val bytes: Long)
 
+/** Upload data for an owned attempt without accepting any of its cases yet. */
+@Serializable data class WorkerPackedArtifacts(val owner: AttemptOwner, val blobs: List<ResultBlob>) {
+    companion object {
+        fun read(input: InputStream): WorkerPackedArtifacts {
+            val prefix = input.readNBytes(4); require(prefix.size == 4)
+            val size = java.nio.ByteBuffer.wrap(prefix).int; require(size in 1..PACKED_HEADER_BYTES)
+            val header = input.readNBytes(size); require(header.size == size)
+            return Json.decodeFromString<WorkerPackedArtifacts>(String(header)).also { validateResultBlobs(it.blobs) }
+        }
+    }
+}
+
 /** A length-prefixed JSON manifest followed by raw blobs in manifest order. No base64 or whole-body buffering. */
 @Serializable data class WorkerPackedCommit(val owner: AttemptOwner, val result: IterationResult, val blobs: List<ResultBlob>) {
     fun validate() {
