@@ -15,6 +15,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
@@ -39,7 +40,8 @@ internal interface InputTransport {
 
 /** [identity] names the remote store (its URL): a cached selection's inputs are reused only against the store that holds them. */
 internal class SharedInputs(val root: Path, private val transport: InputTransport, private val existingPrefix: String = "corpus",
-                           private val maxBytes: Long = 8L * 1024 * 1024 * 1024, val identity: String = "") {
+                           private val maxBytes: Long = 8L * 1024 * 1024 * 1024, val identity: String = "",
+                           private val requests: InputRequestRetry = InputRequestRetry()) {
     /** Declared inputs whose bytes are neither in the regional store nor on this worker. */
     class MissingInputs(val paths: List<String>) :
         IllegalStateException("${paths.size} declared input(s) are neither stored nor local, first ${paths.first()}")
@@ -64,7 +66,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
             val path = root.resolve(safeRelative(relative))
             val size = available[sha] ?: if (Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical)) {
                 require(hashFile(path) == sha) { "declared input checksum mismatch: $relative" }
-                transport.put(key, path, sha)
+                requests.run("upload", checkActive) { transport.put(key, path, sha) }
                 Files.size(path).also { available[sha] = it }
             } else { missing += relative; null }
             size?.let { SharedInput(InputFile(relative, sha, it), key, "identity", sha, it) }
@@ -77,7 +79,9 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
 
     /** Bound both in-flight requests and queued tasks; only the read-only presence checks run concurrently. */
     private fun stored(hashes: List<String>, checkActive: () -> Unit): Map<String, Long?> {
-        if (hashes.size < 2) return hashes.associateWith { checkActive(); transport.stored("input-blobs/$it", it) }
+        if (hashes.size < 2) return hashes.associateWith { sha ->
+            requests.run("presence", checkActive) { transport.stored("input-blobs/$sha", sha) }
+        }
         val sizes = arrayOfNulls<Long>(hashes.size)
         val next = AtomicInteger()
         val pool = Executors.newFixedThreadPool(minOf(8, hashes.size)) { task ->
@@ -90,7 +94,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                 if (index >= hashes.size) break
                 checkActive()
                 val sha = hashes[index]
-                sizes[index] = transport.stored("input-blobs/$sha", sha)
+                sizes[index] = requests.run("presence", checkActive) { transport.stored("input-blobs/$sha", sha) }
             }
         }) }
         try {
@@ -130,8 +134,9 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
                 digest.digest().hex()
             }
             val original = "$existingPrefix/${file.path}" + if (source == path) "" else ".zst"
-            val key = if (transport.matches(original, stored, md5)) original else "input-blobs/${stored.sha256}"
-            if (key != original && !transport.matches(key, stored, md5)) transport.put(key, source, stored.sha256)
+            fun matches(key: String) = requests.run("metadata", checkActive) { transport.matches(key, stored, md5) }
+            val key = if (matches(original)) original else "input-blobs/${stored.sha256}"
+            if (key != original && !matches(key)) requests.run("upload", checkActive) { transport.put(key, source, stored.sha256) }
             SharedInput(file, key, if (source == path) "identity" else "zstd", stored.sha256, stored.bytes)
         }
     }
@@ -267,7 +272,9 @@ internal fun signInput(signer: URI, signature: InputSignature): SignedInput {
     require(signer.scheme == "http" && signer.host in setOf("127.0.0.1", "localhost", "::1") && signer.userInfo == null)
     val request = HttpRequest.newBuilder(signer).timeout(Duration.ofSeconds(15)).header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(Json.encodeToString(InputSignature.serializer(), signature))).build()
-    val response = inputSigningClient.send(request, HttpResponse.BodyHandlers.ofString())
+    val response = try { inputSigningClient.send(request, HttpResponse.BodyHandlers.ofString()) }
+    catch (failure: IOException) { throw IOException("input signing transport failed", failure) }
+    if (response.statusCode() in setOf(408, 429, 500, 502, 503, 504)) throw IOException("input signing HTTP ${response.statusCode()}")
     check(response.statusCode() == 200) { "input signing unavailable" }
     return Json.decodeFromString<SignedInput>(response.body())
 }
@@ -279,6 +286,12 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         require(base.scheme == "https" && base.userInfo == null && base.rawQuery == null)
         require(signer == null || signer.scheme == "http" && signer.host in setOf("127.0.0.1", "localhost", "::1"))
     }
+    private fun <T> send(stage: String, request: HttpRequest, handler: HttpResponse.BodyHandler<T>): HttpResponse<T> {
+        val response = try { client.send(request, handler) }
+        catch (failure: IOException) { throw IOException("shared input $stage transport failed", failure) }
+        if (response.statusCode() in setOf(408, 429, 500, 502, 503, 504)) throw IOException("shared input $stage HTTP ${response.statusCode()}")
+        return response
+    }
     private fun request(method: String, key: String, sha: String? = null): HttpRequest.Builder {
         safeRelative(key)
         val signature = InputSignature(method, key, sha)
@@ -286,10 +299,11 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
             signInput(signer, signature)
         } else SignedInput(base.toString().trimEnd('/') + "/" + key.split('/').joinToString("/") { java.net.URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") })
         val uri = URI(signed.url); require(uri.scheme == "https" && uri.userInfo == null)
-        return HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(10)).also { builder -> signed.headers.forEach { (key, value) -> builder.header(key, value) } }
+        return HttpRequest.newBuilder(uri).timeout(if (method == "HEAD") Duration.ofSeconds(15) else Duration.ofMinutes(10))
+            .also { builder -> signed.headers.forEach { (key, value) -> builder.header(key, value) } }
     }
     override fun matches(key: String, file: InputFile, md5: String): Boolean {
-        val response = client.send(request("HEAD", key).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding())
+        val response = send("metadata", request("HEAD", key).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding())
         if (response.statusCode() == 404) return false
         check(response.statusCode() == 200) { "shared input metadata unavailable (${response.statusCode()})" }
         val length = response.headers().firstValue("Content-Length").orElse("").toLongOrNull()
@@ -298,7 +312,7 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         return length == file.bytes && (checksum == file.sha256 || etag == md5)
     }
     override fun stored(key: String, sha: String): Long? {
-        val response = client.send(request("HEAD", key).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding())
+        val response = send("metadata", request("HEAD", key).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding())
         if (response.statusCode() == 404) return null
         check(response.statusCode() == 200) { "shared input metadata unavailable (${response.statusCode()})" }
         if (response.headers().firstValue("x-amz-meta-sha256").orElse("") != sha) return null
@@ -308,7 +322,7 @@ internal class HttpInputTransport(private val base: URI, private val signer: URI
         val digest = sha.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
         val request = request("PUT", key, sha).setHeader("If-None-Match", "*").setHeader("x-amz-meta-sha256", sha)
             .setHeader("x-amz-checksum-sha256", Base64.getEncoder().encodeToString(digest)).PUT(HttpRequest.BodyPublishers.ofFile(source)).build()
-        val response = client.send(request, HttpResponse.BodyHandlers.discarding())
+        val response = send("upload", request, HttpResponse.BodyHandlers.discarding())
         check(response.statusCode() in setOf(200, 201, 204, 412)) { "shared input publication unavailable (${response.statusCode()})" }
     }
     override fun get(key: String, destination: Path) {
