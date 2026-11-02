@@ -52,6 +52,11 @@ jobs:
         run: |
           mkdir -p build/checker-test-results
           cp build/test-results/test/TEST-com.eignex.lab.checker.*.xml build/checker-test-results/
+      - name: Preserve Git workspace regression receipts
+        if: always()
+        run: |
+          mkdir -p build/workspace-test-results
+          cp build/test-results/test/TEST-com.eignex.lab.WorkerWorkspacesTest.xml build/workspace-test-results/
       - name: Verify representative warm preparation work
         run: ./gradlew :verifyPreparationPerformance
         env:
@@ -97,6 +102,7 @@ jobs:
             build/dimacs-controls/
             build/test-results/
             build/checker-test-results/
+            build/workspace-test-results/
             build/reports/tests/
             lab-bench/build/test-results/
             lab-bench/build/reports/tests/
