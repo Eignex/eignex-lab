@@ -1,4 +1,5 @@
 """The maintained client must never publish a truncated evidence download as complete."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,11 +9,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE_CURL = r'''#!/usr/bin/env python3
-import json, os, sys
+import hashlib, json, os, sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 args = sys.argv[1:]
-path = urlparse(args[-1]).path
+path = unquote(urlparse(args[-1]).path)
 method = args[args.index('-X') + 1] if '-X' in args else 'GET'
 with Path(os.environ['FAKE_CALLS']).open('a') as log: log.write(method + ' ' + path + '\n')
 mode = os.environ['FAKE_MODE']
@@ -22,12 +23,24 @@ if path.endswith('/hold'):
 elif '/hold/' in path:
     pass
 elif path.endswith('/files'):
-    body = json.dumps([{'path':'preparation/archive.zip','bytes':8},{'path':'job.log','bytes':4}]).encode()
+    files = [{'path':'preparation/archive.zip','bytes':8},{'path':'job.log','bytes':4}]
+    if mode in ('hashed', 'bad-hash'):
+        files[0]['sha256'] = hashlib.sha256(b'complete').hexdigest()
+    if mode in ('case-names', 'aliased-directories'):
+        names = ['A.out', 'a.out'] if mode == 'case-names' else ['a/result.out', 'A/result.out']
+        files = [{'path':name,'bytes':len(value),'sha256':hashlib.sha256(value).hexdigest()}
+                 for name,value in zip(names, [b'first', b'other'])]
+    if mode == 'literal-name':
+        files = [{'path':'names/a b\t%#\n','bytes':5,'sha256':hashlib.sha256(b'first').hexdigest()}]
+    body = json.dumps(files).encode()
 elif path.endswith('archive.zip'):
     body = b'complete'
+    if mode == 'bad-hash': body = b'incorrec'
     if mode in ('short', 'transport'): body = b'par'
     if mode in ('transport', 'full-body-error'): exit_code = 16
     if mode == 'http': status, body = '404', b'not found'
+elif mode in ('case-names', 'aliased-directories', 'literal-name') and '/files/' in path:
+    body = b'other' if path.endswith('/a.out') or path.endswith('/A/result.out') else b'first'
 elif path.endswith('job.log'):
     body = b'log\n'
 elif path.endswith('cases.jsonl'):
@@ -98,3 +111,66 @@ class FetchTest(unittest.TestCase):
             self.assertIsNone(receipt['missing'][0]['bytes'])
             self.assertEqual(16, receipt['missing'][0]['curlExit'])
             self.assertIn('DELETE /jobs/1/hold/ab12', (root / 'calls').read_text())
+
+
+    def test_checksum_replaces_same_size_corrupt_resume_and_rejects_wrong_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dest = root / 'download'
+            (dest / 'preparation').mkdir(parents=True)
+            archive = dest / 'preparation/archive.zip'
+            archive.write_bytes(b'incorrec')
+            fixed = self.fetch('hashed', dest, root)
+            self.assertEqual(0, fixed.returncode, fixed.stderr)
+            self.assertEqual(b'complete', archive.read_bytes())
+            archive.unlink()
+            wrong = self.fetch('bad-hash', dest, root)
+            self.assertNotEqual(0, wrong.returncode)
+            self.assertFalse(archive.exists())
+            missing = json.loads((dest / 'lab-fetch-missing.json').read_text())['missing'][0]
+            self.assertEqual('checksum-mismatch', missing['reason'])
+            self.assertEqual(hashlib.sha256(b'complete').hexdigest(), missing['expectedSha256'])
+            self.assertEqual(hashlib.sha256(b'incorrec').hexdigest(), missing['receivedSha256'])
+            self.assertFalse(list(dest.rglob('.lab-fetch-*')))
+            self.assertIn('DELETE /jobs/1/hold/ab12', (root / 'calls').read_text())
+
+    def test_case_variants_are_preserved_or_destination_is_rejected_before_overwrite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'probe').write_bytes(b'')
+            folded = (root / 'PROBE').exists()
+            dest = root / 'download'
+            result = self.fetch('case-names', dest, root)
+            if folded:
+                self.assertNotEqual(0, result.returncode)
+                self.assertFalse((dest / 'A.out').exists())
+                missing = json.loads((dest / 'lab-fetch-missing.json').read_text())['missing'][0]
+                self.assertEqual('destination-case-collision', missing['reason'])
+            else:
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(b'first', (dest / 'A.out').read_bytes())
+                self.assertEqual(b'other', (dest / 'a.out').read_bytes())
+            self.assertFalse(list(dest.glob('.lab-fetch-*')))
+            self.assertIn('DELETE /jobs/1/hold/ab12', (root / 'calls').read_text())
+
+    def test_final_audit_detects_later_write_through_an_existing_directory_alias(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dest = root / 'download'
+            (dest / 'a').mkdir(parents=True)
+            if (dest / 'A').exists():
+                self.skipTest('case-insensitive filesystem is covered by the preflight test')
+            (dest / 'A').symlink_to('a', target_is_directory=True)
+            result = self.fetch('aliased-directories', dest, root)
+            self.assertNotEqual(0, result.returncode)
+            missing = json.loads((dest / 'lab-fetch-missing.json').read_text())['missing']
+            self.assertTrue(any(row['path'] == 'a/result.out' and
+                                row['reason'] == 'retained-checksum-mismatch' for row in missing))
+
+    def test_literal_filename_survives_listing_and_component_url_encoding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dest = root / 'download'
+            result = self.fetch('literal-name', dest, root)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(b'first', (dest / 'names/a b\t%#\n').read_bytes())

@@ -354,59 +354,114 @@ stdout)
 fetch)
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || { echo "usage: lab fetch <id> [dest]" >&2; exit 2; }
   id="$1" dest="${2:-lab-jobs/$1}"; mkdir -p "$dest"
-  receipt="$dest/lab-fetch-missing.json"
-  # A hold keeps the lab's disk trim off the job's files while they download. It is taken before the listing, renewed
-  # as the download goes on, and released however the fetch ends; one a killed client leaves lapses after 2 h.
+  receipt="$dest/lab-fetch-missing.json" part="" missing="" verified=""
+  # Take a hold before listing, renew it during the download, and release it on every exit.
   hold=$(curl -fsS -X POST "$url/jobs/$id/hold" | jq -r .id) && [[ "$hold" =~ ^[0-9a-f]+$ ]] ||
     { echo "lab fetch: could not hold job $id's files for the download" >&2; exit 1; }
-  release() { curl -fsS -o /dev/null -X DELETE "$url/jobs/$id/hold/$hold" || echo "lab fetch: hold $hold on job $id not released; it lapses on its own" >&2; }
+  release() {
+    [[ -z "$part" ]] || rm -f "$part"
+    curl -fsS -o /dev/null -X DELETE "$url/jobs/$id/hold/$hold" || echo "lab fetch: hold $hold on job $id not released; it lapses on its own" >&2
+  }
   trap release EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # The files are listed once, under the hold, and exactly that list is downloaded.
-  listing=$(curl -fsS "$url/jobs/$id/files" | jq -r '.[] | "\(.path)\t\(.bytes)"')
-  renewed=$SECONDS missing="" listed=0
-  while IFS=$'\t' read -r path bytes; do
-    [[ -n "$path" ]] || continue
-    listed=$((listed + 1))
+  hash_file() {
+    local sum
+    if command -v sha256sum >/dev/null 2>&1; then sum=$(sha256sum < "$1") || return 1
+    elif command -v shasum >/dev/null 2>&1; then sum=$(shasum -a 256 < "$1") || return 1
+    else return 1; fi
+    printf '%s' "${sum%% *}"
+  }
+  note_missing() {
+    missing+=$(jq -cn --arg path "$path" --argjson bytes "$bytes" --arg code "${code:-000}" \
+      --argjson status "$curl_status" --argjson received "$received" --arg reason "$1" \
+      --arg expected "${sha:-}" --arg actual "${got:-}" \
+      '{path:$path,bytes:$bytes,httpStatus:$code,curlExit:$status,receivedBytes:$received,reason:$reason}
+       + (if $expected == "" then {} else {expectedSha256:$expected,receivedSha256:$actual} end)')$'\n'
+    echo "lab fetch: $path incomplete: $1" >&2
+  }
+  write_receipt() {
+    printf '%s' "$missing" | jq -s --argjson job "$id" --argjson listed "$listed" \
+      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "$url" \
+      '{job:$job,url:$url,fetchedAt:$at,listed:$listed,missing:.}' > "$receipt"
+  }
+  # JSON Lines preserve literal filenames; each URL component is encoded separately.
+  listing=$(curl -fsS "$url/jobs/$id/files" | jq -c '.[]')
+  listed=$(printf '%s\n' "$listing" | jq -s length)
+  # A case-insensitive destination cannot retain two distinct accepted names that differ only by case.
+  if printf '%s\n' "$listing" | jq -se 'group_by(.path | ascii_downcase) | any(.[]; length > 1)' >/dev/null; then
+    probe=$(mktemp -d "$dest/.lab-fetch-case-XXXXXXXX")
+    : > "$probe/a"
+    if [[ -e "$probe/A" ]]; then
+      rm -rf "$probe"
+      path="" bytes=null code=000 curl_status=0 received=0 sha="" got=""
+      note_missing destination-case-collision
+      write_receipt
+      echo 'lab fetch: these filenames require a case-sensitive destination' >&2
+      exit 1
+    fi
+    rm -rf "$probe"
+  fi
+  renewed=$SECONDS
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    # A sentinel prevents command substitution from removing trailing newlines from a path.
+    path=$(jq -jr '.path, "."' <<< "$entry"); path=${path%.}
+    bytes=$(jq -r '.bytes' <<< "$entry"); sha=$(jq -r '.sha256 // ""' <<< "$entry")
+    case "$path" in ''|/*|*/|*//*|*\\*|.|..|./*|../*|*/./*|*/../*|*/.|*/..) echo 'lab fetch: unsafe listed path' >&2; exit 1;; esac
+    [[ "$bytes" =~ ^-?[0-9]+$ && ( -z "$sha" || "$sha" =~ ^[0-9a-f]{64}$ ) ]] ||
+      { echo 'lab fetch: invalid file metadata' >&2; exit 1; }
     if (( SECONDS - renewed > 600 )); then
-      # A lapsed hold cannot be renewed; a new one takes its place.
       curl -fsS -o /dev/null -X POST "$url/jobs/$id/hold/$hold" ||
         hold=$(curl -fsS -X POST "$url/jobs/$id/hold" | jq -r .id) ||
         echo "lab fetch: could not renew the hold on job $id" >&2
       renewed=$SECONDS
     fi
-    # A size of -1 is unknown (an archive the lab could not size just now): any complete 200 response is accepted.
-    [[ "$bytes" -ge 0 && -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]] && continue
-    mkdir -p "$dest/$(dirname "$path")"
-    curl_status=0
-    code=$(curl -sS -o "$dest/$path.part" -w '%{http_code}' "$url/jobs/$id/files/$path") || curl_status=$?
-    received=0; [[ ! -f "$dest/$path.part" ]] || received=$(wc -c < "$dest/$path.part" | tr -d '[:space:]')
-    if [[ "$curl_status" -eq 0 && "$code" == 200 && ( "$bytes" -lt 0 || "$received" -eq "$bytes" ) ]]; then
-      mv "$dest/$path.part" "$dest/$path"
-    else
-      rm -f "$dest/$path.part"
-      missing+="$path"$'\t'"$bytes"$'\t'"${code:-000}"$'\t'"$curl_status"$'\t'"$received"$'\n'
-      echo "lab fetch: $path incomplete: received $received of $bytes bytes (HTTP ${code:-000}, curl $curl_status)" >&2
+    got=""
+    if [[ "$bytes" -ge 0 && -f "$dest/$path" && "$(wc -c < "$dest/$path")" -eq "$bytes" ]]; then
+      if [[ -n "$sha" ]]; then got=$(hash_file "$dest/$path") || got=""; fi
+      if [[ -z "$sha" || "$got" == "$sha" ]]; then verified+="$entry"$'\n'; continue; fi
     fi
+    mkdir -p "$dest/$(dirname "$path")"
+    part=$(mktemp "$dest/$(dirname "$path")/.lab-fetch-XXXXXXXX")
+    encoded=$(jq -r '.path | split("/") | map(@uri) | join("/")' <<< "$entry")
+    curl_status=0 got=""
+    code=$(curl -sS -o "$part" -w '%{http_code}' "$url/jobs/$id/files/$encoded") || curl_status=$?
+    received=$(wc -c < "$part" | tr -d '[:space:]')
+    if [[ "$curl_status" -eq 0 && "$code" == 200 && ( "$bytes" -lt 0 || "$received" -eq "$bytes" ) ]]; then
+      if [[ -n "$sha" ]]; then got=$(hash_file "$part") || got=""; fi
+      if [[ -z "$sha" || "$got" == "$sha" ]]; then
+        mv "$part" "$dest/$path"; verified+="$entry"$'\n'
+      else note_missing checksum-mismatch; fi
+    else note_missing incomplete-response; fi
+    rm -f "$part"; part=""
   done <<< "$listing"
-  # The cases as the lab's database holds them, lab checks included, which the job's files do not have. Fetched afresh
-  # every time, since a recheck replaces the verdicts; a job with no cases gets none.
+  # Rechecks can change these verdicts, so fetch them afresh rather than resuming the old export.
+  part=$(mktemp "$dest/.lab-cases-XXXXXXXX")
   curl_status=0
-  code=$(curl -fsS -o "$dest/lab-cases.jsonl.part" -w '%{http_code}' "$url/experiments/$id/cases.jsonl") || curl_status=$?
+  code=$(curl -fsS -o "$part" -w '%{http_code}' "$url/experiments/$id/cases.jsonl") || curl_status=$?
   if [[ "$curl_status" -eq 0 && "$code" == 200 ]]; then
-    if [[ -s "$dest/lab-cases.jsonl.part" ]]; then mv "$dest/lab-cases.jsonl.part" "$dest/lab-cases.jsonl"
-    else rm -f "$dest/lab-cases.jsonl.part"; fi
+    if [[ -s "$part" ]]; then mv "$part" "$dest/lab-cases.jsonl"; fi
   else
-    received=0; [[ ! -f "$dest/lab-cases.jsonl.part" ]] || received=$(wc -c < "$dest/lab-cases.jsonl.part" | tr -d '[:space:]')
-    rm -f "$dest/lab-cases.jsonl.part"
-    missing+="lab-cases.jsonl"$'\t\t'"${code:-000}"$'\t'"$curl_status"$'\t'"$received"$'\n'
+    received=$(wc -c < "$part" | tr -d '[:space:]')
+    path=lab-cases.jsonl bytes=null sha="" got=""
+    note_missing incomplete-response
   fi
-  # A listed file that could not be downloaded fails the fetch, with a receipt naming each one beside what did arrive.
+  rm -f "$part"; part=""
+  # A later write through a filesystem alias must not invalidate an earlier verified download silently.
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    sha=$(jq -r '.sha256 // ""' <<< "$entry"); [[ -n "$sha" ]] || continue
+    path=$(jq -jr '.path, "."' <<< "$entry"); path=${path%.}
+    bytes=$(jq -r '.bytes' <<< "$entry"); got="" received=0 code=200 curl_status=0
+    if [[ -f "$dest/$path" ]]; then
+      received=$(wc -c < "$dest/$path" | tr -d '[:space:]')
+      got=$(hash_file "$dest/$path") || got=""
+    fi
+    if [[ "$got" != "$sha" ]]; then note_missing retained-checksum-mismatch; fi
+  done <<< "$verified"
   if [[ -n "$missing" ]]; then
-    printf '%s' "$missing" | jq -R -s --argjson job "$id" --argjson listed "$listed" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg url "$url" \
-      '{job: $job, url: $url, fetchedAt: $at, listed: $listed,
-        missing: [split("\n")[] | select(. != "") | split("\t") | {path: .[0], bytes: (if .[1] == "" then null else (.[1] | tonumber) end), httpStatus: .[2], curlExit: (.[3] | tonumber), receivedBytes: (.[4] | tonumber)}]}' > "$receipt"
+    write_receipt
     echo "lab fetch: job $id is incomplete: $(jq '.missing | length' "$receipt") downloads failed ($listed job files listed); see $receipt" >&2
     exit 1
   fi
