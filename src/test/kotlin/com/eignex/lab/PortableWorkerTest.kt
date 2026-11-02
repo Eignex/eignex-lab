@@ -490,7 +490,7 @@ class PortableWorkerTest {
         Files.writeString(tree.resolve("build/classes/file-1"), "unused corruption")
         fun prepared(trace: PreparationTrace = PreparationTrace(), mayBuild: Boolean = true): Path =
             cache.withPreparedSource(recipe, budget, System.getenv(), { null }, { 10000 }, trace,
-                { consume -> check(mayBuild) { "warm declared workspace must bypass source" }; consume(source) }, { it }, declaredWorkspace = true)
+                { consume -> check(mayBuild) { "warm declared workspace must bypass source" }; consume(source) }, declaredWorkspace = true, use = { it })
         val trace = PreparationTrace()
         assertEquals(tree, prepared(trace, mayBuild = false))
         assertEquals(1, Files.readAllLines(count).size)

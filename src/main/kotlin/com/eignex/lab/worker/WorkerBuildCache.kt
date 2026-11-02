@@ -146,7 +146,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     }
     fun <T> withPrepared(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
                          remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(), use: (Path) -> T): T =
-        withPreparedSource(bundle, budget, environment, remainingRunMs, remainingLeaseMs, trace, { consume -> consume(source) }, use)
+        withPreparedSource(bundle, budget, environment, remainingRunMs, remainingLeaseMs, trace, { consume -> consume(source) }, use = use)
 
     /** Warm verified builds need no source archive at all. Acquire source inputs only during cold checkout,
      * retaining their caller-owned pin throughout consumption instead of returning an unpinned cache path.
@@ -154,7 +154,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
      * workspace. Every other consumer retains complete-tree verification. */
     internal fun <T> withPreparedSource(bundle: WorkerBundle, budget: ResourceBudget, environment: Map<String, String>,
                                        remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(),
-                                       source: ((Path) -> Unit) -> Unit, use: (Path) -> T, declaredWorkspace: Boolean = false): T {
+                                       source: ((Path) -> Unit) -> Unit, declaredWorkspace: Boolean = false, use: (Path) -> T): T {
         Files.createDirectories(root)
         return trace.step("build-cache") {
             var waitingMs = 0L
