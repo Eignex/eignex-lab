@@ -166,6 +166,15 @@ fun Application.workerApi(
                     backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
                 }
             }
+            post("/commit-large") {
+                // Keep large records out of the small-result dispatcher and preserve its 4 MiB request limit.
+                withContext(CoordinatorIo.packedResults) {
+                    check(workAllowed()); val s = call.session
+                    require(s.executionClass == ExecutionClass.SOLVE)
+                    val body = Json.decodeFromString<WorkerCommit>(call.bodyText(LARGE_RESULT_BYTES)); s.requireOwns(body.owner)
+                    backend.commit(body.owner, body.result); call.respond(HttpStatusCode.NoContent)
+                }
+            }
             post("/commit-inline") {
                 val started = System.nanoTime()
                 withContext(CoordinatorIo.results) {
@@ -184,12 +193,13 @@ fun Application.workerApi(
                     call.respond(HttpStatusCode.NoContent)
                 }
             }
-            post("/commit-packed") {
+            for ((path, headerLimit) in listOf("commit-packed" to PACKED_HEADER_BYTES, "commit-packed-large" to LARGE_RESULT_BYTES)) post("/$path") {
                 if (artifacts !is ResultJournal) { call.respond(HttpStatusCode.NotFound); return@post }
                 withContext(CoordinatorIo.packedResults) {
                     check(workAllowed()); val session = call.session
                     call.receiveChannel().toInputStream().use { input ->
-                        val body = WorkerPackedCommit.read(input)
+                        require(session.executionClass == ExecutionClass.SOLVE)
+                        val body = WorkerPackedCommit.read(input, headerLimit)
                         require(body.owner.session == session.id && body.owner.allocation == session.allocation)
                         store.execution.authorizeCommit(body.owner, body.result)
                         artifacts.putPacked(session.jobId, body.blobs, input)

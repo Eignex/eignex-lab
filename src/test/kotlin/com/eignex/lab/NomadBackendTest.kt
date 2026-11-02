@@ -22,6 +22,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.EnumSource
+import org.junit.jupiter.params.provider.ValueSource
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.security.KeyPairGenerator
@@ -38,6 +39,40 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `large result paths retain complete records and enforce fenced idempotent acceptance`(packed: Boolean) = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val journal = ResultJournal(root.resolve("large-journal"), artifacts, start = false)
+        val durableBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
+        application { workerApi(store, durableBackend, journal) { true } }
+        val capture = "full capture".toByteArray(); val sha = ExecutionStore.digest(String(capture))
+        val record = buildJsonObject { put("assignment", "λ".repeat(PACKED_HEADER_BYTES / 2 + 100)) }.toString()
+        val result = IterationResult(claim.indices.mapIndexed { i, index -> ExecutionCaseResult(index, 0, 1, 2, if (i == 0) record else null) }, mapOf("0.out" to sha))
+        if (!packed) journal.putAll(id, mapOf(sha to capture))
+        suspend fun send(owner: AttemptOwner, large: Boolean): HttpResponse {
+            val payload = if (packed) {
+                val header = Json.encodeToString(WorkerPackedCommit(owner, result, listOf(ResultBlob(sha, capture.size.toLong())))).toByteArray()
+                assertTrue(header.size > PACKED_HEADER_BYTES)
+                java.nio.ByteBuffer.allocate(4 + header.size + capture.size).putInt(header.size).put(header).put(capture).array()
+            } else Json.encodeToString(WorkerCommit(owner, result)).toByteArray().also { assertTrue(it.size > PACKED_HEADER_BYTES) }
+            val path = (if (packed) "commit-packed" else "commit") + if (large) "-large" else ""
+            return client.post("/worker/v1/sessions/${session.id}/$path") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                setBody(payload)
+            }
+        }
+        try {
+            assertEquals(HttpStatusCode.BadRequest, send(claim.owner, false).status)
+            assertTrue(store.execution.accepted(id).isEmpty())
+            assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(generation = claim.owner.generation + 1), true).status)
+            assertEquals(HttpStatusCode.NoContent, send(claim.owner, true).status)
+            assertEquals(HttpStatusCode.NoContent, send(claim.owner, true).status)
+            assertEquals(result, store.execution.accepted(id).single().second)
+        } finally { journal.close() }
+    }
+
     @Test fun `packed results enforce ownership and checksums before durable acceptance and replay`() = testApplication {
         val id = setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!

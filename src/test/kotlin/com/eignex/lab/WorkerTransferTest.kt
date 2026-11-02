@@ -18,9 +18,48 @@ import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class WorkerTransferTest {
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `large records skip small inline requests with or without captures`(captures: Boolean) {
+        val root = Files.createTempDirectory("worker-large-record")
+        val file = root.resolve("capture").also { Files.writeString(it, "small capture") }
+        val record = "{\"assignment\":\"" + "λ".repeat(PACKED_HEADER_BYTES / 2 + 100) + "\"}"
+        val calls = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/commit-inline") { exchange ->
+            exchange.sendResponseHeaders(400, -1); exchange.close()
+        }
+        server.createContext("/worker/v1/sessions/session/" + if (captures) "commit-packed-large" else "commit-large") { exchange ->
+            try {
+                val result = if (captures) {
+                    val body = WorkerPackedCommit.read(exchange.requestBody, LARGE_RESULT_BYTES)
+                    assertContentEquals(Files.readAllBytes(file), exchange.requestBody.readAllBytes())
+                    body.result
+                } else Json.decodeFromString<WorkerCommit>(String(exchange.requestBody.readAllBytes())).result
+                assertEquals(record, result.cases.single().record)
+                calls.incrementAndGet(); exchange.sendResponseHeaders(204, -1)
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
+            assertEquals(if (captures) "packed" else "resumable", worker.commitResult(owner,
+                IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2, record))), if (captures) mapOf("0.out" to file) else emptyMap()))
+            assertEquals(1, calls.get())
+            for (limit in listOf(PACKED_HEADER_BYTES, LARGE_RESULT_BYTES)) {
+                val prefix = java.nio.ByteBuffer.allocate(4).putInt(limit + 1).array()
+                assertFailsWith<IllegalArgumentException> { WorkerPackedCommit.read(prefix.inputStream(), limit) }
+            }
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
     @Test fun `cold input streams retry only the failed range and retain no download file`() {
         val root = Files.createTempDirectory("worker-input-stream")
         val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
