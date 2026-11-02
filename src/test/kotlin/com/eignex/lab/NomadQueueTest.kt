@@ -72,6 +72,7 @@ class NomadQueueTest {
         val outputs = mapOf("preparation/${output.commit}.zip" to output.sha256)
         val plan = com.eignex.lab.bench.BenchPlan(listOf(com.eignex.lab.bench.BenchCase("paired",
             resources = com.eignex.lab.bench.BenchResources(1, 512, 1, setOf("arch:arm64", "simd:sve")))))
+        store.execution.phase(claim.owner, "preparing")
         val selected = backend.selectPreparation(claim.owner, listOf(plan.cases.map(BenchRuns::problem)))
         val result = PreparationResult(selected, listOf(output), artifacts = outputs, benchPlan = plan,
             benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "cross-build fixture"),

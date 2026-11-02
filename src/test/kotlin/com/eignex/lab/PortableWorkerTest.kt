@@ -41,8 +41,8 @@ class PortableWorkerTest {
         val metadata = kotlinx.serialization.json.JsonObject(entryJson + mapOf(
             "preparation" to Json.encodeToJsonElement(WorkerPreparation.serializer(), host),
             "runtime" to Json.parseToJsonElement("""{"requiredTags":["arch:${if (outputArch == "amd64") "x86_64" else "arm64"}"]}""")))
-        val (source, bytes) = bundle(mapOf("Bench.java" to program, "bench.json" to metadata.toString(),
-            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val (source, bytes) = bundle(mapOf("CrossBench.java" to program, "bench.json" to metadata.toString(),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes CrossBench.java"))
         val build = WorkerBuild(benchManifest = "bench.json", requiredTags = target.tags, preparation = host)
         val input = source.copy(build = build)
         val spec = ExperimentSpec("cross", bench = BenchSpec("bench.json"))
