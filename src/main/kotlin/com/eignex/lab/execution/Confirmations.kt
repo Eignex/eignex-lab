@@ -50,7 +50,7 @@ internal class Confirmations(private val local: LocalNode, private val paths: Da
 
     private fun firstArmCases(jobId: Long): List<CaseResult> {
         val label = store.plans.arms(jobId).firstOrNull()?.arm?.label ?: return emptyList()
-        return store.plans.cases(jobId).filter { it.arm == label }
+        return OptimumClaims.qualify(store, store.plans.cases(jobId)).filter { it.arm == label }
     }
 
     private companion object {

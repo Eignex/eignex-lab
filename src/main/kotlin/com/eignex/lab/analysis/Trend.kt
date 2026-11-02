@@ -74,6 +74,10 @@ data class TrendRun(
      */
     val themes: Map<String, SuiteShare> = emptyMap(),
     val comparisonSeries: List<String> = emptyList(),
+    val checkedPoints: Int = 0,
+    val nativeProofClaims: Int = 0,
+    val contradictedOptima: Int = 0,
+    val unverifiedOptima: Int = 0,
 )
 
 /**
@@ -100,8 +104,8 @@ interface TrendData {
         fun of(store: Store): TrendData = object : TrendData {
             override fun runs(series: String, limit: Int) = store.jobs(limit = limit, name = series, withCommands = false)
             override fun arms(job: Long) = store.plans.arms(job)
-            override fun scoringCases(job: Long) = store.plans.scoringCases(job)
-            override fun caseRevision(job: Long) = store.plans.caseRevision(job)
+            override fun scoringCases(job: Long) = OptimumClaims.qualify(store, store.plans.scoringCases(job))
+            override fun caseRevision(job: Long) = store.plans.caseRevision(job) + store.plans.checkRevision() + (store.lastFinished() ?: 0)
             override fun references(keys: Collection<ProblemKey>, sources: Map<ProblemKey, String?>) = store.references.matching(keys, sources = sources)
             override fun features(keys: Collection<ProblemKey>) = store.references.features(keys)
             override fun schedules() = store.schedules.all()
@@ -287,6 +291,10 @@ object Trend {
             suites = suites,
             themes = themes,
             comparisonSeries = controlSeries,
+            checkedPoints = summary.witnesses[WitnessCheck.ACCEPTED] ?: 0,
+            nativeProofClaims = summary.nativeProofClaims,
+            contradictedOptima = summary.contradictedOptima,
+            unverifiedOptima = summary.unverifiedOptima,
         )
     }
 

@@ -129,6 +129,9 @@ synchronized(lock) {
 
     internal fun caseRevision(jobId: Long): Long = synchronized(revisions) { revisions.getOrPut(jobId) { revisionFloor } }
 
+    /** A changed point check can contradict a claim in another job. */
+    internal fun checkRevision(): Long = synchronized(revisions) { nextRevision }
+
     private var nextRevision = 0L
     private var revisionFloor = 0L
     private val revisions = object : LinkedHashMap<Long, Long>(SCORING_JOBS, LOAD_FACTOR, true) {

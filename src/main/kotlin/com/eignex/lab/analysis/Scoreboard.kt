@@ -124,7 +124,7 @@ object Scoreboard {
 
     /** Each problem of [cases] with its runs' outcomes. */
     private fun outcomes(cases: List<CaseResult>): Map<Problem, List<Outcome>> =
-        cases.mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }.groupBy({ it.first }, { it.second })
+        OptimumClaims.qualify(cases).mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }.groupBy({ it.first }, { it.second })
 
     /** The values [problem] takes in [dimension]: several themes or traits at once, one value otherwise. */
     fun values(

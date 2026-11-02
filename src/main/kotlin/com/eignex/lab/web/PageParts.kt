@@ -62,7 +62,7 @@ internal fun experimentSection(
     if (job != null) append(Html(" · <a href=\"/experiments/") + job + Html("/cases.csv\">cases.csv</a>"))
     append(Html("</small></h2>"))
     append(Html("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th>build / validation</th><th class=\"num\">done</th><th class=\"num\">solved</th>"))
-    append(Html("<th class=\"num\">proven</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th>"))
+    append(Html("<th class=\"num\">eligible native proofs</th><th>proof evidence</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th>"))
     if (compared) append(Html("<th class=\"num\">score</th><th>vs ") + (esc(labels.first())) + Html("</th>"))
     append(if (job != null) Html("<th>bench csv</th></tr>") else Html("</tr>"))
     val paired = stats.paired.associateBy { it.label }
@@ -76,6 +76,8 @@ internal fun experimentSection(
         append(Html("<td><code>") + commit + Html("</code></td><td>") + provenance(summary) + Html("</td>"))
         append(Html("<td class=\"num\">") + summary.cases + Html("/") + (total[summary.label]?.size ?: 0) + Html("</td>"))
         append(Html("<td class=\"num\">") + estimate(armStats.solved, "%.1f") + Html("</td><td class=\"num\">") + summary.proven + Html("</td>"))
+        append(Html("<td>") + summary.nativeProofClaims + Html(" native claims; ") + summary.contradictedOptima + Html(" contradicted; ") +
+            summary.unverifiedOptima + Html(" unverified scope/check</td>"))
         append(Html("<td class=\"num\">") + (if (summary.unsupported > 0) (Html("<span class=\"PARTIAL\">") + summary.unsupported + Html("</span>")) else "0") + Html("</td>"))
         append(Html("<td class=\"num\">") + (if (summary.errors > 0) (Html("<span class=\"FAILED\">") + summary.errors + Html("</span>")) else "0") + Html("</td>"))
         append(Html("<td class=\"num\">") + estimate(armStats.par2, "%.2f") + Html("</td>"))
@@ -93,6 +95,7 @@ internal fun experimentSection(
     append(Html("</table></div>"))
     append(Html("<p class=\"muted\"><small>Intervals are 95%, bootstrapped over problems, a problem's seeds and repeats averaged. "))
     append(Html("PAR-2 charges an unsolved run twice its budget."))
+    append(Html(" Checked witnesses establish feasible points. Eligible native proofs exclude contradicted optima and unavailable scope/checks; absence of a counterexample is not an independent proof."))
     if (compared) {
         append(Html(" The time ratio is the geometric mean of an arm's PAR-2 time over the first arm's, on the problems either "))
         append(Html("solved; its p is a Wilcoxon signed-rank test. Equal results whose times differ by less than 0.25 s or 10% are a "))

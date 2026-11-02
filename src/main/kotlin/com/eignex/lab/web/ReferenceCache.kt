@@ -84,7 +84,7 @@ internal class ReferenceCache(private val store: Store) : AutoCloseable {
     private fun inputs(job: Job, label: String?): ScoreInputs {
         if (job.status.isActive) return scoreInputs(store, job.id, label)
         val key = "${job.id}/$label/${job.finishedAt}"
-        val stamp = store.references.stamp().toString()
+        val stamp = "${store.references.stamp()}/${store.lastFinished()}/${store.plans.checkRevision()}"
         inputs[key]?.takeIf { it.version == stamp }?.let { return it.value }
         return scoreInputs(store, job.id, label).also { inputs[key] = Kept(stamp, it) }
     }
@@ -143,7 +143,7 @@ internal class ScoreInputs(
 )
 
 internal fun scoreInputs(store: Store, job: Long, label: String?): ScoreInputs {
-    val cases = store.plans.scoringCases(job).filter { it.arm == label }
+    val cases = OptimumClaims.qualify(store, store.plans.scoringCases(job)).filter { it.arm == label }
     val keys = cases.map { it.problem.referenceKey }.distinct()
     return ScoreInputs(cases, References.matching(store.references.current(keys), cases), store.references.features(keys))
 }

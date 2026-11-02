@@ -58,7 +58,7 @@ data class Statistics(val arms: List<ArmStats>, val paired: List<Paired>, val no
  */
 object Stats {
     fun of(labels: List<String>, cases: List<CaseResult>, resamples: Int = RESAMPLES): Statistics {
-        val outcomes = cases.mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
+        val outcomes = OptimumClaims.qualify(cases).mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
         val byProblem = outcomes.groupBy { it.first.problem }
         val problems = byProblem.keys.toList()
         val random = Random(SEED)

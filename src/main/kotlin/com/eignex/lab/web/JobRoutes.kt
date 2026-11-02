@@ -43,7 +43,7 @@ internal fun Route.jobRoutes(services: ApiServices) {
         val job = io { call.job(store) }
         if (call.wantsHtml()) {
             val page = io {
-                val cases = store.plans.cases(job.id)
+                val cases = OptimumClaims.qualify(store, store.plans.cases(job.id))
                 jobPage(
                     config.status, job, "failed" in call.parameters,
                     arms = store.plans.arms(job.id),

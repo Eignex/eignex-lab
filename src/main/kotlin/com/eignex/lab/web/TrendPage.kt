@@ -82,7 +82,7 @@ internal fun trendPage(
     append(Html("<div class=\"chart\" id=\"chart-par2\"></div>"))
     append(Html("<h2>Solved by theme <small>problems solved in each theme the sweep set was drawn by (a problem of several themes counts in each); each axis tops out at the theme's size</small></h2><div class=\"multiples\" id=\"suites\"></div>"))
     append(Html("<h2>Runs</h2><div class=\"scroll\"><table><tr><th>job</th><th>commit</th><th>when</th>"))
-    append(Html("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">proven</th>"))
+    append(Html("<th class=\"num\">problems</th><th class=\"num\">solved</th><th class=\"num\">eligible native proofs</th><th>point / proof evidence</th>"))
     append(Html("<th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">disagreements</th>"))
     append(Html("<th class=\"num\" title=\"problems solved to a worse objective than the reference\">worse incumbent</th>"))
     append(Html("<th class=\"num\" title=\"against the run before: problems lost and gained, the sign test, and what reruns confirmed\">"))
@@ -94,7 +94,9 @@ internal fun trendPage(
         append(Html("") + trendWitness(run) + Html("</td>"))
         append(Html("<td><code>") + commit + Html("</code></td><td>") + ago(run.at) + Html("</td><td class=\"num\">") + run.problems + Html("</td>"))
         append(Html("<td class=\"num\">") + percent(run.solved.value) + Html(" <small class=\"muted\">") + percent(run.solved.low) + Html("–") + percent(run.solved.high) + Html("</small></td>"))
-        append(Html("<td class=\"num\">") + percent(run.proven) + Html("</td><td class=\"num\">") + run.unsupported + Html("</td><td class=\"num\">") + run.errors + Html("</td>"))
+        append(Html("<td class=\"num\">") + percent(run.proven) + Html("</td><td>") + run.checkedPoints + Html(" checked points; ") +
+            run.nativeProofClaims + Html(" native claims; ") + run.contradictedOptima + Html(" contradicted; ") +
+            run.unverifiedOptima + Html(" unverified scope/check</td><td class=\"num\">") + run.unsupported + Html("</td><td class=\"num\">") + run.errors + Html("</td>"))
         append(Html("<td class=\"num\">"))
         append(if (run.disagreements > 0) (Html("<a class=\"FAILED\" href=\"/jobs/") + run.job + Html("\">") + run.disagreements + Html("</a>")) else Html("0"))
         append(Html("</td>"))
@@ -303,7 +305,8 @@ private const val TREND_SCRIPT = """<script>
   function show(r, evt, suite) {
     const rows = [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
-      ['witnesses', r.sourceChecked ? 'source-checked' : 'unchecked solver reports'],
+      ['checked points', r.checkedPoints], ['native proof claims', r.nativeProofClaims],
+      ['contradicted optima', r.contradictedOptima], ['unverified scope/check', r.unverifiedOptima],
       ['comparison series', (r.comparisonSeries || ['historical-unqualified']).join(', ')],
       ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
