@@ -18,7 +18,7 @@ import java.nio.file.StandardCopyOption.*
 internal fun readResultJournalReport(dataDir: Path, at: Long = now()): ResultJournalReport? = runCatching {
     val path = dataDir.resolve("nomad/result-journal-status.json")
     require(Files.size(path) <= 8192)
-    Json.decodeFromString<ResultJournalReport>(Files.readString(path)).let { it.copy(ageMs = (at - it.generatedAt).coerceAtLeast(0)) }
+    Json { ignoreUnknownKeys = true }.decodeFromString<ResultJournalReport>(Files.readString(path)).let { it.copy(ageMs = (at - it.generatedAt).coerceAtLeast(0)) }
 }.getOrNull()
 
 /** Disposable status, written atomically on the internal volume; acknowledged results have separate durable packs. */
@@ -37,4 +37,10 @@ lab_result_journal_limit_bytes $limit
 lab_result_journal_oldest_age_seconds ${oldestAgeMs / 1000.0}
 lab_result_journal_drain_errors_total $drainErrors
 lab_result_journal_drain_failed ${if (lastError == null) 0 else 1}
+lab_result_journal_compactions_total $compactions
+lab_result_journal_compaction_reclaimed_bytes_total $compactionReclaimedBytes
+lab_result_journal_compaction_errors_total $compactionErrors
+lab_result_journal_compaction_failed ${if (lastCompactionError == null) 0 else 1}
+lab_result_journal_last_drain_seconds ${(lastDrainMs ?: 0) / 1000.0}
+lab_result_journal_last_drain_blobs $lastDrainBlobs
 """.trimIndent() + "\n"
