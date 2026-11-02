@@ -205,6 +205,8 @@ compiler/runtime assets, source inputs and any scripts or Git metadata they read
 build. Without the declaration, preparation retains the full built tree. Planner cache identities still cover every
 `planInputs` path in the complete verified build before copying; limiting the workspace never narrows that identity.
 Solve attempts receive private copies of the resulting snapshot, and source input verification remains enforced.
+`LAB_WORKSPACE_CACHE` names a worker-owned sibling directory for bounded adapter metadata shared between fresh
+case JVMs. It is outside sealed inputs and removed with the worker session; adapters must still verify cached identities.
 
 During one preparation, repeated compiler/include files reuse checksums only while inode, size, mtime and
 ctime remain unchanged on a supported filesystem. Directory membership is walked again for every input;

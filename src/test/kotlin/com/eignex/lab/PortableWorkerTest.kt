@@ -30,8 +30,10 @@ class PortableWorkerTest {
                 public static void main(String[] args) throws Exception {
                     if (args[0].equals("describe")) System.out.print("{\"id\":\"native\",\"description\":\"native handoff\"}");
                     else if (args[0].equals("plan")) System.out.print("{\"cases\":[{\"id\":\"p\",\"inputs\":[{\"path\":\"model.txt\",\"role\":\"model\"}]}]}");
-                    else if (args[0].equals("run")) java.nio.file.Files.writeString(
-                        java.nio.file.Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"p\"}");
+                    else if (args[0].equals("run")) {
+                        if (System.getenv("LAB_WORKSPACE_CACHE") == null) throw new IllegalStateException("workspace cache unavailable");
+                        java.nio.file.Files.writeString(java.nio.file.Path.of(System.getenv("OUT"), "result.json"), "{\"caseId\":\"p\"}");
+                    }
                     else throw new IllegalArgumentException(args[0]);
                 }
             }""".trimIndent()
