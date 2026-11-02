@@ -138,6 +138,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         }
                     }
                 }
+                // Compilation has finished. The sealed output inventory below enforces its final byte
+                // limit; stop the temporary staging scan before it competes with checksum capture.
+                disk.close()
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
                 val (files, workspaceManifest) = trace.step("build-verification") {
