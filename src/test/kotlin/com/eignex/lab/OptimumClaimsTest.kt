@@ -102,6 +102,8 @@ class OptimumClaimsTest {
         }
         assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim, dependency).state)
         assertEquals(OptimumAssessment.UNVERIFIED, assessed(edit(claim) { remove("sourceHashes") }, point("6")).state)
+        assertTrue(Compare.compare(listOf("claim"), listOf(claim, other.copy(record = JsonObject(other.record!!.jsonObject +
+            ("proven" to JsonPrimitive(true)))))).disagreements.isEmpty())
     }
 
     @Test
@@ -238,6 +240,23 @@ class OptimumClaimsTest {
         val baseline = point("45650").copy(arm = Confirm.BEFORE)
         val guardedClaim = OptimumClaims.qualify(listOf(claim.copy(arm = Confirm.AFTER)), listOf(better)).single()
         assertTrue(Confirm.confirmed(listOf(baseline, guardedClaim)).proofGained.isEmpty())
+    }
+
+    @Test
+    fun `unverified native claims cannot manufacture proof performance gains`() {
+        fun fixture(case: CaseResult) = edit(scoped(case)) { put("solver", JsonPrimitive("fixture")); remove("comparisonControls") }
+        val before = fixture(point("7", proven = true, state = LabCheck.UNKNOWN)).copy(arm = Confirm.BEFORE)
+        val after = fixture(point("7", proven = true)).copy(arm = Confirm.AFTER)
+        val guarded = OptimumClaims.qualify(listOf(before, after))
+        val unavailable = OptimumClaims.qualify(listOf(before)).single()
+        val known = guarded.last()
+        assertEquals(OptimumAssessment.UNVERIFIED, OptimumClaims.assessment(unavailable.record)?.state)
+        val x = requireNotNull(Outcome.of(unavailable.record)); val y = requireNotNull(Outcome.of(known.record))
+        assertEquals(0.5, Compare.points(x, y))
+        assertEquals(0.5, Compare.points(y, x))
+        assertTrue(Confirm.flips(listOf(unavailable), listOf(known)).proofGained.isEmpty())
+        val ordinary = fixture(point("7")).copy(arm = Confirm.BEFORE)
+        assertEquals(1, Confirm.flips(listOf(ordinary), listOf(known)).proofGained.size)
     }
 
     @Test

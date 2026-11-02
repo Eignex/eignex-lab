@@ -110,8 +110,10 @@ object Confirm {
                     (o.optimize && o.proven && o.feasible == true && value != null &&
                         o.optimumAssessment?.state != OptimumAssessment.UNVERIFIED)
                 val px = proof(x, ox); val py = proof(y, oy)
-                if (px && !py) pl++
-                if (!px && py) pg++
+                if (listOf(x, y).none { it.optimumAssessment?.state == OptimumAssessment.UNVERIFIED }) {
+                    if (px && !py) pl++
+                    if (!px && py) pg++
+                }
                 if (x.optimize && x.feasible == true && ox != null && oy != null) {
                     val cmp = oy.compareTo(ox) * if (x.maximize) -1 else 1
                     if (cmp > 0) ol++

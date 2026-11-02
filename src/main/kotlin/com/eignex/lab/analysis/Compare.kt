@@ -218,8 +218,11 @@ object Compare {
      * small is the machine's noise, and the time split alone would call it a win.
      */
     fun points(a: Outcome, b: Outcome): Double {
-        if (a.rank != b.rank) return if (a.rank > b.rank) 1.0 else 0.0
-        if (a.rank == 0) return 0.0
+        val unverifiedProof = listOf(a, b).any { it.optimumAssessment?.state == OptimumAssessment.UNVERIFIED }
+        fun rank(o: Outcome) = if (unverifiedProof && o.optimize && o.feasible == true) minOf(o.rank, 1) else o.rank
+        val ar = rank(a); val br = rank(b)
+        if (ar != br) return if (ar > br) 1.0 else 0.0
+        if (ar == 0) return 0.0
         val (oa, ob) = a.objective to b.objective
         if (a.optimize && oa != null && ob != null && oa != ob) return if ((oa > ob) == a.maximize) 1.0 else 0.0
         if (abs(a.timeMs - b.timeMs) <= maxOf(TIE_MS, (TIE_SHARE * maxOf(a.timeMs, b.timeMs)).toLong())) return 0.5
@@ -285,7 +288,8 @@ object Compare {
                 Disagreement(case.problem, "${case.arm} native optimum ${it.objective} contradicted by checked ${it.counterexampleObjective} (${it.witnessSha256})")
             }
         }
-        return Comparison(arms, contradictions + disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))
+        val legacy = outcomes.filter { it.second.optimumAssessment == null }
+        return Comparison(arms, contradictions + disagreements(legacy.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))
     }
 
     /**
