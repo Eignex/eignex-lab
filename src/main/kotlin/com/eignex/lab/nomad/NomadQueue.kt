@@ -147,24 +147,26 @@ class NomadQueue(
                 fun cloudSessions() = solving(CpuEnforcement.HARD_QUOTA)
                 for (index in active.size until limit) {
                     val remainingCpu = cpuLimit - sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }.sumOf { it.budget.cpuMillis }
-                    val available = ordered.filter { checkNotNull(solveBudget(it, current)).cpuMillis <= remainingCpu }.filter { target ->
-                        // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
-                        if (!target.native) cloudSessions().none { it.node == null } else {
-                            val budget = checkNotNull(solveBudget(target, current))
-                            val nativeSessions = solving(CpuEnforcement.ADVISORY_NATIVE)
-                            val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
-                            mayUseNative(job.id, target) && nativeSessions.size < maximum
-                        }
-                    }
                     val reserved = store.execution.nativeReservation()
-                    val target = available.firstOrNull { target ->
-                        if (!target.native) cloudMayRun(target, current, checkNotNull(solveBudget(target, current))) else {
-                            val budget = checkNotNull(solveBudget(target, current))
+                    val nativeSessions = solving(CpuEnforcement.ADVISORY_NATIVE)
+                    val nativeCases = this.settings.perHostParallel?.let { cap ->
+                        (cap - nativeSessions.sumOf { it.budget.parallel }).coerceAtLeast(0)
+                    } ?: Int.MAX_VALUE
+                    fun fitting(target: NomadQueueTarget): ResourceBudget? = if (!target.native) solveBudget(target, current) else
+                        settings.solveBudget(target, current, preparedBench, minOf(config.maxParallel, nativeCases),
+                            cpuCeiling = minOf(remainingCpu.toLong(), config.cores * 1000L - reserved.first).coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+                            memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
+                    val available = ordered.mapNotNull { target -> fitting(target)?.takeIf { it.cpuMillis <= remainingCpu }?.let { target to it } }
+                        .filter { (target, _) ->
+                            // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
+                            if (!target.native) cloudSessions().none { it.node == null } else mayUseNative(job.id, target)
+                        }
+                    val (target, budget) = available.firstOrNull { (target, budget) ->
+                        if (!target.native) cloudMayRun(target, current, budget) else {
                             reserved.first + budget.cpuMillis <= config.cores * 1000L &&
                                 reserved.second + budget.memoryMiB <= target.template.budget.memoryMiB
                         }
                     } ?: break
-                    val budget = checkNotNull(solveBudget(target, current))
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, recipe.arms, cases, bundles, budget,
                         solveJavaOptions = recipe.solveJavaOptions, inputCorpus = preparation.corpus, sharedInputs = preparation.sharedInputs)
                     val excluded = if (target.native || this.settings.perHostParallel == null) emptySet() else cloudSessions().filter { it.node != null }

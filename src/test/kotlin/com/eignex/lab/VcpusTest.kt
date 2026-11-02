@@ -77,6 +77,8 @@ class VcpusTest {
         // The native worker's case cap does the same, and its vCPUs stay within the local cores.
         assertEquals(ResourceBudget(7000, 512 + 6 * 1024, 6), budget(16, maxCases = 6))
         assertEquals(ResourceBudget(4000, 512 + 3 * 1024, 3), settings.solveBudget(wide, job(16), cpuCeiling = 4000))
+        assertEquals(ResourceBudget(3000, 512 + 2 * 1024, 2), settings.solveBudget(wide, job(4), memoryCeiling = 512 + 2 * 1024))
+        assertNull(settings.solveBudget(wide, job(4), memoryCeiling = 512 + 1024 - 1))
         // A case wider than the job's vcpus still gets its CPUs; one wider than the target cannot run there.
         val wideCase = spec.copy(base = mapOf("processors" to "4"))
         val plan = com.eignex.lab.bench.BenchPlan(listOf(com.eignex.lab.bench.BenchCase("c", resources = com.eignex.lab.bench.BenchResources(4, 1024, 10))))
