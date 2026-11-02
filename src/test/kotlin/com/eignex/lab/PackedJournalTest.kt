@@ -26,6 +26,116 @@ class PackedJournalTest {
     private val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
     private val blobs = listOf(ResultBlob(sha, bytes.size.toLong()))
 
+    @Test fun `mixed packed retries reserve and publish only new blobs within the disk cap`() {
+        val fresh = "fresh".toByteArray(); val freshSha = ExecutionStore.digest("fresh")
+        val mixed = blobs + ResultBlob(freshSha, fresh.size.toLong())
+        val writes = mutableListOf<String>()
+        val counted = object : ArtifactStore by external {
+            override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
+                writes += sha; return external.put(job, sha, bytes, offset, input)
+            }
+            override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
+                writes.addAll(blobs.keys); external.putAll(job, blobs)
+            }
+        }
+        val path = root.resolve("journal")
+        val limit = 4L * 1024 * 1024
+        ResultJournal(path, counted, maxBytes = limit, start = false).use { journal ->
+            journal.putPacked(1, blobs, bytes.inputStream())
+            val before = journal.status().bytes
+            journal.putPacked(1, mixed, (bytes + fresh).inputStream())
+            assertEquals(2, journal.status().batches)
+            assertTrue(journal.status().bytes - before < 32 * 1024, "duplicate payload cannot consume another reservation or pack")
+            assertTrue(journal.status().bytes <= limit)
+        }
+        ResultJournal(path, counted, maxBytes = limit, start = false).use { recovered ->
+            assertEquals(2, recovered.status().batches)
+            assertTrue(recovered.drainGroup()); assertEquals(0, recovered.status().batches)
+            assertEquals(mapOf(sha to 1, freshSha to 1), writes.groupingBy { it }.eachCount())
+            assertContentEquals(bytes, external.open(1, sha).use { it.readAllBytes() })
+            assertContentEquals(fresh, external.open(1, freshSha).use { it.readAllBytes() })
+        }
+    }
+
+    @Test fun `discarded duplicate bytes still pass checksums and failures return only the new reservation`() {
+        val fresh = "fresh".toByteArray(); val freshSha = ExecutionStore.digest("fresh")
+        val mixed = blobs + ResultBlob(freshSha, fresh.size.toLong())
+        ResultJournal(root.resolve("journal"), external, maxBytes = 4L * 1024 * 1024, start = false).use { journal ->
+            journal.putPacked(1, blobs, bytes.inputStream())
+            val before = journal.status().bytes
+            val corrupt = bytes.copyOf().also { it[0] = (it[0] + 1).toByte() }
+            assertFailsWith<IllegalArgumentException> { journal.putPacked(1, mixed, (corrupt + fresh).inputStream()) }
+            assertEquals(before, journal.status().bytes); assertEquals(1, journal.status().batches)
+            assertEquals(0, journal.offset(1, freshSha))
+            assertContentEquals(bytes, journal.open(1, sha).use { it.readAllBytes() })
+            journal.putPacked(1, mixed, (bytes + fresh).inputStream())
+            assertEquals(2, journal.status().batches)
+        }
+    }
+
+    @Test fun `mixed retries cannot discard existing references until their failed publication barrier recovers`() {
+        val fresh = "fresh".toByteArray(); val freshSha = ExecutionStore.digest("fresh")
+        val mixed = blobs + ResultBlob(freshSha, fresh.size.toLong())
+        var fail = false
+        val path = root.resolve("journal")
+        val limit = 4L * 1024 * 1024
+        ResultJournal(path, external, maxBytes = limit, start = false, syncDirectory = {
+            if (fail) throw java.io.IOException("injected sync failure")
+            java.nio.channels.FileChannel.open(it, java.nio.file.StandardOpenOption.READ).use { channel -> channel.force(true) }
+        }).use { journal ->
+            fail = true
+            assertFailsWith<java.io.IOException> { journal.putPacked(1, blobs, bytes.inputStream()) }
+            val before = journal.status().bytes
+            val unread = object : InputStream() { override fun read(): Int = error("existing reference barrier must precede body") }
+            assertFailsWith<java.io.IOException> { journal.putPacked(1, mixed, unread) }
+            assertEquals(before, journal.status().bytes); assertEquals(1, journal.status().batches)
+            assertFalse(journal.drainOne())
+            fail = false
+            journal.putPacked(1, mixed, (bytes + fresh).inputStream())
+            assertEquals(2, journal.status().batches); assertTrue(journal.status().bytes <= limit)
+        }
+        ResultJournal(path, external, maxBytes = limit, start = false).use { recovered ->
+            assertTrue(recovered.drainGroup()); assertEquals(8192, recovered.status().bytes)
+            assertContentEquals(bytes, external.open(1, sha).use { it.readAllBytes() })
+            assertContentEquals(fresh, external.open(1, freshSha).use { it.readAllBytes() })
+        }
+    }
+
+    @Test fun `competing mixed senders retain only new reservations while their shared duplicate drains`() {
+        val entered = CountDownLatch(2); val release = CountDownLatch(1); val pool = Executors.newFixedThreadPool(2)
+        val fresh = listOf("first", "second").map { it.toByteArray() }
+        val path = root.resolve("journal"); val limit = 4L * 1024 * 1024
+        try {
+            ResultJournal(path, external, maxBytes = limit, start = false).use { journal ->
+                journal.putPacked(1, blobs, bytes.inputStream())
+                val futures = fresh.map { value -> pool.submit {
+                    val hash = java.security.MessageDigest.getInstance("SHA-256").digest(value).hex()
+                    val input = object : ByteArrayInputStream(bytes + value) {
+                        private var waiting = true
+                        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                            if (waiting) { waiting = false; entered.countDown(); check(release.await(5, SECONDS)) }
+                            return super.read(buffer, offset, length)
+                        }
+                    }
+                    journal.putPacked(1, blobs + ResultBlob(hash, value.size.toLong()), input)
+                } }
+                assertTrue(entered.await(3, SECONDS), "both small new reservations must fit beside the retained duplicate")
+                assertTrue(journal.status().bytes <= limit)
+                assertTrue(journal.drainOne(), "receivers cannot hold the commit monitor or pin duplicate packs")
+                release.countDown(); futures.forEach { it.get(5, SECONDS) }
+                assertEquals(2, journal.status().batches)
+            }
+            ResultJournal(path, external, maxBytes = limit, start = false).use { recovered ->
+                assertEquals(2, recovered.status().batches); assertTrue(recovered.status().bytes < 64 * 1024)
+                assertTrue(recovered.drainGroup()); assertEquals(8192, recovered.status().bytes)
+                for (value in fresh + listOf(bytes)) {
+                    val hash = java.security.MessageDigest.getInstance("SHA-256").digest(value).hex()
+                    assertContentEquals(value, external.open(1, hash).use { it.readAllBytes() })
+                }
+            }
+        } finally { release.countDown(); pool.shutdownNow() }
+    }
+
     @Test fun `a near maximum capture reserves ZIP framing without exceeding the disk cap`() {
         val large = ByteArray(PACKED_BYTES - 1024)
         val hash = java.security.MessageDigest.getInstance("SHA-256").digest(large).hex()
