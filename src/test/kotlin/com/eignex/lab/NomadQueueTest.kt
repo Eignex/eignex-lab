@@ -398,20 +398,25 @@ class NomadQueueTest {
         listOf(first, second).forEach { store.setPriority(it, 100) }
         val cloud = job(ExperimentSpec("later-cloud", host = Experiments.AWS_HOST))
         val calls = java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger>()
+        val discovered = mutableSetOf<Long>()
         var nativeAvailable = false
         CoordinatorWork<QueueSourceKey, Pair<List<PlannedArm>, List<WorkerBundle>>>("source-test", 1).use { work ->
             val admission = NomadQueue(config, store, backend, artifacts, settings, { true }, nativeAllowed = { nativeAvailable },
                 source = { job, targets, frozen ->
-                    val key = QueueSourceKey(job.id, job.experiment, targets, frozen)
-                    work.poll(key) {
-                        calls.computeIfAbsent(job.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
-                        val arms = Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) }
-                        val bundles = targets.distinctBy { it.os to it.arch }.map { target ->
-                            input(job.id, target.os, target.arch).let { bundle ->
-                                if (job.id == cloud) bundle else bundle.copy(build = WorkerBuild(requiredTags = setOf("platform:mac", "arch:arm64")))
+                    // Establish both deferred publications before cloud admission owns the compiler slot.
+                    // Otherwise valid async timing can admit cloud before the second source even starts.
+                    if (job.id == cloud && !discovered.containsAll(listOf(first, second))) null else {
+                        val key = QueueSourceKey(job.id, job.experiment, targets, frozen)
+                        work.poll(key) {
+                            calls.computeIfAbsent(job.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                            val arms = Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) }
+                            val bundles = targets.distinctBy { it.os to it.arch }.map { target ->
+                                input(job.id, target.os, target.arch).let { bundle ->
+                                    if (job.id == cloud) bundle else bundle.copy(build = WorkerBuild(requiredTags = setOf("platform:mac", "arch:arm64")))
+                                }
                             }
-                        }
-                        arms to bundles
+                            arms to bundles
+                        }.also { if (it != null) discovered += job.id }
                     }
                 })
             val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
