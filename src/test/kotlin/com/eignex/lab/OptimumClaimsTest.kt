@@ -124,9 +124,10 @@ class OptimumClaimsTest {
     }
 
     private fun scoped(case: CaseResult, assumptions: List<String> = emptyList(), units: String = "original-source",
-                       scale: String = "1", offset: String = "0", original: String? = null): CaseResult = edit(case) {
+                       scale: String = "1", offset: String = "0", original: String? = null,
+                       semantics: String = "e".repeat(64)): CaseResult = edit(case) {
         val scope = buildJsonObject {
-            put("schema", "original-source-optimum-v1"); put("semanticsSha256", "e".repeat(64))
+            put("schema", "original-source-optimum-v1"); put("semanticsSha256", semantics)
             put("objective", buildJsonObject { put("sense", "min"); put("units", units); put("identity", "source-objective") })
             put("assumptions", JsonArray(assumptions.map(::JsonPrimitive)))
         }
@@ -146,6 +147,15 @@ class OptimumClaimsTest {
         assertEquals("19", assessed(claim, better).objective)
         assertEquals("18", assessed(claim, better).counterexampleObjective)
         assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, assessed(claim, scoped(point("18"), units = "cents")).state)
+    }
+
+    @Test
+    fun `explicit objective maps share original source scope with ordinary checked points`() {
+        val claim = scoped(point("-9", proven = true, maximize = true), scale = "-2", offset = "1", original = "19",
+            semantics = sha256("xcsp3-integer-source-v1".toByteArray()))
+        val assessment = assessed(claim, point("18"))
+        assertEquals(OptimumAssessment.CONTRADICTED, assessment.state)
+        assertEquals("declared-scope", assessment.scopeAuthority)
     }
 
     @Test
