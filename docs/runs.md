@@ -37,6 +37,11 @@ Regional archives are listed without downloading them. Reading their usual `prep
 fetches and verifies the accepted bytes on demand; the response ETag carries that same SHA-256. A trimmed job
 does not regain its archives through this route. An unavailable accepted archive fails explicitly rather than
 silently disappearing from a supposedly complete listing.
+`lab fetch` verifies listed SHA-256 hashes before publishing or resuming a file, then checks the retained
+files again before reporting completion. Files without a listed hash retain the transport and size checks.
+A failed download leaves `lab-fetch-missing.json` with its reason. Accepted names that differ only by ASCII
+case require a case-sensitive destination; the client refuses an incompatible destination before overwriting files.
+
 The HTTP service needs the same `LAB_SHARED_INPUT_URL` and loopback `LAB_SHARED_INPUT_SIGNER` configuration
 as the coordinator to retrieve regional archives. Already projected archives remain readable without that store.
 
