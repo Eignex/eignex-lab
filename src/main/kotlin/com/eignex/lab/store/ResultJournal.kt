@@ -148,21 +148,24 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     /** Reserve before receiving bytes; external I/O and slow senders never own the small-commit monitor. */
     fun putPacked(job: Long, blobs: List<ResultBlob>, input: InputStream) {
         require(job > 0); validateResultBlobs(blobs)
-        val reservation = reservation(blobs.sumOf { it.bytes }, blobs.size)
-        var duplicate = false
-        synchronized(monitor) {
+        var reserved = 0L
+        val pending = synchronized(monitor) {
             check(!closed); check(writable()) { "result journal storage unavailable" }
-            duplicate = blobs.all { index[job to it.sha] != null }
-            if (duplicate) {
-                if (blobs.any { index.getValue(job to it.sha).durable.not() }) {
-                    syncDirectory(root); batches.values.forEach { it.durable = true }
-                }
-            } else {
-                check(reservation <= maxBytes - used) { "result journal full; pending data retained" }
-                used += reservation; receiving++
+            // As with putAll, a mixed retry need only retain the bytes not already held by this journal.
+            // Existing references must be durable before discarding their incoming copies. A concurrent drain
+            // can then reclaim them only after their external publication barrier has succeeded.
+            if (blobs.any { index[job to it.sha]?.durable == false }) {
+                syncDirectory(root); batches.values.forEach { it.durable = true }
             }
+            val remaining = blobs.filter { (job to it.sha) !in index }
+            if (remaining.isNotEmpty()) {
+                reserved = reservation(remaining.sumOf { it.bytes }, remaining.size)
+                check(reserved <= maxBytes - used) { "result journal full; pending data retained" }
+                used += reserved; receiving++
+            }
+            remaining
         }
-        if (duplicate) {
+        if (pending.isEmpty()) {
             for (blob in blobs) copyBlob(blob, input, java.io.OutputStream.nullOutputStream())
             require(input.read() == -1) { "trailing result data" }; return
         }
@@ -170,18 +173,21 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         var accounted = false
         try {
             temporary = Files.createTempFile(root, ".pending-", ".tmp")
-            val manifest = Manifest(job, blobs)
+            val manifest = Manifest(job, pending)
+            val retained = pending.mapTo(hashSetOf()) { it.sha }
             ZipOutputStream(java.io.BufferedOutputStream(Files.newOutputStream(temporary), 256 * 1024)).use { zip ->
                 zip.setLevel(0)
                 zip.putNextEntry(ZipEntry("manifest.json").apply { time = 0 })
                 zip.write(Json.encodeToString(manifest).toByteArray()); zip.closeEntry()
                 for (blob in blobs) {
-                    zip.putNextEntry(ZipEntry(blob.sha).apply { time = 0 })
-                    copyBlob(blob, input, zip); zip.closeEntry()
+                    if (blob.sha in retained) {
+                        zip.putNextEntry(ZipEntry(blob.sha).apply { time = 0 })
+                        copyBlob(blob, input, zip); zip.closeEntry()
+                    } else copyBlob(blob, input, java.io.OutputStream.nullOutputStream())
                 }
                 require(input.read() == -1) { "trailing result data" }
             }
-            val actual = charge(Files.size(temporary), blobs.size); check(actual <= reservation)
+            val actual = charge(Files.size(temporary), pending.size); check(actual <= reserved)
             FileChannel.open(temporary, WRITE).use { it.force(true) }
             synchronized(monitor) {
                 check(!closed)
@@ -189,14 +195,14 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                 Files.move(temporary, destination, ATOMIC_MOVE)
                 // Account even a failed publication barrier so retry/restart cannot lose the candidate.
                 val batch = Batch(destination, manifest, actual, durable = false)
-                used -= reservation; add(batch); accounted = true
+                used -= reserved; add(batch); accounted = true
                 syncDirectory(root); batches.values.forEach { it.durable = true }
             }
         } finally {
             // On cleanup failure keep the reservation charged until startup removes the unacknowledged temp.
             try {
                 if (temporary == null || Files.deleteIfExists(temporary) || !Files.exists(temporary)) {
-                    if (!accounted) synchronized(monitor) { used -= reservation }
+                    if (!accounted) synchronized(monitor) { used -= reserved }
                 }
             } finally { synchronized(monitor) { receiving-- } }
         }
