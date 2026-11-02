@@ -111,9 +111,11 @@ internal object CapacityObservation {
         job: Job,
         settings: CapacitySettings,
         localTags: Set<String>,
+        selector: NodeSelector? = job.experiment.nodeTags,
     ): CapacityDemand? {
         val pool = settings.pools.singleOrNull { it.nodeClass == placement.nodeClass } ?: return null
         val experiment = job.experiment
+        require(NodeTags.market(selector) == NodeTags.market(experiment.nodeTags)) { "phase selector changed the purchasing policy" }
         require(pool.market == NodeTags.market(experiment.nodeTags)) { "session purchasing policy differs from pool" }
         val work = when {
             session.executionClass in setOf(ExecutionClass.BUILD, ExecutionClass.PREPARE) -> CapacityWork.BUILD
@@ -121,8 +123,8 @@ internal object CapacityObservation {
             experiment.measuresCli -> CapacityWork.MEASUREMENT
             else -> CapacityWork.SOLVE
         }
-        return CapacityDemand(session.id, job.id, budget, job.priority, (placement.pool as? WorkerPool.Cloud)?.perHostParallel, experiment.nodeTags,
-            pool.market, Placement.localEligible(experiment, localTags), work, pool.id,
+        return CapacityDemand(session.id, job.id, budget, job.priority, (placement.pool as? WorkerPool.Cloud)?.perHostParallel, selector,
+            pool.market, experiment.host != Experiments.AWS_HOST && NodeTags.matches(selector, localTags), work, pool.id,
             maxConcurrentBuildsPerNode = if (work == CapacityWork.BUILD) placement.preparationSlots ?: 2 else null)
     }
 }
@@ -191,7 +193,8 @@ class CapacityCollector(
             !nomad.hasActiveAllocation(s.nomadJobId) }
         val demands = pending.mapNotNull { s ->
             val job = store.job(s.jobId) ?: return@mapNotNull null
-            CapacityObservation.deriveDemand(s, store.execution.manifest(s.id).budget, store.execution.placement(s.id), job, settings, localTags)
+            val manifest = store.execution.manifest(s.id)
+            CapacityObservation.deriveDemand(s, manifest.budget, store.execution.placement(s.id), job, settings, localTags, manifest.placementTags)
         }.filter { it.pool !in stalePools }
         val inventoryAge = fresh.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }

@@ -49,8 +49,9 @@ data class NomadQueueSettings(
             "workers sharing prepared binaries must use the same pinned image for each platform"
         }
     }
-    fun matching(spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean = false): List<NomadQueueTarget> = targets.filter { target ->
-        NodeTags.matches(spec.nodeTags, target.capabilities) &&
+    fun matching(spec: ExperimentSpec, origin: JobOrigin, cloudSchedule: Boolean = false,
+                 selector: NodeSelector? = spec.nodeTags): List<NomadQueueTarget> = targets.filter { target ->
+        NodeTags.matches(selector, target.capabilities) &&
             (target.native || Placement.localOnlyReason(spec, origin, cloudSchedule) == null &&
                 target.market == NodeTags.market(spec.nodeTags))
     }

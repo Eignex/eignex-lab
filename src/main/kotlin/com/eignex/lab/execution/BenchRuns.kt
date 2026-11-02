@@ -48,6 +48,7 @@ internal object BenchRuns {
         ProfileRuns.validate("Eignex/bench", ProfileMain(entry.main, buildTasks = entry.buildTasks,
             classpath = entry.classpath, jvmArgs = entry.jvmArgs))
         runtime(tree, spec).validate()
+        preparation(tree, spec)
         return entry
     }
 
@@ -68,6 +69,18 @@ internal object BenchRuns {
         val manifest = BenchProtocol.json.parseToJsonElement(Files.readString(tree.resolve(safeRelative(spec.manifest)))).jsonObject
         val runtime = manifest["runtime"]?.let { BenchProtocol.json.decodeFromJsonElement(Runtime.serializer(), it) } ?: Runtime()
         return if (spec.adapterResources) runtime.copy(requiredTags = runtime.requiredTags + "platform:linux") else runtime
+    }
+
+    /** Lab-only phase contract; absent manifests retain the original shared host/runtime requirements. */
+    fun preparation(tree: Path, spec: BenchSpec): WorkerPreparation? =
+        preparation(Files.readString(tree.resolve(safeRelative(spec.manifest))))
+
+    internal fun preparation(text: String): WorkerPreparation? {
+        val manifest = BenchProtocol.json.parseToJsonElement(text).jsonObject
+        return manifest["preparation"]?.let {
+            try { BenchProtocol.json.decodeFromJsonElement(WorkerPreparation.serializer(), it) }
+            catch (failure: kotlinx.serialization.SerializationException) { throw IllegalArgumentException("invalid committed preparation contract", failure) }
+        }
     }
 
     /** Opt-in private workspace contents; omitted manifests retain the entire built tree. */

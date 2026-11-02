@@ -36,7 +36,7 @@ class WorkerArchiveCacheTest {
             assertEquals(first.sha256, hashFile(zip)); bundle
         }
         assertEquals(1, created); assertEquals(first.files, second.files)
-        assertEquals("mac", second.os); assertEquals("other", second.toolchain)
+        assertEquals("mac", second.os); assertEquals("arm64", second.arch); assertEquals("other", second.toolchain)
     }
 
     @Test fun `same length changes with restored mtime and directory layout invalidate archives`() {
