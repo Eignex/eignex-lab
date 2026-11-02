@@ -101,4 +101,54 @@ class MpsPolicyChecksTest {
             MpsNumericalSemantics.identity(declaration("1/10000000", "0.0000001")))
         assertNotEquals(MpsNumericalSemantics.identity(declaration()), MpsNumericalSemantics.identity(declaration("0", "0")))
     }
+
+    @Test fun `captured PP08aCUTS BV card and equivalent one spellings preserve binary constraints`() {
+        val originalCard = " BV bnd       Y0101...             1"
+        val original = "NAME BV_CONTROL\nROWS\n N COST\nCOLUMNS\n Y0101... COST 1\nBOUNDS\n$originalCard\nENDATA\n"
+        for (value in listOf("", "1", "1.0", "+1.000", "10e-1", ".1D1")) {
+            val source = original.replace(originalCard, " BV bnd       Y0101..." + if (value.isEmpty()) "" else "             $value")
+            for (semantics in listOf(declaration("0", "0"), declaration())) {
+                for (coordinate in listOf("0", "1")) {
+                    val accepted = check(source, "v Y0101...=$coordinate", coordinate, semantics)
+                    assertEquals(LabCheck.VALID, accepted.state, "$value: ${accepted.reason}")
+                    assertEquals(LabCheck.VALID, accepted.mpsChecks!!.exact.state)
+                    assertEquals(Policies.MPS_EXACT, accepted.mpsChecks!!.exact.policy)
+                    assertEquals(Policies.MPS_DECLARED, accepted.mpsChecks!!.configured.policy)
+                }
+                for (coordinate in listOf("-1", "2", "1/2", "100000001/100000000")) {
+                    val rejected = check(source, "v Y0101...=$coordinate", coordinate, semantics)
+                    assertEquals(LabCheck.INVALID, rejected.state, "$value/$coordinate: ${rejected.reason}")
+                    assertEquals(LabCheck.INVALID, rejected.mpsChecks!!.exact.state)
+                }
+                assertEquals(LabCheck.INVALID, check(source, "v Y0101...=1", "0", semantics).state)
+            }
+        }
+    }
+
+    @Test fun `BV values other than decimal one and unrelated malformed bound cards remain unknown`() {
+        val source = "NAME T\nROWS\n N COST\nCOLUMNS\n X COST 1\nBOUNDS\n BV B X 1\nENDATA\n"
+        for (card in listOf("BV B X 0", "BV B X 2", "BV B X -1", "BV B X 0.9999999999999999",
+            "BV B X NaN", "BV B X 1/1", "BV B X 1 extra", "BV B", "BV B X 1.0.0",
+            "FR B X 1", "MI B X 1", "PL B X 1", "LO B X", "UP B X")) {
+            val result = check(source.replace("BV B X 1", card), "v X=1", "1")
+            assertEquals(LabCheck.UNKNOWN, result.state, "$card: ${result.reason}")
+            assertEquals(LabCheck.UNKNOWN, result.mpsChecks!!.exact.state)
+            assertEquals(LabCheck.UNKNOWN, result.mpsChecks!!.configured.state)
+            assertNull(result.mpsChecks!!.comparisonIdentity)
+        }
+        assertEquals(LabCheck.UNSUPPORTED, check(source.replace("BV B X 1", "SC B X 1"), "v X=1", "1").state)
+        assertEquals(LabCheck.UNSUPPORTED, check(source.replace("BV B X 1", "BV B X 1e999999999"), "v X=1", "1").state)
+    }
+
+    @Test fun `BV coverage migrates checker identities without aliasing retained v1 receipts`() {
+        assertEquals("lab-mps-exact-rational-v2", Policies.MPS_EXACT)
+        assertEquals("lab-mps-declared-rational-v2", Policies.MPS_DECLARED)
+        val semantics = declaration()
+        val semanticsHash = MpsNumericalSemantics.identity(semantics)!!
+        val previous = sha256("lab-mps-declared-rational-v1\n$semanticsHash\nmax(abs,rel*max(abs(bound),sum(abs(term))));bounds=abs(bound);integrality=exact;objective=exact".toByteArray())
+        assertNotEquals(previous, MpsNumericalSemantics.checkerPolicyIdentity(semantics))
+        val historical = LabCheck("lab-mps-declared-rational-v1", LabCheck.UNKNOWN, "parser failure: bound value for BV", "old checker")
+        assertEquals("lab-mps-declared-rational-v1", LabCheck.parse(historical.json())!!.policy)
+    }
+
 }

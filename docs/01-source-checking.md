@@ -51,7 +51,7 @@ independent receipts provide point evidence.
 ## Exact rational MPS
 
 `RationalMpsChecker` evaluates every numeric spelling under explicit policies. Its `mpsChecks` receipt retains
-`lab-mps-exact-rational-v1` separately from `lab-mps-declared-rational-v1`; no fraction/decimal routing or implicit
+`lab-mps-exact-rational-v2` separately from `lab-mps-declared-rational-v2`; no fraction/decimal routing or implicit
 legacy tolerance selection occurs. `MpsChecker` remains available as the separately identified legacy solchecker.
 Both independent rational policies identify their evaluator source, configured-policy source and executing JAR
 SHA-256 when packaged. No Klause parser, model, arithmetic, point validator or solver supplies checking authority.
@@ -95,6 +95,15 @@ and [IBM's MPS record specification](https://www.ibm.com/docs/en/cofz/12.9.0?top
 
 Real columns default to `[0,+infinity)`. Integer marker columns default to `[0,1]` unless explicit bounds replace
 that default; supported bound records are LO, UP, FX, FR, MI, PL, BV, LI and UI. BV/LI/UI also declare integrality.
+BV permits a blank fourth field or a decimal/exponent value exactly equal to one, including `1` and `1.0`, as
+specified by [IBM's integer-variable MPS extension](https://www.ibm.com/docs/en/icos/22.1.1?topic=extensions-integer-variables-in-mps-files).
+It always declares binary bounds `[0,1]` and exact integrality. Other BV values, fraction-valued source metadata,
+extra fields and malformed values stay unknown; redundant values on FR/MI/PL remain rejected.
+
+The v2 policy identities include this BV input coverage. Retained v1 receipts are historical evidence under their
+original identities; they are not aliases for v2 and do not acquire v2 comparison identities. A checking-only
+migration preserves the original receipts, source/witness/declaration hashes and all checking costs before recording
+fresh checks. Neither policy changes tolerances or supplies optimum authority.
 Unknown sections, semi-continuous bounds, indicators, multiple RHS/range/bound vectors and ambiguous extensions
 are unsupported, never ignored as a route to acceptance. Syntax/section errors produce `unknown` with `parser
 failure`, unsupported features/resource limits produce `unsupported`, deadline expiry produces `not-run` with
