@@ -112,6 +112,33 @@ class TreeVerificationTest {
         assertEquals(0L, warm.stats.hashedBytes)
     }
 
+    @Test fun `bulk copy guards validate selected receipt files without requiring unrelated compiler scratch`() {
+        val source = Files.createDirectories(root.resolve("selected-source"))
+        val selected = (0 until 64).map { index ->
+            val path = source.resolve("runtime/file$index"); Files.createDirectories(path.parent)
+            Files.writeString(path, "value-$index")
+            InputFile("runtime/file$index", ExecutionStore.digest("value-$index"), "value-$index".length.toLong())
+        }
+        val scratch = source.resolve("compiler/scratch"); Files.createDirectories(scratch.parent); Files.writeString(scratch, "scratch")
+        val sourceReceipt = root.resolve("selected-source.json")
+        TreeVerification().capture(source, sourceReceipt)
+        assertTrue(TreeVerification().valid(source, selected, sourceReceipt, allowUndeclared = true))
+        val destination = root.resolve("selected-copy"); val receipt = root.resolve("selected-copy.json")
+        val wanted = selected.map { it.path }.toSet()
+        val verifier = TreeVerification()
+        verifier.copy(source, sourceReceipt, destination, receipt, include = { it.toString().replace('\\', '/') in wanted }) {
+            for (file in selected) {
+                val target = destination.resolve(file.path); Files.createDirectories(target.parent)
+                Files.copy(source.resolve(file.path), target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
+            }
+            Files.writeString(scratch, "unrelated change")
+        }
+        val unread = TreeVerification(hash = { _, _ -> error("selected copied bytes reread") })
+        assertTrue(unread.valid(destination, selected, receipt))
+        assertFalse(Files.exists(destination.resolve("compiler")))
+        assertEquals(0, verifier.stats.hashedFiles)
+    }
+
     @Test fun `trusted copy rejects concurrent source changes and seals private inode stamps without rehashing`() {
         verifier().capture(tree, receipt)
         val destination = root.resolve("private"); val targetReceipt = root.resolve("private.json")

@@ -90,15 +90,25 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
                          checkActive: () -> Unit, include: (Path) -> Boolean, copy: () -> Unit) {
         val original = if (reliable(source)) previous(source, sourceReceipt) else null
         val proof = original?.let { it.copy(files = it.files.filter { file -> include(Path.of(file.file.path)) }) }
+        val expectedProof = proof?.files?.associateBy { it.file.path }.orEmpty()
+        val proofPaths = if (proof != null && proof.files.size >= 64) buildSet {
+            add("")
+            for (file in proof.files) {
+                val path = Path.of(file.file.path)
+                for (count in 1..path.nameCount) add(path.subpath(0, count).toString().replace('\\', '/'))
+            }
+        } else emptySet()
         fun unchanged() {
-            if (bulkMetadata && proof != null && proof.files.size == original?.files?.size && MacDirectoryEntries.supported(source)) {
-                val expected = proof.files.associateBy { it.file.path }; var count = 0
-                walk(source, checkActive) { path, observed ->
-                    val entry = expected[source.relativize(path).toString().replace('\\', '/')]
+            if (bulkMetadata && proofPaths.isNotEmpty() && MacDirectoryEntries.supported(source)) {
+                var count = 0
+                // A receipt may intentionally cover only runtime or selected inputs. Traverse their ancestors,
+                // checking exactly those files, just like the individual-stat path; never require unrelated scratch.
+                walk(source, checkActive, include = { it.toString().replace('\\', '/') in proofPaths }) { path, observed ->
+                    val entry = expectedProof[source.relativize(path).toString().replace('\\', '/')]
                     require(entry != null && observed.stamp() == entry.stamp) { "verified copy source changed" }
                     count++
                 }
-                require(count == expected.size) { "verified copy source changed" }
+                require(count == expectedProof.size) { "verified copy source changed" }
                 return
             }
             for (entry in proof?.files.orEmpty()) {
