@@ -198,6 +198,14 @@ Independent source checks run when requested.
 It does not copy earlier solver outcomes or reset the source job's spent allowance. Retain the source job's
 full preparation, failed work and retirement costs alongside the replay's own bounded costs.
 
+A bench manifest may declare top-level `workspaceInputs`, a nonempty list of portable relative file or directory
+paths to copy from the verified build. The manifest itself is included automatically. This asserts that `describe`,
+`plan` and `run` need only those paths, generated files and the declared corpus: include installed classpaths,
+compiler/runtime assets, source inputs and any scripts or Git metadata they read. Listed paths must exist in the
+build. Without the declaration, preparation retains the full built tree. Planner cache identities still cover every
+`planInputs` path in the complete verified build before copying; limiting the workspace never narrows that identity.
+Solve attempts receive private copies of the resulting snapshot, and source input verification remains enforced.
+
 During one preparation, repeated compiler/include files reuse checksums only while inode, size, mtime and
 ctime remain unchanged on a supported filesystem. Directory membership is walked again for every input;
 changed files and unsupported filesystems take the checksum path. Reuse ends with that preparation.

@@ -37,7 +37,10 @@ class PortableWorkerTest {
             }""".trimIndent()
         val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.Bench", listOf("build/classes"), listOf("installDist"))
         val (source, bytes) = bundle(mapOf("Bench.java" to program, "model.txt" to "source",
-            "bench.json" to com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry),
+            "bench.json" to (com.eignex.lab.bench.BenchProtocol.json.encodeToJsonElement(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry).jsonObject +
+                mapOf("workspaceInputs" to Json.parseToJsonElement("[\"build/classes\",\"model.txt\"]"),
+                    "planInputs" to Json.parseToJsonElement("[\"Bench.java\"]"))).let { kotlinx.serialization.json.JsonObject(it).toString() },
+            "unused.txt" to "compiler-only input",
             "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
         val input = source.copy(build = WorkerBuild(listOf("installDist")))
         val spec = ExperimentSpec("native", bench = BenchSpec("bench.json"))
@@ -55,6 +58,14 @@ class PortableWorkerTest {
         assertEquals(1L, built.tree?.job)
         assertEquals(built.sha256, result.artifacts[preparationArtifact(built)])
         assertTrue(snapshots.valid(built, {}))
+        assertFalse(built.files.any { it.path in setOf("Bench.java", "unused.txt", "gradlew") })
+        assertTrue(built.files.any { it.path == "build/classes/fixture/Bench.class" })
+        val completeBuild = Files.walk(root.resolve("builds")).use { paths ->
+            paths.filter { it.fileName.toString() == "Bench.java" && it.parent.fileName.toString() == "tree" }.findFirst().orElseThrow().parent
+        }
+        assertEquals(BenchSelections.key("release", spec.repository, requireNotNull(spec.work.bench),
+            BenchRuns.request(spec.work.bench!!, manifest.arms.first().arm), source.commit, completeBuild, "local"),
+            result.selectionCache.single().key, "excluded planner files must still determine the selection identity")
         assertFalse("archive" in trace.snapshot().timings)
         assertFalse("cache-publication" in trace.snapshot().timings)
         val case = result.benchPlan!!.cases.single()

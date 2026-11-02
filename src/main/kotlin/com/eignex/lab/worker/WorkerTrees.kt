@@ -64,6 +64,23 @@ internal object WorkerTrees {
         })
     }
 
+    fun copySelected(source: Path, destination: Path, paths: List<String>, checkActive: () -> Unit) {
+        checkActive(); require(!Files.exists(destination)); Files.createDirectories(destination)
+        val selected = mutableListOf<Path>()
+        for (name in paths.distinct().map(::safeRelative).sortedBy { it.nameCount }) {
+            if (selected.none { name.startsWith(it) }) selected.add(name)
+        }
+        val canonical = source.toRealPath()
+        for (relative in selected) {
+            checkActive()
+            val file = source.resolve(relative)
+            require(file.toRealPath().startsWith(canonical) && !Files.isSymbolicLink(file)) { "workspace input escapes source" }
+            val target = destination.resolve(relative)
+            Files.createDirectories(target.parent)
+            copyEntries(listOf(file), target.parent, checkActive)
+        }
+    }
+
     private fun copyEntries(entries: List<Path>, destination: Path, checkActive: () -> Unit) {
         val mac = System.getProperty("os.name").lowercase().contains("mac")
         for (batch in entries.chunked(64)) {
