@@ -27,7 +27,7 @@ class OptimumClaimsTest {
             put("comparisonControls", buildJsonObject { put("exact", "true") })
             put("finalWitness", witness)
             put("labCheck", buildJsonObject {
-                put("state", state); put("policy", "lab-xcsp3-solution-checker-fixture-v1")
+                put("state", state); put("policy", Policies.XCSP3)
                 put("checkerSha256", "b".repeat(64)); put("witnessSha256", sha256(witness.toByteArray()))
                 put("sourceSha256", buildJsonObject { put("model", source) })
             })
@@ -64,6 +64,22 @@ class OptimumClaimsTest {
         val result = assessed(point("7", proven = true), point("7"), point("8"))
         assertEquals(OptimumAssessment.NO_COUNTEREXAMPLE, result.state)
         assertTrue("independently unverified" in result.reason)
+    }
+
+    @Test
+    fun `a fresh assessment consumes newly supplied evidence and ignores a stale embedded assessment`() {
+        val initial = OptimumClaims.qualify(listOf(point("7", proven = true))).single()
+        val refreshed = OptimumClaims.qualify(listOf(initial), listOf(point("6"))).single()
+        assertEquals(OptimumAssessment.CONTRADICTED, OptimumClaims.assessment(refreshed.record)?.state)
+        val changedSource = edit(refreshed) { remove("sourceHashes") }
+        assertEquals(OptimumAssessment.UNVERIFIED,
+            OptimumClaims.assessment(OptimumClaims.qualify(listOf(changedSource)).single().record)?.state)
+    }
+
+    @Test
+    fun `grid completion does not acquire original source optimum scope`() {
+        val grid = edit(point("7", proven = true)) { put("stats", buildJsonObject { put("floatApproximation", "true") }) }
+        assertEquals(OptimumAssessment.UNVERIFIED, assessed(grid, point("6")).state)
     }
 
     @Test
@@ -163,7 +179,7 @@ class OptimumClaimsTest {
         fun mps(value: String, proven: Boolean = false): CaseResult = edit(point(value, proven)) {
             put("numericalSemantics", semantics)
             val check = getValue("labCheck").jsonObject
-            put("labCheck", JsonObject(check + ("mpsChecks" to buildJsonObject {
+            put("labCheck", JsonObject(check + ("policy" to JsonPrimitive(Policies.MPS_DECLARED)) + ("mpsChecks" to buildJsonObject {
                 put("exact", buildJsonObject { put("state", LabCheck.INVALID) })
                 put("configured", buildJsonObject { put("state", LabCheck.VALID); put("policy", Policies.MPS_DECLARED) })
                 put("semanticsSha256", MpsNumericalSemantics.identity(semantics))

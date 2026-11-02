@@ -15,6 +15,9 @@ to rounded display values. A point must carry a valid independent receipt with m
 and an identified checker. Failed, unsupported and incomplete checks provide no counterexample.
 
 The whole-source exact integer XCSP3 adapter uses original source costs and its official cost-checking receipt.
+Its authority is the published original-source optimum contract. This does not identify the internal proof scope
+or supply a missing historical prepared snapshot; those remain unverified. Grid completion supplies no source
+optimum claim. Explicit restricted scopes are never replaced by empty original-source assumptions.
 MPS comparisons use `MpsNumericalSemantics` identities and the configured-policy verdict in `LabCheck.mpsChecks`,
 including the reconstructed original objective, original-model scope and explicit empty assumptions. Its exact
 verdict stays separate. Missing numerical declarations do not acquire inferred defaults. Other mapped or restricted

@@ -21,6 +21,7 @@ data class OptimumAssessment(
     val checkerPolicy: String? = null,
     val evidenceJob: Long? = null,
     val evidenceCase: Int? = null,
+    val scopeAuthority: String? = null,
 ) {
     companion object {
         const val CONTRADICTED = "contradicted"
@@ -42,12 +43,14 @@ object OptimumClaims {
 
     /** Derived copies only: neither a producer record nor a checking receipt is rewritten. */
     fun qualify(cases: List<CaseResult>, evidence: List<CaseResult> = emptyList()): List<CaseResult> {
-        val points = (cases + evidence).filter { it.status == Status.DONE }.mapNotNull(::point)
+        val claimedSources = cases.mapNotNull { (it.record as? JsonObject)?.takeIf(::nativeOptimum)?.get("sourceHashes") }.toSet()
+        if (cases.none { (it.record as? JsonObject)?.let(::nativeOptimum) == true }) return cases
+        val points = (cases + evidence).filter { it.status == Status.DONE &&
+            (it.record as? JsonObject)?.get("sourceHashes") in claimedSources }.mapNotNull(::point)
             .groupBy { it.scope }
         return cases.map { case ->
             val record = case.record as? JsonObject ?: return@map case
             if (!nativeOptimum(record)) return@map case
-            if (assessment(record) != null) return@map case
             val claim = scope(case)
             val value = objective(record)
             val result = when {
@@ -67,12 +70,18 @@ object OptimumClaims {
                         else -> OptimumAssessment(OptimumAssessment.CONTRADICTED,
                             "a scope-matched independently checked original-source point improves the native optimum",
                             mapped.toString(), better.objective.toString(), better.witness, better.policy,
-                            better.case.origin?.job, better.case.index)
+                            better.case.origin?.job, better.case.index, claim.authority)
                     }
                 }
             }
             case.copy(record = JsonObject(record + (FIELD to json.encodeToJsonElement(result))))
         }
+    }
+
+    /** Nested scoring reuses the assessment supplied by its enclosing, wider evidence query. */
+    internal fun local(cases: List<CaseResult>): List<CaseResult> {
+        val fresh = qualify(cases)
+        return cases.zip(fresh) { original, computed -> if (assessment(original.record) != null) original else computed }
     }
 
     /** All retained points for the claimed problems, including other seeds, arms and revisions. */
@@ -90,7 +99,8 @@ object OptimumClaims {
     }
 
     private data class Scope(val sources: JsonObject, val semantics: String, val maximize: Boolean,
-                             val units: String, val objective: String, val assumptions: JsonArray)
+                             val units: String, val objective: String, val assumptions: JsonArray,
+                             val authority: String = "declared-scope")
     private data class Mapping(val scale: Q, val offset: Q) {
         fun apply(value: Q) = scale * value + offset
     }
@@ -103,6 +113,7 @@ object OptimumClaims {
 
     private fun scope(case: CaseResult): Scope? {
         val record = case.record as? JsonObject ?: return null
+        if (text(record["stats"] as? JsonObject, "floatApproximation") == "true") return null
         val sources = record["sourceHashes"] as? JsonObject ?: return null
         if (sources.isEmpty() || sources.values.any { (it as? JsonPrimitive)?.content?.matches(HASH) != true }) return null
         val explicit = record["optimalityScope"] as? JsonObject
@@ -123,7 +134,11 @@ object OptimumClaims {
             if (sources.keys != setOf("model")) return null
             val semantics = MpsNumericalSemantics.identity(record["numericalSemantics"]) ?: return null
             val maximize = text(record, "maximize")?.toBooleanStrictOrNull() ?: return null
-            return Scope(sources, semantics, maximize, "original-mps", "source-objective", JsonArray(emptyList()))
+            val receipt = (record["labCheck"] as? JsonObject)?.get("mpsChecks") as? JsonObject ?: return null
+            if (text(receipt, "objectiveSense") != if (maximize) "MAX" else "MIN") return null
+            if (text(receipt, "sourceSha256") != text(sources, "model") || text(receipt, "semanticsSha256") != semantics ||
+                text(receipt, "scope") != "original-model" || receipt["assumptions"] != JsonArray(emptyList())) return null
+            return Scope(sources, semantics, maximize, "original-mps", "source-objective", JsonArray(emptyList()), "published-source-contract")
         }
         // The XCSP3 integer adapter reports whole-original-source costs, checked by the official cost checker.
         // Other semantics, private scopes and mapped objectives require explicit bound checking receipts.
@@ -131,7 +146,7 @@ object OptimumClaims {
             text(record["comparisonControls"] as? JsonObject, "exact") != "true" ||
             record.containsKey("objectiveMapping") || record.containsKey("optimalityScope")) return null
         val maximize = text(record, "maximize")?.toBooleanStrictOrNull() ?: return null
-        return Scope(sources, "xcsp3-integer-source-v1", maximize, "original-source", "source-objective", JsonArray(emptyList()))
+        return Scope(sources, "xcsp3-integer-source-v1", maximize, "original-source", "source-objective", JsonArray(emptyList()), "published-source-contract")
     }
 
     private fun point(case: CaseResult): Point? {
@@ -148,14 +163,14 @@ object OptimumClaims {
         if (text(check, "checkerSha256")?.matches(HASH) != true) return null
         val value = objective(record)?.let { mapping(record)?.apply(it) } ?: return null
         if (scope.semantics == "xcsp3-integer-source-v1") {
-            if (!policy.startsWith("lab-xcsp3-solution-checker-") || !policy.endsWith("-v1") || value.d != BigInteger.ONE) return null
+            if (policy != Policies.XCSP3 || value.d != BigInteger.ONE) return null
         } else if (case.problem.format == "MPS" && !record.containsKey("optimalityScope")) {
             val receipt = check["mpsChecks"] as? JsonObject ?: return null
             val configured = receipt["configured"] as? JsonObject ?: return null
             val declaration = record["numericalSemantics"]
             val sense = if (scope.maximize) "MAX" else "MIN"
             val source = text(scope.sources, "model") ?: return null
-            if (text(configured, "state") != LabCheck.VALID || text(configured, "policy") != Policies.MPS_DECLARED ||
+            if (policy != Policies.MPS_DECLARED || text(configured, "state") != LabCheck.VALID || text(configured, "policy") != Policies.MPS_DECLARED ||
                 text(receipt, "semanticsSha256") != scope.semantics ||
                 text(receipt, "checkerPolicySha256") != MpsNumericalSemantics.checkerPolicyIdentity(declaration) ||
                 text(receipt, "comparisonIdentity") != MpsNumericalSemantics.comparisonIdentity(declaration, source, sense) ||

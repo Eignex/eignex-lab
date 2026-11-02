@@ -241,7 +241,7 @@ object Compare {
 
     /** Totals, pairwise scores and disagreements over [cases] of the arms named in [labels], in that order. */
     fun compare(labels: List<String>, cases: List<CaseResult>): Comparison {
-        val outcomes = OptimumClaims.qualify(cases).mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
+        val outcomes = OptimumClaims.local(cases).mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
         // A (problem, seed) pair is one contest; seeds pair up across arms, so each arm meets the others on equal terms.
         val contests = outcomes.groupBy { (case, _) -> Triple(case.problem, case.seed, case.repeat) }
             .mapValues { (_, entries) -> entries.associate { (case, outcome) -> case.arm to outcome } }

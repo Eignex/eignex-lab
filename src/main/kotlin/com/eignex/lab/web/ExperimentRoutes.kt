@@ -39,7 +39,7 @@ internal fun Route.experimentRoutes(services: ApiServices) {
     get("/experiments/{id}/reference") {
         val id = call.longParam()
         call.respond(io {
-            val cases = store.plans.cases(id)
+            val cases = OptimumClaims.qualify(store, store.plans.cases(id))
             val references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
             References.compare(store.plans.arms(id).map { it.arm.label }, cases, references)
         })
