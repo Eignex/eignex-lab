@@ -223,12 +223,14 @@ class TrendTest {
         store.references.put(listOf(ProblemKey("", "p0") to Reference("clasp", false, null, false, true, 10, 1000)), "test")
         now = 2000
         val stamp = cache.sync(TrendData.of(store))
-        val fresh = Trend.scheduled(TrendData.of(store), "sweep").associate { it.id to cache.lookup(it.id, TrendCache.version(it), stamp)?.fresh }
+        val fresh = Trend.scheduled(TrendData.of(store), "sweep").associate {
+            it.id to cache.lookup(it.id, TrendCache.version(it, TrendData.of(store).caseRevision(it.id)), stamp)?.fresh
+        }
 
         assertEquals(mapOf(ranA to false, other to true), fresh)
         // A recompute takes the changed row in: the run now disagrees with it.
         assertEquals(1, Trend.runs(TrendData.of(store), "sweep", cache, refreshing = true).first { it.job == ranA }.disagreements)
-        assertEquals(true, cache.lookup(ranA, TrendCache.version(store.job(ranA)!!), cache.sync(TrendData.of(store)))?.fresh)
+        assertEquals(true, cache.lookup(ranA, TrendCache.version(store.job(ranA)!!, TrendData.of(store).caseRevision(ranA)), cache.sync(TrendData.of(store)))?.fresh)
     }
 
     @Test
@@ -264,10 +266,10 @@ class TrendTest {
 
         val job = store.job(older)!!
         val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(older, TrendCache.version(job), store.references.stamp()) == null && System.currentTimeMillis() < deadline) {
+        while (cache.lookup(older, TrendCache.version(job, TrendData.of(store).caseRevision(older)), store.references.stamp()) == null && System.currentTimeMillis() < deadline) {
             Thread.sleep(20)
         }
-        assertEquals(older, cache.lookup(older, TrendCache.version(job), store.references.stamp())?.run?.job)
+        assertEquals(older, cache.lookup(older, TrendCache.version(job, TrendData.of(store).caseRevision(older)), store.references.stamp())?.run?.job)
     }
 
     @Test
@@ -297,7 +299,7 @@ class TrendTest {
         assertEquals(listOf(going), first.map { it.job })
         assertEquals(listOf(done), missing)
         val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(done, TrendCache.version(store.job(done)!!), store.references.stamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        while (cache.lookup(done, TrendCache.version(store.job(done)!!, TrendData.of(store).caseRevision(done)), store.references.stamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
         val later = ArrayList<Long>()
         assertEquals(listOf(done, going), Trend.runs(TrendData.of(store), "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)
