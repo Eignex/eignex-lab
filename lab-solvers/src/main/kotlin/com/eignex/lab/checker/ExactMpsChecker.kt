@@ -71,7 +71,7 @@ class ExactMpsChecker private constructor(
     }
 
     companion object {
-        internal fun configured(semantics: MpsNumericalSemantics) = ExactMpsChecker(120_000, System::nanoTime, semantics)
+        internal fun configured(semantics: MpsNumericalSemantics, timeoutMs: Long) = ExactMpsChecker(timeoutMs, System::nanoTime, semantics)
         const val MAX_SOURCE = 16 * 1024 * 1024
         const val MAX_WITNESS = 8 * 1024 * 1024
         const val MAX_TERMS = 200_000

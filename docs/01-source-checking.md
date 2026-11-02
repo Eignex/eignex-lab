@@ -8,11 +8,33 @@ the verdict; changing a checking rule requires a new policy.
 
 ## Exact rational MPS
 
-`RationalMpsChecker` routes rational coordinates/objectives directly to `ExactMpsChecker`; other records first use
-the existing MIPLIB solchecker. Its unsupported layouts can use the exact route. A legacy valid/invalid result keeps
-its original checker and tolerance policy. Exact results identify `lab-mps-exact-rational-v1`, with version/source
-SHA-256 and the executing JAR SHA-256 when packaged. The evaluator source is included in that JAR. No Klause MPS
-parser, model, arithmetic, point validator or solver is used by the exact route.
+`RationalMpsChecker` evaluates every numeric spelling under explicit policies. Its `mpsChecks` receipt retains
+`lab-mps-exact-rational-v1` separately from `lab-mps-declared-rational-v1`; no fraction/decimal routing or implicit
+legacy tolerance selection occurs. `MpsChecker` remains available as the separately identified legacy solchecker.
+Both independent rational policies identify their evaluator source, configured-policy source and executing JAR
+SHA-256 when packaged. No Klause parser, model, arithmetic, point validator or solver supplies checking authority.
+
+The declared policy requires `numericalSemantics` with schema `mps-decimal-semantics-v1` and complete declared and
+effective contracts: decimal literal authority, absolute/relative tolerance, default integer/real endpoints, exact
+integrality and exact objective equality. Unsupported, malformed or absent declarations yield an unqualified
+`unknown` configured verdict while retaining the exact verdict. Nothing infers semantics from witness spelling,
+solver flags or an absent override banner.
+
+Configured row slack is `max(absolute, relative * max(abs(bound), sum(abs(term activity))))`; column-bound slack
+uses the finite bound magnitude. Each row side is checked separately. Default bound overrides apply only to wholly
+unranged columns; explicit source bounds remain authoritative. Integrality and objective equality stay exact,
+including nonterminating rational witnesses. The zero-tolerance policy permits no slack.
+
+`MpsNumericalSemantics` canonicalizes effective rational values for policy identity. The receipt binds effective
+semantics, independent checker rules, original source/witness SHA-256, claimed and reconstructed objectives, source
+objective sense, original units, whole-model scope and empty assumptions. Comparison identity excludes witness
+spelling and includes the source, effective policy, checker rules and objective scope. Matching identities permit
+point comparisons only; they supply no optimum, bound or proof authority. Historical records and strict rejections
+remain intact. A conditional replay may add a separately identified supplemental policy with `semanticsOrigin`,
+without replacing a retained declaration or qualifying an absent historical one. Supplemental receipts identify
+`declarationOrigin=conditional-replay` and `semanticsQualified=false`; their top-level verdict stays `unknown` while
+the separate configured verdict records the conditional evaluation. Only a supported actual record declaration has
+`declarationOrigin=solver-record` and `semanticsQualified=true`.
 
 The exact route evaluates every declared column and row from the original source. It uses normalized BigInteger
 rationals, never floating conversion, decimal approximation or point repair. Its row, bound, integrality and
@@ -46,8 +68,8 @@ Source lookup remains the existing hash-bound `SourceLocator` contract. A resour
 feasibility. Receipts record limits, operation count, arithmetic policy and elapsed time without inventing child
 process resource receipts for this in-process evaluator.
 
-`lab/mps-check.json` is the repository-owned remote replay manifest. It accepts a bounded list of original records,
-source paths/digests and expected verdicts. It freezes those inputs, runs the production router and `SourceChecker`,
+`bench/mps-replay.json` is the repository-owned remote replay manifest (`lab/mps-check.json` is its compatible alias). It accepts a bounded list of original records,
+source paths/digests and expected exact verdicts, plus optional configured expectations and supplemental semantics origins. It freezes those inputs, runs the production router and `SourceChecker`,
 and retains original record, source copy, effective control record and full `LabCheck`. A replay validates only those
 retained artifacts; it cannot validate an absent historical capture. Campaign manifests and narratives belong outside
 source; link the tracker/PR and lab receipts for a particular qualification.

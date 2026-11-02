@@ -27,6 +27,9 @@ data class MpsPolicyChecks(
     val objectiveUnits: String = "original-mps",
     val scope: String = "original-model",
     val assumptions: List<String> = emptyList(),
+    val semanticsQualified: Boolean = false,
+    val declarationOrigin: String = "absent",
+    val semanticsOrigin: JsonObject? = null,
 )
 
 /** A validated declaration; source numbers and witness coordinates remain rational throughout checking. */
@@ -121,13 +124,16 @@ class RationalMpsChecker(
     override val checker = "Eignex Lab independent rational MPS policy checker"
 
     override fun check(case: CheckCase, work: File): Verdict {
+        val started = System.nanoTime()
         val strict = exact.check(case, work)
-        val declaration = case.record["numericalSemantics"]
+        val declaration = case.record["numericalSemantics"]?.takeUnless { it == JsonNull }
         val parsed = runCatching { MpsNumericalSemantics.read(declaration) }
         val semantics = parsed.getOrNull()
+        val origin = case.field("numericalSemanticsOrigin") ?: if (declaration == null) "absent" else "solver-record"
+        val qualified = semantics != null && origin == "solver-record"
         val configured = if (semantics == null) Verdict(LabCheck.UNKNOWN,
             "unqualified numerical policy: ${parsed.exceptionOrNull()?.message}")
-        else ExactMpsChecker.configured(semantics).check(case, work)
+        else ExactMpsChecker.configured(semantics, (120_000 - (System.nanoTime() - started) / 1_000_000).coerceAtLeast(0)).check(case, work)
         val source = (case.record["sourceHashes"] as? JsonObject)?.get("model")?.jsonPrimitive?.content
         val semanticsHash = MpsNumericalSemantics.identity(declaration)
         val policyHash = MpsNumericalSemantics.checkerPolicyIdentity(declaration)
@@ -135,12 +141,21 @@ class RationalMpsChecker(
         val comparison = if (source != null && sense != null && configured.mpsObjective != null)
             MpsNumericalSemantics.comparisonIdentity(declaration, source, sense) else null
         fun point(v: Verdict, p: String) = MpsPointVerdict(p, v.state, v.reason, v.version, v.sha256)
-        return configured.copy(policy = policy, checker = checker, mpsChecks = MpsPolicyChecks(
+        val checks = MpsPolicyChecks(
             exact = point(strict, Policies.MPS_EXACT), configured = point(configured, policy),
             semantics = declaration as? JsonObject, semanticsSha256 = semanticsHash,
             checkerPolicySha256 = policyHash, comparisonIdentity = comparison, sourceSha256 = source,
             witnessSha256 = sha256(case.witness.toByteArray()), claimedObjective = case.claimedObjective,
             reconstructedObjective = configured.mpsObjective, objectiveSense = sense,
-        ))
+            semanticsQualified = qualified, declarationOrigin = origin,
+            semanticsOrigin = case.record["numericalSemanticsEvidence"] as? JsonObject,
+        )
+        return configured.copy(
+            state = if (qualified) configured.state else LabCheck.UNKNOWN,
+            reason = if (semantics != null && !qualified)
+                "unqualified numerical policy: $origin; conditional verdict ${configured.state}: ${configured.reason}"
+            else configured.reason,
+            policy = policy, checker = checker, mpsChecks = checks,
+        )
     }
 }

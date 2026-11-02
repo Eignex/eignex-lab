@@ -27,22 +27,28 @@ class RetainedMpsPolicyTest {
             assertEquals(LabCheck.UNKNOWN, unqualified.state)
             assertNull(unqualified.mpsChecks!!.semanticsSha256)
             assertEquals(LabCheck.INVALID, unqualified.mpsChecks!!.exact.state)
-            val conditional = JsonObject(original + ("numericalSemantics" to fixture.getValue("supplementalSemantics")))
+            val conditional = JsonObject(original + mapOf("numericalSemantics" to fixture.getValue("supplementalSemantics"),
+                "numericalSemanticsOrigin" to JsonPrimitive("conditional-replay"),
+                "numericalSemanticsEvidence" to fixture.getValue("semanticsOrigin")))
             val checked = dispatcher.check(problem, conditional)!!
             val checks = checked.mpsChecks!!
+            assertEquals(LabCheck.UNKNOWN, checked.state)
+            assertFalse(checks.semanticsQualified)
+            assertEquals("conditional-replay", checks.declarationOrigin)
             assertEquals(LabCheck.INVALID, checks.exact.state)
             assertEquals(fixture.getValue("retainedLabCheck").jsonObject.getValue("reason").jsonPrimitive.content,
                 checks.exact.reason)
-            assertTrue(checks.configured.state in setOf(LabCheck.VALID, LabCheck.INVALID), checked.reason)
+            assertEquals(fixture.getValue("expectedConfigured").jsonPrimitive.content, checks.configured.state, checked.reason)
+            assertEquals(checks.claimedObjective, checks.reconstructedObjective)
             assertNotNull(checks.comparisonIdentity)
             println("retained-policy-$id ${checked.json()}")
             assertEquals(checked, LabCheck.parse(checked.json()))
             val wrongObjective = dispatcher.check(problem, JsonObject(conditional + ("exactObjective" to JsonPrimitive("-999999999"))))!!
-            assertEquals(LabCheck.INVALID, wrongObjective.state)
+            assertEquals(LabCheck.INVALID, wrongObjective.mpsChecks!!.configured.state)
             val badWitness = original.getValue("finalWitness").jsonPrimitive.content
                 .replaceFirst(Regex("=[^ ]+"), "=999999999999999")
             val wrongPoint = dispatcher.check(problem, JsonObject(conditional + ("finalWitness" to JsonPrimitive(badWitness))))!!
-            assertEquals(LabCheck.INVALID, wrongPoint.state)
+            assertEquals(LabCheck.INVALID, wrongPoint.mpsChecks!!.configured.state)
         }
     }
 }
