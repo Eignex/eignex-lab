@@ -17,6 +17,55 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import kotlin.test.*
 
 class BenchInputDigestsTest {
+    @Test fun `large compiler inventories keep pinned and selection identities with batched metadata`() {
+        val source = Files.createTempDirectory("bench-bulk-compiler")
+        try {
+            val compiler = Files.createDirectories(source.resolve("compiler/nested"))
+            Files.createDirectories(source.resolve("compiler/empty/deep"))
+            repeat(800) { Files.writeString(compiler.resolve("tool-$it"), "compiler-$it") }
+            Files.writeString(compiler.resolve("unicodé"), "unicode")
+            val digests = BenchInputDigests()
+            val legacy = digests.inventory(source, source.resolve("compiler"), bulkMetadata = false)
+            assertEquals(legacy, digests.inventory(source, source.resolve("compiler")))
+            val case = BenchCase("fixture", inputs = listOf(BenchInput("compiler", role = "compiler")))
+            val pinned = ExecutionStore.digest(legacy.joinToString("\n") { "SOURCE/compiler/$it" })
+            repeat(3) { assertEquals(pinned, BenchRuns.pinned(case, source, source, digests = digests).attributes["labInputDigest"]) }
+            val plan = BenchPlan(listOf(case))
+            assertEquals(ExecutionStore.digest(legacy.joinToString("\n") { "compiler/$it" }), BenchSelections.sourceDigest(plan, source, digests))
+            assertEquals(801, digests.hashedFiles)
+            if (MacDirectoryEntries.supported(source)) assertTrue(digests.bulkFiles >= 801 * 5)
+            Files.writeString(compiler.resolve("added"), "added")
+            assertNotEquals(pinned, BenchRuns.pinned(case, source, source, digests = digests).attributes["labInputDigest"])
+            Files.delete(compiler.resolve("added"))
+            assertEquals(pinned, BenchRuns.pinned(case, source, source, digests = digests).attributes["labInputDigest"])
+        } finally { deleteTree(source) }
+    }
+
+    @Test fun `compiler pinning rejects changes while an earlier directory batch is being hashed`() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("os.name").lowercase().contains("mac"))
+        val source = Files.createTempDirectory("bench-bulk-mutation")
+        try {
+            val compiler = Files.createDirectory(source.resolve("compiler"))
+            Files.writeString(compiler.resolve("a-source"), "first")
+            val target = compiler.resolve("z-target"); Files.writeString(target, "other")
+            val proof = source.resolveSibling("${source.fileName}.json")
+            TreeVerification().capture(source, proof)
+            Files.writeString(compiler.resolve("a-source"), "newer")
+            val digests = BenchInputDigests(hash = { path, check ->
+                hashFile(path, check).also {
+                    if (path.fileName.toString() == "a-source") {
+                        val modified = Files.getLastModifiedTime(target)
+                        Files.writeString(target, "wrong"); Files.setLastModifiedTime(target, modified)
+                    }
+                }
+            })
+            digests.receipt(source, proof)
+            val case = BenchCase("fixture", inputs = listOf(BenchInput("compiler", role = "compiler")))
+            assertFailsWith<IllegalArgumentException> { BenchRuns.pinned(case, source, source, digests = digests) }
+            Files.deleteIfExists(proof)
+        } finally { deleteTree(source) }
+    }
+
     @Test fun `verified private copy receipts avoid byte reads across fresh digest instances`() {
         val parent = Files.createTempDirectory("bench-proof")
         val source = Files.createDirectory(parent.resolve("source"))

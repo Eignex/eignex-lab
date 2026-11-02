@@ -70,38 +70,9 @@ internal object BenchSelections {
             val root = tree.resolve(safeRelative(relative))
             if (!Files.exists(root, NOFOLLOW_LINKS)) return@flatMap listOf("$relative:absent")
             require(root.toRealPath().startsWith(canonical)) { "plan input escapes source" }
-            val native = if (bulkMetadata && Files.isDirectory(root, NOFOLLOW_LINKS) && !Files.isSymbolicLink(root) && MacDirectoryEntries.supported(root))
-                nativeInventory(root, checkActive) else null
-            val entries = native ?: Files.walk(root).use { it.sorted().toList() }.map { file ->
-                require(!Files.isSymbolicLink(file)) { "plan input contains a link" }
-                Triple(file, Files.isDirectory(file, NOFOLLOW_LINKS), null)
-            }
-            val inventory = entries.map { (file, directory, observed) ->
-                checkActive()
-                "$relative/${root.relativize(file)}:" + if (directory) "directory" else digests.checksum(tree, file, observed)
-            }
-            // Bulk observations are used only within this walk. Recheck the complete inventory after consuming
-            // its checksums, so a mutation of a later file cannot hide behind the earlier directory batch.
-            if (native != null) require(nativeInventory(root, checkActive) == native) { "plan inputs changed during verification" }
-            inventory
+            digests.inventory(tree, root, bulkMetadata, checkActive).map { "$relative/$it" }
         }
         return ExecutionStore.digest(lines.joinToString("\n"))
-    }
-
-    private fun nativeInventory(root: Path, checkActive: () -> Unit): List<Triple<Path, Boolean, MacDirectoryEntries.Entry?>>? {
-        val entries = mutableListOf(Triple(root, true, null as MacDirectoryEntries.Entry?))
-        fun directory(path: Path): Boolean {
-            checkActive()
-            val batch = MacDirectoryEntries.read(path, checkActive) ?: return false
-            for (entry in batch) {
-                checkActive(); require(entry.directory || entry.regular) { "plan input contains a link or unsupported file" }
-                val file = path.resolve(entry.name)
-                entries += Triple(file, entry.directory, entry)
-                if (entry.directory && !directory(file)) return false
-            }
-            return true
-        }
-        return if (directory(root)) entries.sortedBy { it.first } else null
     }
 
     fun corpusPaths(plan: BenchPlan): List<String> =
@@ -113,11 +84,7 @@ internal object BenchSelections {
         val lines = plan.cases.flatMap { it.inputs }.filter { it.root == BenchInputRoot.SOURCE }.map { it.path }.distinct().sorted().flatMap { relative ->
             val root = source.resolve(safeRelative(relative))
             require(root.toRealPath().startsWith(canonical)) { "bench input escapes its root" }
-            val files = if (Files.isDirectory(root)) Files.walk(root).use { it.sorted().toList() } else listOf(root)
-            files.map { file ->
-                require(!Files.isSymbolicLink(file)) { "bench input contains a link" }
-                "$relative/${root.relativize(file)}:" + if (Files.isDirectory(file)) "directory" else digests.checksum(source, file)
-            }
+            digests.inventory(source, root).map { "$relative/$it" }
         }
         return ExecutionStore.digest(lines.joinToString("\n"))
     }

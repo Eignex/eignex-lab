@@ -47,6 +47,41 @@ internal class BenchInputDigests(private val checkActive: () -> Unit = {},
         return sha
     }
 
+    /** Traverse anew on every use, including empty directories. Batched metadata only replaces individual
+     * stats; a second observation rejects mutations while checksums from the first batch were consumed. */
+    fun inventory(base: Path, root: Path, bulkMetadata: Boolean = true, check: () -> Unit = checkActive): List<String> {
+        check()
+        require(root.toRealPath().startsWith(base.toRealPath())) { "bench input escapes its root" }
+        val native = if (bulkMetadata && Files.isDirectory(root, NOFOLLOW_LINKS) && !Files.isSymbolicLink(root) &&
+            MacDirectoryEntries.supported(root)) nativeInventory(root, check) else null
+        val entries = native ?: Files.walk(root).use { it.sorted().toList() }.map { file ->
+            require(!Files.isSymbolicLink(file)) { "bench input contains a link" }
+            Triple(file, Files.isDirectory(file, NOFOLLOW_LINKS), null)
+        }
+        val lines = entries.map { (file, directory, observed) ->
+            check()
+            "${root.relativize(file)}:" + if (directory) "directory" else checksum(base, file, observed)
+        }
+        if (native != null) require(nativeInventory(root, check) == native) { "bench inputs changed during verification" }
+        return lines
+    }
+
+    private fun nativeInventory(root: Path, check: () -> Unit): List<Triple<Path, Boolean, MacDirectoryEntries.Entry?>>? {
+        val entries = mutableListOf(Triple(root, true, null as MacDirectoryEntries.Entry?))
+        fun directory(path: Path): Boolean {
+            check()
+            val batch = MacDirectoryEntries.read(path, check) ?: return false
+            for (entry in batch) {
+                check(); require(entry.directory || entry.regular) { "bench input contains a link or unsupported file" }
+                val file = path.resolve(entry.name)
+                entries += Triple(file, entry.directory, entry)
+                if (entry.directory && !directory(file)) return false
+            }
+            return true
+        }
+        return if (directory(root)) entries.sortedBy { it.first } else null
+    }
+
     private fun stamp(file: Path): Stamp? {
         val attributes = try { Files.readAttributes(file, "unix:size,lastModifiedTime,ctime,fileKey,isRegularFile", NOFOLLOW_LINKS) }
             catch (_: UnsupportedOperationException) { return null }
