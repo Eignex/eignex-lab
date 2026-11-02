@@ -17,9 +17,33 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class WorkerBuildAccountingTest {
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `dependency accounting uses background disk priority and restores its caller on success or failure`(fail: Boolean) {
+        val root = Files.createTempDirectory("background-dependency-accounting")
+        val home = Files.createDirectories(root.resolve("dependencies/${"d".repeat(64)}"))
+        Files.writeString(home.resolve("dependency"), "data")
+        val original = WorkerCacheIo.currentPolicy()
+        var scans = 0
+        try {
+            val cache = WorkerBuildCache(root, ProcessSupervisor(root.resolve("unused")), maxBytes = 0,
+                dependencyBytes = {
+                    scans++
+                    assertEquals(if (CliMeasurements.localMacOs) 3 else original, WorkerCacheIo.currentPolicy())
+                    if (fail) throw java.io.IOException("injected accounting failure")
+                    4L
+                })
+            if (fail) assertFailsWith<java.io.IOException> { cache.maintain() } else cache.maintain()
+            assertEquals(1, scans)
+            assertEquals(original, WorkerCacheIo.currentPolicy(), "maintenance cannot lower its caller's later I/O priority")
+            assertEquals(fail, Files.exists(home), "successful accounting must still enforce the byte budget")
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `legacy dependency accounting never holds the staging lock and unchanged homes skip recursive scans`() {
         val root = Files.createTempDirectory("dependency-accounting")
         val home = Files.createDirectories(root.resolve("dependencies/${"a".repeat(64)}"))

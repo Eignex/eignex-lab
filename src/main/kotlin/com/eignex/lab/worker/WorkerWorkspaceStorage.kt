@@ -16,7 +16,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 
 /** Session-private mutable clones live beside their verified inputs, including on external cache volumes.
- * A process-owned lock protects live sessions. Reap crashed sessions off the staging path; normal exit removes its own. */
+ * A process-owned lock protects live sessions. Reap crashed sessions off the staging path; normal exit removes its own.
+ * Background reaping and exit deletion yield disk priority to other sessions' staging. */
 internal class WorkerWorkspaceStorage(private val root: Path) : AutoCloseable {
     private val directory: Path
     private val pin: ProcessFilePin
@@ -34,7 +35,7 @@ internal class WorkerWorkspaceStorage(private val root: Path) : AutoCloseable {
             try { reap() } catch (_: java.io.IOException) { println("worker workspace cleanup deferred") }
         }, "worker-workspace-cleanup").apply { isDaemon = true; start() }
     }
-    internal fun reap() {
+    internal fun reap() = WorkerCacheIo.background {
         val garbage = guarded {
             val stale = mutableListOf<Path>()
             Files.list(root).use { entries -> entries.forEach { path ->
@@ -64,7 +65,7 @@ internal class WorkerWorkspaceStorage(private val root: Path) : AutoCloseable {
             val trash = guarded {
                 root.resolve(".evict-${java.util.UUID.randomUUID()}").also { Files.move(directory, it, ATOMIC_MOVE) }
             }
-            try { deleteTree(trash) } catch (_: java.nio.file.NoSuchFileException) { /* A reaper finished it. */ }
+            try { WorkerCacheIo.background { deleteTree(trash) } } catch (_: java.nio.file.NoSuchFileException) { /* A reaper finished it. */ }
         } finally { pin.close() }
     }
 }
