@@ -181,7 +181,9 @@ class PagesTest {
 
             val page = client.get("/jobs/$id") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
 
-            assertContains(page, "<td class=\"best\">3*")
+            assertContains(page, "<td class=\"best\">3")
+            assertFalse("<td class=\"best\">3*" in page)
+            assertContains(page, "1 unverified scope/check")
             assertContains(page, "1 worse")
         }
     }
