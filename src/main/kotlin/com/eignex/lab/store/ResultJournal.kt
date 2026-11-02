@@ -75,16 +75,14 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             check(used <= maxBytes) { "recovered result journal exceeds its configured cap" }
             syncDirectory(root)
         } catch (failure: Exception) { ownership.release(); channel.close(); workers.shutdownNow(); throw failure }
-        if (start) repeat(2) {
-            workers.scheduleWithFixedDelay({
-                try { drainOne() }
-                catch (failure: Exception) {
-                    val detail = failure.javaClass.simpleName
-                    if (loggedError != detail) System.err.println("result journal drain: $detail; pending data retained")
-                    loggedError = detail; lastError = detail
-                }
-            }, 0, 250, TimeUnit.MILLISECONDS)
-        }
+        if (start) JournalDrainLoop(::drainOne,
+            hasWork = { synchronized(monitor) { batches.values.any { eligible(it) } } },
+            closed = { closed }, schedule = { action, delay -> workers.schedule(action, delay, TimeUnit.MILLISECONDS) },
+            onFailure = { failure ->
+                val detail = failure.javaClass.simpleName
+                if (loggedError != detail) System.err.println("result journal drain: $detail; pending data retained")
+                loggedError = detail; lastError = detail
+            }).start()
     }
 
     fun status(): Status = synchronized(monitor) {
@@ -275,16 +273,23 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
 
     internal fun drainOne(): Boolean {
         val batch = synchronized(monitor) {
-            batches.values.filter { it.flushed }.toList().forEach(::cleanup)
-            batches.values.firstOrNull { it.durable && !it.busy && !it.flushed && it.retryAt <= now() }
+            if (closed) return false
+            batches.values.filter { it.flushed && it.retryAt <= now() }.toList().forEach(::cleanup)
+            batches.values.firstOrNull { eligible(it) }?.also { reserve(it) }
         } ?: return false
-        return drain(batch)
+        return drainReserved(batch)
     }
+    private fun eligible(batch: Batch): Boolean = batch.durable && !batch.busy && !batch.flushed && batch.retryAt <= now()
+    // Selection and reservation share the monitor so both lanes can immediately claim distinct packs.
+    private fun reserve(batch: Batch) { batch.busy = true; batch.readers++ }
     private fun drain(batch: Batch): Boolean {
         synchronized(monitor) {
             if (closed || !batch.durable || batch.busy || batch.flushed || batch.path !in batches) return false
-            batch.busy = true; batch.readers++
+            reserve(batch)
         }
+        return drainReserved(batch)
+    }
+    private fun drainReserved(batch: Batch): Boolean {
         try {
             external.publishBatch(batch.manifest.job) {
                 val offsets = batch.manifest.blobs.associate { it.sha to external.offset(batch.manifest.job, it.sha) }
@@ -319,7 +324,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             Files.deleteIfExists(batch.path)
             syncDirectory(root)
         } catch (failure: Exception) {
-            batch.error = failure.javaClass.simpleName; lastError = batch.error; drainErrors++
+            batch.retryAt = now() + 5000; batch.error = failure.javaClass.simpleName; lastError = batch.error; drainErrors++
             throw failure
         }
         batches.remove(batch.path); used -= batch.charge
