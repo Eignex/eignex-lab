@@ -28,7 +28,7 @@ model point check alone cannot validate additional assumptions.
 
 Derived `labOptimumClaim` assessments distinguish `contradicted`, `unverified`, and `no-counterexample`. A
 contradiction withdraws optimum credit while retaining point validity and raw native flags. Missing scope or a lack
-of any scope-matched checked point remains unverified. No counterexample in supplied evidence leaves the native
+of a scope-matched independent check of the claimed point remains unverified. No counterexample in supplied evidence leaves the native
 proof independently unverified; no reference search runs during assessment. Claims and checker receipts remain
 unchanged in storage and raw case exports.
 

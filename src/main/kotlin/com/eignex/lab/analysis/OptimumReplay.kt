@@ -53,9 +53,14 @@ object OptimumReplay : BenchSuite {
             id
         }
         val guarded = ids.map { OptimumClaims.qualify(store, store.plans.scoringCases(it)).single() }
+        val origins = ids.zip(captures.map { it.jsonObject.getValue("origin").jsonObject }).toMap()
         val assessments = guarded.mapIndexed { i, result -> buildJsonObject {
             put("origin", captures[i].jsonObject.getValue("origin"))
-            val assessment = OptimumClaims.assessment(result.record)
+            val assessment = OptimumClaims.assessment(result.record)?.let { value ->
+                val origin = origins[value.evidenceJob]
+                if (origin == null) value else value.copy(evidenceJob = origin.getValue("job").jsonPrimitive.long,
+                    evidenceCase = origin["index"]?.jsonPrimitive?.int ?: value.evidenceCase)
+            }
             put("assessment", assessment?.let { json.encodeToJsonElement(it) } ?: JsonNull)
             put("expected", captures[i].jsonObject.getValue("expected"))
         } }

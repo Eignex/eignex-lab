@@ -61,16 +61,20 @@ object OptimumClaims {
                     val better = mapped?.let { bound -> points[claim].orEmpty().filter {
                         if (claim.maximize) it.objective > bound else it.objective < bound
                     }.minWithOrNull { a, b -> a.objective.compareTo(b.objective) * if (claim.maximize) -1 else 1 } }
+                    val check = record["labCheck"] as? JsonObject
+                    val checkedClaim = text(check, "state") == LabCheck.VALID && points[claim].orEmpty().any {
+                        it.witness == text(check, "witnessSha256") && it.objective == mapped
+                    }
                     when {
                         mapped == null -> OptimumAssessment(OptimumAssessment.UNVERIFIED, "objective mapping unavailable")
-                        points[claim].isNullOrEmpty() -> OptimumAssessment(OptimumAssessment.UNVERIFIED,
-                            "no independently checked point bound to this claim scope", mapped.toString())
-                        better == null -> OptimumAssessment(OptimumAssessment.NO_COUNTEREXAMPLE,
-                            "no scope-matched checked better point in the supplied evidence; native proof remains independently unverified", mapped.toString())
-                        else -> OptimumAssessment(OptimumAssessment.CONTRADICTED,
+                        better != null -> OptimumAssessment(OptimumAssessment.CONTRADICTED,
                             "a scope-matched independently checked original-source point improves the native optimum",
                             mapped.toString(), better.objective.toString(), better.witness, better.policy,
                             better.case.origin?.job, better.case.index, claim.authority)
+                        !checkedClaim -> OptimumAssessment(OptimumAssessment.UNVERIFIED,
+                            "the claimed point has no scope-matched independent check in the supplied evidence", mapped.toString())
+                        else -> OptimumAssessment(OptimumAssessment.NO_COUNTEREXAMPLE,
+                            "no scope-matched checked better point in the supplied evidence; native proof remains independently unverified", mapped.toString())
                     }
                 }
             }
