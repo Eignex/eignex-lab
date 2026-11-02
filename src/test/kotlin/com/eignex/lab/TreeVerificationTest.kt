@@ -156,7 +156,10 @@ class TreeVerificationTest {
         fun ahead() = TreeVerification(readAheadFiles = 1) { path, check -> reads++; hashFile(path, check) }
         val cold = ahead(); assertTrue(cold.valid(tree, many, receipt)); assertEquals(many.size, reads)
         val warm = ahead(); assertTrue(warm.valid(tree, many, receipt))
-        assertEquals(0, warm.stats.hashedFiles); assertEquals(many.size, warm.stats.readAheadFiles)
+        assertEquals(0, warm.stats.hashedFiles)
+        if (MacDirectoryEntries.supported(tree)) {
+            assertEquals(many.size, warm.stats.bulkFiles); assertEquals(0, warm.stats.readAheadFiles)
+        } else assertEquals(many.size, warm.stats.readAheadFiles)
         val changed = tree.resolve("dir1/file1"); val modified = Files.getLastModifiedTime(changed)
         Files.writeString(changed, "BYTES 1"); Files.setLastModifiedTime(changed, modified)
         assertFalse(ahead().valid(tree, many, receipt))

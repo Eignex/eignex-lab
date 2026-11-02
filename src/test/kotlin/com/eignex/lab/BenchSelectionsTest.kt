@@ -11,10 +11,34 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class BenchSelectionsTest {
+    @Test fun `native selection rejects changes after a directory batch was observed`() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("os.name").lowercase().contains("mac"))
+        val base = tree("concurrent-bulk-inputs", """{"main":"a.B","planInputs":["bench"]}""",
+            mapOf("bench/a-source" to "first", "bench/z-target" to "other"))
+        val proof = base.resolveSibling("concurrent-proof.json")
+        TreeVerification().capture(base, proof)
+        Files.writeString(base.resolve("bench/a-source"), "newer")
+        var changed = false
+        val digests = BenchInputDigests(hash = { path, check ->
+            hashFile(path, check).also {
+                if (path.fileName.toString() == "a-source") {
+                    val target = base.resolve("bench/z-target"); val modified = Files.getLastModifiedTime(target)
+                    Files.writeString(target, "wrong"); Files.setLastModifiedTime(target, modified); changed = true
+                }
+            }
+        })
+        digests.receipt(base, proof)
+        assertFailsWith<IllegalArgumentException> {
+            BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), commit, base, "local", digests = digests)
+        }
+        assertTrue(changed)
+    }
     @Test fun `declared selection identities reuse verified build checksums without changing keys`() {
         val base = tree("verified-inputs", """{"main":"a.B","planInputs":["bench"]}""",
             mapOf("bench/build/classes/Plan.class" to "compiled", "bench/build/install/lib/runtime.jar" to "x".repeat(2 * 1024 * 1024)))
-        val expected = key(base)
+        Files.createDirectories(base.resolve("bench/empty/deep"))
+        val expected = BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), commit,
+            base, "local", bulkMetadata = false)
         val proof = base.resolveSibling("proof.json")
         TreeVerification().capture(base, proof)
         val reused = BenchInputDigests(hash = { _, _ -> error("selection reread a verified build file") })
@@ -23,6 +47,7 @@ class BenchSelectionsTest {
             base, "local", digests = reused))
         assertEquals(0, reused.hashedFiles)
         assertTrue(reused.reusedFiles >= 3)
+        if (MacDirectoryEntries.supported(base)) assertTrue(reused.bulkFiles >= 3)
         val file = base.resolve("bench/build/classes/Plan.class"); val modified = Files.getLastModifiedTime(file)
         Files.writeString(file, "modified"); Files.setLastModifiedTime(file, modified)
         val changed = BenchInputDigests(); changed.receipt(base, proof)
