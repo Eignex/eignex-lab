@@ -207,8 +207,11 @@ A bench manifest may declare top-level `workspaceInputs`, a nonempty list of por
 paths to copy from the verified build. The manifest itself is included automatically. This asserts that `describe`,
 `plan` and `run` need only those paths, generated files and the declared corpus: include installed classpaths,
 compiler/runtime assets, source inputs and any scripts or Git metadata they read. Listed paths must exist in the
-build. Without the declaration, preparation retains the full built tree. Planner cache identities still cover every
-`planInputs` path in the complete verified build before copying; limiting the workspace never narrows that identity.
+build. Without the declaration, preparation retains the full built tree. Cold declared builds retain and checksum
+the manifest, workspace inputs and all `planInputs`; unrelated checkout and compiler files are detached by rename
+and removed in the background. Planner cache identities still cover every `planInputs` path before copying;
+limiting the workspace never narrows that identity. A consumer requiring the full checkout rebuilds a retained
+cache entry. Existing full cache entries remain reusable, and cache disk accounting covers all retained files.
 Solve attempts receive private copies of the resulting snapshot, and source input verification remains enforced.
 `LAB_WORKSPACE_CACHE` names a worker-owned sibling directory for bounded adapter metadata shared between fresh
 case JVMs. It is outside sealed inputs and removed with the worker session; adapters must still verify cached identities.

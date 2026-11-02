@@ -37,6 +37,33 @@ internal class WorkerBuildStaging(private val root: Path) {
     fun publish(lease: Lease, destination: Path, check: () -> Unit) = guarded(check) {
         Files.move(lease.directory, destination, ATOMIC_MOVE)
     }
+    /** Move declared roots, rather than cloning their bytes. The remaining checkout is a reaper-owned
+     * tombstone, so sealing the cache never walks or hashes unrelated source and compiler scratch. */
+    fun retain(lease: Lease, paths: List<String>, check: () -> Unit): Path {
+        val tree = lease.directory.resolve("tree")
+        val retained = Files.createDirectory(lease.directory.resolve("retained"))
+        val selected = mutableListOf<Path>()
+        for (relative in paths.distinct().map(::safeRelative).sortedBy { it.nameCount }) {
+            if (selected.none { relative.startsWith(it) }) selected.add(relative)
+        }
+        val canonical = tree.toRealPath()
+        for (relative in selected) {
+            check()
+            val source = tree.resolve(relative)
+            // Absent planner inputs are part of the selection identity, not required runtime files.
+            if (!Files.exists(source, NOFOLLOW_LINKS)) continue
+            require(source.toRealPath().startsWith(canonical) && !Files.isSymbolicLink(source)) { "build input escapes source" }
+            val target = retained.resolve(relative)
+            Files.createDirectories(target.parent)
+            Files.move(source, target, ATOMIC_MOVE)
+        }
+        return guarded(check) {
+            val trash = root.resolve(".evict-${UUID.randomUUID()}")
+            Files.move(tree, trash, ATOMIC_MOVE)
+            Files.move(retained, tree, ATOMIC_MOVE)
+            trash
+        }
+    }
     fun close(lease: Lease) {
         var trash: Path? = null
         try {
