@@ -81,7 +81,9 @@ object OptimumClaims {
     /** Nested scoring reuses the assessment supplied by its enclosing, wider evidence query. */
     internal fun local(cases: List<CaseResult>): List<CaseResult> {
         val fresh = qualify(cases)
-        return cases.zip(fresh) { original, computed -> if (assessment(original.record) != null) original else computed }
+        return cases.zip(fresh) { original, computed ->
+            if (assessment(original.record) != null && assessment(computed.record)?.state != OptimumAssessment.CONTRADICTED) original else computed
+        }
     }
 
     /** All retained points for the claimed problems, including other seeds, arms and revisions. */

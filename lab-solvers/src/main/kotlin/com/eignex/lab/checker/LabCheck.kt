@@ -43,6 +43,7 @@ data class LabCheck(
     /** Complete derived checker inputs retained after scratch cleanup; historical checks keep none. */
     val inputs: List<CheckedInput> = emptyList(),
     val mpsChecks: MpsPolicyChecks? = null,
+    val optimumEvidence: ScopedPointEvidence? = null,
 ) {
     fun json(): String = JSON.encodeToString(serializer(), this)
 
