@@ -288,8 +288,7 @@ object Compare {
                 Disagreement(case.problem, "${case.arm} native optimum ${it.objective} contradicted by checked ${it.counterexampleObjective} (${it.witnessSha256})")
             }
         }
-        val legacy = outcomes.filter { it.second.optimumAssessment == null }
-        return Comparison(arms, contradictions + disagreements(legacy.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))
+        return Comparison(arms, contradictions + disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))
     }
 
     /**
@@ -303,7 +302,8 @@ object Compare {
             if (infeasible.isNotEmpty() && feasible.isNotEmpty()) {
                 return@mapNotNull Disagreement(problem, "infeasible per ${infeasible.joinToString()}, solved by ${feasible.joinToString()}")
             }
-            val optima = entries.filter { it.third.optimize && it.third.proven && it.third.objective != null }
+            val optima = entries.filter { it.third.optimize && it.third.proven && it.third.objective != null &&
+                it.third.optimumAssessment == null }
             if (optima.map { it.third.objective }.distinct().size > 1) {
                 return@mapNotNull Disagreement(problem, "different proven optima: " + optima.distinctBy { it.second to it.third.objective }
                     .joinToString { "${it.second} ${it.third.objective}" })

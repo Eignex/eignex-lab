@@ -112,8 +112,7 @@ object OptimumClaims {
     }
     private data class Point(val scope: Scope, val objective: Q, val witness: String, val policy: String, val case: CaseResult)
 
-    private fun nativeOptimum(record: JsonObject): Boolean = (text(record, "solver") != null || record.containsKey("optimalityScope")) &&
-        text(record, "kind") == "optimize" &&
+    private fun nativeOptimum(record: JsonObject): Boolean = text(record, "kind") == "optimize" &&
         (text(record, "proven") == "true" || text(record["stats"] as? JsonObject, "reportedProven") == "true") &&
         (text(record, "feasible") == "true" || text(record["stats"] as? JsonObject, "reportedFeasible") == "true")
 

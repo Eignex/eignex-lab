@@ -90,6 +90,8 @@ class OptimumClaimsTest {
         }
         val claim = edit(point("7", proven = true)) { remove("labCheck") }
         assertEquals(OptimumAssessment.UNVERIFIED, assessed(claim).state)
+        val unidentified = edit(point("7", proven = true)) { remove("solver") }
+        assertEquals(OptimumAssessment.UNVERIFIED, assessed(unidentified, point("6")).state)
     }
 
     @Test
@@ -240,6 +242,17 @@ class OptimumClaimsTest {
         val baseline = point("45650").copy(arm = Confirm.BEFORE)
         val guardedClaim = OptimumClaims.qualify(listOf(claim.copy(arm = Confirm.AFTER)), listOf(better)).single()
         assertTrue(Confirm.confirmed(listOf(baseline, guardedClaim)).proofGained.isEmpty())
+    }
+
+    @Test
+    fun `optimum assessment retains existing infeasibility disagreement warnings`() {
+        val optimum = point("7", proven = true)
+        val infeasible = edit(point("7", proven = true).copy(arm = "infeasible")) {
+            put("feasible", JsonPrimitive(false)); remove("labCheck"); remove("finalWitness")
+        }
+        val result = Compare.compare(listOf("claim", "infeasible"), listOf(optimum, infeasible))
+        assertTrue(result.disagreements.any { "infeasible" in it.reason })
+        assertEquals(0, result.arms.first().contradictedOptima)
     }
 
     @Test
