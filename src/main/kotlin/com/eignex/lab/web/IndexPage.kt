@@ -35,21 +35,23 @@ internal fun indexPage(
     /** Free on the data directory's volume, and why the runner holds its queue, read before rendering ([PageQueries.index]). */
     free: Long? = runCatching { freeBytes(status.paths.dataDir) }.getOrNull(),
     held: String? = runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(),
+    loading: Boolean = false,
 ): Html = buildHtml {
     val front = before == null && name == null
-    append(head("eignex lab", live = before == null))
+    append(head("eignex lab", live = true))
     append(Html("<header><h1>Queue</h1>"))
-    append(Html("<p id=\"summary\" data-live class=\"muted\">") + summary(status, host, active, nodes, free, held) + Html("</p></header>"))
+    append(Html("<p id=\"summary\" data-live class=\"muted\">") + (if (loading) Html("Loading queue…") else summary(status, host, active, nodes, free, held)) + Html("</p></header>"))
+    append(Html("<p id=\"queue-snapshot\" data-live class=\"muted small\"><!--queue-snapshot--></p>"))
     if (front) {
         // One pass over the active jobs: the per-row estimates and the summary's totals read the same numbers.
         val estimates = active.mapNotNull { job ->
             Estimates.estimate(job, caseHistory, status.local.cores, status.local.maxParallel)?.let { job.id to it }
         }.toMap()
-        append(Html("<section><h2>Active</h2><div id=\"work\" data-live>") + workSummary(status, active, estimates) + Html("</div>"))
-        append(Html("<div id=\"active\" data-live>") + activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes, instances) + Html("</div></section>"))
-        if (schedules.isNotEmpty()) {
-            append(Html("<section><h2>Schedules</h2><div id=\"schedules\" data-live>") + schedulesTable(schedules) + Html("</div></section>"))
-        }
+        append(Html("<section><h2>Active</h2><div id=\"work\" data-live>") + (if (loading) Html("Loading…") else workSummary(status, active, estimates)) + Html("</div>"))
+        append(Html("<div id=\"active\" data-live>") + (if (loading) Html("Loading…") else activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes, instances)) + Html("</div></section>"))
+        append(Html("<section><h2>Schedules</h2><div id=\"schedules\" data-live>") +
+            (if (loading) Html("Loading…") else if (schedules.isEmpty()) Html("<p>No schedules.</p>") else schedulesTable(schedules)) +
+            Html("</div></section>"))
     }
     append(Html("<section><h2>"))
     append(if (name == null) Html("History") else (Html("Runs of ") + esc(name) + Html(" <small><a href=\"/\">all jobs</a></small>")))
@@ -60,7 +62,7 @@ internal fun indexPage(
     }
     append(Html("</div><div id=\"history\" data-live>"))
     val shown = if (front) history.filter { it.status.isTerminal } else history
-    append(jobTable(status, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes, instances = instances))
+    append(if (loading) Html("<p>Loading history…</p>") else jobTable(status, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes, instances = instances))
     append(Html("<p class=\"pager\">"))
     if (before != null) append(Html("<a href=\"/") + query("name" to name) + Html("\">newest</a> "))
     if (history.size == limit) append(Html("<a href=\"/") + (query("name" to name, "before" to history.last().id.toString())) + Html("\">older</a>"))

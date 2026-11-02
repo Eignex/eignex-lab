@@ -72,7 +72,14 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
      */
     fun run(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it },
-            cachedSelections: (List<String>) -> List<BenchSelectionEntry> = { emptyList() }, upload: (Path) -> String): PreparationResult {
+            cachedSelections: (List<String>) -> List<BenchSelectionEntry> = { emptyList() }, upload: (Path) -> String): PreparationResult =
+        builds.withDependenciesPinned {
+            runPinned(manifest, directory, remainingRunMs, remainingLeaseMs, selectProblems, cachedSelections, upload)
+        }
+
+    private fun runPinned(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
+                          selectProblems: (List<List<Problem>>) -> List<List<Problem>>,
+                          cachedSelections: (List<String>) -> List<BenchSelectionEntry>, upload: (Path) -> String): PreparationResult {
         Files.createDirectories(directory)
         val timeout = requireNotNull(manifest.preparationTimeoutSec)
         val expires = System.nanoTime() + timeout * 1_000_000_000

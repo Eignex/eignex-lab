@@ -30,6 +30,20 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
 
     val disk = DiskUsage(config.paths, config.docker, active = { store.active(withCommands = false).map { it.id }.toSet() })
 
+    /** Queue display reads a snapshot, so a slow storage probe never holds a page request. */
+    internal val pageStorage = PageStorage(config)
+
+    internal val queuePage = QueuePageCache(
+        read = { key ->
+            val view = PageQueries(this).index(key.before, key.name)
+            val histories = view.active.associate { it.id to estimates.lookup(it) }
+            indexPage(config.status, host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
+                view.queue, { histories[it.id] }, emptyMap(), view.hosts, view.nodes, view.instances, view.free, view.held)
+        },
+        loading = { key -> indexPage(config.status, host, emptyList(), emptyList(), emptyList(), PAGE_SIZE,
+            key.before, key.name, free = null, held = null, loading = true) },
+    )
+
     /** The Nomad capacity settings, read again only when their file changes. */
     val capacitySettings = FileCache({ config.nomadCapacitySettings }, CapacitySettings::read)
 
@@ -64,12 +78,16 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
 
     /** Start the disk measurements and compute the pages' slow reads before anyone asks, so the first load is quick. */
     fun start() {
+        pageStorage.start()
+        queuePage.start()
         disk.start()
         references.warm()
         Trend.warm(TrendData.of(store), trends)
     }
 
     override fun close() {
+        queuePage.close()
+        pageStorage.close()
         disk.close()
         trends.close()
         references.close()

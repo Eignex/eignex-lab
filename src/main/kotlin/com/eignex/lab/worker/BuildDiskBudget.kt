@@ -1,11 +1,7 @@
 package com.eignex.lab.worker
 
 import java.nio.file.Files
-import java.nio.file.FileVisitResult
-import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -52,26 +48,6 @@ internal class BuildDiskBudget(private val root: Path, private val staging: Path
     }
 }
 
-/** Reuse the walker's attributes instead of statting every file twice more. Compilers may remove a
- * temporary file during the walk; an absent entry can be ignored, while other filesystem errors remain failures. */
-private fun stagingBytes(root: Path, maxBytes: Long, checkActive: () -> Unit): Long {
-    var bytes = 0L
-    Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
-        override fun preVisitDirectory(dir: Path, attributes: BasicFileAttributes): FileVisitResult {
-            checkActive()
-            return FileVisitResult.CONTINUE
-        }
-        override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
-            checkActive()
-            if (attributes.isRegularFile) bytes = Math.addExact(bytes, attributes.size())
-            require(bytes <= maxBytes) { "build staging exceeds disk budget" }
-            return FileVisitResult.CONTINUE
-        }
-        override fun visitFileFailed(file: Path, error: java.io.IOException): FileVisitResult {
-            checkActive()
-            if (error !is NoSuchFileException) throw error
-            return FileVisitResult.CONTINUE
-        }
-    })
-    return bytes
-}
+/** Staging changes during compilation; ignore vanished entries, but never other filesystem errors. */
+private fun stagingBytes(root: Path, maxBytes: Long, checkActive: () -> Unit): Long =
+    com.eignex.lab.util.treeBytes(root, maxBytes, checkActive)

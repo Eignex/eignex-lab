@@ -507,6 +507,76 @@ class PortableWorkerTest {
         assertEquals("prepared", Files.readString(tree.resolve("runtime/program")).trim())
     }
 
+    @Test fun `dependency accounting stays excluded throughout cold build sealing`(): Unit = service { socket ->
+        val script = "mkdir -p build; echo prepared > build/output"
+        val (input, bytes) = bundle(mapOf("gradlew" to script))
+        val source = VerifiedCache(root.resolve("pin-source")).stage(input) { ByteArrayInputStream(bytes) }
+        val buildRoot = root.resolve("pinned-builds")
+        val trace = PreparationTrace()
+        var checked = 0
+        val pending = java.util.concurrent.CopyOnWriteArrayList<Thread>()
+        val cache = WorkerBuildCache(buildRoot, ProcessSupervisor(socket), startMaintenance = { pending.add(it) })
+        try {
+            val tree = cache.prepare(input.copy(build = WorkerBuild(listOf("assemble"))), source,
+                ResourceBudget(1000, 512), System.getenv(), remainingRunMs = {
+                    if (trace.snapshot().stage == "build-verification") {
+                        val homes = Files.list(buildRoot.resolve("dependencies")).use { it.toList() }
+                        assertEquals(1, homes.size)
+                        assertNull(ProcessFilePin.tryLock(buildRoot.resolve("dependencies-${homes.single().fileName}.lock")),
+                            "sealing must retain the dirty Gradle home pin, excluding recursive accounting")
+                        checked++
+                    }
+                    null
+                }, trace = trace) { 10000 }
+            assertTrue(checked > 0)
+            assertEquals("prepared", Files.readString(tree.resolve("build/output")).trim())
+            pending.forEach { it.start() }
+            assertTrue(cache.awaitMaintenanceIdle())
+            cache.maintain(now() + 120_000)
+            val home = Files.list(buildRoot.resolve("dependencies")).use { it.toList() }.single()
+            assertTrue(Files.isRegularFile(buildRoot.resolve("dependency-sizes/${home.fileName}.json")),
+                "publication must still release and account dependency bytes")
+        } finally {
+            pending.filter { it.state == Thread.State.NEW }.forEach { it.start() }
+            assertTrue(cache.awaitMaintenanceIdle())
+        }
+    }
+
+    @Test fun `outer preparation scope retains one dependency home through consumers and failures`(): Unit = service { socket ->
+        val (input, bytes) = bundle(mapOf("gradlew" to "mkdir -p build; echo prepared > build/output"))
+        val source = VerifiedCache(root.resolve("scope-source")).stage(input) { ByteArrayInputStream(bytes) }
+        for (fail in listOf(false, true)) {
+            val buildRoot = root.resolve("scoped-builds-$fail")
+            val pending = java.util.concurrent.CopyOnWriteArrayList<Thread>()
+            val cache = WorkerBuildCache(buildRoot, ProcessSupervisor(socket), startMaintenance = { pending.add(it) })
+            fun home(): Path = Files.list(buildRoot.resolve("dependencies")).use { it.toList() }.single()
+            fun assertPinned() = assertNull(ProcessFilePin.tryLock(buildRoot.resolve("dependencies-${home().fileName}.lock")))
+            try {
+                val outcome = runCatching { cache.withDependenciesPinned {
+                    for (commit in listOf("a".repeat(40), "b".repeat(40))) {
+                        cache.withPreparedSource(input.copy(commit = commit, build = WorkerBuild(listOf("assemble"))),
+                            ResourceBudget(1000, 512), System.getenv(), { null }, { 10_000 },
+                            source = { it(source) }) { tree ->
+                                assertPinned()
+                                assertEquals("prepared", Files.readString(tree.resolve("build/output")).trim())
+                            }
+                        assertPinned() // Later planning, shared-input publication and handoff still own this scope.
+                    }
+                    if (fail) error("failed handoff")
+                } }
+                if (fail) assertEquals("failed handoff", outcome.exceptionOrNull()?.message) else outcome.getOrThrow()
+                ProcessFilePin.tryLock(buildRoot.resolve("dependencies-${home().fileName}.lock"))!!.close()
+                pending.forEach { it.start() }
+                assertTrue(cache.awaitMaintenanceIdle())
+                cache.maintain(now() + 120_000)
+                assertTrue(Files.isRegularFile(buildRoot.resolve("dependency-sizes/${home().fileName}.json")))
+            } finally {
+                pending.filter { it.state == Thread.State.NEW }.forEach { it.start() }
+                assertTrue(cache.awaitMaintenanceIdle())
+            }
+        }
+    }
+
     @Test fun `source builds share their session budget cache once and rebuild corrupt outputs`(): Unit = service { socket ->
         val count = root.resolve("build-count")
         val script = """#!/usr/bin/env bash
