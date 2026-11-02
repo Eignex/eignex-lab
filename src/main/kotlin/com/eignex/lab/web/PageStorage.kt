@@ -9,6 +9,8 @@ import com.eignex.lab.util.periodic
 internal class PageStorage(
     private val read: () -> Snapshot,
     private val everyMs: Long = 5_000,
+    private val maxAgeMs: Long = 30_000,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : AutoCloseable {
     constructor(config: Config) : this({
         Snapshot(runCatching { freeBytes(config.dataDir) }.getOrNull(), Volumes.hold(config.paths, config.minFreeBytes))
@@ -16,8 +18,14 @@ internal class PageStorage(
 
     internal data class Snapshot(val free: Long?, val held: String?)
 
-    @Volatile var latest = Snapshot(null, "storage status is being checked")
-        private set
+    private data class Sample(val at: Long, val snapshot: Snapshot)
+    @Volatile private var sample: Sample? = null
+
+    val latest: Snapshot get() {
+        val kept = sample ?: return Snapshot(null, "storage status is being checked")
+        return if (clock() - kept.at in 0..maxAgeMs) kept.snapshot
+            else Snapshot(null, "storage status is stale; waiting for storage")
+    }
 
     private var worker: Thread? = null
 
@@ -25,13 +33,15 @@ internal class PageStorage(
     fun start() {
         check(worker == null)
         worker = periodic("page-storage", everyMs) {
-            latest = try {
+            val at = clock()
+            val snapshot = try {
                 read()
             } catch (interrupted: InterruptedException) {
                 throw interrupted
             } catch (_: Exception) {
-                Snapshot(latest.free, "storage status could not be read")
+                Snapshot(null, "storage status could not be read")
             }
+            sample = Sample(at, snapshot)
         }
     }
 

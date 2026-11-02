@@ -12,6 +12,7 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -71,6 +72,30 @@ class PageStorageTest {
                 assertTrue(entered.await(5, TimeUnit.SECONDS))
                 repeat(100) { assertEquals(healthy, cache.latest) }
                 assertNull(cache.latest.held)
+            } finally {
+                release.countDown()
+            }
+        }
+    }
+
+    @Test fun `a stalled refresh cannot keep displaying old healthy storage indefinitely`() {
+        val clock = AtomicLong(0)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        var reads = 0
+        PageStorage(read = {
+            if (++reads > 1) {
+                entered.countDown()
+                release.await()
+            }
+            PageStorage.Snapshot(1234, null)
+        }, everyMs = 1, maxAgeMs = 30, clock = clock::get).use { cache ->
+            try {
+                cache.start()
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                clock.set(31)
+                assertNull(cache.latest.free)
+                assertEquals("storage status is stale; waiting for storage", cache.latest.held)
             } finally {
                 release.countDown()
             }
