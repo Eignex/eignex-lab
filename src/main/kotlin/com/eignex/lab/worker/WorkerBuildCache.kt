@@ -293,8 +293,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             }
             catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
             finally {
-                maintenanceRunning.set(false)
-                if (discardedBuilds.isNotEmpty()) requestMaintenance()
+                synchronized(maintenanceRunning) {
+                    maintenanceRunning.set(false)
+                    if (discardedBuilds.isNotEmpty()) requestMaintenance()
+                }
             }
         }, "worker-build-cleanup").apply { isDaemon = true }
         try { startMaintenance(thread) }
@@ -319,7 +321,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         require(timeoutMs >= 0)
         val started = System.nanoTime()
         val timeoutNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs)
-        while (maintenanceRunning.get()) {
+        while (synchronized(maintenanceRunning) { maintenanceRunning.get() }) {
             checkMaintenanceActive()
             if (System.nanoTime() - started >= timeoutNanos) return false
             Thread.sleep(10)
