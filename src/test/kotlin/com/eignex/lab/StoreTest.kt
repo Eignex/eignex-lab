@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class StoreTest {
