@@ -70,23 +70,40 @@ class NomadQueue(
                             held.first + budget.cpuMillis <= config.cores * 1000L && held.second + budget.memoryMiB <= target.template.budget.memoryMiB
                         })
                 }
-                val targets = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
+                var targets = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
                     .filter { solveBudget(it, job) != null }
                     .filter { if (it.native) spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
                 require(targets.isNotEmpty()) { "no configured Nomad worker can run this experiment within its resource budget" }
                 var sessions = store.execution.sessions(job.id)
                 if (sessions.isEmpty()) {
-                    val fitting = targets.filter {
+                    // Discover committed host requirements without assuming the execution CPU can compile its outputs.
+                    // No relaxed candidate can be admitted until an explicit source contract authorizes that host.
+                    val candidates = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules),
+                        WorkerPreparation.capabilities(spec.nodeTags))
+                        .filter { if (it.native) spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
+                    val fitting = candidates.filter {
                         it.template.budget.cpuMillis >= settings.preparationBudget.cpuMillis && it.template.budget.memoryMiB >= settings.preparationBudget.memoryMiB
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
                     val available = fitting.filter(::preparationAvailable)
                     if (available.isEmpty()) continue
-                    val key = QueueSourceKey(job.id, spec, targets, settings)
-                    val publication = publishedSources.get(key) ?: source(job, targets, settings)?.also { publishedSources.put(key, it) } ?: continue
+                    val sourceTargets = (targets + candidates).distinctBy { it.template.nodeClass }
+                    val key = QueueSourceKey(job.id, spec, sourceTargets, settings)
+                    val publication = publishedSources.get(key) ?: source(job, sourceTargets, settings)?.also { publishedSources.put(key, it) } ?: continue
                     val (arms, bundles) = publication
-                    val required = bundles.flatMap { it.build?.requiredTags.orEmpty() }.toSet()
-                    val compatible = fitting.filter { target -> NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
+                    val contracts = bundles.map { it.build?.preparation }.distinct()
+                    require(contracts.size <= 1) { "preparation contracts differ between source bundles" }
+                    val contract = contracts.singleOrNull()
+                    val selector = contract?.selector(spec.nodeTags) ?: spec.nodeTags
+                    val required = bundles.flatMap { it.build?.let { build -> build.preparation?.requiredTags ?: build.requiredTags }.orEmpty() }.toSet()
+                    contract?.let { declared ->
+                        require(targets.any { it.os == declared.target.os && it.arch == declared.target.arch &&
+                            bundles.all { bundle -> NodeTags.matches(NodeSelector(require = bundle.build?.requiredTags.orEmpty()), it.capabilities) } }) {
+                            "no execution worker satisfies the declared preparation target and runtime requirements"
+                        }
+                    }
+                    val compatible = fitting.filter { target -> NodeTags.matches(selector, target.capabilities) &&
+                        NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
                     val target = ordered(compatible, ::preparationBudget).firstOrNull(::preparationAvailable) ?: continue
@@ -100,6 +117,12 @@ class NomadQueue(
                 publishedSources.forget(job.id)
                 val preparation = store.execution.acceptedPreparation(job.id) ?: continue
                 val recipe = store.execution.manifest(sessions.first { it.executionClass == ExecutionClass.PREPARE }.id)
+                if (recipe.bundles.any { it.build?.preparation != null }) {
+                    targets = targets.filter { target -> recipe.arms.all { arm ->
+                        preparation.bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch }
+                    } }
+                    require(targets.isNotEmpty()) { "accepted cross build has no compatible execution worker" }
+                }
                 if (!job.setupDone && !preparationPlan(job.id) { plan(job, recipe, preparation) }) continue
                 val current = store.job(job.id) ?: continue
                 if (current.cancelRequested || current.paused || current.status.isTerminal) continue
@@ -147,9 +170,10 @@ class NomadQueue(
                     else { keptWorkers++; keptCpu += session.budget.cpuMillis }
                 }
                 if (active.size >= limit) continue
-                val bundles = recipe.bundles.map { original -> preparation.bundles.singleOrNull {
-                    it.commit == original.commit && it.os == original.os && it.arch == original.arch
-                } ?: original }
+                val bundles = if (recipe.bundles.any { it.build?.preparation != null }) preparation.bundles else
+                    recipe.bundles.map { original -> preparation.bundles.singleOrNull {
+                        it.commit == original.commit && it.os == original.os && it.arch == original.arch
+                    } ?: original }
                 val ordered = ordered(targets) { checkNotNull(solveBudget(it, current)) }
                 fun solving(enforcement: CpuEnforcement) = sessions.filter { session -> session.executionClass == ExecutionClass.SOLVE &&
                     session.desired != Desired.STOP && store.execution.placement(session.id).enforcement == enforcement }
@@ -345,15 +369,18 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         }
         val approved = arms.map { it.sha }.toSet()
         val inputs = SourceInputs({ repository, sha -> require(repository == spec.repository && sha in approved); trust.requireRepository() })
-        val requirements = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().flatMap { sha ->
+        val declarations = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().map { sha ->
             val text = checked(mirror, "show", "$sha:${bench.manifest}")
             val value = com.eignex.lab.bench.BenchProtocol.json.parseToJsonElement(text).jsonObject["runtime"]
             val runtime = value?.let { com.eignex.lab.bench.BenchProtocol.json.decodeFromJsonElement(BenchRuns.Runtime.serializer(), it) } ?: BenchRuns.Runtime()
             runtime.validate()
-            runtime.requiredTags
-        }.toSet() }.orEmpty()
+            runtime.requiredTags to BenchRuns.preparation(text)?.also { it.target.validateRequirements(runtime.requiredTags) }
+        } }.orEmpty()
+        val requirements = declarations.flatMap { it.first }.toSet()
+        val contracts = declarations.map { it.second }.distinct()
+        require(contracts.size <= 1) { "preparation contracts differ between comparison arms" }
         val build = WorkerBuild(spec.work.profile?.let { ProfileRuns.buildTasks(spec.repository, it) } ?: emptyList(), settings.preparationTimeoutSec,
-            benchManifest = spec.work.bench?.manifest, requiredTags = requirements)
+            benchManifest = spec.work.bench?.manifest, requiredTags = requirements, preparation = contracts.singleOrNull())
         val platforms = targets.distinctBy { it.os to it.arch }
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
             val first = platforms.first()

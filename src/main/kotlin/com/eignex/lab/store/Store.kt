@@ -213,6 +213,14 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         }
     }
 
+    /** A waiter's state check reads no recipe or command rows. Missing jobs have no status. */
+    fun jobStatus(id: Long): Status? = reading {
+        connection.prepareStatement("SELECT status FROM jobs WHERE id = ?").use { statement ->
+            statement.setLong(1, id)
+            statement.executeQuery().use { rows -> if (rows.next()) Status.valueOf(rows.getString(1)) else null }
+        }
+    }
+
     /** Job [id] with its commands, both read from one snapshot. */
     fun job(id: Long): Job? = reading {
         connection.prepareStatement("SELECT * FROM jobs WHERE id = ?").use { statement ->

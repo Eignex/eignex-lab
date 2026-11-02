@@ -163,6 +163,8 @@ class NomadBackend(
             require(preparation.artifacts == result.artifacts.filterKeys { it.startsWith("preparation/") })
             require(preparation.bundles.map { it.commit }.toSet() == manifest.arms.map { it.sha }.toSet())
             require(preparation.bundles.map { Triple(it.commit, it.os, it.arch) }.distinct().size == preparation.bundles.size)
+            val target = manifest.bundles.firstOrNull()?.build?.preparation?.target
+            if (target != null) require(preparation.bundles.all(target::matches)) { "prepared output differs from the declared cross-build target" }
             for (bundle in preparation.bundles + listOfNotNull(preparation.corpus)) {
                 require(bundle.repository == manifest.experiment.repository && bundle.build == null)
                 require(manifest.bundles.any { it.commit == bundle.commit && it.os == bundle.os && it.arch == bundle.arch })
@@ -185,9 +187,11 @@ class NomadBackend(
                 require(preparation.benchDescriptor != null)
                 require(preparation.armPlans.isEmpty() && manifest.arms.size == 1 || preparation.armPlans.keys == manifest.arms.map { it.arm.label }.toSet())
                 for (armPlan in preparation.armPlans.values) {
+                    target?.let { output -> armPlan.cases.forEach { output.validateRequirements(it.resources.requiredTags) } }
                     BenchRuns.resources(armPlan)
                     require(BenchRuns.align(plan.cases, armPlan) == armPlan) { "arm plans changed the frozen workloads" }
                 }
+                target?.let { output -> plan.cases.forEach { output.validateRequirements(it.resources.requiredTags) } }
                 BenchRuns.resources(plan)
                 require(preparation.selections == listOf(plan.cases.map(BenchRuns::problem)))
             }

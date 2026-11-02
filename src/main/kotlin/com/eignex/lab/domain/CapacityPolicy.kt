@@ -38,7 +38,7 @@ data class CapacityPool(
     }
     val cpuMillis get() = vcpus * 1000
     val availableMemoryMiB get() = memoryMiB - reserveMemoryMiB
-    val capabilities get() = tags + setOf("cloud", market.tag)
+    val capabilities get() = tags + setOf("cloud", "platform:linux", market.tag)
 }
 
 @Serializable

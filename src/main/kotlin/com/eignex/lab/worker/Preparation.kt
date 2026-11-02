@@ -52,6 +52,11 @@ internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = 
         (if (environment["LAB_SHARED_INPUT_ROOT"] != null) mapOf("LAB_CORPUS_KEEP_PACKED" to "true") else emptyMap())
 }
 
+/** Read-only Git provenance/status calls must not rewrite a sealed case workspace's index stat cache.
+ * Required writes still take their locks, and explicit process or repository runtime exports retain precedence. */
+internal fun workerExecutionEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> =
+    workerEnvironment(mac, environment) + ("GIT_OPTIONAL_LOCKS" to (environment["GIT_OPTIONAL_LOCKS"] ?: "0"))
+
 /**
  * Set for a bench's `describe` and `plan` when the lab accepts declared input hashes in place of local bytes. A bench
  * that understands it may plan from an index and leave inputs unmaterialized; one that does not simply ignores it.
@@ -286,9 +291,12 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         }
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
+            val output = original.build?.preparation?.target?.let { target ->
+                original.copy(os = target.os, arch = target.arch, build = null)
+            } ?: original.copy(build = null)
             fun publish(zip: Path, built: WorkerBundle): WorkerBundle {
                 // Seed the solve input cache without a coordinator round trip.
-                trace.step("cache-publication") { if (inputCache != null) {
+                trace.step("cache-publication") { if (inputCache != null && built.os == os && built.arch == arch) {
                     inputCache.seed(built, tree, tree.resolveSibling("${tree.fileName}.archive-verified.json"), ::checkActive, trace)
                 } }
                 artifacts["preparation/$sha.zip"] = transfer(zip)
@@ -302,15 +310,15 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             } else if (nativeTrees != null && nativeJob != null && manifest.experiment.isBench && manifest.experiment.host == HostPlacement.LOCAL) {
                 trace.step("local-handoff") {
                     val proof = tree.resolveSibling("${tree.fileName}.verified.json")
-                    val (metadata, snapshot) = nativeTrees.publish(nativeJob, tree, proof, original.copy(build = null), ::checkActive)
+                    val (metadata, snapshot) = nativeTrees.publish(nativeJob, tree, proof, output, ::checkActive)
                     artifacts[preparationArtifact(snapshot)] = transfer(metadata)
                     trace.cache("handoff", "hit", "job-owned-snapshot", bytes = snapshot.files.sumOf { it.bytes }, files = snapshot.files.size)
                     snapshot
                 }
-            } else if (archives != null) trace.step("archive") { archives.use(tree, original.copy(build = null), false, ::checkActive, trace, ::publish) }
+            } else if (archives != null) trace.step("archive") { archives.use(tree, output, false, ::checkActive, trace, ::publish) }
             else {
                 val zip = directory.resolve("$sha.zip")
-                publish(zip, trace.step("archive") { archive(tree, zip, original.copy(build = null), runtimeOnly = false, checkActive = ::checkActive) })
+                publish(zip, trace.step("archive") { archive(tree, zip, output, runtimeOnly = false, checkActive = ::checkActive) })
             }
         }
         val corpusBundle = if (sharing == null && Files.walk(corpus).use { files -> files.anyMatch { Files.isRegularFile(it, NOFOLLOW_LINKS) } }) {

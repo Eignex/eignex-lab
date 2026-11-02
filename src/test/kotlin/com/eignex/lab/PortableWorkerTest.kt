@@ -24,6 +24,47 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class PortableWorkerTest {
+    @Test fun `preparation builds on its source host but publishes only the explicitly declared output platform`(): Unit = service { socket ->
+        val outputArch = if (workerArch() == "arm64") "amd64" else "arm64"
+        val target = WorkerBuildTarget(if (CliMeasurements.localMacOs) "mac" else "linux", outputArch)
+        val host = WorkerPreparation(setOf("platform:${target.os}", "arch:${if (workerArch() == "amd64") "x86_64" else "arm64"}"), target)
+        val program = """package fixture;
+            public class CrossBench {
+                public static void main(String[] args) {
+                    if (args[0].equals("describe")) System.out.print("{\"id\":\"cross\",\"description\":\"cross build fixture\"}");
+                    else if (args[0].equals("plan")) System.out.print("{\"cases\":[{\"id\":\"p\"}]}");
+                    else throw new IllegalArgumentException(args[0]);
+                }
+            }""".trimIndent()
+        val entry = com.eignex.lab.bench.BenchEntryPoint("fixture.CrossBench", listOf("build/classes"), listOf("installDist"))
+        val entryJson = com.eignex.lab.bench.BenchProtocol.json.encodeToJsonElement(com.eignex.lab.bench.BenchEntryPoint.serializer(), entry).jsonObject
+        val metadata = kotlinx.serialization.json.JsonObject(entryJson + mapOf(
+            "preparation" to Json.encodeToJsonElement(WorkerPreparation.serializer(), host),
+            "runtime" to Json.parseToJsonElement("""{"requiredTags":["arch:${if (outputArch == "amd64") "x86_64" else "arm64"}"]}""")))
+        val (source, bytes) = bundle(mapOf("CrossBench.java" to program, "bench.json" to metadata.toString(),
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes CrossBench.java"))
+        val build = WorkerBuild(benchManifest = "bench.json", requiredTags = target.tags, preparation = host)
+        val input = source.copy(build = build)
+        val spec = ExperimentSpec("cross", bench = BenchSpec("bench.json"))
+        val manifest = WorkManifest("cross-prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
+            emptyList(), listOf(input, input.copy(arch = outputArch)), ResourceBudget(1000, 2048), preparationTimeoutSec = 120)
+        assertEquals(6, manifest.schemaVersion)
+        val uploads = mutableMapOf<String, Path>(); val trace = PreparationTrace()
+        val result = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cross-cache")),
+            WorkerBuildCache(root.resolve("cross-builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) }, source.os, source.arch,
+            shared = null, inputCache = WorkerInputCache(root.resolve("cross-inputs")), trace = trace,
+            archives = WorkerArchiveCache(root.resolve("cross-archives")))
+            .run(manifest, root.resolve("cross-preparing"), { null }, { 80000 }) { file -> hashFile(file).also { uploads[it] = file } }
+        val built = result.bundles.single()
+        assertEquals(target.os, built.os); assertEquals(outputArch, built.arch); assertNull(built.build)
+        assertEquals(built.sha256, result.artifacts[preparationArtifact(built)])
+        assertEquals("miss", trace.snapshot().caches.getValue("archive").outcome)
+        assertNull(trace.snapshot().caches["prepared-input"], "cross-host output must not seed an unusable local solve cache")
+        val unpacked = VerifiedCache(root.resolve("cross-verify")).stage(built) { Files.newInputStream(uploads.getValue(built.sha256)) }
+        assertTrue(Files.isRegularFile(unpacked.resolve("build/classes/fixture/CrossBench.class")))
+        assertEquals(setOf("arch:${if (outputArch == "amd64") "x86_64" else "arm64"}"), result.benchPlan!!.cases.single().resources.requiredTags)
+    }
+
     @Test fun `native bench preparation hands off a sealed tree without archiving or seeding another input copy`(): Unit = service { socket ->
         val program = """package fixture;
             public class Bench {
