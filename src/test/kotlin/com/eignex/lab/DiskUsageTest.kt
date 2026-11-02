@@ -148,4 +148,104 @@ class DiskUsageTest {
         // Job 3 was active when last measured, so once more; the rest come from the saved sizes.
         assertEquals(setOf(3L), jobsMeasured(measured()))
     }
+
+    @Test
+    fun `busy accounting preserves the cached report and retries without another full interval`() {
+        val dir = Files.createTempDirectory("disk-idle")
+        val calls = dir.resolve("calls")
+        val data = dir.resolve("data").createDirectories()
+        val jobs = dir.resolve("jobs").createDirectories()
+        jobs.resolve("1").createDirectories()
+        val config = Config(dataDir = data, jobsDir = jobs, corpusDir = dir.resolve("corpus"), auth = Auth.Disabled)
+        val script = "for p in \"\$@\"; do echo \"\$p\" >> $calls; printf '4\\t%s\\n' \"\$p\"; done"
+        var now = System.currentTimeMillis()
+        var busy = false
+        val usage = DiskUsage(config.paths, config.docker, { emptySet() },
+            DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
+            0, { now }, busy = { busy })
+        val first = usage.measure()!!
+        Files.delete(calls)
+        now += DiskUsage.START_DELAY_MIN * 60_000
+        busy = true
+
+        assertNull(usage.measureDue())
+        assertEquals(first, usage.latest, "a deferred pass must retain the report and its real age")
+        assertFalse(calls.exists(), "busy accounting started a deep walk")
+
+        busy = false
+        val resumed = assertNotNull(usage.measureDue())
+        assertEquals(now, resumed.at)
+        Files.delete(calls)
+        now += DiskUsage.INTERVAL_MIN * 60_000 - 1
+        assertNull(usage.measureDue())
+        assertFalse(calls.exists(), "a completed pass was repeated before its interval")
+    }
+
+    @Test
+    fun `work starting during a du cancels its process group and keeps the previous report`() {
+        val dir = Files.createTempDirectory("disk-yield")
+        val data = dir.resolve("data").createDirectories()
+        val block = dir.resolve("block")
+        val child = dir.resolve("child")
+        val begun = dir.resolve("begun")
+        val config = Config(dataDir = data, corpusDir = dir.resolve("corpus"), auth = Auth.Disabled)
+        val script = "if [ -e $block ]; then sleep 600 & echo \$! > $child; touch $begun; wait; fi; " +
+            "for p in \"\$@\"; do printf '4\\t%s\\n' \"\$p\"; done"
+        val usage = DiskUsage(config.paths, config.docker, { emptySet() },
+            DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
+            0, System::currentTimeMillis, busy = { begun.exists() })
+        val first = usage.measure()!!
+        block.writeText("")
+        val start = System.nanoTime()
+
+        assertNull(usage.measure())
+        assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(15))
+        val pid = child.readText().trim().toLong()
+        awaitGone(pid)
+        assertFalse(alive(pid), "the cancelled walk's child is still running")
+        assertEquals(first, usage.latest)
+        assertTrue(data.resolve(DuRunner.PID_DIR).toFile().listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `completed job chunks survive a cooperative deferral and restart`() {
+        val dir = Files.createTempDirectory("disk-chunks")
+        val data = dir.resolve("data").createDirectories()
+        val jobs = dir.resolve("jobs").createDirectories()
+        val calls = dir.resolve("calls")
+        val now = System.currentTimeMillis()
+        repeat(51) { index ->
+            Files.setLastModifiedTime(jobs.resolve("${index + 1}").createDirectories(), FileTime.fromMillis(now - 7_200_000))
+        }
+        val config = Config(dataDir = data, jobsDir = jobs, corpusDir = dir.resolve("corpus"), auth = Auth.Disabled)
+        val script = "for p in \"\$@\"; do echo \"\$p\" >> $calls; printf '4\\t%s\\n' \"\$p\"; done"
+        var busy = false
+        val usage = DiskUsage(config.paths, config.docker, { emptySet() },
+            DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
+            0, { now }, pause = {
+                if (calls.exists()) {
+                    busy = true
+                    Thread.sleep(DiskUsage.ACTIVITY_POLL_MS + 20)
+                }
+            }, busy = { busy })
+
+        assertNull(usage.measure())
+        assertNull(usage.latest)
+        assertEquals(50, calls.readLines().size)
+        Files.delete(calls)
+        val restarted = DiskUsage(config.paths, config.docker, { emptySet() },
+            DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")), 0, { now })
+        assertNotNull(restarted.measure())
+        assertEquals(listOf(jobs.resolve("51").toString()), calls.readLines().filter { it.startsWith("$jobs/") })
+    }
+
+    @Test
+    fun `an unavailable activity read defers rather than treating work as idle`() {
+        val dir = Files.createTempDirectory("disk-activity")
+        val config = Config(dataDir = dir, corpusDir = dir.resolve("corpus"), auth = Auth.Disabled)
+        val usage = DiskUsage(config.paths, config.docker, busy = { error("activity unavailable") })
+        assertNull(usage.measure())
+        assertFalse(dir.resolve(DuRunner.PID_DIR).exists())
+    }
+
 }

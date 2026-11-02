@@ -26,6 +26,39 @@ class StoreTest {
     private fun store() = Store(Files.createTempDirectory("lab").resolve("lab.db"))
 
     @Test
+    fun `activity guards ignore paused work without decoding recipes or commands`() {
+        val file = Files.createTempDirectory("activity-store").resolve("lab.db")
+        val store = Store(file)
+        val first = store.create("first", "main", listOf("true" to 10L), experiment = ExperimentSpec("first"))
+        val second = store.create("second", "main", emptyList(), experiment = ExperimentSpec("second"))
+        store.startForTest()
+        DriverManager.getConnection("jdbc:sqlite:$file").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeUpdate("UPDATE jobs SET experiment = 'invalid json'")
+                for (query in listOf("SELECT id FROM jobs WHERE status IN ('QUEUED', 'RUNNING')",
+                    "SELECT 1 FROM jobs WHERE status IN ('QUEUED', 'RUNNING') AND paused = 0 AND cancel_requested = 0 LIMIT 1")) {
+                    val plan = statement.executeQuery("EXPLAIN QUERY PLAN $query").use { rows ->
+                        generateSequence { if (rows.next()) rows.getString("detail") else null }.toList().joinToString(" ")
+                    }
+                    assertTrue("COVERING INDEX jobs_activity" in plan, plan)
+                }
+            }
+        }
+        assertEquals(setOf(first, second), store.activeJobIds())
+        assertTrue(store.hasActiveWork())
+        store.setPaused(first, true)
+        store.setPaused(second, true)
+        assertFalse(store.hasActiveWork())
+        assertEquals(setOf(first, second), store.activeJobIds())
+        store.setPaused(second, false)
+        assertTrue(store.hasActiveWork())
+        DriverManager.getConnection("jdbc:sqlite:$file").use { connection ->
+            connection.createStatement().use { it.executeUpdate("UPDATE jobs SET cancel_requested = 1 WHERE id = $second") }
+        }
+        assertFalse(store.hasActiveWork())
+    }
+
+    @Test
     fun `queue and estimate reads complete while the writer lock is held`() {
         val store = store()
         val id = store.create("queued", "main", listOf("true" to 10L), experiment = ExperimentSpec("queued"))

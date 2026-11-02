@@ -28,7 +28,7 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
     /** The finished runs the queue page's estimates learn from, reread at most once a minute. */
     val estimates = EstimateHistory(EstimateData.of(store), config.cores)
 
-    val disk = DiskUsage(config.paths, config.docker, active = { store.active(withCommands = false).map { it.id }.toSet() })
+    val disk = DiskUsage(config.paths, config.docker, active = store::activeJobIds, busy = store::hasActiveWork)
 
     /** Queue display reads a snapshot, so a slow storage probe never holds a page request. */
     internal val pageStorage = PageStorage(config)
