@@ -20,8 +20,8 @@ import kotlin.test.*
 
 class ExecutionStoreTest {
     private fun checkpoint(elapsed: Long, cpu: Long, retirement: String? = null) = ResourceCheckpoint(elapsed,
-        ResourceObservation("cgroup-v2-hard", budget, "200000 100000", (budget.memoryMiB * 1024L * 1024).toString(),
-            "25", "Linux", "amd64", mapOf("cpu.stat" to "usage_usec $cpu")), "worker-cumulative-lower-bound", retirement)
+        budget, "cgroup-v2-hard", "200000 100000", (budget.memoryMiB * 1024L * 1024).toString(),
+        mapOf("cpu.stat" to "usage_usec $cpu"), "worker-cumulative-lower-bound", retirement)
 
     @Test fun `interruption retains accepted pairs checkpoints and spent allowance while replacing the unfinished row`() {
         val id = job(); bind(id)
@@ -54,7 +54,7 @@ class ExecutionStoreTest {
         val next = store.execution.claim("s", token, "alloc-s", 1030)!!
         assertFailsWith<ExecutionFenced> { store.execution.resourceCheckpoint(next.owner.copy(token = "wrong"), checkpoint(30, 100), 1031) }
         assertFailsWith<ExecutionFenced> { store.execution.resourceCheckpoint(next.owner.copy(allocation = "other"), checkpoint(30, 100), 1031) }
-        val badBudget = checkpoint(30, 100).let { it.copy(observation = it.observation.copy(budget = ResourceBudget(1000, 512))) }
+        val badBudget = checkpoint(30, 100).copy(budget = ResourceBudget(1000, 512))
         assertFailsWith<IllegalArgumentException> { store.execution.resourceCheckpoint(next.owner, badBudget, 1031) }
         assertFailsWith<IllegalArgumentException> { store.execution.resourceCheckpoint(first.owner, checkpoint(30, 100, "worker-shutdown"), 1031) }
         assertEquals(Desired.RUN, store.execution.session("s")!!.desired)

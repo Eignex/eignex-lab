@@ -16,7 +16,6 @@ import com.eignex.lab.capacity.RunningNode
 import com.eignex.lab.capacity.runningNode
 import com.eignex.lab.worker.PreparationResult
 import com.eignex.lab.worker.RunDeadlineExceeded
-import com.eignex.lab.worker.ResourceCheckpoint
 
 @Serializable
 data class ExecutionSession(
@@ -188,7 +187,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown resource attempt")
         val session = db.session(owner.session) ?: throw ExecutionFenced("unknown resource session")
         if (session.allocation != owner.allocation || at > attempt.leaseUntil + 120_000) throw ExecutionFenced("resource evidence expired")
-        require(checkpoint.observation.budget == session.budget) { "resource budget differs from reservation" }
+        require(checkpoint.budget == session.budget) { "resource budget differs from reservation" }
         val prior = db.sqlRows("SELECT resource_checkpoint FROM execution_sessions WHERE id = ?", session.id) {
             it.getString(1)?.let { value -> Json.decodeFromString<ResourceCheckpoint>(value) }
         }.single()

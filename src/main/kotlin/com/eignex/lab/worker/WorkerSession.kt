@@ -110,7 +110,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val owner = resourceOwner.get() ?: return
             runCatching {
                 val sample = ResourceCheckpoint((System.nanoTime() - resourcesStarted) / 1_000_000,
-                    observation.copy(counters = ResourceObservation.counters()), "worker-cumulative-lower-bound", retirement)
+                    observation.budget, observation.enforcement, observation.cpuMax, observation.memoryMax,
+                    ResourceObservation.counters(), "worker-cumulative-lower-bound", retirement)
                 json("resource-checkpoint", Json.encodeToString(WorkerResourceCheckpoint(owner, sample)))
             } // Evidence has a short single-request timeout; it must never block work recovery.
         }

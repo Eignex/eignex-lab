@@ -66,8 +66,8 @@ class NomadBackendTest {
         val claim = store.execution.claim(session.id, token, "allocation")!!
         application { workerApi(store, backend(), artifacts) { false } }
         store.execution.loseSession(session.id, "infrastructure:lost")
-        val snapshot = ResourceCheckpoint(10, ResourceObservation("cgroup-v2-hard", session.budget, "200000 100000", "1073741824",
-            "25", "Linux", "amd64", mapOf("cpu.stat" to "usage_usec 100")), "worker-cumulative-lower-bound")
+        val snapshot = ResourceCheckpoint(10, session.budget, "cgroup-v2-hard", "200000 100000", "1073741824",
+            mapOf("cpu.stat" to "usage_usec 100"), "worker-cumulative-lower-bound")
         suspend fun send(owner: AttemptOwner): HttpResponse = client.post("/worker/v1/sessions/session/resource-checkpoint") {
             header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
             setBody(Json.encodeToString(WorkerResourceCheckpoint(owner, snapshot)))

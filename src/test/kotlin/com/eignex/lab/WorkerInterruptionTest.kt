@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import com.eignex.lab.domain.ResourceBudget
+import com.eignex.lab.domain.ResourceCheckpoint
 import com.eignex.lab.util.deleteTree
 import com.eignex.lab.worker.*
 import java.nio.file.Files
@@ -23,13 +24,12 @@ class WorkerInterruptionTest {
     }
 
     @Test fun `resource snapshots explicitly distinguish cumulative lower bounds from missing CPU`() {
-        val observation = ResourceObservation("advisory-native", ResourceBudget(1000, 512), null, null, "25", "Mac OS X", "arm64", emptyMap())
-        val missing = ResourceCheckpoint(1, observation, "worker-cumulative-lower-bound")
+        val missing = ResourceCheckpoint(1, ResourceBudget(1000, 512), "advisory-native", null, null, emptyMap(), "worker-cumulative-lower-bound")
         assertNull(missing.cpuUsec)
-        assertEquals(245620810L, missing.copy(observation = observation.copy(counters = mapOf("cpu.stat" to "usage_usec 245620810\nuser_usec 238508662"))).cpuUsec)
+        assertEquals(245620810L, missing.copy(counters = mapOf("cpu.stat" to "usage_usec 245620810\nuser_usec 238508662")).cpuUsec)
         assertFailsWith<IllegalArgumentException> { missing.copy(scope = "final") }
         assertFailsWith<IllegalArgumentException> { missing.copy(retirement = "source-build-failed") }
-        assertFailsWith<IllegalArgumentException> { missing.copy(observation = observation.copy(counters = mapOf("cpu.stat" to "usage_usec -1"))) }
-        assertFailsWith<IllegalArgumentException> { missing.copy(observation = observation.copy(counters = mapOf("command" to "arbitrary"))) }
+        assertFailsWith<IllegalArgumentException> { missing.copy(counters = mapOf("cpu.stat" to "usage_usec -1")) }
+        assertFailsWith<IllegalArgumentException> { missing.copy(counters = mapOf("command" to "arbitrary")) }
     }
 }

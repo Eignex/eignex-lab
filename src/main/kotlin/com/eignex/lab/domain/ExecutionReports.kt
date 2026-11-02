@@ -12,4 +12,4 @@ import com.eignex.lab.store.ExecutionSession
 
 @Serializable
 data class ExecutionSessionReport(val session: ExecutionSession, val phase: String?, val generation: Int?, val committed: Int, val observation: String?, val observedAt: Long?, val preparation: PreparationStatus? = null,
-    val resources: com.eignex.lab.worker.ResourceCheckpoint? = null)
+    val resources: ResourceCheckpoint? = null)
