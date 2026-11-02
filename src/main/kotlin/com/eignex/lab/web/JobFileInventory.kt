@@ -21,7 +21,8 @@ internal class JobFileInventory(
     private val idleMs: Long = 300_000,
     private val completed: () -> Unit = {},
 ) : AutoCloseable {
-    data class Key(val job: Long, val version: Int, val status: Status, val trimmed: Boolean)
+    data class Key(val job: Long, val version: Int, val status: Status, val trimmed: Boolean,
+                   val logs: List<JobLogStamp> = emptyList())
     data class Snapshot(val key: Key, val at: Long, val files: List<FileEntry>, val json: String) {
         val charge: Long = json.length * 2L + files.sumOf { 192L + 2L * (it.path.length + (it.sha256?.length ?: 0)) }
     }

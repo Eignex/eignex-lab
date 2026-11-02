@@ -2,6 +2,10 @@ package com.eignex.lab
 
 import com.eignex.lab.domain.*
 import com.eignex.lab.web.*
+import java.nio.file.AccessDeniedException
+import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit.SECONDS
 import java.util.concurrent.atomic.AtomicInteger
@@ -121,5 +125,56 @@ class JobFileInventoryTest {
                 assertEquals(2, reads.get())
             }
         }
+    }
+
+    @Test fun `terminal log metadata failures return unavailable instead of a retained complete snapshot`() {
+        val root = Files.createTempDirectory("terminal-log-probe")
+        Files.writeString(root.resolve("job.log"), "done")
+        var fail = false; var now = 0L
+        val reads = AtomicInteger()
+        JobFileInventory({ id ->
+            key(id, status = Status.DONE).copy(logs = jobLogStamp(root) { path ->
+                if (fail) throw AccessDeniedException(path.toString())
+                Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            })
+        }, { reads.incrementAndGet(); listOf(file) }, clock = { now }).use { inventory ->
+            assertNotNull(inventory.get(1))
+            fail = true
+            assertNull(inventory.get(1), "a failed metadata check cannot reuse a complete warm snapshot")
+            assertEquals(503, assertNotNull(inventory.failure(1)).status.value)
+            assertEquals(1, reads.get(), "failed validation must not enumerate the job or CAS")
+            fail = false; now = 2_001
+            assertNotNull(inventory.get(1))
+            assertNull(inventory.failure(1))
+        }
+    }
+
+    @Test fun `terminal log stamps observe creation replacement and removal using only four nofollow metadata reads`() {
+        val root = Files.createTempDirectory("terminal-log-stamp")
+        val log = root.resolve("job.log")
+        var probes = 0
+        fun stamp() = jobLogStamp(root) { path ->
+            probes++
+            Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        }
+        val missing = stamp()
+        assertEquals(4, probes)
+        Files.writeString(log, "done")
+        val created = stamp()
+        assertNotEquals(missing, created)
+        val original = Files.readAttributes(log, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        val replacement = root.resolve("replacement")
+        Files.writeString(replacement, "next")
+        Files.setLastModifiedTime(replacement, original.lastModifiedTime())
+        Files.move(replacement, log, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        val replaced = stamp()
+        // A rename can preserve size and mtime; providers with file keys still expose its new identity.
+        if (original.fileKey() != null) assertNotEquals(created, replaced)
+        Files.delete(log)
+        Files.createSymbolicLink(log, root.resolve("absent-target"))
+        assertFalse(stamp().single { it.name == "job.log" }.regular)
+        Files.delete(log)
+        assertEquals(missing, stamp())
+        assertEquals(20, probes, "validation must not enumerate a directory or inspect accepted blobs")
     }
 }

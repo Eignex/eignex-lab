@@ -80,7 +80,8 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
             val status = store.jobStatus(id) ?: throw ApiError.NotFound("no such job $id")
             Volumes.jobFiles(config.paths)?.let { throw ApiError.Unavailable("job files unavailable: $it") }
             JobFileInventory.Key(id, store.execution.acceptedArtifactVersion(id), status,
-                Files.exists(config.jobDir(id).resolve(JobFileNames.TRIMMED)))
+                Files.exists(config.jobDir(id).resolve(JobFileNames.TRIMMED)),
+                if (status.isTerminal) jobLogStamp(config.jobDir(id)) else emptyList())
         },
         read = { key ->
             (acceptedFiles.entries(key.job, jobFiles(config.jobDir(key.job))).associateBy { it.path } +

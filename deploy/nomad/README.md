@@ -356,7 +356,10 @@ CAS-size metadata, and repeated aliases share one size lookup. The local CAS pat
 Snapshots expose their age, revalidate accepted version, job state, retention marker and volume availability in
 the background, and expire after five seconds for active jobs or thirty seconds for ended jobs. Snapshot/size
 caches and pending work are bounded; oversized completed inventories use a one-response handoff without
-truncation. Downloads retain their existing path, ownership and checksum checks.
+truncation. Ended-job validation also checks metadata for four mutable coordinator root logs, since final log
+publication can follow the terminal database transition. A changed log invalidates the complete snapshot;
+unavailable log metadata returns 503. This fixed background probe reads no log contents or CAS tree. A log
+can still change between listing and download; downloads retain their existing length and checksum checks.
 
 `SourceInputs` exports an approved Git tip and its reachable history only after its mandatory source-trust
 callback succeeds. The archive contains Git objects, never the mirror's remotes, hooks, credentials or configuration.

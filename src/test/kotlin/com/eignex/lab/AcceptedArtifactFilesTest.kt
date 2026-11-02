@@ -121,6 +121,32 @@ class AcceptedArtifactFilesTest {
         assertEquals(before, lab.store.execution.accepted(lab.job), "reads cannot rewrite accepted results")
     }
 
+    @Test fun `a post DONE coordinator log append refreshes a warm inventory without losing accepted names or hashes`() = testApplication {
+        val lab = Lab()
+        lab.store.finish(lab.job, Status.DONE)
+        application { api(lab.services) }
+        suspend fun listing(): List<FileEntry> = withTimeout(5_000) {
+            var response = client.get("/jobs/${lab.job}/files")
+            while (response.status == HttpStatusCode.ServiceUnavailable) {
+                delay(10); response = client.get("/jobs/${lab.job}/files")
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            Json.decodeFromString<List<FileEntry>>(response.bodyAsText())
+        }
+        val version = lab.store.execution.acceptedArtifactVersion(lab.job)
+        val before = listing()
+        val log = lab.root.resolve("job.log")
+        Files.writeString(log, "published after DONE\n", java.nio.file.StandardOpenOption.APPEND)
+        val after = listing()
+        assertEquals(Status.DONE, lab.store.jobStatus(lab.job))
+        assertEquals(version, lab.store.execution.acceptedArtifactVersion(lab.job))
+        assertTrue(after.single { it.path == "job.log" }.bytes > before.single { it.path == "job.log" }.bytes)
+        assertEquals(Files.size(log), after.single { it.path == "job.log" }.bytes)
+        assertEquals(before.map { it.path }.toSet(), after.map { it.path }.toSet())
+        assertEquals(before.filter { it.sha256 != null }, after.filter { it.sha256 != null })
+        assertEquals(Files.readString(log), client.get("/jobs/${lab.job}/files/job.log").bodyAsText())
+    }
+
     @Test fun `accepted names refresh after a commit and oversized maps retain correct window boundaries`() = testApplication {
         val lab = Lab(initialCommit = false)
         application { api(lab.services) }
