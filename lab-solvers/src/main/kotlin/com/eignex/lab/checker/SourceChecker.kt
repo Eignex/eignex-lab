@@ -37,6 +37,7 @@ data class Verdict(
     val resourceReceipts: List<ToolResourceReceipt> = emptyList(),
     val inputs: List<CheckedInput> = emptyList(),
     val mpsChecks: MpsPolicyChecks? = null,
+    val optimumEvidence: ScopedPointEvidence? = null,
     val mpsObjective: String? = null,
     val mpsSense: String? = null,
 )
@@ -94,6 +95,7 @@ class SourceChecker(
             resourceReceipts = verdict.resourceReceipts,
             inputs = verdict.inputs,
             mpsChecks = verdict.mpsChecks,
+            optimumEvidence = verdict.optimumEvidence,
         )
         return try {
             run(adapter, problem, record, witness, hashes, revision, miniZincFrame)
