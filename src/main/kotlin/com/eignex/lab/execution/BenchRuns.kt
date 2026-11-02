@@ -103,11 +103,7 @@ internal object BenchRuns {
             if (declared != null) return@flatMap listOf("${input.root}/${input.path}/:$declared")
             val base = if (input.root == BenchInputRoot.SOURCE) source else corpus
             val root = base.resolve(input.path)
-            val files = if (Files.isDirectory(root)) Files.walk(root).use { it.sorted().toList() } else listOf(root)
-            files.map { file ->
-                require(!Files.isSymbolicLink(file)) { "bench input contains a link" }
-                "${input.root}/${input.path}/${root.relativize(file)}:" + if (Files.isDirectory(file)) "directory" else digests.checksum(base, file)
-            }
+            digests.inventory(base, root).map { "${input.root}/${input.path}/$it" }
         }
         return case.copy(resources = case.resources.copy(requiredTags = case.resources.requiredTags + runtime.requiredTags),
             attributes = case.attributes + ("labInputDigest" to ExecutionStore.digest(inventory.joinToString("\n"))))
