@@ -63,6 +63,10 @@ class MacDirectoryEntriesTest {
             repeat(800) { Files.writeString(root.resolve("file-$it"), "value-$it") }
             Files.writeString(root.resolve("é-雪"), "unicode")
             val executable = root.resolve("file-0"); assertTrue(executable.toFile().setExecutable(true, true))
+            val denied = root.resolve("file-1"); assertTrue(denied.toFile().setExecutable(true, true))
+            val acl = ProcessBuilder("/bin/chmod", "+a", "user:${System.getProperty("user.name")} deny execute", denied.toString()).start()
+            assertTrue(acl.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); assertEquals(0, acl.exitValue())
+            assertFalse(Files.isExecutable(denied), "fixture must exercise effective ACL access, not only mode bits")
             Files.createDirectory(root.resolve("directory"))
             assertTrue(MacDirectoryEntries.supported(root))
             val entries = assertNotNull(MacDirectoryEntries.read(root, {}))
