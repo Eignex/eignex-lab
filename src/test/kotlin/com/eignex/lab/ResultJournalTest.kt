@@ -163,6 +163,76 @@ class ResultJournalTest {
         }
     }
 
+    @Test fun `two drainers reserve distinct packs while both external publications are blocked`() {
+        val entered = CountDownLatch(2); val release = CountDownLatch(1)
+        val jobs = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+        val blocked = object : ArtifactStore by external {
+            override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
+                assertTrue(jobs.add(job), "a pack must have exactly one publishing owner")
+                entered.countDown(); check(release.await(10, SECONDS)); external.putAll(job, blobs)
+            }
+        }
+        val pool = Executors.newFixedThreadPool(2)
+        ResultJournal(journal, blocked, start = false).use { store ->
+            try {
+                store.putAll(1, blobs("first")); store.putAll(2, blobs("second"))
+                val drains = (1..2).map { pool.submit<Boolean> { store.drainOne() } }
+                assertTrue(entered.await(3, SECONDS), "both lanes must claim work before either publication finishes")
+                assertEquals(setOf(1L, 2L), jobs)
+                assertEquals("first", read(store, 1, "first")); assertEquals("second", read(store, 2, "second"))
+                release.countDown(); drains.forEach { assertTrue(it.get(3, SECONDS)) }
+                assertEquals(0, store.status().batches)
+            } finally { release.countDown(); pool.shutdownNow() }
+        }
+    }
+
+    @Test fun `a failed publication backs off its pack while another job can drain`() {
+        val destination = object : ArtifactStore by external {
+            override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
+                if (job == 1L) throw java.io.IOException("injected publication failure")
+                external.putAll(job, blobs)
+            }
+        }
+        ResultJournal(journal, destination, start = false).use { store ->
+            store.putAll(1, blobs("retry")); store.putAll(2, blobs("ready"))
+            assertFailsWith<java.io.IOException> { store.drainOne() }
+            assertTrue(store.drainOne()); assertFalse(store.drainOne())
+            assertEquals(1, store.status().batches); assertEquals(1L, store.status().drainErrors)
+            assertEquals("retry", read(store, 1, "retry")); assertEquals("ready", read(external, 2, "ready"))
+        }
+    }
+
+    @Test fun `a failed reclamation barrier retains its charge and backs off without starving other packs`() {
+        var failCleanup = false; var syncs = 0; var publications = 0
+        val destination = object : ArtifactStore by external {
+            override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
+                publications++; external.putAll(job, blobs)
+            }
+        }
+        ResultJournal(journal, destination, start = false, syncDirectory = {
+            syncs++
+            if (failCleanup) { failCleanup = false; throw java.io.IOException("injected cleanup barrier failure") }
+        }).use { store ->
+            store.putAll(1, blobs("published")); store.putAll(2, blobs("ready"))
+            val charged = store.status().bytes; val initialSyncs = syncs
+            failCleanup = true
+            assertFailsWith<java.io.IOException> { store.drainOne() }
+            assertEquals(charged, store.status().bytes, "failed reclamation must not release journal capacity")
+            assertEquals(initialSyncs + 1, syncs)
+            assertEquals("published", read(store, 1, "published"))
+            assertTrue(store.drainOne()); assertFalse(store.drainOne())
+            assertEquals(initialSyncs + 2, syncs, "the failed cleanup must not be retried before its backoff")
+            assertEquals(1, store.status().batches)
+            assertEquals("ready", read(external, 2, "ready"))
+        }
+        ResultJournal(journal, destination, start = false).use { recovered ->
+            assertEquals(0, recovered.status().batches); assertEquals(8192L, recovered.status().bytes)
+            assertFalse(recovered.drainOne())
+            assertEquals("published", read(recovered, 1, "published")); assertEquals("ready", read(recovered, 2, "ready"))
+            assertEquals(2, publications, "recovery must not republish already durable external bytes")
+        }
+    }
+
     @Test fun `cap refuses new batches without removing pending accepted bytes and recovers capacity after drain`() {
         ResultJournal(journal, external, maxBytes = 32768, start = false).use { store ->
             val first = blobs("a".repeat(6000)); val second = blobs("b".repeat(6000))
