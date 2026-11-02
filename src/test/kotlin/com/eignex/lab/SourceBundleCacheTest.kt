@@ -57,6 +57,7 @@ class SourceBundleCacheTest {
         publish(1); cache().remember(1, bundle, bytes.size.toLong())
         assertNull(reuse(2, value = bundle.copy(commit = "b".repeat(40)), recover = { sequenceOf(1L to bundle) }))
         assertNull(reuse(3, value = bundle.copy(repository = "Eignex/example"), recover = { sequenceOf(1L to bundle) }))
+        deleteTree(hints) // Exercise recovery of the extra-input candidate, rather than the earlier valid hint.
         val extra = bundle.copy(files = bundle.files + InputFile("lab-inputs/model", "b".repeat(64), 1))
         assertNull(reuse(4, recover = { sequenceOf(1L to extra) }))
         assertFailsWith<IllegalArgumentException> { cache().remember(1, extra, bytes.size.toLong()) }
