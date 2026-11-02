@@ -215,6 +215,20 @@ fun Application.workerApi(
                     call.respond(HttpStatusCode.NoContent)
                 }
             }
+            post("/uploads-packed") {
+                if (artifacts !is ResultJournal) { call.respond(HttpStatusCode.NotFound); return@post }
+                withContext(CoordinatorIo.packedResults) {
+                    check(workAllowed()); val session = call.session
+                    require(session.executionClass == ExecutionClass.SOLVE)
+                    call.receiveChannel().toInputStream().use { input ->
+                        val body = WorkerPackedArtifacts.read(input)
+                        session.requireOwns(body.owner); store.execution.authorize(body.owner)
+                        // A batch acknowledges only durable data. The complete row still needs its final commit.
+                        artifacts.putPacked(session.jobId, body.blobs, input)
+                    }
+                    call.respond(HttpStatusCode.NoContent)
+                }
+            }
             get("/inputs/{sha}") {
                 withContext(CoordinatorIo.artifacts) {
                     check(workAllowed()); val s = call.session; val sha = call.parameters["sha"]!!
