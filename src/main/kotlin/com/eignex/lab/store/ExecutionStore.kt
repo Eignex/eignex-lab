@@ -177,8 +177,8 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     /** A Nomad scheduling hint, never authentication, ownership or a charged claim. Pending image
      * pulls reserve compiler placement without serializing a whole pool until worker registration. */
-    internal fun preparationNode(id: String, node: String) = store.executionTransaction { db ->
-        require(node.isNotBlank())
+    internal fun preparationNode(id: String, node: String?) = store.executionTransaction { db ->
+        require(node == null || node.isNotBlank())
         db.sqlUpdate("UPDATE execution_sessions SET node_id = ? WHERE id = ? AND allocation_id IS NULL AND desired != 'stop' AND execution_class = 'prepare'", node, id)
     }
 

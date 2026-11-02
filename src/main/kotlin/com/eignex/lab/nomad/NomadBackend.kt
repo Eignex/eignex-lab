@@ -367,9 +367,7 @@ class NomadBackend(
             val allocations = nomad.allocations(s.nomadJobId)
             store.execution.observed(s.id, allocations.joinToString { "${it.id}:${it.client}:${it.node}" })
             if (s.allocation == null && s.executionClass == ExecutionClass.PREPARE) {
-                allocations.filter { it.active && it.node.isNotBlank() }.singleOrNull()?.let {
-                    store.execution.preparationNode(s.id, it.node)
-                }
+                store.execution.preparationNode(s.id, allocations.filter { it.active }.singleOrNull()?.node?.takeIf { it.isNotBlank() })
             }
             if (!current.paused && s.allocation == null && allocations.isEmpty()) {
                 val submission = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
