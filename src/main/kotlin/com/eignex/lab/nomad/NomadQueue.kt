@@ -28,6 +28,8 @@ class NomadQueue(
     private val preparationPlan: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
     private val capacitySettings: CapacitySettings? = config.cluster?.capacity,
 ) {
+    private val publishedSources = QueueSourcePublications()
+
     fun reconcile() {
         if (!allowed()) return
         for (id in store.execution.pendingDomainCompletion()) {
@@ -36,7 +38,9 @@ class NomadQueue(
             store.execution.domainCompleted(id)
         }
         val schedules = store.schedules.all()
-        for (listed in store.active().filter { it.runsOnNomad && !it.paused && !it.cancelRequested }
+        val active = store.active()
+        publishedSources.retain(active)
+        for (listed in active.filter { it.runsOnNomad && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
             var job = listed
             try {
@@ -78,7 +82,9 @@ class NomadQueue(
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
                     val available = fitting.filter(::preparationAvailable)
                     if (available.isEmpty()) continue
-                    val (arms, bundles) = source(job, targets, settings) ?: continue
+                    val key = QueueSourceKey(job.id, spec, targets, settings)
+                    val publication = publishedSources.get(key) ?: source(job, targets, settings)?.also { publishedSources.put(key, it) } ?: continue
+                    val (arms, bundles) = publication
                     val required = bundles.flatMap { it.build?.requiredTags.orEmpty() }.toSet()
                     val compatible = fitting.filter { target -> NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
@@ -88,8 +94,10 @@ class NomadQueue(
                         preparationBudget(target), solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
                         benchReplay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
+                    publishedSources.forget(job.id)
                     continue
                 }
+                publishedSources.forget(job.id)
                 val preparation = store.execution.acceptedPreparation(job.id) ?: continue
                 val recipe = store.execution.manifest(sessions.first { it.executionClass == ExecutionClass.PREPARE }.id)
                 if (!job.setupDone && !preparationPlan(job.id) { plan(job, recipe, preparation) }) continue
