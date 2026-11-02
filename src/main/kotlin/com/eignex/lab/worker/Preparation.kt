@@ -135,7 +135,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 else consume(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
             }
             if (bundle.tree != null && nativeTrees != null) nativeTrees.use(bundle, ::checkActive) { tree, _ -> copy(tree) }
-            else if (bundle.build != null) builds.withPreparedSource(bundle, manifest.budget, env, remainingRunMs, ::remaining, trace, ::acquireSource, ::copy)
+            else if (bundle.build != null) builds.withPreparedSource(bundle, manifest.budget, env, remainingRunMs, ::remaining, trace, ::acquireSource, ::copy,
+                declaredWorkspace = replay == null)
             else trace.step("inputs") {
                 inputCache?.use(bundle, ::checkActive, { download(bundle) }, trace, ::copy)
                     ?: copy(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))

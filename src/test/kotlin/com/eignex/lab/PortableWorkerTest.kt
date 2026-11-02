@@ -471,6 +471,42 @@ class PortableWorkerTest {
         assertEquals(0, tracked.waitFor())
     }
 
+    @Test fun `declared preparation verifies planner and runtime inputs without visiting compiler scratch`(): Unit = service { socket ->
+        val count = root.resolve("selected-build-count")
+        val script = """#!/usr/bin/env bash
+            set -eu
+            echo build >> '$count'
+            mkdir -p runtime build/classes
+            echo prepared > runtime/program
+            for n in {1..200}; do echo compiler > "build/classes/file-${'$'}n"; done
+        """.trimIndent()
+        val entry = """{"main":"fixture.Bench","classpath":["runtime/*"],"buildTasks":["assemble"],"workspaceInputs":["runtime"],"planInputs":["planner.txt"]}"""
+        val (input, bytes) = bundle(mapOf("gradlew" to script, "bench.json" to entry, "planner.txt" to "planner"))
+        val source = VerifiedCache(root.resolve("selected-source")).stage(input) { ByteArrayInputStream(bytes) }
+        val recipe = input.copy(build = WorkerBuild(listOf("assemble"), benchManifest = "bench.json"))
+        val cache = WorkerBuildCache(root.resolve("selected-builds"), ProcessSupervisor(socket))
+        val budget = ResourceBudget(1000, 512)
+        val tree = cache.prepare(recipe, source, budget, System.getenv()) { 10000 }
+        Files.writeString(tree.resolve("build/classes/file-1"), "unused corruption")
+        fun prepared(trace: PreparationTrace = PreparationTrace(), mayBuild: Boolean = true): Path =
+            cache.withPreparedSource(recipe, budget, System.getenv(), { null }, { 10000 }, trace,
+                { consume -> check(mayBuild) { "warm declared workspace must bypass source" }; consume(source) }, { it }, declaredWorkspace = true)
+        val trace = PreparationTrace()
+        assertEquals(tree, prepared(trace, mayBuild = false))
+        assertEquals(1, Files.readAllLines(count).size)
+        assertTrue(requireNotNull(trace.snapshot().caches["build"]?.checkedFiles) < 10)
+        // A caller needing the complete build still detects the excluded corruption.
+        cache.prepare(recipe, source, budget, System.getenv()) { 10000 }
+        assertEquals(2, Files.readAllLines(count).size)
+        for (file in listOf("runtime/program", "planner.txt", "bench.json")) {
+            Files.writeString(tree.resolve(file), "corrupt")
+            assertEquals(tree, prepared())
+        }
+        assertEquals(5, Files.readAllLines(count).size)
+        assertEquals(entry, Files.readString(tree.resolve("bench.json")))
+        assertEquals("prepared", Files.readString(tree.resolve("runtime/program")).trim())
+    }
+
     @Test fun `source builds share their session budget cache once and rebuild corrupt outputs`(): Unit = service { socket ->
         val count = root.resolve("build-count")
         val script = """#!/usr/bin/env bash

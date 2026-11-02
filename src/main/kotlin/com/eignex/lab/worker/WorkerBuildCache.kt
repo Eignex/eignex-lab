@@ -35,7 +35,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         prepareFrom(bundle, { consume -> consume(source) }, budget, environment, remainingRunMs, trace, remainingLeaseMs)
 
     private fun prepareFrom(bundle: WorkerBundle, source: ((Path) -> Unit) -> Unit, budget: ResourceBudget, environment: Map<String, String>,
-                            remainingRunMs: () -> Long?, trace: PreparationTrace, remainingLeaseMs: () -> Long, pinWaitingMs: Long = 0): Path {
+                            remainingRunMs: () -> Long?, trace: PreparationTrace, remainingLeaseMs: () -> Long, pinWaitingMs: Long = 0,
+                            declaredWorkspace: Boolean = false): Path {
         fun checkRun() { if (remainingRunMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
         checkRun()
         val build = requireNotNull(bundle.build)
@@ -49,7 +50,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             val verification = TreeVerification()
             val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
             val verificationAt = System.nanoTime()
-            val hit = trace.step("build-cache") { valid(destination, identity, ::checkRun, verification) }
+            val hit = trace.step("build-cache") { valid(destination, identity, ::checkRun, verification,
+                build.benchManifest.takeIf { declaredWorkspace }) }
             trace.cache("build", if (hit) "hit" else "miss", if (hit) (if (verification.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
                 verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs + pinWaitingMs, checkedFiles = verification.stats.checkedFiles,
                 hashedFiles = verification.stats.hashedFiles, hashedBytes = verification.stats.hashedBytes)
@@ -147,16 +149,18 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         withPreparedSource(bundle, budget, environment, remainingRunMs, remainingLeaseMs, trace, { consume -> consume(source) }, use)
 
     /** Warm verified builds need no source archive at all. Acquire source inputs only during cold checkout,
-     * retaining their caller-owned pin throughout consumption instead of returning an unpinned cache path. */
+     * retaining their caller-owned pin throughout consumption instead of returning an unpinned cache path.
+     * [declaredWorkspace] is only for preparation: [use] may read declared planner inputs and copy the declared
+     * workspace. Every other consumer retains complete-tree verification. */
     internal fun <T> withPreparedSource(bundle: WorkerBundle, budget: ResourceBudget, environment: Map<String, String>,
                                        remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(),
-                                       source: ((Path) -> Unit) -> Unit, use: (Path) -> T): T {
+                                       source: ((Path) -> Unit) -> Unit, use: (Path) -> T, declaredWorkspace: Boolean = false): T {
         Files.createDirectories(root)
         return trace.step("build-cache") {
             var waitingMs = 0L
             locked(root.resolve("${identity(bundle)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
                 var acquired = false
-                val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs, waitingMs)
+                val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs, waitingMs, declaredWorkspace)
                 if (!acquired) trace.cache("input", "bypass", "build-hit")
                 use(tree)
             }
@@ -402,14 +406,33 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         finally { Files.deleteIfExists(temporary) }
     }
 
-    private fun valid(path: Path, identity: String, checkActive: () -> Unit, verification: TreeVerification): Boolean {
+    private fun valid(path: Path, identity: String, checkActive: () -> Unit, verification: TreeVerification, workspaceManifest: String? = null): Boolean {
         val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(path.resolve("manifest.json"))) }.getOrNull() ?: return false
         if (entry.files.isEmpty() || entry.files.fold(0L) { total, file ->
                 if (file.bytes > maxBytes - total) return false
                 total + file.bytes
             } > maxBytes) return false
-        return entry.identity == identity && verification.valid(path.resolve("tree"), entry.files,
-            path.resolve("verified.json"), checkActive, exactExecutables = true)
+        if (entry.identity != identity) return false
+        val tree = path.resolve("tree")
+        fun verify(files: List<InputFile>, name: String, roots: List<Path>): Boolean {
+            val receipt = path.resolve(name)
+            if (!Files.exists(receipt) && Files.isRegularFile(path.resolve("verified.json"))) Files.copy(path.resolve("verified.json"), receipt)
+            return verification.valid(tree, files, receipt, checkActive, exactExecutables = true,
+                include = { relative -> relative.toString().isEmpty() || roots.any { relative.startsWith(it) || it.startsWith(relative) } })
+        }
+        if (workspaceManifest != null) {
+            val manifest = entry.files.singleOrNull { it.path == workspaceManifest } ?: return false
+            // The manifest chooses the scope, so verify its approved bytes before reading any declarations.
+            if (!verify(listOf(manifest), "manifest-verified.json", listOf(safeRelative(workspaceManifest)))) return false
+            val spec = BenchSpec(workspaceManifest)
+            val workspace = BenchRuns.workspaceInputs(tree, spec)
+            if (workspace != null) {
+                val roots = (workspace + BenchSelections.planInputs(tree, spec).orEmpty()).distinct().map(::safeRelative)
+                val selected = entry.files.filter { file -> roots.any { Path.of(file.path).startsWith(it) } }
+                return verify(selected, "workspace-verified.json", roots)
+            }
+        }
+        return verification.valid(tree, entry.files, path.resolve("verified.json"), checkActive, exactExecutables = true)
     }
     private fun copy(source: Path, destination: Path, checkActive: () -> Unit) {
         Files.walk(source).use { paths -> paths.forEach { path ->
