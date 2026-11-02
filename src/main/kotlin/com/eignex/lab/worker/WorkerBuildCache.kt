@@ -67,6 +67,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             // Create and pin staging before our background sweep can take its discovery lock.
             val staging = lease.directory
             val disk = BuildDiskBudget(root, staging, maxBytes)
+            var dependency: DependencyHome? = null
             try {
                 requestMaintenance()
                 val tree = staging.resolve("tree")
@@ -122,7 +123,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     trace.step("compiler-wait") {
                         compilationSlot(remainingRunMs, remainingLeaseMs) {
                             deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
-                            dependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs) { dependencyHome ->
+                            val pinned = acquireDependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs)
+                            dependency = pinned
+                            pinned.directory.let { dependencyHome ->
                                 Files.createDirectories(dependencyHome)
                                 trace.step("compilation") {
                                     run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
@@ -156,7 +159,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 storage.publish(lease, destination, ::checkRun)
                 destination.resolve("tree")
             } finally {
-                disk.close(); storage.close(lease)
+                disk.close()
+                try { storage.close(lease) } finally { dependency?.close() }
                 if (discardedBuilds.isNotEmpty()) requestMaintenance()
             }
         }
@@ -247,7 +251,22 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
 
     /** Gradle cannot negotiate cache locks across container namespaces. Reuse the first idle home, or give an
      * already-admitted concurrent build another home. Scheduling budgets bound concurrency; cache eviction bounds disk. */
-    internal fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T {
+    internal fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T =
+        acquireDependencyHome(key, run, lease).use { use(it.directory) }
+
+    /** Keep a dirty dependency home pinned through sealing. Releasing it immediately after Gradle
+     * caused background accounting to walk its entire cache while the same USB disk was sealing
+     * thousands of compiler outputs. It is still accounted after publication or a failed build. */
+    private inner class DependencyHome(val directory: Path, private val owner: ProcessFilePin) : AutoCloseable {
+        override fun close() {
+            try {
+                if (Files.isDirectory(directory, NOFOLLOW_LINKS))
+                    Files.setLastModifiedTime(directory, java.nio.file.attribute.FileTime.fromMillis(now()))
+            } finally { owner.close(); requestMaintenance() }
+        }
+    }
+
+    private fun acquireDependencyHome(key: String, run: () -> Long?, lease: () -> Long): DependencyHome {
         var slot = 0
         while (true) {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
@@ -256,13 +275,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             val name = if (slot == 0) key else "$key-$slot"
             val owner = ProcessFilePin.tryLock(root.resolve("dependencies-$name.lock"))
             if (owner != null) {
-                try { owner.use {
-                    val home = root.resolve("dependencies/$name")
-                    // Invalidate before any writer enters, including failed/crashed builds.
+                try {
                     Files.deleteIfExists(root.resolve("dependency-sizes/$name.json"))
-                    try { return use(home) }
-                    finally { if (Files.isDirectory(home, NOFOLLOW_LINKS)) Files.setLastModifiedTime(home, java.nio.file.attribute.FileTime.fromMillis(now())) }
-                } } finally { requestMaintenance() }
+                    return DependencyHome(root.resolve("dependencies/$name"), owner)
+                } catch (failure: Throwable) { owner.close(); throw failure }
             }
             slot++
         }
@@ -487,20 +503,7 @@ private fun checkMaintenanceActive() {
     if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache cleanup cancelled")
 }
 
-private fun dependencyTreeBytes(path: Path): Long {
-    var bytes = 0L
-    Files.walkFileTree(path, object : java.nio.file.SimpleFileVisitor<Path>() {
-        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
-            checkMaintenanceActive(); return java.nio.file.FileVisitResult.CONTINUE
-        }
-        override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
-            checkMaintenanceActive()
-            if (attrs.isRegularFile) bytes = Math.addExact(bytes, attrs.size())
-            return java.nio.file.FileVisitResult.CONTINUE
-        }
-    })
-    return bytes
-}
+private fun dependencyTreeBytes(path: Path): Long = treeBytes(path, checkActive = ::checkMaintenanceActive)
 
 /**
  * The heap each build JVM may take within a preparation's [memoryMiB]. Gradle compiles Kotlin in its own JVM, which
