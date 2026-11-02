@@ -26,6 +26,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                        private val dependencyBytes: (Path) -> Long = ::dependencyTreeBytes,
                        private val startMaintenance: (Thread) -> Unit = Thread::start,
                        private val observeBuild: (Path, Path, PreparationBuildDiagnostic) -> Unit = { _, _, _ -> }) {
+    private val dependencyScope = ThreadLocal<DependencyPins?>()
     private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
     private val discardedBuilds = java.util.concurrent.ConcurrentLinkedQueue<Path>()
     @Serializable private data class DependencyUsage(val key: String, val modified: String, val bytes: Long)
@@ -160,7 +161,10 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 destination.resolve("tree")
             } finally {
                 disk.close()
-                try { storage.close(lease) } finally { dependency?.close() }
+                try { storage.close(lease) } finally { dependency?.let { home ->
+                    val scope = dependencyScope.get()
+                    if (scope == null) home.close() else if (home !in scope.homes) scope.homes.add(home)
+                } }
                 if (discardedBuilds.isNotEmpty()) requestMaintenance()
             }
         }
@@ -177,7 +181,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                                        remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(),
                                        source: ((Path) -> Unit) -> Unit, declaredWorkspace: Boolean = false, use: (Path) -> T): T {
         Files.createDirectories(root)
-        return trace.step("build-cache") {
+        return withDependenciesPinned { trace.step("build-cache") {
             var waitingMs = 0L
             locked(root.resolve("${identity(bundle)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
                 var acquired = false
@@ -185,6 +189,27 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 if (!acquired) trace.cache("input", "bypass", "build-hit")
                 use(tree)
             }
+        } }
+    }
+
+    /** Preparation keeps its dirty dependency homes pinned through planning, input publication and
+     * handoff too. Standalone consumers own a shorter scope; nested preparation scopes retain pins
+     * until the outermost consumer has finished, including on failure. */
+    internal fun <T> withDependenciesPinned(use: () -> T): T {
+        if (dependencyScope.get() != null) return use()
+        val scope = DependencyPins()
+        dependencyScope.set(scope)
+        try { return scope.use { use() } } finally { dependencyScope.remove() }
+    }
+
+    private inner class DependencyPins : AutoCloseable {
+        val homes = mutableListOf<DependencyHome>()
+        override fun close() {
+            var failure: Throwable? = null
+            for (home in homes.asReversed()) try { home.close() } catch (error: Throwable) {
+                if (failure == null) failure = error else failure.addSuppressed(error)
+            }
+            failure?.let { throw it }
         }
     }
 
@@ -257,7 +282,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     /** Keep a dirty dependency home pinned through sealing. Releasing it immediately after Gradle
      * caused background accounting to walk its entire cache while the same USB disk was sealing
      * thousands of compiler outputs. It is still accounted after publication or a failed build. */
-    private inner class DependencyHome(val directory: Path, private val owner: ProcessFilePin) : AutoCloseable {
+    private inner class DependencyHome(val key: String, val directory: Path, private val owner: ProcessFilePin) : AutoCloseable {
         override fun close() {
             try {
                 if (Files.isDirectory(directory, NOFOLLOW_LINKS))
@@ -267,6 +292,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     }
 
     private fun acquireDependencyHome(key: String, run: () -> Long?, lease: () -> Long): DependencyHome {
+        dependencyScope.get()?.homes?.firstOrNull { it.key == key }?.let { return it }
         var slot = 0
         while (true) {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
@@ -277,7 +303,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             if (owner != null) {
                 try {
                     Files.deleteIfExists(root.resolve("dependency-sizes/$name.json"))
-                    return DependencyHome(root.resolve("dependencies/$name"), owner)
+                    return DependencyHome(key, root.resolve("dependencies/$name"), owner)
                 } catch (failure: Throwable) { owner.close(); throw failure }
             }
             slot++
