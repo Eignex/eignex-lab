@@ -105,7 +105,7 @@ interface TrendData {
             override fun runs(series: String, limit: Int) = store.jobs(limit = limit, name = series, withCommands = false)
             override fun arms(job: Long) = store.plans.arms(job)
             override fun scoringCases(job: Long) = OptimumClaims.qualify(store, store.plans.scoringCases(job))
-            override fun caseRevision(job: Long) = store.plans.caseRevision(job) + store.plans.checkRevision()
+            override fun caseRevision(job: Long) = store.plans.caseRevision(job) + store.plans.checkRevision() + (store.lastFinished() ?: 0)
             override fun references(keys: Collection<ProblemKey>, sources: Map<ProblemKey, String?>) = store.references.matching(keys, sources = sources)
             override fun features(keys: Collection<ProblemKey>) = store.references.features(keys)
             override fun schedules() = store.schedules.all()

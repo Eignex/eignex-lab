@@ -285,24 +285,45 @@ class OptimumClaimsTest {
     @Test
     fun `retained evidence from another job automatically withdraws proof credit`() {
         val store = Store(Files.createTempDirectory("optimum-claims").resolve("lab.db"))
-        fun retain(case: CaseResult): Long {
-            val id = store.create("point", "fixture", emptyList(), experiment = ExperimentSpec("point", emptyList()))
-            store.plan(id, listOf(PlannedArm(Arm(case.arm, emptyMap()), "fixture")), listOf(case.problem),
-                Experiments.cases(1, 1, emptyList()), listOf("retained" to 1L))
-            store.commandStarted(id, 0)
-            val record = case.record!!.jsonObject
-            store.caseRecord(id, 0, JsonObject(record - "labCheck").toString())
-            store.commandFinished(id, 0, 0)
-            store.plans.caseCheck(id, 0, record.getValue("labCheck").toString())
-            return id
-        }
-        val claim = retain(point("45650", proven = true))
-        val evidence = retain(point("43000").copy(seed = 3))
+        val claim = retain(store, point("45650", proven = true))
+        val evidence = retain(store, point("43000").copy(seed = 3))
         val guarded = OptimumClaims.qualify(store, store.plans.scoringCases(claim)).single()
         val result = requireNotNull(OptimumClaims.assessment(guarded.record))
         assertEquals(OptimumAssessment.CONTRADICTED, result.state)
         assertEquals(evidence, result.evidenceJob)
         assertEquals(1, Compare.compare(listOf("claim"), listOf(guarded)).arms.single().contradictedOptima)
         assertEquals(true, store.plans.cases(claim).single().record!!.jsonObject["proven"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `a witness finished through another store refreshes a cached historical claim`() {
+        val database = Files.createTempDirectory("optimum-evidence-cache").resolve("lab.db")
+        val writer = Store(database)
+        retain(writer, point("7", proven = true), "sweep@claim")
+        val data = TrendData.of(Store(database))
+        TrendCache().use { cache ->
+            assertEquals(1.0, Trend.runs(data, "sweep", cache).single().proven)
+
+            Thread.sleep(2)
+            retain(writer, point("6"), "witness@point")
+            val updated = Trend.runs(data, "sweep", cache).single()
+
+            assertEquals(1, updated.contradictedOptima)
+            assertEquals(0.0, updated.proven)
+            assertEquals(1.0, updated.solved.value)
+        }
+    }
+
+    private fun retain(store: Store, case: CaseResult, name: String = "point"): Long {
+        val id = store.create(name, "fixture", emptyList(), experiment = ExperimentSpec(name, emptyList()))
+        store.plan(id, listOf(PlannedArm(Arm(case.arm, emptyMap()), "fixture")), listOf(case.problem),
+            Experiments.cases(1, 1, emptyList()), listOf("retained" to 1L))
+        store.commandStarted(id, 0)
+        val record = case.record!!.jsonObject
+        store.caseRecord(id, 0, JsonObject(record - "labCheck").toString())
+        store.commandFinished(id, 0, 0)
+        store.plans.caseCheck(id, 0, record.getValue("labCheck").toString())
+        store.finish(id, Status.DONE)
+        return id
     }
 }
