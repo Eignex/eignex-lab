@@ -70,7 +70,7 @@ class PageEscapingTest {
                     header(HttpHeaders.Accept, "text/html")
                 }
                 assertEquals(HttpStatusCode.OK, response.status, path)
-                val body = response.bodyAsText()
+                val body = if (path == "/") client.queuePage() else response.bodyAsText()
                 assertFalse("<script>alert(1)" in body || "<b onmouseover" in body, "$path renders hostile text as markup")
                 // The pages that show the job do show its text, escaped: the check above is not passing on an empty page.
                 if (path == "/" || path == "/jobs/$id") assertTrue("&lt;script&gt;alert(1)" in body, path)
