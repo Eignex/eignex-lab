@@ -30,10 +30,9 @@ import com.eignex.lab.worker.portablePath
 /** The lab's checkers as this machine provisions them: one adapter per format, the sources from its own corpus. */
 object Checkers {
     fun of(paths: DataPaths): SourceChecker {
-        val solchecker = Solchecker(dir(paths))
         val dolmen = Dolmen(dir(paths))
         return SourceChecker(
-        adapters = listOf(Xcsp3Checker(), RationalMpsChecker(MpsChecker(solchecker::binary)), MiniZincChecker(), SmtChecker(dolmen::binary), OpbChecker(), WboChecker(), WcnfChecker(), DimacsChecker()),
+        adapters = listOf(Xcsp3Checker(), RationalMpsChecker(), MiniZincChecker(), SmtChecker(dolmen::binary), OpbChecker(), WboChecker(), WcnfChecker(), DimacsChecker()),
         locator = SourceLocator(paths.corpusDir.toFile(), fixtures = fixtures(paths), problemPaths = { problem, revision ->
             if (revision == null) problem else {
                 fun path(value: String): String = if (value.startsWith("lab-source/") || value.startsWith("lab-corpus/"))

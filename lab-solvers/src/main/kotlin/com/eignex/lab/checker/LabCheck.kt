@@ -42,6 +42,7 @@ data class LabCheck(
     val resourceReceipts: List<ToolResourceReceipt> = emptyList(),
     /** Complete derived checker inputs retained after scratch cleanup; historical checks keep none. */
     val inputs: List<CheckedInput> = emptyList(),
+    val mpsChecks: MpsPolicyChecks? = null,
 ) {
     fun json(): String = JSON.encodeToString(serializer(), this)
 
@@ -68,6 +69,7 @@ data class LabCheck(
 /** The lab's checking policies, one per format and checker version: a new checker or a new rule is a new policy. */
 object Policies {
     val XCSP3 = "lab-xcsp3-solution-checker-${Xcsp3Checker.VERSION}-v1"
+    const val MPS_DECLARED = "lab-mps-declared-rational-v1"
     const val MPS_EXACT = "lab-mps-exact-rational-v1"
     const val MPS = "lab-mps-solchecker-1.0.4-longnum-v1"
     const val MINIZINC = "lab-minizinc-choco-integer-point-v8"

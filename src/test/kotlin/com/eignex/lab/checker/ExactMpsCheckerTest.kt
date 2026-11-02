@@ -182,24 +182,13 @@ ENDATA
         finally { Thread.interrupted() }
     }
 
-    @Test fun `router preserves legacy identity and sends fractions and rejected layouts to exact route`() {
-        var legacyCalls = 0
-        val legacy = object : FormatChecker {
-            override val format = "MPS"
-            override val policy = "test-legacy"
-            override val checker = "legacy checker"
-            override fun check(case: CheckCase, work: File): Verdict {
-                legacyCalls++
-                return Verdict(if ("RHS" in case.sources.model.readText()) LabCheck.VALID else LabCheck.UNSUPPORTED, "test layout")
-            }
+    @Test fun `router preserves exact verdicts and leaves undeclared policy unqualified for all spellings`() {
+        val router = RationalMpsChecker()
+        for (value in listOf("1/3", "0.3333333333333333")) {
+            val result = expect(LabCheck.UNKNOWN, check(source("pure-real-min"), "v X=$value", value, router))
+            assertEquals(Policies.MPS_DECLARED, result.policy)
+            assertEquals(if ('/' in value) LabCheck.VALID else LabCheck.INVALID, result.mpsChecks!!.exact.state)
+            assertNull(result.mpsChecks!!.comparisonIdentity)
         }
-        val router = RationalMpsChecker(legacy)
-        expect(LabCheck.VALID, check(source("pure-real-min"), adapter = router))
-        assertEquals(0, legacyCalls)
-        expect(LabCheck.VALID, check(source("open-real-min"), "v I=3 X=3", "1.5", router))
-        assertEquals(1, legacyCalls)
-        val retained = expect(LabCheck.VALID, check(source("pure-real-min"), "v X=0.5", "0.5", router))
-        assertEquals("test-legacy", retained.policy)
-        assertEquals("legacy checker", retained.checker)
     }
 }

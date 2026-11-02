@@ -1,0 +1,115 @@
+{
+  "origin": {
+    "job": 10051,
+    "case": 0,
+    "url": "https://lab.eignex.com/jobs/10051",
+    "nativeRecordPath": "cases/0/out/report/solve-record.json",
+    "nativeRecordSha256": "b5d089b5538c2131ee2acf99f9eae2c15e8790f336d950c4714b377acfff50a3",
+    "apiLineSha256": "4b3e8a2db6460a1bccbf7f956ebe29ac13f2f8c29be11138374f2ab9898666fe",
+    "witnessSha256": "2f3353af7796b476f038dbc77b56f15336e7401a08bd67cf5db218fa36cb211b",
+    "handoffSha256": "6f9b297246729fc210899bb948e34567b29bf3c0fe8a91eb789cab371cfe9259"
+  },
+  "record": {
+    "solver": "klause",
+    "kind": "optimize",
+    "feasible": true,
+    "maximize": false,
+    "gitSha": "40c86700ccf428752a19530033597ce4a7ebeeab",
+    "command": "/lab-cache/workspaces/session-17547353480075996170/trees/735a00eca0ad56128039acee0c22b03c67c39eb3980a27101a9a3e002c2231dd/klause-cli/build/install/klause-cli-jvm/bin/klause-cli --format mps /lab-cache/consumer/klause-bench/corpus/.lab-inputs/views/5ed10559575ab582cc01756b4834da5edfa74bc2b3051baf49b7f2d3d5469f5d/miplib3-mps/miplib3/bell3a.mps -t 30000 -r 1 -s -v -a --output-objective -p 1 --param companion-integers=true --param companion-active-ms=4000 --param portfolio-progress=true --param portfolio-reward=ordinary --param phase-retention=0.25 --param reseed-stale-threshold=3 --param source-incumbent-completion=false --param companion-after-incumbent=false --param companion-admission=ordinary",
+    "sourceHashes": {
+      "model": "1ada0bcc162defc9d8f17769920d3531d6e9f8c69f466e3eb165939ae845fd43"
+    },
+    "finalWitness": "v c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 c11=0 c12=0 c13=0 c14=0 c15=0 c16=0 c17=0 c18=0 c19=0 c20=0 c21=0 c22=0 c23=0 d1=0 d2=0 d3=0 d4=0 d5=0 d6=0 d7=0 d9=0 d10=0 d12=0 d13=0 d15=0 d16=0 d17=0 d20=0 d21=0 h1=0 h2=0 h3=0 h4=0 h5=0 h6=0 h7=0 h9=0 h10=0 h12=0 h13=0 h15=0 h16=0 h17=0 h20=0 h21=0 g1=0 g2=11 g3=0 g4=0 g5=0 g6=0 g7=0 g9=21 g10=0 g12=0 g13=4 g15=0 g16=7 g17=1 g20=21 g21=8 a1=1124 a2=1024 a3=1238 a4=1038 a5=1028 a6=414 a7=168 a8=10 a9=0 a10=514 a11=214 a12=164 a13=4 a14=300 a15=100 a16=0 a17=6 a18=20 a19=96 a20=95.9999999999998863131622783839702606201171875 a21=8 a22=100 a23=50 b1=1736 b2=1736 b3=1472 b4=1472 b5=1472 b6=1196 b7=692 b8=500 b9=500 b10=96 b11=96 b12=96 b13=96 b14=0 b15=180 b16=180 b17=24 b18=0 b19=504 b20=504 b21=192 b22=0 b23=0 f1=0 f2=264 f3=0 f4=0 f5=0 f6=0 f7=0 f9=500 f10=0 f12=0 f13=96 f15=0 f16=156 f17=24 f20=504.0000000000001136868377216160297393798828125 f21=192",
+    "exactObjective": "250246661752213207263/274877906944000",
+    "comparisonControls": {
+      "policy": "matched-source-v1",
+      "series": "sdk-linux-v1",
+      "solverSeed": "1",
+      "compilerSeed": "1",
+      "solverBudgetMs": "30000",
+      "compilerTimeoutSeconds": "60",
+      "caseTimeoutSeconds": "320",
+      "cpus": "1",
+      "memoryMiB": "4096",
+      "heap-mib": "2560",
+      "gc": "default",
+      "debug": "true",
+      "measurement": "resources",
+      "complete-assignment": "false",
+      "exact": "false",
+      "deadlinePolicy": "cli-inclusive-v1",
+      "inputDigest": "045694e36f5647c5a2699c53d3621ea1472d2aa945edb5f515bf50b4e7172282",
+      "runtimeFingerprint": "77db956e3b95d561ada489b018480b9bc836d329f216433689d7c47ddaacf7b1",
+      "harnessFingerprint": "93f05631c3eebab25fbf4e5b1d47149559d4a79e05efcfa65b1061dcf563b711",
+      "libraryFingerprint": "1d1ee89965daad8adf764d1e4cc03a6c734b68498407279f06ca09ccec0a1943"
+    },
+    "buildFingerprint": "c370550396ec160e949e15d68707cb64437a71b68d8611dfdde4e68466b35547"
+  },
+  "retainedLabCheck": {
+    "policy": "lab-mps-exact-rational-v1",
+    "state": "invalid",
+    "reason": "invalid assignment: row C20",
+    "checker": "Eignex Lab independent rational MPS point checker",
+    "checkerVersion": "1 (source sha256 b828530fdcd4030ef4b5b0c4a1ddba2b811497d96d6e8f4b0f28fdc3aa3e04a6)",
+    "checkerSha256": "cb96d3e4f2d526a3ce602eb5dc413bb39a5fb9730484402f0fca651afd8325ba",
+    "witnessSha256": "2f3353af7796b476f038dbc77b56f15336e7401a08bd67cf5db218fa36cb211b",
+    "sourceSha256": {
+      "model": "1ada0bcc162defc9d8f17769920d3531d6e9f8c69f466e3eb165939ae845fd43"
+    },
+    "checkedAt": 1793533159307,
+    "elapsedMs": 2,
+    "diagnostic": "exact rational arithmetic; zero tolerance; feasible point only; 1535 operations; source <= 16777216 bytes, witness <= 8388608 chars, terms <= 200000, scalars <= 16384 bits; deadline 120000ms; parser failures=unknown, unsupported/resource caps=unsupported, timeout=not-run",
+    "resourceReceipts": [],
+    "inputs": []
+  },
+  "supplementalSemantics": {
+    "schema": "mps-decimal-semantics-v1",
+    "declared": {
+      "numericAuthority": "DECIMAL_LITERALS",
+      "feasibilityTolerance": {
+        "absolute": "1/10000000",
+        "relative": "1/10000000"
+      },
+      "undeclaredIntegers": {
+        "lower": "0",
+        "upper": "1"
+      },
+      "undeclaredReals": {
+        "lower": "0",
+        "upper": null
+      },
+      "integrality": "exact",
+      "objective": "exact"
+    },
+    "effective": {
+      "numericAuthority": "DECIMAL_LITERALS",
+      "feasibilityTolerance": {
+        "absolute": "1/10000000",
+        "relative": "1/10000000"
+      },
+      "undeclaredIntegers": {
+        "lower": "0",
+        "upper": "1"
+      },
+      "undeclaredReals": {
+        "lower": "0",
+        "upper": null
+      },
+      "integrality": "exact",
+      "objective": "exact"
+    }
+  },
+  "semanticsOrigin": {
+    "kind": "source-and-invocation-reconstruction",
+    "sourceRevision": "40c86700ccf428752a19530033597ce4a7ebeeab",
+    "sourceFileSha256": {
+      "klause/src/commonMain/kotlin/com/eignex/klause/formats/mps/MpsSemantics.kt": "559fa6f1974c1cf61ab6eae2f25df0fd0bff7cada7235331f099f99a816cca08",
+      "klause-cli/src/commonMain/kotlin/com/eignex/klause/cli/MpsMode.kt": "77b5a347ce185c637b35cd38327500191a9bbacae5c7d4a5b4c375c0f9b67db2",
+      "klause-cli/src/commonMain/kotlin/com/eignex/klause/cli/SourceOptions.kt": "721f7c4955a55d3b60cf43b62555454a61a5108791aeedb372443092aeb7dd23",
+      "klause-cli/src/commonMain/kotlin/com/eignex/klause/cli/CliMode.kt": "2042b355182e43860fb744e38357adc9bbf832aff177aab9dc827b3fd9caef99"
+    },
+    "cliJarSha256": "9157e65a05dc6ec2def9ddb889343fbedea5ec926d774022d09d08b777333613",
+    "libraryJarSha256": "ec06c959919fc0048420a167d6f13c6da690d337629c68aad443a0771a6b23af",
+    "limitation": "Historical record has no machine-readable declaration; supplemental policy is a separately identified replay condition, never a replacement declaration."
+  }
+}

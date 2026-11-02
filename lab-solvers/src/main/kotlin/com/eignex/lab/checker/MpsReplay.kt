@@ -21,12 +21,14 @@ object MpsReplay : BenchSuite {
         return checks.mapIndexed { index, value ->
             val item = value.jsonObject
             val required = setOf("model", "record", "expected", "origin", "control")
-            require(item.keys == required || item.keys == required + "root")
+            require(item.keys.containsAll(required) && item.keys.all { it in required + setOf("root", "numericalSemantics", "semanticsOrigin", "expectedConfigured") })
+            require(("numericalSemantics" in item) == ("semanticsOrigin" in item)) { "Supplemental semantics require an explicit origin" }
             val model = item.getValue("model").jsonPrimitive.content
             val root = item["root"]?.jsonPrimitive?.content?.let { BenchInputRoot.valueOf(it) } ?: BenchInputRoot.SOURCE
             val record = item.getValue("record").jsonObject
             val hash = record.getValue("sourceHashes").jsonObject.getValue("model").jsonPrimitive.content
             require(item.getValue("expected").jsonPrimitive.content in LabCheck.STATES)
+            item["expectedConfigured"]?.let { require(it.jsonPrimitive.content in LabCheck.STATES) }
             require(item.getValue("control").jsonObject.keys.all { it in setOf("finalWitness", "exactObjective") })
             BenchCase("mps-replay-$index", parameters = mapOf("check" to item.toString()),
                 resources = BenchResources(cpus = 1, memoryMiB = 512, timeoutSeconds = 150, requiredTags = setOf("platform:linux", "arch:x86_64")),
@@ -46,20 +48,25 @@ object MpsReplay : BenchSuite {
         val source = path.toFile()
         require(sha256(source) == input.sha256) { "Frozen original source digest differs" }
         val original = item.getValue("record").jsonObject
-        val effective = JsonObject(original + item.getValue("control").jsonObject)
+        require("numericalSemantics" !in item || original["numericalSemantics"] == null) { "Cannot replace retained semantics" }
+        val effective = JsonObject(original + item.getValue("control").jsonObject +
+            item["numericalSemantics"]?.let { mapOf("numericalSemantics" to it) }.orEmpty())
         val output = context.outputDirectory
         output.resolve("original-record.json").writeText(original.toString())
         output.resolve("effective-record.json").writeText(effective.toString())
         output.resolve("origin.json").writeText(item.getValue("origin").toString())
         source.copyTo(output.resolve("original.mps").toFile())
         val scratch = output.resolve("scratch").toFile()
-        // The same router used by Checkers.of; legacy tool setup is lazy, so exact rational checks need none.
-        val adapter = RationalMpsChecker(MpsChecker(Solchecker(output.resolve("tools").toFile())::binary))
+        // Use the ordinary point-checking path, without starting a solver or external tool.
+        val adapter = RationalMpsChecker()
         val verdict = SourceChecker(listOf(adapter), SourceLocator(root.toFile()), scratch)
             .check(Problem("mps-replay", source.nameWithoutExtension, format = "MPS", model = source.path), effective)
         output.resolve("lab-check.json").writeText(verdict?.json() ?: "null")
         val expected = item.getValue("expected").jsonPrimitive.content
-        val accepted = verdict != null && verdict.state == expected && verdict.policy == Policies.MPS_EXACT
+        val strict = verdict?.mpsChecks?.exact
+        val expectedConfigured = item["expectedConfigured"]?.jsonPrimitive?.content
+        val accepted = strict != null && strict.state == expected && strict.policy == Policies.MPS_EXACT &&
+            (expectedConfigured == null || verdict?.mpsChecks?.configured?.state == expectedConfigured)
         return BenchResult(case.id, status = if (accepted) BenchStatus.SUCCESS else BenchStatus.FAILED,
             message = if (accepted) null else "Expected exact policy $expected; got ${verdict?.state}: ${verdict?.reason}",
             artifacts = listOf("original-record.json", "effective-record.json", "origin.json", "original.mps", "lab-check.json")
@@ -67,6 +74,7 @@ object MpsReplay : BenchSuite {
             details = buildJsonObject {
                 put("scope", "retained exact feasible point; no optimality/proof/performance claim")
                 put("origin", item.getValue("origin")); put("expected", expected)
+                item["semanticsOrigin"]?.let { put("semanticsOrigin", it) }
                 put("labCheck", verdict?.let { Json.parseToJsonElement(it.json()) } ?: JsonNull)
                 put("javaVersion", System.getProperty("java.runtime.version"))
                 put("os", System.getProperty("os.name")); put("arch", System.getProperty("os.arch"))
