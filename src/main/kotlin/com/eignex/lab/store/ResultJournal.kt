@@ -284,7 +284,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             // A large existing pack is published alone; ordinary groups share one waited volume barrier.
             if (grouped && !first.individualRetry && bytes <= 4L * 1024 * 1024) {
                 for (batch in batches.values) {
-                    if (group.size == 32) break
+                    if (group.size == 128) break
                     if (batch === first || batch.manifest.job != first.manifest.job || batch.individualRetry || !eligible(batch)) continue
                     val next = batch.manifest.blobs.sumOf { it.bytes }
                     if (next > 4L * 1024 * 1024 - bytes) continue
