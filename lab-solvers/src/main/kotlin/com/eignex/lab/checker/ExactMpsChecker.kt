@@ -9,24 +9,30 @@ import java.math.BigDecimal
 import java.math.BigInteger
 
 /** A narrow MPS point evaluator, independent of Klause's parser, model and acceptance code. */
-class ExactMpsChecker(
-    private val timeoutMs: Long = 120_000,
-    private val nanoTime: () -> Long = System::nanoTime,
+class ExactMpsChecker private constructor(
+    private val timeoutMs: Long,
+    private val nanoTime: () -> Long,
+    private val semantics: MpsNumericalSemantics?,
 ) : FormatChecker {
+    constructor(timeoutMs: Long = 120_000, nanoTime: () -> Long = System::nanoTime) : this(timeoutMs, nanoTime, null)
     override val format = "MPS"
-    override val policy = Policies.MPS_EXACT
+    override val policy = if (semantics == null) Policies.MPS_EXACT else Policies.MPS_DECLARED
     override val checker = "Eignex Lab independent rational MPS point checker"
 
     override fun check(case: CheckCase, work: File): Verdict {
         val budget = MpsCheckBudget(timeoutMs, nanoTime)
+        val policySource = javaClass.getResourceAsStream("/checker-source/com/eignex/lab/checker/MpsPolicyChecks.kt")
+            ?.use { sha256(it.readBytes()) }
         val sourceIdentity = javaClass.getResourceAsStream("/checker-source/com/eignex/lab/checker/ExactMpsChecker.kt")
             ?.use { sha256(it.readBytes()) }
         val location = File(javaClass.protectionDomain.codeSource.location.toURI())
         val binaryHash = location.takeIf { it.isFile }?.let(::sha256)
-        fun done(state: String, reason: String) = Verdict(state, reason, "1 (source sha256 $sourceIdentity)", binaryHash,
-            diagnostic = "exact rational arithmetic; zero tolerance; feasible point only; ${budget.operations} operations; " +
+        var point: ExactMpsPoint? = null
+        fun done(state: String, reason: String) = Verdict(state, reason, "1 (source sha256 $sourceIdentity)${if (semantics == null) "" else " (policy source sha256 $policySource)"}", binaryHash,
+            diagnostic = "exact rational arithmetic; ${if (semantics == null) "zero tolerance" else "declared source tolerance"}; feasible point only; ${budget.operations} operations; " +
                 "source <= $MAX_SOURCE bytes, witness <= $MAX_WITNESS chars, terms <= $MAX_TERMS, scalars <= ${MpsQ.MAX_BITS} bits; " +
-                "deadline ${timeoutMs}ms; parser failures=unknown, unsupported/resource caps=unsupported, timeout=not-run")
+                "deadline ${timeoutMs}ms; parser failures=unknown, unsupported/resource caps=unsupported, timeout=not-run",
+            mpsObjective = point?.takeIf { it.objectiveKnown }?.objective?.toString(), mpsSense = point?.sense)
         return try {
             val expected = (case.record["sourceHashes"] as? kotlinx.serialization.json.JsonObject)?.get("model")
                 ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
@@ -49,11 +55,12 @@ class ExactMpsChecker(
             }
             if (sha256(bytes) != expected) throw MpsCheckFailure(LabCheck.NOT_RUN, "source identity: original model hash differs")
             val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
-            val point = ExactMpsPoint(budget)
-            point.read(text)
+            val evaluator = ExactMpsPoint(budget, semantics)
+            point = evaluator
+            evaluator.read(text)
             val objective = case.claimedObjective ?: return done(LabCheck.UNKNOWN, "incomplete claim: no exact objective")
-            point.check(case.witness, objective)
-            done(LabCheck.VALID, "exact feasible point accepted; ${point.sense} objective ${point.objective}; no optimality or bound checked")
+            evaluator.check(case.witness, objective)
+            done(LabCheck.VALID, "${if (semantics == null) "exact" else "declared-policy"} feasible point accepted; ${evaluator.sense} objective ${evaluator.objective}; no optimality or bound checked")
         } catch (e: MpsCheckFailure) {
             done(e.state, e.message.orEmpty())
         } catch (e: InterruptedException) {
@@ -64,25 +71,11 @@ class ExactMpsChecker(
     }
 
     companion object {
+        internal fun configured(semantics: MpsNumericalSemantics) = ExactMpsChecker(120_000, System::nanoTime, semantics)
         const val MAX_SOURCE = 16 * 1024 * 1024
         const val MAX_WITNESS = 8 * 1024 * 1024
         const val MAX_TERMS = 200_000
         internal fun unsupported(why: String): Nothing = throw MpsCheckFailure(LabCheck.UNSUPPORTED, "unsupported: $why")
-    }
-}
-
-/** Fractions go straight to exact checking. Other legacy coverage is retained under its own policy. */
-class RationalMpsChecker(private val legacy: FormatChecker, private val exact: FormatChecker = ExactMpsChecker()) : FormatChecker {
-    override val format = "MPS"
-    override val policy = Policies.MPS_EXACT
-    override val checker = "MPS source checker router"
-    override fun check(case: CheckCase, work: File): Verdict {
-        fun run(adapter: FormatChecker) = adapter.check(case, work).let {
-            it.copy(policy = it.policy ?: adapter.policy, checker = it.checker ?: adapter.checker)
-        }
-        if ('/' in case.witness || '/' in case.claimedObjective.orEmpty()) return run(exact)
-        val previous = run(legacy)
-        return if (previous.state == LabCheck.UNSUPPORTED) run(exact) else previous
     }
 }
 
@@ -103,7 +96,7 @@ private class MpsCheckBudget(timeoutMs: Long, private val clock: () -> Long) {
 }
 
 /** Normalized rationals. Every operand and intermediate is bounded; no floating conversion or rounding. */
-private data class MpsQ private constructor(val n: BigInteger, val d: BigInteger) : Comparable<MpsQ> {
+internal data class MpsQ private constructor(val n: BigInteger, val d: BigInteger) : Comparable<MpsQ> {
     operator fun plus(b: MpsQ) = of(n * b.d + b.n * d, d * b.d)
     operator fun unaryMinus() = of(-n, d)
     operator fun minus(b: MpsQ) = this + -b
@@ -139,7 +132,7 @@ private data class MpsQ private constructor(val n: BigInteger, val d: BigInteger
     }
 }
 
-private class ExactMpsPoint(private val budget: MpsCheckBudget) {
+private class ExactMpsPoint(private val budget: MpsCheckBudget, private val semantics: MpsNumericalSemantics?) {
     private data class Row(val type: String, val terms: MutableMap<String, MpsQ> = linkedMapOf(),
                            var rhs: MpsQ = MpsQ.ZERO, var range: MpsQ? = null)
     private data class Column(var integer: Boolean, var lower: MpsQ? = MpsQ.ZERO, var upper: MpsQ? = null,
@@ -149,6 +142,8 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
     private var objectiveRow: String? = null
     private var senseRead = false
     var sense = "MIN"
+        private set
+    var objectiveKnown = false
         private set
     var objective = MpsQ.ZERO
         private set
@@ -264,7 +259,13 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
         }
         if (importances && importanceColumns.isEmpty()) syntax("empty IMPORTANCES")
         if (!ended || "ROWS" !in seen || "COLUMNS" !in seen || objectiveRow == null || integer) syntax("incomplete MPS sections/markers")
-        for (col in columns.values) if (col.integer && !col.bounded) col.upper = MpsQ.ONE
+        for (col in columns.values) if (!col.bounded) {
+            if (semantics != null) {
+                val defaults = if (col.integer) semantics.integers else semantics.reals
+                col.lower = defaults.first
+                col.upper = defaults.second
+            } else if (col.integer) col.upper = MpsQ.ONE
+        }
     }
 
     private fun readSense(s: String) {
@@ -276,6 +277,10 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
             else -> syntax("OBJSENSE $s")
         }
     }
+
+    private fun slack(bound: MpsQ, magnitude: MpsQ = MpsQ.ZERO): MpsQ = semantics?.let {
+        maxOf(it.absolute, it.relative * maxOf(bound.abs(), magnitude))
+    } ?: MpsQ.ZERO
 
     fun check(witness: String, claimed: String) {
         if (witness.length > ExactMpsChecker.MAX_WITNESS) ExactMpsChecker.unsupported("witness size limit")
@@ -292,17 +297,30 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
         }
         budget.tick()
         if (values.size != columns.size) throw MpsCheckFailure(LabCheck.UNKNOWN, "incomplete witness: missing source coordinates")
+        val objectiveSource = rows.getValue(objectiveRow!!)
+        objective = -objectiveSource.rhs
+        for ((column, coefficient) in objectiveSource.terms) {
+            budget.tick()
+            objective += coefficient * values.getValue(column)
+        }
+        objectiveKnown = true
         for ((name, col) in columns) {
             budget.tick()
             val x = values.getValue(name)
             if (col.integer && x.d != BigInteger.ONE) invalid("integrality of $name")
-            if (col.lower?.let { x < it } == true || col.upper?.let { x > it } == true) invalid("bound of $name")
+            if (col.lower?.let { x < it - slack(it) } == true || col.upper?.let { x > it + slack(it) } == true) invalid("bound of $name")
         }
         for ((name, row) in rows) {
             budget.tick()
             var activity = MpsQ.ZERO
-            for ((column, coefficient) in row.terms) { budget.tick(); activity += coefficient * values.getValue(column) }
-            if (name == objectiveRow) { objective = activity - row.rhs; continue }
+            var magnitude = MpsQ.ZERO
+            for ((column, coefficient) in row.terms) {
+                budget.tick()
+                val term = coefficient * values.getValue(column)
+                activity += term
+                magnitude += term.abs()
+            }
+            if (name == objectiveRow) continue
             val r = row.range
             val lower = when (row.type) {
                 "G" -> row.rhs
@@ -316,7 +334,7 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget) {
                 "G" -> r?.let { row.rhs + it.abs() }
                 else -> null
             }
-            if (lower?.let { activity < it } == true || upper?.let { activity > it } == true) invalid("row $name")
+            if (lower?.let { activity < it - slack(it, magnitude) } == true || upper?.let { activity > it + slack(it, magnitude) } == true) invalid("row $name")
         }
         budget.tick()
         if (objective != MpsQ.read(claimed)) invalid("$sense objective differs: reconstructed $objective")

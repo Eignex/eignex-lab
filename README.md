@@ -13,7 +13,19 @@ eignex-lab operations; report operational dependencies to that owner.
 `control` for each check. Optional `root=CORPUS` resolves the model under the frozen
 corpus; the default `SOURCE` uses the repository. Source hashes are required, and
 `control` permits only witness or exact-objective changes for explicit negative
-checks. Receipts validate points, without proving optimality or performance.
+checks. Receipts validate points, without proving optimality or performance. Optional
+`numericalSemantics` with an explicit `semanticsOrigin` supplies a separately
+identified conditional replay policy; it cannot replace a retained declaration.
+`expected` checks the exact verdict and optional `expectedConfigured` checks the
+configured verdict. Historical records without declarations remain unqualified.
+
+MPS checks use rational arithmetic for every witness spelling. `labCheck.mpsChecks`
+retains zero-tolerance and declared-policy verdicts independently. A supported
+`numericalSemantics` declaration identifies exact decimal source authority,
+absolute/relative feasibility slack and effective default bounds; integrality and
+objective equality remain exact. Comparison identity binds that effective policy,
+independent checker rules, source digest, original objective sense/units and whole
+model scope without assumptions. A point verdict supplies no optimum authority.
 
 **Auto placement is preferred and is the default for ordinary jobs.** Omit `tags`: the lab uses
 idle local capacity and adds cloud capacity as demand grows, respecting job priority.

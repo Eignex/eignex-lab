@@ -32,7 +32,7 @@ dependencies {
 // The exact checkers name the hash of their own source in each verdict, so the source ships beside the classes.
 tasks.processResources {
     from("src/main/kotlin") {
-        include("com/eignex/lab/checker/ExactMpsChecker.kt", "com/eignex/lab/checker/DimacsSourceEvaluation.kt")
+        include("com/eignex/lab/checker/ExactMpsChecker.kt", "com/eignex/lab/checker/MpsPolicyChecks.kt", "com/eignex/lab/checker/DimacsSourceEvaluation.kt")
         into("checker-source")
     }
 }

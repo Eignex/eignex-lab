@@ -50,8 +50,9 @@ class MpsReplayTest {
                 assertEquals(BenchStatus.SUCCESS, result.status, result.message)
                 assertEquals(record, Json.parseToJsonElement(context.outputDirectory.resolve("original-record.json").toFile().readText()))
                 val verdict = LabCheck.parse(context.outputDirectory.resolve("lab-check.json").toFile().readText())!!
-                assertEquals(expected, verdict.state)
-                assertEquals(Policies.MPS_EXACT, verdict.policy)
+                assertEquals(expected, verdict.mpsChecks!!.exact.state)
+                assertEquals(Policies.MPS_EXACT, verdict.mpsChecks!!.exact.policy)
+                assertEquals(LabCheck.UNKNOWN, verdict.state)
                 assertEquals(5, result.artifacts.size)
             }
         }

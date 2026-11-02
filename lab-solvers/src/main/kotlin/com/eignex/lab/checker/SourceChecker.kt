@@ -36,6 +36,9 @@ data class Verdict(
     val diagnostic: String? = null,
     val resourceReceipts: List<ToolResourceReceipt> = emptyList(),
     val inputs: List<CheckedInput> = emptyList(),
+    val mpsChecks: MpsPolicyChecks? = null,
+    val mpsObjective: String? = null,
+    val mpsSense: String? = null,
 )
 
 /** One assignment or proof checker for a source format. Full solvers must never be used as checkers. */
@@ -90,6 +93,7 @@ class SourceChecker(
             elapsedMs = clock() - started, diagnostic = verdict.diagnostic?.take(DIAGNOSTIC_CAP),
             resourceReceipts = verdict.resourceReceipts,
             inputs = verdict.inputs,
+            mpsChecks = verdict.mpsChecks,
         )
         return try {
             run(adapter, problem, record, witness, hashes, revision, miniZincFrame)
