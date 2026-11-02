@@ -23,24 +23,27 @@ import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /** A bounded experiment session. Infrastructure failures exit nonzero; ordinary solver outcomes are committed. */
 class WorkerSession(private val api: URI, private val id: String, private val token: String, private val allocation: String,
                     private val identityFile: Path, private val release: String, private val root: Path,
                     private val supervisorSocket: Path, private val launcher: String, private val privateTransport: Boolean = false,
-                    private val client: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build()) {
+                    private val client: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build(),
+                    drainFile: Path? = System.getenv("LAB_WORKER_DRAIN_FILE")?.let(Path::of)) {
     init { require(api.scheme == "https" || (api.scheme == "http" && (privateTransport || api.host in setOf("127.0.0.1", "localhost", "::1")))); require(api.userInfo == null && api.rawQuery == null) }
     private val runDeadline = AtomicLong(Long.MAX_VALUE)
     private val retryLeaseDeadline = AtomicLong(Long.MAX_VALUE)
     private val retries = WorkerRetry()
+    private val interruption = WorkerInterruption(drainFile)
     @Volatile internal var preparationRecorder: PreparationRecorder? = null
-    private fun leaseRemainingMs(): Long = retryLeaseDeadline.get().takeIf { it != Long.MAX_VALUE }
-        ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE
+    private fun leaseRemainingMs(): Long = minOf(interruption.remainingMs(), retryLeaseDeadline.get().takeIf { it != Long.MAX_VALUE }
+        ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE)
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
     private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
     private fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
         val started = System.nanoTime()
-        val timeout = if (path == "run-timeout") 30_000L else if (path == "preparation-diagnostics") {
+        val timeout = if (path == "resource-checkpoint") 3_000L else if (path == "run-timeout") 30_000L else if (path == "preparation-diagnostics") {
             // Evidence only: do not extend work, retry, or accept writes after the owning lease expires.
             val lease = leaseRemainingMs()
             if (lease <= 0) throw ExecutionFenced("worker lease expired")
@@ -101,9 +104,24 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
             builds, inputCache, workspaceStorage.workspaces)
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
+        val resourcesStarted = System.nanoTime()
+        val resourceOwner = AtomicReference<AttemptOwner?>()
+        fun checkpoint(retirement: String? = null) {
+            val owner = resourceOwner.get() ?: return
+            runCatching {
+                val sample = ResourceCheckpoint((System.nanoTime() - resourcesStarted) / 1_000_000,
+                    observation.budget, observation.enforcement, observation.cpuMax, observation.memoryMax,
+                    ResourceObservation.counters(), "worker-cumulative-lower-bound", retirement)
+                json("resource-checkpoint", Json.encodeToString(WorkerResourceCheckpoint(owner, sample)))
+            } // Evidence has a short single-request timeout; it must never block work recovery.
+        }
+        val resourceReporter = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-resources").apply { isDaemon = true } }
+        val shutdownHook = Thread({ checkpoint(if (interruption.requested()) "provider-interruption" else "worker-shutdown") }, "worker-retirement")
+        Runtime.getRuntime().addShutdownHook(shutdownHook)
+        resourceReporter.scheduleWithFixedDelay({ checkpoint() }, 0, 5, TimeUnit.SECONDS)
         try {
         while (true) {
-            if (System.getenv("LAB_WORKER_DRAIN_FILE")?.let { Files.exists(Path.of(it)) } == true) return
+            if (interruption.requested()) return
             val response = retry { json("claim", "{}") }
             if (response.statusCode() == 204) return
             val claim = Json.decodeFromString<IterationClaim>(String(response.body()))
@@ -122,11 +140,13 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 retryLeaseDeadline.set(deadline.get())
             }
             retry { renew() }
+            resourceOwner.set(claim.owner)
+            checkpoint()
             val heartbeat = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-lease").apply { isDaemon = true } }
             heartbeat.scheduleWithFixedDelay({
                 try { renew() } catch (_: ExecutionFenced) { deadline.set(0) } catch (_: Exception) { /* Existing monotonic deadline remains authoritative. */ }
             }, 10, 10, TimeUnit.SECONDS)
-            fun remaining() = (deadline.get() - System.nanoTime()) / 1_000_000
+            fun remaining() = minOf(interruption.remainingMs(), (deadline.get() - System.nanoTime()) / 1_000_000)
             fun phase(value: String) { if (remaining() <= 0) throw LeaseLost("attempt lease ended"); retry { json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
             val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
             val logs = streamLogs(claim, directory)
@@ -211,11 +231,20 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 retry(ignoreRunDeadline = true) { json("run-timeout", Json.encodeToString(claim.owner)) }
                 return
             } catch (failure: WorkerBuildFailure) {
+                if (interruption.requested()) return
                 retry { json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return
             } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow(); retryLeaseDeadline.set(Long.MAX_VALUE) }
         }
-        } finally { try { nativeOwnership?.close() } finally { workspaceStorage.close() } }
+        } catch (failure: Exception) {
+            // A known provider withdrawal is routine replacement, never a deterministic build poison pill.
+            if (!interruption.requested()) throw failure
+        } finally {
+            resourceReporter.shutdownNow()
+            checkpoint(if (interruption.requested()) "provider-interruption" else null)
+            runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
+            try { nativeOwnership?.close() } finally { workspaceStorage.close() }
+        }
     }
 
     private fun streamLogs(claim: IterationClaim, directory: Path): AutoCloseable {

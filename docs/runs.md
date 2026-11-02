@@ -158,6 +158,17 @@ legacy confirmations retain their local-only execution policy. Repository bench 
 run's placement and pinned build platform instead of being forced onto a native worker. Schedule responses expose the same editable tags
 format, including the local tag for historical local schedules.
 
+Spot interruption is normal worker replacement. A provider warning stops new claims immediately and gives
+the current row at most 45 seconds to finish inside the host's 60-second drain. Accepted rows remain accepted;
+an unfinished row is replaced in full, preserving its spent allowance and all failed-attempt costs.
+Workers send bounded resource checkpoints every five seconds and on retirement, independently of result
+publication. `/jobs/ID/execution` exposes each session's latest `resources` with the explicit
+`worker-cumulative-lower-bound` scope. These counters include child processes, are cumulative within one worker,
+and must not be summed across its snapshots or treated as a final total. Later cleanup/delivery CPU remains
+unknown. Authenticated checkpoints may arrive briefly after fencing; they cannot renew work or accept a case.
+Nomad-assigned pending preparations reserve their node's compiler slots before image pull and registration,
+allowing other preparations and replacements to be placed without granting an early worker claim.
+
 The **Nodes** tab shows the local machine, cloud pools, active nodes, and their allocations. To start a specific
 kind of cloud node, select its configured pool by CPU, memory, architecture/SIMD tags, and Spot or on-demand market.
 Choose the minimum total nodes to keep in that pool and a duration of 15–60 minutes. Existing nodes count toward

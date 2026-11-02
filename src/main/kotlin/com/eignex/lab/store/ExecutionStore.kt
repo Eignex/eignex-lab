@@ -155,7 +155,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     fun reports(job: Long): List<ExecutionSessionReport> = store.executionRead { db ->
-        db.sqlRows("SELECT $SESSION_COLUMNS, observed_at, observation FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
+        db.sqlRows("SELECT $SESSION_COLUMNS, observed_at, observation, resource_checkpoint FROM execution_sessions WHERE job_id = ? ORDER BY created_at, id", job) { row ->
             val s = sessionRow(row)
             val active = db.sqlRows("SELECT state, generation, preparation_progress, preparation_updated_at, preparation_caches, preparation_diagnostics FROM iteration_attempts WHERE session_id = ? ORDER BY generation DESC, started_at DESC LIMIT 1", s.id) { attempt ->
                 Triple(attempt.getString(1), attempt.getInt(2), attempt.getString(3)?.let {
@@ -166,11 +166,48 @@ class ExecutionStore internal constructor(private val store: Store) {
             }.singleOrNull()
             val done = db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE session_id = ? AND state = 'committed'", s.id) { it.getInt(1) }.single()
             val observed = row.getObject("observed_at")?.let { row.getLong("observed_at") }
-            ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed, active?.third)
+            ExecutionSessionReport(s, active?.first, active?.second, done, row.getString("observation"), observed, active?.third,
+                row.getString("resource_checkpoint")?.let { Json.decodeFromString<ResourceCheckpoint>(it) })
         }
     }
     internal fun activePreparations(): List<ExecutionSession> = store.executionRead { db ->
         db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE desired != 'stop' AND execution_class IN ('prepare', 'build')", map = ::sessionRow)
+    }
+
+    /** A Nomad scheduling hint, never authentication, ownership or a charged claim. Pending image
+     * pulls reserve compiler placement without serializing a whole pool until worker registration. */
+    internal fun preparationNode(id: String, node: String?) = store.executionTransaction { db ->
+        require(node == null || node.isNotBlank())
+        db.sqlUpdate("UPDATE execution_sessions SET node_id = ? WHERE id = ? AND allocation_id IS NULL AND desired != 'stop' AND execution_class = 'prepare'", node, id)
+    }
+
+    /** Late cost evidence never renews a lease or accepts a result. Attempt token and bound allocation
+     * still authenticate it; only the newest cumulative sample survives, bounded to one per session. */
+    fun resourceCheckpoint(owner: AttemptOwner, checkpoint: ResourceCheckpoint, at: Long = now()) = store.executionTransaction { db ->
+        val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown resource attempt")
+        val session = db.session(owner.session) ?: throw ExecutionFenced("unknown resource session")
+        if (session.allocation != owner.allocation || at > attempt.leaseUntil + 120_000) throw ExecutionFenced("resource evidence expired")
+        require(checkpoint.budget == session.budget) { "resource budget differs from reservation" }
+        val prior = db.sqlRows("SELECT resource_checkpoint FROM execution_sessions WHERE id = ?", session.id) {
+            it.getString(1)?.let { value -> Json.decodeFromString<ResourceCheckpoint>(value) }
+        }.single()
+        val stale = prior != null && (checkpoint.elapsedMs < prior.elapsedMs ||
+            prior.cpuUsec?.let { before -> checkpoint.cpuUsec?.let { it < before } ?: true } == true)
+        if (checkpoint.retirement != null && session.desired != Desired.STOP) {
+            val active = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", session.id, map = ::attemptRow)
+            require(active.all { it.iteration == owner.iteration && it.generation == owner.generation }) { "retirement attempt superseded" }
+            val reason = "interrupted:${checkpoint.retirement}"
+            db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason, session.id)
+            active.forEach { db.invalidate(it, "lost", at) }
+            db.stopIntent(session)
+            db.event(session.jobId, session.id, reason, at)
+            db.sqlUpdate("UPDATE jobs SET run_ms = run_ms + COALESCE(? - running_since, 0), running_since = NULL WHERE id = ? AND backend = 'nomad' AND status = 'RUNNING' AND NOT EXISTS (SELECT 1 FROM execution_sessions WHERE job_id = ? AND desired != 'stop')", at, session.jobId, session.jobId)
+        }
+        val best = if (stale) requireNotNull(prior) else checkpoint
+        val retirement = if (checkpoint.retirement == "provider-interruption" || prior?.retirement == "provider-interruption") "provider-interruption"
+            else checkpoint.retirement ?: prior?.retirement
+        val next = best.copy(retirement = retirement)
+        db.sqlUpdate("UPDATE execution_sessions SET resource_checkpoint = ? WHERE id = ?", Json.encodeToString(next), session.id)
     }
 
     /** Sessions not yet stopped, through the partial index on them. */

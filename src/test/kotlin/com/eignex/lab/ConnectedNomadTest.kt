@@ -133,6 +133,8 @@ class ConnectedNomadTest {
     @Test fun `real Nomad allocation authenticates runs a paired iteration and commits through HTTP`() {
         assumeTrue(System.getenv("LAB_NOMAD_INTEGRATION") == "1")
         val state = Path.of(System.getenv("LAB_NOMAD_TEST_STATE"))
+        val interruptionFlag = state.resolve("status/draining")
+        Files.deleteIfExists(interruptionFlag)
         val root = Files.createTempDirectory(state, "lab-")
         val store = Store(root.resolve("lab.db")); val artifacts = LocalArtifactStore(root.resolve("artifacts"))
         val client = NomadClient(URI.create(System.getenv("LAB_NOMAD_TEST_ADDRESS")), state.resolve("coordinator.token"), NomadClient.tlsClient(state.resolve("client.p12"), state.resolve("trust.p12"), state.resolve("store-password")))
@@ -180,7 +182,7 @@ class ConnectedNomadTest {
         var server = embeddedServer(Netty, host = "127.0.0.1", port = port) { workerApi(store, backend, artifacts) { true } }.start()
         val session = backend.enqueue(job, manifest, template, "http://127.0.0.1:$port")
         try {
-            var restarted = false; var lost = false; var sawLive = false
+            var restarted = false; var lost = false; var sawLive = false; var interrupted = false
             val deadline = System.nanoTime() + 120_000_000_000
             while (System.nanoTime() < deadline) {
                 backend.reconcile()
@@ -203,6 +205,10 @@ class ConnectedNomadTest {
                     check(ProcessBuilder("docker", "kill", "--signal=KILL", container).start().waitFor() == 0)
                     lost = true
                 }
+                if (lost && !interrupted && store.execution.sessions(job).size >= 2 && current.commands.first().status == Status.RUNNING) {
+                    Files.createFile(interruptionFlag)
+                    interrupted = true
+                }
                 if (store.job(job)!!.status in setOf(Status.DONE, Status.FAILED)) break
                 Thread.sleep(250)
             }
@@ -210,7 +216,7 @@ class ConnectedNomadTest {
             assertTrue(store.job(job)!!.commands.all { it.exitCode == 0 }, "every committed profile process succeeded")
             assertTrue(sawLive, "case output was visible before paired acceptance")
             assertTrue(Files.readString(root.resolve("jobs/$job/job.log")).contains("status: DONE"))
-            assertTrue(restarted && lost, "both coordinator restart and forced allocation loss ran")
+            assertTrue(restarted && lost && interrupted, "coordinator restart, forced loss and provider warning all ran")
             assertTrue(store.execution.sessions(job).size >= 2)
             assertEquals(2, store.job(job)!!.done)
             assertEquals(1, store.execution.accepted(job).size)
@@ -222,12 +228,20 @@ class ConnectedNomadTest {
             val exited = System.nanoTime() + 10_000_000_000
             while (client.allocation(acceptedAllocation)?.client !in setOf("complete", "failed", "lost") && System.nanoTime() < exited) Thread.sleep(100)
             assertTrue(client.allocation(acceptedAllocation)?.client in setOf("complete", "failed", "lost"), "accepted worker exited")
+            val reports = store.execution.reports(job)
+            val failedResources = assertNotNull(reports.single { it.session.id == session.id }.resources)
+            assertTrue(assertNotNull(failedResources.cpuUsec) > 0, "failed worker cost checkpoint survived allocation loss")
+            val retiredResources = assertNotNull(reports.single { it.committed > 0 }.resources)
+            assertEquals("provider-interruption", retiredResources.retirement)
+            assertEquals("worker-cumulative-lower-bound", retiredResources.scope)
+            assertEquals(1, store.execution.accepted(job).size, "provider warning retained the complete accepted pair")
             val attempts = state.resolve("data/alloc/$acceptedAllocation/worker/local/worker/attempts")
             assertTrue(!Files.exists(attempts) || Files.list(attempts).use { !it.findAny().isPresent }, "accepted private workspaces are released")
             // A fresh coordinator replays no submission and preserves accepted work.
             NomadBackend(Store(root.resolve("lab.db")), client, artifacts, { root.resolve("jobs/$it") }).reconcile()
             assertEquals(Status.DONE, store.job(job)!!.status)
         } finally {
+            Files.deleteIfExists(interruptionFlag)
             store.requestCancel(job)
             for (s in store.execution.sessions(job)) client.stop(s.nomadJobId)
             server.stop(1000, 3000)

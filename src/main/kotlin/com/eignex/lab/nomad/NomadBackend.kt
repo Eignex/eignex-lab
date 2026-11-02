@@ -366,6 +366,9 @@ class NomadBackend(
             }
             val allocations = nomad.allocations(s.nomadJobId)
             store.execution.observed(s.id, allocations.joinToString { "${it.id}:${it.client}:${it.node}" })
+            if (s.allocation == null && s.executionClass == ExecutionClass.PREPARE) {
+                store.execution.preparationNode(s.id, allocations.filter { it.active }.singleOrNull()?.node?.takeIf { it.isNotBlank() })
+            }
             if (!current.paused && s.allocation == null && allocations.isEmpty()) {
                 val submission = Json.parseToJsonElement(store.execution.submission(s.id)).jsonObject
                 if (placement(submission, s.budget) != submission &&
@@ -390,6 +393,7 @@ class NomadBackend(
                 store.execution.loseSession(s.id, when {
                     current.paused || s.desired == Desired.DRAIN -> "drained"
                     bound?.client == "complete" && !store.execution.hasActiveAttempt(s.id) -> "idle"
+                    bound?.desired == "stop" && bound.client in setOf("pending", "running", "lost") -> "retired:allocation-stopped"
                     else -> "infrastructure:${bound?.client ?: "failed"}"
                 })
             }
