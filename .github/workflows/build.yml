@@ -64,6 +64,15 @@ jobs:
         run: |
           mkdir -p build/workspace-test-results
           cp build/test-results/test/TEST-com.eignex.lab.WorkerWorkspacesTest.xml build/workspace-test-results/
+      - name: Preserve initial file inventory regression receipts
+        if: always()
+        run: |
+          mkdir -p build/inventory-test-results
+          for receipt in JobFileInventoryTest AcceptedArtifactFilesTest; do
+            if [ -f "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" ]; then
+              cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/inventory-test-results/
+            fi
+          done
       - name: Verify representative warm preparation work
         run: ./gradlew :verifyPreparationPerformance
         env:
@@ -111,6 +120,7 @@ jobs:
             build/checker-test-results/
             build/journal-test-results/
             build/workspace-test-results/
+            build/inventory-test-results/
             build/reports/tests/
             lab-bench/build/test-results/
             lab-bench/build/reports/tests/
