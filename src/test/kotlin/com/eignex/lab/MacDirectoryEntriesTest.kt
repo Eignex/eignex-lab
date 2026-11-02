@@ -35,6 +35,17 @@ class MacDirectoryEntriesTest {
         assertEquals(java.nio.file.attribute.FileTime.from(java.time.Instant.ofEpochSecond(1793570000, 123456789)).toString(), first.modified)
     }
 
+    @Test fun `directories omit type-specific file fields even when invalid attributes are packed`() {
+        val name = "directory".toByteArray()
+        val bytes = record().copyOf((88 + name.size + 1 + 7) / 8 * 8)
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder())
+        buffer.putInt(0, bytes.size); buffer.putInt(16, 0); buffer.putInt(28, 60)
+        buffer.putInt(32, name.size + 1); buffer.putInt(40, 2)
+        bytes.fill(0, 88); name.copyInto(bytes, 88)
+        val entry = assertNotNull(MacDirectoryEntries.decode(bytes + record("file"), 2)).first()
+        assertEquals("directory", entry.name); assertTrue(entry.directory); assertFalse(entry.regular); assertEquals(0L, entry.bytes)
+    }
+
     @Test fun `invalid masks errors lengths names and times cannot become verification observations`() {
         fun rejected(change: (ByteBuffer) -> Unit) {
             val bytes = record(); change(ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()))

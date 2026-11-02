@@ -76,15 +76,16 @@ internal object MacDirectoryEntries {
             if (length < 96 || length % 8 != 0 || length > bytes.size - offset) return null
             val mask = buffer.getInt(offset + 4)
             if (mask and requiredCommon != requiredCommon || buffer.getInt(offset + 24) != 0) return null
+            val type = buffer.getInt(offset + 40)
+            val regular = type == 1
             val nameOffset = buffer.getInt(offset + 28).toLong() + 28
             val nameBytes = buffer.getInt(offset + 32)
-            if (nameOffset < 96 || nameBytes !in 1..4096 || nameOffset + nameBytes > length) return null
+            // Type-specific file attributes are omitted for directories even with PACK_INVAL_ATTRS.
+            if (nameOffset < (if (regular) 96 else 88) || nameBytes !in 1..4096 || nameOffset + nameBytes > length) return null
             val start = offset + nameOffset.toInt()
             if (bytes[start + nameBytes - 1] != 0.toByte()) return null
             val name = String(bytes, start, nameBytes - 1, Charsets.UTF_8)
             if (name.isEmpty() || '/' in name || '\u0000' in name) return null
-            val type = buffer.getInt(offset + 40)
-            val regular = type == 1
             if (regular && buffer.getInt(offset + 16) and FILE_LENGTH == 0) return null
             fun time(at: Int): String? {
                 val seconds = buffer.getLong(offset + at); val nanos = buffer.getLong(offset + at + 8)
@@ -95,7 +96,7 @@ internal object MacDirectoryEntries {
             val changed = time(60) ?: return null
             val device = buffer.getInt(offset + 36).toLong()
             val inode = buffer.getLong(offset + 80)
-            val size = buffer.getLong(offset + 88)
+            val size = if (regular) buffer.getLong(offset + 88) else 0
             if (regular && size < 0) return null
             if (name !in setOf(".", "..")) result += Entry(name, type == 2, regular, size, modified, changed,
                 "(dev=${java.lang.Long.toHexString(device)},ino=$inode)", buffer.getInt(offset + 76) and 1 != 0)
