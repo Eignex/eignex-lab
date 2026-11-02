@@ -15,6 +15,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.response.header
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -26,14 +27,24 @@ internal fun Route.statusRoutes(services: ApiServices) {
     get("/") {
         val before = call.parameters["before"]?.let { it.toLongOrNull() ?: throw ApiError.Invalid("before must be a number") }
         val name = call.parameters["name"]?.takeIf { it.isNotBlank() }
-        val page = io {
-            val view = PageQueries(services).index(before, name)
-            // The runs each active job's estimate learns from, read now: the renderer only formats them.
-            val histories = view.active.associate { it.id to services.estimates.lookup(it) }
-            // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
-            indexPage(config.status, services.host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
-                view.queue, { histories[it.id] }, emptyMap(), view.hosts, view.nodes, view.instances, view.free, view.held)
+        val timings = ArrayList<Pair<String, Long>>()
+        fun <T> phase(name: String, read: () -> T): T {
+            val started = System.nanoTime()
+            return read().also { timings += name to (System.nanoTime() - started) }
         }
+        val page = io {
+            val view = phase("queries") { PageQueries(services).index(before, name) }
+            // The runs each active job's estimate learns from, read now: the renderer only formats them.
+            val histories = phase("estimates") { view.active.associate { it.id to services.estimates.lookup(it) } }
+            // Why a queued job waits is `lab placement`'s ([Waiting]); the page shows only its place in the queue.
+            phase("render") {
+                indexPage(config.status, services.host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
+                    view.queue, { histories[it.id] }, emptyMap(), view.hosts, view.nodes, view.instances, view.free, view.held)
+            }
+        }
+        val timing = timings.joinToString(", ") { (name, nanos) -> "$name;dur=${nanos / 1_000_000.0}" }
+        call.response.header("Server-Timing", timing)
+        if (timings.sumOf { it.second } >= 1_000_000_000L) println("slow queue page: $timing")
         call.respondHtml(page)
     }
     get("/disk") {
