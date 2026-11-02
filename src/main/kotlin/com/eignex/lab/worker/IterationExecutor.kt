@@ -170,7 +170,7 @@ internal class IterationExecutor(
         return null
     }
 
-    private fun environment(): Map<String, String> = workerEnvironment(os == "mac")
+    private fun environment(): Map<String, String> = workerExecutionEnvironment(os == "mac")
     private fun <T> withInput(bundle: WorkerBundle, check: () -> Unit, runtimeOnly: Boolean = false, use: (Path) -> T): T =
         if (inputCache != null) {
             if (runtimeOnly) inputCache.useRuntime(bundle, check, { bundleInput(bundle) }, use)
