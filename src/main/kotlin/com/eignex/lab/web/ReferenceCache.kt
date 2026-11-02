@@ -31,7 +31,7 @@ internal class ReferenceCache(private val store: Store) : AutoCloseable {
         Thread(task, "reference-refresh").apply { isDaemon = true }
     }
 
-    private fun version() = "${store.references.stamp()}/${store.lastFinished()}"
+    private fun version() = "${store.references.stamp()}/${store.lastFinished()}/${store.plans.checkRevision()}"
 
     private fun later(key: String, work: () -> Unit) {
         if (!refreshing.add(key)) return

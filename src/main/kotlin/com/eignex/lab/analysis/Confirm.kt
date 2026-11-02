@@ -65,7 +65,7 @@ object Confirm {
      * Missing/invalid blocks cannot vote, but remain in the denominator. Time never selects a transition.
      */
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
-        val guarded = OptimumClaims.qualify(before + after)
+        val guarded = OptimumClaims.local(before + after)
         return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size))
     }
 
