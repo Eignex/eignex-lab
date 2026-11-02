@@ -75,6 +75,18 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
     }
     internal val preparedArchives by lazy { PreparedArchiveFiles(config, store, fileArtifacts) }
     internal val acceptedFiles by lazy { AcceptedArtifactFiles(config, store, localFileArtifacts) }
+    internal val fileInventory = JobFileInventory(
+        validate = { id ->
+            val status = store.jobStatus(id) ?: throw ApiError.NotFound("no such job $id")
+            Volumes.jobFiles(config.paths)?.let { throw ApiError.Unavailable("job files unavailable: $it") }
+            JobFileInventory.Key(id, store.execution.acceptedArtifactVersion(id), status,
+                Files.exists(config.jobDir(id).resolve(JobFileNames.TRIMMED)))
+        },
+        read = { key ->
+            (acceptedFiles.entries(key.job, jobFiles(config.jobDir(key.job))).associateBy { it.path } +
+                preparedArchives.entries(key.job).associateBy { it.path }).values.sortedBy { it.path }
+        },
+    )
 
     /** Start the disk measurements and compute the pages' slow reads before anyone asks, so the first load is quick. */
     fun start() {
@@ -86,6 +98,7 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
     }
 
     override fun close() {
+        fileInventory.close()
         queuePage.close()
         pageStorage.close()
         disk.close()

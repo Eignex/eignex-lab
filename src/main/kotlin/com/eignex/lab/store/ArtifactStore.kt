@@ -17,6 +17,13 @@ interface ArtifactStore {
     fun readFile(job: Long, sha: String): Path = file(job, sha)
     fun open(job: Long, sha: String, verify: Boolean = true): InputStream = Files.newInputStream(if (verify) file(job, sha) else readFile(job, sha))
     fun size(job: Long, sha: String): Long = Files.size(readFile(job, sha))
+    /** Best-effort listing metadata, never a payload verification or admission authority. */
+    fun sizes(job: Long, hashes: Set<String>): Map<String, Long> = hashes.mapNotNull { sha ->
+        if (Thread.currentThread().isInterrupted) throw InterruptedException()
+        try { sha to size(job, sha) }
+        catch (failure: InterruptedException) { throw failure }
+        catch (_: Exception) { null }
+    }.toMap()
     fun verify(job: Long, sha: String) { open(job, sha).use { } }
     /** Optional reuse of immutable, checksum-verified preparation archives across jobs. */
     fun reuse(job: Long, sha: String): Long? = null
@@ -40,6 +47,17 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
     override fun readFile(job: Long, sha: String): Path = path(job, sha).also { require(Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS)) }
     override fun file(job: Long, sha: String): Path = readFile(job, sha).also {
         require(hashFile(it) == sha) { "artifact missing or corrupt" }
+    }
+    override fun sizes(job: Long, hashes: Set<String>): Map<String, Long> = sizes(job, hashes, MacDirectoryEntries::read)
+
+    internal fun sizes(job: Long, hashes: Set<String>, entries: (Path, () -> Unit) -> List<MacDirectoryEntries.Entry>?): Map<String, Long> {
+        if (hashes.isEmpty()) return emptyMap()
+        val bulk = entries(directory(job)) { if (Thread.currentThread().isInterrupted) throw InterruptedException() }
+            ?: return hashes.mapNotNull { sha ->
+                if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                runCatching { sha to Files.size(readFile(job, sha)) }.getOrNull()
+            }.toMap()
+        return bulk.asSequence().filter { it.regular && it.name in hashes }.associate { it.name to it.bytes }
     }
     override fun offset(job: Long, sha: String): Long = path(job, sha).let { full ->
         if (Files.isRegularFile(full)) Files.size(full) else full.resolveSibling("$sha.partial").let { if (Files.exists(it)) Files.size(it) else 0 }
