@@ -123,23 +123,18 @@ synchronized(lock) {
         val updated = synchronized(lock) { update("UPDATE cases SET lab_check = ? WHERE job_id = ? AND idx = ?", check, jobId, index) }
         if (updated != 0) {
             synchronized(scoring) { scoring.remove(jobId) }
-            synchronized(revisions) { revisions[jobId] = ++nextRevision }
         }
     }
 
-    internal fun caseRevision(jobId: Long): Long = synchronized(revisions) { revisions.getOrPut(jobId) { revisionFloor } }
+    internal fun caseRevision(jobId: Long): Long = checkRevision(jobId)
 
     /** A changed point check can contradict a claim in another job. */
-    internal fun checkRevision(): Long = synchronized(revisions) { nextRevision }
+    internal fun checkRevision(): Long = checkRevision(0)
 
-    private var nextRevision = 0L
-    private var revisionFloor = 0L
-    private val revisions = object : LinkedHashMap<Long, Long>(SCORING_JOBS, LOAD_FACTOR, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Long>): Boolean {
-            if (size <= SCORING_JOBS) return false
-            // Evicting a changed job must not resurrect a cached point from before its check.
-            revisionFloor = maxOf(revisionFloor, eldest.value)
-            return true
+    private fun checkRevision(jobId: Long): Long = reading {
+        connection.prepareStatement("SELECT revision FROM check_revisions WHERE job_id = ?").use { statement ->
+            statement.setLong(1, jobId)
+            statement.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else 0 }
         }
     }
 

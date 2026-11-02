@@ -296,22 +296,35 @@ class OptimumClaimsTest {
     }
 
     @Test
-    fun `a witness finished through another store refreshes a cached historical claim`() {
+    fun `a witness rechecked through another store refreshes a cached historical claim`() {
         val database = Files.createTempDirectory("optimum-evidence-cache").resolve("lab.db")
         val writer = Store(database)
         retain(writer, point("7", proven = true), "sweep@claim")
+        val evidence = retain(writer, point("6", state = LabCheck.UNKNOWN), "witness@point")
         val data = TrendData.of(Store(database))
         TrendCache().use { cache ->
             assertEquals(1.0, Trend.runs(data, "sweep", cache).single().proven)
 
-            Thread.sleep(2)
-            retain(writer, point("6"), "witness@point")
+            writer.plans.caseCheck(evidence, 0, point("6").record!!.jsonObject.getValue("labCheck").toString())
             val updated = Trend.runs(data, "sweep", cache).single()
 
             assertEquals(1, updated.contradictedOptima)
             assertEquals(0.0, updated.proven)
             assertEquals(1.0, updated.solved.value)
         }
+    }
+
+    @Test
+    fun `a check from another store invalidates cached scoring records`() {
+        val database = Files.createTempDirectory("point-check-cache").resolve("lab.db")
+        val writer = Store(database)
+        val claim = retain(writer, point("7", proven = true, state = LabCheck.UNKNOWN))
+        val reader = Store(database)
+        assertEquals(SourceVerdict.UNKNOWN, Outcome.of(reader.plans.scoringCases(claim).single().record)?.sourceValidation)
+
+        writer.plans.caseCheck(claim, 0, point("7", proven = true).record!!.jsonObject.getValue("labCheck").toString())
+
+        assertEquals(SourceVerdict.VALID, Outcome.of(reader.plans.scoringCases(claim).single().record)?.sourceValidation)
     }
 
     private fun retain(store: Store, case: CaseResult, name: String = "point"): Long {

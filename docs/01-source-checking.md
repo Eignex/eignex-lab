@@ -38,7 +38,8 @@ assessments. Retained checked points from other jobs, seeds, revisions and arms 
 machine equality is unnecessary for a mathematical counterexample. Proof-performance comparisons retain their
 stricter matched execution controls. Contradicted or unverified optima cannot earn proof credit or confirmation
 gains. Counts distinguish checked points, raw native claims, contradicted optima and unverified claims. Cached
-trends refresh when checking receipts or finished evidence jobs change.
+trends refresh when checking receipts or finished evidence jobs change. SQLite receipt revisions invalidate both
+raw scoring records and derived trends across runner/API connections, including rechecks of ended jobs.
 
 `bench/optimum-claims.json` replays bounded retained case/check receipts through the production assessment and
 qualification paths, retaining the original captures, origins, assessments and summary. It accepts `captures` with
