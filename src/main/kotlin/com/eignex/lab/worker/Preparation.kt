@@ -112,7 +112,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             fun copy(built: Path): Path = trace.step("workspace") {
                 val bench = manifest.experiment.work.bench
-                val paths = bench?.let { BenchRuns.workspaceInputs(built, it) }
+                val paths = if (replay == null) bench?.let { BenchRuns.workspaceInputs(built, it) } else null
                 if (paths != null && replay == null) trace.step("selection") {
                     // The repository may declare broad planner identity inputs but a small runtime workspace.
                     // Bind keys to the complete verified build while it is pinned, before copying the declared subset.
