@@ -8,6 +8,12 @@ from pathlib import Path
 import re
 
 
+class InputSigningServer(ThreadingHTTPServer):
+    # A worker checks eight inputs concurrently; several workers may share this listener.
+    # Python's default backlog of five can reset bursts before any handler receives them.
+    request_queue_size = 64
+
+
 def signature_request(body, bucket):
     method, key = body['method'], body['key']
     if method not in ('HEAD', 'GET', 'PUT') or not isinstance(key, str):
@@ -64,7 +70,7 @@ def main():
             except Exception:
                 self.send_error(503, 'input signing unavailable')
 
-    ThreadingHTTPServer(('127.0.0.1', config.get('port', 8093)), Handler).serve_forever()
+    InputSigningServer(('127.0.0.1', config.get('port', 8093)), Handler).serve_forever()
 
 
 if __name__ == '__main__':

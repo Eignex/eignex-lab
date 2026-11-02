@@ -1,5 +1,7 @@
 import importlib.util
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+import socket
 import unittest
 
 
@@ -12,6 +14,19 @@ def module(name):
 
 
 class InputStoreTest(unittest.TestCase):
+    def test_native_signer_queues_a_worker_burst_before_handlers_accept(self):
+        signer = module('input_signer')
+        # Delay accept entirely: the kernel must retain all eight connections, independent
+        # of handler scheduling or AWS latency. The old five-entry listener fails this burst.
+        with signer.InputSigningServer(('127.0.0.1', 0), BaseHTTPRequestHandler) as server:
+            clients = []
+            try:
+                for _ in range(8):
+                    clients.append(socket.create_connection(server.server_address, timeout=1))
+            finally:
+                for client in clients:
+                    client.close()
+
     def test_regional_access_requires_the_specific_vpc_endpoint(self):
         policy = module('input_store').statements('input-bucket', 'vpce-test')
         for row in policy:
