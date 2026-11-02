@@ -277,7 +277,13 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     /** Gradle cannot negotiate cache locks across container namespaces. Reuse the first idle home, or give an
      * already-admitted concurrent build another home. Scheduling budgets bound concurrency; cache eviction bounds disk. */
     internal fun <T> dependencyHome(key: String, run: () -> Long?, lease: () -> Long, use: (Path) -> T): T =
-        acquireDependencyHome(key, run, lease).use { use(it.directory) }
+        withDependenciesPinned {
+            val home = acquireDependencyHome(key, run, lease)
+            try { use(home.directory) } finally {
+                val scope = requireNotNull(dependencyScope.get())
+                if (home !in scope.homes) scope.homes.add(home)
+            }
+        }
 
     /** Keep a dirty dependency home pinned through sealing. Releasing it immediately after Gradle
      * caused background accounting to walk its entire cache while the same USB disk was sealing
