@@ -27,14 +27,19 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     }
     @Serializable internal data class Written(val file: InputFile, val stamp: Stamp)
     @Serializable private data class Receipt(val version: Int, val rootKey: String?, val files: List<Written>)
+    internal enum class Rejection(val code: Int) {
+        NONE(0), MISSING_TREE(1), DUPLICATE_EXPECTED(2), UNDECLARED_FILE(3), SIZE(4), EXECUTABLE(5),
+        CHECKSUM(6), CHANGED_DURING_HASH(7), MISSING_FILE(8), DIRECTORIES(9), IO(10),
+    }
     internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0,
-                              var verificationNanos: Long = 0, var readAheadFiles: Int = 0, var bulkFiles: Int = 0)
+                              var verificationNanos: Long = 0, var readAheadFiles: Int = 0, var bulkFiles: Int = 0,
+                              var removedFiles: Int = 0, var rejection: Rejection = Rejection.NONE)
     val stats = Stats()
     private fun checksum(path: Path, checkActive: () -> Unit, bytes: Long): String {
         stats.hashedFiles++; stats.hashedBytes = Math.addExact(stats.hashedBytes, bytes)
         return hash(path, checkActive)
     }
-    private class Invalid : RuntimeException()
+    private class Invalid(val reason: Rejection) : RuntimeException()
 
     private fun reliable(tree: Path) = Files.getFileStore(tree).type().lowercase() in
         setOf("apfs", "ext4", "xfs", "btrfs", "overlay", "tmpfs", "zfs")
@@ -142,7 +147,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},
               exactExecutables: Boolean = false, removeUndeclared: Boolean = false, allowUndeclared: Boolean = false,
               expectedDirectories: List<String>? = null, include: (Path) -> Boolean = { true }): Boolean {
-        val started = System.nanoTime()
+        val started = System.nanoTime(); stats.rejection = Rejection.NONE
         try { return validTree(tree, expected, receipt, checkActive, exactExecutables, removeUndeclared, allowUndeclared, expectedDirectories, include) }
         finally { stats.verificationNanos += System.nanoTime() - started }
     }
@@ -150,14 +155,15 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     private fun validTree(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit,
                           exactExecutables: Boolean, removeUndeclared: Boolean, allowUndeclared: Boolean, expectedDirectories: List<String>?, include: (Path) -> Boolean): Boolean {
         checkActive()
-        if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return false
+        fun reject(reason: Rejection): Boolean { stats.rejection = reason; return false }
+        if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return reject(Rejection.MISSING_TREE)
         // Coarse timestamp filesystems (for example HFS+/FAT) cannot distinguish a quick write/mtime restore.
         val reliableMetadata = reliable(tree)
         val rootKey = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()
         val previous = previous(tree, receipt)
         val old = previous?.files?.associateBy { it.file.path }.orEmpty()
         val wanted = expected.associateBy { it.path }
-        if (wanted.size != expected.size) return false
+        if (wanted.size != expected.size) return reject(Rejection.DUPLICATE_EXPECTED)
         val verified = mutableListOf<Written>()
         val directories = expectedDirectories?.let { mutableListOf<String>() }
         try { readAhead(tree, expected.map { it.path }, checkActive) {
@@ -166,22 +172,24 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
                 val entry = wanted[name]
                 if (entry == null) {
                     if (!allowUndeclared) {
-                        if (!removeUndeclared) throw Invalid()
-                        Files.delete(file)
+                        if (!removeUndeclared) throw Invalid(Rejection.UNDECLARED_FILE)
+                        Files.delete(file); stats.removedFiles++
                     }
                 } else {
                     val cached = old[name]
                     val before = observed.stamp()
-                    if (before.bytes != entry.bytes || (entry.executable || exactExecutables) && before.executable != entry.executable) throw Invalid()
+                    if (before.bytes != entry.bytes) throw Invalid(Rejection.SIZE)
+                    if ((entry.executable || exactExecutables) && before.executable != entry.executable) throw Invalid(Rejection.EXECUTABLE)
                     if (!reliableMetadata || !before.reusable || cached?.file != entry || cached.stamp != before) {
-                        if (checksum(file, checkActive, before.bytes) != entry.sha256 || stamp(file) != before) throw Invalid()
+                        if (checksum(file, checkActive, before.bytes) != entry.sha256) throw Invalid(Rejection.CHECKSUM)
+                        if (stamp(file) != before) throw Invalid(Rejection.CHANGED_DURING_HASH)
                     }
                     verified += Written(entry, before)
                 }
             }
-        } } catch (_: Invalid) { return false } catch (_: IOException) { return false }
-        if (verified.size != expected.size) return false
-        if (expectedDirectories != null && directories?.sorted() != expectedDirectories.sorted()) return false
+        } } catch (failure: Invalid) { return reject(failure.reason) } catch (_: IOException) { return reject(Rejection.IO) }
+        if (verified.size != expected.size) return reject(Rejection.MISSING_FILE)
+        if (expectedDirectories != null && directories?.sorted() != expectedDirectories.sorted()) return reject(Rejection.DIRECTORIES)
         val result = Receipt(1, rootKey, verified.sortedBy { it.file.path })
         if (result != previous) {
             checkActive()
