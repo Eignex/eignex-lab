@@ -231,7 +231,9 @@ When every arm hits, the accepted shared inputs replace corpus publication; othe
 digests must equal the reused ones. A plan is offered for reuse only when its job's accepted shared inputs hold all its
 corpus inputs, so a selection filter that dropped cases, or a worker without a shared input store, leaves nothing to
 reuse. The preparation's cache report shows `Bench selection` hits and misses. On a miss, shared-input publication
-checks up to eight distinct content hashes concurrently. Local hashing and uploads keep their checksum checks;
+checks up to eight distinct content hashes concurrently. Presence checks and conditional uploads retry transient
+transport failures at most three times per request, checking ownership before each retry; signing and object-store
+failures carry separate diagnostics. Metadata requests have a 15-second timeout. Local hashing and uploads keep their checksum checks;
 ownership cancellation interrupts pending checks before publication continues.
 Build staging is pinned before background cleanup begins, and cleanup filters unrelated cache entries by
 name before reading their metadata. Input/archive quota eviction renames unused entries to tombstones;

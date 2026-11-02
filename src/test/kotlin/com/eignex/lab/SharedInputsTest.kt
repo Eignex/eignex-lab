@@ -19,6 +19,30 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class SharedInputsTest {
+    @Test fun `publication retries only a failed presence check and preserves the verified inventory`() {
+        val root = Files.createTempDirectory("retry-input-presence")
+        try {
+            val failing = ExecutionStore.digest("reset")
+            val healthy = ExecutionStore.digest("healthy")
+            val calls = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+            val transport = object : InputTransport {
+                override fun stored(key: String, sha: String): Long {
+                    val attempt = calls.computeIfAbsent(sha) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                    if (sha == failing && attempt < 3) throw java.io.EOFException("connection reset")
+                    return 7
+                }
+                override fun matches(key: String, file: InputFile, md5: String) = error("unexpected local lookup")
+                override fun put(key: String, source: Path, sha: String) = error("stored bytes must not be uploaded")
+                override fun get(key: String, destination: Path) = error("publication must not fetch bytes")
+            }
+            val declared = mapOf("a" to failing, "b" to healthy)
+            val result = SharedInputs(root, transport, requests = InputRequestRetry {}).publish(declared.keys.toList(), declared = declared)
+            assertEquals(declared.map { (path, sha) -> SharedInput(InputFile(path, sha, 7), "input-blobs/$sha") }, result)
+            assertEquals(3, calls.getValue(failing).get())
+            assertEquals(1, calls.getValue(healthy).get())
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `publication overlaps at most eight distinct presence checks and preserves canonical inventories`() {
         val root = Files.createTempDirectory("parallel-input-presence")
         try {
