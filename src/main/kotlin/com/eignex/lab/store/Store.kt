@@ -149,9 +149,9 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     }
 
     /** Every queued or running job, oldest first; without [withCommands], with their [Job.counts] instead. */
-    @Synchronized
-    fun active(withCommands: Boolean = true): List<Job> =
+    fun active(withCommands: Boolean = true): List<Job> = reading {
         jobsWhere("status IN (?, ?) ORDER BY id", Status.QUEUED.name, Status.RUNNING.name, withCommands = withCommands)
+    }
 
     private fun jobsWhere(where: String, vararg values: Any?, withCommands: Boolean = true): List<Job> =
         connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
@@ -201,9 +201,9 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     }
 
     /** The jobs [ids], without their commands, with their [Job.counts]. */
-    @Synchronized
-    fun jobsByIds(ids: Collection<Long>): List<Job> =
+    fun jobsByIds(ids: Collection<Long>): List<Job> = reading {
         if (ids.isEmpty()) emptyList() else jobsWhere("id IN (${ids.joinToString(",") { "?" }}) ORDER BY id", *ids.toTypedArray(), withCommands = false)
+    }
 
     /** Job [id] with its commands, both read from one snapshot. */
     fun job(id: Long): Job? = reading {

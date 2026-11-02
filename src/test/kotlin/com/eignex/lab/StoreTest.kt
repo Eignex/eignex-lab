@@ -13,6 +13,9 @@ import com.eignex.lab.cli.*
 
 import java.nio.file.Files
 import java.sql.DriverManager
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.concurrent.thread
 import kotlin.test.assertEquals
@@ -20,6 +23,40 @@ import kotlin.test.assertTrue
 
 class StoreTest {
     private fun store() = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+
+    @Test
+    fun `queue and estimate reads complete while the writer lock is held`() {
+        val store = store()
+        val id = store.create("queued", "main", listOf("true" to 10L), experiment = ExperimentSpec("queued"))
+        val scheduleId = store.schedules.create("sweep", "main", ExperimentSpec("sweep"), 120)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val writer = thread {
+            synchronized(store) {
+                entered.countDown()
+                release.await()
+            }
+        }
+        val reader = Executors.newSingleThreadExecutor()
+        try {
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            val (reads, schedules) = reader.submit<Pair<List<List<Job>>, List<Schedule>>> {
+                listOf(store.active(), store.active(withCommands = false), store.jobsByIds(listOf(id))) to store.schedules.all()
+            }.get(2, TimeUnit.SECONDS)
+            assertEquals(listOf(scheduleId), schedules.map { it.id })
+            assertEquals(listOf(id), reads[0].map { it.id })
+            assertEquals(1, reads[0].single().commands.size)
+            for (jobs in reads.drop(1)) {
+                assertEquals(listOf(id), jobs.map { it.id })
+                assertTrue(jobs.single().commands.isEmpty())
+                assertEquals(CommandCounts(1, 0, 0, 0), jobs.single().counts)
+            }
+        } finally {
+            release.countDown()
+            writer.join()
+            reader.shutdownNow()
+        }
+    }
 
     @Test
     fun `each case says where it ran, one run before the lab recorded that reading as its job's host`() {

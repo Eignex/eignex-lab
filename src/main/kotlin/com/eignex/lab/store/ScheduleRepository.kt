@@ -26,7 +26,7 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
         }
     }
 
-    fun all(): List<Schedule> = synchronized(lock) {
+    fun all(): List<Schedule> = reading {
         connection.prepareStatement("SELECT * FROM schedules ORDER BY id").use { statement ->
             statement.executeQuery().use { rows ->
                 generateSequence {
