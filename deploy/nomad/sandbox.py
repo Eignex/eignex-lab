@@ -51,8 +51,31 @@ class Sandbox:
             env["NOMAD_TOKEN"] = (self.state / "token").read_text().strip()
         return env
 
-    def cli(self, *args):
-        return run([self.nomad, *args], env=self.env())
+    def cli(self, *args, timeout=None):
+        return run([self.nomad, *args], env=self.env(), timeout=timeout)
+
+    def allocation_logs(self, allocation):
+        # A terminal server allocation may precede the client's local log-state publication.
+        # Keep the same allocation and every resource assertion; only this precise readiness error retries.
+        deadline = time.monotonic() + 10
+        unavailable = ("Failed to read stdout file: error reading file: Unexpected response code: 404 "
+                       f"(state for allocation {allocation} not found on client)")
+        failure = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if failure is not None:
+                    raise failure
+                raise RuntimeError("allocation log readiness deadline expired")
+            try:
+                return self.cli("alloc", "logs", allocation, "worker", timeout=min(5, remaining))
+            except subprocess.CalledProcessError as error:
+                if error.returncode != 1 or (error.stderr or "").strip() != unavailable:
+                    raise
+                failure = error
+            delay = min(0.25, max(0, deadline - time.monotonic()))
+            if delay > 0:
+                time.sleep(delay)
 
     def api(self, path, method="GET", body=None):
         context = ssl.create_default_context(cafile=str(self.state / "nomad-agent-ca.pem"))
@@ -255,7 +278,7 @@ class Sandbox:
                     raise RuntimeError(f"resource probe failed: {task['Events']}")
                 starts.append(task["StartedAt"])
                 ends.append(task["FinishedAt"])
-                report = json.loads(self.cli("alloc", "logs", alloc["ID"], "worker").strip().splitlines()[-1])
+                report = json.loads(self.allocation_logs(alloc["ID"]).strip().splitlines()[-1])
                 quota, period = (int(x) for x in report["cpuMax"].split())
                 check(0 <= budget / 1000 - quota / period < 0.02, report)
                 check(int(report["memoryMax"]) == 256 * 1024 * 1024, report)
@@ -310,7 +333,7 @@ class Sandbox:
             self.api("jobs", "POST", {"Job": rendered})
             alloc = self.wait_allocation(job, terminal=True)
             check(not alloc["TaskStates"]["worker"]["Failed"], alloc["TaskStates"]["worker"])
-            result = json.loads(self.cli("alloc", "logs", alloc["ID"], "worker").strip().splitlines()[-1])
+            result = json.loads(self.allocation_logs(alloc["ID"]).strip().splitlines()[-1])
             check(result["platform"] == "darwin" and result["enforcement"] == "advisory-native", result)
             (self.state / "native-verification.json").write_text(json.dumps(result, indent=2))
             print("Native Mac process probe passed; real solver/JFR and abrupt-death supervision gates remain", flush=True)
