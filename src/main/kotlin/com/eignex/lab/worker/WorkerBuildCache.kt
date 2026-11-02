@@ -336,12 +336,12 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     private fun requestMaintenance() {
         if (!maintenanceRunning.compareAndSet(false, true)) return
         val thread = Thread({
-            try {
+            try { WorkerCacheIo.background {
                 // A previous sweep may still be throttled. Detached cold-build garbage must nevertheless
                 // drain without delaying preparation, and remains discoverable after a worker crash.
                 while (true) deleteCacheGarbage(discardedBuilds.poll() ?: break)
                 maintain(wait = false)
-            }
+            } }
             catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
             finally {
                 synchronized(maintenanceRunning) {
@@ -356,8 +356,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
 
     /** The sweep pin serializes accounting; the staging lock covers only snapshots and atomic renames.
      * Published manifests account immutable builds. Dependency homes are scanned once per dirty generation,
-     * under their own pin, outside the staging lock. Active/unknown homes count conservatively. */
-    internal fun maintain(at: Long = now(), wait: Boolean = true) {
+     * under their own pin, outside the staging lock. Active/unknown homes count conservatively.
+     * Startup accounting yields disk priority to foreground staging, just like ordinary cache garbage. */
+    internal fun maintain(at: Long = now(), wait: Boolean = true): Unit = WorkerCacheIo.background {
         // The request flag is reserved before Thread.start(), so a synchronous caller also drains
         // requests that have not been scheduled yet, before it concludes maintenance is finished.
         if (wait) check(awaitMaintenanceIdle(Long.MAX_VALUE))
