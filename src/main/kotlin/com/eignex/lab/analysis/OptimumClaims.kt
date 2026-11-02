@@ -70,7 +70,8 @@ object OptimumClaims {
                         better != null -> OptimumAssessment(OptimumAssessment.CONTRADICTED,
                             "a scope-matched independently checked original-source point improves the native optimum",
                             mapped.toString(), better.objective.toString(), better.witness, better.policy,
-                            better.case.origin?.job, better.case.index, claim.authority)
+                            better.case.origin?.job, better.case.index,
+                            if (record["optimalityScope"] is JsonObject) "declared-scope" else "published-source-contract")
                         !checkedClaim -> OptimumAssessment(OptimumAssessment.UNVERIFIED,
                             "the claimed point has no scope-matched independent check in the supplied evidence", mapped.toString())
                         else -> OptimumAssessment(OptimumAssessment.NO_COUNTEREXAMPLE,
@@ -105,8 +106,7 @@ object OptimumClaims {
     }
 
     private data class Scope(val sources: JsonObject, val semantics: String, val maximize: Boolean,
-                             val units: String, val objective: String, val assumptions: JsonArray,
-                             val authority: String = "declared-scope")
+                             val units: String, val objective: String, val assumptions: JsonArray)
     private data class Mapping(val scale: Q, val offset: Q) {
         fun apply(value: Q) = scale * value + offset
     }
@@ -144,7 +144,7 @@ object OptimumClaims {
             if (text(receipt, "objectiveSense") != if (maximize) "MAX" else "MIN") return null
             if (text(receipt, "sourceSha256") != text(sources, "model") || text(receipt, "semanticsSha256") != semantics ||
                 text(receipt, "scope") != "original-model" || receipt["assumptions"] != JsonArray(emptyList())) return null
-            return Scope(sources, semantics, maximize, "original-mps", "source-objective", JsonArray(emptyList()), "published-source-contract")
+            return Scope(sources, semantics, maximize, "original-mps", "source-objective", JsonArray(emptyList()))
         }
         // The XCSP3 integer adapter reports whole-original-source costs, checked by the official cost checker.
         // Other semantics, private scopes and mapped objectives require explicit bound checking receipts.
@@ -152,7 +152,7 @@ object OptimumClaims {
             text(record["comparisonControls"] as? JsonObject, "exact") != "true" ||
             record.containsKey("objectiveMapping") || record.containsKey("optimalityScope")) return null
         val maximize = text(record, "maximize")?.toBooleanStrictOrNull() ?: return null
-        return Scope(sources, "xcsp3-integer-source-v1", maximize, "original-source", "source-objective", JsonArray(emptyList()), "published-source-contract")
+        return Scope(sources, digest("xcsp3-integer-source-v1"), maximize, "original-source", "source-objective", JsonArray(emptyList()))
     }
 
     private fun point(case: CaseResult): Point? {
@@ -168,7 +168,7 @@ object OptimumClaims {
         val policy = text(check, "policy")?.takeIf { it.isNotBlank() } ?: return null
         if (text(check, "checkerSha256")?.matches(HASH) != true) return null
         val value = objective(record)?.let { mapping(record)?.apply(it) } ?: return null
-        if (scope.semantics == "xcsp3-integer-source-v1") {
+        if (case.problem.format == "XCSP3" && !record.containsKey("optimalityScope")) {
             if (policy != Policies.XCSP3 || value.d != BigInteger.ONE) return null
         } else if (case.problem.format == "MPS" && !record.containsKey("optimalityScope")) {
             val receipt = check["mpsChecks"] as? JsonObject ?: return null
