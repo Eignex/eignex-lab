@@ -26,11 +26,12 @@ import java.util.zip.ZipOutputStream
 class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     private val maxBytes: Long = 128L * 1024 * 1024,
                     private val writable: () -> Boolean = { true }, start: Boolean = true,
+                    private val retryClock: () -> Long = ::now,
                     private val syncDirectory: (Path) -> Unit = { FileChannel.open(it, READ).use { channel -> channel.force(true) } }) : ArtifactStore, AutoCloseable {
     @Serializable private data class Manifest(val job: Long, val blobs: List<ResultBlob>)
     private data class Batch(val path: Path, val manifest: Manifest, val charge: Long,
                              var readers: Int = 0, var busy: Boolean = false, var flushed: Boolean = false, var retryAt: Long = 0,
-                             var durable: Boolean = true, val createdAt: Long = now(), var error: String? = null)
+                             var individualRetry: Boolean = false, var durable: Boolean = true, val createdAt: Long = now(), var error: String? = null)
     @Serializable data class Status(val batches: Int, val bytes: Long, val limit: Long, val lastError: String?,
                                    val oldestAgeMs: Long = 0, val drainErrors: Long = 0, val lastDrainAt: Long? = null)
     private val monitor = Any()
@@ -75,7 +76,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             check(used <= maxBytes) { "recovered result journal exceeds its configured cap" }
             syncDirectory(root)
         } catch (failure: Exception) { ownership.release(); channel.close(); workers.shutdownNow(); throw failure }
-        if (start) JournalDrainLoop(::drainOne,
+        if (start) JournalDrainLoop(::drainGroup,
             hasWork = { synchronized(monitor) { batches.values.any { eligible(it) } } },
             closed = { closed }, schedule = { action, delay -> workers.schedule(action, delay, TimeUnit.MILLISECONDS) },
             onFailure = { failure ->
@@ -271,15 +272,30 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     }
     override fun readFile(job: Long, sha: String): Path = file(job, sha)
 
-    internal fun drainOne(): Boolean {
-        val batch = synchronized(monitor) {
+    internal fun drainOne(): Boolean = drainSelected(grouped = false)
+    internal fun drainGroup(): Boolean = drainSelected(grouped = true)
+    private fun drainSelected(grouped: Boolean): Boolean {
+        val selected = synchronized(monitor) {
             if (closed) return false
-            batches.values.filter { it.flushed && it.retryAt <= now() }.toList().forEach(::cleanup)
-            batches.values.firstOrNull { eligible(it) }?.also { reserve(it) }
-        } ?: return false
-        return drainReserved(batch)
+            batches.values.filter { it.flushed && it.retryAt <= retryClock() }.toList().forEach(::cleanup)
+            val first = batches.values.firstOrNull { eligible(it) } ?: return false
+            val group = mutableListOf(first)
+            var bytes = first.manifest.blobs.sumOf { it.bytes }
+            // A large existing pack is published alone; ordinary groups share one waited volume barrier.
+            if (grouped && !first.individualRetry && bytes <= 4L * 1024 * 1024) {
+                for (batch in batches.values) {
+                    if (group.size == 32) break
+                    if (batch === first || batch.manifest.job != first.manifest.job || batch.individualRetry || !eligible(batch)) continue
+                    val next = batch.manifest.blobs.sumOf { it.bytes }
+                    if (next > 4L * 1024 * 1024 - bytes) continue
+                    group.add(batch); bytes += next
+                }
+            }
+            group.onEach(::reserve)
+        }
+        return drainReserved(selected)
     }
-    private fun eligible(batch: Batch): Boolean = batch.durable && !batch.busy && !batch.flushed && batch.retryAt <= now()
+    private fun eligible(batch: Batch): Boolean = batch.durable && !batch.busy && !batch.flushed && batch.retryAt <= retryClock()
     // Selection and reservation share the monitor so both lanes can immediately claim distinct packs.
     private fun reserve(batch: Batch) { batch.busy = true; batch.readers++ }
     private fun drain(batch: Batch): Boolean {
@@ -287,36 +303,55 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             if (closed || !batch.durable || batch.busy || batch.flushed || batch.path !in batches) return false
             reserve(batch)
         }
-        return drainReserved(batch)
+        return drainReserved(listOf(batch))
     }
-    private fun drainReserved(batch: Batch): Boolean {
+    private fun drainReserved(group: List<Batch>): Boolean {
         try {
-            external.publishBatch(batch.manifest.job) {
-                val offsets = batch.manifest.blobs.associate { it.sha to external.offset(batch.manifest.job, it.sha) }
-                if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES && offsets.values.all { it == 0L }) {
-                    external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
-                } else ZipFile(batch.path.toFile()).use { zip ->
-                    for (blob in batch.manifest.blobs) zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
-                        val offset = offsets.getValue(blob.sha)
-                        require(offset in 0..blob.bytes) { "external artifact size changed" }
-                        input.skipNBytes(offset)
-                        external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
+            try {
+                external.publishBatch(group.first().manifest.job) { group.forEach(::publish) }
+            } catch (failure: Exception) {
+                synchronized(monitor) {
+                    for (batch in group) {
+                        batch.retryAt = retryClock() + 5000; batch.error = failure.javaClass.simpleName
+                        // A bad pack cannot repeatedly trap healthy co-members in the same failing group.
+                        batch.individualRetry = true
                     }
+                    lastError = failure.javaClass.simpleName; drainErrors++
                 }
+                throw failure
             }
             synchronized(monitor) {
-                batch.flushed = true; batch.error = null; lastDrainAt = now()
+                // No pack may lose its journal copy/index until the entire shared barrier succeeded.
+                for (batch in group) {
+                    batch.flushed = true; batch.error = null
+                    for (blob in batch.manifest.blobs) index.remove(batch.manifest.job to blob.sha, batch)
+                }
+                lastDrainAt = now()
                 if (batches.values.none { it.error != null }) { lastError = null; loggedError = null }
-                for (blob in batch.manifest.blobs) index.remove(batch.manifest.job to blob.sha, batch)
             }
             return true
-        } catch (failure: Exception) {
+        } finally {
             synchronized(monitor) {
-                batch.retryAt = now() + 5000; batch.error = failure.javaClass.simpleName
-                lastError = batch.error; drainErrors++
+                // Release every reservation even if one reclamation fails after successful publication.
+                group.forEach { it.busy = false; it.readers-- }
+                val failures = mutableListOf<Exception>()
+                for (batch in group) try { cleanup(batch) } catch (failure: Exception) { failures.add(failure) }
+                failures.firstOrNull()?.let { first -> failures.drop(1).filter { it !== first }.forEach(first::addSuppressed); throw first }
             }
-            throw failure
-        } finally { synchronized(monitor) { batch.busy = false; batch.readers--; cleanup(batch) } }
+        }
+    }
+    private fun publish(batch: Batch) {
+        val offsets = batch.manifest.blobs.associate { it.sha to external.offset(batch.manifest.job, it.sha) }
+        if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES && offsets.values.all { it == 0L }) {
+            external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
+        } else ZipFile(batch.path.toFile()).use { zip ->
+            for (blob in batch.manifest.blobs) zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
+                val offset = offsets.getValue(blob.sha)
+                require(offset in 0..blob.bytes) { "external artifact size changed" }
+                input.skipNBytes(offset)
+                external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
+            }
+        }
     }
     private fun cleanup(batch: Batch) {
         if (!batch.flushed || batch.readers != 0 || batch.path !in batches) return
@@ -324,7 +359,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             Files.deleteIfExists(batch.path)
             syncDirectory(root)
         } catch (failure: Exception) {
-            batch.retryAt = now() + 5000; batch.error = failure.javaClass.simpleName; lastError = batch.error; drainErrors++
+            batch.retryAt = retryClock() + 5000; batch.error = failure.javaClass.simpleName; lastError = batch.error; drainErrors++
             throw failure
         }
         batches.remove(batch.path); used -= batch.charge
