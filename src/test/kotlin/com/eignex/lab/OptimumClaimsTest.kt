@@ -183,6 +183,7 @@ class OptimumClaimsTest {
                 put("exact", buildJsonObject { put("state", LabCheck.INVALID) })
                 put("configured", buildJsonObject { put("state", LabCheck.VALID); put("policy", Policies.MPS_DECLARED) })
                 put("semanticsSha256", MpsNumericalSemantics.identity(semantics))
+                put("semanticsQualified", true); put("declarationOrigin", "solver-record")
                 put("checkerPolicySha256", MpsNumericalSemantics.checkerPolicyIdentity(semantics))
                 put("comparisonIdentity", MpsNumericalSemantics.comparisonIdentity(semantics, source, "MIN"))
                 put("sourceSha256", source); put("witnessSha256", sha256(witness.toByteArray()))
