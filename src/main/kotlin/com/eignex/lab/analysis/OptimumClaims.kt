@@ -135,6 +135,7 @@ object OptimumClaims {
             val semantics = MpsNumericalSemantics.identity(record["numericalSemantics"]) ?: return null
             val maximize = text(record, "maximize")?.toBooleanStrictOrNull() ?: return null
             val receipt = (record["labCheck"] as? JsonObject)?.get("mpsChecks") as? JsonObject ?: return null
+            if (text(receipt, "semanticsQualified") != "true" || text(receipt, "declarationOrigin") != "solver-record") return null
             if (text(receipt, "objectiveSense") != if (maximize) "MAX" else "MIN") return null
             if (text(receipt, "sourceSha256") != text(sources, "model") || text(receipt, "semanticsSha256") != semantics ||
                 text(receipt, "scope") != "original-model" || receipt["assumptions"] != JsonArray(emptyList())) return null
