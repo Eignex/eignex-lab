@@ -18,7 +18,14 @@ internal class WorkerUnavailable(status: Int) : IOException("worker API HTTP $st
 internal class WorkerRetry(private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
                            private val sleep: (Long) -> Unit = Thread::sleep) {
     fun <T> run(remaining: () -> Long, operation: () -> T): T {
-        val deadline = clock() + minOf(60_000L, remaining().coerceAtLeast(0))
+        return run(remaining, 60_000L, operation)
+    }
+
+    /** Completed solve rows stay with their owner through backpressure; renewed leases never extend a run limit. */
+    fun <T> runWhileOwned(remaining: () -> Long, operation: () -> T): T = run(remaining, null, operation)
+
+    private fun <T> run(remaining: () -> Long, maxMs: Long?, operation: () -> T): T {
+        val deadline = maxMs?.let { clock() + minOf(it, remaining().coerceAtLeast(0)) }
         var attempts = 0
         while (true) {
             try { return operation() }
@@ -27,7 +34,7 @@ internal class WorkerRetry(private val clock: () -> Long = { System.nanoTime() /
                     failure is java.util.concurrent.CancellationException) throw failure
                 attempts++
                 val transient = failure is IOException
-                val left = minOf(deadline - clock(), remaining())
+                val left = minOf(deadline?.let { it - clock() } ?: Long.MAX_VALUE, remaining())
                 if ((!transient && attempts >= 3) || left <= 0) throw failure
                 sleep(minOf(250L * attempts, 2000, left))
             }

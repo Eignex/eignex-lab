@@ -72,7 +72,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
         if (path in setOf("commit-inline", "commit-packed", "commit-packed-large") && response.statusCode() in setOf(404, 405)) return response
-        if (response.statusCode() in setOf(429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
+        if (response.statusCode() in setOf(408, 429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
         return response
     }
@@ -80,6 +80,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     private fun <T> retry(ignoreRunDeadline: Boolean = false, operation: () -> T): T = retries.run({
         minOf(leaseRemainingMs(),
             if (ignoreRunDeadline) Long.MAX_VALUE else runRemainingMs() ?: Long.MAX_VALUE)
+    }, operation)
+    private fun <T> publicationRetry(operation: () -> T): T = retries.runWhileOwned({
+        minOf(leaseRemainingMs(), runRemainingMs() ?: Long.MAX_VALUE)
     }, operation)
     fun run() {
         Files.createDirectories(root)
@@ -307,7 +310,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val body = Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))
             // File bytes alone do not bound the request: full assignment records can exceed them by megabytes.
             if (body.toByteArray().size <= PACKED_HEADER_BYTES) {
-                val reply = retry { json("commit-inline", body) }
+                val reply = publicationRetry { json("commit-inline", body) }
                 if (reply.statusCode() in 200..299) return "inline"
             }
         }
@@ -323,16 +326,16 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val prefix = java.nio.ByteBuffer.allocate(4 + header.size).putInt(header.size).put(header).array()
             val body = HttpRequest.BodyPublishers.concat(HttpRequest.BodyPublishers.ofByteArray(prefix),
                 *sources.values.map { HttpRequest.BodyPublishers.ofFile(it) }.toTypedArray())
-            val reply = retry { request(path, "POST", body) }
+            val reply = publicationRetry { request(path, "POST", body) }
             if (reply.statusCode() in 200..299) return "packed"
         }
         val outputs = result.artifacts.toMutableMap()
-        for ((name, file) in files) outputs[name] = upload(file, owner)
+        for ((name, file) in files) outputs[name] = upload(file, owner, publication = result.preparation == null)
         val body = Json.encodeToString(WorkerCommit(owner, result.copy(artifacts = outputs)))
         val bytes = body.toByteArray().size
         require(bytes <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
         val path = if (result.preparation == null && bytes > PACKED_HEADER_BYTES) "commit-large" else "commit"
-        retry { json(path, body) }
+        if (result.preparation == null) publicationRetry { json(path, body) } else retry { json(path, body) }
         return "resumable"
     }
 
@@ -349,7 +352,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         return sha
     }
 
-    internal fun upload(file: Path, owner: AttemptOwner, reusable: Boolean = false, trace: PreparationTrace? = null): String {
+    internal fun upload(file: Path, owner: AttemptOwner, reusable: Boolean = false, trace: PreparationTrace? = null, publication: Boolean = false): String {
         val verificationStarted = System.nanoTime()
         val sha = hashFile(file); val size = Files.size(file)
         val verificationMs = (System.nanoTime() - verificationStarted) / 1_000_000
@@ -357,14 +360,15 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         var resumed = false
         val reuse = if (reusable) "reuse=true&" else ""
         var offset: Long? = null
+        fun <T> transfer(operation: () -> T): T = if (publication) publicationRetry(operation) else retry(operation = operation)
         while (true) {
-            val complete = retry {
+            val complete = transfer {
                 try {
                     // Query progress only initially or after an ambiguous response; successful PUTs carry the next offset.
                     val queriedOffset = offset == null
                     val from = offset ?: Json.decodeFromString<UploadReply>(String(request("uploads/$sha" + if (reusable) "?reuse=true" else "", owner = owner).body())).offset
                     require(from in 0..size)
-                    if (from == size && size > 0) return@retry true
+                    if (from == size && size > 0) return@transfer true
                     if (queriedOffset && from > 0) resumed = true
                     val count = minOf(size - from, 8L * 1024 * 1024).toInt()
                     val bytes = Files.newInputStream(file).use { input -> input.skipNBytes(from); input.readNBytes(count) }

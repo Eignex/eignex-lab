@@ -19,6 +19,8 @@ import java.util.concurrent.TimeUnit.SECONDS
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class ResultJournalTest {
@@ -27,6 +29,39 @@ class ResultJournalTest {
     private val journal = root.resolve("internal")
     private fun blobs(text: String) = mapOf(ExecutionStore.digest(text) to text.toByteArray())
     private fun read(store: ArtifactStore, job: Long, text: String) = store.open(job, ExecutionStore.digest(text)).use { String(it.readAllBytes()) }
+
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `external batch barriers precede reclamation and repeat after restart with complete files`(large: Boolean) {
+        val payloads = (0..1).map { value -> ByteArray(if (large) 600 * 1024 else 16 * 1024) { ((it + value) % 251).toByte() } }
+            .associateBy { java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() }
+        var barriers = 0
+        var fail = true
+        fun destination(): ArtifactStore {
+            val local = LocalArtifactStore(root.resolve("external"))
+            return object : ArtifactStore by local {
+                override fun publishBatch(job: Long, publish: () -> Unit) = local.publishBatch(job, { directory ->
+                    assertEquals(root.resolve("external/$job"), directory)
+                    for ((sha, bytes) in payloads) assertContentEquals(bytes, Files.readAllBytes(local.file(job, sha)))
+                    barriers++
+                    if (fail) throw java.io.IOException("injected volume barrier failure")
+                }, publish)
+            }
+        }
+        ResultJournal(journal, destination(), start = false).use { store ->
+            val body = java.io.ByteArrayOutputStream().apply { payloads.values.forEach { write(it) } }.toByteArray()
+            store.putPacked(1, payloads.map { ResultBlob(it.key, it.value.size.toLong()) }, body.inputStream())
+            assertFailsWith<java.io.IOException> { store.drainOne() }
+            assertEquals(1, barriers); assertEquals(1, store.status().batches)
+            for ((sha, bytes) in payloads) assertContentEquals(bytes, store.open(1, sha).use { it.readAllBytes() })
+        }
+        fail = false
+        ResultJournal(journal, destination(), start = false).use { recovered ->
+            assertTrue(recovered.drainOne())
+            assertEquals(2, barriers, "already complete external files still need the failed barrier retried")
+            assertEquals(0, recovered.status().batches)
+            for ((sha, bytes) in payloads) assertContentEquals(bytes, external.open(1, sha).use { it.readAllBytes() })
+        }
+    }
 
     @Test fun `small complete preparation uploads acknowledge durable journal data without external writes`() {
         val blocked = object : ArtifactStore by external {

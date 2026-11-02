@@ -23,6 +23,8 @@ interface ArtifactStore {
     fun remember(job: Long, sha: String) { }
     /** Whether [sha] is held only by the regional build store, which readers here would have to fetch it from. */
     fun regional(job: Long, sha: String): Boolean = false
+    /** Return only after all writes in [publish] are durable; providers may share one waited barrier. */
+    fun publishBatch(job: Long, publish: () -> Unit) { publish() }
     fun putAll(job: Long, blobs: Map<String, ByteArray>) {
         for ((sha, bytes) in blobs) put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
     }
@@ -32,6 +34,7 @@ interface ArtifactStore {
 class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
                          private val writable: () -> Boolean = { true }) : ArtifactStore {
     private val reuseIndex = ArtifactReuseIndex(root)
+    private val publishingJob = ThreadLocal<Long>()
     private fun directory(job: Long): Path { require(job > 0); return root.resolve(job.toString()) }
     private fun path(job: Long, sha: String): Path { require(SHA256.matches(sha)); return directory(job).resolve(sha) }
     override fun readFile(job: Long, sha: String): Path = path(job, sha).also { require(Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS)) }
@@ -41,14 +44,38 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
     override fun offset(job: Long, sha: String): Long = path(job, sha).let { full ->
         if (Files.isRegularFile(full)) Files.size(full) else full.resolveSibling("$sha.partial").let { if (Files.exists(it)) Files.size(it) else 0 }
     }
+    override fun publishBatch(job: Long, publish: () -> Unit) {
+        if (!MacVolumeSync.supported) { publish(); return }
+        publishBatch(job, { MacVolumeSync.flush(it) {} }, publish)
+    }
+
+    /** Injection keeps failure/recovery tests independent of the host filesystem's barrier implementation. */
+    internal fun publishBatch(job: Long, flush: (Path) -> Unit, publish: () -> Unit) {
+        val target = directory(job)
+        check(writable()) { "artifact storage temporarily unavailable" }
+        val prior = publishingJob.get()
+        publishingJob.set(job)
+        try {
+            publish()
+            // Both data and renamed directory entries must reach the volume before journal reclamation.
+            if (Files.isDirectory(target)) flush(target)
+        } finally {
+            if (prior == null) publishingJob.remove() else publishingJob.set(prior)
+        }
+    }
+
+    private fun flushPublished(full: Path) {
+        FileChannel.open(full, READ).use { it.force(true) }
+        FileChannel.open(full.parent, READ).use { it.force(true) }
+    }
     override fun reuse(job: Long, sha: String): Long? {
         val full = path(job, sha)
-        if (Files.isRegularFile(full)) return Files.size(full)
+        if (Files.isRegularFile(full)) { flushPublished(full); return Files.size(full) }
         check(writable()) { "artifact storage temporarily unavailable" }
         Files.createDirectories(full.parent)
         synchronized(fileLockFor(full)) {
             FileChannel.open(full.resolveSibling("$sha.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
-                if (Files.isRegularFile(full)) return Files.size(full)
+                if (Files.isRegularFile(full)) { flushPublished(full); return Files.size(full) }
                 val source = try { reuseIndex.find(sha) } catch (_: java.io.IOException) { null } ?: return null
                 try {
                     // Index entries are hints, never proof. Check the immutable bytes before sharing their inode.
@@ -57,7 +84,8 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
                     Files.createLink(full, source)
                 } catch (_: java.io.IOException) { return null } // Deleted source or unsupported hard links: ordinary upload.
                 Files.deleteIfExists(full.resolveSibling("$sha.partial"))
-                FileChannel.open(full.parent, READ).use { it.force(true) }
+                // Another publisher may still be within its volume batch; a shared inode must be durable now.
+                flushPublished(full)
                 remember(job, sha)
                 return Files.size(full)
             } }
@@ -83,7 +111,13 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
         val full = path(job, sha); Files.createDirectories(full.parent)
         synchronized(fileLockFor(full)) {
         FileChannel.open(full.resolveSibling("$sha.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
-            if (Files.exists(full)) { require(Files.size(file(job, sha)) == bytes); return bytes }
+            val force = publishingJob.get() != job
+            if (Files.exists(full)) {
+                require(Files.size(file(job, sha)) == bytes)
+                // A concurrent batch can expose complete bytes before its final barrier.
+                if (force) flushPublished(full)
+                return bytes
+            }
             val partial = full.resolveSibling("$sha.partial")
             val current = if (Files.exists(partial)) Files.size(partial) else 0
             require(offset == current) { "upload offset changed" }
@@ -99,9 +133,9 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
             } catch (e: IllegalArgumentException) { Files.deleteIfExists(partial); throw e }
             if (Files.size(partial) == bytes) {
                 if ((streamed?.digest()?.hex() ?: hashFile(partial)) != sha) { Files.delete(partial); error("artifact checksum mismatch") }
-                FileChannel.open(partial, WRITE).use { it.force(true) }
+                if (force) FileChannel.open(partial, WRITE).use { it.force(true) }
                 Files.move(partial, full, ATOMIC_MOVE)
-                FileChannel.open(full.parent, READ).use { it.force(true) }
+                if (force) FileChannel.open(full.parent, READ).use { it.force(true) }
             }
             return offset(job, sha)
         } }
