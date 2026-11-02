@@ -53,7 +53,7 @@ internal fun Route.experimentRoutes(services: ApiServices) {
             val jobs = ids.map { id -> store.job(id) ?: throw ApiError.NotFound("no job $id") }
             // Arms are named by their job, so the same arm of two runs stays two columns.
             val arms = jobs.flatMap { job -> store.plans.arms(job.id).map { it.copy(arm = it.arm.copy(label = "${job.id} ${it.arm.label}")) } }
-            val cases = jobs.flatMap { job -> store.plans.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } }
+            val cases = OptimumClaims.qualify(store, jobs.flatMap { job -> store.plans.cases(job.id).map { it.copy(arm = "${job.id} ${it.arm}") } })
             val references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases))
             if (html) comparePage(config.repoUrl, jobs, arms, cases, references)
             else References.compare(arms.map { it.arm.label }, cases, references)
@@ -84,16 +84,24 @@ internal fun Route.experimentRoutes(services: ApiServices) {
     }
     get("/experiments/{id}/stats") {
         val id = call.longParam()
-        call.respond(io { Stats.of(store.plans.arms(id).map { it.arm.label }, store.plans.cases(id)) })
+        call.respond(io { Stats.of(store.plans.arms(id).map { it.arm.label }, OptimumClaims.qualify(store, store.plans.cases(id))) })
+    }
+    get("/experiments/{id}/optimum-claims") {
+        val id = call.longParam()
+        call.respond(io {
+            OptimumClaims.qualify(store, store.plans.cases(id)).mapNotNull { case ->
+                OptimumClaims.assessment(case.record)?.let { case.index.toString() to it }
+            }.toMap()
+        })
     }
     get("/experiments/{id}/cases.csv") {
-        call.respondText(io { Results.casesCsv(store.plans.cases(call.longParam())) }, ContentType.Text.CSV)
+        call.respondText(io { Results.casesCsv(OptimumClaims.qualify(store, store.plans.cases(call.longParam()))) }, ContentType.Text.CSV)
     }
     get("/experiments/{id}/bench.csv") {
         val id = call.longParam()
         val arm = call.parameters["arm"] ?: throw ApiError.Invalid("arm is required")
         val seed = call.parameters["seed"]?.let { it.toLongOrNull() ?: throw ApiError.Invalid("seed must be a number") }
-        call.respondText(io { Results.benchCsv(store.plans.cases(id), arm, seed) }, ContentType.Text.CSV)
+        call.respondText(io { Results.benchCsv(OptimumClaims.qualify(store, store.plans.cases(id)), arm, seed) }, ContentType.Text.CSV)
     }
 }
 

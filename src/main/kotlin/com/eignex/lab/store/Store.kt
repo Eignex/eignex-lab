@@ -270,10 +270,10 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** The cases of one problem across every job, newest job first; with [limit], only that many. */
     @Synchronized
-    fun problemRuns(collection: String, problem: String, limit: Int? = null): List<ProblemRun> = connection.prepareStatement(
+    fun problemRuns(collection: String, problem: String, limit: Int? = null, withWitness: Boolean = false): List<ProblemRun> = connection.prepareStatement(
         // The record as scoring reads it: the page shows each run's outcome and time, not its witness or provenance,
         // which can make one problem's runs tens of megabytes.
-        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, $SCORING_RECORD, c.lab_check
+        """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, ${if (withWitness) OPTIMUM_EVIDENCE_RECORD else SCORING_RECORD}, c.lab_check
            FROM problems p
            JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
            JOIN commands m ON m.job_id = c.job_id AND m.idx = c.idx
@@ -500,8 +500,11 @@ internal val SCORING_STATS = listOf(
 private const val PRODUCER_RECORD = "sourceValidationProducerRecordJson"
 
 /** A case record as [Store.scoringCases] reads it: cut down in SQLite, and left whole when it is not valid JSON. */
-internal val SCORING_RECORD = """CASE WHEN c.record IS NULL OR NOT json_valid(c.record) THEN c.record ELSE
-    json_set(json_remove(c.record, '$.buildProvenance', '$.buildProvenanceRef', '$.finalWitness', '$.attribution'), '$.stats',
+internal val SCORING_RECORD = scoringRecord(withWitness = false)
+internal val OPTIMUM_EVIDENCE_RECORD = scoringRecord(withWitness = true)
+
+private fun scoringRecord(withWitness: Boolean) = """CASE WHEN c.record IS NULL OR NOT json_valid(c.record) THEN c.record ELSE
+    json_set(json_remove(c.record, '$.buildProvenance', '$.buildProvenanceRef', '$.attribution'${if (withWitness) "" else ", '$.finalWitness'"}), '$.stats',
         json((SELECT json_group_object(key, CASE WHEN key = '$PRODUCER_RECORD'
                   THEN '' || json_object('timeToBestMs', json_extract(value, '$.timeToBestMs')) ELSE value END)
               FROM json_each(c.record, '$.stats')

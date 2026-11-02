@@ -28,9 +28,11 @@ class ResultsTest {
         val lines = Results.casesCsv(cases).lines()
         val fields = lines[1].split(',')
 
-        assertEquals(listOf("sourceValidation", "floatApproximation"), lines[0].split(',').takeLast(5).take(2))
+        val header = lines[0].split(',')
         assertEquals(listOf("", "", "false"), fields.slice(12..14))
-        assertEquals(listOf("invalid", "true"), fields.takeLast(5).take(2))
+        val row = header.zip(fields).toMap()
+        assertEquals("invalid", row["sourceValidation"])
+        assertEquals("true", row["floatApproximation"])
         assertEquals("s,p,false,,,false,1000,1000,,,,,,", Results.benchCsv(cases, "a", null).lines()[1])
     }
 
@@ -43,7 +45,12 @@ class ResultsTest {
             CaseResult(index, Status.DONE, Problem("s", "p"), "a", null, Json.parseToJsonElement(record))
         }
 
-        val rows = Results.casesCsv(cases).lines().take(3).map { it.split(',').dropLast(1).takeLast(2) }
+        val lines = Results.casesCsv(cases).lines()
+        val header = lines.first().split(',')
+        val rows = lines.take(3).map { line ->
+            val row = header.zip(line.split(',')).toMap()
+            listOf(row.getValue("buildFingerprint"), row.getValue("validationPolicy"))
+        }
 
         assertEquals(listOf(listOf("buildFingerprint", "validationPolicy"),
             listOf("build-a", "reported-result-v1"), listOf("", "")), rows)

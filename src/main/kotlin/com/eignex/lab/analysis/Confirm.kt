@@ -65,6 +65,11 @@ object Confirm {
      * Missing/invalid blocks cannot vote, but remain in the denominator. Time never selects a transition.
      */
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
+        val guarded = OptimumClaims.qualify(before + after)
+        return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size))
+    }
+
+    private fun qualifiedFlips(before: List<CaseResult>, after: List<CaseResult>): Flips {
         val problems = (before + after).associateBy(ComparisonControls::problem)
         val both = before.map(ComparisonControls::problem).toSet().intersect(after.map(ComparisonControls::problem).toSet())
             .sortedWith(compareBy({ it.first }, { it.second }))
@@ -95,13 +100,15 @@ object Confirm {
                 if (hashesA != null && hashesB != null && hashesA != hashesB) continue
                 val x = Outcome.of(ca.record) ?: continue
                 val y = Outcome.of(cb.record) ?: continue
+                if (listOf(x, y).any { it.optimumAssessment?.state == OptimumAssessment.CONTRADICTED }) continue
                 if (x.rank > 0 && y.rank == 0) fl++
                 if (x.rank == 0 && y.rank > 0) fg++
                 if (x.rank == 0 || y.rank == 0 || x.feasible != y.feasible ||
                     x.optimize != y.optimize || x.maximize != y.maximize) continue
                 val ox = objective(ca); val oy = objective(cb)
                 fun proof(o: Outcome, value: Exact?) = o.feasible == false ||
-                    (o.optimize && o.proven && o.feasible == true && value != null)
+                    (o.optimize && o.proven && o.feasible == true && value != null &&
+                        o.optimumAssessment?.state != OptimumAssessment.UNVERIFIED)
                 val px = proof(x, ox); val py = proof(y, oy)
                 if (px && !py) pl++
                 if (!px && py) pg++

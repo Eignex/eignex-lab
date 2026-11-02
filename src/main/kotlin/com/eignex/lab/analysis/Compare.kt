@@ -56,6 +56,8 @@ data class Outcome(
      * lab check that failed never undoes the bench's acceptance. Only a float approximation's claim needs it to count.
      */
     val accepted: Boolean = false,
+    val optimumAssessment: OptimumAssessment? = null,
+    val nativeProven: Boolean = proven,
 ) {
     init {
         requireConsistent(feasible, objective, proven)
@@ -106,6 +108,7 @@ data class Outcome(
             // with or without a failed check beside it.
             val rejected = SourceValidation.rejects(validation) ||
                 (approximation && (reportedFeasible == false || (reportedFeasible == true && !accepted)))
+            val optimum = OptimumClaims.assessment(fields)
             return Outcome(
                 optimize = field("kind")?.content == "optimize",
                 maximize = field("maximize")?.booleanOrNull ?: false,
@@ -113,7 +116,8 @@ data class Outcome(
                 // A record that says two things at once reads as the one it can mean ([Decision]): an infeasibility has no
                 // objective, and an undecided solve proved nothing.
                 objective = if (rejected || reportedFeasible == false) null else objective,
-                proven = !rejected && !approximation && proven && reportedFeasible != null,
+                proven = !rejected && !approximation && proven && reportedFeasible != null &&
+                    optimum?.state !in setOf(OptimumAssessment.CONTRADICTED, OptimumAssessment.UNVERIFIED),
                 timeToBestMs = if (rejected) null else timeToBest,
                 budgetMs = field("budgetMs")?.longOrNull ?: 0,
                 error = field("command")?.content == "ERROR" || stat(fields, "referenceError") != null,
@@ -132,6 +136,8 @@ data class Outcome(
                     ?.let { (it * MS_PER_S).toLong() },
                 elapsedMs = field("elapsedMs")?.longOrNull?.takeIf { it >= 0 },
                 processors = field("processors")?.content?.toIntOrNull()?.takeIf { it > 0 },
+                optimumAssessment = optimum,
+                nativeProven = proven,
             )
         }
 
@@ -184,6 +190,9 @@ data class ArmSummary(
     val witnesses: Map<WitnessCheck, Int> = emptyMap(),
     /** Contests (problem, seed, repeat) where its record's validation policy differs from the first arm's. */
     val validationMismatches: Int = 0,
+    val nativeProofClaims: Int = 0,
+    val contradictedOptima: Int = 0,
+    val unverifiedOptima: Int = 0,
 )
 
 /**
@@ -232,7 +241,7 @@ object Compare {
 
     /** Totals, pairwise scores and disagreements over [cases] of the arms named in [labels], in that order. */
     fun compare(labels: List<String>, cases: List<CaseResult>): Comparison {
-        val outcomes = cases.mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
+        val outcomes = OptimumClaims.qualify(cases).mapNotNull { case -> Outcome.of(case.record)?.let { case to it } }
         // A (problem, seed) pair is one contest; seeds pair up across arms, so each arm meets the others on equal terms.
         val contests = outcomes.groupBy { (case, _) -> Triple(case.problem, case.seed, case.repeat) }
             .mapValues { (_, entries) -> entries.associate { (case, outcome) -> case.arm to outcome } }
@@ -266,9 +275,17 @@ object Compare {
                 instrumented = outcomes.count { it.first.arm == label && it.first.instrumented },
                 witnesses = own.filter { it.claimedSolution }.mapNotNull { it.witness }.groupingBy { it }.eachCount(),
                 validationMismatches = mismatches,
+                nativeProofClaims = own.count { it.nativeProven || it.feasible == false },
+                contradictedOptima = own.count { it.optimumAssessment?.state == OptimumAssessment.CONTRADICTED },
+                unverifiedOptima = own.count { it.optimumAssessment?.state == OptimumAssessment.UNVERIFIED },
             )
         }
-        return Comparison(arms, disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))
+        val contradictions = outcomes.mapNotNull { (case, outcome) ->
+            outcome.optimumAssessment?.takeIf { it.state == OptimumAssessment.CONTRADICTED }?.let {
+                Disagreement(case.problem, "${case.arm} native optimum ${it.objective} contradicted by checked ${it.counterexampleObjective} (${it.witnessSha256})")
+            }
+        }
+        return Comparison(arms, contradictions + disagreements(outcomes.map { (case, outcome) -> Triple(case.problem, case.arm, outcome) }))
     }
 
     /**

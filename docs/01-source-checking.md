@@ -6,6 +6,43 @@ unchecked. A valid point supplies feasibility evidence. It supplies neither an o
 proof of a solver's terminal status. Checker policy, implementation identity, source and witness digests accompany
 the verdict; changing a checking rule requires a new policy.
 
+## Native optimum contradictions
+
+`OptimumClaims` compares a native optimum with independently checked better points on the same original source
+and all its dependencies, effective semantics, objective sense and units, and assumptions. Exact rational affine
+maps transport reported objectives into original units before comparison; malformed exact values never fall back
+to rounded display values. A point must carry a valid independent receipt with matching source and witness digests
+and an identified checker. Failed, unsupported and incomplete checks provide no counterexample.
+
+The whole-source exact integer XCSP3 adapter uses original source costs and its official cost-checking receipt.
+MPS comparisons use `MpsNumericalSemantics` identities and the configured-policy verdict in `LabCheck.mpsChecks`,
+including the reconstructed original objective, original-model scope and explicit empty assumptions. Its exact
+verdict stays separate. Missing numerical declarations do not acquire inferred defaults. Other mapped or restricted
+claims declare `optimalityScope` with schema `original-source-optimum-v1`, `semanticsSha256`, an original objective
+`{sense, units, identity}`, and `assumptions`. Optional `objectiveMapping` contains exact `scale` and `offset`.
+Their point receipt must bind that complete scope and original objective in `labCheck.optimumEvidence`; an original
+model point check alone cannot validate additional assumptions.
+
+Derived `labOptimumClaim` assessments distinguish `contradicted`, `unverified`, and `no-counterexample`. A
+contradiction withdraws optimum credit while retaining point validity and raw native flags. Missing scope or a lack
+of any scope-matched checked point remains unverified. No counterexample in supplied evidence leaves the native
+proof independently unverified; no reference search runs during assessment. Claims and checker receipts remain
+unchanged in storage and raw case exports.
+
+The job/comparison pages, statistics, CSV qualification, scheduled confirmations and sweep trends consume derived
+assessments. Retained checked points from other jobs, seeds, revisions and arms can contradict a claim; runtime or
+machine equality is unnecessary for a mathematical counterexample. Proof-performance comparisons retain their
+stricter matched execution controls. Contradicted or unverified optima cannot earn proof credit or confirmation
+gains. Counts distinguish checked points, raw native claims, contradicted optima and unverified claims. Cached
+trends refresh when checking receipts or finished evidence jobs change.
+
+`bench/optimum-claims.json` replays bounded retained case/check receipts through the production assessment and
+qualification paths, retaining the original captures, origins, assessments and summary. It accepts `captures` with
+`{origin: {job}, case, expected}` entries; expected is `point`, `contradicted`, `unverified` or `no-counterexample`.
+The existing `capture-zstd-base64` transport admits larger captures. Expectations assert observed states without
+supplying checking authority. Replay performs neither assignment checking nor reference search; the retained
+independent receipts provide point evidence.
+
 ## Exact rational MPS
 
 `RationalMpsChecker` evaluates every numeric spelling under explicit policies. Its `mpsChecks` receipt retains
