@@ -22,9 +22,165 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class NomadQueueTest {
+    @ParameterizedTest @ValueSource(ints = [2, 8])
+    fun `a shrunken native session retains its paired row while spare capacity admits another session`(rows: Int) {
+        val fixture = shrunkenNative(rows)
+        val original = store.job(fixture.id)!!.experiment
+        val manifest = store.execution.manifest(fixture.session.id)
+        queue(policy = fixture.policy).reconcile()
+        val solves = store.execution.sessions(fixture.id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(2, solves.size)
+        assertEquals(setOf(1000, 7000), solves.map { it.budget.cpuMillis }.toSet())
+        assertEquals(8000, solves.sumOf { it.budget.cpuMillis })
+        assertTrue(solves.sumOf { it.budget.memoryMiB } <= 8192)
+        assertEquals(Desired.RUN, store.execution.credential(fixture.session.id, fixture.token).desired)
+        assertEquals(fixture.claim, store.execution.claim(fixture.session.id, fixture.token, "shrunken-allocation"))
+        assertEquals(manifest, store.execution.manifest(fixture.session.id))
+        assertEquals(original, store.job(fixture.id)!!.experiment)
+        val added = solves.single { it.id != fixture.session.id }
+        val token = solveToken(added)
+        store.execution.bind(added.id, token, "added-allocation", "native", "release")
+        val claim = store.execution.claim(added.id, token, "added-allocation")!!
+        assertTrue(claim.indices.toSet().intersect(fixture.claim.indices.toSet()).isEmpty())
+        val owned = store.execution.manifest(added.id).cases.filter { it.index in claim.indices }
+        assertTrue(owned.isNotEmpty())
+        assertTrue(owned.groupBy { Triple(it.problem, it.seed, it.repeat) }.values.all { row -> row.map { it.arm }.toSet() == setOf(0, 1) })
+        repeat(2) { queue(policy = fixture.policy).reconcile() }
+        assertEquals(2, store.execution.sessions(fixture.id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
+        assertEquals(fixture.id, store.execution.authorize(fixture.claim.owner))
+    }
+
+    @ParameterizedTest @ValueSource(strings = ["sessions", "host-parallel", "job-cpu"])
+    fun `spare native admission still respects the configured session parallel and CPU caps`(cap: String) {
+        val policy = nativeSolveSettings().let { when (cap) {
+            "sessions" -> it.copy(maxSessionsPerJob = 1)
+            "host-parallel" -> it.copy(perHostParallel = 1)
+            else -> it.copy(maxVcpusPerJob = 1)
+        } }
+        val fixture = shrunkenNative(policy = policy)
+        repeat(2) { queue(policy = policy).reconcile() }
+        val solves = store.execution.sessions(fixture.id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(listOf(fixture.session.id), solves.map { it.id })
+        assertEquals(1000, solves.sumOf { it.budget.cpuMillis })
+        assertEquals(Desired.RUN, solves.single().desired)
+        assertEquals(fixture.id, store.execution.authorize(fixture.claim.owner))
+    }
+
+    @Test fun `the CPU floor still admits one frozen case that needs more CPUs than the requested limit`() {
+        val policy = nativeSolveSettings().copy(maxVcpusPerJob = 1)
+        val id = job(ExperimentSpec("two-cpu-case", vcpus = 1, host = Experiments.LAB_HOST, base = mapOf("processors" to "2")))
+        queue(policy = policy).reconcile(); prepare(id, 4); backend.reconcile()
+        queue(policy = policy).reconcile()
+        val solve = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(ResourceBudget(2000, 768, 1), solve.budget)
+        assertTrue(store.execution.manifest(solve.id).cases.all { it.executionCase!!.resources.cpus == 2 })
+        assertEquals(1, store.job(id)!!.vcpus)
+    }
+
+    @ParameterizedTest @ValueSource(ints = [1, 2])
+    fun `cloud budgets fit the live CPU cap while preserving a larger single case minimum`(caseCpus: Int) {
+        val policy = settings.copy(maxVcpusPerJob = 1, targets = settings.targets.filter { !it.native }.map {
+            it.copy(template = it.template.copy(budget = ResourceBudget(8000, 8192, 6)))
+        })
+        val id = job(ExperimentSpec("capped-cloud", vcpus = 8, host = Experiments.AWS_HOST,
+            base = mapOf("processors" to caseCpus.toString())))
+        queue(policy = policy).reconcile(); prepare(id, 4); backend.reconcile()
+        repeat(2) { queue(policy = policy).reconcile() }
+        val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(1, solves.size)
+        assertEquals(ResourceBudget(caseCpus * 1000, 768, 1), solves.single().budget)
+        assertFalse(store.execution.placement(solves.single().id).native)
+        assertTrue(store.execution.manifest(solves.single().id).cases.all { it.executionCase!!.resources.cpus == caseCpus })
+        assertEquals(8, store.job(id)!!.vcpus)
+    }
+
+    @ParameterizedTest @ValueSource(strings = ["cpu", "memory"])
+    fun `spare native admission waits for actual host CPU or memory and then grows without replacing its owner`(resource: String) {
+        val fixture = shrunkenNative()
+        val background = job(ExperimentSpec("background-reservation", host = Experiments.LAB_HOST, priority = -2))
+        store.setPriority(background, -2)
+        val budget = if (resource == "cpu") ResourceBudget(7000, 512) else ResourceBudget(1000, 7000)
+        val template = fixture.policy.targets.single().template.copy(id = "background-reservation", budget = budget,
+            nativeCapacity = ResourceBudget(8000, 8192))
+        store.execution.createSession("background-reservation", background, ExecutionClass.PREPARE, "release", budget,
+            ExecutionStore.token(), template.render().toString())
+        queue(policy = fixture.policy).reconcile()
+        assertEquals(1, store.execution.sessions(fixture.id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
+        assertEquals(fixture.id, store.execution.authorize(fixture.claim.owner))
+        store.execution.loseSession("background-reservation", "fixture releases capacity")
+        queue(policy = fixture.policy).reconcile()
+        val solves = store.execution.sessions(fixture.id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(2, solves.size); assertEquals(8000, solves.sumOf { it.budget.cpuMillis })
+        assertEquals(Desired.RUN, store.execution.credential(fixture.session.id, fixture.token).desired)
+        assertEquals(fixture.id, store.execution.authorize(fixture.claim.owner))
+    }
+
+    @Test fun `higher priority work prevents spare native admission without replacing the current row`() {
+        val fixture = shrunkenNative()
+        val urgent = job(ExperimentSpec("urgent-native", host = Experiments.LAB_HOST, priority = 201))
+        store.setPriority(urgent, 201)
+        queue(policy = fixture.policy).reconcile()
+        assertEquals(1, store.execution.sessions(fixture.id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
+        assertEquals(Desired.RUN, store.execution.credential(fixture.session.id, fixture.token).desired)
+        assertEquals(fixture.id, store.execution.authorize(fixture.claim.owner))
+        store.finish(urgent, Status.DONE)
+        queue(policy = fixture.policy).reconcile()
+        assertEquals(2, store.execution.sessions(fixture.id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
+        assertEquals(fixture.id, store.execution.authorize(fixture.claim.owner))
+    }
+
+    @ParameterizedTest @ValueSource(strings = ["cpu", "memory"])
+    fun `known unavailable preparation capacity defers source publication until the reservation is released`(resource: String) {
+        val policy = nativeSolveSettings()
+        val id = job(ExperimentSpec("waiting-preparation", vcpus = 4, host = Experiments.LAB_HOST, priority = 100))
+        store.setPriority(id, 100)
+        val original = store.job(id)!!.experiment
+        val background = job(ExperimentSpec("background-preparation", host = Experiments.LAB_HOST, priority = -2))
+        store.setPriority(background, -2)
+        val budget = if (resource == "cpu") ResourceBudget(7000, 512) else ResourceBudget(1000, 7000)
+        val template = policy.targets.single().template.copy(id = "held-preparation", budget = budget,
+            nativeCapacity = ResourceBudget(8000, 8192))
+        store.execution.createSession("held-preparation", background, ExecutionClass.PREPARE, "release", budget,
+            ExecutionStore.token(), template.render().toString())
+        repeat(2) { queue(policy = policy).reconcile() }
+        assertEquals(0, publications)
+        assertTrue(store.execution.sessions(id).isEmpty())
+        store.execution.loseSession("held-preparation", "fixture releases preparation capacity")
+        queue(policy = policy).reconcile()
+        assertEquals(1, publications)
+        val session = store.execution.sessions(id).single()
+        assertEquals(ExecutionClass.PREPARE, session.executionClass)
+        assertEquals(ResourceBudget(4000, 2048), session.budget)
+        assertEquals(original, store.job(id)!!.experiment)
+    }
+
+    private data class ShrunkenNative(val id: Long, val policy: NomadQueueSettings, val session: ExecutionSession,
+                                     val token: String, val claim: IterationClaim)
+    private fun nativeSolveSettings() = settings.copy(targets = settings.targets.filter { it.native }.map {
+        it.copy(template = it.template.copy(budget = ResourceBudget(8000, 8192, 6)))
+    })
+    private fun solveToken(session: ExecutionSession): String = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+        .getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
+        .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+    private fun shrunkenNative(rows: Int = 8, policy: NomadQueueSettings = nativeSolveSettings()): ShrunkenNative {
+        val id = job(ExperimentSpec("shrunken-native", vcpus = 8, host = Experiments.LAB_HOST, priority = 100,
+            configs = listOf(emptyMap(), mapOf("variant" to "other"))))
+        store.setPriority(id, 100)
+        queue(cores = 1, policy = policy).reconcile(); prepare(id, rows); backend.reconcile()
+        queue(cores = 1, policy = policy).reconcile()
+        val session = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(ResourceBudget(1000, 768, 1), session.budget)
+        val token = solveToken(session)
+        store.execution.bind(session.id, token, "shrunken-allocation", "native", "release")
+        val claim = store.execution.claim(session.id, token, "shrunken-allocation")!!
+        return ShrunkenNative(id, policy, session, token, claim)
+    }
+
     @Test fun `prepared native pairs start within spare memory while a background preparation keeps its reservation`() {
         val spec = ExperimentSpec("sweep", vcpus = 4, host = Experiments.LAB_HOST, priority = 100,
             configs = listOf(emptyMap(), mapOf("variant" to "other")))
