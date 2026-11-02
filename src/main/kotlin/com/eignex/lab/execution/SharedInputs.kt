@@ -22,10 +22,16 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.security.MessageDigest
 import java.time.Duration
 import java.util.Base64
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.atomic.AtomicInteger
 
 internal interface InputTransport {
     fun matches(key: String, file: InputFile, md5: String): Boolean
-    /** The size of the object at [key] when it was published with content hash [sha], else null. */
+    /** The size of the object at [key] when published with content hash [sha], else null. Called concurrently during publication. */
     fun stored(key: String, sha: String): Long?
     fun put(key: String, source: Path, sha: String)
     fun get(key: String, destination: Path)
@@ -49,15 +55,17 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     fun publish(paths: List<String>, checkActive: () -> Unit = {}, declared: Map<String, String> = emptyMap()): List<SharedInput> {
         val canonical = root.toRealPath()
         val missing = mutableListOf<String>()
-        val stored = declared.filterKeys { it in paths }.toSortedMap().mapNotNull { (relative, sha) ->
+        val wanted = declared.filterKeys { it in paths }.toSortedMap()
+        for ((relative, sha) in wanted) { checkActive(); safeRelative(relative); require(sha.matches(SHA256)) }
+        val available = stored(wanted.values.distinct(), checkActive).toMutableMap()
+        val stored = wanted.mapNotNull { (relative, sha) ->
             checkActive()
-            require(sha.matches(SHA256))
             val key = "input-blobs/$sha"
             val path = root.resolve(safeRelative(relative))
-            val size = transport.stored(key, sha) ?: if (Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical)) {
+            val size = available[sha] ?: if (Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical)) {
                 require(hashFile(path) == sha) { "declared input checksum mismatch: $relative" }
                 transport.put(key, path, sha)
-                Files.size(path)
+                Files.size(path).also { available[sha] = it }
             } else { missing += relative; null }
             size?.let { SharedInput(InputFile(relative, sha, it), key, "identity", sha, it) }
         }
@@ -65,6 +73,39 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
         // A declared file can also lie inside an undeclared include directory; its declared entry wins.
         val local = publishLocal(paths.filterNot { it in declared }, canonical, checkActive).filterNot { it.file.path in declared }
         return if (stored.isEmpty()) local else (stored + local).sortedBy { it.file.path }
+    }
+
+    /** Bound both in-flight requests and queued tasks; only the read-only presence checks run concurrently. */
+    private fun stored(hashes: List<String>, checkActive: () -> Unit): Map<String, Long?> {
+        if (hashes.size < 2) return hashes.associateWith { checkActive(); transport.stored("input-blobs/$it", it) }
+        val sizes = arrayOfNulls<Long>(hashes.size)
+        val next = AtomicInteger()
+        val pool = Executors.newFixedThreadPool(minOf(8, hashes.size)) { task ->
+            Thread(task, "shared-input-presence").apply { isDaemon = true }
+        }
+        val completed = ExecutorCompletionService<Unit>(pool)
+        val tasks = List(minOf(8, hashes.size)) { completed.submit(Callable {
+            while (true) {
+                val index = next.getAndIncrement()
+                if (index >= hashes.size) break
+                checkActive()
+                val sha = hashes[index]
+                sizes[index] = transport.stored("input-blobs/$sha", sha)
+            }
+        }) }
+        try {
+            repeat(tasks.size) {
+                while (true) {
+                    checkActive()
+                    val task = completed.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                    try { task.get() } catch (failure: ExecutionException) { throw failure.cause ?: failure }
+                    break
+                }
+            }
+        } finally {
+            tasks.forEach { it.cancel(true) }; pool.shutdownNow()
+        }
+        return hashes.withIndex().associate { (index, sha) -> sha to sizes[index] }
     }
 
     private fun publishLocal(paths: List<String>, canonical: Path, checkActive: () -> Unit): List<SharedInput> {

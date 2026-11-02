@@ -198,6 +198,16 @@ Independent source checks run when requested.
 It does not copy earlier solver outcomes or reset the source job's spent allowance. Retain the source job's
 full preparation, failed work and retirement costs alongside the replay's own bounded costs.
 
+A bench manifest may declare top-level `workspaceInputs`, a nonempty list of portable relative file or directory
+paths to copy from the verified build. The manifest itself is included automatically. This asserts that `describe`,
+`plan` and `run` need only those paths, generated files and the declared corpus: include installed classpaths,
+compiler/runtime assets, source inputs and any scripts or Git metadata they read. Listed paths must exist in the
+build. Without the declaration, preparation retains the full built tree. Planner cache identities still cover every
+`planInputs` path in the complete verified build before copying; limiting the workspace never narrows that identity.
+Solve attempts receive private copies of the resulting snapshot, and source input verification remains enforced.
+`LAB_WORKSPACE_CACHE` names a worker-owned sibling directory for bounded adapter metadata shared between fresh
+case JVMs. It is outside sealed inputs and removed with the worker session; adapters must still verify cached identities.
+
 During one preparation, repeated compiler/include files reuse checksums only while inode, size, mtime and
 ctime remain unchanged on a supported filesystem. Directory membership is walked again for every input;
 changed files and unsupported filesystems take the checksum path. Reuse ends with that preparation.
@@ -215,7 +225,9 @@ still match and its corpus inputs are held by the same shared input store, whose
 When every arm hits, the accepted shared inputs replace corpus publication; otherwise the planning arm's fresh
 digests must equal the reused ones. A plan is offered for reuse only when its job's accepted shared inputs hold all its
 corpus inputs, so a selection filter that dropped cases, or a worker without a shared input store, leaves nothing to
-reuse. The preparation's cache report shows `Bench selection` hits and misses.
+reuse. The preparation's cache report shows `Bench selection` hits and misses. On a miss, shared-input publication
+checks up to eight distinct content hashes concurrently. Local hashing and uploads keep their checksum checks;
+ownership cancellation interrupts pending checks before publication continues.
 Build staging is pinned before background cleanup begins, and cleanup filters unrelated cache entries by
 name before reading their metadata. Input/archive quota eviction renames unused entries to tombstones;
 background workers delete those trees under one process-owned garbage lock per cache root. Publication

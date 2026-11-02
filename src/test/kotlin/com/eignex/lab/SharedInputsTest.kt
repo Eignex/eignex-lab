@@ -19,6 +19,63 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class SharedInputsTest {
+    @Test fun `publication overlaps at most eight distinct presence checks and preserves canonical inventories`() {
+        val root = Files.createTempDirectory("parallel-input-presence")
+        try {
+            val active = java.util.concurrent.atomic.AtomicInteger()
+            val peak = java.util.concurrent.atomic.AtomicInteger()
+            val calls = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+            val together = java.util.concurrent.CountDownLatch(2)
+            val transport = object : InputTransport {
+                override fun stored(key: String, sha: String): Long {
+                    calls.computeIfAbsent(sha) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                    val live = active.incrementAndGet(); peak.accumulateAndGet(live) { previous, current -> maxOf(previous, current) }
+                    try {
+                        together.countDown(); check(together.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                        return 7
+                    } finally { active.decrementAndGet() }
+                }
+                override fun matches(key: String, file: InputFile, md5: String) = error("unexpected local lookup")
+                override fun put(key: String, source: Path, sha: String) = error("stored bytes must not be uploaded")
+                override fun get(key: String, destination: Path) = error("publication must not fetch bytes")
+            }
+            val declared = (0..19).associate { "collection/$it" to ExecutionStore.digest("input-$it") } +
+                ("collection/alias" to ExecutionStore.digest("input-0"))
+            val result = SharedInputs(root, transport).publish(declared.keys.toList(), declared = declared)
+            assertEquals(declared.toSortedMap().map { (path, sha) -> SharedInput(InputFile(path, sha, 7), "input-blobs/$sha") }, result)
+            assertTrue(peak.get() in 2..8)
+            assertEquals(20, calls.size); assertTrue(calls.values.all { it.get() == 1 })
+            assertEquals(0, active.get())
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `cancelled publication interrupts pending presence checks without uploading bytes`() {
+        val root = Files.createTempDirectory("cancel-input-presence")
+        try {
+            val cancelled = java.util.concurrent.atomic.AtomicBoolean()
+            val entered = java.util.concurrent.CountDownLatch(2)
+            val stopped = java.util.concurrent.CountDownLatch(2)
+            val transport = object : InputTransport {
+                override fun stored(key: String, sha: String): Long? {
+                    try {
+                        entered.countDown(); check(entered.await(2, java.util.concurrent.TimeUnit.SECONDS)); cancelled.set(true)
+                        java.util.concurrent.CountDownLatch(1).await(); error("request unexpectedly returned")
+                    } finally { stopped.countDown() }
+                }
+                override fun matches(key: String, file: InputFile, md5: String) = error("unexpected local lookup")
+                override fun put(key: String, source: Path, sha: String) = error("cancelled publication uploaded bytes")
+                override fun get(key: String, destination: Path) = error("unexpected download")
+            }
+            val declared = mapOf("a" to ExecutionStore.digest("a"), "b" to ExecutionStore.digest("b"))
+            assertFailsWith<java.util.concurrent.CancellationException> {
+                SharedInputs(root, transport).publish(declared.keys.toList(), {
+                    if (cancelled.get()) throw java.util.concurrent.CancellationException("lease lost")
+                }, declared)
+            }
+            assertTrue(stopped.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `evicted local inputs can be restored from the immutable remote inventory`() {
         val root = Files.createTempDirectory("evicted-inputs")
         val transport = Transport()

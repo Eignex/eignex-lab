@@ -37,12 +37,15 @@ class WorkerWorkspaces(private val root: Path) {
         return tree
     }
 
-    internal fun copy(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean): Path =
+    internal fun copy(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean, paths: List<String>? = null): Path =
         create(key, checkActive) { destination ->
             val sourceReceipt = if (Files.isRegularFile(source.parent.resolve("manifest.json"))) source.parent.resolve("verified.json")
                 else source.resolveSibling("${source.fileName}.verified.json")
-            TreeVerification().copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive, { !runtimeOnly || WorkerTrees.runtimePath(it) }) {
-                if (runtimeOnly) WorkerTrees.copyRuntime(source, destination, checkActive) else WorkerTrees.copy(source, destination, checkActive)
+            val selected = paths?.map(::safeRelative)
+            TreeVerification().copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive,
+                { path -> (selected == null || selected.any { path.startsWith(it) }) && (!runtimeOnly || WorkerTrees.runtimePath(path)) }) {
+                if (paths != null) WorkerTrees.copySelected(source, destination, paths, checkActive)
+                else if (runtimeOnly) WorkerTrees.copyRuntime(source, destination, checkActive) else WorkerTrees.copy(source, destination, checkActive)
             }
         }
 

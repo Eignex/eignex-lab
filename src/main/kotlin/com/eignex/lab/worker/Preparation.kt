@@ -106,12 +106,28 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(), remainingLeaseMs = ::remaining) }
             checkPreparationExit(exit) { "preparation command failed (exit $exit): " + Files.readString(errors).takeLast(8192) }
         }
+        val inputDigests = BenchInputDigests(::checkActive)
+        val builtSelectionKeys = mutableMapOf<String, String?>()
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             fun copy(built: Path): Path = trace.step("workspace") {
-                privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, false)?.let { return@step it }
+                val bench = manifest.experiment.work.bench
+                val paths = if (replay == null) bench?.let { BenchRuns.workspaceInputs(built, it) } else null
+                if (paths != null && replay == null) trace.step("selection") {
+                    // The repository may declare broad planner identity inputs but a small runtime workspace.
+                    // Bind keys to the complete verified build while it is pinned, before copying the declared subset.
+                    val proof = if (Files.isRegularFile(built.parent.resolve("manifest.json"))) built.parent.resolve("verified.json")
+                        else built.resolveSibling("${built.fileName}.verified.json")
+                    inputDigests.receipt(built, proof)
+                    for (arm in manifest.arms.filter { it.sha == sha }) builtSelectionKeys[arm.arm.label] = try {
+                        BenchSelections.key(manifest.release, manifest.experiment.repository, requireNotNull(bench),
+                            BenchRuns.request(bench, arm.arm), sha, built, sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive, inputDigests)
+                    } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null }
+                }
+                privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, false, paths)?.let { return@step it }
                 val tree = directory.resolve("worktrees/$sha")
-                WorkerTrees.copy(built, tree, ::checkActive)
+                if (paths == null) WorkerTrees.copy(built, tree, ::checkActive)
+                else WorkerTrees.copySelected(built, tree, paths, ::checkActive)
                 tree
             }
             fun acquireSource(consume: (Path) -> Unit) = trace.step("inputs") {
@@ -128,7 +144,6 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val spec = manifest.experiment
         val bench = spec.work.bench
         val armPlans = linkedMapOf<String, com.eignex.lab.bench.BenchPlan>()
-        val inputDigests = BenchInputDigests(::checkActive)
         if (bench != null) for (tree in prepared.values) inputDigests.receipt(tree, tree.resolveSibling("${tree.fileName}.verified.json"))
         var descriptor: com.eignex.lab.bench.BenchDescriptor? = replay?.descriptor
         var materialize: () -> Unit = {}
@@ -144,7 +159,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         } else if (bench != null) {
             val repositoryArms = manifest.arms.filter { it.arm.values["backend"] != REFERENCE_BACKEND }.ifEmpty { listOf(manifest.arms.first()) }
             val keys = trace.step("selection") { repositoryArms.associate { arm -> arm.arm.label to try {
-                BenchSelections.key(manifest.release, spec.repository, bench, BenchRuns.request(bench, arm.arm), arm.sha,
+                if (arm.arm.label in builtSelectionKeys) builtSelectionKeys[arm.arm.label]
+                else BenchSelections.key(manifest.release, spec.repository, bench, BenchRuns.request(bench, arm.arm), arm.sha,
                     prepared.getValue(arm.sha), sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive, inputDigests)
             } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null } } }
             val found = keys.values.filterNotNull().distinct().takeIf { it.isNotEmpty() }?.let { wanted -> trace.step("selection") {

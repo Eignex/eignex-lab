@@ -10,6 +10,8 @@ import com.eignex.lab.util.*
 
 import com.eignex.lab.bench.*
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -66,6 +68,15 @@ internal object BenchRuns {
         val manifest = BenchProtocol.json.parseToJsonElement(Files.readString(tree.resolve(safeRelative(spec.manifest)))).jsonObject
         val runtime = manifest["runtime"]?.let { BenchProtocol.json.decodeFromJsonElement(Runtime.serializer(), it) } ?: Runtime()
         return if (spec.adapterResources) runtime.copy(requiredTags = runtime.requiredTags + "platform:linux") else runtime
+    }
+
+    /** Opt-in private workspace contents; omitted manifests retain the entire built tree. */
+    fun workspaceInputs(tree: Path, spec: BenchSpec): List<String>? {
+        val manifest = BenchProtocol.json.parseToJsonElement(Files.readString(tree.resolve(safeRelative(spec.manifest)))).jsonObject
+        val value = manifest["workspaceInputs"] ?: return null
+        val paths = BenchProtocol.json.decodeFromJsonElement(ListSerializer(String.serializer()), value)
+        require(paths.isNotEmpty()) { "workspaceInputs must name at least one path" }
+        return (paths + spec.manifest).onEach { safeRelative(it) }.distinct()
     }
 
     /** The lab passes opaque parameter overrides to the repository planner. */

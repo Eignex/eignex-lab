@@ -15,6 +15,32 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class WorkerTreesTest {
+    @Test fun `declared workspaces copy only named roots and preserve private bytes and empty directories`() {
+        val root = Files.createTempDirectory("declared-copy")
+        try {
+            val source = Files.createDirectory(root.resolve("source"))
+            val runtime = Files.createDirectories(source.resolve("module/runtime/empty/deep"))
+            val jar = source.resolve("module/runtime/app.jar"); Files.writeString(jar, "runtime")
+            Files.createDirectories(source.resolve("module/build/classes"))
+            Files.writeString(source.resolve("module/build/classes/Unused.class"), "compiler scratch")
+            Files.writeString(source.resolve("manifest.json"), "manifest")
+            val proof = source.resolveSibling("source.verified.json"); TreeVerification().capture(source, proof)
+            val workspaces = WorkerWorkspaces(root.resolve("private"))
+            val tree = workspaces.copy("a".repeat(64), source, {}, false,
+                listOf("module/runtime/app.jar", "module/runtime", "manifest.json", "module/runtime"))
+            assertEquals("runtime", Files.readString(tree.resolve("module/runtime/app.jar")))
+            assertTrue(Files.isDirectory(tree.resolve(source.relativize(runtime))))
+            assertFalse(Files.exists(tree.resolve("module/build")))
+            workspaces.seal("a".repeat(64), tree, {})
+            assertEquals(tree, workspaces.reuse("a".repeat(64), {}))
+            Files.writeString(tree.resolve("module/runtime/app.jar"), "private")
+            assertEquals("runtime", Files.readString(jar))
+            assertNull(workspaces.reuse("a".repeat(64), {}))
+            assertFailsWith<IllegalArgumentException> { WorkerTrees.copySelected(source, root.resolve("escape"), listOf("../outside"), {}) }
+            assertFails { WorkerTrees.copySelected(source, root.resolve("missing"), listOf("absent"), {}) }
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `default runtime copies omit compiler intermediates but retain distributions sources and Git`() {
         val root = Files.createTempDirectory("runtime-copy")
         try {

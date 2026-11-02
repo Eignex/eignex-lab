@@ -123,7 +123,8 @@ internal class IterationExecutor(
                             is Work.Profile -> Experiments.profileCommand(worktree.toString(), work.main, case.index, corpus.toString(), arm.debug, manifest.experiment.repository)
                             is Work.Analysis, is Work.Script, Work.Recipe -> error("execution requires a repository bench manifest or explicit profile")
                         }
-                    val env = environment() + mapOf("JOB_DIR" to directory.toString())
+                    val env = environment() + mapOf("JOB_DIR" to directory.toString(),
+                        "LAB_WORKSPACE_CACHE" to worktree.parent.resolve(".bench-cache").toString())
                     val adapterResources = manifest.experiment.work.bench?.adapterResources == true && !reference
                     val timerSha = if (adapterResources) runCatching { hashFile(Path.of(AdapterResources.TIMER)) }.getOrNull() else null
                     val start = now()

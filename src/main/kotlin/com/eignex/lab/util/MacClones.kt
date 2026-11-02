@@ -9,8 +9,8 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 
-/** APFS can clone a bounded, verified directory atomically in one transaction. cp -c instead issues a
- * transaction for every file, which is very slow on the external cache drive during durable writes. */
+/** Prefer APFS copy-on-write clones. Directory clones still create separate inodes for their descendants,
+ * so callers should select runtime inputs before copying large built trees. */
 internal object MacClones {
     private val clone by lazy {
         runCatching {
