@@ -25,6 +25,47 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `prepared native pairs start within spare memory while a background preparation keeps its reservation`() {
+        val spec = ExperimentSpec("sweep", vcpus = 4, host = Experiments.LAB_HOST, priority = 100,
+            configs = listOf(emptyMap(), mapOf("variant" to "other")))
+        val id = job(spec); store.setPriority(id, 100); queue().reconcile(); prepare(id); backend.reconcile()
+        val original = store.job(id)!!.experiment
+        val background = job(ExperimentSpec("reference", host = Experiments.LAB_HOST, priority = -2))
+        store.setPriority(background, -2)
+        fun hold(name: String, memory: Int) {
+            val token = ExecutionStore.token(); val budget = ResourceBudget(1000, memory)
+            val native = settings.targets.first { it.native }.template.copy(id = name, budget = budget,
+                nativeCapacity = ResourceBudget(config.cores * 1000, 4096))
+            store.execution.createSession(name, background, ExecutionClass.PREPARE, "release", budget, token, native.render().toString())
+            store.execution.bind(name, token, "allocation-$name", "native", "release")
+        }
+        hold("full-background", 3840)
+        queue().reconcile()
+        assertTrue(store.execution.sessions(id).none { it.executionClass == ExecutionClass.SOLVE }, "one complete case must fit")
+        store.execution.loseSession("full-background", "fixture released memory")
+        hold("background", 3072)
+        queue().reconcile()
+        val session = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE }
+        assertEquals(ResourceBudget(2000, 768, 1), session.budget)
+        assertEquals(3000L to 3840L, store.execution.nativeReservation())
+        assertEquals(original, store.job(id)!!.experiment)
+        val manifest = store.execution.manifest(session.id)
+        assertEquals(6, manifest.cases.size)
+        assertTrue(manifest.cases.all {
+            val resources = requireNotNull(it.executionCase).resources
+            resources.memoryMiB == 512L && resources.cpus == 1
+        })
+        val payload = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+        val token = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
+            .getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+        store.execution.bind(session.id, token, "fit-allocation", "native", "release")
+        val claim = store.execution.claim(session.id, token, "fit-allocation")!!
+        val claimed = manifest.cases.filter { it.index in claim.indices }
+        assertEquals(setOf(0, 1), claimed.map { it.arm }.toSet())
+        assertEquals(1, claimed.map { Triple(it.problem, it.seed, it.repeat) }.distinct().size)
+        queue().reconcile()
+        assertEquals(1, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
+    }
     @Test fun `cloud preparation waits before publication and charging until the preceding placement binds`() {
         val first = job(ExperimentSpec("first-build", host = Experiments.AWS_HOST))
         val second = job(ExperimentSpec("second-build", host = Experiments.AWS_HOST))
