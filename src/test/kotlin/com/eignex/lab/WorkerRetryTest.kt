@@ -18,6 +18,22 @@ class WorkerRetryTest {
     private var time = 0L
     private val retry = WorkerRetry({ time }, { time += it })
 
+    @Test fun `completed rows survive long backpressure while renewed ownership remains valid`() {
+        var calls = 0
+        assertEquals("accepted", retry.runWhileOwned({ 80_000 }) {
+            calls++
+            if (time < 90_000) throw WorkerUnavailable(503)
+            "accepted"
+        })
+        assertTrue(time >= 90_000); assertTrue(calls > 3)
+        time = 0
+        assertFailsWith<IOException> { retry.runWhileOwned({ 1250 - time }) { throw WorkerUnavailable(408) } }
+        assertEquals(1250, time)
+        var permanent = 0
+        assertFailsWith<IllegalArgumentException> { retry.runWhileOwned({ 80_000 }) { permanent++; errorArgument() } }
+        assertEquals(3, permanent)
+    }
+
     @Test fun `a brief restart tolerates more than three failures and preserves the same operation`() {
         var calls = 0
         assertEquals("accepted", retry.run({ 80_000 - time }) { if (++calls <= 7) throw WorkerUnavailable(502); "accepted" })

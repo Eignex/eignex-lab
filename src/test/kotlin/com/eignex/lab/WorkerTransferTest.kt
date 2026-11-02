@@ -23,6 +23,28 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class WorkerTransferTest {
+    @Test fun `request timeouts preserve the same completed row for idempotent publication`() {
+        val root = Files.createTempDirectory("worker-publication-timeout")
+        val calls = AtomicInteger()
+        val owners = mutableListOf<AttemptOwner>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/worker/v1/sessions/session/commit-inline") { exchange ->
+            try {
+                owners += Json.decodeFromString<WorkerInlineCommit>(String(exchange.requestBody.readAllBytes())).owner
+                exchange.sendResponseHeaders(when (calls.incrementAndGet()) { 1 -> 408; 2 -> 503; else -> 204 }, -1)
+            } finally { exchange.close() }
+        }
+        server.start()
+        try {
+            val identity = root.resolve("identity").also { Files.writeString(it, "fixture") }
+            val worker = WorkerSession(URI.create("http://127.0.0.1:${server.address.port}"), "session", "token", "allocation", identity,
+                "release", root, root.resolve("unused.sock"), "unused")
+            val owner = AttemptOwner("session", "allocation", "iteration", 1, "attempt-token")
+            assertEquals("inline", worker.commitResult(owner, IterationResult(listOf(ExecutionCaseResult(0, 0, 1, 2))), emptyMap()))
+            assertEquals(listOf(owner, owner, owner), owners)
+        } finally { server.stop(0); deleteTree(root) }
+    }
+
     @ParameterizedTest @ValueSource(booleans = [false, true])
     fun `large records skip small inline requests with or without captures`(captures: Boolean) {
         val root = Files.createTempDirectory("worker-large-record")
