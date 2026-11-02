@@ -128,7 +128,7 @@ class PagesTest {
         testApplication {
             application { api(config, store, host) }
 
-            val index = client.get("/") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
+            val index = client.queuePage()
             val job = client.get("/jobs/$done?commands") { header(HttpHeaders.Accept, "text/html") }
             val failed = client.get("/jobs/$done?failed") { header(HttpHeaders.Accept, "text/html") }.bodyAsText()
             val json = client.get("/jobs/$done")

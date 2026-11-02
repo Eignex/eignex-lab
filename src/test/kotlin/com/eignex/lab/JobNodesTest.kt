@@ -51,7 +51,7 @@ class JobNodesTest {
         for (path in listOf("/", "/jobs/$id")) {
             val response = client.get(path) { accept(ContentType.Text.Html) }
             assertEquals(HttpStatusCode.OK, response.status)
-            val page = response.bodyAsText()
+            val page = if (path == "/") client.queuePage() else response.bodyAsText()
             assertContains(page, "avx2:i-worker</a>")
             assertContains(page, "href=\"/nodes#node-avx2%3Ai-worker\"")
             assertContains(page, "title=\"Nomad node nomad-node-uuid\"")
@@ -68,12 +68,12 @@ class JobNodesTest {
         store.execution.loseSession("lost", "infrastructure:spot")
         application { api(config, store, host) }
         for (path in listOf("/", "/jobs/$id")) {
-            val page = client.get(path) { accept(ContentType.Text.Html) }.bodyAsText()
+            val page = if (path == "/") client.queuePage() else client.get(path) { accept(ContentType.Text.Html) }.bodyAsText()
             assertContains(page, "class=\"QUEUED\">WAITING</span>")
             assertContains(page, "waiting for compatible capacity")
             assertFalse(page.contains("lost-node"))
         }
-        val queue = client.get("/").bodyAsText()
+        val queue = client.queuePage()
         assertContains(queue, "0 running · 0 queued · 1 waiting for capacity")
         val report = Waiting.report(config.status, store, { null })
         assertFalse(report.nodesUp)
@@ -107,7 +107,7 @@ class JobNodesTest {
         val nodes = jobNodes(config.status, store, listOf(id, waiting))
         assertEquals(listOf("native-node-uuid", "cloud-node-uuid"), nodes.getValue(id).map { it.id })
         assertNull(nodes[waiting])
-        val page = client.get("/").bodyAsText()
+        val page = client.queuePage()
         assertContains(page, "local + cloud</span>")
         assertContains(page, "native · native-n</a>")
         assertContains(page, "href=\"/nodes#local-node\"")
