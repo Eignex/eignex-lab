@@ -35,7 +35,7 @@ internal fun Route.fileRoutes(services: ApiServices) {
         val id = io { call.job(store) }.id
         requireJobFiles(config.paths)
         val files = io {
-            (jobFiles(config.jobDir(id)).associateBy { it.path } + services.preparedArchives.entries(id).associateBy { it.path })
+            (services.acceptedFiles.entries(id, jobFiles(config.jobDir(id))).associateBy { it.path } + services.preparedArchives.entries(id).associateBy { it.path })
                 .values.sortedBy { it.path }
         }
         if (call.wantsHtml()) call.respondHtml(filesPage(id, files)) else call.respond(files)
@@ -48,14 +48,18 @@ internal fun Route.fileRoutes(services: ApiServices) {
         }
         val segments = call.parameters.getAll("path").orEmpty()
         val archive = io { services.preparedArchives.resolve(id, segments) }
-        val file = archive?.file?.toFile() ?: io { (jobFile(config.jobDir(id), segments) ?: WorkerLogs.resolve(store, config.jobDir(id), id, segments))?.toFile() }
+        val accepted = if (archive == null) io { services.acceptedFiles.resolve(id, segments) } else null
+        val file = (archive?.file ?: accepted?.file)?.toFile() ?: io { (jobFile(config.jobDir(id), segments) ?: WorkerLogs.resolve(store, config.jobDir(id), id, segments))?.toFile() }
             ?: throw ApiError.NotFound("no such file")
-        if (tail == null) archive?.let { call.response.header(HttpHeaders.ETag, "\"${it.sha256}\"") }
+        if (tail == null) (archive?.sha256 ?: accepted?.sha256)?.let { call.response.header(HttpHeaders.ETag, "\"$it\"") }
+        val extension = segments.last().substringAfterLast('.', "")
         when {
             tail != null -> call.respondText(io { tail(file, tail) }, ContentType.Text.Plain)
             archive != null -> call.respond(LocalFileContent(file, ContentType("application", "zip")))
             // Logs and command output open in the browser instead of downloading.
-            file.extension in TEXT_FILES -> call.respond(LocalFileContent(file, ContentType.Text.Plain.withCharset(Charsets.UTF_8)))
+            extension in TEXT_FILES -> call.respond(LocalFileContent(file, ContentType.Text.Plain.withCharset(Charsets.UTF_8)))
+            accepted != null -> call.respond(LocalFileContent(file, java.net.URLConnection.getFileNameMap().getContentTypeFor(segments.last())
+                ?.let { ContentType.parse(it) } ?: ContentType.Application.OctetStream))
             else -> call.respondFile(file)
         }
     }

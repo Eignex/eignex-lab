@@ -355,6 +355,15 @@ ended-case rechecks share the production registry. `checker/dimacs.json` accepts
 retains both paths' receipts; SDK success alone is insufficient. SAT point acceptance supplies no independent
 UNSAT or optimum proof. Resource and unavailable checks remain unchecked.
 
+## Retained artifacts
+
+File listings and downloads use accepted artifact names and content hashes. Names differing only in case remain
+separate on a coordinator with a case-insensitive filesystem; its physical job directory is a projection rather
+than the artifact inventory. Full accepted downloads include their SHA-256 as an ETag. A blob still draining from
+the result journal may have unknown listed size; a matching local projection can serve it, while missing or corrupt
+bytes return an unavailable response. Existing authentication, job scoping, safe paths and trim policy still apply.
+Trimmed jobs retain their designated logs and records without making raw artifacts downloadable again.
+
 ## Controlled sweep migrations
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,

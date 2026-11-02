@@ -577,6 +577,17 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->
         db.sqlRows("SELECT iteration_id, result FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) { it.getString(1) to Json.decodeFromString<IterationResult>(it.getString(2)) }
     }
+    /** Small invalidation token for file readers; committed attempts retain their immutable artifact maps. */
+    fun acceptedArtifactVersion(jobId: Long): Int = store.executionRead { db ->
+        db.sqlRows("SELECT COUNT(*) FROM iteration_attempts WHERE job_id = ? AND state = 'committed'", jobId) { it.getInt(1) }.single()
+    }
+    /** Read accepted logical names without decoding their potentially large case records and preparations. */
+    fun acceptedArtifacts(jobId: Long): Map<String, String> = store.executionRead { db ->
+        db.sqlRows("""SELECT artifact.key, artifact.value FROM iteration_attempts attempt,
+            json_each(CASE WHEN json_valid(attempt.result) THEN attempt.result ELSE '{}' END, '$.artifacts') artifact
+            WHERE attempt.job_id = ? AND attempt.state = 'committed' AND artifact.type = 'text'
+            ORDER BY attempt.iteration_id""", jobId) { it.getString(1) to it.getString(2) }.toMap()
+    }
     /** The job's accepted result of [iteration], read alone: results are large, and most readers want one of them. */
     fun accepted(jobId: Long, iteration: String): IterationResult? = store.executionRead { db ->
         db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND state = 'committed'", jobId, iteration) {

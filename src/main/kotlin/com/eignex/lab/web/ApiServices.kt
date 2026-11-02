@@ -50,14 +50,17 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
     val jobs = JobService(this)
     val schedules = ScheduleService(this)
 
-    internal val preparedArchives by lazy {
-        val local = archiveArtifacts ?: LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"),
+    private val localFileArtifacts by lazy {
+        archiveArtifacts ?: LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"),
             writable = { Volumes.hold(config.paths, config.minFreeBytes) == null })
-        val artifacts = if (archiveArtifacts != null) local else BuildArchives.coordinator()?.let {
-            RegionalArtifactStore(local, it, config.dataDir.resolve("nomad/build-fetches"))
-        } ?: local
-        PreparedArchiveFiles(config, store, artifacts)
     }
+    private val fileArtifacts by lazy {
+        if (archiveArtifacts != null) localFileArtifacts else BuildArchives.coordinator()?.let {
+            RegionalArtifactStore(localFileArtifacts, it, config.dataDir.resolve("nomad/build-fetches"))
+        } ?: localFileArtifacts
+    }
+    internal val preparedArchives by lazy { PreparedArchiveFiles(config, store, fileArtifacts) }
+    internal val acceptedFiles by lazy { AcceptedArtifactFiles(config, store, localFileArtifacts) }
 
     /** Start the disk measurements and compute the pages' slow reads before anyone asks, so the first load is quick. */
     fun start() {
