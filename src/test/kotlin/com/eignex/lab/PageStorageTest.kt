@@ -34,7 +34,7 @@ class PageStorageTest {
             })
         val executor = Executors.newSingleThreadExecutor()
         try {
-            Store(config.database).use { store ->
+            Store(config.database).let { store ->
                 ApiServices(config, store, HostReport("test", 4, "java")).use { services ->
                     services.pageStorage.start()
                     assertTrue(entered.await(5, TimeUnit.SECONDS))
