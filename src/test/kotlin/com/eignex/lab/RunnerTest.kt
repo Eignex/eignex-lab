@@ -10,6 +10,10 @@ import com.eignex.lab.worker.*
 import com.eignex.lab.nomad.*
 import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
+import com.eignex.lab.checker.LabCheck
+import com.eignex.lab.checker.ScopedPointEvidence
+import com.eignex.lab.checker.sha256
+import kotlinx.serialization.json.*
 
 import java.nio.file.Files
 import java.nio.file.Path
@@ -86,6 +90,16 @@ class RunnerTest {
         store.schedules.create(original.name, "main", original, 120)
         val workloads = listOf(1L, 3L).map { seed -> com.eignex.lab.bench.BenchCase("model/$seed/0", parameters = mapOf("seed" to seed.toString()),
             attributes = mapOf("suite" to "fixture", "problem" to "model", "comparisonKey" to "model/$seed/0", "labInputDigest" to "exact-input", "seed" to seed.toString())) }
+        val scope = buildJsonObject {
+            put("schema", "original-source-optimum-v1"); put("semanticsSha256", "e".repeat(64))
+            put("objective", buildJsonObject { put("sense", "min"); put("units", "fixture"); put("identity", "source-objective") })
+            put("assumptions", JsonArray(emptyList()))
+        }
+        val witness = "v x=9007199254740993"
+        val sources = mapOf("model" to "a".repeat(64))
+        val check = LabCheck("fixture-v1", LabCheck.VALID, "fixture point and scope accepted", "fixture",
+            checkerSha256 = "b".repeat(64), witnessSha256 = sha256(witness.toByteArray()), sourceSha256 = sources,
+            optimumEvidence = ScopedPointEvidence(scope, "9007199254740993"))
         fun completed(sha: String, proven: Boolean): Long {
             val spec = original.copy(name = "checked-sweep@$sha", base = mapOf("ref" to sha))
             val id = store.create(spec.name, sha, emptyList(), experiment = spec)
@@ -93,8 +107,14 @@ class RunnerTest {
                 Experiments.cases(workloads.size, 1, emptyList()).map { it.copy(seed = workloads[it.problem].parameters.getValue("seed").toLong()) }, workloads.map { "true" to 1L })
             store.setup(id, sha)
             workloads.forEachIndexed { index, _ ->
-                store.caseRecord(id, index, """{"kind":"optimize","feasible":true,"proven":$proven,"exactObjective":"9007199254740993","budgetMs":1000}""")
+                store.caseRecord(id, index, buildJsonObject {
+                    put("solver", "fixture"); put("kind", "optimize"); put("feasible", true); put("maximize", false)
+                    put("proven", proven); put("exactObjective", "9007199254740993"); put("budgetMs", 1000)
+                    put("sourceHashes", buildJsonObject { sources.forEach { (key, value) -> put(key, value) } })
+                    put("optimalityScope", scope); put("finalWitness", witness)
+                }.toString())
                 store.commandFinished(id, index, 0)
+                store.plans.caseCheck(id, index, check.json())
             }
             store.finish(id, Status.DONE)
             return id
