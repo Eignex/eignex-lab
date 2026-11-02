@@ -324,16 +324,16 @@ internal object Schema {
     /** Step 16: receipt revisions visible across runner/API connections; key zero is the global evidence generation. */
     private fun checkRevisions(db: Connection) {
         db.createStatement().use {
-            it.execute("CREATE TABLE check_revisions (job_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)")
-            it.execute("INSERT INTO check_revisions VALUES (0, 0)")
+            it.execute("CREATE TABLE IF NOT EXISTS check_revisions (job_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)")
+            it.execute("INSERT OR IGNORE INTO check_revisions VALUES (0, 0)")
             val advance = "UPDATE check_revisions SET revision = revision + 1 WHERE job_id = 0; "
             val own = "INSERT INTO check_revisions VALUES (NEW.job_id, 1) ON CONFLICT(job_id) " +
                 "DO UPDATE SET revision = revision + 1; "
-            it.execute("CREATE TRIGGER check_revision_update AFTER UPDATE OF lab_check ON cases " +
+            it.execute("CREATE TRIGGER IF NOT EXISTS check_revision_update AFTER UPDATE OF lab_check ON cases " +
                 "WHEN OLD.lab_check IS NOT NEW.lab_check BEGIN $advance $own END")
-            it.execute("CREATE TRIGGER check_revision_insert AFTER INSERT ON cases " +
+            it.execute("CREATE TRIGGER IF NOT EXISTS check_revision_insert AFTER INSERT ON cases " +
                 "WHEN NEW.lab_check IS NOT NULL BEGIN $advance $own END")
-            it.execute("CREATE TRIGGER check_revision_delete AFTER DELETE ON cases " +
+            it.execute("CREATE TRIGGER IF NOT EXISTS check_revision_delete AFTER DELETE ON cases " +
                 "WHEN OLD.lab_check IS NOT NULL BEGIN $advance END")
         }
     }
