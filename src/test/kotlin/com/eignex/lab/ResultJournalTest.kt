@@ -30,6 +30,120 @@ class ResultJournalTest {
     private fun blobs(text: String) = mapOf(ExecutionStore.digest(text) to text.toByteArray())
     private fun read(store: ArtifactStore, job: Long, text: String) = store.open(job, ExecutionStore.digest(text)).use { String(it.readAllBytes()) }
 
+    @Test fun `group reclamation shares one internal barrier without releasing undrained capacity`() {
+        var syncs = 0
+        ResultJournal(journal, external, start = false, syncDirectory = { syncs++ }).use { store ->
+            repeat(130) { store.putAll(1, blobs("result-$it")) }
+            val charged = store.status().bytes; val before = syncs
+            assertTrue(store.drainGroup())
+            assertEquals(before + 1, syncs); assertEquals(2, store.status().batches)
+            assertTrue(store.status().bytes in 8193 until charged)
+            assertEquals("result-0", read(external, 1, "result-0"))
+            assertEquals("result-129", read(store, 1, "result-129"))
+            assertTrue(store.drainGroup()); assertEquals(before + 2, syncs)
+            assertEquals(8192L, store.status().bytes)
+        }
+    }
+
+    @Test fun `failed shared reclamation retains every charge and retries missing paths without republication`() {
+        var syncs = 0; var fail = false; var at = 1000L; var publications = 0
+        val destination = object : ArtifactStore by external {
+            override fun putAll(job: Long, blobs: Map<String, ByteArray>) { publications++; external.putAll(job, blobs) }
+        }
+        ResultJournal(journal, destination, maxBytes = 2L * 1024 * 1024, start = false, retryClock = { at }, syncDirectory = {
+            syncs++; if (fail) { fail = false; throw java.io.IOException("injected shared reclamation failure") }
+        }).use { store ->
+            repeat(128) { store.putAll(1, blobs("result-$it")) }
+            val charged = store.status().bytes; val before = syncs
+            fail = true
+            assertFailsWith<java.io.IOException> { store.drainGroup() }
+            assertEquals(before + 1, syncs); assertEquals(charged, store.status().bytes)
+            assertEquals(128, store.status().batches)
+            assertFailsWith<IllegalStateException> { store.putAll(2, blobs("x".repeat(1024 * 1024))) }
+            assertEquals(charged, store.status().bytes)
+            assertFalse(store.drainGroup()); assertEquals(before + 1, syncs)
+            assertEquals(0L, Files.list(journal).use { paths -> paths.filter { it.toString().endsWith(".zip") }.count() })
+            at += 5000
+            assertFalse(store.drainGroup()); assertEquals(before + 2, syncs)
+            assertEquals(8192L, store.status().bytes); assertEquals(0, store.status().batches)
+            assertEquals(128, publications)
+        }
+        ResultJournal(journal, destination, start = false).use { recovered ->
+            assertEquals(0, recovered.status().batches); assertEquals(8192L, recovered.status().bytes)
+            assertEquals("result-127", read(recovered, 1, "result-127"))
+            assertEquals(128, publications)
+        }
+    }
+
+    @Test fun `restart after a failed grouped deletion barrier retains externally durable results`() {
+        var fail = false
+        ResultJournal(journal, external, start = false, syncDirectory = {
+            if (fail) throw java.io.IOException("injected grouped deletion barrier failure")
+        }).use { store ->
+            repeat(3) { store.putAll(1, blobs("result-$it")) }
+            val charged = store.status().bytes
+            fail = true
+            assertFailsWith<java.io.IOException> { store.drainGroup() }
+            assertEquals(charged, store.status().bytes); assertEquals(3, store.status().batches)
+        }
+        ResultJournal(journal, external, start = false).use { recovered ->
+            assertEquals(0, recovered.status().batches); assertEquals(8192L, recovered.status().bytes)
+            repeat(3) { assertEquals("result-$it", read(recovered, 1, "result-$it")) }
+        }
+    }
+
+    @Test fun `partial deletion failure reclaims only shared-synced peers and retains the failed charge`() {
+        var held: Path? = null; var at = 1000L; var syncs = 0; var publications = 0
+        val destination = object : ArtifactStore by external {
+            override fun publishBatch(job: Long, publish: () -> Unit) {
+                publications++; publish()
+                if (held == null) {
+                    val path = Files.list(journal).use { paths -> paths.filter { it.toString().endsWith(".zip") }.findFirst().orElseThrow() }
+                    Files.delete(path); Files.createDirectory(path); Files.writeString(path.resolve("busy"), "retained")
+                    held = path
+                }
+            }
+        }
+        ResultJournal(journal, destination, start = false, retryClock = { at }, syncDirectory = { syncs++ }).use { store ->
+            repeat(3) { store.putAll(1, blobs("result-$it")) }
+            val charged = store.status().bytes; val before = syncs
+            assertFailsWith<java.nio.file.DirectoryNotEmptyException> { store.drainGroup() }
+            assertEquals(before + 1, syncs); assertEquals(1, store.status().batches)
+            assertTrue(store.status().bytes in 8193 until charged)
+            repeat(3) { assertEquals("result-$it", read(store, 1, "result-$it")) }
+            assertFalse(store.drainGroup()); assertEquals(before + 1, syncs)
+            val path = requireNotNull(held); Files.delete(path.resolve("busy")); Files.delete(path)
+            at += 5000
+            assertFalse(store.drainGroup()); assertEquals(before + 2, syncs)
+            assertEquals(8192L, store.status().bytes); assertEquals(1, publications)
+        }
+    }
+
+    @Test fun `another lane cannot reclaim packs reserved by a blocked group`() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val destination = object : ArtifactStore by external {
+            override fun publishBatch(job: Long, publish: () -> Unit) {
+                if (job == 1L) { entered.countDown(); check(release.await(10, SECONDS)) }
+                publish()
+            }
+        }
+        val pool = Executors.newSingleThreadExecutor()
+        ResultJournal(journal, destination, start = false).use { store ->
+            try {
+                repeat(128) { store.putAll(1, blobs("reserved-$it")) }
+                store.putAll(2, blobs("other"))
+                val drain = pool.submit<Boolean> { store.drainGroup() }
+                assertTrue(entered.await(3, SECONDS))
+                assertTrue(store.drainGroup()); assertEquals(128, store.status().batches)
+                assertEquals(128L, Files.list(journal).use { paths -> paths.filter { it.toString().endsWith(".zip") }.count() })
+                assertEquals("reserved-0", read(store, 1, "reserved-0"))
+                assertEquals("other", read(external, 2, "other"))
+                release.countDown(); assertTrue(drain.get(5, SECONDS))
+                assertEquals(0, store.status().batches); assertEquals(8192L, store.status().bytes)
+            } finally { release.countDown(); pool.shutdownNow() }
+        }
+    }
+
     @ParameterizedTest @ValueSource(booleans = [false, true])
     fun `external batch barriers precede reclamation and repeat after restart with complete files`(large: Boolean) {
         val payloads = (0..1).map { value -> ByteArray(if (large) 600 * 1024 else 16 * 1024) { ((it + value) % 251).toByte() } }
