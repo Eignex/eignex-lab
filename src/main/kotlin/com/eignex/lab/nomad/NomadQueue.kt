@@ -59,6 +59,13 @@ class NomadQueue(
                 else settings.solveBudget(target, of, preparedBench)
                 fun preparationBudget(target: NomadQueueTarget) =
                     settings.preparationBudget(target, job, if (target.native) config.cores * 1000 else Int.MAX_VALUE)
+                fun preparationAvailable(target: NomadQueueTarget): Boolean {
+                    val budget = preparationBudget(target)
+                    return cloudMayRun(target, job, budget) && backend.canPrepare(target.template, this.settings.maxConcurrentBuildsPerNode) &&
+                        (!target.native || mayUseNative(job.id, target) && store.execution.nativeReservation().let { held ->
+                            held.first + budget.cpuMillis <= config.cores * 1000L && held.second + budget.memoryMiB <= target.template.budget.memoryMiB
+                        })
+                }
                 val targets = settings.matching(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
                     .filter { solveBudget(it, job) != null }
                     .filter { if (it.native) spec.host != Experiments.AWS_HOST else spec.host != Experiments.LAB_HOST }
@@ -69,19 +76,14 @@ class NomadQueue(
                         it.template.budget.cpuMillis >= settings.preparationBudget.cpuMillis && it.template.budget.memoryMiB >= settings.preparationBudget.memoryMiB
                     }
                     require(fitting.isNotEmpty()) { "no target fits the preparation budget" }
-                    val available = fitting.filter { backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) }
+                    val available = fitting.filter(::preparationAvailable)
                     if (available.isEmpty()) continue
                     val (arms, bundles) = source(job, targets, settings) ?: continue
                     val required = bundles.flatMap { it.build?.requiredTags.orEmpty() }.toSet()
                     val compatible = fitting.filter { target -> NodeTags.matches(NodeSelector(require = required), target.capabilities) &&
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
-                    val target = ordered(compatible, ::preparationBudget).firstOrNull {
-                        cloudMayRun(it, job, preparationBudget(it)) && backend.canPrepare(it.template, this.settings.maxConcurrentBuildsPerNode) && (!it.native || mayUseNative(job.id, it) && store.execution.nativeReservation().let { held ->
-                            held.first + preparationBudget(it).cpuMillis <= config.cores * 1000L &&
-                                held.second + preparationBudget(it).memoryMiB <= it.template.budget.memoryMiB
-                        })
-                    } ?: continue
+                    val target = ordered(compatible, ::preparationBudget).firstOrNull(::preparationAvailable) ?: continue
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         preparationBudget(target), solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
                         benchReplay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
@@ -102,14 +104,13 @@ class NomadQueue(
                 }
                 val pending = store.plans.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
-                val smallest = targets.map { checkNotNull(solveBudget(it, current)) }.minBy { it.cpuMillis }
-                val minimumCpu = smallest.cpuMillis
-                // The job's vCPUs are its whole solve reservation; sessions split it only where one target cannot hold it.
+                val minimumCpu = Math.multiplyExact(cases.maxOf { it.executionCase?.resources?.cpus ?: recipe.arms[it.arm].arm.cores }, 1000)
+                // The job's vCPUs bound the aggregate reservation, at least enough for its largest single case.
                 val requestedCpu = Math.multiplyExact(current.vcpus, 1000)
                 val cpuLimit = maxOf(minOf(this.settings.maxVcpusPerJob * 1000, requestedCpu), minimumCpu)
-                // A session claims whole rows until they fill the cases it runs at once ([ExecutionStore.claim]).
-                val rowsPerSession = (smallest.parallel + recipe.arms.size - 1) / recipe.arms.size
-                val limit = minOf(this.settings.maxSessionsPerJob, (pending + rowsPerSession - 1) / rowsPerSession, cpuLimit / minimumCpu)
+                // Existing sessions may have shrunk to fit prior capacity. Admit by actual remaining resources below,
+                // not an assumed ideal session width; every useful session still needs a whole pending paired row.
+                val limit = minOf(this.settings.maxSessionsPerJob, pending)
                 // Unbound cloud intent must not occupy the last slot while compatible native capacity is idle.
                 // Retirement races registration under the store lock: a bound/claimed attempt is never moved.
                 val native = targets.firstOrNull { it.native && mayUseNative(job.id, it) }
@@ -152,7 +153,9 @@ class NomadQueue(
                     val nativeCases = this.settings.perHostParallel?.let { cap ->
                         (cap - nativeSessions.sumOf { it.budget.parallel }).coerceAtLeast(0)
                     } ?: Int.MAX_VALUE
-                    fun fitting(target: NomadQueueTarget): ResourceBudget? = if (!target.native) solveBudget(target, current) else
+                    fun fitting(target: NomadQueueTarget): ResourceBudget? = if (!target.native)
+                        settings.solveBudget(target, current, preparedBench, cpuCeiling = remainingCpu)
+                    else
                         settings.solveBudget(target, current, preparedBench, minOf(config.maxParallel, nativeCases),
                             cpuCeiling = minOf(remainingCpu.toLong(), config.cores * 1000L - reserved.first).coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
                             memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
