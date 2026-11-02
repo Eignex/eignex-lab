@@ -232,10 +232,11 @@ object References {
      * A reference on other source files than the arm's runs of a problem ([sources]) does not cover it.
      */
     fun compare(labels: List<String>, cases: List<CaseResult>, references: Map<ProblemKey, Reference>): ReferenceComparison {
+        val qualified = OptimumClaims.local(cases)
         val disagreements = ArrayList<Disagreement>()
         val shortfalls = ArrayList<Shortfall>()
         val summaries = labels.map { label ->
-            val own = cases.filter { it.arm == label }
+            val own = qualified.filter { it.arm == label }
             val sources = sources(own)
             val byProblem = own
                 .mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }

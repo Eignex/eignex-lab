@@ -21,7 +21,7 @@ object Results {
             "index,status,arm,seed,repeat,suite,problem,collection,family,format,kind,maximize,feasible,objective,proven," +
                 "timeToBestMs,timeToFirstFeasibleMs,solveTimeMs,timeMs,budgetMs,error,unsupported,loadError,sourceValidation,floatApproximation,buildFingerprint,validationPolicy,host,nativeProofClaim,optimumAssessment",
         )
-        for (case in cases) {
+        for (case in OptimumClaims.local(cases)) {
             val record = case.record as? JsonObject
             val outcome = Outcome.of(record)
             fun field(name: String) = (record?.get(name) as? JsonPrimitive)?.content?.takeUnless { it == "null" }.orEmpty()
@@ -48,7 +48,7 @@ object Results {
      */
     fun benchCsv(cases: List<CaseResult>, arm: String, seed: Long?): String = buildString {
         appendLine("suite,problem,maximize,objective,feasible,proven,elapsedMs,budgetMs,format,structure,numGlobal,numLinear,boolHeavy,logic")
-        val rows = cases.filter { it.arm == arm && it.seed == seed && it.repeat == 0 }
+        val rows = OptimumClaims.local(cases).filter { it.arm == arm && it.seed == seed && it.repeat == 0 }
             .mapNotNull { case -> Outcome.of(case.record)?.let { case.problem to it } }
             .sortedWith(compareBy({ it.first.collection }, { it.first.problem }))
         for ((problem, outcome) in rows) {
