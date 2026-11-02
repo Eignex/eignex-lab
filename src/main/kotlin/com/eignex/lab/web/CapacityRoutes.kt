@@ -59,8 +59,8 @@ internal fun Route.capacityRoutes(services: ApiServices) {
         call.respond(HttpStatusCode.NoContent)
     }
     get("/jobs/{id}/execution") {
-        val job = io { call.job(store) }
-        val reports = io { store.execution.reports(job.id) }
-        if (call.wantsHtml()) call.respondHtml(executionPage(job.id, reports)) else call.respond(reports)
+        val id = io { call.existingJobId(store) }
+        val reports = io { store.execution.reports(id) }
+        if (call.wantsHtml()) call.respondHtml(executionPage(id, reports)) else call.respond(reports)
     }
 }
