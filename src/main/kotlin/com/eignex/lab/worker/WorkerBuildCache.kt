@@ -27,8 +27,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                        private val startMaintenance: (Thread) -> Unit = Thread::start,
                        private val observeBuild: (Path, Path, PreparationBuildDiagnostic) -> Unit = { _, _, _ -> }) {
     private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
+    private val discardedBuilds = java.util.concurrent.ConcurrentLinkedQueue<Path>()
     @Serializable private data class DependencyUsage(val key: String, val modified: String, val bytes: Long)
-    @Serializable private data class Entry(val identity: String, val files: List<InputFile>)
+    @Serializable private data class Entry(val identity: String, val files: List<InputFile>, val workspaceManifest: String? = null)
 
     fun prepare(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
                 remainingRunMs: () -> Long? = { null }, trace: PreparationTrace = PreparationTrace(), remainingLeaseMs: () -> Long): Path =
@@ -135,13 +136,29 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 }
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
                 tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
-                val files = trace.step("build-verification") { TreeVerification().capture(tree, staging.resolve("verified.json"), ::checkRun) }
+                val (files, workspaceManifest) = trace.step("build-verification") {
+                    val manifest = build.benchManifest?.takeIf { declaredWorkspace }?.takeIf { manifest ->
+                        val spec = BenchSpec(manifest)
+                        val workspace = BenchRuns.workspaceInputs(tree, spec) ?: return@takeIf false
+                        // Keep planner identity inputs as well as everything copied to solve workspaces.
+                        // Profiles and benches without declarations retain their complete checkout.
+                        discardedBuilds.add(storage.retain(lease, workspace + BenchSelections.planInputs(tree, spec).orEmpty(), ::checkRun))
+                        true
+                    }
+                    val verifier = TreeVerification()
+                    val files = verifier.capture(tree, staging.resolve("verified.json"), ::checkRun)
+                    println("worker build verification: files=${files.size} hashedFiles=${verifier.stats.hashedFiles} hashedBytes=${verifier.stats.hashedBytes} declaredWorkspace=${manifest != null}")
+                    files to manifest
+                }
                 require(files.sumOf { it.bytes } <= maxBytes) { "build exceeds cache disk budget" }
                 checkRun()
-                Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files)))
+                Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files, workspaceManifest)))
                 storage.publish(lease, destination, ::checkRun)
                 destination.resolve("tree")
-            } finally { disk.close(); storage.close(lease) }
+            } finally {
+                disk.close(); storage.close(lease)
+                if (discardedBuilds.isNotEmpty()) requestMaintenance()
+            }
         }
     }
     fun <T> withPrepared(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
@@ -268,9 +285,17 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     private fun requestMaintenance() {
         if (!maintenanceRunning.compareAndSet(false, true)) return
         val thread = Thread({
-            try { maintain(wait = false) }
+            try {
+                // A previous sweep may still be throttled. Detached cold-build garbage must nevertheless
+                // drain without delaying preparation, and remains discoverable after a worker crash.
+                while (true) deleteCacheGarbage(discardedBuilds.poll() ?: break)
+                maintain(wait = false)
+            }
             catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
-            finally { maintenanceRunning.set(false) }
+            finally {
+                maintenanceRunning.set(false)
+                if (discardedBuilds.isNotEmpty()) requestMaintenance()
+            }
         }, "worker-build-cleanup").apply { isDaemon = true }
         try { startMaintenance(thread) }
         catch (failure: Throwable) { maintenanceRunning.set(false); throw failure }
@@ -388,7 +413,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }
         for (path in garbage.distinct()) {
             checkMaintenanceActive()
-            try { deleteTree(path) } catch (_: java.nio.file.NoSuchFileException) { }
+            deleteCacheGarbage(path)
         }
         if (garbage.isNotEmpty()) println("worker build cache cleanup: trees=${garbage.size}")
     }
@@ -413,6 +438,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 total + file.bytes
             } > maxBytes) return false
         if (entry.identity != identity) return false
+        // A retained bench tree is complete only for its declared preparation scope. A full-checkout
+        // consumer must rebuild; never silently serve a profile or replay a pruned checkout.
+        if (entry.workspaceManifest != null && entry.workspaceManifest != workspaceManifest) return false
         val tree = path.resolve("tree")
         fun verify(files: List<InputFile>, name: String, roots: List<Path>): Boolean {
             val receipt = path.resolve(name)
