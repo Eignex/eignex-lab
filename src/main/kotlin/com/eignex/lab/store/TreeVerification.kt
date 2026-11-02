@@ -141,14 +141,14 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
 
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},
               exactExecutables: Boolean = false, removeUndeclared: Boolean = false, allowUndeclared: Boolean = false,
-              expectedDirectories: List<String>? = null): Boolean {
+              expectedDirectories: List<String>? = null, include: (Path) -> Boolean = { true }): Boolean {
         val started = System.nanoTime()
-        try { return validTree(tree, expected, receipt, checkActive, exactExecutables, removeUndeclared, allowUndeclared, expectedDirectories) }
+        try { return validTree(tree, expected, receipt, checkActive, exactExecutables, removeUndeclared, allowUndeclared, expectedDirectories, include) }
         finally { stats.verificationNanos += System.nanoTime() - started }
     }
 
     private fun validTree(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit,
-                          exactExecutables: Boolean, removeUndeclared: Boolean, allowUndeclared: Boolean, expectedDirectories: List<String>?): Boolean {
+                          exactExecutables: Boolean, removeUndeclared: Boolean, allowUndeclared: Boolean, expectedDirectories: List<String>?, include: (Path) -> Boolean): Boolean {
         checkActive()
         if (!Files.isDirectory(tree, NOFOLLOW_LINKS)) return false
         // Coarse timestamp filesystems (for example HFS+/FAT) cannot distinguish a quick write/mtime restore.
@@ -161,7 +161,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
         val verified = mutableListOf<Written>()
         val directories = expectedDirectories?.let { mutableListOf<String>() }
         try { readAhead(tree, expected.map { it.path }, checkActive) {
-            walk(tree, checkActive, directories = directories) { file, observed ->
+            walk(tree, checkActive, include = include, directories = directories) { file, observed ->
                 val name = tree.relativize(file).toString().replace('\\', '/')
                 val entry = wanted[name]
                 if (entry == null) {
