@@ -37,7 +37,10 @@ internal class CoordinatorWork<K, V : Any>(name: String, private val parallelism
     }
 
     @Synchronized
-    fun retain(keys: Set<K>) { tasks.entries.removeIf { it.key !in keys && it.value.isDone } }
+    fun retain(keys: Set<K>) = retainWhere { it in keys }
+
+    @Synchronized
+    fun retainWhere(keep: (K) -> Boolean) { tasks.entries.removeIf { !keep(it.key) && it.value.isDone } }
 
     override fun close() { executor.shutdownNow() }
 }

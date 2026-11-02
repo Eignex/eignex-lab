@@ -17,6 +17,21 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
 
 class CoordinatorWorkTest {
+    @Test fun `source input keys never reuse a completed operation for an edited recipe`() {
+        val finished = CountDownLatch(1)
+        CoordinatorWork<Pair<Long, String>, Int>("source-key-test", 1, completed = { finished.countDown() }).use { work ->
+            val old = 1L to "old recipe"
+            work.poll(old) { 1 }
+            assertTrue(finished.await(2, SECONDS))
+            val replacement = 1L to "new recipe"
+            work.retainWhere { it == replacement }
+            val deadline = System.nanoTime() + SECONDS.toNanos(2)
+            var value: Int? = null
+            while (value == null && System.nanoTime() < deadline) { value = work.poll(replacement) { 2 }; Thread.yield() }
+            assertEquals(2, value)
+        }
+    }
+
     @Test fun `completion wakeup can hand off another operation before its callback returns`() {
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val finishFirst = CountDownLatch(1)
         CoordinatorWork<String, Int>("handoff-test", 1, completed = { entered.countDown(); release.await() }).use { work ->
