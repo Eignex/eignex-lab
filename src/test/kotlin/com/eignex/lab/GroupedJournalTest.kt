@@ -30,13 +30,13 @@ class GroupedJournalTest {
         }
         ResultJournal(path, destination, start = false).use {
             store = it
-            repeat(40) { n -> store.putAll(1, blobs("first-$n")) }
+            repeat(136) { n -> store.putAll(1, blobs("first-$n")) }
             repeat(2) { n -> store.putAll(2, blobs("second-$n")) }
-            retained = 42; assertTrue(store.drainGroup()); assertEquals(10, store.status().batches)
+            retained = 138; assertTrue(store.drainGroup()); assertEquals(10, store.status().batches)
             retained = 10; assertTrue(store.drainGroup()); assertEquals(2, store.status().batches)
             retained = 2; assertTrue(store.drainGroup()); assertEquals(0, store.status().batches)
             assertEquals(listOf(1L, 1L, 2L), publishedJobs)
-            repeat(40) { n -> assertEquals("first-$n", read(store, 1, "first-$n")) }
+            repeat(136) { n -> assertEquals("first-$n", read(store, 1, "first-$n")) }
         }
     }
 
@@ -147,11 +147,11 @@ class GroupedJournalTest {
         val pool = Executors.newFixedThreadPool(2)
         ResultJournal(path, destination, start = false).use { store ->
             try {
-                repeat(64) { n -> store.putAll(1, blobs("value-$n")) }
+                repeat(256) { n -> store.putAll(1, blobs("value-$n")) }
                 val drains = (1..2).map { pool.submit<Boolean> { store.drainGroup() } }
                 assertTrue(entered.await(5, SECONDS))
-                assertEquals(64, seen.size); assertEquals(64, store.status().batches)
-                assertEquals("value-0", read(store, 1, "value-0")); assertEquals("value-63", read(store, 1, "value-63"))
+                assertEquals(256, seen.size); assertEquals(256, store.status().batches)
+                assertEquals("value-0", read(store, 1, "value-0")); assertEquals("value-255", read(store, 1, "value-255"))
                 store.putAll(2, blobs("new")); assertEquals("new", read(store, 2, "new"))
                 release.countDown(); drains.forEach { assertTrue(it.get(3, SECONDS)) }
                 assertEquals(1, store.status().batches)
