@@ -53,11 +53,26 @@ internal class AcceptedArtifactFiles(private val config: Config, private val sto
     private fun archive(name: String) = name.startsWith("preparation/") && name.endsWith(".zip")
     private fun folded(name: String) = Normalizer.normalize(name, Normalizer.Form.NFC).uppercase(Locale.ROOT).lowercase(Locale.ROOT)
 
-    fun entries(job: Long, projected: List<FileEntry>): List<FileEntry> {
+    /** One immutable acceptance/trim view is used for both physical size selection and the logical merge. */
+    class Listing internal constructor(internal val job: Long, internal val names: Map<String, String>,
+                                      internal val visibleNames: Map<String, String>, internal val trimmed: Boolean,
+                                      val replaced: Set<String>)
+
+    fun listing(job: Long): Listing {
         val names = accepted(job)
-        val root = config.jobDir(job)
-        val trimmed = Files.exists(root.resolve(JobFileNames.TRIMMED))
+        val trimmed = Files.exists(config.jobDir(job).resolve(JobFileNames.TRIMMED))
         val visibleNames = names.filter { (name, sha) -> visible(name, sha, trimmed) }
+        return Listing(job, names, visibleNames, trimmed, visibleNames.keys.filterNot(::archive).toSet())
+    }
+
+    fun entries(job: Long, projected: List<FileEntry>): List<FileEntry> = entries(listing(job), projected)
+
+    fun entries(listing: Listing, projected: List<FileEntry>): List<FileEntry> {
+        val job = listing.job
+        val names = listing.names
+        val visibleNames = listing.visibleNames
+        val trimmed = listing.trimmed
+        val root = config.jobDir(job)
         val aliases = names.keys.groupBy(::folded)
         val physical = projected.filter { file ->
             if (trimmed && !JobTrim.keeps(safeRelative(file.path))) return@filter false

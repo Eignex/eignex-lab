@@ -11,10 +11,29 @@ import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
 import java.nio.file.Files
+import java.nio.file.FileVisitResult
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
+
+/** Reuse the walker's no-follow metadata, including under .git, without a second stat per entry.
+ * Default failure callbacks propagate unreadable/missing paths; cancellation is checked between entries. */
+internal fun verifyCheckoutTree(tree: Path, checkActive: () -> Unit) {
+    Files.walkFileTree(tree, object : SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(directory: Path, attributes: BasicFileAttributes): FileVisitResult {
+            checkActive()
+            return FileVisitResult.CONTINUE
+        }
+        override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+            checkActive()
+            require(!attributes.isSymbolicLink) { "source tree contains unsupported links" }
+            return FileVisitResult.CONTINUE
+        }
+    })
+}
 
 /** The build-cache maintenance lock serializes discovery, pin creation and publication. */
 internal class WorkerBuildStaging(private val root: Path) {

@@ -12,6 +12,55 @@ import java.nio.file.Path
 import kotlin.test.*
 
 class ColdBuildVerificationTest {
+    @Test fun `checkout verification retains nested source and git files unchanged`() {
+        val root = Files.createTempDirectory("checkout-metadata")
+        try {
+            for (name in listOf("source/main.kt", ".git/objects/pack/approved.pack")) {
+                val path = root.resolve(name); Files.createDirectories(path.parent); Files.writeString(path, name)
+            }
+            verifyCheckoutTree(root) {}
+            assertEquals("source/main.kt", Files.readString(root.resolve("source/main.kt")))
+            assertEquals(".git/objects/pack/approved.pack", Files.readString(root.resolve(".git/objects/pack/approved.pack")))
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `checkout verification rejects source git directory and broken links without following them`() {
+        val root = Files.createTempDirectory("checkout-links")
+        val outside = Files.createTempDirectory("checkout-outside")
+        try {
+            Files.writeString(outside.resolve("keep"), "safe")
+            for ((name, target) in listOf("source-link" to outside.resolve("keep"), ".git/objects/linked" to outside.resolve("keep"),
+                    "directory-link" to outside, "broken-link" to outside.resolve("missing"))) {
+                val link = root.resolve(name); Files.createDirectories(link.parent); Files.createSymbolicLink(link, target)
+                assertFailsWith<IllegalArgumentException> { verifyCheckoutTree(root) {} }
+                assertTrue(Files.isSymbolicLink(link)); Files.delete(link)
+                assertEquals("safe", Files.readString(outside.resolve("keep")))
+            }
+        } finally { deleteTree(root); deleteTree(outside) }
+    }
+
+    @Test fun `checkout verification checks cancellation at directories and files`() {
+        for (directories in listOf(false, true)) {
+            val root = Files.createTempDirectory("checkout-cancel")
+            try {
+                if (directories) Files.createDirectories(root.resolve("one/two/three"))
+                else repeat(5) { Files.writeString(root.resolve("file-$it"), "source") }
+                var checks = 0
+                assertFailsWith<java.util.concurrent.CancellationException> {
+                    verifyCheckoutTree(root) { if (++checks == 3) throw java.util.concurrent.CancellationException() }
+                }
+                assertEquals(3, checks)
+            } finally { deleteTree(root) }
+        }
+    }
+
+    @Test fun `checkout verification propagates missing root instead of accepting partial input`() {
+        val root = Files.createTempDirectory("checkout-missing")
+        try {
+            assertFailsWith<java.nio.file.NoSuchFileException> { verifyCheckoutTree(root.resolve("missing")) {} }
+        } finally { deleteTree(root) }
+    }
+
     private val manifest = """{"main":"example.Main","classpath":["runtime/*"],"buildTasks":[],"workspaceInputs":["runtime","runtime/code.jar",".git"],"planInputs":["planner","missing"]}"""
     private fun source(root: Path): Path {
         val source = Files.createDirectory(root.resolve("source"))

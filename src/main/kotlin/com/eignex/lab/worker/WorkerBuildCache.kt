@@ -108,7 +108,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         run(listOf("git", "config", "--local", "core.symlinks", "false"), tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", source.resolve(safeRelative(build.gitBundle)).toString(), "refs/lab-source/${bundle.commit}"), tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", bundle.commit), tree)
-                        Files.walk(tree).use { paths -> require(paths.noneMatch(Files::isSymbolicLink)) { "source tree contains unsupported links" } }
+                        verifyCheckoutTree(tree, ::checkRun)
                         for (file in bundle.files.filter { it.path != build.gitBundle }) {
                             require(safeRelative(file.path).first().toString() == "lab-inputs") { "additional input cannot overwrite committed code" }
                             val target = tree.resolve(safeRelative(file.path)); Files.createDirectories(target.parent)
