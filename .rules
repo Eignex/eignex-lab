@@ -30,6 +30,10 @@ Benchmark lab: a Kotlin coordinator on a Mac schedules Nomad worker sessions on 
   (`LAB_NOMAD_NATIVE_CONFIG`) and its installed launchd plist, not from `lab.env` alone.
 - `deploy/install.sh` refuses agent or supervisor plist changes without `--restart-agents`; do not restart Nomad
   agents or the supervisor as part of an ordinary update.
+- Before publishing worker images, compare every `/opt/lab` file's mode as well as its bytes with the previous image:
+  `worker-entrypoint.sh` and `process_supervisor.py` must stay executable, or every container exits 126 at start.
+  Start one image offline to see the entrypoint run, then switch queue targets by digest with hash-guarded edits,
+  and watch the first new session start before enabling features that depend on the new worker.
 
 ## PR validation
 
