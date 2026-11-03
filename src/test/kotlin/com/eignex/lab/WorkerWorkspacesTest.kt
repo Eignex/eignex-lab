@@ -180,6 +180,7 @@ class WorkerWorkspacesTest {
         val cache = WorkerWorkspaces(root.resolve("workspaces")); val key = "3".repeat(64)
         try {
             val tree = cache.copySealed(key, source) {}
+            assertFalse(Files.exists(root.resolve("workspaces/$key.verified.json")))
             assertEquals(tree, cache.reuse(key) {}, "execution copies must be ready without a second explicit seal")
             Files.writeString(tree.resolve("generated"), "output")
             assertEquals(tree, cache.reuse(key) {})
@@ -191,7 +192,7 @@ class WorkerWorkspacesTest {
         } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
     }
 
-    @Test fun `execution copies without usable source proof fall back to ordinary sealing`() {
+    @Test fun `execution copies without usable source proof fall back to checksum sealing in memory`() {
         val root = Files.createTempDirectory("execution-copy-fallback")
         val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
         val cache = WorkerWorkspaces(root.resolve("workspaces"))
@@ -200,6 +201,7 @@ class WorkerWorkspacesTest {
                 if (proof != null) Files.writeString(root.resolve("source.verified.json"), proof)
                 val key = (index + 4).toString().repeat(64)
                 val tree = cache.copySealed(key, source) {}
+                assertFalse(Files.exists(root.resolve("workspaces/$key.verified.json")))
                 assertEquals(tree, cache.reuse(key) {})
                 Files.writeString(tree.resolve("code"), "corrupt")
                 assertNull(cache.reuse(key) {})
@@ -207,7 +209,7 @@ class WorkerWorkspacesTest {
         } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
     }
 
-    @Test fun `cancellation after copy receipt publication cannot publish a ready execution workspace`() {
+    @Test fun `cancellation during execution copying cannot publish a ready workspace`() {
         val root = Files.createTempDirectory("execution-copy-cancel")
         val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
         TreeVerification().capture(source, root.resolve("source.verified.json"))
@@ -215,12 +217,32 @@ class WorkerWorkspacesTest {
         try {
             assertFailsWith<CancellationException> {
                 cache.copySealed(key, source) {
-                    if (Files.exists(workspace.resolve("$key.verified.json"))) throw CancellationException("after copy")
+                    if (Files.exists(workspace.resolve("$key/code"))) throw CancellationException("copied file")
                 }
             }
-            assertTrue(Files.exists(workspace.resolve("$key.verified.json")), "fixture must reach completed copy publication")
+            assertTrue(Files.exists(workspace.resolve("$key/code")), "fixture must reach private file copying")
+            assertFalse(Files.exists(workspace.resolve("$key.verified.json")))
             assertNull(cache.reuse(key) {})
         } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
+    }
+
+    @Test fun `execution memory receipts cannot survive a workspace owner restart`() {
+        val root = Files.createTempDirectory("execution-copy-restart")
+        val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
+        TreeVerification().capture(source, root.resolve("source.verified.json"))
+        val workspace = root.resolve("workspaces"); val cache = WorkerWorkspaces(workspace); val key = "8".repeat(64)
+        var restarted: WorkerWorkspaces? = null
+        try {
+            val tree = cache.copySealed(key, source) {}
+            assertEquals(tree, cache.reuse(key) {})
+            assertFalse(Files.exists(workspace.resolve("$key.verified.json")))
+            restarted = WorkerWorkspaces(workspace)
+            assertNull(restarted.reuse(key) {}, "a new owner must copy rather than trust old private state")
+            cache.create(key, {}) { Files.createDirectory(it); Files.writeString(it.resolve("code"), "partial") }
+            assertNull(cache.reuse(key) {}, "replacement must evict its old memory proof")
+        } finally {
+            assertTrue(cache.awaitCleanupIdle()); assertTrue(restarted?.awaitCleanupIdle() ?: true); deleteTree(root)
+        }
     }
 
     @Test fun `preparation copies remain unsealed until trusted setup has finished`() {
@@ -230,9 +252,11 @@ class WorkerWorkspacesTest {
         val cache = WorkerWorkspaces(root.resolve("workspaces")); val key = "7".repeat(64)
         try {
             val tree = cache.copy(key, source, {}, false)
+            assertTrue(Files.isRegularFile(root.resolve("workspaces/$key.verified.json")), "preparation copy proofs remain persistent")
             assertNull(cache.reuse(key) {})
             Files.writeString(tree.resolve("setup"), "prepared")
             cache.seal(key, tree) {}
+            assertTrue(Files.isRegularFile(root.resolve("workspaces/$key.verified.json")), "post-setup seals remain persistent")
             assertEquals(tree, cache.reuse(key) {})
             assertEquals("prepared", Files.readString(tree.resolve("setup")))
         } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }

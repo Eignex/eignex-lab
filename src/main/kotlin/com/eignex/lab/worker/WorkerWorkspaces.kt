@@ -21,7 +21,8 @@ import java.util.concurrent.ConcurrentHashMap
 /** Mutable trees belong to one worker session; distinct private slots can stage concurrently. */
 class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null,
                        private val detach: (Path, Path) -> Unit = { from, to -> Files.move(from, to, ATOMIC_MOVE) }) {
-    private data class Ready(val tree: Path, val files: List<InputFile>, val receipt: Path)
+    private data class Ready(val tree: Path, val files: List<InputFile>, val receipt: Path,
+                             val memoryReceipt: TreeVerification.MemoryReceipt? = null)
     private val ready = ConcurrentHashMap<String, Ready>()
     private val eviction = Any()
     private val cleanup = WorkerCacheCleanup(root, cleanupExecutor)
@@ -33,7 +34,7 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
             println("worker workspace reuse: outcome=0 reason=0 elapsedMs=0 checkedFiles=0 hashedFiles=0 hashedBytes=0 removedFiles=0")
             return@guarded null
         }
-        val verification = TreeVerification(); val started = System.nanoTime()
+        val verification = TreeVerification(memoryReceipt = entry.memoryReceipt); val started = System.nanoTime()
         // Prune consumer-generated caches and verify sealed inputs in the same walk, without following links.
         val valid = verification.valid(entry.tree, entry.files, entry.receipt, checkActive,
             exactExecutables = true, removeUndeclared = true)
@@ -79,25 +80,29 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
         guarded(key) { copyWithProof(key, source, checkActive, runtimeOnly, paths).first }
 
     /** Execution has no setup between the trusted private copy and its first use. Keep its complete copy proof;
-     * preparation callers still use [copy] and seal after their mutable planning/setup work. */
+     * its receipt is RAM-only and dies with this Ready entry/session. Preparation callers still use [copy]
+     * and persistent receipts, sealing again after their mutable planning/setup work. */
     internal fun copySealed(key: String, source: Path, checkActive: () -> Unit): Path = guarded(key) {
-        val (tree, files) = copyWithProof(key, source, checkActive, false, null)
+        val memory = TreeVerification.MemoryReceipt()
+        val receipt = root.resolve("$key.verified.json")
+        val (tree, files) = copyWithProof(key, source, checkActive, false, null, memory)
         checkActive()
         val sealing = System.nanoTime()
-        if (files == null) seal(key, tree, checkActive)
-        else ready[key] = Ready(tree, files, root.resolve("$key.verified.json"))
+        val sealed = files ?: TreeVerification(memoryReceipt = memory).capture(tree, receipt, checkActive)
+        checkActive()
+        ready[key] = Ready(tree, sealed, receipt, memory)
         println("worker workspace seal: copyProof=${if (files == null) 0 else 1} elapsedMs=${(System.nanoTime()-sealing)/1_000_000}")
         tree
     }
 
     private fun copyWithProof(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean,
-                              paths: List<String>?): Pair<Path, List<InputFile>?> {
+                              paths: List<String>?, memoryReceipt: TreeVerification.MemoryReceipt? = null): Pair<Path, List<InputFile>?> {
         var files: List<InputFile>? = null
         val tree = create(key, checkActive) { destination ->
             val sourceReceipt = if (Files.isRegularFile(source.parent.resolve("manifest.json"))) source.parent.resolve("verified.json")
                 else source.resolveSibling("${source.fileName}.verified.json")
             val selected = paths?.map(::safeRelative)
-            files = TreeVerification().copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive,
+            files = TreeVerification(memoryReceipt = memoryReceipt).copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive,
                 { path -> (selected == null || selected.any { path.startsWith(it) }) && (!runtimeOnly || WorkerTrees.runtimePath(path)) }) {
                 if (paths != null) WorkerTrees.copySelected(source, destination, paths, checkActive)
                 else if (runtimeOnly) WorkerTrees.copyRuntime(source, destination, checkActive) else WorkerTrees.copy(source, destination, checkActive)
