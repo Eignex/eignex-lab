@@ -72,10 +72,11 @@ class NomadBackend(
         else require(!job.setupDone && !job.planned && manifest.arms.map { it.arm } == Experiments.arms(manifest.experiment))
         require(template.budget == manifest.budget)
         val planned = store.plans.casePlan(jobId).associateBy { it.index }
+        val timeouts = job.commands.associate { it.index to it.timeoutSec }
         for (case in manifest.cases) {
             val old = planned.getValue(case.index)
             require(old.problem == case.problem && old.seed == case.seed && old.repeat == case.repeat && old.arm == manifest.arms[case.arm].arm.label)
-            require(job.commands.single { it.index == case.index }.timeoutSec == case.timeoutSec)
+            require(case.index in timeouts && timeouts[case.index] == case.timeoutSec)
         }
         store.execution.session(manifest.session)?.let { existing ->
             require(existing.jobId == jobId && store.execution.manifest(existing.id) == manifest)
