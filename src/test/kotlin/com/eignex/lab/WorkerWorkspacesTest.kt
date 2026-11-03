@@ -18,9 +18,161 @@ import java.nio.file.attribute.FileTime
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 
 class WorkerWorkspacesTest {
+    @Test fun `slot staging overlaps independent reuse within the existing CPU and concurrency budget`() {
+        val slots = List(6) { WorkerSlotStaging.Slot("source", "key-$it", it) }
+        val started = CountDownLatch(2); val release = CountDownLatch(1)
+        val active = AtomicInteger(); val maximum = AtomicInteger(); val observed = AtomicReference<Throwable?>()
+        val finished = AtomicReference<WorkerSlotStaging.Staged?>()
+        val staging = WorkerSlotStaging(ResourceBudget(2000, 256, 6), slots.size) {}
+        val worker = Thread {
+            try { staging.use {
+                finished.set(it.stage(slots, reuse = { slot, check ->
+                    val count = active.incrementAndGet(); maximum.updateAndGet { maxOf(it, count) }; started.countDown()
+                    try { assertTrue(release.await(10, TimeUnit.SECONDS)); check(); Path.of("private", slot.key) }
+                    finally { active.decrementAndGet() }
+                }, source = { _, _, _ -> error("warm slots must not acquire a source") },
+                    copy = { _, _, _ -> error("warm slots must not copy") }))
+            } } catch (error: Throwable) { observed.set(error) }
+        }
+        try {
+            assertEquals(2, staging.parallelism)
+            worker.start(); assertTrue(started.await(10, TimeUnit.SECONDS), "independent slots did not overlap")
+            assertEquals(2, active.get())
+        } finally { release.countDown(); worker.join(15_000) }
+        assertFalse(worker.isAlive); observed.get()?.let { throw it }
+        assertEquals(2, maximum.get()); assertEquals(0, active.get())
+        assertEquals(slots.map { it.key }, assertNotNull(finished.get()).paths.keys.toList())
+        assertEquals(0, finished.get()?.fresh)
+        for ((budget, count, expected) in listOf(
+            Triple(ResourceBudget(8000, 256, 1), 6, 1), Triple(ResourceBudget(8000, 256, 6), 1, 1),
+            Triple(ResourceBudget(500, 256, 6), 6, 1))) {
+            WorkerSlotStaging(budget, count) {}.use { assertEquals(expected, it.parallelism) }
+        }
+    }
+
+    @Test fun `missing slots acquire each source once on its owner thread and preserve stable slot paths`() {
+        val owner = Thread.currentThread(); val pinned = AtomicBoolean()
+        val copies = CountDownLatch(2); val acquisitions = linkedMapOf<String, Int>()
+        val slots = listOf(WorkerSlotStaging.Slot("first", "a", 0), WorkerSlotStaging.Slot("first", "b", 1),
+            WorkerSlotStaging.Slot("second", "c", 0), WorkerSlotStaging.Slot("warm", "d", 0))
+        val result = WorkerSlotStaging(ResourceBudget(2000, 256, 2), slots.size) {}.use { staging ->
+            staging.stage(slots, reuse = { slot, _ -> if (slot.source == "warm") Path.of("warm") else null },
+                source = { sha, check, consume ->
+                    assertSame(owner, Thread.currentThread()); check(); assertFalse(pinned.getAndSet(true))
+                    acquisitions[sha] = acquisitions.getOrDefault(sha, 0) + 1
+                    try { consume(Path.of(sha)) } finally { pinned.set(false) }
+                }, copy = { slot, source, check ->
+                    assertTrue(pinned.get()); assertNotSame(owner, Thread.currentThread())
+                    if (slot.source == "first") { copies.countDown(); assertTrue(copies.await(10, TimeUnit.SECONDS)) }
+                    check(); source.resolve(slot.number.toString())
+                })
+        }
+        assertEquals(mapOf("first" to 1, "second" to 1), acquisitions); assertFalse(pinned.get())
+        assertEquals(mapOf("a" to Path.of("first/0"), "b" to Path.of("first/1"), "c" to Path.of("second/0"), "d" to Path.of("warm")), result.paths)
+        assertEquals(3, result.fresh)
+        WorkerSlotStaging(ResourceBudget(1000, 256), 2) {}.use { staging ->
+            assertFailsWith<IllegalArgumentException> { staging.stage(listOf(slots[0], slots[0]),
+                reuse = { _, _ -> error("duplicate keys must fail before work") }, source = { _, _, _ -> error("source") },
+                copy = { _, _, _ -> error("copy") }) }
+        }
+    }
+
+    @Test fun `a failed slot retains its source pin until an interrupted sibling actually leaves its copy`() {
+        val entered = CountDownLatch(2); val interrupted = CountDownLatch(1); val release = CountDownLatch(1)
+        val done = CountDownLatch(1); val pinned = AtomicBoolean(); val observed = AtomicReference<Throwable?>()
+        val failure = IllegalStateException("copy failed")
+        val slots = List(2) { WorkerSlotStaging.Slot("source", "key-$it", it) }
+        val worker = Thread {
+            try { WorkerSlotStaging(ResourceBudget(2000, 256, 2), slots.size) {}.use { staging ->
+                staging.stage(slots, reuse = { _, _ -> null }, source = { _, _, consume ->
+                    pinned.set(true); try { consume(Path.of("source")) } finally { pinned.set(false) }
+                }, copy = { slot, source, check ->
+                    entered.countDown(); assertTrue(entered.await(10, TimeUnit.SECONDS))
+                    if (slot.number == 1) throw failure
+                    while (release.count > 0) try { release.await() }
+                    catch (_: InterruptedException) { interrupted.countDown() }
+                    check(); source
+                })
+            } } catch (error: Throwable) { observed.set(error) } finally { done.countDown() }
+        }
+        try {
+            worker.start(); assertTrue(interrupted.await(10, TimeUnit.SECONDS))
+            assertTrue(pinned.get(), "Future cancellation must not release a source still used by a copy")
+            assertEquals(1L, done.count)
+        } finally { release.countDown(); worker.join(15_000) }
+        assertFalse(worker.isAlive); assertFalse(pinned.get()); assertSame(failure, observed.get())
+    }
+
+    @Test fun `lease deadline and caller interruption join real staging tasks before returning`() {
+        for (reason in listOf("lease", "deadline", "interrupt")) {
+            val entered = CountDownLatch(1); val interrupted = CountDownLatch(1); val release = CountDownLatch(1)
+            val done = CountDownLatch(1); val pinned = AtomicBoolean(); val restoredInterrupt = AtomicBoolean()
+            val cancelled = AtomicReference<Throwable?>(); val observed = AtomicReference<Throwable?>()
+            val failure = if (reason == "lease") ExecutionFenced("lease expired") else RunDeadlineExceeded()
+            val worker = Thread {
+                try { WorkerSlotStaging(ResourceBudget(1000, 256), 1, { cancelled.get()?.let { throw it } }).use { staging ->
+                    staging.stage(listOf(WorkerSlotStaging.Slot("source", "key", 0)), reuse = { _, _ -> null },
+                        source = { _, _, consume ->
+                            pinned.set(true)
+                            try { consume(Path.of("source")) } finally {
+                                assertFalse(Thread.currentThread().isInterrupted, "pin-release lock waits must see deferred interruption")
+                                pinned.set(false)
+                            }
+                        },
+                        copy = { _, source, check ->
+                            entered.countDown()
+                            while (release.count > 0) try { release.await() }
+                            catch (_: InterruptedException) { interrupted.countDown() }
+                            check(); source
+                        })
+                } } catch (error: Throwable) { observed.set(error) }
+                finally { restoredInterrupt.set(Thread.currentThread().isInterrupted); done.countDown() }
+            }
+            try {
+                worker.start(); assertTrue(entered.await(10, TimeUnit.SECONDS))
+                if (reason == "interrupt") worker.interrupt() else cancelled.set(failure)
+                assertTrue(interrupted.await(10, TimeUnit.SECONDS))
+                assertTrue(pinned.get()); assertEquals(1L, done.count)
+            } finally { release.countDown(); worker.join(15_000) }
+            assertFalse(worker.isAlive); assertFalse(pinned.get())
+            if (reason == "interrupt") { assertIs<InterruptedException>(observed.get()); assertTrue(restoredInterrupt.get()) }
+            else { assertSame(failure, observed.get()); assertFalse(restoredInterrupt.get()) }
+        }
+    }
+
+    @Test fun `parallel replacements keep one tombstone without holding the eviction guard across copies`() {
+        val root = Files.createTempDirectory("parallel-workspaces"); val queued = ConcurrentLinkedQueue<Runnable>()
+        val cache = WorkerWorkspaces(root, Executor { queued.add(it) })
+        val keys = (0..512).map { ExecutionStore.digest("slot-$it") }.distinctBy { fileLockFor(root.resolve(it)) }.take(2)
+        val executor = Executors.newFixedThreadPool(2); val copying = CountDownLatch(2)
+        try {
+            for (key in keys) cache.create(key, {}) { Files.createDirectory(it); Files.writeString(it.resolve("code"), "old") }
+            val replacements = keys.map { key -> executor.submit<Path> {
+                cache.create(key, {}) { tree ->
+                    copying.countDown(); assertTrue(copying.await(10, TimeUnit.SECONDS), "global eviction guard serialized private copies")
+                    Files.createDirectory(tree); Files.writeString(tree.resolve("code"), "new")
+                }.also { cache.seal(key, it) {} }
+            } }
+            replacements.forEach { assertEquals("new", Files.readString(it.get(15, TimeUnit.SECONDS).resolve("code"))) }
+            assertEquals(1L, Files.list(root).use { paths -> paths.filter { it.fileName.toString().startsWith(".evict-") }.count() })
+            for (key in keys) assertNotNull(cache.reuse(key) {})
+        } finally {
+            executor.shutdownNow(); assertTrue(executor.awaitTermination(15, TimeUnit.SECONDS))
+            while (true) (queued.poll() ?: break).run()
+            assertTrue(cache.awaitCleanupIdle()); deleteTree(root)
+        }
+    }
+
     @Test fun `execution copy handoff is immediately reusable and still rejects mutations and prunes outputs`() {
         val root = Files.createTempDirectory("execution-copy-handoff")
         val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")

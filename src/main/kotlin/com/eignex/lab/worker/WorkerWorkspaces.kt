@@ -16,18 +16,22 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.util.UUID
 import java.util.concurrent.Executor
+import java.util.concurrent.ConcurrentHashMap
 
-/** Mutable trees belong to one serial worker session, never to the node-shared cache. */
+/** Mutable trees belong to one worker session; distinct private slots can stage concurrently. */
 class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null,
                        private val detach: (Path, Path) -> Unit = { from, to -> Files.move(from, to, ATOMIC_MOVE) }) {
     private data class Ready(val tree: Path, val files: List<InputFile>, val receipt: Path)
-    private val ready = mutableMapOf<String, Ready>()
+    private val ready = ConcurrentHashMap<String, Ready>()
+    private val eviction = Any()
     private val cleanup = WorkerCacheCleanup(root, cleanupExecutor)
 
-    internal fun reuse(key: String, checkActive: () -> Unit): Path? {
+    private inline fun <T> guarded(key: String, use: () -> T): T = synchronized(fileLockFor(root.resolve(key))) { use() }
+
+    internal fun reuse(key: String, checkActive: () -> Unit): Path? = guarded(key) {
         val entry = ready[key] ?: run {
             println("worker workspace reuse: outcome=0 reason=0 elapsedMs=0 checkedFiles=0 hashedFiles=0 hashedBytes=0 removedFiles=0")
-            return null
+            return@guarded null
         }
         val verification = TreeVerification(); val started = System.nanoTime()
         // Prune consumer-generated caches and verify sealed inputs in the same walk, without following links.
@@ -35,12 +39,10 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
             exactExecutables = true, removeUndeclared = true)
         val stats = verification.stats
         println("worker workspace reuse: outcome=${if (valid) 1 else 2} reason=${stats.rejection.code} elapsedMs=${(System.nanoTime()-started)/1_000_000} checkedFiles=${stats.checkedFiles} hashedFiles=${stats.hashedFiles} hashedBytes=${stats.hashedBytes} removedFiles=${stats.removedFiles}")
-        if (valid) return entry.tree
-        ready.remove(key)
-        return null
+        if (valid) entry.tree else { ready.remove(key, entry); null }
     }
 
-    internal fun create(key: String, checkActive: () -> Unit, copy: (Path) -> Unit): Path {
+    internal fun create(key: String, checkActive: () -> Unit, copy: (Path) -> Unit): Path = guarded(key) {
         require(SHA256.matches(key)); checkActive(); Files.createDirectories(root)
         val tree = root.resolve(key)
         ready.remove(key)
@@ -51,12 +53,16 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
         if (Files.exists(tree, NOFOLLOW_LINKS)) {
             // Retain at most one extra old tree in this pinned session. A failed or slow reaper cannot accumulate
             // generations; further replacements keep the ordinary synchronous deletion path until it catches up.
-            val pending = Files.list(root).use { entries -> entries.anyMatch { it.fileName.toString().startsWith(".evict-") } }
-            if (!pending) {
-                checkActive()
-                val garbage = root.resolve(".evict-${UUID.randomUUID()}")
-                try { detach(tree, garbage); detached = true }
-                catch (_: java.io.IOException) { /* Unsupported atomic moves retain ordinary deletion. */ }
+            detached = synchronized(eviction) {
+                // Only the shallow tombstone check and atomic rename share this guard, never a tree walk,
+                // recursive deletion or copy. Different-key replacements still retain at most one old tree.
+                val pending = Files.list(root).use { entries -> entries.anyMatch { it.fileName.toString().startsWith(".evict-") } }
+                if (pending) false else {
+                    checkActive()
+                    val garbage = root.resolve(".evict-${UUID.randomUUID()}")
+                    try { detach(tree, garbage); true }
+                    catch (_: java.io.IOException) { false } // Unsupported atomic moves retain ordinary deletion.
+                }
             }
             if (detached) cleanup.request() else deleteTree(tree)
         }
@@ -64,24 +70,24 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
         checkActive()
         copy(tree)
         println("worker workspace create: detached=${if (detached) 1 else 0} deleteMs=${(deleted-receiptDeleted)/1_000_000} receiptMs=${(receiptDeleted-started)/1_000_000} copyMs=${(System.nanoTime()-deleted)/1_000_000}")
-        return tree
+        tree
     }
 
     internal fun awaitCleanupIdle(timeoutMs: Long = 10_000): Boolean = cleanup.awaitIdle(timeoutMs)
 
     internal fun copy(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean, paths: List<String>? = null): Path =
-        copyWithProof(key, source, checkActive, runtimeOnly, paths).first
+        guarded(key) { copyWithProof(key, source, checkActive, runtimeOnly, paths).first }
 
     /** Execution has no setup between the trusted private copy and its first use. Keep its complete copy proof;
      * preparation callers still use [copy] and seal after their mutable planning/setup work. */
-    internal fun copySealed(key: String, source: Path, checkActive: () -> Unit): Path {
+    internal fun copySealed(key: String, source: Path, checkActive: () -> Unit): Path = guarded(key) {
         val (tree, files) = copyWithProof(key, source, checkActive, false, null)
         checkActive()
         val sealing = System.nanoTime()
         if (files == null) seal(key, tree, checkActive)
         else ready[key] = Ready(tree, files, root.resolve("$key.verified.json"))
         println("worker workspace seal: copyProof=${if (files == null) 0 else 1} elapsedMs=${(System.nanoTime()-sealing)/1_000_000}")
-        return tree
+        tree
     }
 
     private fun copyWithProof(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean,
@@ -101,7 +107,7 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
     }
 
     /** Seal after trusted measurement installation/provenance capture, which bind this stable private path. */
-    internal fun seal(key: String, tree: Path, checkActive: () -> Unit) {
+    internal fun seal(key: String, tree: Path, checkActive: () -> Unit) = guarded(key) {
         check(tree == root.resolve(key))
         val receipt = root.resolve("$key.verified.json")
         val files = TreeVerification().capture(tree, receipt, checkActive)

@@ -51,9 +51,16 @@ class NativePreparedTreesTest {
         val (_, bundle) = publish()
         val workspaces = WorkerWorkspaces(root.resolve("execution-slots"))
         val firstKey = "a".repeat(64); val secondKey = "b".repeat(64)
+        val slots = listOf(WorkerSlotStaging.Slot(bundle.commit, firstKey, 0), WorkerSlotStaging.Slot(bundle.commit, secondKey, 1))
+        var acquisitions = 0
         try {
-            val first = store.use(bundle, {}) { tree, _ -> workspaces.copySealed(firstKey, tree) {} }
-            val second = store.use(bundle, {}) { tree, _ -> workspaces.copySealed(secondKey, tree) {} }
+            val staged = WorkerSlotStaging(ResourceBudget(2000, 256, 2), slots.size) {}.use { staging ->
+                staging.stage(slots, reuse = { slot, check -> workspaces.reuse(slot.key, check) },
+                    source = { _, check, consume -> acquisitions++; store.use(bundle, check) { tree, _ -> consume(tree) } },
+                    copy = { slot, source, check -> workspaces.copySealed(slot.key, source, check) })
+            }
+            assertEquals(1, acquisitions)
+            val first = staged.paths.getValue(firstKey); val second = staged.paths.getValue(secondKey)
             assertNotEquals(first, second)
             assertEquals(first, workspaces.reuse(firstKey) {})
             assertEquals(second, workspaces.reuse(secondKey) {})
