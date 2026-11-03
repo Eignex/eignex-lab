@@ -18,7 +18,7 @@ import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** An opt-in source ZIP understood by existing workers: exact files and the original commit, without its history. */
+/** Approved current-source exports, retaining the original commit without its history. */
 internal object SourceSnapshots {
     private data class Entry(val name: String, val executable: Boolean, val objectId: String? = null, val file: Path? = null)
     const val RECEIPT = ".git/lab-source-snapshot"
@@ -34,6 +34,7 @@ internal object SourceSnapshots {
     fun publish(mirror: Path, repository: String, commit: String, os: String, arch: String, toolchain: String,
                 build: WorkerBuild, output: Path, files: Map<String, Path>, maxBytes: Long): WorkerBundle {
         val started = System.nanoTime()
+        val packed = build.gitBundle == PackedGitSource.MARKER
         val staging = Files.createTempDirectory(output.toAbsolutePath().parent, ".source-snapshot-")
         val tree = Files.createDirectory(staging.resolve("tree"))
         val log = staging.resolve("git.log")
@@ -55,7 +56,7 @@ internal object SourceSnapshots {
             finally { if (process.isAlive) process.destroyForcibly() }
         }
         try {
-            git(tree, "init")
+            git(tree, "init", "--template=")
             Files.writeString(tree.resolve(".git/config"), """
                 [core]
                     repositoryformatversion = 0
@@ -87,11 +88,12 @@ internal object SourceSnapshots {
             // Repack only this shallow commit, independently of the mirror's delta/pack layout. This also bounds
             // imported history and makes repeated exports stable without changing the worker's cache identity.
             git(tree, "-c", "pack.compression=1", "repack", "-adF", "--window=0", "--threads=1")
-            git(tree, "read-tree", commit) // Zero inode/mtime fields instead of exporting coordinator-local stat data.
+            if (!packed) git(tree, "read-tree", commit) // Zero inode/mtime fields instead of exporting coordinator-local stat data.
             val listing = staging.resolve("tracked")
             git(tree, "ls-tree", "-rz", "--full-tree", commit, stdout = listing)
             require(Files.size(listing) <= 16L * 1024 * 1024) { "source snapshot file inventory exceeds limit" }
             val entries = mutableListOf<Entry>()
+            val committedPaths = mutableListOf<String>()
             val directories = mutableListOf(".git/refs/heads/", ".git/refs/tags/")
             for (entry in Files.readString(listing).split('\u0000').filter(String::isNotEmpty)) {
                 val separator = entry.indexOf('\t'); require(separator > 0)
@@ -99,12 +101,14 @@ internal object SourceSnapshots {
                 val mode = fields[0]
                 val relative = safeRelative(entry.substring(separator + 1))
                 require(!relative.first().toString().equals(".git", ignoreCase = true)) { "source cannot replace Git metadata" }
+                val name = relative.toString().replace('\\', '/')
+                committedPaths.add(name)
                 when (mode) {
                     "100644", "100755", "120000" -> {
                         require(fields[1] == "blob" && fields[2].matches(Regex("[a-f0-9]{40}")))
-                        entries.add(Entry(relative.toString().replace('\\', '/'), mode == "100755", objectId = fields[2]))
+                        if (!packed) entries.add(Entry(name, mode == "100755", objectId = fields[2]))
                     }
-                    "160000" -> directories.add(relative.toString().replace('\\', '/') + "/") // Uninitialized submodule, as with an ordinary checkout.
+                    "160000" -> if (!packed) directories.add("$name/") // Uninitialized submodule, as with an ordinary checkout.
                     else -> error("unsupported source entry mode")
                 }
             }
@@ -116,24 +120,27 @@ internal object SourceSnapshots {
             for ((relative, source) in files) {
                 require(Files.isRegularFile(source, NOFOLLOW_LINKS)) { "source inputs must be regular files" }
                 val name = safeRelative(relative).toString().replace('\\', '/')
-                require(entries.none { it.name == name || it.name.startsWith("$name/") || name.startsWith("${it.name}/") }) { "additional input cannot overwrite committed code" }
+                require(committedPaths.none { it == name || it.startsWith("$name/") || name.startsWith("$it/") }) { "additional input cannot overwrite committed code" }
                 entries.add(Entry(name, Files.isExecutable(source), file = source))
             }
             // Supplemented archives are deliberately ineligible for the source-only hint cache.
-            if (files.isEmpty()) {
+            if (packed) {
+                val marker = tree.resolve(PackedGitSource.MARKER); Files.writeString(marker, PackedGitSource.receipt(commit)); paths.add(marker)
+            } else if (files.isEmpty()) {
                 val marker = tree.resolve(RECEIPT); Files.writeString(marker, receipt(commit)); paths.add(marker)
             }
             require(paths.all { Files.isRegularFile(it, NOFOLLOW_LINKS) }) { "source snapshot contains unsupported links" }
             entries.addAll(paths.map { Entry(tree.relativize(it).toString().replace('\\', '/'), Files.isExecutable(it), file = it) })
-            val process = command(tree, "cat-file", "--batch").start()
-            val deadline = Thread.ofVirtual().name("source-snapshot-deadline").start {
-                try { if (!process.waitFor(120, TimeUnit.SECONDS)) process.destroyForcibly() }
+            val process = if (entries.any { it.objectId != null }) command(tree, "cat-file", "--batch").start() else null
+            val deadline = process?.let { objects -> Thread.ofVirtual().name("source-snapshot-deadline").start {
+                try { if (!objects.waitFor(120, TimeUnit.SECONDS)) objects.destroyForcibly() }
                 catch (_: InterruptedException) { /* Export completed or failed before the deadline. */ }
-            }
+            } }
             val inventory = mutableListOf<InputFile>(); val archiveDigest = MessageDigest.getInstance("SHA-256")
             var total = 0L
             try {
-                process.inputStream.buffered(64 * 1024).use { objects -> process.outputStream.buffered().use { requests ->
+                (process?.inputStream?.buffered(64 * 1024) ?: InputStream.nullInputStream()).use { objects ->
+                    (process?.outputStream?.buffered() ?: java.io.OutputStream.nullOutputStream()).use { requests ->
                     ZipOutputStream(java.security.DigestOutputStream(Files.newOutputStream(output, CREATE_NEW).buffered(256 * 1024), archiveDigest)).use { zip ->
                         val buffer = ByteArray(64 * 1024)
                         fun append(entry: Entry, stream: InputStream, bytes: Long) {
@@ -176,9 +183,10 @@ internal object SourceSnapshots {
                         }
                     }
                 } }
-                check(total > 0 && process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0) { "source snapshot object export failed" }
-            } finally { deadline.interrupt(); if (process.isAlive) process.destroyForcibly() }
-            val result = WorkerBundle(archiveDigest.digest().hex(), inventory, repository, commit, os, arch, toolchain, build = build.copy(gitBundle = null))
+                check(total > 0 && (process == null || process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0)) { "source snapshot object export failed" }
+            } finally { deadline?.interrupt(); if (process?.isAlive == true) process.destroyForcibly() }
+            val result = WorkerBundle(archiveDigest.digest().hex(), inventory, repository, commit, os, arch, toolchain,
+                build = build.copy(gitBundle = if (packed) PackedGitSource.MARKER else null))
             println("source snapshot export: files=${result.files.size} bytes=${result.files.sumOf { it.bytes }} elapsedMs=${(System.nanoTime()-started)/1_000_000}")
             return result
         } catch (failure: Throwable) { Files.deleteIfExists(output); throw failure }

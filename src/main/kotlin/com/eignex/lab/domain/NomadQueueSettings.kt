@@ -36,6 +36,8 @@ data class NomadQueueSettings(
     val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
     /** Explicitly approved infrastructure releases this worker can replace, preserving consumer inputs. */
     val workerReplaces: Set<String> = emptySet(),
+    /** Enable only after every pinned target supports worker protocol 7. Frozen older recipes keep their format. */
+    val packedSourceSnapshots: Boolean = false,
 ) {
     init {
         require(release.isNotBlank() && targets.isNotEmpty() && targets.map { it.template.nodeClass }.distinct().size == targets.size)

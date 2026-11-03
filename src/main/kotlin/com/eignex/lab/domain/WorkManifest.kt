@@ -41,6 +41,7 @@ data class WorkerBundle(
         Repositories.requireAllowed(repository)
         require(os in setOf("linux", "mac") && arch in setOf("amd64", "arm64") && toolchain.isNotBlank())
         require(files.isNotEmpty() && files.map { it.path }.distinct().size == files.size)
+        require(build?.gitBundle != PackedGitSource.MARKER || PackedGitSource.usable(this)) { "invalid packed source receipt" }
         tree?.let { require(build == null && sha256 == preparedTreeDigest(files, it.directories)) { "invalid prepared tree identity" } }
     }
 }
@@ -78,6 +79,7 @@ data class WorkManifest(
     val solveJavaOptions: String = "",
     @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
         !experiment.isBench -> 1
+        bundles.any { it.build?.gitBundle == PackedGitSource.MARKER } -> 7
         bundles.any { it.build?.preparation != null } -> 6
         bundles.any { it.tree != null } -> 5
         experiment.work.bench?.adapterResources == true -> 4
@@ -92,7 +94,8 @@ data class WorkManifest(
         bundles.firstOrNull()?.build?.preparation?.selector(experiment.nodeTags) ?: experiment.nodeTags
 
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..6) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..7) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(bundles.none { it.build?.gitBundle == PackedGitSource.MARKER } || schemaVersion >= 7) { "packed source requires worker protocol 7" }
         require(bundles.none { it.build?.preparation != null } || schemaVersion >= 6) { "separate preparation platforms require worker protocol 6" }
         require(bundles.map { it.build?.preparation }.distinct().size <= 1) { "preparation contracts differ between source bundles" }
         require(bundles.none { it.tree != null } || schemaVersion >= 5) { "prepared trees require worker protocol 5" }
