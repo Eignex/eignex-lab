@@ -83,6 +83,10 @@ data class Config(
     /** The coordinator's durable result journal cap. New solve claims wait above three quarters of it and resume
      *  below half, so a larger cap on a fast internal volume absorbs bursts instead of stopping the fleet. */
     val resultJournalBytes: Long = Defaults.RESULT_JOURNAL_MB * BYTES_PER_MB,
+    /** Where ended jobs' artifact directories move from the hot store under [dataDir] ([ArtifactArchiver]); null keeps them. */
+    val artifactArchive: Path? = null,
+    /** How long after a job ends its artifacts stay on the hot store before archiving. */
+    val artifactArchiveGraceMs: Long = Defaults.ARTIFACT_ARCHIVE_GRACE_MIN * 60_000L,
     /** The most an archive may unpack to, by its manifest, which also bounds what an analysis job extracts of it. */
     val archiveMaxUnpackedBytes: Long = Defaults.ARCHIVE_MAX_UNPACKED_MB * BYTES_PER_MB,
     /** Where external volumes mount, as macOS mounts them: a directory under it needs its volume mounted ([Volumes]). */
@@ -185,6 +189,8 @@ data class Config(
                 retry = Backoff(read.int("LAB_RETRY_ATTEMPTS", Defaults.RETRY_ATTEMPTS, 1..100), retryBaseMs, retryMaxMs.coerceAtLeast(retryBaseMs)),
                 archiveMaxBytes = read.long("LAB_ARCHIVE_MAX_MB", Defaults.ARCHIVE_MAX_MB, 1L..10_000_000) * BYTES_PER_MB,
                 resultJournalBytes = read.long("LAB_RESULT_JOURNAL_MB", Defaults.RESULT_JOURNAL_MB, 1L..65_536) * BYTES_PER_MB,
+                artifactArchive = read.optionalPath("LAB_ARTIFACT_ARCHIVE"),
+                artifactArchiveGraceMs = read.long("LAB_ARTIFACT_ARCHIVE_GRACE_MIN", Defaults.ARTIFACT_ARCHIVE_GRACE_MIN, 0L..60L * 24 * 30) * 60_000L,
                 archiveMaxUnpackedBytes = read.long("LAB_ARCHIVE_MAX_UNPACKED_MB", Defaults.ARCHIVE_MAX_UNPACKED_MB, 1L..100_000_000) * BYTES_PER_MB,
                 nodeTags = list(read.string("LAB_NODE_TAGS", "")),
                 cpuCapabilities = cpu,
@@ -305,6 +311,7 @@ object Defaults {
     const val RETRY_MAX_SEC = 300L
     const val ARCHIVE_MAX_MB = 2048L
     const val RESULT_JOURNAL_MB = 128L
+    const val ARTIFACT_ARCHIVE_GRACE_MIN = 60L
     const val ARCHIVE_MAX_UNPACKED_MB = 16384L
     /** The reference image tags a Docker cleanup always keeps ([DockerCleanup]). */
     const val DOCKER_KEEP = "eignex-lab-xcsp3-cpsat:source-preserving-v2,eignex-lab-scip:latest,eignex-lab-clasp:latest"
