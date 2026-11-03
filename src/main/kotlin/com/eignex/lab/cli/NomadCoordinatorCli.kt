@@ -72,6 +72,12 @@ object NomadCoordinatorCli {
             maxBytes = config.resultJournalBytes,
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes },
             solveAdmissionChanged = { admissionSignal.wake(); reconcileSignal.wake() })
+        config.artifactArchive?.let { archive ->
+            // Ended jobs leave the internal SSD for the archive volume; active jobs keep writing to the hot store.
+            val archiver = ArtifactArchiver(config.dataDir.resolve("nomad/artifacts"), archive, store::ended, artifacts::pending, config.artifactArchiveGraceMs)
+            if (MacRenameSwap.supported) periodic("nomad-artifact-archive", 300_000) { if (Files.isDirectory(archive)) archiver.pass() }
+            else System.err.println("artifact archive: atomic rename swap unsupported on this host; archiving off")
+        }
         periodic("nomad-result-journal-status", 5_000) {
             writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)
         }
