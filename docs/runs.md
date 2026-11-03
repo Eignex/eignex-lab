@@ -393,6 +393,12 @@ short polls remains deliverable. Timeouts and disconnected callers do not cancel
 Reads that remain blocked beyond the selected wait still return unavailable; this does not serve an older snapshot
 without checking accepted version, status, trim, terminal logs and storage availability.
 
+An inventory `503` includes bounded cached progress in the existing JSON `detail` string: waiting/busy/failed state,
+current phase and elapsed time, last safe failure category and phase, retry delay, and retained-snapshot age/staleness.
+The detail contains no file names, paths or exception text. `currentValidated=false` means a retained snapshot is not
+proof that this unavailable request passed validation. Reading these diagnostics does not probe storage or start
+another refresh; a new successful request still returns the complete ordinary inventory array.
+
 ## Controlled sweep migrations
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,

@@ -83,11 +83,19 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
                 Files.exists(config.jobDir(id).resolve(JobFileNames.TRIMMED)),
                 if (status.isTerminal) jobLogStamp(config.jobDir(id)) else emptyList())
         },
-        read = { key ->
-            (acceptedFiles.entries(key.job, jobFiles(config.jobDir(key.job))).associateBy { it.path } +
-                preparedArchives.entries(key.job).associateBy { it.path }).values.sortedBy { it.path }
-        },
+        read = { key -> readFileInventory(key) },
+        detailedRead = { key, phase -> readFileInventory(key, phase) },
     )
+
+    private fun readFileInventory(key: JobFileInventory.Key, phase: (JobFileInventory.Phase) -> Unit = {}): List<FileEntry> {
+        phase(JobFileInventory.Phase.PHYSICAL_FILES)
+        val projected = jobFiles(config.jobDir(key.job))
+        phase(JobFileInventory.Phase.ACCEPTED_METADATA)
+        val accepted = acceptedFiles.entries(key.job, projected)
+        phase(JobFileInventory.Phase.PREPARATION_METADATA)
+        val prepared = preparedArchives.entries(key.job)
+        return (accepted.associateBy { it.path } + prepared.associateBy { it.path }).values.sortedBy { it.path }
+    }
 
     /** Start the disk measurements and compute the pages' slow reads before anyone asks, so the first load is quick. */
     fun start() {

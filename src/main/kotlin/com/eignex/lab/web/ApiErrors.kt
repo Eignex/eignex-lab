@@ -38,7 +38,7 @@ sealed class ApiError(val status: HttpStatusCode, message: String) : RuntimeExce
     class Conflict(message: String) : ApiError(HttpStatusCode.Conflict, message)
 
     /** Something the call needs is unavailable now, such as the job files' volume; it may succeed later. */
-    class Unavailable(message: String) : ApiError(HttpStatusCode.ServiceUnavailable, message)
+    class Unavailable(message: String, val detail: String? = null) : ApiError(HttpStatusCode.ServiceUnavailable, message)
 
     /** A retired route, with what replaced it. */
     class Gone(message: String) : ApiError(HttpStatusCode.Gone, message)
@@ -58,9 +58,9 @@ internal suspend fun ApplicationCall.respondHtml(page: Html) = respondText(page.
  * Answer [status] with [message]: a small page for a browser ([wantsHtml]), else an [ErrorBody] as JSON. Every error
  * of the API goes out this way.
  */
-internal suspend fun ApplicationCall.respondError(status: HttpStatusCode, message: String) {
+internal suspend fun ApplicationCall.respondError(status: HttpStatusCode, message: String, detail: String? = null) {
     if (wantsHtml()) respondText(errorPage(status, message).markup, ContentType.Text.Html, status)
-    else respond(status, ErrorBody(message))
+    else respond(status, ErrorBody(message, detail))
 }
 
 /**
@@ -68,7 +68,7 @@ internal suspend fun ApplicationCall.respondError(status: HttpStatusCode, messag
  * throws as 400: the API's one mapping of failures to statuses.
  */
 internal fun Application.installApiErrors() = install(StatusPages) {
-    exception<ApiError> { call, e -> call.respondError(e.status, e.message ?: e.status.description) }
+    exception<ApiError> { call, e -> call.respondError(e.status, e.message ?: e.status.description, (e as? ApiError.Unavailable)?.detail) }
     exception<BadRequestException> { call, e ->
         call.respondError(HttpStatusCode.BadRequest, generateSequence<Throwable>(e) { it.cause }.last().message ?: "bad request")
     }

@@ -92,6 +92,11 @@ class AcceptedArtifactFilesTest {
             assertEquals(HttpStatusCode.ServiceUnavailable, pending.status)
             assertEquals("2", pending.headers[HttpHeaders.RetryAfter])
             assertTrue(pending.bodyAsText().startsWith("{"), "a pending inventory must not look like a complete array")
+            val unavailable = Json.decodeFromString<ErrorBody>(pending.bodyAsText())
+            val detail = assertNotNull(unavailable.detail)
+            assertTrue("state=busy" in detail && "phase=accepted_metadata" in detail, detail)
+            assertTrue("currentValidated=false" in detail, detail)
+            assertFalse(lab.root.toString() in detail || lab.names.any { it in detail }, "diagnostics must not reveal paths or artifact names")
             release.countDown()
             var ready = client.get("/jobs/${lab.job}/files")
             withTimeout(5_000) { while (ready.status == HttpStatusCode.ServiceUnavailable) { delay(10); ready = client.get("/jobs/${lab.job}/files") } }
