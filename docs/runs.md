@@ -385,6 +385,14 @@ the result journal may have unknown listed size; a matching local projection can
 bytes return an unavailable response. Existing authentication, job scoping, safe paths and trim policy still apply.
 Trimmed jobs retain their designated logs and records without making raw artifacts downloadable again.
 
+Complete inventories are prepared and validated in the background. The default file-list request waits at most
+one second, returning `503` with `Retry-After` while work is pending. Explicit fetches can use
+`GET /jobs/<id>/files?waitSec=30` to suspend for up to 30 seconds on that request's fresh validation. The maintained
+client opts into this wait with a longer transport timeout and bounded retries, so validation that finishes between
+short polls remains deliverable. Timeouts and disconnected callers do not cancel the shared inventory work.
+Reads that remain blocked beyond the selected wait still return unavailable; this does not serve an older snapshot
+without checking accepted version, status, trim, terminal logs and storage availability.
+
 ## Controlled sweep migrations
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,
