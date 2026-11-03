@@ -67,7 +67,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build/staging-io-test-results
-          for receipt in TreeVerificationTest WorkerWorkspacesTest NativePreparedTreesTest MacDirectoryEntriesTest ArtifactListingMetadataTest; do
+          for receipt in TreeVerificationTest WorkerWorkspacesTest WorkerTreesTest NativePreparedTreesTest MacDirectoryEntriesTest ArtifactListingMetadataTest; do
             if [ -f "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" ]; then
               cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/staging-io-test-results/
             fi
