@@ -26,6 +26,48 @@ class GroupedJournalTest {
         override fun publishBatch(job: Long, publish: () -> Unit) = external.publishBatch(job, flush, publish)
     }
 
+    @Test fun `small journal complete publication skips offset preflight and retains every pack across midwrite failure`() {
+        val first = "first-complete"; val second = "second-complete"
+        val firstSha = ExecutionStore.digest(first); val secondSha = ExecutionStore.digest(second)
+        var fail = true; var clock = 1000L; var barriers = 0
+        val opens = mutableListOf<String>()
+        val destination = object : ArtifactStore by external {
+            override fun offset(job: Long, sha: String): Long = error("small journal publication must not preflight offsets")
+            override fun publishBatch(job: Long, publish: () -> Unit) = external.publishBatch(job, { barriers++ }, publish)
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                external.putComplete(job, blobs) { blob ->
+                    opens += blob.sha
+                    if (fail && blob.sha == secondSha) object : java.io.InputStream() {
+                        override fun read(): Int = throw IOException("source interrupted")
+                    } else source(blob)
+                }
+            }
+        }
+        ResultJournal(path, destination, start = false, retryClock = { clock }).use { journal ->
+            journal.putAll(1, blobs(first) + blobs(second)); val charge = journal.status().bytes
+            assertFailsWith<IOException> { journal.drainGroup() }
+            assertEquals(charge, journal.status().bytes); assertEquals(1, journal.status().batches)
+            assertEquals(0, barriers); assertEquals(first, read(external, 1, first))
+            assertEquals(second, read(journal, 1, second))
+            fail = false; clock += 5000
+            assertTrue(journal.drainGroup()); assertEquals(1, barriers)
+            assertEquals(8192L, journal.status().bytes); assertEquals(second, read(external, 1, second))
+            assertEquals(1, opens.count { it == firstSha }, "existing full CAS must verify without reopening its journal source")
+            assertEquals(2, opens.count { it == secondSha })
+        }
+    }
+
+    @Test fun `small complete publication rejects corrupt journal sources before shared durability or reclamation`() {
+        var barriers = 0
+        ResultJournal(path, destination { barriers++ }, start = false).use { journal ->
+            journal.putAll(1, blobs("retained")); val charge = journal.status().bytes
+            removeJournalPayload()
+            assertFailsWith<IllegalArgumentException> { journal.drainGroup() }
+            assertEquals(charge, journal.status().bytes); assertEquals(1, journal.status().batches)
+            assertEquals(0, barriers); assertEquals(1L, journal.status().drainErrors)
+        }
+    }
+
     @Test fun `phases distinguish publishing callback barrier and externally flushed reader retention`() {
         val callbackEntered = CountDownLatch(1); val callbackRelease = CountDownLatch(1)
         val barrierEntered = CountDownLatch(1); val barrierRelease = CountDownLatch(1)
@@ -164,6 +206,10 @@ class GroupedJournalTest {
         val bad = ExecutionStore.digest("value-1")
         val destination = object : ArtifactStore by external {
             override fun publishBatch(job: Long, publish: () -> Unit) = external.publishBatch(job, { }, publish)
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 if (bad in blobs) throw IOException("permanently failing pack")
                 external.putAll(job, blobs)
@@ -193,6 +239,10 @@ class GroupedJournalTest {
         var fail = true; var barriers = 0
         val destination = object : ArtifactStore by external {
             override fun publishBatch(job: Long, publish: () -> Unit) = external.publishBatch(job, { barriers++ }, publish)
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 if (fail && ExecutionStore.digest("second") in blobs) throw IOException("interrupted group publication")
                 external.putAll(job, blobs)
@@ -221,6 +271,10 @@ class GroupedJournalTest {
             override fun publishBatch(job: Long, publish: () -> Unit) = external.publishBatch(job, {
                 entered.countDown(); check(release.await(10, SECONDS))
             }, publish)
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 for (sha in blobs.keys) assertTrue(seen.add(sha), "no pack may have two publishing owners")
                 external.putAll(job, blobs)
@@ -275,6 +329,8 @@ class GroupedJournalTest {
                 barriers++
                 assertEquals(charged, store.status().bytes, "the existing external copy still needs its waited barrier")
             }, publish)
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) =
+                super<ArtifactStore>.putComplete(job, blobs, source)
             override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: java.io.InputStream): Long {
                 assertEquals(bytes, offset)
                 assertEquals(-1, input.read(), "a complete offset has no remaining upload suffix")

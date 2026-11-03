@@ -155,4 +155,121 @@ class ArtifactReuseTest {
         assertTrue(Files.isRegularFile(store().file(5, empty)))
     }
 
+    @Test fun `complete bounded publication preserves full files and rejects invalid bounds before creating directories`() {
+        val values = (0..126).map { n -> ByteArray(if (n == 0) 16384 else 8192) { ((it + n) % 251).toByte() } } + byteArrayOf()
+        val payloads = values.associateBy { java.security.MessageDigest.getInstance("SHA-256").digest(it).hex() }
+        val descriptors = payloads.map { ResultBlob(it.key, it.value.size.toLong()) }
+        assertEquals(128, descriptors.size); assertEquals(INLINE_BYTES.toLong(), descriptors.sumOf { it.bytes })
+        store().putComplete(1, descriptors) { payloads.getValue(it.sha).inputStream() }
+        store().putComplete(1, descriptors) { error("verified full content must not open a redundant source") }
+        for ((key, value) in payloads) assertContentEquals(value, Files.readAllBytes(store().file(1, key)))
+        val tiny = (0..128).map { ResultBlob(ExecutionStore.digest("tiny-$it"), 1) }
+        assertFailsWith<IllegalArgumentException> { store().putComplete(2, tiny) { error("invalid source opened") } }
+        assertFailsWith<IllegalArgumentException> { store().putComplete(3, listOf(ResultBlob(sha, INLINE_BYTES + 1L))) { error("invalid source opened") } }
+        assertFailsWith<IllegalArgumentException> { store().putComplete(4, listOf(ResultBlob("invalid", 1))) { error("invalid source opened") } }
+        assertFalse(Files.exists(root.resolve("2"))); assertFalse(Files.exists(root.resolve("3"))); assertFalse(Files.exists(root.resolve("4")))
+        assertFailsWith<IllegalStateException> { LocalArtifactStore(root, writable = { false }).putComplete(5, listOf(ResultBlob(sha, bytes.size.toLong()))) { bytes.inputStream() } }
+        assertFalse(Files.exists(root.resolve("5")))
+        assertFailsWith<IllegalArgumentException> { LocalArtifactStore(root, maxBytes = 4).putComplete(6, listOf(ResultBlob(sha, bytes.size.toLong()))) { bytes.inputStream() } }
+        assertFalse(Files.exists(root.resolve("6")))
+    }
+
+    @Test fun `complete publication never truncates a partial symlink target`() {
+        val outside = root.resolve("outside"); Files.writeString(outside, "retained outside bytes")
+        Files.createDirectories(root.resolve("1")); Files.createSymbolicLink(root.resolve("1/$sha.partial"), outside)
+        assertFailsWith<java.io.IOException> { store().putComplete(1, listOf(ResultBlob(sha, bytes.size.toLong()))) { bytes.inputStream() } }
+        assertEquals("retained outside bytes", Files.readString(outside))
+        assertFalse(Files.exists(root.resolve("1/$sha")))
+    }
+
+    @Test fun `complete publication retains checksum checks source failures and corrupt full rejection`() {
+        val descriptor = listOf(ResultBlob(sha, bytes.size.toLong()))
+        store().put(1, sha, bytes.size.toLong(), 0, bytes.copyOfRange(0, 3).inputStream())
+        assertFailsWith<java.io.IOException> { store().putComplete(1, descriptor) { throw java.io.IOException("source unavailable") } }
+        assertEquals(3L, store().offset(1, sha), "an unopened complete source cannot discard existing partial progress")
+        assertFailsWith<IllegalStateException> { store().putComplete(1, descriptor) { ByteArray(bytes.size) { 42 }.inputStream() } }
+        assertFalse(Files.exists(root.resolve("1/$sha"))); assertFalse(Files.exists(root.resolve("1/$sha.partial")))
+        assertFailsWith<IllegalStateException> { store().putComplete(1, descriptor) { bytes.copyOfRange(0, 2).inputStream() } }
+        assertFalse(Files.exists(root.resolve("1/$sha")))
+        store().putComplete(1, descriptor) { bytes.inputStream() }
+        Files.write(root.resolve("1/$sha"), ByteArray(bytes.size) { 42 })
+        assertFailsWith<IllegalArgumentException> { store().putComplete(1, descriptor) { error("corrupt full file must not be overwritten from source") } }
+        assertContentEquals(ByteArray(bytes.size) { 42 }, Files.readAllBytes(root.resolve("1/$sha")))
+    }
+
+    @Test fun `providers without complete publication support retain confirmed offset resume and full verification`() {
+        val local = store(); val offsets = mutableListOf<Long>()
+        val fallback = object : ArtifactStore {
+            override fun offset(job: Long, sha: String) = local.offset(job, sha)
+            override fun file(job: Long, sha: String) = local.file(job, sha)
+            override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: java.io.InputStream): Long {
+                offsets += offset
+                return local.put(job, sha, bytes, offset, input)
+            }
+        }
+        local.put(1, sha, bytes.size.toLong(), 0, bytes.copyOfRange(0, 3).inputStream())
+        fallback.putComplete(1, listOf(ResultBlob(sha, bytes.size.toLong()))) { bytes.inputStream() }
+        fallback.putComplete(1, listOf(ResultBlob(sha, bytes.size.toLong()))) { error("complete fallback must not open source") }
+        assertEquals(listOf(3L, bytes.size.toLong()), offsets)
+        assertContentEquals(bytes, Files.readAllBytes(local.file(1, sha)))
+        Files.write(root.resolve("1/$sha"), ByteArray(bytes.size) { 42 })
+        assertFailsWith<IllegalArgumentException> { fallback.putComplete(1, listOf(ResultBlob(sha, bytes.size.toLong()))) { error("source opened") } }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = [false, true])
+    fun `complete publication serializes ordinary resumption without mixing bytes`(succeed: Boolean) {
+        val local = store(); val entered = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val resumeEntered = java.util.concurrent.CountDownLatch(1); val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            local.put(1, sha, bytes.size.toLong(), 0, bytes.copyOfRange(0, 3).inputStream())
+            val complete = pool.submit {
+                local.putComplete(1, listOf(ResultBlob(sha, bytes.size.toLong()))) {
+                    entered.countDown(); check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    if (succeed) bytes.inputStream() else object : java.io.InputStream() {
+                        var sent = false
+                        override fun read(): Int = error("bulk expected")
+                        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                            if (sent) throw java.io.IOException("interrupted complete source")
+                            bytes.copyInto(buffer, offset, 0, 4); sent = true; return 4
+                        }
+                    }
+                }
+            }
+            assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            val resumed = pool.submit<Long> {
+                resumeEntered.countDown()
+                local.put(1, sha, bytes.size.toLong(), 3, bytes.copyOfRange(3, bytes.size).inputStream())
+            }
+            assertTrue(resumeEntered.await(3, java.util.concurrent.TimeUnit.SECONDS)); assertFalse(resumed.isDone)
+            release.countDown()
+            if (succeed) {
+                complete.get(3, java.util.concurrent.TimeUnit.SECONDS)
+                assertEquals(bytes.size.toLong(), resumed.get(3, java.util.concurrent.TimeUnit.SECONDS))
+            } else {
+                assertIs<java.io.IOException>(assertFailsWith<java.util.concurrent.ExecutionException> { complete.get(3, java.util.concurrent.TimeUnit.SECONDS) }.cause)
+                assertIs<IllegalArgumentException>(assertFailsWith<java.util.concurrent.ExecutionException> { resumed.get(3, java.util.concurrent.TimeUnit.SECONDS) }.cause)
+                assertEquals(4L, local.offset(1, sha)); assertFalse(Files.exists(root.resolve("1/$sha")))
+                local.putComplete(1, listOf(ResultBlob(sha, bytes.size.toLong()))) { bytes.inputStream() }
+            }
+            assertContentEquals(bytes, Files.readAllBytes(local.file(1, sha)))
+        } finally { release.countDown(); pool.shutdownNow(); assertTrue(pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) }
+    }
+
+    @Test fun `complete batch cannot recreate a parent removed after its first completed member`() {
+        val second = "second complete artifact".toByteArray(); val secondSha = ExecutionStore.digest(String(second))
+        val parent = root.resolve("1"); val removed = root.resolve("removed-complete")
+        val descriptors = listOf(ResultBlob(sha, bytes.size.toLong()), ResultBlob(secondSha, second.size.toLong()))
+        assertFailsWith<java.io.IOException> {
+            store().putComplete(1, descriptors) { blob ->
+                if (blob.sha == secondSha) { Files.move(parent, removed, ATOMIC_MOVE); second.inputStream() }
+                else bytes.inputStream()
+            }
+        }
+        assertFalse(Files.exists(parent)); assertContentEquals(bytes, Files.readAllBytes(removed.resolve(sha)))
+        Files.move(removed, parent, ATOMIC_MOVE)
+        store().putComplete(1, descriptors) { if (it.sha == sha) error("full member reopened") else second.inputStream() }
+        assertContentEquals(second, Files.readAllBytes(store().file(1, secondSha)))
+    }
+
 }

@@ -34,6 +34,10 @@ class PackedJournalTest {
             override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
                 writes += sha; return external.put(job, sha, bytes, offset, input)
             }
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 writes.addAll(blobs.keys); external.putAll(job, blobs)
             }

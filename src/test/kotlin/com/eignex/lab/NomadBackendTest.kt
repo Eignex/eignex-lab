@@ -221,6 +221,7 @@ class NomadBackendTest {
         val claim = store.execution.claim(session.id, token, "allocation")!!
         store.execution.phase(claim.owner, "uploading")
         val offline = object : ArtifactStore by artifacts {
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) { error("external unavailable") }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) { error("external unavailable") }
         }
         val directory = root.resolve("journal")
