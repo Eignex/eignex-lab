@@ -165,6 +165,7 @@ class DiskUsageTest {
             0, { now }, busy = { busy })
         val first = usage.measure()!!
         Files.delete(calls)
+        jobs.resolve("2").createDirectories() // Unmeasured work remains due even when the existing places are cached.
         now += DiskUsage.START_DELAY_MIN * 60_000
         busy = true
 
@@ -185,6 +186,8 @@ class DiskUsageTest {
     fun `work starting during a du cancels its process group and keeps the previous report`() {
         val dir = Files.createTempDirectory("disk-yield")
         val data = dir.resolve("data").createDirectories()
+        val jobs = data.resolve("jobs").createDirectories()
+        jobs.resolve("1").createDirectories()
         val block = dir.resolve("block")
         val child = dir.resolve("child")
         val begun = dir.resolve("begun")
@@ -195,6 +198,7 @@ class DiskUsageTest {
             DuRunner(data.resolve(DuRunner.PID_DIR), command = listOf("bash", "-c", script, "du")),
             0, System::currentTimeMillis, busy = { begun.exists() })
         val first = usage.measure()!!
+        jobs.resolve("2").createDirectories() // Force the next pass to start the controlled du process.
         block.writeText("")
         val start = System.nanoTime()
 
