@@ -1,0 +1,37 @@
+# eignex-lab working notes
+
+Benchmark lab: a Kotlin coordinator on a Mac schedules Nomad worker sessions on the Mac and on AWS spot nodes.
+
+## Access
+
+- Consuming repositories use `deploy/lab` and the authenticated HTTP API at `https://lab.eignex.com`.
+- SSH access, host discovery and server administration belong to agents explicitly working on eignex-lab
+  operations. Coordinate restarts and deployments with any other operations session.
+
+## Storage
+
+- The Mac's internal SSD holds hot data: the result journal, the artifact store of running jobs and caches.
+- The spinning `/Volumes/Ros` disk is an archive of job data only. Never put a per-file write path for running
+  jobs on it; small random writes there throttle the whole fleet.
+- Ended jobs' artifacts move to the archive through `ArtifactArchiver` (`LAB_ARTIFACT_ARCHIVE`), leaving a symlink.
+
+## Planning
+
+- A bench's `plan` (and `describe`) makes no network requests and finishes in seconds. It selects from committed
+  metadata — set files and committed corpus indexes — and declares corpus inputs by sha256; the lab fetches each
+  case's bytes by hash at execution. Fix a slow or fetching planner in the consuming repository, not with lab
+  workarounds.
+
+## Deployment
+
+- Controller (API, runner, coordinator) and worker releases deploy separately. Worker images and native launchers
+  are pinned in `$LAB_DATA/nomad/queue.json`; worker-side changes take effect only after a worker rollout.
+- The coordinator's environment comes from `labEnvironment` in the native-services settings
+  (`LAB_NOMAD_NATIVE_CONFIG`) and its installed launchd plist, not from `lab.env` alone.
+- `deploy/install.sh` refuses agent or supervisor plist changes without `--restart-agents`; do not restart Nomad
+  agents or the supervisor as part of an ordinary update.
+
+## PR validation
+
+- GitHub CI (check, native-worker, validate) is the full gate; targeted local suites during development are enough.
+  Check CI before reporting a PR as green and fix failures in follow-up commits.
