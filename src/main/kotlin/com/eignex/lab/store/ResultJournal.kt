@@ -32,17 +32,30 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     private val forceCompactedFile: (Path) -> Unit = { FileChannel.open(it, WRITE).use { channel -> channel.force(true) } },
                     private val deletePack: (Path) -> Boolean = Files::deleteIfExists) : ArtifactStore, AutoCloseable {
     @Serializable private data class Manifest(val job: Long, val blobs: List<ResultBlob>)
+    private enum class Activity { PUBLISHING, COMPACTING }
     private data class Batch(val path: Path, val manifest: Manifest, val charge: Long,
                              var readers: Int = 0, var busy: Boolean = false, var flushed: Boolean = false, var retryAt: Long = 0,
                              var individualRetry: Boolean = false, var durable: Boolean = true, val createdAt: Long = now(), var error: String? = null,
-                             var superseded: Boolean = false, var retirement: Retirement? = null, var compactAfter: Long = 0)
+                             var superseded: Boolean = false, var retirement: Retirement? = null, var compactAfter: Long = 0,
+                             var activity: Activity? = null)
     private data class Retirement(val remaining: MutableSet<Path>, val saved: Long)
     private data class Compaction(val inputs: List<Batch>, val sources: Map<String, Pair<ResultBlob, Batch>>, val reserved: Long)
+    @Serializable enum class Phase { queued, publishing, compacting, backoff, unconfirmedInternal, flushedPinned, flushedCleanup, superseded }
+    /** Bytes are charged pack bytes; readers includes temporary publication/compaction reservations. */
+    @Serializable data class PhaseStatus(val batches: Int = 0, val blobs: Int = 0, val bytes: Long = 0,
+                                        val oldestAgeMs: Long = 0, val readers: Int = 0)
+    /** Timing fields describe the last successful publishBatch, excluding later internal reclamation.
+     * Post-callback completion includes provider bookkeeping, its durability barrier and scheduling;
+     * it is not a measurement of an isolated flush syscall. Status collection performs no filesystem IO. */
     @Serializable data class Status(val batches: Int, val bytes: Long, val limit: Long, val lastError: String?,
                                    val oldestAgeMs: Long = 0, val drainErrors: Long = 0, val lastDrainAt: Long? = null,
                                    val compactions: Long = 0, val compactionReclaimedBytes: Long = 0,
                                    val compactionErrors: Long = 0, val lastCompactionError: String? = null,
-                                   val lastDrainMs: Long? = null, val lastDrainBlobs: Int = 0)
+                                   val lastDrainMs: Long? = null, val lastDrainBlobs: Int = 0,
+                                   val phases: Map<Phase, PhaseStatus> = emptyMap(), val oldestPhase: Phase? = null,
+                                   val receiving: Int = 0, val receivingReservedBytes: Long = 0,
+                                   val lastPublishBatchMs: Long? = null, val lastPublishCallbackMs: Long? = null,
+                                   val lastPostCallbackCompletionMs: Long? = null)
     private val monitor = Any()
     private val batches = linkedMapOf<Path, Batch>()
     private val index = mutableMapOf<Pair<Long, String>, Batch>()
@@ -56,6 +69,9 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     private var lastDrainAt: Long? = null
     private var lastDrainMs: Long? = null
     private var lastDrainBlobs = 0
+    private var lastPublishBatchMs: Long? = null
+    private var lastPublishCallbackMs: Long? = null
+    private var lastPostCallbackCompletionMs: Long? = null
     private var compactions = 0L
     private var compactionReclaimedBytes = 0L
     private var compactionErrors = 0L
@@ -112,9 +128,31 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     }
 
     fun status(): Status = synchronized(monitor) {
+        val at = now()
+        val retryAt = retryClock()
+        val grouped = batches.values.groupBy { phase(it, retryAt) }
+        val phases = Phase.entries.associateWith { phase ->
+            val group = grouped[phase].orEmpty()
+            PhaseStatus(group.size, group.sumOf { it.manifest.blobs.size }, group.sumOf { it.charge },
+                group.minOfOrNull { it.createdAt }?.let { (at - it).coerceAtLeast(0) } ?: 0, group.sumOf { it.readers })
+        }
+        val oldest = batches.values.minByOrNull { it.createdAt }
         Status(batches.size, used, maxBytes, lastError,
-            batches.values.minOfOrNull { it.createdAt }?.let { (now() - it).coerceAtLeast(0) } ?: 0, drainErrors, lastDrainAt,
-            compactions, compactionReclaimedBytes, compactionErrors, lastCompactionError, lastDrainMs, lastDrainBlobs)
+            oldest?.let { (at - it.createdAt).coerceAtLeast(0) } ?: 0, drainErrors, lastDrainAt,
+            compactions, compactionReclaimedBytes, compactionErrors, lastCompactionError, lastDrainMs, lastDrainBlobs,
+            phases, oldest?.let { phase(it, retryAt) }, receiving, used - 8192L - phases.values.sumOf { it.bytes },
+            lastPublishBatchMs, lastPublishCallbackMs, lastPostCallbackCompletionMs)
+    }
+    // Disjoint precedence: retired/durable state wins over reservations and soft retry hints.
+    private fun phase(batch: Batch, at: Long): Phase = when {
+        batch.superseded -> Phase.superseded
+        batch.flushed && batch.readers > 0 -> Phase.flushedPinned
+        batch.flushed -> Phase.flushedCleanup
+        !batch.durable -> Phase.unconfirmedInternal
+        batch.activity == Activity.PUBLISHING -> Phase.publishing
+        batch.activity == Activity.COMPACTING -> Phase.compacting
+        batch.retryAt > at -> Phase.backoff
+        else -> Phase.queued
     }
     private fun charge(bytes: Long, blobs: Int): Long = ((bytes + 4095) / 4096 + 1) * 4096 + blobs * 512L
     private fun reservation(bytes: Long, blobs: Int): Long = charge(bytes + bytes / 16384 * 8 + blobs * 512L + 4096, blobs)
@@ -342,7 +380,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             }
             selectCompaction()?.also { plan ->
                 used += plan.reserved; receiving++
-                plan.inputs.forEach(::reserve)
+                plan.inputs.forEach { reserve(it, Activity.COMPACTING) }
             } ?: return false
         }
         var temporary: Path? = null
@@ -400,7 +438,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                 }
             } finally {
                 synchronized(monitor) {
-                    receiving--; selected.inputs.forEach { it.busy = false; it.readers-- }
+                    receiving--; selected.inputs.forEach { it.busy = false; it.readers--; it.activity = null }
                     cleanup(selected.inputs)
                 }
             }
@@ -471,13 +509,15 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     group.add(batch); bytes += next
                 }
             }
-            group.onEach(::reserve)
+            group.onEach { reserve(it) }
         }
         return drainReserved(selected)
     }
     private fun eligible(batch: Batch): Boolean = batch.durable && !batch.busy && !batch.flushed && !batch.superseded && batch.retryAt <= retryClock()
     // Selection and reservation share the monitor so both lanes can immediately claim distinct packs.
-    private fun reserve(batch: Batch) { batch.busy = true; batch.readers++ }
+    private fun reserve(batch: Batch, activity: Activity = Activity.PUBLISHING) {
+        batch.busy = true; batch.readers++; batch.activity = activity
+    }
     private fun drain(batch: Batch): Boolean {
         synchronized(monitor) {
             if (closed || !batch.durable || batch.busy || batch.flushed || batch.superseded || batch.path !in batches) return false
@@ -487,9 +527,22 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     }
     private fun drainReserved(group: List<Batch>): Boolean {
         val started = System.nanoTime()
+        var callbackNanos = 0L
+        var callbackFinished: Long? = null
+        val publicationStarted = System.nanoTime()
+        var publicationFinished = publicationStarted
         try {
             try {
-                external.publishBatch(group.first().manifest.job) { group.forEach(::publish) }
+                external.publishBatch(group.first().manifest.job) {
+                    val callbackStarted = System.nanoTime()
+                    try { group.forEach(::publish) }
+                    finally {
+                        val finished = System.nanoTime()
+                        callbackNanos += finished - callbackStarted
+                        callbackFinished = finished
+                    }
+                }
+                publicationFinished = System.nanoTime()
             } catch (failure: Exception) {
                 synchronized(monitor) {
                     for (batch in group) {
@@ -507,6 +560,9 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     batch.flushed = true; batch.error = null
                     for (blob in batch.manifest.blobs) index.remove(batch.manifest.job to blob.sha, batch)
                 }
+                lastPublishBatchMs = (publicationFinished - publicationStarted) / 1_000_000
+                lastPublishCallbackMs = callbackNanos / 1_000_000
+                lastPostCallbackCompletionMs = callbackFinished?.let { (publicationFinished - it) / 1_000_000 }
                 lastDrainAt = now()
                 lastDrainMs = (System.nanoTime() - started) / 1_000_000
                 lastDrainBlobs = group.sumOf { it.manifest.blobs.size }
@@ -516,7 +572,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         } finally {
             synchronized(monitor) {
                 // Release every reservation even if one reclamation fails after successful publication.
-                group.forEach { it.busy = false; it.readers-- }
+                group.forEach { it.busy = false; it.readers--; it.activity = null }
                 cleanup(group)
             }
         }

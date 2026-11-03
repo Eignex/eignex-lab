@@ -228,6 +228,8 @@ class ResultJournalTest {
         }).use { store ->
             fail = true
             assertFailsWith<java.io.IOException> { store.putAll(1, blobs("result")) }
+            assertEquals(1, store.status().phases.getValue(ResultJournal.Phase.unconfirmedInternal).batches)
+            assertEquals(ResultJournal.Phase.unconfirmedInternal, store.status().oldestPhase)
             val failedAt = barriers
             assertFalse(store.drainOne())
             store.putAll(1, blobs("result"))
