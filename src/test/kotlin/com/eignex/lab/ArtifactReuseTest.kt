@@ -12,6 +12,7 @@ import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.attribute.FileTime
 import kotlin.test.*
 
@@ -21,6 +22,56 @@ class ArtifactReuseTest {
     private val sha = ExecutionStore.digest(String(bytes))
     private fun store() = LocalArtifactStore(root)
     private fun publish(job: Long = 1) { store().put(job, sha, bytes.size.toLong(), 0, bytes.inputStream()); store().remember(job, sha) }
+
+    @Test fun `empty and invalid artifact batches never create a job directory`() {
+        store().putAll(1, emptyMap())
+        assertFalse(Files.exists(root.resolve("1")))
+        assertFailsWith<IllegalArgumentException> { store().putAll(2, mapOf("invalid" to bytes)) }
+        assertFalse(Files.exists(root.resolve("2")))
+        assertFailsWith<IllegalArgumentException> { LocalArtifactStore(root, maxBytes = 4).putAll(3, mapOf(sha to bytes)) }
+        assertFalse(Files.exists(root.resolve("3")))
+        assertFailsWith<IllegalStateException> { LocalArtifactStore(root, writable = { false }).putAll(4, mapOf(sha to bytes)) }
+        assertFalse(Files.exists(root.resolve("4")))
+    }
+
+    @Test fun `artifact batch fails without recreating a parent removed between completed writes`() {
+        val second = "second artifact".toByteArray(); val secondSha = ExecutionStore.digest(String(second))
+        val payloads = linkedMapOf(sha to bytes, secondSha to second)
+        val parent = root.resolve("1"); val removed = root.resolve("removed")
+        val disappearing = object : Map<String, ByteArray> by payloads {
+            override val entries: Set<Map.Entry<String, ByteArray>> get() = object : AbstractSet<Map.Entry<String, ByteArray>>() {
+                override val size get() = payloads.size
+                override fun iterator(): Iterator<Map.Entry<String, ByteArray>> {
+                    val iterator = payloads.entries.iterator()
+                    return object : Iterator<Map.Entry<String, ByteArray>> {
+                        override fun hasNext() = iterator.hasNext()
+                        override fun next(): Map.Entry<String, ByteArray> = iterator.next().also { entry ->
+                            if (entry.key == secondSha && Files.isRegularFile(parent.resolve(sha))) Files.move(parent, removed, ATOMIC_MOVE)
+                        }
+                    }
+                }
+            }
+        }
+        assertFailsWith<java.io.IOException> { store().putAll(1, disappearing) }
+        assertFalse(Files.exists(parent), "a missing batch parent must not be silently recreated")
+        assertContentEquals(bytes, Files.readAllBytes(removed.resolve(sha)))
+        assertFalse(Files.exists(removed.resolve(secondSha)))
+        // Once the original directory is restored, an ordinary retry verifies the first write and completes the rest.
+        Files.move(removed, parent, ATOMIC_MOVE)
+        store().putAll(1, payloads)
+        for ((key, value) in payloads) assertContentEquals(value, Files.readAllBytes(store().file(1, key)))
+    }
+
+    @Test fun `batched writes retain checksum rejection and allow a later complete retry`() {
+        val second = "second artifact".toByteArray(); val secondSha = ExecutionStore.digest(String(second))
+        val corrupt = second.copyOf().also { it[0] = (it[0] + 1).toByte() }
+        assertFailsWith<IllegalStateException> { store().putAll(1, linkedMapOf(sha to bytes, secondSha to corrupt)) }
+        assertContentEquals(bytes, Files.readAllBytes(store().file(1, sha)))
+        assertFalse(Files.exists(root.resolve("1/$secondSha")))
+        assertFalse(Files.exists(root.resolve("1/$secondSha.partial")))
+        store().putAll(1, linkedMapOf(sha to bytes, secondSha to second))
+        assertContentEquals(second, Files.readAllBytes(store().file(1, secondSha)))
+    }
 
     @Test fun `reuse survives coordinator restart shares bytes and remains valid after original job removal`() {
         publish()
