@@ -39,6 +39,55 @@ class MacDirectoryEntriesTest {
         return bytes
     }
 
+    private fun nameRecord(name: String = "fixture", type: Int = 1): ByteArray {
+        val encoded = name.toByteArray()
+        val bytes = ByteArray((40 + encoded.size + 1 + 7) / 8 * 8)
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder())
+        buffer.putInt(0, bytes.size); buffer.putInt(4, 9)
+        buffer.putInt(28, 12); buffer.putInt(32, encoded.size + 1); buffer.putInt(36, type)
+        encoded.copyInto(bytes, 40)
+        return bytes
+    }
+
+    @Test fun `name records carry no sizes or strong verification metadata`() {
+        val records = nameRecord("é-雪") + nameRecord("directory", 2) + nameRecord("link", 5) + nameRecord(".", 2)
+        assertEquals(listOf(MacDirectoryEntries.NameEntry("é-雪", false, true),
+            MacDirectoryEntries.NameEntry("directory", true, false), MacDirectoryEntries.NameEntry("link", false, false)),
+            MacDirectoryEntries.decodeNames(records, 4))
+        assertNull(MacDirectoryEntries.decodeListing(nameRecord(), 1), "a name/type result cannot supply a file length")
+        assertNull(MacDirectoryEntries.decode(records, 4), "name/type hints cannot become source verification evidence")
+    }
+
+    @Test fun `name records reject errors missing types extra attributes and malformed names`() {
+        fun rejected(change: (ByteBuffer) -> Unit) {
+            val bytes = nameRecord(); change(ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()))
+            assertNull(MacDirectoryEntries.decodeNames(bytes, 1))
+        }
+        rejected { it.putInt(0, Int.MAX_VALUE) }
+        rejected { it.putInt(0, 39) }
+        rejected { it.putInt(0, 47) }
+        rejected { it.putInt(4, 1) }
+        rejected { it.putInt(4, 8) }
+        rejected { it.putInt(4, 11) }
+        rejected { it.putInt(8, 1) }
+        rejected { it.putInt(12, 1) }
+        rejected { it.putInt(16, 0x200) }
+        rejected { it.putInt(20, 1) }
+        rejected { it.putInt(24, 5) }
+        rejected { it.putInt(28, Int.MIN_VALUE) }
+        rejected { it.putInt(28, 11) }
+        rejected { it.putInt(28, 13) }
+        rejected { it.putInt(32, 0) }
+        rejected { it.putInt(32, Int.MAX_VALUE) }
+        assertNull(MacDirectoryEntries.decodeNames(nameRecord().copyOf(39), 1))
+        assertNull(MacDirectoryEntries.decodeNames(nameRecord(), 2))
+        assertNull(MacDirectoryEntries.decodeNames(nameRecord("unsafe/name"), 1))
+        assertNull(MacDirectoryEntries.decodeNames(nameRecord("unsafe\u0000name"), 1))
+        assertNull(MacDirectoryEntries.decodeNames(nameRecord(""), 1))
+        val unterminated = nameRecord(); unterminated[40 + "fixture".length] = 1
+        assertNull(MacDirectoryEntries.decodeNames(unterminated, 1))
+    }
+
     @Test fun `listing records represent only names types and lengths including directories and links`() {
         val records = listingRecord("é-雪") + listingRecord("directory", 2) + listingRecord("link", 5) + listingRecord(".", 2)
         val entries = assertNotNull(MacDirectoryEntries.decodeListing(records, 4))
@@ -99,7 +148,19 @@ class MacDirectoryEntriesTest {
                 assertEquals(expected.isRegularFile, entry.regular, entry.name)
                 assertEquals(if (expected.isRegularFile) expected.size() else 0L, entry.bytes, entry.name)
             }
+            val names = assertNotNull(MacDirectoryEntries.readNames(root, {}))
+            assertEquals(entries.map { MacDirectoryEntries.NameEntry(it.name, it.directory, it.regular) }.toSet(), names.toSet())
+            assertNull(MacDirectoryEntries.readNames(root.resolve("file-link"), {}))
+            assertNull(MacDirectoryEntries.readNames(root.resolve("dir-link"), {}))
+            var nameCalls = 0
+            assertFailsWith<CancellationException> {
+                MacDirectoryEntries.readNames(root) { if (++nameCalls == 2) throw CancellationException("listing ended") }
+            }
             val ordinary = com.eignex.lab.domain.jobFiles(root) { _, _ -> null }
+            val replaced = setOf("file-0", "é-雪")
+            val selected = com.eignex.lab.domain.jobFiles(root, replaced)
+            assertEquals(ordinary.filterNot { it.path in replaced }, selected.filterNot { it.path in replaced })
+            assertTrue(selected.filter { it.path in replaced }.all { it.bytes == com.eignex.lab.domain.FileEntry.UNKNOWN_BYTES })
             assertEquals(ordinary, com.eignex.lab.domain.jobFiles(root), "native hints retain the complete ordinary inventory")
             assertFalse(entries.single { it.name == "file-link" }.regular)
             assertFalse(entries.single { it.name == "dir-link" }.directory)

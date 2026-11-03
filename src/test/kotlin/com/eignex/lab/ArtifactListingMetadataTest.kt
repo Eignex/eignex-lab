@@ -62,6 +62,63 @@ class ArtifactListingMetadataTest {
         } finally { deleteTree(root) }
     }
 
+    @Test fun `exact logical replacements avoid physical lengths while legacy directories and changed links remain visible safely`() {
+        val root = Files.createTempDirectory("logical-size-selection")
+        try {
+            Files.createDirectory(root.resolve("accepted-dir"))
+            Files.createDirectory(root.resolve("legacy-dir"))
+            Files.writeString(root.resolve("legacy"), "legacy")
+            Files.writeString(root.resolve("exact"), "projection")
+            Files.createSymbolicLink(root.resolve("changed-link"), root.resolve("exact"))
+            val sizedDirectories = mutableListOf<String>()
+            val statted = mutableListOf<String>()
+            val files = jobFiles(root, setOf("exact", "accepted-dir"), names = { path, _ ->
+                assertEquals(root, path)
+                listOf(MacDirectoryEntries.NameEntry("exact", false, true),
+                    MacDirectoryEntries.NameEntry("accepted-dir", true, false),
+                    MacDirectoryEntries.NameEntry("legacy-dir", true, false),
+                    MacDirectoryEntries.NameEntry("legacy", false, true),
+                    MacDirectoryEntries.NameEntry("changed-link", false, true), // Changed to a symlink after enumeration.
+                    MacDirectoryEntries.NameEntry("ignored-link", false, false))
+            }, entries = { path, _ ->
+                val relative = root.relativize(path).joinToString("/"); sizedDirectories += relative
+                when (relative) {
+                    "accepted-dir" -> listOf(MacDirectoryEntries.ListingEntry("child", false, true, 7))
+                    "legacy-dir" -> listOf(MacDirectoryEntries.ListingEntry("child", false, true, 9))
+                    else -> error("unexpected sized directory")
+                }
+            }, attributes = { path ->
+                val relative = root.relativize(path).joinToString("/"); statted += relative
+                assertTrue(relative !in setOf("exact", "accepted-dir"), "accepted size is not physical authority")
+                Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            })
+            assertEquals(listOf(FileEntry("accepted-dir/child", 7), FileEntry("exact", FileEntry.UNKNOWN_BYTES),
+                FileEntry("legacy", 6), FileEntry("legacy-dir/child", 9)), files)
+            assertEquals(listOf("accepted-dir", "legacy-dir"), sizedDirectories)
+            assertEquals(listOf("legacy", "changed-link"), statted)
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `unknown physical metadata failures stay visible and unsupported narrow listings retain ordinary sizes`() {
+        val root = Files.createTempDirectory("logical-size-fallback")
+        try {
+            Files.writeString(root.resolve("accepted"), "projection")
+            Files.writeString(root.resolve("legacy"), "legacy")
+            val ordinary = jobFiles(root) { _, _ -> null }
+            val fallback = jobFiles(root, setOf("accepted"), names = { _, _ -> null })
+            assertEquals(ordinary, fallback)
+            assertFailsWith<java.io.IOException> {
+                jobFiles(root, setOf("accepted"), names = { _, _ -> listOf(MacDirectoryEntries.NameEntry("legacy", false, true)) },
+                    attributes = { throw java.io.IOException("unreadable legacy metadata") })
+            }
+            val sized = mutableListOf<java.nio.file.Path>()
+            assertEquals(listOf(FileEntry("legacy", 6)), jobFiles(root, emptySet(),
+                names = { _, _ -> error("legacy-only directories must keep sized batching") },
+                entries = { path, _ -> sized.add(path); listOf(MacDirectoryEntries.ListingEntry("legacy", false, true, 6)) }))
+            assertEquals(listOf(root), sized)
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `ordinary file inventory reuses directory batches and excludes links and private trees`() {
         val root = Files.createTempDirectory("job-metadata")
         Files.createDirectories(root.resolve("cases"))
