@@ -128,11 +128,16 @@ class NomadQueue(
                 if (current.cancelRequested || current.paused || current.status.isTerminal) continue
                 if (store.unclaimed(job.id) == 0) continue
                 if (!backend.mayStartSolve()) continue
-                val cases = store.plans.casePlan(job.id).map { row ->
-                    val armIndex = recipe.arms.indexOfFirst { it.arm.label == row.arm }
-                    val execution = preparation.armPlans[row.arm]?.cases?.single { BenchRuns.key(it) == BenchRuns.key(requireNotNull(row.problem.benchCase)) }
-                    WorkCase(row.index, armIndex, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
-                        current.commands.single { it.index == row.index }.timeoutSec, execution)
+                // Built only when a session is created; indexed so an 800-case job is linear, not quadratic, per pass.
+                val cases by lazy {
+                    val arms = recipe.arms.withIndex().associate { (index, arm) -> arm.arm.label to index }
+                    val timeouts = current.commands.associate { it.index to it.timeoutSec }
+                    val executions = preparation.armPlans.mapValues { (_, plan) -> plan.cases.groupBy { BenchRuns.key(it) } }
+                    store.plans.casePlan(job.id).map { row ->
+                        val execution = executions[row.arm]?.getValue(BenchRuns.key(requireNotNull(row.problem.benchCase)))?.single()
+                        WorkCase(row.index, arms[row.arm] ?: -1, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
+                            requireNotNull(timeouts[row.index]) { "case ${row.index} has no command" }, execution)
+                    }
                 }
                 val pending = store.plans.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
