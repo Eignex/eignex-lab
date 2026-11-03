@@ -36,6 +36,9 @@ class NomadBackend(
     private val solveAllowed: () -> Boolean = { true },
 ) {
     private val pendingLogs = mutableSetOf<Long>()
+    /** What each job.log last projected: its newest event, status and error. Unchanged jobs skip the event read and
+     * the file comparison; the job files live on the archive volume, so this saves a read per active job per pass. */
+    private val projectedLogs = java.util.concurrent.ConcurrentHashMap<Long, Triple<Long?, Status, String?>>()
     /** Consecutive delivery failures of each unacknowledged intent, until [MAX_INTENT_ATTEMPTS] abandons it. */
     private val intentFailures = mutableMapOf<String, Int>()
     val logs = WorkerLogs(store, jobDirectory)
@@ -460,6 +463,8 @@ class NomadBackend(
 
     private fun projectLog(job: Long) {
         val current = store.job(job) ?: return
+        val marker = Triple(store.execution.lastEventId(job), current.status, current.error)
+        if (projectedLogs[job] == marker) return
         val events = store.execution.events(job)
         val text = events.joinToString("\n", postfix = "\n") { event ->
             "${java.time.Instant.ofEpochMilli(event.at)} ${event.session ?: "experiment"} ${event.detail}"
@@ -467,6 +472,7 @@ class NomadBackend(
         val path = jobDirectory(job).resolve("job.log")
         Files.createDirectories(path.parent)
         if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
+        projectedLogs[job] = marker
     }
 
     /** The native reservation's limits a session on [pool] holds to: its own, else the native worker's capacity. */

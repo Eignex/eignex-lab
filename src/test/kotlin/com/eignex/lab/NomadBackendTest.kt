@@ -1530,6 +1530,17 @@ class NomadBackendTest {
         assertFalse(Files.exists(path.parent))
     }
 
+    @Test fun `an unchanged job log is not reread or rewritten on later passes`() {
+        val id = setup(); register(); val backend = backend()
+        backend.reconcile()
+        val path = root.resolve("jobs/$id/job.log")
+        Files.writeString(path, "sentinel")
+        backend.reconcile()
+        assertEquals("sentinel", Files.readString(path), "no new event or status: the projection is skipped")
+        store.requestCancel(id); backend.reconcile()
+        assertContains(Files.readString(path), "CANCELLED")
+    }
+
     @Test fun `accepted output still ingests after cancellation wins before reconciliation`() {
         val id = setup(); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!
