@@ -281,12 +281,19 @@ class JournalCompactionTest {
                 assertTrue(readerEntered.await(3, SECONDS))
                 val copying = pool.submit<Boolean> { store.compactOne() }
                 assertTrue(copyEntered.await(3, SECONDS))
+                val copyingStatus = store.status()
+                assertEquals(2, copyingStatus.phases.getValue(ResultJournal.Phase.compacting).batches)
+                assertEquals(3, copyingStatus.phases.getValue(ResultJournal.Phase.compacting).readers)
+                assertEquals(1, copyingStatus.receiving); assertTrue(copyingStatus.receivingReservedBytes > 0)
+                assertEquals(copyingStatus.bytes, 8192L + copyingStatus.receivingReservedBytes + copyingStatus.phases.values.sumOf { it.bytes })
                 // This caller initially sees the busy original and must reread the redirected index.
                 val stable = pool.submit<Path> { store.file(1, ExecutionStore.digest("first")) }
                 add(store, "other-job", 2)
                 copyRelease.countDown(); assertTrue(copying.get(5, SECONDS))
                 assertEquals("first", Files.readString(stable.get(5, SECONDS)))
                 assertEquals(0L, store.status().compactionReclaimedBytes, "pinned input still holds its charge")
+                assertEquals(1, store.status().phases.getValue(ResultJournal.Phase.superseded).batches)
+                assertEquals(0L, store.status().receivingReservedBytes)
                 assertEquals("first", read(store, "first"))
                 readerRelease.countDown(); assertEquals("first", old.get(5, SECONDS))
                 assertTrue(store.status().compactionReclaimedBytes > 0)
