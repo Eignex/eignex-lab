@@ -165,9 +165,9 @@ class ExecutionStoreTest {
         val spec = ExperimentSpec("pending-preparation")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
         store.execution.createSession("pending", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
-        assertFalse(PreparationAdmission(store).allows(null, false, 2))
+        assertFalse(PreparationAdmission(store).allows(null, false, 1))
         store.execution.preparationNode("pending", "node")
-        assertTrue(PreparationAdmission(store).allows(null, false, 2))
+        assertTrue(PreparationAdmission(store).allows(null, false, 1))
         assertNull(store.execution.session("pending")!!.allocation)
         assertNull(store.job(id)!!.runningSince)
         assertFailsWith<ExecutionFenced> { store.execution.claim("pending", token, "allocation", 1001) }
