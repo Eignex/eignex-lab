@@ -93,8 +93,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
+        val gradleCache = GradleCacheProxy({ method, key, body ->
+            val response = request("gradle-cache/$key", method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
+            response.statusCode() to response.body()
+        })
         val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket),
-            observeBuild = { stdout, stderr, exit -> preparationRecorder?.build(stdout, stderr, exit) })
+            observeBuild = { stdout, stderr, exit -> preparationRecorder?.build(stdout, stderr, exit) }, remoteCache = { gradleCache.url })
         Thread({
             try { builds.maintain() } catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
         }, "worker-build-cleanup").apply { isDaemon = true; start() }
@@ -253,7 +257,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             resourceReporter.shutdownNow()
             checkpoint(if (interruption.requested()) "provider-interruption" else null)
             runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
-            try { nativeOwnership?.close() } finally { workspaceStorage.close() }
+            try { nativeOwnership?.close() } finally { try { workspaceStorage.close() } finally { gradleCache.close() } }
         }
     }
 
