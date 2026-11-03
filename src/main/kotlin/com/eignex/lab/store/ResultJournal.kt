@@ -526,11 +526,16 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES && offsets.values.all { it == 0L }) {
             external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
         } else ZipFile(batch.path.toFile()).use { zip ->
-            for (blob in batch.manifest.blobs) zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
+            for (blob in batch.manifest.blobs) {
                 val offset = offsets.getValue(blob.sha)
                 require(offset in 0..blob.bytes) { "external artifact size changed" }
-                input.skipNBytes(offset)
-                external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
+                if (offset == blob.bytes) {
+                    // No suffix remains. The destination must still verify/finalize its copy and share the barrier.
+                    external.put(batch.manifest.job, blob.sha, blob.bytes, offset, InputStream.nullInputStream())
+                } else zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
+                    input.skipNBytes(offset)
+                    external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
+                }
             }
         }
     }

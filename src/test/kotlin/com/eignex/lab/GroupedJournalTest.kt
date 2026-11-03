@@ -9,6 +9,9 @@ import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit.SECONDS
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class GroupedJournalTest {
@@ -175,6 +178,75 @@ class GroupedJournalTest {
             assertFalse(store.drainGroup()); assertEquals(0, store.status().batches)
             assertEquals(8192L, store.status().bytes); assertEquals(1, barriers)
             repeat(3) { n -> assertEquals("value-$n", read(store, 1, "value-$n")) }
+        }
+    }
+
+    @Test fun `verified external bytes can drain without rereading an unavailable journal payload`() {
+        val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
+        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        external.put(1, sha, bytes.size.toLong(), 0, bytes.inputStream())
+        var barriers = 0; var charged = 0L
+        lateinit var store: ResultJournal
+        val destination = object : ArtifactStore by external {
+            override fun publishBatch(job: Long, publish: () -> Unit) = external.publishBatch(job, {
+                barriers++
+                assertEquals(charged, store.status().bytes, "the existing external copy still needs its waited barrier")
+            }, publish)
+            override fun put(job: Long, sha: String, bytes: Long, offset: Long, input: java.io.InputStream): Long {
+                assertEquals(bytes, offset)
+                assertEquals(-1, input.read(), "a complete offset has no remaining upload suffix")
+                return external.put(job, sha, bytes, offset, input)
+            }
+        }
+        ResultJournal(path, destination, start = false).use {
+            store = it
+            store.putPacked(1, listOf(ResultBlob(sha, bytes.size.toLong())), bytes.inputStream())
+            removeJournalPayload()
+            assertFailsWith<IllegalArgumentException> { store.open(1, sha).close() }
+            charged = store.status().bytes
+            assertTrue(store.drainGroup())
+            assertEquals(1, barriers); assertEquals(8192L, store.status().bytes)
+            assertContentEquals(bytes, external.open(1, sha).use { input -> input.readAllBytes() })
+        }
+    }
+
+    @Test fun `complete offsets still verify corrupt external bytes and retain the journal on failure`() {
+        val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
+        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        external.put(1, sha, bytes.size.toLong(), 0, bytes.inputStream())
+        Files.write(root.resolve("external/1/$sha"), ByteArray(bytes.size) { 42 })
+        var barriers = 0
+        ResultJournal(path, destination { barriers++ }, start = false).use { store ->
+            store.putPacked(1, listOf(ResultBlob(sha, bytes.size.toLong())), bytes.inputStream())
+            val charged = store.status().bytes
+            assertFailsWith<IllegalArgumentException> { store.drainGroup() }
+            assertEquals(0, barriers); assertEquals(1, store.status().batches)
+            assertEquals(charged, store.status().bytes)
+            assertContentEquals(bytes, store.open(1, sha).use { it.readAllBytes() })
+        }
+    }
+
+    @Test fun `complete partial uploads are verified and published before the journal charge is released`() {
+        val bytes = ByteArray(128 * 1024) { (it % 251).toByte() }
+        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+        val directory = Files.createDirectories(root.resolve("external/1"))
+        Files.write(directory.resolve("$sha.partial"), bytes)
+        var barriers = 0
+        ResultJournal(path, destination { barriers++ }, start = false).use { store ->
+            store.putPacked(1, listOf(ResultBlob(sha, bytes.size.toLong())), bytes.inputStream())
+            assertTrue(store.drainGroup())
+            assertEquals(1, barriers); assertEquals(8192L, store.status().bytes)
+            assertFalse(Files.exists(directory.resolve("$sha.partial")))
+            assertContentEquals(bytes, external.open(1, sha).use { it.readAllBytes() })
+        }
+    }
+
+    /** An external verified copy is sufficient even if the redundant local payload is no longer readable. */
+    private fun removeJournalPayload() {
+        val pack = Files.list(path).use { paths -> paths.filter { it.fileName.toString().endsWith(".zip") }.toList().single() }
+        val manifest = ZipFile(pack.toFile()).use { zip -> zip.getInputStream(zip.getEntry("manifest.json")).use { it.readAllBytes() } }
+        ZipOutputStream(Files.newOutputStream(pack)).use { zip ->
+            zip.putNextEntry(ZipEntry("manifest.json")); zip.write(manifest); zip.closeEntry()
         }
     }
 }
