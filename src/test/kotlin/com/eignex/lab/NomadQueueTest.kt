@@ -311,7 +311,7 @@ class NomadQueueTest {
         queue().reconcile()
         assertEquals(1, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
     }
-    @Test fun `cloud preparation waits before publication and charging until the preceding placement binds`() {
+    @Test fun `cloud preparations beyond a node's compiler slots wait before publication and charging until placements bind`() {
         val first = job(ExperimentSpec("first-build", host = Experiments.AWS_HOST))
         val second = job(ExperimentSpec("second-build", host = Experiments.AWS_HOST))
         val third = job(ExperimentSpec("third-build", host = Experiments.AWS_HOST))
@@ -324,14 +324,11 @@ class NomadQueueTest {
             store.execution.bind(session.id, env.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content, allocation, "busy", "release")
         }
         admission.reconcile()
-        assertEquals(1, publications)
-        assertTrue(store.execution.sessions(second).isEmpty())
-        assertEquals(0L, store.job(second)!!.runMs)
-        assertNull(store.job(second)!!.runningSince)
-        bind(first, "first-allocation")
-        admission.reconcile()
-        assertEquals(2, publications)
+        assertEquals(2, publications, "a booting node no longer holds the next job's preparation")
         assertTrue(store.execution.sessions(third).isEmpty())
+        assertEquals(0L, store.job(third)!!.runMs)
+        assertNull(store.job(third)!!.runningSince)
+        bind(first, "first-allocation")
         bind(second, "second-allocation")
         admission.reconcile()
         val payload = store.execution.submission(store.execution.sessions(third).single().id)
