@@ -24,8 +24,10 @@ internal class PreparationAdmission(private val store: Store) {
         fun allows(nodeClass: String?, native: Boolean, limit: Int, held: List<Reservation>): Boolean {
             require(limit in 1..64)
             val matching = held.filter { it.nodeClass == nodeClass && it.native == native }
-            // Serialize unbound cloud preparations so the next placement sees the preceding reservation.
-            return if (native) matching.size < limit else matching.none { it.node == null }
+            // Up to a node's compiler slots may await placement together: a new node's boot no longer serializes every
+            // other job's preparation. Placements still exclude nodes full of bound preparations, and the worker's own
+            // compiler slots queue any overlap on one node rather than overcommit it.
+            return if (native) matching.size < limit else matching.count { it.node == null } < limit
         }
 
         fun mark(job: JsonObject, limit: Int): JsonObject {

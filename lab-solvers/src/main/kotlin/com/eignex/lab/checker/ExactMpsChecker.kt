@@ -28,7 +28,7 @@ class ExactMpsChecker private constructor(
         val location = File(javaClass.protectionDomain.codeSource.location.toURI())
         val binaryHash = location.takeIf { it.isFile }?.let(::sha256)
         var point: ExactMpsPoint? = null
-        fun done(state: String, reason: String) = Verdict(state, reason, "1 (source sha256 $sourceIdentity)${if (semantics == null) "" else " (policy source sha256 $policySource)"}", binaryHash,
+        fun done(state: String, reason: String) = Verdict(state, reason, "2 (source sha256 $sourceIdentity)${if (semantics == null) "" else " (policy source sha256 $policySource)"}", binaryHash,
             diagnostic = "exact rational arithmetic; ${if (semantics == null) "zero tolerance" else "declared source tolerance"}; feasible point only; ${budget.operations} operations; " +
                 "source <= $MAX_SOURCE bytes, witness <= $MAX_WITNESS chars, terms <= $MAX_TERMS, scalars <= ${MpsQ.MAX_BITS} bits; " +
                 "deadline ${timeoutMs}ms; parser failures=unknown, unsupported/resource caps=unsupported, timeout=not-run",
@@ -239,7 +239,9 @@ private class ExactMpsPoint(private val budget: MpsCheckBudget, private val sema
                     if (type !in setOf("LO", "UP", "FX", "FR", "MI", "PL", "BV", "LI", "UI"))
                         ExactMpsChecker.unsupported("bound type $type")
                     val valued = type in setOf("LO", "UP", "FX", "LI", "UI")
-                    if (valued != (t.size == 4)) syntax("bound value for $type")
+                    if (type == "BV" && t.size == 4) {
+                        if ('/' in t[3] || MpsQ.read(t[3]) != MpsQ.ONE) syntax("bound value for BV must be one or blank")
+                    } else if (valued != (t.size == 4)) syntax("bound value for $type")
                     val col = columns[t[2]] ?: syntax("unknown bound column ${t[2]}")
                     col.bounded = true
                     val v = if (valued) MpsQ.read(t[3]) else MpsQ.ZERO

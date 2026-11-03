@@ -65,14 +65,24 @@ object NomadCoordinatorCli {
         java.nio.channels.FileChannel.open(config.dataDir, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
         val localArtifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config.paths, config.minFreeBytes) == null })
         // Cloud preparations leave their build archives in the regional store; this machine fetches one only to read it.
+        val admissionSignal = CoordinatorSignal()
+        val reconcileSignal = CoordinatorSignal()
         val artifacts = ResultJournal(journalRoot,
             BuildArchives.coordinator()?.let { RegionalArtifactStore(localArtifacts, it, config.dataDir.resolve("nomad/build-fetches")) } ?: localArtifacts,
-            writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
+            maxBytes = config.resultJournalBytes,
+            writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes },
+            solveAdmissionChanged = { admissionSignal.wake(); reconcileSignal.wake() })
+        config.artifactArchive?.let { archive ->
+            // Ended jobs leave the internal SSD for the archive volume; active jobs keep writing to the hot store.
+            val archiver = ArtifactArchiver(config.dataDir.resolve("nomad/artifacts"), archive, store::ended, artifacts::pending, config.artifactArchiveGraceMs)
+            if (MacRenameSwap.supported) periodic("nomad-artifact-archive", 300_000) { if (Files.isDirectory(archive)) archiver.pass() }
+            else System.err.println("artifact archive: atomic rename swap unsupported on this host; archiving off")
+        }
+        // Preparations on any node share task outputs through this bounded cache on the internal volume.
+        val gradleCache = config.gradleCacheBytes.takeIf { it > 0 }?.let { GradleBuildCache(config.dataDir.resolve("nomad/gradle-cache"), it) }
         periodic("nomad-result-journal-status", 5_000) {
             writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)
         }
-        val admissionSignal = CoordinatorSignal()
-        val reconcileSignal = CoordinatorSignal()
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
@@ -89,7 +99,7 @@ object NomadCoordinatorCli {
         val cluster = ClusterSettings(queueSettings, capacityFile?.let(CapacitySettings::read))
         val capacitySettings = cluster.capacity
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
-            changed = { admissionSignal.wake(); reconcileSignal.wake() },
+            changed = { admissionSignal.wake(); reconcileSignal.wake() }, solveAllowed = artifacts::allowsNewSolve,
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
             writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
             val (problem, arm) = store.plans.caseOf(job, index) ?: error("case missing")
@@ -157,7 +167,7 @@ object NomadCoordinatorCli {
             connectors.add(EngineConnectorBuilder().apply { host = settings.bindAddress; port = settings.workerPort })
             settings.privateBindAddress?.let { address -> connectors.add(EngineConnectorBuilder().apply { host = address; port = settings.workerPort }) }
             requestReadTimeoutSeconds = 30; responseWriteTimeoutSeconds = 30
-        }) { workerApi(store, backend, artifacts, workAllowed = disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
+        }) { workerApi(store, backend, artifacts, gradleCache = gradleCache, workAllowed = disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
 }

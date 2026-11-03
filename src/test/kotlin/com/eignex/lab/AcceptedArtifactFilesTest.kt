@@ -45,14 +45,68 @@ class AcceptedArtifactFilesTest {
             contents.zip(hashes).forEach { (text, sha) -> blobs.put(job, sha, text.length.toLong(), 0, text.byteInputStream()) }
             if (initialCommit) commitAccepted()
         }
-        fun commitAccepted() {
+        fun commitAccepted(artifacts: Map<String, String> = accepted) {
             val token = ExecutionStore.token()
             store.execution.createSession("preparation", job, ExecutionClass.PREPARE, "release", ResourceBudget(1000, 1024), token, "{}", 1000)
             store.execution.bind("preparation", token, "allocation", "node", "release", 1001)
             val owner = store.execution.claim("preparation", token, "allocation", 1002)!!.owner
             store.execution.phase(owner, "uploading", 1003)
-            store.execution.commit(owner, IterationResult(emptyList(), accepted,
-                preparation = com.eignex.lab.worker.PreparationResult(emptyList(), emptyList(), artifacts = accepted)), 1004)
+            store.execution.commit(owner, IterationResult(emptyList(), artifacts,
+                preparation = com.eignex.lab.worker.PreparationResult(emptyList(), emptyList(), artifacts = artifacts)), 1004)
+        }
+    }
+
+    @Test fun `one listing view freezes exact replacements while archives aliases legacy and trim keep their semantics`() {
+        val lab = Lab(initialCommit = false)
+        val reader = AcceptedArtifactFiles(lab.config, lab.store, lab.blobs)
+        val before = reader.listing(lab.job)
+        assertTrue(before.replaced.isEmpty())
+        val archiveName = "preparation/accepted.zip"
+        val archive = lab.root.resolve(archiveName)
+        Files.createDirectories(archive.parent); Files.writeString(archive, "archive")
+        val archiveSha = ExecutionStore.digest("archive")
+        lab.blobs.put(lab.job, archiveSha, 7, 0, "archive".byteInputStream())
+        lab.commitAccepted(lab.accepted + (archiveName to archiveSha))
+        // An exact regular projection can contain unrelated bytes; the accepted CAS remains authoritative.
+        val record = lab.root.resolve("cases/0/record.json")
+        Files.createDirectories(record.parent); Files.writeString(record, "wrong projection")
+        val legacy = lab.root.resolve("cases/0/out/dir/REPORT.GZ")
+        if (!Files.exists(legacy)) Files.writeString(legacy, "independent legacy")
+        val listing = reader.listing(lab.job)
+        assertEquals(lab.names.toSet(), listing.replaced)
+        assertTrue(archiveName !in listing.replaced, "preparation archives retain their own size/resolver path")
+        val projected = jobFiles(lab.root, listing.replaced)
+        val files = reader.entries(listing, projected)
+        assertEquals(lab.contents[2].length.toLong(), files.single { it.path == "cases/0/record.json" }.bytes)
+        assertEquals(lab.hashes[2], files.single { it.path == "cases/0/record.json" }.sha256)
+        assertEquals(7, files.single { it.path == archiveName }.bytes.toInt())
+        assertTrue(files.any { it.path == "job.log" })
+        assertFalse(files.any { it.path == "cases/0/out/dir/Report.gz" }, "folded projection aliases stay suppressed")
+        if (!Files.isSameFile(legacy, lab.physical))
+            assertTrue(files.any { it.path == "cases/0/out/dir/REPORT.GZ" && it.sha256 == null }, "unrelated case-equivalent legacy remains")
+        assertTrue(reader.entries(before, projected).none { it.sha256 != null }, "the earlier view cannot adopt a later commit halfway through merging")
+        Files.writeString(lab.root.resolve(JobFileNames.TRIMMED), "trimmed")
+        val trimmed = reader.listing(lab.job)
+        assertEquals(setOf("cases/0/record.json"), trimmed.replaced)
+        assertEquals(listOf("cases/0/record.json"), reader.entries(trimmed, jobFiles(lab.root, trimmed.replaced))
+            .filter { it.path.startsWith("cases/") }.map { it.path })
+    }
+
+    @Test fun `an acceptance change after the listing view is captured rejects the complete inventory generation`() {
+        val lab = Lab(initialCommit = false)
+        val reader = AcceptedArtifactFiles(lab.config, lab.store, lab.blobs)
+        var change = true
+        val completed = CountDownLatch(1)
+        JobFileInventory(validate = { id -> JobFileInventory.Key(id, lab.store.execution.acceptedArtifactVersion(id), Status.RUNNING, false) },
+            read = { key ->
+                val listing = reader.listing(key.job)
+                val projected = jobFiles(lab.root, listing.replaced)
+                if (change) { change = false; lab.commitAccepted() }
+                reader.entries(listing, projected)
+            }, completed = { completed.countDown() }).use { inventory ->
+            assertNull(inventory.get(lab.job), "a stale acceptance view must not be encoded as a fresh complete array")
+            assertTrue(completed.await(5, SECONDS), "the changed generation finishes before inspecting its cached failure")
+            assertEquals(JobFileInventory.ErrorCategory.CHANGED, inventory.readiness(lab.job).lastError)
         }
     }
 
@@ -92,6 +146,11 @@ class AcceptedArtifactFilesTest {
             assertEquals(HttpStatusCode.ServiceUnavailable, pending.status)
             assertEquals("2", pending.headers[HttpHeaders.RetryAfter])
             assertTrue(pending.bodyAsText().startsWith("{"), "a pending inventory must not look like a complete array")
+            val unavailable = Json.decodeFromString<ErrorBody>(pending.bodyAsText())
+            val detail = assertNotNull(unavailable.detail)
+            assertTrue("state=busy" in detail && "phase=accepted_metadata" in detail, detail)
+            assertTrue("currentValidated=false" in detail, detail)
+            assertFalse(lab.root.toString() in detail || lab.names.any { it in detail }, "diagnostics must not reveal paths or artifact names")
             release.countDown()
             var ready = client.get("/jobs/${lab.job}/files")
             withTimeout(5_000) { while (ready.status == HttpStatusCode.ServiceUnavailable) { delay(10); ready = client.get("/jobs/${lab.job}/files") } }

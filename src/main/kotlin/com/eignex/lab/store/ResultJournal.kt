@@ -30,24 +30,59 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     private val retryClock: () -> Long = ::now,
                     private val syncDirectory: (Path) -> Unit = { FileChannel.open(it, READ).use { channel -> channel.force(true) } },
                     private val forceCompactedFile: (Path) -> Unit = { FileChannel.open(it, WRITE).use { channel -> channel.force(true) } },
-                    private val deletePack: (Path) -> Boolean = Files::deleteIfExists) : ArtifactStore, AutoCloseable {
+                    private val deletePack: (Path) -> Boolean = Files::deleteIfExists,
+                    // Nonblocking wakeup only: charge changes may hold the journal monitor.
+                    private val solveAdmissionChanged: () -> Unit = {},
+                    private val openPublicationPack: (Path) -> ZipFile = { ZipFile(it.toFile()) }) : ArtifactStore, AutoCloseable {
     @Serializable private data class Manifest(val job: Long, val blobs: List<ResultBlob>)
+    private enum class Activity { PUBLISHING, COMPACTING }
     private data class Batch(val path: Path, val manifest: Manifest, val charge: Long,
                              var readers: Int = 0, var busy: Boolean = false, var flushed: Boolean = false, var retryAt: Long = 0,
                              var individualRetry: Boolean = false, var durable: Boolean = true, val createdAt: Long = now(), var error: String? = null,
-                             var superseded: Boolean = false, var retirement: Retirement? = null, var compactAfter: Long = 0)
+                             var superseded: Boolean = false, var retirement: Retirement? = null, var compactAfter: Long = 0,
+                             var activity: Activity? = null)
     private data class Retirement(val remaining: MutableSet<Path>, val saved: Long)
     private data class Compaction(val inputs: List<Batch>, val sources: Map<String, Pair<ResultBlob, Batch>>, val reserved: Long)
+    @Serializable enum class Phase { queued, publishing, compacting, backoff, unconfirmedInternal, flushedPinned, flushedCleanup, superseded }
+    @Serializable data class SolveAdmission(val held: Boolean, val holdAtBytes: Long, val resumeAtBytes: Long)
+    /** Bytes are charged pack bytes; readers includes temporary publication/compaction reservations. */
+    @Serializable data class PhaseStatus(val batches: Int = 0, val blobs: Int = 0, val bytes: Long = 0,
+                                        val oldestAgeMs: Long = 0, val readers: Int = 0)
+    /** Timing fields describe the last successful publishBatch, excluding later internal reclamation.
+     * Post-callback completion includes provider bookkeeping, its durability barrier and scheduling;
+     * it is not a measurement of an isolated flush syscall. Status collection performs no filesystem IO. */
     @Serializable data class Status(val batches: Int, val bytes: Long, val limit: Long, val lastError: String?,
                                    val oldestAgeMs: Long = 0, val drainErrors: Long = 0, val lastDrainAt: Long? = null,
                                    val compactions: Long = 0, val compactionReclaimedBytes: Long = 0,
                                    val compactionErrors: Long = 0, val lastCompactionError: String? = null,
-                                   val lastDrainMs: Long? = null, val lastDrainBlobs: Int = 0)
+                                   val lastDrainMs: Long? = null, val lastDrainBlobs: Int = 0,
+                                   val phases: Map<Phase, PhaseStatus> = emptyMap(), val oldestPhase: Phase? = null,
+                                   val receiving: Int = 0, val receivingReservedBytes: Long = 0,
+                                   val lastPublishBatchMs: Long? = null, val lastPublishCallbackMs: Long? = null,
+                                   val lastPostCallbackCompletionMs: Long? = null, val solveAdmission: SolveAdmission? = null)
     private val monitor = Any()
     private val batches = linkedMapOf<Path, Batch>()
     private val index = mutableMapOf<Pair<Long, String>, Batch>()
     private val pendingCompactions = linkedMapOf<Path, Pair<Batch, List<Batch>>>()
+    private val solveHoldAt = maxBytes - maxBytes / 4
+    private val solveResumeAt = maxBytes / 2
+    @Volatile private var solveHeld = true // Fail closed until recovery has completed.
     private var used = 8192L // Directory and owner-lock allowance, plus rounded blocks charged for each pack.
+        set(value) {
+            field = value
+            val held = if (solveHeld) value > solveResumeAt else value >= solveHoldAt
+            if (held != solveHeld) {
+                solveHeld = held
+                // A disposable wakeup cannot interrupt accounting, indexing or durability barriers.
+                try { solveAdmissionChanged() } catch (_: Exception) { }
+            }
+        }
+
+    /** Admission hint only, read without filesystem IO or taking the journal monitor/SQLite lock together.
+     * Owned captures can exceed the headroom; the journal's unchanged reservation checks remain authoritative. */
+    fun allowsNewSolve(): Boolean = !closed && !solveHeld
+    /** Whether any of [job]'s accepted results still await publication to the external store. */
+    fun pending(job: Long): Boolean = synchronized(monitor) { index.keys.any { it.first == job } }
     private var receiving = 0
     @Volatile private var closed = false
     @Volatile private var lastError: String? = null
@@ -56,6 +91,9 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     private var lastDrainAt: Long? = null
     private var lastDrainMs: Long? = null
     private var lastDrainBlobs = 0
+    private var lastPublishBatchMs: Long? = null
+    private var lastPublishCallbackMs: Long? = null
+    private var lastPostCallbackCompletionMs: Long? = null
     private var compactions = 0L
     private var compactionReclaimedBytes = 0L
     private var compactionErrors = 0L
@@ -93,6 +131,8 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             check(used <= maxBytes) { "recovered result journal exceeds its configured cap" }
             syncDirectory(root)
             recoverSuperseded()
+            // A restart in the hysteresis band must not reopen a previously held journal.
+            solveHeld = used > solveResumeAt
         } catch (failure: Exception) { ownership.release(); channel.close(); workers.shutdownNow(); maintenance.shutdownNow(); throw failure }
         if (start) JournalDrainLoop(::drainGroup,
             hasWork = { synchronized(monitor) { batches.values.any { eligible(it) } } },
@@ -104,7 +144,8 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             }).start()
         if (start) maintenance.scheduleWithFixedDelay({
             try {
-                if (synchronized(monitor) { !closed && (batches.size >= 256 || used >= maxBytes / 2) }) compactOne()
+                // While solve claims wait, publication alone reclaims space; compaction would compete for the same volume.
+                if (synchronized(monitor) { !closed && !solveHeld && (batches.size >= 256 || used >= maxBytes / 2) }) compactOne()
             } catch (failure: Exception) {
                 synchronized(monitor) { compactionErrors++; lastCompactionError = failure.javaClass.simpleName }
             }
@@ -112,14 +153,38 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     }
 
     fun status(): Status = synchronized(monitor) {
+        val at = now()
+        val retryAt = retryClock()
+        val grouped = batches.values.groupBy { phase(it, retryAt) }
+        val phases = Phase.entries.associateWith { phase ->
+            val group = grouped[phase].orEmpty()
+            PhaseStatus(group.size, group.sumOf { it.manifest.blobs.size }, group.sumOf { it.charge },
+                group.minOfOrNull { it.createdAt }?.let { (at - it).coerceAtLeast(0) } ?: 0, group.sumOf { it.readers })
+        }
+        val oldest = batches.values.minByOrNull { it.createdAt }
         Status(batches.size, used, maxBytes, lastError,
-            batches.values.minOfOrNull { it.createdAt }?.let { (now() - it).coerceAtLeast(0) } ?: 0, drainErrors, lastDrainAt,
-            compactions, compactionReclaimedBytes, compactionErrors, lastCompactionError, lastDrainMs, lastDrainBlobs)
+            oldest?.let { (at - it.createdAt).coerceAtLeast(0) } ?: 0, drainErrors, lastDrainAt,
+            compactions, compactionReclaimedBytes, compactionErrors, lastCompactionError, lastDrainMs, lastDrainBlobs,
+            phases, oldest?.let { phase(it, retryAt) }, receiving, used - 8192L - phases.values.sumOf { it.bytes },
+            lastPublishBatchMs, lastPublishCallbackMs, lastPostCallbackCompletionMs,
+            SolveAdmission(solveHeld, solveHoldAt, solveResumeAt))
+    }
+    // Disjoint precedence: retired/durable state wins over reservations and soft retry hints.
+    private fun phase(batch: Batch, at: Long): Phase = when {
+        batch.superseded -> Phase.superseded
+        batch.flushed && batch.readers > 0 -> Phase.flushedPinned
+        batch.flushed -> Phase.flushedCleanup
+        !batch.durable -> Phase.unconfirmedInternal
+        batch.activity == Activity.PUBLISHING -> Phase.publishing
+        batch.activity == Activity.COMPACTING -> Phase.compacting
+        batch.retryAt > at -> Phase.backoff
+        else -> Phase.queued
     }
     private fun charge(bytes: Long, blobs: Int): Long = ((bytes + 4095) / 4096 + 1) * 4096 + blobs * 512L
     private fun reservation(bytes: Long, blobs: Int): Long = charge(bytes + bytes / 16384 * 8 + blobs * 512L + 4096, blobs)
-    private fun add(batch: Batch) {
-        batches[batch.path] = batch; used += batch.charge
+    private fun add(batch: Batch, reserved: Long = 0) {
+        // Convert an in-flight reservation in one charge update, never publishing a transient low-water mark.
+        batches[batch.path] = batch; used += batch.charge - reserved
         for (blob in batch.manifest.blobs) index.putIfAbsent(batch.manifest.job to blob.sha, batch)
     }
     /** A strict, deterministic preferred-copy order makes restart coverage acyclic without a new disk format. */
@@ -240,7 +305,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                 Files.move(temporary, destination, ATOMIC_MOVE)
                 // Account even a failed publication barrier so retry/restart cannot lose the candidate.
                 val batch = Batch(destination, manifest, actual, durable = false)
-                used -= reserved; add(batch); accounted = true
+                add(batch, reserved); accounted = true
                 syncDirectory(root); batches.values.forEach { it.durable = true }
             }
         } finally {
@@ -342,7 +407,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             }
             selectCompaction()?.also { plan ->
                 used += plan.reserved; receiving++
-                plan.inputs.forEach(::reserve)
+                plan.inputs.forEach { reserve(it, Activity.COMPACTING) }
             } ?: return false
         }
         var temporary: Path? = null
@@ -384,7 +449,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                 val destination = root.resolve("${manifest.job}-${UUID.randomUUID()}.zip")
                 Files.move(temporary, destination, ATOMIC_MOVE)
                 val replacement = Batch(destination, manifest, actual, durable = false, createdAt = oldest)
-                used -= selected.reserved; add(replacement); accounted = true
+                add(replacement, selected.reserved); accounted = true
                 pendingCompactions[destination] = replacement to selected.inputs
                 syncDirectory(root); batches.values.forEach { it.durable = true }
                 finishCompaction(replacement, selected.inputs)
@@ -400,7 +465,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                 }
             } finally {
                 synchronized(monitor) {
-                    receiving--; selected.inputs.forEach { it.busy = false; it.readers-- }
+                    receiving--; selected.inputs.forEach { it.busy = false; it.readers--; it.activity = null }
                     cleanup(selected.inputs)
                 }
             }
@@ -471,13 +536,15 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     group.add(batch); bytes += next
                 }
             }
-            group.onEach(::reserve)
+            group.onEach { reserve(it) }
         }
         return drainReserved(selected)
     }
     private fun eligible(batch: Batch): Boolean = batch.durable && !batch.busy && !batch.flushed && !batch.superseded && batch.retryAt <= retryClock()
     // Selection and reservation share the monitor so both lanes can immediately claim distinct packs.
-    private fun reserve(batch: Batch) { batch.busy = true; batch.readers++ }
+    private fun reserve(batch: Batch, activity: Activity = Activity.PUBLISHING) {
+        batch.busy = true; batch.readers++; batch.activity = activity
+    }
     private fun drain(batch: Batch): Boolean {
         synchronized(monitor) {
             if (closed || !batch.durable || batch.busy || batch.flushed || batch.superseded || batch.path !in batches) return false
@@ -487,9 +554,22 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     }
     private fun drainReserved(group: List<Batch>): Boolean {
         val started = System.nanoTime()
+        var callbackNanos = 0L
+        var callbackFinished: Long? = null
+        val publicationStarted = System.nanoTime()
+        var publicationFinished = publicationStarted
         try {
             try {
-                external.publishBatch(group.first().manifest.job) { group.forEach(::publish) }
+                external.publishBatch(group.first().manifest.job) {
+                    val callbackStarted = System.nanoTime()
+                    try { group.forEach(::publish) }
+                    finally {
+                        val finished = System.nanoTime()
+                        callbackNanos += finished - callbackStarted
+                        callbackFinished = finished
+                    }
+                }
+                publicationFinished = System.nanoTime()
             } catch (failure: Exception) {
                 synchronized(monitor) {
                     for (batch in group) {
@@ -507,6 +587,9 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
                     batch.flushed = true; batch.error = null
                     for (blob in batch.manifest.blobs) index.remove(batch.manifest.job to blob.sha, batch)
                 }
+                lastPublishBatchMs = (publicationFinished - publicationStarted) / 1_000_000
+                lastPublishCallbackMs = callbackNanos / 1_000_000
+                lastPostCallbackCompletionMs = callbackFinished?.let { (publicationFinished - it) / 1_000_000 }
                 lastDrainAt = now()
                 lastDrainMs = (System.nanoTime() - started) / 1_000_000
                 lastDrainBlobs = group.sumOf { it.manifest.blobs.size }
@@ -516,27 +599,48 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         } finally {
             synchronized(monitor) {
                 // Release every reservation even if one reclamation fails after successful publication.
-                group.forEach { it.busy = false; it.readers-- }
+                group.forEach { it.busy = false; it.readers--; it.activity = null }
                 cleanup(group)
             }
         }
     }
     private fun publish(batch: Batch) {
-        val offsets = batch.manifest.blobs.associate { it.sha to external.offset(batch.manifest.job, it.sha) }
-        if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES && offsets.values.all { it == 0L }) {
-            external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
-        } else ZipFile(batch.path.toFile()).use { zip ->
+        // Pack size does not make its small members resumable uploads. Keep complete-source batches bounded,
+        // and retain the ordinary confirmed-prefix path only for individual payloads larger than that bound.
+        val archive = lazy { openPublicationPack(batch.path) }
+        val pending = mutableListOf<ResultBlob>()
+        var pendingBytes = 0L
+        fun complete() {
+            if (pending.isEmpty()) return
+            external.putComplete(batch.manifest.job, pending.toList()) { blob -> ByteArrayInputStream(read(archive.value, blob)) }
+            pending.clear(); pendingBytes = 0
+        }
+        // A complete destination needs no journal payload. Close a demanded ZIP on success or failure,
+        // with ordinary use() suppression so a close error cannot conceal the original publication failure.
+        java.io.Closeable { if (archive.isInitialized()) archive.value.close() }.use {
             for (blob in batch.manifest.blobs) {
-                val offset = offsets.getValue(blob.sha)
-                require(offset in 0..blob.bytes) { "external artifact size changed" }
-                if (offset == blob.bytes) {
-                    // No suffix remains. The destination must still verify/finalize its copy and share the barrier.
-                    external.put(batch.manifest.job, blob.sha, blob.bytes, offset, InputStream.nullInputStream())
-                } else zip.getInputStream(requireNotNull(zip.getEntry(blob.sha))).use { input ->
-                    input.skipNBytes(offset)
-                    external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
+                if (blob.bytes <= INLINE_BYTES) {
+                    if (pending.size == INLINE_FILES || blob.bytes > INLINE_BYTES - pendingBytes) complete()
+                    pending += blob; pendingBytes += blob.bytes
+                    continue
                 }
+                complete()
+                val offset = external.offset(batch.manifest.job, blob.sha)
+                require(offset in 0..blob.bytes) { "external artifact size changed" }
+                val written = if (offset == blob.bytes) {
+                    // A complete destination still verifies/finalizes its copy and shares the outer barrier.
+                    external.put(batch.manifest.job, blob.sha, blob.bytes, offset, InputStream.nullInputStream())
+                } else {
+                    val zip = archive.value
+                    val entry = requireNotNull(zip.getEntry(blob.sha)); require(entry.size == blob.bytes)
+                    zip.getInputStream(entry).use { input ->
+                        input.skipNBytes(offset)
+                        external.put(batch.manifest.job, blob.sha, blob.bytes, offset, input)
+                    }
+                }
+                check(written == blob.bytes) { "incomplete artifact source" }
             }
+            complete()
         }
     }
     private fun cleanup(batch: Batch) = cleanup(listOf(batch))
@@ -577,11 +681,12 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         failures.firstOrNull()?.let { first -> failures.drop(1).filter { it !== first }.forEach(first::addSuppressed); throw first }
     }
     private fun read(batch: Batch, sha: String): ByteArray = read(batch.path, batch.manifest.blobs.single { it.sha == sha })
-    private fun read(path: Path, blob: ResultBlob): ByteArray = ZipFile(path.toFile()).use { zip ->
+    private fun read(path: Path, blob: ResultBlob): ByteArray = ZipFile(path.toFile()).use { read(it, blob) }
+    private fun read(zip: ZipFile, blob: ResultBlob): ByteArray {
         val entry = requireNotNull(zip.getEntry(blob.sha)); require(entry.size == blob.bytes)
         val bytes = zip.getInputStream(entry).use { it.readNBytes(PACKED_BYTES + 1) }
         check(bytes.size.toLong() == blob.bytes && MessageDigest.getInstance("SHA-256").digest(bytes).hex() == blob.sha) { "result journal checksum mismatch" }
-        bytes
+        return bytes
     }
     private fun manifest(path: Path): Manifest = ZipFile(path.toFile()).use { zip ->
         val entry = requireNotNull(zip.getEntry("manifest.json")); require(entry.size in 1..65536)

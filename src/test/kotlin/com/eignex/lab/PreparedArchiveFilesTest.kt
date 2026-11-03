@@ -15,6 +15,12 @@ import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit.SECONDS
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 
 class PreparedArchiveFilesTest {
@@ -68,6 +74,11 @@ class PreparedArchiveFilesTest {
         val contents = listOf("old prepared bytes", "new prepared bytes")
         val hashes = contents.map(ExecutionStore::digest)
 
+        fun project(index: Int = 0): Path = config.jobDir(job).resolve(names[index]).also {
+            Files.createDirectories(it.parent)
+            Files.writeString(it, contents[index])
+        }.toRealPath()
+
         init {
             Files.createDirectories(config.jobDir(job))
             contents.zip(hashes).forEach { (text, hash) -> archives.objects[hash] = text.toByteArray() }
@@ -102,6 +113,8 @@ class PreparedArchiveFilesTest {
 
     @Test fun `archive access requires authentication and an accepted mapping in the requested job`() = testApplication {
         val lab = Lab(Auth.Required(Password.hash("fixture-password")))
+        lab.project()
+        assertNotNull(lab.services.preparedArchives.resolve(lab.job, lab.names[0].split('/')))
         application { api(lab.services) }
         assertEquals(HttpStatusCode.Unauthorized, client.get("/jobs/${lab.job}/files/${lab.names[0]}").status)
         assertEquals(HttpStatusCode.Unauthorized, client.get("/jobs/${lab.job}/files").status)
@@ -110,6 +123,141 @@ class PreparedArchiveFilesTest {
         assertNull(lab.services.preparedArchives.resolve(lab.job, listOf("preparation", "unaccepted.zip")))
         assertFailsWith<IllegalArgumentException> { lab.services.preparedArchives.resolve(lab.job, listOf("preparation", "..", "secret.zip")) }
         assertTrue(lab.archives.gets.isEmpty())
+    }
+
+    @Test fun `repeated projected archive reads reuse verified metadata but a fresh reader hashes cold bytes`() {
+        val lab = Lab(); val file = lab.project(); lab.archives.objects.clear()
+        var hashes = 0
+        fun freshReader() = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts,
+            verification = ArtifactFileVerification(hash = { hashes++; hashFile(it) }))
+        val reader = freshReader()
+        repeat(3) {
+            val archive = assertNotNull(reader.resolve(lab.job, lab.names[0].split('/')))
+            assertEquals(file, archive.file); assertEquals(lab.hashes[0], archive.sha256)
+            assertEquals(lab.contents[0], Files.readString(archive.file))
+        }
+        assertEquals(1, hashes)
+        assertNotNull(freshReader().resolve(lab.job, lab.names[0].split('/')))
+        assertEquals(2, hashes, "disposable RAM proofs do not make a fresh reader trust historical bytes")
+        assertTrue(lab.archives.gets.isEmpty())
+    }
+
+    @Test fun `concurrent projected archive reads share verification without blocking another accepted archive`() {
+        val lab = Lab(); val file = lab.project(); lab.project(1); lab.archives.objects.clear()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val followerObserved = CountDownLatch(1)
+        val followerThread = AtomicReference<Thread>(); val hashes = AtomicInteger()
+        val proof = ArtifactFileVerification(hash = {
+            hashes.incrementAndGet()
+            if (it == file) { entered.countDown(); check(release.await(5, SECONDS)) }
+            hashFile(it)
+        }, observe = {
+            if (Thread.currentThread() === followerThread.get()) followerObserved.countDown()
+            if (TreeVerification.reliableMetadata(it)) TreeVerification.fileMetadata(it) else null
+        })
+        val reader = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts, verification = proof)
+        val pool = Executors.newFixedThreadPool(3)
+        try {
+            val first = pool.submit<PreparedArchiveFiles.Archive?> { reader.resolve(lab.job, lab.names[0].split('/')) }
+            assertTrue(entered.await(5, SECONDS))
+            val follower = pool.submit<PreparedArchiveFiles.Archive?> {
+                followerThread.set(Thread.currentThread()); reader.resolve(lab.job, lab.names[0].split('/'))
+            }
+            assertTrue(followerObserved.await(5, SECONDS))
+            val other = pool.submit<PreparedArchiveFiles.Archive?> { reader.resolve(lab.job, lab.names[1].split('/')) }
+            assertEquals(lab.hashes[1], assertNotNull(other.get(5, SECONDS)).sha256)
+            assertFalse(follower.isDone)
+            release.countDown()
+            assertEquals(file, assertNotNull(first.get(5, SECONDS)).file)
+            assertEquals(file, assertNotNull(follower.get(5, SECONDS)).file)
+            assertNotNull(reader.resolve(lab.job, lab.names[0].split('/')))
+            assertEquals(2, hashes.get(), "each accepted immutable archive is checksummed once")
+        } finally { release.countDown(); pool.shutdownNow(); assertTrue(pool.awaitTermination(5, SECONDS)) }
+        assertTrue(lab.archives.gets.isEmpty())
+    }
+
+    @Test fun `projected archive edits and same size corruption with restored mtime fail before a response`() {
+        val lab = Lab(); val file = lab.project(); lab.archives.objects.clear()
+        var hashes = 0
+        val reader = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts,
+            verification = ArtifactFileVerification(hash = { hashes++; hashFile(it) }))
+        fun resolve() = reader.resolve(lab.job, lab.names[0].split('/'))
+        assertNotNull(resolve())
+        Files.writeString(file, "different length corrupt archive")
+        assertFailsWith<ApiError.Unavailable> { resolve() }
+        Files.writeString(file, lab.contents[0]); assertNotNull(resolve())
+        val modified = Files.getLastModifiedTime(file)
+        Files.writeString(file, "x".repeat(lab.contents[0].length)); Files.setLastModifiedTime(file, modified)
+        assertFailsWith<ApiError.Unavailable> { resolve() }
+        Files.writeString(file, lab.contents[0]); Files.setLastModifiedTime(file, modified)
+        assertNotNull(resolve()); assertNotNull(resolve())
+        assertEquals(5, hashes, "only restored valid bytes may establish a fresh proof")
+        assertTrue(lab.archives.gets.isEmpty(), "corrupt projected bytes must not silently switch to another source")
+    }
+
+    @Test fun `replacement projected inodes reverify even with matching size and mtime`() {
+        val lab = Lab(); val file = lab.project(); lab.archives.objects.clear()
+        var hashes = 0
+        val reader = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts,
+            verification = ArtifactFileVerification(hash = { hashes++; hashFile(it) }))
+        assertNotNull(reader.resolve(lab.job, lab.names[0].split('/')))
+        val modified = Files.getLastModifiedTime(file)
+        val replacement = file.resolveSibling("replacement.zip")
+        Files.writeString(replacement, lab.contents[0]); Files.setLastModifiedTime(replacement, modified)
+        Files.move(replacement, file, REPLACE_EXISTING)
+        assertNotNull(reader.resolve(lab.job, lab.names[0].split('/')))
+        assertEquals(2, hashes)
+        Files.writeString(replacement, "x".repeat(lab.contents[0].length)); Files.setLastModifiedTime(replacement, modified)
+        Files.move(replacement, file, REPLACE_EXISTING)
+        assertFailsWith<ApiError.Unavailable> { reader.resolve(lab.job, lab.names[0].split('/')) }
+        assertEquals(3, hashes)
+        assertTrue(lab.archives.gets.isEmpty())
+    }
+
+    @Test fun `unprovable projected archive metadata rehashes every read and still rejects corruption`() {
+        val lab = Lab(); val file = lab.project(); lab.archives.objects.clear()
+        var hashes = 0
+        val reader = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts,
+            verification = ArtifactFileVerification(hash = { hashes++; hashFile(it) }, observe = { null }))
+        repeat(2) { assertNotNull(reader.resolve(lab.job, lab.names[0].split('/'))) }
+        assertEquals(2, hashes)
+        Files.writeString(file, "x".repeat(lab.contents[0].length))
+        assertFailsWith<ApiError.Unavailable> { reader.resolve(lab.job, lab.names[0].split('/')) }
+        assertEquals(3, hashes)
+    }
+
+    @Test fun `a warm projected proof cannot bypass accepted job names paths or trimming`() {
+        val lab = Lab(); val file = lab.project(); lab.archives.objects.clear()
+        var hashes = 0
+        val reader = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts,
+            verification = ArtifactFileVerification(hash = { hashes++; hashFile(it) }))
+        assertNotNull(reader.resolve(lab.job, lab.names[0].split('/')))
+        val other = lab.config.jobDir(lab.other).resolve(lab.names[0])
+        Files.createDirectories(other.parent); Files.copy(file, other)
+        assertNull(reader.resolve(lab.other, lab.names[0].split('/')))
+        Files.copy(file, file.resolveSibling("unaccepted.zip"))
+        assertNull(reader.resolve(lab.job, listOf("preparation", "unaccepted.zip")))
+        assertFailsWith<IllegalArgumentException> { reader.resolve(lab.job, listOf("preparation", "..", "secret.zip")) }
+        Files.writeString(lab.config.jobDir(lab.job).resolve(JobFileNames.TRIMMED), "trimmed")
+        assertNull(reader.resolve(lab.job, lab.names[0].split('/')))
+        assertTrue(reader.entries(lab.job).isEmpty())
+        assertEquals(1, hashes, "acceptance and retention are checked before consulting a byte proof")
+        assertTrue(lab.archives.gets.isEmpty())
+    }
+
+    @Test fun `warm projected archives preserve inside root links and reject links escaping the job`() {
+        val lab = Lab(); val file = lab.project(); lab.archives.objects.clear()
+        var hashes = 0
+        val reader = PreparedArchiveFiles(lab.config, lab.store, lab.artifacts,
+            verification = ArtifactFileVerification(hash = { hashes++; hashFile(it) }))
+        assertNotNull(reader.resolve(lab.job, lab.names[0].split('/')))
+        val outside = Files.writeString(lab.config.dataDir.resolve("outside.zip"), lab.contents[0]).toRealPath()
+        Files.delete(file); Files.createSymbolicLink(file, outside)
+        assertFailsWith<ApiError.Unavailable> { reader.resolve(lab.job, lab.names[0].split('/')) }
+        assertEquals(1, hashes, "a cached proof must not read bytes outside the accepted job")
+        val inside = Files.writeString(file.resolveSibling("inside.zip"), lab.contents[0])
+        Files.delete(file); Files.createSymbolicLink(file, inside)
+        assertEquals(inside, assertNotNull(reader.resolve(lab.job, lab.names[0].split('/'))).file)
+        assertEquals(2, hashes)
     }
 
     @Test fun `trimmed jobs do not resurrect regional archives`() = testApplication {
@@ -166,8 +314,19 @@ class PreparedArchiveFilesTest {
         val listed = Json.decodeFromString<List<FileEntry>>(client.get("/jobs/${lab.job}/files").bodyAsText())
         assertEquals(lab.hashes, listed.map { it.sha256 })
         for ((name, text) in lab.names.zip(lab.contents)) {
-            assertEquals(text, client.get("/jobs/${lab.job}/files/$name").bodyAsText())
+            repeat(2) {
+                val response = client.get("/jobs/${lab.job}/files/$name")
+                assertEquals(HttpStatusCode.OK, response.status)
+                assertEquals(text, response.bodyAsText())
+                assertEquals("\"${ExecutionStore.digest(text)}\"", response.headers[HttpHeaders.ETag])
+            }
         }
+        val file = lab.config.jobDir(lab.job).resolve(lab.names[0])
+        val modified = Files.getLastModifiedTime(file)
+        Files.writeString(file, "x".repeat(lab.contents[0].length)); Files.setLastModifiedTime(file, modified)
+        val corrupt = client.get("/jobs/${lab.job}/files/${lab.names[0]}")
+        assertEquals(HttpStatusCode.ServiceUnavailable, corrupt.status)
+        assertEquals("accepted preparation archive unavailable", Json.decodeFromString<ErrorBody>(corrupt.bodyAsText()).error)
         assertTrue(lab.archives.gets.isEmpty())
     }
 }

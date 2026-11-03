@@ -25,7 +25,9 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                        private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
                        private val dependencyBytes: (Path) -> Long = ::dependencyTreeBytes,
                        private val startMaintenance: (Thread) -> Unit = Thread::start,
-                       private val observeBuild: (Path, Path, PreparationBuildDiagnostic) -> Unit = { _, _, _ -> }) {
+                       private val observeBuild: (Path, Path, PreparationBuildDiagnostic) -> Unit = { _, _, _ -> },
+                       /** The shared Gradle remote build cache's loopback address ([GradleCacheProxy]), when there is one. */
+                       private val remoteCache: () -> String? = { null }) {
     private val dependencyScope = ThreadLocal<DependencyPins?>()
     private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
     private val discardedBuilds = java.util.concurrent.ConcurrentLinkedQueue<Path>()
@@ -108,7 +110,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         run(listOf("git", "config", "--local", "core.symlinks", "false"), tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", source.resolve(safeRelative(build.gitBundle)).toString(), "refs/lab-source/${bundle.commit}"), tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", bundle.commit), tree)
-                        Files.walk(tree).use { paths -> require(paths.noneMatch(Files::isSymbolicLink)) { "source tree contains unsupported links" } }
+                        verifyCheckoutTree(tree, ::checkRun)
                         for (file in bundle.files.filter { it.path != build.gitBundle }) {
                             require(safeRelative(file.path).first().toString() == "lab-inputs") { "additional input cannot overwrite committed code" }
                             val target = tree.resolve(safeRelative(file.path)); Files.createDirectories(target.parent)
@@ -129,9 +131,12 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                             pinned.directory.let { dependencyHome ->
                                 Files.createDirectories(dependencyHome)
                                 trace.step("compilation") {
+                                    // Task outputs are reused from earlier preparations on any node; the init script binds the cache.
+                                    val cache = remoteCache()
                                     run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain"), tree,
-                                        env + ("GRADLE_USER_HOME" to dependencyHome.toString()), kind = "compilation")
+                                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain") +
+                                        listOfNotNull(cache?.let { "--build-cache" }), tree,
+                                        env + ("GRADLE_USER_HOME" to dependencyHome.toString()) + listOfNotNull(cache?.let { "LAB_GRADLE_CACHE_URL" to it }), kind = "compilation")
                                 }
                                 Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
                             }

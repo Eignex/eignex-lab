@@ -106,6 +106,8 @@ data class ExecutionIntent(val id: String, val jobId: Long, val session: String,
 @Serializable data class ExecutionEvent(val id: Long, val session: String?, val detail: String, val at: Long)
 
 class ExecutionFenced(message: String) : IllegalStateException(message)
+/** A held solve claim for a worker that waits: answered as HTTP 202 with [SolveWait], never as a drain. */
+class SolveAdmissionHeld : IllegalStateException("solve admission held for result journal drain")
 
 internal data class PreparationExitFailure(val count: Int, val stage: String, val release: String)
 
@@ -284,7 +286,10 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.session(id)!!
     }
 
-    fun claim(id: String, token: String, allocation: String, at: Long = now(), leaseMs: Long = LEASE_MS): IterationClaim? {
+    /** [waitWhenHeld]: the worker understands [SolveAdmissionHeld] and keeps its session and warm workspaces through
+     * journal pressure. Older workers, which exit on any declined claim, retain the drain below. */
+    fun claim(id: String, token: String, allocation: String, at: Long = now(), leaseMs: Long = LEASE_MS, allowNewSolve: () -> Boolean = { true },
+              waitWhenHeld: Boolean = false): IterationClaim? {
         expire(at)
         return store.executionTransaction { db ->
             require(leaseMs in 1..LEASE_MS)
@@ -300,6 +305,17 @@ class ExecutionStore internal constructor(private val store: Store) {
                 // Claim tokens are derived from the scoped session secret; only their digest is persisted.
                 val claimToken = claimToken(token, active.iteration, active.generation)
                 return@executionTransaction IterationClaim(AttemptOwner(id, allocation, active.iteration, active.generation, claimToken), active.indices, active.leaseUntil, active.parallel)
+            }
+            // Replay above keeps ownership valid even if pressure arrived after the claim response was lost.
+            // The decision and idle retirement share the claim transaction: no concurrent request can own a row
+            // between an external hasActiveAttempt check and a drain. The callback must read a cached hint only,
+            // never filesystem/journal locks while holding this transaction. Old workers exit normally on null/HTTP204.
+            if (session.executionClass == ExecutionClass.SOLVE && !allowNewSolve()) {
+                // Nothing is written: the session stays RUN and bound, and its worker asks again shortly.
+                if (waitWhenHeld) throw SolveAdmissionHeld()
+                db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain', observation = 'journal-pressure' WHERE id = ? AND desired = 'run'", id)
+                db.event(session.jobId, id, "held:journal-pressure", at)
+                return@executionTransaction null
             }
             if (session.executionClass == ExecutionClass.PREPARE) {
                 if (store.job(session.jobId)!!.setupDone || db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { it.getInt(1) }.isNotEmpty()) return@executionTransaction null

@@ -33,6 +33,7 @@ class NomadBackend(
     private val changed: () -> Unit = {},
     private val nativeNodeTags: Set<String>? = null,
     private val selectProblems: (Store, ExperimentSpec, List<List<Problem>>, () -> Unit) -> List<List<Problem>> = ::preparationSelection,
+    private val solveAllowed: () -> Boolean = { true },
 ) {
     private val pendingLogs = mutableSetOf<Long>()
     /** Consecutive delivery failures of each unacknowledged intent, until [MAX_INTENT_ATTEMPTS] abandons it. */
@@ -41,6 +42,9 @@ class NomadBackend(
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
     private val cpuPlacement = NomadCpuPlacement(nomad)
     private val preparationAdmission = PreparationAdmission(store)
+
+    /** Separate from volume/acceptance health: a hold never revokes already-owned work. */
+    internal fun mayStartSolve(): Boolean = solveAllowed()
 
     internal fun hasCapacity(template: NomadBatchJob, budget: ResourceBudget): Boolean = cpuPlacement.hasCapacity(template, budget)
 
@@ -68,10 +72,11 @@ class NomadBackend(
         else require(!job.setupDone && !job.planned && manifest.arms.map { it.arm } == Experiments.arms(manifest.experiment))
         require(template.budget == manifest.budget)
         val planned = store.plans.casePlan(jobId).associateBy { it.index }
+        val timeouts = job.commands.associate { it.index to it.timeoutSec }
         for (case in manifest.cases) {
             val old = planned.getValue(case.index)
             require(old.problem == case.problem && old.seed == case.seed && old.repeat == case.repeat && old.arm == manifest.arms[case.arm].arm.label)
-            require(job.commands.single { it.index == case.index }.timeoutSec == case.timeoutSec)
+            require(case.index in timeouts && timeouts[case.index] == case.timeoutSec)
         }
         store.execution.session(manifest.session)?.let { existing ->
             require(existing.jobId == jobId && store.execution.manifest(existing.id) == manifest)
@@ -90,6 +95,7 @@ class NomadBackend(
             template.environment["LAB_WORKER_MAX_CONCURRENT_BUILDS"]?.toIntOrNull() ?: 2)
         val calibrated = placement(preparation, manifest.budget)
         val payload = authenticatedJob(JsonObject(calibrated + ("Namespace" to JsonPrimitive(nomad.namespace))), id, manifest.release)
+        if (executionClass == ExecutionClass.SOLVE) check(mayStartSolve()) { "waiting for result journal drain" }
         return store.execution.createSession(id, jobId, executionClass, manifest.release, manifest.budget, token, payload.toString(), manifest = Json.encodeToString(manifest)).also { changed() }
     }
 
@@ -110,14 +116,16 @@ class NomadBackend(
         return session
     }
 
-    fun claim(id: String, token: String, allocation: String): IterationClaim? {
+    fun claim(id: String, token: String, allocation: String, waitWhenHeld: Boolean = false): IterationClaim? {
         val session = store.execution.session(id) ?: throw ExecutionFenced("unknown session")
         // A retried claim must retain its current iteration even if priorities changed meanwhile.
         if (!store.execution.hasActiveAttempt(id) && store.execution.placement(id).native && !nativeMayRun(session.jobId)) {
             store.execution.drain(id)
             return null
         }
-        return store.execution.claim(id, token, allocation)
+        // Read the cached pressure bit at claim allocation, after replaying any existing owner.
+        // Production's callback takes no journal monitor and performs no filesystem IO.
+        return store.execution.claim(id, token, allocation, allowNewSolve = ::mayStartSolve, waitWhenHeld = waitWhenHeld)
     }
 
     fun selectPreparation(owner: AttemptOwner, requested: List<List<Problem>>): List<List<Problem>> {
@@ -310,6 +318,12 @@ class NomadBackend(
             IntentOp.SUBMIT -> {
                 if (session.desired == Desired.STOP) { store.execution.acknowledge(intent.id); return }
                 if (!workAllowed()) return
+                if (session.executionClass == ExecutionClass.SOLVE && !mayStartSolve()) {
+                    // Registration and retirement serialize in the store. If bind won, its idle claim drains;
+                    // otherwise STOP releases the reservation and removes this demand from autoscaling.
+                    if (store.execution.loseUnallocatedSession(session.id, "journal-pressure")) store.execution.acknowledge(intent.id)
+                    return
+                }
                 val planned = Json.parseToJsonElement(intent.payload).jsonObject
                 val existing = nomad.job(session.nomadJobId)
                 if (existing == null) nomad.submit(planned)
@@ -357,6 +371,8 @@ class NomadBackend(
                 store.execution.loseSession(s.id, "no-unclaimed-work")
                 continue
             }
+            if (s.executionClass == ExecutionClass.SOLVE && !mayStartSolve() &&
+                store.execution.loseUnallocatedSession(s.id, "journal-pressure")) continue
             // Pending allocations cannot reach the claim boundary themselves. Release their reservation
             // so higher-priority native work can be admitted; bound workers yield on their next claim.
             if (s.allocation == null && store.execution.placement(s.id).native &&
@@ -404,14 +420,12 @@ class NomadBackend(
         }
         if (store.job(job.id)?.status?.isActive != true) return
         val sessions = store.execution.sessions(job.id)
-        if (current.paused && sessions.all { it.desired == Desired.STOP }) {
-            // The current row consumes the allowance until every worker has drained. Binding a
-            // replacement starts the clock again after the user resumes the job.
-            store.execution.pauseClock(job.id)
-            return
-        }
-        if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && !prepared && sessions.any { it.executionClass == ExecutionClass.PREPARE }) && sessions.isNotEmpty() && sessions.all { it.desired == Desired.STOP }) {
-            store.execution.pauseClock(job.id)
+        val stopped = sessions.isNotEmpty() && sessions.all { it.desired == Desired.STOP }
+        // Every real worker must have retired first. Retain elapsed allowance, then stop charging idle
+        // queue/projection time; a later bind starts the same clock again, without refunding any costs.
+        if (stopped) store.execution.pauseClock(job.id)
+        if (current.paused && stopped) return
+        if (!current.paused && (store.unclaimed(job.id) > 0 || !current.setupDone && !prepared && sessions.any { it.executionClass == ExecutionClass.PREPARE }) && stopped) {
             // Once preparation is accepted, only admission may create the first solve session. Replacing a
             // stopped preparation here races plan publication and recreates already accepted preparation.
             val previous = sessions.lastOrNull { !prepared || it.executionClass == ExecutionClass.SOLVE } ?: return
@@ -425,6 +439,8 @@ class NomadBackend(
             // Queue admission owns intentional cloud-to-native handoff; do not recreate the cloud intent in between.
             if (previous.executionClass == ExecutionClass.SOLVE && store.execution.reports(job.id)
                     .firstOrNull { it.session.id == previous.id }?.observation == "placement-native-capacity") return
+            // pauseClock above has retained all accrued allowance once every real session stopped.
+            if (previous.executionClass == ExecutionClass.SOLVE && !mayStartSolve()) return
             val pool = store.execution.placement(previous.id).pool
             if (pool is WorkerPool.Native) {
                 if (!nativeMayRun(job.id)) return
@@ -466,6 +482,7 @@ class NomadBackend(
 
     @Synchronized
     private fun replace(previous: ExecutionSession) {
+        if (previous.executionClass == ExecutionClass.SOLVE && !mayStartSolve()) return
         val submitted = Json.parseToJsonElement(store.execution.submission(previous.id)).jsonObject
         val priorPlacement = SessionPlacement.of(submitted)
         val limit = priorPlacement.preparationSlots ?: 2
@@ -491,6 +508,7 @@ class NomadBackend(
         }
         val jobId = "lab-${previous.jobId}-${previous.executionClass}-$id-1"
         val job = authenticatedJob(JsonObject(original + mapOf("ID" to JsonPrimitive(jobId), "Name" to JsonPrimitive(jobId), "TaskGroups" to JsonArray(groups), "Meta" to JsonObject(originalMeta))), id, manifest.release)
+        if (previous.executionClass == ExecutionClass.SOLVE && !mayStartSolve()) return
         store.execution.createSession(id, previous.jobId, previous.executionClass, manifest.release, previous.budget, token, job.toString(), manifest = Json.encodeToString(manifest))
     }
 

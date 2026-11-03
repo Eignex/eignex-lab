@@ -28,6 +28,9 @@ import io.ktor.util.AttributeKey
 import java.net.URI
 
 @Serializable data class WorkerRegistration(val release: String)
+/** A worker that sets [wait] keeps its session through journal pressure, asking again after [SolveWait.retryMs]. */
+@Serializable data class ClaimRequest(val wait: Boolean = false)
+@Serializable data class SolveWait(val retryMs: Long)
 @Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
 @Serializable data class WorkerBenchSelections(val owner: AttemptOwner, val keys: List<String>)
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
@@ -50,6 +53,8 @@ fun Application.workerApi(
     backend: NomadBackend,
     artifacts: ArtifactStore,
     inputSigner: URI? = System.getenv("LAB_SHARED_INPUT_SIGNER")?.takeIf { it.isNotBlank() }?.let(::URI),
+    /** The shared Gradle remote build cache for preparations; null answers every lookup as a miss. */
+    gradleCache: GradleBuildCache? = null,
     workAllowed: () -> Boolean,
 ) {
     install(ContentNegotiation) { json(Json { encodeDefaults = false }) }
@@ -59,6 +64,11 @@ fun Application.workerApi(
             call.application.log.warn("worker request rejected: ${cause.javaClass.simpleName} at ${cause.stackTrace.firstOrNull { it.className.startsWith("com.eignex.lab.") }}")
             call.respond(HttpStatusCode.BadRequest, "invalid worker request") }
         exception<IllegalStateException> { call, _ -> call.respond(HttpStatusCode.ServiceUnavailable, "worker service unavailable") }
+    }
+    /** One partition per repository and platform of the session's built bundle, so entries never cross either. */
+    fun cachePartition(cache: GradleBuildCache, session: String): String {
+        val bundle = store.execution.manifest(session).bundles.first { it.build != null }
+        return cache.partition(bundle.repository, bundle.os, bundle.arch, bundle.toolchain)
     }
     suspend fun ApplicationCall.bodyText(limit: Int = 4 * 1024 * 1024): String = receiveChannel().let { channel ->
         val bytes = channel.readRemaining(limit.toLong() + 1).readByteArray()
@@ -75,9 +85,28 @@ fun Application.workerApi(
                 val c = call.credentials(); val body = Json.decodeFromString<WorkerRegistration>(call.bodyText(REGISTRATION_BYTES))
                 call.respond(backend.register(c.session, c.token, c.allocation, c.identity, body.release))
             }
+            // Gradle's HTTP build cache protocol, proxied by the worker: 404 is a miss, and a refused write is not an error.
+            get("/gradle-cache/{key}") {
+                val s = call.session
+                val cache = gradleCache?.takeIf { s.executionClass == ExecutionClass.PREPARE }
+                val entry = cache?.let { withContext(CoordinatorIo.artifacts) { it.get(cachePartition(it, s.id), call.parameters["key"]!!) } }
+                if (entry == null) call.respond(HttpStatusCode.NotFound) else call.respondFile(entry.toFile())
+            }
+            put("/gradle-cache/{key}") {
+                check(workAllowed()); val s = call.session
+                val cache = gradleCache?.takeIf { s.executionClass == ExecutionClass.PREPARE }
+                if (cache == null) { call.respond(HttpStatusCode.NotFound); return@put }
+                val stored = withContext(CoordinatorIo.artifacts) {
+                    call.receiveChannel().toInputStream().use { cache.put(cachePartition(cache, s.id), call.parameters["key"]!!, it) }
+                }
+                call.respond(if (stored) HttpStatusCode.Created else HttpStatusCode.PayloadTooLarge)
+            }
             post("/claim") {
                 check(workAllowed()); call.session
-                val c = call.credentials(); val claim = backend.claim(c.session, c.token, c.allocation)
+                val c = call.credentials()
+                val request = claimJson.decodeFromString<ClaimRequest>(call.bodyText(CLAIM_BYTES).ifBlank { "{}" })
+                val claim = try { backend.claim(c.session, c.token, c.allocation, waitWhenHeld = request.wait) }
+                    catch (_: SolveAdmissionHeld) { call.respond(HttpStatusCode.Accepted, SolveWait(SOLVE_WAIT_MS)); return@post }
                 if (claim == null) call.respond(HttpStatusCode.NoContent) else call.respond(claim)
             }
             post("/renew") {
@@ -279,6 +308,9 @@ fun Application.workerApi(
 
 /** The most a registration's body, a release name, may be. */
 private const val REGISTRATION_BYTES = 8 * 1024
+private const val CLAIM_BYTES = 1024
+internal const val SOLVE_WAIT_MS = 5_000L
+private val claimJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
 private val SESSION = AttributeKey<ExecutionSession>("WorkerSession")
 

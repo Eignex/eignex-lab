@@ -27,6 +27,68 @@ class TreeVerificationTest {
     private var reads = 0
     private fun verifier() = TreeVerification { path, check -> reads++; hashFile(path, check) }
 
+    @Test fun `memory copy receipts retain full verification without writing a target receipt`() {
+        verifier().capture(tree, receipt)
+        val sourceProof = Files.readString(receipt)
+        val memory = TreeVerification.MemoryReceipt()
+        val destination = root.resolve("memory-copy"); val targetReceipt = root.resolve("memory-copy.json")
+        val copied = TreeVerification(memoryReceipt = memory).copy(tree, receipt, destination, targetReceipt) {
+            WorkerTrees.copy(tree, destination) {}
+        }
+        assertEquals(expected, copied); assertFalse(Files.exists(targetReceipt))
+        assertEquals(sourceProof, Files.readString(receipt), "the shared source proof remains persistent")
+        fun warm() = TreeVerification(memoryReceipt = memory, hash = { _, _ -> error("unchanged bytes reread") })
+        val verification = warm()
+        assertTrue(verification.valid(destination, expected, targetReceipt, exactExecutables = true))
+        assertEquals(0, verification.stats.hashedFiles)
+        Files.writeString(destination.resolve("generated"), "output")
+        assertTrue(warm().valid(destination, expected, targetReceipt, removeUndeclared = true))
+        assertFalse(Files.exists(destination.resolve("generated"))); assertFalse(Files.exists(targetReceipt))
+        assertTrue(destination.resolve("tool").toFile().setExecutable(true, true))
+        assertFalse(warm().valid(destination, expected, targetReceipt, exactExecutables = true))
+        assertTrue(destination.resolve("tool").toFile().setExecutable(false, false))
+        val modified = Files.getLastModifiedTime(destination.resolve("tool"))
+        Files.writeString(destination.resolve("tool"), "wrong"); Files.setLastModifiedTime(destination.resolve("tool"), modified)
+        val changed = TreeVerification(memoryReceipt = memory)
+        assertFalse(changed.valid(destination, expected, targetReceipt)); assertEquals(1, changed.stats.hashedFiles)
+        assertFalse(Files.exists(targetReceipt))
+    }
+
+    @Test fun `memory receipts reject replaced roots and cannot replace persistent source proof`() {
+        val memory = TreeVerification.MemoryReceipt()
+        val captured = TreeVerification(memoryReceipt = memory).capture(tree, receipt)
+        assertFalse(Files.exists(receipt))
+        val withoutSourceProof = root.resolve("no-persistent-source")
+        assertNull(TreeVerification(memoryReceipt = memory).copy(tree, receipt, withoutSourceProof, root.resolve("ignored.json")) {
+            WorkerTrees.copy(tree, withoutSourceProof) {}
+        }, "a target memory receipt must never stand in for a persistent source proof")
+        Files.move(tree, root.resolve("old-root"))
+        Files.createDirectory(tree); Files.writeString(tree.resolve("tool"), "hello")
+        val replacement = TreeVerification(memoryReceipt = memory)
+        assertTrue(replacement.valid(tree, captured, receipt)); assertEquals(1, replacement.stats.hashedFiles)
+        val changed = TreeVerification(memoryReceipt = memory)
+        Files.writeString(file, "wrong")
+        assertFalse(changed.valid(tree, captured, receipt)); assertEquals(1, changed.stats.hashedFiles)
+        assertFalse(Files.exists(receipt))
+    }
+
+    @Test fun `memory receipt fallback hashes without a trusted source and unsupported metadata stays conservative`() {
+        val memory = TreeVerification.MemoryReceipt()
+        val sealing = TreeVerification(memoryReceipt = memory)
+        val captured = sealing.capture(tree, receipt)
+        assertEquals(1, sealing.stats.hashedFiles); assertFalse(Files.exists(receipt))
+        assertTrue(TreeVerification(memoryReceipt = memory).valid(tree, captured, receipt))
+        FileSystems.newFileSystem(root.resolve("memory-cache.zip"), mapOf("create" to "true")).use { fs ->
+            val directory = Files.createDirectory(fs.getPath("/tree")); Files.writeString(directory.resolve("tool"), "hello")
+            val proof = fs.getPath("/receipt.json"); val unsupported = TreeVerification.MemoryReceipt()
+            repeat(2) {
+                val verification = TreeVerification(memoryReceipt = unsupported)
+                assertTrue(verification.valid(directory, expected, proof)); assertEquals(1, verification.stats.hashedFiles)
+            }
+            assertFalse(Files.exists(proof))
+        }
+    }
+
     @Test fun `rejection diagnostics distinguish changed bytes missing files and generated outputs`() {
         val verification = verifier()
         assertTrue(verification.valid(tree, expected, receipt))
@@ -146,13 +208,14 @@ class TreeVerificationTest {
         val destination = root.resolve("selected-copy"); val receipt = root.resolve("selected-copy.json")
         val wanted = selected.map { it.path }.toSet()
         val verifier = TreeVerification()
-        verifier.copy(source, sourceReceipt, destination, receipt, include = { it.toString().replace('\\', '/') in wanted }) {
+        val copied = verifier.copy(source, sourceReceipt, destination, receipt, include = { it.toString().replace('\\', '/') in wanted }) {
             for (file in selected) {
                 val target = destination.resolve(file.path); Files.createDirectories(target.parent)
                 Files.copy(source.resolve(file.path), target, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
             }
             Files.writeString(scratch, "unrelated change")
         }
+        assertEquals(selected.toSet(), assertNotNull(copied).toSet())
         val unread = TreeVerification(hash = { _, _ -> error("selected copied bytes reread") })
         assertTrue(unread.valid(destination, selected, receipt))
         assertFalse(Files.exists(destination.resolve("compiler")))
@@ -163,7 +226,8 @@ class TreeVerificationTest {
         verifier().capture(tree, receipt)
         val destination = root.resolve("private"); val targetReceipt = root.resolve("private.json")
         val copy = verifier()
-        copy.copy(tree, receipt, destination, targetReceipt) { WorkerTrees.copy(tree, destination) {} }
+        val copied = copy.copy(tree, receipt, destination, targetReceipt) { WorkerTrees.copy(tree, destination) {} }
+        assertEquals(expected, copied)
         assertEquals(0, copy.stats.hashedFiles)
         val fresh = verifier(); assertTrue(fresh.valid(destination, expected, targetReceipt, exactExecutables = true))
         assertEquals(0, fresh.stats.hashedFiles)
@@ -176,6 +240,58 @@ class TreeVerificationTest {
             }
         }
         assertFalse(Files.exists(root.resolve("changing.json")))
+    }
+
+    @Test fun `copy handoff requires complete matching destination inventory and executable bits`() {
+        verifier().capture(tree, receipt)
+        for (kind in listOf("missing", "extra", "executable")) {
+            val destination = root.resolve(kind); val targetReceipt = root.resolve("$kind.json")
+            assertFailsWith<IllegalArgumentException> {
+                verifier().copy(tree, receipt, destination, targetReceipt) {
+                    WorkerTrees.copy(tree, destination) {}
+                    when (kind) {
+                        "missing" -> Files.delete(destination.resolve("tool"))
+                        "extra" -> Files.writeString(destination.resolve("extra"), "unexpected")
+                        else -> assertTrue(destination.resolve("tool").toFile().setExecutable(true, true))
+                    }
+                }
+            }
+            assertFalse(Files.exists(targetReceipt), "an incomplete copy must not publish a reusable receipt")
+        }
+    }
+
+    @Test fun `missing and unsupported source proofs cannot produce a trusted copy handoff`() {
+        val missing = root.resolve("missing-proof")
+        assertNull(verifier().copy(tree, missing, root.resolve("without-proof"), root.resolve("without-proof.json")) {
+            WorkerTrees.copy(tree, root.resolve("without-proof")) {}
+        })
+        assertFalse(Files.exists(root.resolve("without-proof.json")))
+        FileSystems.newFileSystem(root.resolve("copy.zip"), mapOf("create" to "true")).use { fs ->
+            val source = Files.createDirectory(fs.getPath("/source")); Files.writeString(source.resolve("tool"), "hello")
+            val sourceReceipt = fs.getPath("/receipt.json")
+            verifier().capture(source, sourceReceipt)
+            val destination = root.resolve("unsupported-source"); val targetReceipt = root.resolve("unsupported-source.json")
+            assertNull(verifier().copy(source, sourceReceipt, destination, targetReceipt) {
+                Files.createDirectory(destination); Files.copy(source.resolve("tool"), destination.resolve("tool"))
+            })
+            assertFalse(Files.exists(targetReceipt))
+            val unsupportedDestination = fs.getPath("/destination"); val unsupportedReceipt = fs.getPath("/destination.json")
+            verifier().capture(tree, receipt)
+            assertNull(verifier().copy(tree, receipt, unsupportedDestination, unsupportedReceipt) {
+                Files.createDirectory(unsupportedDestination); Files.copy(file, unsupportedDestination.resolve("tool"))
+            })
+            assertFalse(Files.exists(unsupportedReceipt))
+        }
+    }
+
+    @Test fun `failed copy receipt publication cannot return a trusted handoff`() {
+        verifier().capture(tree, receipt)
+        val destination = root.resolve("receipt-failed"); val targetReceipt = Files.createDirectory(root.resolve("receipt-directory"))
+        Files.writeString(targetReceipt.resolve("keep"), "existing")
+        assertFailsWith<java.io.IOException> {
+            verifier().copy(tree, receipt, destination, targetReceipt) { WorkerTrees.copy(tree, destination) {} }
+        }
+        assertEquals("existing", Files.readString(targetReceipt.resolve("keep")))
     }
 
     @Test fun `copy verification timing excludes time inside the trusted filesystem copy`() {

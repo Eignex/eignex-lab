@@ -120,5 +120,11 @@ class CapacityStartupTest {
         assertEquals(1, plan.desired[pool.id]); assertEquals("ready", plan.placements.single().node)
         assertEquals("startup replacement circuit open", plan.waiting.single().reason)
         assertEquals(0, CapacityPolicy.evaluate(settings, emptyList(), listOf(demand), manual, at = at, growthBlocked = setOf(pool.id)).desired[pool.id])
+        val warmSettings = CapacitySettings(listOf(pool.copy(warmNodes = 4)), 64)
+        assertEquals(4, CapacityPolicy.evaluate(warmSettings, emptyList(), emptyList(), at = at).desired[pool.id])
+        assertEquals(0, CapacityPolicy.evaluate(warmSettings, emptyList(), emptyList(), at = at, growthBlocked = setOf(pool.id)).desired[pool.id],
+            "a standing warm-node floor must not bypass the startup recovery circuit")
+        assertEquals(1, CapacityPolicy.evaluate(warmSettings, listOf(ready), listOf(demand), at = at, growthBlocked = setOf(pool.id)).desired[pool.id],
+            "an open circuit preserves a healthy warm worker with accepted work")
     }
 }

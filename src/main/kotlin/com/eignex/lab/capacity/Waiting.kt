@@ -67,7 +67,9 @@ data class PlacementReport(val at: Long, val nodesUp: Boolean, val cloud: String
     val local: LocalWork? = null, val jobs: List<JobPlacement>, val held: String? = null)
 
 data class QueueView(val localQueue: List<Long>, val localNext: Long?, val local: LocalWork?, val cores: Int,
-    val schedules: List<Schedule> = emptyList(), val diskHeld: String? = null, val now: Long = now())
+    val schedules: List<Schedule> = emptyList(), val diskHeld: String? = null, val now: Long = now(),
+    /** Why new solve claims wait for the coordinator's result journal to drain, when they do. */
+    val journalHeld: String? = null)
 
 object Waiting {
     const val SETUP = "setup"
@@ -79,6 +81,7 @@ object Waiting {
         job.cancelRequested -> "cancel requested: it ends without running"
         job.paused -> "paused: no worker takes it until resumed (lab resume ${job.id})"
         view.diskHeld != null -> "queue held: ${view.diskHeld}"
+        view.journalHeld != null && job.experiment.isAnalysis != true -> "solve held: ${view.journalHeld}"
         job.experiment.isAnalysis == true -> "waiting for native execution to finish before local analysis"
         else -> "Nomad: waiting for session admission or compatible capacity; lab execution ${job.id} shows allocations"
     }
@@ -90,7 +93,16 @@ object Waiting {
         val running = analysis.firstOrNull { it.status == Status.RUNNING }
         return QueueView(analysis.filter { it.status == Status.QUEUED }.map { it.id }, analysis.firstOrNull()?.id,
             running?.let { localWork(it, null) }, status.local.cores, store.schedules.all(),
-            runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(), at)
+            runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(), at,
+            readResultJournalReport(status.paths.dataDir, at)?.let(::journalHold))
+    }
+
+    /** Hold text from a fresh journal report; a stale one says nothing rather than guessing. */
+    internal fun journalHold(report: ResultJournalReport): String? {
+        val admission = report.status.solveAdmission ?: return null
+        if (report.stale || !admission.held) return null
+        val mib = { bytes: Long -> bytes / (1024 * 1024) }
+        return "result journal ${mib(report.status.bytes)}/${mib(report.status.limit)} MiB, new solve claims resume below ${mib(admission.resumeAtBytes)} MiB"
     }
 
     fun report(status: StatusSettings, store: Store, history: (Job) -> CaseHistory?, at: Long = now()): PlacementReport {
@@ -104,7 +116,7 @@ object Waiting {
             .map { placement(status, it, view, positions[it.id], history, progress[it.id].orEmpty(), assignments[it.id].orEmpty(), parallelism[it.id] ?: (0 to 0)) }
         val snapshot = readCapacityReport(status.paths.capacityReport)
         val ready = snapshot?.takeIf { it.healthy && it.ageMs <= CapacityCollector.FRESH_MS }?.nodes.orEmpty().count { it.state == CapacityNodeState.READY }
-        return PlacementReport(at, ready > 0, "Nomad: $ready ready cloud nodes; see /nodes", view.local, jobs, view.diskHeld)
+        return PlacementReport(at, ready > 0, "Nomad: $ready ready cloud nodes; see /nodes", view.local, jobs, view.diskHeld ?: view.journalHeld)
     }
 
     internal fun placement(status: StatusSettings, job: Job, view: QueueView, position: Int?, history: (Job) -> CaseHistory?,

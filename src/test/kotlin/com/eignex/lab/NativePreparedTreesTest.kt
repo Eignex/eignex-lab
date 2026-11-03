@@ -4,6 +4,7 @@ import com.eignex.lab.domain.*
 import com.eignex.lab.execution.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
+import com.eignex.lab.worker.*
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
@@ -44,6 +45,35 @@ class NativePreparedTreesTest {
         restarted.use(bundle, {}) { original, _ -> assertEquals("source", Files.readString(original.resolve("model.txt"))) }
         assertTrue(Files.isDirectory(target.resolve("empty")))
         assertTrue(Files.isExecutable(target.resolve("bin/run")))
+    }
+
+    @Test fun `native execution handoffs retain separate mutable slots and the accepted snapshot authority`() {
+        val (_, bundle) = publish()
+        val workspaces = WorkerWorkspaces(root.resolve("execution-slots"))
+        val firstKey = "a".repeat(64); val secondKey = "b".repeat(64)
+        val slots = listOf(WorkerSlotStaging.Slot(bundle.commit, firstKey, 0), WorkerSlotStaging.Slot(bundle.commit, secondKey, 1))
+        var acquisitions = 0
+        try {
+            val staged = WorkerSlotStaging(ResourceBudget(2000, 256, 2), slots.size) {}.use { staging ->
+                staging.stage(slots, reuse = { slot, check -> workspaces.reuse(slot.key, check) },
+                    source = { _, check, consume -> acquisitions++; store.use(bundle, check) { tree, _ -> consume(tree) } },
+                    copy = { slot, source, check -> workspaces.copySealed(slot.key, source, check) })
+            }
+            assertEquals(1, acquisitions)
+            val first = staged.paths.getValue(firstKey); val second = staged.paths.getValue(secondKey)
+            assertNotEquals(first, second)
+            assertEquals(first, workspaces.reuse(firstKey) {})
+            assertEquals(second, workspaces.reuse(secondKey) {})
+            for (tree in listOf(first, second)) {
+                assertTrue(Files.isDirectory(tree.resolve("empty")))
+                assertTrue(Files.isExecutable(tree.resolve("bin/run")))
+            }
+            Files.writeString(first.resolve("model.txt"), "mutated")
+            assertNull(workspaces.reuse(firstKey) {})
+            assertEquals(second, workspaces.reuse(secondKey) {})
+            assertEquals("source", Files.readString(second.resolve("model.txt")))
+            assertTrue(store.valid(bundle, {}), "a mutable execution slot must never modify accepted inputs")
+        } finally { assertTrue(workspaces.awaitCleanupIdle()) }
     }
 
     @Test fun `portable export verifies every file without treating a tree digest as a ZIP digest`() {

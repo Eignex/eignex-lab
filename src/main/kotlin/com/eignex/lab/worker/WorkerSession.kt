@@ -93,8 +93,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
+        val gradleCache = GradleCacheProxy({ method, key, body ->
+            val response = request("gradle-cache/$key", method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
+            response.statusCode() to response.body()
+        })
         val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket),
-            observeBuild = { stdout, stderr, exit -> preparationRecorder?.build(stdout, stderr, exit) })
+            observeBuild = { stdout, stderr, exit -> preparationRecorder?.build(stdout, stderr, exit) }, remoteCache = { gradleCache.url })
         Thread({
             try { builds.maintain() } catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
         }, "worker-build-cleanup").apply { isDaemon = true; start() }
@@ -120,10 +124,20 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         resourceReporter.scheduleWithFixedDelay({ checkpoint() }, 0, 5, TimeUnit.SECONDS)
         try {
+        var heldSince: Long? = null
         while (true) {
             if (interruption.requested()) return
-            val response = retry { json("claim", "{}") }
+            val response = retry { json("claim", """{"wait":true}""") }
             if (response.statusCode() == 204) return
+            if (response.statusCode() == 202) {
+                // Journal pressure: keep this session and its warm workspaces, but not indefinitely.
+                val started = heldSince ?: System.nanoTime().also { heldSince = it }
+                if (System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) return
+                val retryMs = runCatching { Json.decodeFromString<SolveWait>(String(response.body())).retryMs }.getOrDefault(5_000L)
+                Thread.sleep(retryMs.coerceIn(1_000L, 30_000L))
+                continue
+            }
+            heldSince = null
             val claim = Json.decodeFromString<IterationClaim>(String(response.body()))
             val deadline = AtomicLong(0)
             fun renew() {
@@ -243,7 +257,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             resourceReporter.shutdownNow()
             checkpoint(if (interruption.requested()) "provider-interruption" else null)
             runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
-            try { nativeOwnership?.close() } finally { workspaceStorage.close() }
+            try { nativeOwnership?.close() } finally { try { workspaceStorage.close() } finally { gradleCache.close() } }
         }
     }
 
@@ -268,7 +282,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     }
                 } // Provisional output retries independently; accepted artifacts still transfer in full.
             }
-        }, 0, 1, TimeUnit.SECONDS)
+        }, 0, LIVE_LOG_INTERVAL_SEC, TimeUnit.SECONDS)
         return AutoCloseable { service.shutdownNow() }
     }
 
@@ -449,6 +463,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     }
 
     companion object {
+        /** Longest continuous journal-pressure wait before an idle worker releases its node. */
+        internal const val MAX_SOLVE_WAIT_MS = 15 * 60_000L
+        /** Provisional output only: each upload is a coordinator write per stream, and accepted output transfers in full. */
+        internal const val LIVE_LOG_INTERVAL_SEC = 5L
+
         fun main(args: List<String>): Int = runCatching {
             require(args.isEmpty()) { "worker uses allocation environment only" }
             fun env(key: String) = requireNotNull(System.getenv(key)) { "$key is required" }

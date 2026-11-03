@@ -21,7 +21,7 @@ import java.util.zip.ZipOutputStream
 class SourceInputs(private val requireTrusted: (repository: String, commit: String) -> Unit,
                    private val maxBytes: Long = 32L * 1024 * 1024 * 1024) {
     fun publish(mirror: Path, repository: String, commit: String, os: String, arch: String, toolchain: String,
-                build: WorkerBuild, output: Path, files: Map<String, Path> = emptyMap()): WorkerBundle {
+                build: WorkerBuild, output: Path, files: Map<String, Path> = emptyMap(), includeHistory: Boolean = true): WorkerBundle {
         Repositories.requireAllowed(repository)
         require(CommitSha.isValid(commit))
         requireTrusted(repository, commit) // Call before exporting any objects, including on retries.
@@ -29,6 +29,7 @@ class SourceInputs(private val requireTrusted: (repository: String, commit: Stri
         require(bundleName !in files && files.keys.all { safeRelative(it).first().toString() == "lab-inputs" })
         require(!Files.exists(output, NOFOLLOW_LINKS)) { "source archive output already exists" }
         Files.createDirectories(output.toAbsolutePath().parent)
+        if (!includeHistory) return SourceSnapshots.publish(mirror, repository, commit, os, arch, toolchain, build, output, files, maxBytes)
         val staging = Files.createTempDirectory(output.toAbsolutePath().parent, ".source-")
         try {
             val gitBundle = staging.resolve(bundleName)

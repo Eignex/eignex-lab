@@ -9,7 +9,8 @@ import java.nio.file.Path
 
 /** Accepted preparation archives remain listable without copying regional bytes onto the coordinator. */
 internal class PreparedArchiveFiles(private val config: Config, private val store: Store, private val artifacts: ArtifactStore,
-                                   private val nativeTrees: () -> NativePreparedTrees? = { NativePreparedTrees.environment() }) {
+                                   private val nativeTrees: () -> NativePreparedTrees? = { NativePreparedTrees.environment() },
+                                   private val verification: ArtifactFileVerification = ArtifactFileVerification()) {
     data class Archive(val file: Path, val sha256: String)
 
     private fun accepted(job: Long): Map<String, String> {
@@ -51,7 +52,7 @@ internal class PreparedArchiveFiles(private val config: Config, private val stor
             } } finally { store.holds.release(job, hold.id) }
         }
         val file = available {
-            projected?.also { check(hashFile(it) == sha) { "archive checksum mismatch" } } ?: artifacts.file(job, sha)
+            projected?.also { verification.verify(it, sha) } ?: artifacts.file(job, sha)
         }
         return Archive(file, sha)
     }

@@ -25,7 +25,7 @@ data class FileEntry(val path: String, val bytes: Long, val sha256: String? = nu
  * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a
  * job's files are what it wrote there, and a link could lead anywhere on the machine.
  */
-internal fun jobFiles(root: Path, entries: (Path, () -> Unit) -> List<MacDirectoryEntries.Entry>? = MacDirectoryEntries::read): List<FileEntry> {
+internal fun jobFiles(root: Path, entries: (Path, () -> Unit) -> List<MacDirectoryEntries.ListingEntry>? = MacDirectoryEntries::readListing): List<FileEntry> {
     if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return emptyList()
     val files = mutableListOf<FileEntry>()
     val fallback = object : java.nio.file.SimpleFileVisitor<Path>() {
@@ -53,6 +53,37 @@ internal fun jobFiles(root: Path, entries: (Path, () -> Unit) -> List<MacDirecto
     }
     visit(root)
     return files.sortedBy { it.path }
+}
+
+/** Exact accepted logical replacements do not use their projection's size. All physical names/directories
+ * still participate in the inventory; legacy-only directories retain the existing bulk-length path. */
+internal fun jobFiles(root: Path, replaced: Set<String>,
+                     names: (Path, () -> Unit) -> List<MacDirectoryEntries.NameEntry>? = MacDirectoryEntries::readNames,
+                     entries: (Path, () -> Unit) -> List<MacDirectoryEntries.ListingEntry>? = MacDirectoryEntries::readListing,
+                     attributes: (Path) -> java.nio.file.attribute.BasicFileAttributes = {
+                         Files.readAttributes(it, java.nio.file.attribute.BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+                     }): List<FileEntry> {
+    val parents = mutableSetOf<String>()
+    for (name in replaced) {
+        parents += ""
+        name.indices.filter { name[it] == '/' }.forEach { parents += name.substring(0, it) }
+    }
+    return jobFiles(root) { directory, checkActive ->
+        val prefix = root.relativize(directory).joinToString("/")
+        if (prefix !in parents) entries(directory, checkActive)
+        else names(directory, checkActive)?.map { entry ->
+            checkActive()
+            val path = directory.resolve(entry.name)
+            val relative = root.relativize(path).joinToString("/")
+            if (!entry.regular || relative in replaced)
+                MacDirectoryEntries.ListingEntry(entry.name, entry.directory, entry.regular, FileEntry.UNKNOWN_BYTES)
+            else {
+                val attrs = attributes(path) // Recheck type as well: a replacement symlink must not be followed.
+                MacDirectoryEntries.ListingEntry(entry.name, attrs.isDirectory, attrs.isRegularFile,
+                    if (attrs.isRegularFile) attrs.size() else FileEntry.UNKNOWN_BYTES)
+            }
+        }
+    }
 }
 
 /**

@@ -12,9 +12,117 @@ import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
 import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 
 class WorkerTreesTest {
+    @Test fun `cancelled private copy holds its source callback until the owned child actually exits`() {
+        val child = HeldCopyProcess()
+        val expected = IllegalStateException("source lease fenced")
+        val copyThread = AtomicReference<Thread>()
+        val pinReleased = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val failure = AtomicReference<Throwable>()
+        val coordinator = Thread {
+            try {
+                WorkerSlotStaging(ResourceBudget(1000, 256), 1) {}.use { staging ->
+                    staging.stage(listOf(WorkerSlotStaging.Slot("source", "private", 0)),
+                        reuse = { _, _ -> null },
+                        source = { _, _, consume ->
+                            try { consume(Path.of("pinned-source")) } finally { pinReleased.countDown() }
+                        },
+                        copy = { _, _, _ ->
+                            copyThread.set(Thread.currentThread())
+                            withOwnedCopyProcess<Path>(child) { throw expected }
+                        })
+                }
+            } catch (error: Throwable) { failure.set(error) }
+            finally { finished.countDown() }
+        }
+        try {
+            coordinator.start()
+            assertTrue(child.destroyed.await(10, TimeUnit.SECONDS))
+            assertTrue(child.falseWait.await(10, TimeUnit.SECONDS))
+            copyThread.get().interrupt()
+            assertTrue(child.interruptedWait.await(10, TimeUnit.SECONDS))
+            assertTrue(child.isAlive)
+            assertEquals(1L, pinReleased.count, "source pin released while cp still owns its input")
+            assertEquals(1L, finished.count, "cancelled staging returned before actual cp exit")
+            child.exit.countDown()
+            assertTrue(finished.await(10, TimeUnit.SECONDS))
+            assertSame(expected, failure.get())
+            assertIs<InterruptedException>(expected.suppressed.single())
+            assertEquals(0L, pinReleased.count)
+        } finally {
+            child.exit.countDown()
+            coordinator.join(10_000)
+            assertFalse(coordinator.isAlive)
+        }
+    }
+
+    @Test fun `copy cleanup reports interruption with a cleared flag after joining its child`() {
+        val child = HeldCopyProcess()
+        val finalizerRan = AtomicBoolean()
+        val finalizerInterrupted = AtomicBoolean(true)
+        val failure = AtomicReference<Throwable>()
+        val finished = CountDownLatch(1)
+        val copier = Thread {
+            try {
+                try { withOwnedCopyProcess(child) { Thread.currentThread().interrupt() } }
+                finally {
+                    finalizerInterrupted.set(Thread.currentThread().isInterrupted)
+                    finalizerRan.set(true)
+                }
+            } catch (error: Throwable) { failure.set(error) }
+            finally { finished.countDown() }
+        }
+        try {
+            copier.start()
+            assertTrue(child.falseWait.await(10, TimeUnit.SECONDS))
+            assertFalse(finalizerRan.get())
+            assertTrue(child.isAlive)
+            child.exit.countDown()
+            assertTrue(finished.await(10, TimeUnit.SECONDS))
+            assertIs<InterruptedException>(failure.get())
+            assertTrue(finalizerRan.get())
+            assertFalse(finalizerInterrupted.get(), "source finalizer must be able to acquire interruptible pins")
+        } finally {
+            child.exit.countDown()
+            copier.join(10_000)
+            assertFalse(copier.isAlive)
+        }
+    }
+
+    /** Force-destroy is only a request: the process deliberately stays alive until the test releases it. */
+    private class HeldCopyProcess : Process() {
+        val exit = CountDownLatch(1)
+        val destroyed = CountDownLatch(1)
+        val falseWait = CountDownLatch(1)
+        val interruptedWait = CountDownLatch(1)
+        private val waits = AtomicInteger()
+        override fun getOutputStream() = java.io.OutputStream.nullOutputStream()
+        override fun getInputStream() = java.io.InputStream.nullInputStream()
+        override fun getErrorStream() = java.io.InputStream.nullInputStream()
+        override fun isAlive() = exit.count != 0L
+        override fun exitValue(): Int {
+            if (isAlive) throw IllegalThreadStateException("copy still alive")
+            return 0
+        }
+        override fun waitFor(): Int { exit.await(); return exitValue() }
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+            if (waits.getAndIncrement() == 0) { falseWait.countDown(); return false }
+            return try { exit.await(timeout, unit) }
+            catch (error: InterruptedException) { interruptedWait.countDown(); throw error }
+        }
+        override fun destroy() { destroyed.countDown() }
+        override fun destroyForcibly(): Process { destroy(); return this }
+    }
+
     @Test fun `declared workspaces copy only named roots and preserve private bytes and empty directories`() {
         val root = Files.createTempDirectory("declared-copy")
         try {

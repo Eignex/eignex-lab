@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FAKE_CURL = r'''#!/usr/bin/env python3
 import hashlib, json, os, sys
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 args = sys.argv[1:]
 path = unquote(urlparse(args[-1]).path)
 method = args[args.index('-X') + 1] if '-X' in args else 'GET'
@@ -23,6 +23,10 @@ if path.endswith('/hold'):
 elif '/hold/' in path:
     pass
 elif path.endswith('/files'):
+    options = {'query': parse_qs(urlparse(args[-1]).query),
+               'timeout': int(args[args.index('--max-time') + 1])}
+    with Path(os.environ['FAKE_CALLS']).with_name('inventory-options').open('a') as log:
+        log.write(json.dumps(options) + '\n')
     files = [{'path':'preparation/archive.zip','bytes':8},{'path':'job.log','bytes':4}]
     if mode in ('hashed', 'bad-hash'):
         files[0]['sha256'] = hashlib.sha256(b'complete').hexdigest()
@@ -95,6 +99,26 @@ class FetchTest(unittest.TestCase):
             self.assertFalse((dest / 'preparation/archive.zip').exists())
             self.assertIn('complete file inventory unavailable', result.stderr)
             self.assertIn('DELETE /jobs/1/hold/ab12', (root / 'calls').read_text())
+
+    def test_inventory_long_poll_has_transport_margin_and_respects_remaining_retry_budget(self):
+        for budget in (None, '5', '0'):
+            with self.subTest(budget=budget), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                extra = {} if budget is None else {'LAB_FILE_LIST_TIMEOUT': budget}
+                result = self.fetch('success', root / 'download', root, extra)
+                self.assertEqual(0, result.returncode, result.stderr)
+                requests = [json.loads(line) for line in (root / 'inventory-options').read_text().splitlines()]
+                self.assertEqual(1, len(requests))
+                wait = int(requests[0]['query']['waitSec'][0])
+                self.assertGreaterEqual(wait, 1)
+                self.assertLessEqual(wait, 30)
+                self.assertEqual(wait + 2, requests[0]['timeout'])
+                if budget is None:
+                    self.assertEqual(30, wait)
+                elif budget == '5':
+                    self.assertLessEqual(requests[0]['timeout'], 5)
+                else:
+                    self.assertEqual(1, wait, 'zero disables retries but retains one bounded initial attempt')
 
     def test_transport_failure_and_short_http_200_body_are_incomplete_and_resumable(self):
         for mode in ('transport', 'short', 'full-body-error', 'http'):

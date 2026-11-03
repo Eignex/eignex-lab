@@ -21,11 +21,14 @@ class PreparationAdmissionTest {
         assertEquals(original, PreparationAdmission.clear(placed))
     }
 
-    @Test fun `one unbound preparation per cloud class prevents placement races`() {
-        val held = listOf(PreparationAdmission.Reservation(null, "general", false))
-        assertFalse(PreparationAdmission.allows("general", false, 2, held))
-        assertTrue(PreparationAdmission.allows("other", false, 2, held))
-        assertTrue(PreparationAdmission.allows("general", false, 2, held.map { it.copy(node = "bound") }))
+    @Test fun `unbound cloud preparations per class are bounded by the node's compiler slots`() {
+        val one = listOf(PreparationAdmission.Reservation(null, "general", false))
+        assertTrue(PreparationAdmission.allows("general", false, 2, one), "a booting node no longer serializes the next job")
+        val two = one + one
+        assertFalse(PreparationAdmission.allows("general", false, 2, two))
+        assertTrue(PreparationAdmission.allows("other", false, 2, two))
+        assertTrue(PreparationAdmission.allows("general", false, 2, two.map { it.copy(node = "bound") }))
+        assertFalse(PreparationAdmission.allows("general", false, 1, one), "a single-slot class still waits for placement")
     }
 
     @Test fun `native admission keeps its compiler limit and solve placement is untouched`() {

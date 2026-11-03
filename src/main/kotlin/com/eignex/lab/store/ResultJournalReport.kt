@@ -43,4 +43,22 @@ lab_result_journal_compaction_errors_total $compactionErrors
 lab_result_journal_compaction_failed ${if (lastCompactionError == null) 0 else 1}
 lab_result_journal_last_drain_seconds ${(lastDrainMs ?: 0) / 1000.0}
 lab_result_journal_last_drain_blobs $lastDrainBlobs
-""".trimIndent() + "\n"
+""".trimIndent() + "\n" + buildString {
+    for ((phase, state) in phases) {
+        append("lab_result_journal_phase_batches{phase=\"${phase.name}\"} ${state.batches}\n")
+        append("lab_result_journal_phase_blobs{phase=\"${phase.name}\"} ${state.blobs}\n")
+        append("lab_result_journal_phase_bytes{phase=\"${phase.name}\"} ${state.bytes}\n")
+        append("lab_result_journal_phase_readers{phase=\"${phase.name}\"} ${state.readers}\n")
+        append("lab_result_journal_phase_oldest_age_seconds{phase=\"${phase.name}\"} ${state.oldestAgeMs / 1000.0}\n")
+    }
+    solveAdmission?.let {
+        append("lab_result_journal_solve_admission_held ${if (it.held) 1 else 0}\n")
+        append("lab_result_journal_solve_hold_at_bytes ${it.holdAtBytes}\n")
+        append("lab_result_journal_solve_resume_at_bytes ${it.resumeAtBytes}\n")
+    }
+    append("lab_result_journal_receiving $receiving\n")
+    append("lab_result_journal_receiving_reserved_bytes $receivingReservedBytes\n")
+    append("lab_result_journal_last_publish_batch_seconds ${(lastPublishBatchMs ?: 0) / 1000.0}\n")
+    append("lab_result_journal_last_publish_callback_seconds ${(lastPublishCallbackMs ?: 0) / 1000.0}\n")
+    append("lab_result_journal_last_post_callback_completion_seconds ${(lastPostCallbackCompletionMs ?: 0) / 1000.0}\n")
+}

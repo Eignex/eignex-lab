@@ -23,6 +23,9 @@ internal fun nodesPage(local: LocalNode, host: HostReport, snapshot: CapacitySna
     if (journal != null) {
         val s = journal.status
         append(Html("<section id=\"result-journal\" data-live><h2>Result journal</h2><p>") + s.batches + Html(" pending batches · ") + (s.bytes / 1024) + Html(" KiB reserved of ") + (s.limit / 1024 / 1024) + Html(" MiB · oldest ") + (s.oldestAgeMs / 1000) + Html("s · ") + s.drainErrors + Html(" drain errors</p>"))
+        s.solveAdmission?.takeIf { it.held }?.let {
+            append(Html("<p class=\"warn\">New solve claims are waiting for the journal to drain to ") + (it.resumeAtBytes / 1024 / 1024) + Html(" MiB. Owned rows continue; uploads may wait for space.</p>"))
+        }
         if (journal.stale) append(Html("<p class=\"warn\">Journal report is stale (") + (journal.ageMs / 1000) + Html("s old).</p>"))
         if (s.lastError != null) append(Html("<p class=\"warn\">Drain error: ") + esc(s.lastError) + Html(". Pending results are retained.</p>"))
         if (s.bytes >= s.limit * 9 / 10) append(Html("<p class=\"warn\">Journal is near capacity; uploads may wait for the external drain.</p>"))

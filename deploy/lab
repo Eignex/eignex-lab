@@ -108,14 +108,19 @@ curl() {
   return "$status"
 }
 files_json() {
-  local response code transport list_timeout="${LAB_FILE_LIST_TIMEOUT:-600}" deadline
+  local response code transport list_timeout="${LAB_FILE_LIST_TIMEOUT:-600}" deadline remaining wait_sec transport_timeout
   [[ "$list_timeout" =~ ^[0-9]{1,4}$ ]] && list_timeout=$((10#$list_timeout)) && [[ "$list_timeout" -le 3600 ]] ||
     { echo 'LAB_FILE_LIST_TIMEOUT must be 0 to 3600 seconds' >&2; return 2; }
   response=$(mktemp)
   deadline=$((SECONDS + list_timeout))
   while :; do
     transport=0
-    code=$(curl -sS --max-time 10 -o "$response" -w '%{http_code}' "$url/jobs/$1/files") || transport=$?
+    remaining=$((deadline - SECONDS))
+    # Leave transport margin, including one initial attempt when the overall retry budget is zero.
+    wait_sec=$((remaining > 2 ? remaining - 2 : 1))
+    (( wait_sec <= 30 )) || wait_sec=30
+    transport_timeout=$((wait_sec + 2))
+    code=$(curl -sS --max-time "$transport_timeout" -o "$response" -w '%{http_code}' "$url/jobs/$1/files?waitSec=$wait_sec") || transport=$?
     if [[ "$transport" -eq 0 && "$code" == 200 ]]; then cat "$response"; rm -f "$response"; return 0; fi
     if [[ "$transport" -ne 0 || "$code" != 503 || "$SECONDS" -ge "$deadline" ]]; then
       echo "lab: complete file inventory unavailable (HTTP $code)" >&2

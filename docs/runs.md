@@ -214,6 +214,14 @@ Independent source checks run when requested.
 It does not copy earlier solver outcomes or reset the source job's spent allowance. Retain the source job's
 full preparation, failed work and retirement costs alongside the replay's own bounded costs.
 
+A bench manifest may opt into `"sourceHistory": "snapshot"` when its build and tools need only the selected
+revision. The coordinator exports its exact files and a shallow Git repository at the original commit ID;
+`git rev-parse HEAD`, `git ls-files` and `git show HEAD:path` still work. Ancestors, tags, other branches,
+repository hooks and credentials are not exported. Existing workers consume this as a verified source ZIP.
+Omitting the field, or setting `"sourceHistory": "full"`, retains the original history bundle; use that mode
+for tools such as `git describe` or builds that inspect ancestors. Profiles retain full history. The source
+hint cache separates both modes, and snapshot exports normalize Git pack and index metadata for stable reuse.
+
 A bench manifest may declare top-level `workspaceInputs`, a nonempty list of portable relative file or directory
 paths to copy from the verified build. The manifest itself is included automatically. This asserts that `describe`,
 `plan` and `run` need only those paths, generated files and the declared corpus: include installed classpaths,
@@ -384,6 +392,20 @@ than the artifact inventory. Full accepted downloads include their SHA-256 as an
 the result journal may have unknown listed size; a matching local projection can serve it, while missing or corrupt
 bytes return an unavailable response. Existing authentication, job scoping, safe paths and trim policy still apply.
 Trimmed jobs retain their designated logs and records without making raw artifacts downloadable again.
+
+Complete inventories are prepared and validated in the background. The default file-list request waits at most
+one second, returning `503` with `Retry-After` while work is pending. Explicit fetches can use
+`GET /jobs/<id>/files?waitSec=30` to suspend for up to 30 seconds on that request's fresh validation. The maintained
+client opts into this wait with a longer transport timeout and bounded retries, so validation that finishes between
+short polls remains deliverable. Timeouts and disconnected callers do not cancel the shared inventory work.
+Reads that remain blocked beyond the selected wait still return unavailable; this does not serve an older snapshot
+without checking accepted version, status, trim, terminal logs and storage availability.
+
+An inventory `503` includes bounded cached progress in the existing JSON `detail` string: waiting/busy/failed state,
+current phase and elapsed time, last safe failure category and phase, retry delay, and retained-snapshot age/staleness.
+The detail contains no file names, paths or exception text. `currentValidated=false` means a retained snapshot is not
+proof that this unavailable request passed validation. Reading these diagnostics does not probe storage or start
+another refresh; a new successful request still returns the complete ordinary inventory array.
 
 ## Controlled sweep migrations
 

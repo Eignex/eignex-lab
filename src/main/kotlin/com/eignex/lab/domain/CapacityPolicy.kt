@@ -26,12 +26,15 @@ data class CapacityPool(
     val tags: Set<String>, val market: CapacityMarket = CapacityMarket.SPOT,
     val reserveMemoryMiB: Int = 1024,
     val minPriority: Int = 0, val sustainedMs: Long = 30_000, val cooldownMs: Long = 60_000, val idleMs: Long = 300_000,
+    /** Ready nodes kept without demand, so small jobs skip a node boot; a standing manual lease. Costs while idle. */
+    val warmNodes: Int = 0,
 ) {
     init {
         require(id.matches(Regex("[a-z][a-z0-9-]{0,47}")) && nodeClass.isNotBlank())
         require(vcpus in 1..1024 && memoryMiB > 0 && maxNodes in 1..1000)
         require(reserveMemoryMiB in 0 until memoryMiB)
         require(sustainedMs >= 0 && cooldownMs >= 0 && idleMs >= 0)
+        require(warmNodes in 0..maxNodes)
         NodeTags.validate(NodeSelector(require = tags))
         require("hardware:unknown" !in tags && tags.count { it.startsWith("arch:") } == 1)
         require(tags.none { it in setOf("spot", "on-demand", "local") })
@@ -162,7 +165,7 @@ object CapacityPolicy {
             }
         }
         for (p in settings.pools) {
-            val floor = manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0
+            val floor = maxOf(p.warmNodes, manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0)
             val idle = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.READY && it.allocations.isEmpty() && it.node.emptySince?.let { since -> at - since >= p.idleMs } == true }
             // A launch request with no remaining work must not survive indefinitely when Spot is unavailable.
             val unusedLaunches = bins.count { it.node.pool == p.id && it.node.state in setOf(CapacityNodeState.BOOTING, CapacityNodeState.REPLACING) && it.allocations.isEmpty() }

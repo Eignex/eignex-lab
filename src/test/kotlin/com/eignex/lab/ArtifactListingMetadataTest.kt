@@ -43,17 +43,95 @@ class ArtifactListingMetadataTest {
         assertFailsWith<IllegalArgumentException> { store.file(1, sha) }
     }
 
+    @Test fun `unsupported listing metadata falls back without losing legacy files or following links`() {
+        val root = Files.createTempDirectory("listing-fallback")
+        try {
+            Files.createDirectories(root.resolve("cases/0/out"))
+            Files.writeString(root.resolve("cases/0/out/legacy.txt"), "legacy")
+            Files.writeString(root.resolve("job.log"), "log")
+            Files.createDirectories(root.resolve("nomad/prepared-trees/private"))
+            Files.writeString(root.resolve("nomad/prepared-trees/private/secret"), "hidden")
+            Files.createSymbolicLink(root.resolve("case-link"), root.resolve("cases"))
+            val files = jobFiles(root) { _, _ -> null }
+            assertEquals(listOf(FileEntry("cases/0/out/legacy.txt", 6), FileEntry("job.log", 3)), files)
+            if (!System.getProperty("os.name").lowercase().contains("mac")) assertNull(MacDirectoryEntries.readListing(root, {}))
+            val thread = Thread.currentThread()
+            thread.interrupt()
+            try { assertFailsWith<InterruptedException> { jobFiles(root) { _, _ -> null } } }
+            finally { Thread.interrupted() }
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `exact logical replacements avoid physical lengths while legacy directories and changed links remain visible safely`() {
+        val root = Files.createTempDirectory("logical-size-selection")
+        try {
+            Files.createDirectory(root.resolve("accepted-dir"))
+            Files.createDirectory(root.resolve("legacy-dir"))
+            Files.writeString(root.resolve("legacy"), "legacy")
+            Files.writeString(root.resolve("exact"), "projection")
+            Files.createSymbolicLink(root.resolve("changed-link"), root.resolve("exact"))
+            val sizedDirectories = mutableListOf<String>()
+            val statted = mutableListOf<String>()
+            val files = jobFiles(root, setOf("exact", "accepted-dir"), names = { path, _ ->
+                assertEquals(root, path)
+                listOf(MacDirectoryEntries.NameEntry("exact", false, true),
+                    MacDirectoryEntries.NameEntry("accepted-dir", true, false),
+                    MacDirectoryEntries.NameEntry("legacy-dir", true, false),
+                    MacDirectoryEntries.NameEntry("legacy", false, true),
+                    MacDirectoryEntries.NameEntry("changed-link", false, true), // Changed to a symlink after enumeration.
+                    MacDirectoryEntries.NameEntry("ignored-link", false, false))
+            }, entries = { path, _ ->
+                val relative = root.relativize(path).joinToString("/"); sizedDirectories += relative
+                when (relative) {
+                    "accepted-dir" -> listOf(MacDirectoryEntries.ListingEntry("child", false, true, 7))
+                    "legacy-dir" -> listOf(MacDirectoryEntries.ListingEntry("child", false, true, 9))
+                    else -> error("unexpected sized directory")
+                }
+            }, attributes = { path ->
+                val relative = root.relativize(path).joinToString("/"); statted += relative
+                assertTrue(relative !in setOf("exact", "accepted-dir"), "accepted size is not physical authority")
+                Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            })
+            assertEquals(listOf(FileEntry("accepted-dir/child", 7), FileEntry("exact", FileEntry.UNKNOWN_BYTES),
+                FileEntry("legacy", 6), FileEntry("legacy-dir/child", 9)), files)
+            assertEquals(listOf("accepted-dir", "legacy-dir"), sizedDirectories)
+            assertEquals(listOf("legacy", "changed-link"), statted)
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `unknown physical metadata failures stay visible and unsupported narrow listings retain ordinary sizes`() {
+        val root = Files.createTempDirectory("logical-size-fallback")
+        try {
+            Files.writeString(root.resolve("accepted"), "projection")
+            Files.writeString(root.resolve("legacy"), "legacy")
+            val ordinary = jobFiles(root) { _, _ -> null }
+            val fallback = jobFiles(root, setOf("accepted"), names = { _, _ -> null })
+            assertEquals(ordinary, fallback)
+            assertFailsWith<java.io.IOException> {
+                jobFiles(root, setOf("accepted"), names = { _, _ -> listOf(MacDirectoryEntries.NameEntry("legacy", false, true)) },
+                    attributes = { throw java.io.IOException("unreadable legacy metadata") })
+            }
+            val sized = mutableListOf<java.nio.file.Path>()
+            assertEquals(listOf(FileEntry("legacy", 6)), jobFiles(root, emptySet(),
+                names = { _, _ -> error("legacy-only directories must keep sized batching") },
+                entries = { path, _ -> sized.add(path); listOf(MacDirectoryEntries.ListingEntry("legacy", false, true, 6)) }))
+            assertEquals(listOf(root), sized)
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `ordinary file inventory reuses directory batches and excludes links and private trees`() {
         val root = Files.createTempDirectory("job-metadata")
         Files.createDirectories(root.resolve("cases"))
         Files.createDirectories(root.resolve("nomad"))
         val visited = mutableListOf<String>()
+        fun listing(name: String, bytes: Long, directory: Boolean = false, regular: Boolean = !directory) =
+            MacDirectoryEntries.ListingEntry(name, directory, regular, bytes)
         val files = jobFiles(root) { path, _ ->
             val name = root.relativize(path).joinToString("/"); visited += name
             when (name) {
-                "" -> listOf(entry("cases", 0, directory = true), entry("nomad", 0, directory = true), entry("log-link", 0, regular = false))
-                "cases" -> listOf(entry("ordinary.txt", 21))
-                "nomad" -> listOf(entry("prepared-trees", 0, directory = true))
+                "" -> listOf(listing("cases", 0, directory = true), listing("nomad", 0, directory = true), listing("log-link", 0, regular = false))
+                "cases" -> listOf(listing("ordinary.txt", 21))
+                "nomad" -> listOf(listing("prepared-trees", 0, directory = true))
                 else -> error("private subtree was visited")
             }
         }

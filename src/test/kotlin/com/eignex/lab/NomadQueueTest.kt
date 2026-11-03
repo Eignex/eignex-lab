@@ -27,6 +27,24 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `journal pressure permits preparation and planning then holds only new solves without source churn`() {
+        solveAdmissionAllowed = false
+        val id = job(wide); val admission = queue()
+        admission.reconcile()
+        assertEquals(listOf(ExecutionClass.PREPARE), store.execution.sessions(id).map { it.executionClass })
+        prepare(id, 6)
+        repeat(5) { admission.reconcile() }
+        assertTrue(store.job(id)!!.setupDone); assertEquals(6, store.job(id)!!.commands.size)
+        assertEquals(1, publications); assertEquals(1, store.execution.accepted(id).size)
+        assertTrue(store.execution.sessions(id).none { it.executionClass == ExecutionClass.SOLVE })
+        assertFalse(store.job(id)!!.paused); assertEquals(wide.vcpus, store.job(id)!!.vcpus)
+        val accepted = store.execution.acceptedPreparation(id)
+        solveAdmissionAllowed = true; admission.reconcile()
+        assertTrue(store.execution.sessions(id).any { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN })
+        assertEquals(accepted, store.execution.acceptedPreparation(id)); assertEquals(1, publications)
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
     @Test fun `a target that conflicts with execution placement is refused before allocating or retrying`() {
         val host = settings.targets.single { !it.native }
         val runtime = host.copy(template = host.template.copy(nodeClass = "arm-runtime"), tags = setOf("arch:arm64", "simd:sve"))
@@ -293,7 +311,7 @@ class NomadQueueTest {
         queue().reconcile()
         assertEquals(1, store.execution.sessions(id).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP })
     }
-    @Test fun `cloud preparation waits before publication and charging until the preceding placement binds`() {
+    @Test fun `cloud preparations beyond a node's compiler slots wait before publication and charging until placements bind`() {
         val first = job(ExperimentSpec("first-build", host = Experiments.AWS_HOST))
         val second = job(ExperimentSpec("second-build", host = Experiments.AWS_HOST))
         val third = job(ExperimentSpec("third-build", host = Experiments.AWS_HOST))
@@ -306,14 +324,11 @@ class NomadQueueTest {
             store.execution.bind(session.id, env.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content, allocation, "busy", "release")
         }
         admission.reconcile()
-        assertEquals(1, publications)
-        assertTrue(store.execution.sessions(second).isEmpty())
-        assertEquals(0L, store.job(second)!!.runMs)
-        assertNull(store.job(second)!!.runningSince)
-        bind(first, "first-allocation")
-        admission.reconcile()
-        assertEquals(2, publications)
+        assertEquals(2, publications, "a booting node no longer holds the next job's preparation")
         assertTrue(store.execution.sessions(third).isEmpty())
+        assertEquals(0L, store.job(third)!!.runMs)
+        assertNull(store.job(third)!!.runningSince)
+        bind(first, "first-allocation")
         bind(second, "second-allocation")
         admission.reconcile()
         val payload = store.execution.submission(store.execution.sessions(third).single().id)
@@ -633,6 +648,8 @@ class NomadQueueTest {
         val id = job(ExperimentSpec("reclaim", vcpus = 8, priority = -2, host = HostPlacement.AUTO))
         store.setPriority(id, -2)
         queue().reconcile(); prepare(id, 8); backend.reconcile()
+        val preparationRunMs = store.job(id)!!.runMs
+        assertNull(store.job(id)!!.runningSince, "accepted preparation retains its elapsed time before waiting for a solve worker")
         // Initial policy predates capacity-aware admission and fills the remaining slot with a cloud intent.
         queue(cores = 4).reconcile()
         val pending = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE &&
@@ -643,7 +660,8 @@ class NomadQueueTest {
         assertEquals(frozen, store.execution.manifest(pending.id))
         assertTrue(store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN }
             .all { store.execution.placement(it.id).native })
-        assertEquals(0L, store.job(id)!!.runMs)
+        assertEquals(preparationRunMs, store.job(id)!!.runMs, "an unbound handoff must neither refund preparation time nor charge solve execution")
+        assertNull(store.job(id)!!.runningSince)
         assertTrue(store.execution.events(id).any { it.detail == "lost:placement-native-capacity" })
     }
 
@@ -701,7 +719,8 @@ class NomadQueueTest {
         override fun allocation(id: String): NomadAllocation? = null
         override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
     }
-    private val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") })
+    private var solveAdmissionAllowed = true
+    private val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, solveAllowed = { solveAdmissionAllowed })
     private fun target(platform: NomadPlatform, name: String, market: CapacityMarket = CapacityMarket.SPOT): NomadQueueTarget {
         val mac = platform == NomadPlatform.MAC
         return NomadQueueTarget(NomadBatchJob("template", platform, name, NomadCpuCapacity(8000, 8), ResourceBudget(4000, 4096, 2),
@@ -888,6 +907,16 @@ class NomadQueueTest {
         assertEquals(1, solves.size)
         assertTrue(solves.all { it.release == "release" && it.budget.memoryMiB == 768 })
         assertEquals(1, publications)
+    }
+
+    @Test fun `without a per host cap a job's cloud sessions place together within its CPU limit`() {
+        val id = job(ExperimentSpec("cloud-fanout", problems = listOf(mapOf("suite" to "s")), vcpus = 8, host = Experiments.AWS_HOST))
+        val narrow = narrow(1000)
+        queue(policy = narrow).reconcile(); prepare(id, 4); backend.reconcile(); queue(policy = narrow).reconcile()
+        val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
+        assertTrue(solves.size > 1, "unplaced sessions no longer wait for each other's node")
+        assertTrue(solves.all { it.node == null })
+        assertTrue(solves.sumOf { it.budget.cpuMillis } <= 8000, "the job's vCPUs still bound its sessions")
     }
 
     @Test fun `explicit cloud per host cap is independent of worker CPU requests`() {

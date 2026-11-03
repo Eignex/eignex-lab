@@ -127,11 +127,17 @@ class NomadQueue(
                 val current = store.job(job.id) ?: continue
                 if (current.cancelRequested || current.paused || current.status.isTerminal) continue
                 if (store.unclaimed(job.id) == 0) continue
-                val cases = store.plans.casePlan(job.id).map { row ->
-                    val armIndex = recipe.arms.indexOfFirst { it.arm.label == row.arm }
-                    val execution = preparation.armPlans[row.arm]?.cases?.single { BenchRuns.key(it) == BenchRuns.key(requireNotNull(row.problem.benchCase)) }
-                    WorkCase(row.index, armIndex, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
-                        current.commands.single { it.index == row.index }.timeoutSec, execution)
+                if (!backend.mayStartSolve()) continue
+                // Built only when a session is created; indexed so an 800-case job is linear, not quadratic, per pass.
+                val cases by lazy {
+                    val arms = recipe.arms.withIndex().associate { (index, arm) -> arm.arm.label to index }
+                    val timeouts = current.commands.associate { it.index to it.timeoutSec }
+                    val executions = preparation.armPlans.mapValues { (_, plan) -> plan.cases.groupBy { BenchRuns.key(it) } }
+                    store.plans.casePlan(job.id).map { row ->
+                        val execution = executions[row.arm]?.getValue(BenchRuns.key(requireNotNull(row.problem.benchCase)))?.single()
+                        WorkCase(row.index, arms[row.arm] ?: -1, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
+                            requireNotNull(timeouts[row.index]) { "case ${row.index} has no command" }, execution)
+                    }
                 }
                 val pending = store.plans.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
@@ -179,6 +185,7 @@ class NomadQueue(
                     session.desired != Desired.STOP && store.execution.placement(session.id).enforcement == enforcement }
                 fun cloudSessions() = solving(CpuEnforcement.HARD_QUOTA)
                 for (index in active.size until limit) {
+                    if (!backend.mayStartSolve()) break
                     val remainingCpu = cpuLimit - sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }.sumOf { it.budget.cpuMillis }
                     val reserved = store.execution.nativeReservation()
                     val nativeSessions = solving(CpuEnforcement.ADVISORY_NATIVE)
@@ -193,8 +200,10 @@ class NomadQueue(
                             memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
                     val available = ordered.mapNotNull { target -> fitting(target)?.takeIf { it.cpuMillis <= remainingCpu }?.let { target to it } }
                         .filter { (target, _) ->
-                            // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
-                            if (!target.native) cloudSessions().none { it.node == null } else mayUseNative(job.id, target)
+                            // A per-host cap needs the previous cloud placement bound before deciding which hosts still have
+                            // parallel slots. Without one, the job's sessions place together, bounded by its CPU limit.
+                            if (!target.native) this.settings.perHostParallel == null || cloudSessions().none { it.node == null }
+                            else mayUseNative(job.id, target)
                         }
                     val (target, budget) = available.firstOrNull { (target, budget) ->
                         if (!target.native) cloudMayRun(target, current, budget) else {
@@ -369,23 +378,24 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         }
         val approved = arms.map { it.sha }.toSet()
         val inputs = SourceInputs({ repository, sha -> require(repository == spec.repository && sha in approved); trust.requireRepository() })
-        val declarations = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().map { sha ->
+        val declarations = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().associateWith { sha ->
             val text = checked(mirror, "show", "$sha:${bench.manifest}")
             val value = com.eignex.lab.bench.BenchProtocol.json.parseToJsonElement(text).jsonObject["runtime"]
             val runtime = value?.let { com.eignex.lab.bench.BenchProtocol.json.decodeFromJsonElement(BenchRuns.Runtime.serializer(), it) } ?: BenchRuns.Runtime()
             runtime.validate()
-            runtime.requiredTags to BenchRuns.preparation(text)?.also { it.target.validateRequirements(runtime.requiredTags) }
+            Triple(runtime.requiredTags, BenchRuns.preparation(text)?.also { it.target.validateRequirements(runtime.requiredTags) }, BenchRuns.sourceHistory(text))
         } }.orEmpty()
-        val requirements = declarations.flatMap { it.first }.toSet()
-        val contracts = declarations.map { it.second }.distinct()
+        val requirements = declarations.values.flatMap { it.first }.toSet()
+        val contracts = declarations.values.map { it.second }.distinct()
         require(contracts.size <= 1) { "preparation contracts differ between comparison arms" }
         val build = WorkerBuild(spec.work.profile?.let { ProfileRuns.buildTasks(spec.repository, it) } ?: emptyList(), settings.preparationTimeoutSec,
             benchManifest = spec.work.bench?.manifest, requiredTags = requirements, preparation = contracts.singleOrNull())
         val platforms = targets.distinctBy { it.os to it.arch }
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
             val first = platforms.first()
+            val includeHistory = declarations[sha]?.third ?: true
             val reused = sourceCache.reuse(job.id, spec.repository, sha, first.os, first.arch, "jdk25", build,
-                authorize = { require(sha in approved); trust.requireRepository() }) {
+                authorize = { require(sha in approved); trust.requireRepository() }, includeHistory = includeHistory) {
                 store.active(withCommands = false).asSequence().filter { it.id != job.id && it.experiment?.repository == spec.repository }.take(32).flatMap { other ->
                     store.execution.sessions(other.id).asSequence().filter { it.executionClass == ExecutionClass.PREPARE }.mapNotNull { session ->
                         runCatching { other.id to store.execution.manifest(session.id) }.getOrNull()
@@ -398,7 +408,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             }
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
             try {
-                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output)
+                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output, includeHistory = includeHistory)
                 if (artifacts.reuse(job.id, bundle.sha256) == null) {
                     val offset = artifacts.offset(job.id, bundle.sha256)
                     Files.newInputStream(output).use { stream -> stream.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, Files.size(output), offset, stream) }
