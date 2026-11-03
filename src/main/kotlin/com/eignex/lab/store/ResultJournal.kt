@@ -81,6 +81,8 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     /** Admission hint only, read without filesystem IO or taking the journal monitor/SQLite lock together.
      * Owned captures can exceed the headroom; the journal's unchanged reservation checks remain authoritative. */
     fun allowsNewSolve(): Boolean = !closed && !solveHeld
+    /** Whether any of [job]'s accepted results still await publication to the external store. */
+    fun pending(job: Long): Boolean = synchronized(monitor) { index.keys.any { it.first == job } }
     private var receiving = 0
     @Volatile private var closed = false
     @Volatile private var lastError: String? = null
