@@ -154,6 +154,8 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
                 if (force) FileChannel.open(partial, WRITE).use { it.force(true) }
                 Files.move(partial, full, ATOMIC_MOVE)
                 if (force) FileChannel.open(full.parent, READ).use { it.force(true) }
+                // The verified complete write is already published; do not stat it again to rediscover its size.
+                return bytes
             }
             return offset(job, sha)
         } }

@@ -174,16 +174,20 @@ object Volumes {
         for (entry in paths(paths)) {
             val dir = Path.of(entry.path)
             val problem = problem(entry.label, dir, paths.volumesRoot, paths.volumeAccess, mounted)
+            val measured = if (problem == null) runCatching { space(dir) } else null
+            val found = measured?.getOrNull()
+            val failure = problem ?: measured?.exceptionOrNull()?.let { "not readable: ${it.message}" }
             val key = if (problem != null) {
                 (mountPointOf(dir, paths.volumesRoot) ?: dir).toString()
             } else {
-                runCatching { space(dir).mount }.getOrElse { dir.toString() }
+                found?.mount ?: dir.toString()
             }
-            volumes[key] = volumes[key]?.let { it.copy(paths = it.paths + entry) } ?: if (problem != null) {
-                VolumeReport(key, null, null, listOf(entry), problem)
+            val prior = volumes[key]
+            val entries = prior?.paths.orEmpty() + entry
+            volumes[key] = if (failure != null) {
+                VolumeReport(key, null, null, entries, prior?.problem ?: failure)
             } else {
-                runCatching { space(dir) }.map { VolumeReport(it.mount, it.freeBytes, it.totalBytes, listOf(entry)) }
-                    .getOrElse { VolumeReport(key, null, null, listOf(entry), "not readable: ${it.message}") }
+                prior?.copy(paths = entries) ?: checkNotNull(found).let { VolumeReport(it.mount, it.freeBytes, it.totalBytes, entries) }
             }
         }
         return volumes.values.toList()

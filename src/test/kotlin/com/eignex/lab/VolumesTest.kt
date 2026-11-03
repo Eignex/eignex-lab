@@ -90,6 +90,23 @@ class VolumesTest {
     }
 
     @Test
+    fun `a failed space observation remains unavailable until a later report succeeds`() {
+        val config = external()
+        var fail = true
+        val observe: (Path) -> VolumeSpace = { path ->
+            if (fail) { fail = false; throw java.io.IOException("temporary metadata failure") }
+            space(100 * gb, 3000 * gb)(path)
+        }
+        val failed = Volumes.report(config.paths, observe) { true }.single { it.paths.any { path -> path.name == "LAB_DATA" } }
+        assertNull(failed.freeBytes)
+        assertNull(failed.totalBytes)
+        assertTrue(failed.problem!!.contains("temporary metadata failure"))
+        val recovered = Volumes.report(config.paths, observe) { true }
+        assertTrue(recovered.all { it.problem == null })
+        assertEquals(listOf("/", "/Volumes/Ros"), recovered.map { it.mount })
+    }
+
+    @Test
     fun `everything on one disk is one volume, held by its free space alone`() {
         val config = Config(dataDir = Path("/Users/lab/data"), corpusDir = Path("/Users/lab/corpus"), auth = Auth.Disabled, volumeAccess = answers)
         val volumes = Volumes.report(config.paths, space(100 * gb, 0)) { true }
