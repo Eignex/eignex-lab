@@ -530,6 +530,11 @@ class PortableWorkerTest {
         git("tag", "old-tag"); Files.delete(repository.resolve("removed.bin"))
         Files.writeString(repository.resolve("gradlew"), "mkdir -p build; git rev-parse HEAD > build/commit; git rev-list --count HEAD > build/history; git show HEAD:café.txt > build/from-git")
         Files.writeString(repository.resolve("café.txt"), "current source")
+        Files.writeString(repository.resolve(".gitattributes"), "café.txt export-ignore\nbinary.bin -text\n")
+        val binary = ByteArray(256 * 1024) { (it % 251).toByte() }
+        Files.write(repository.resolve("binary.bin"), binary)
+        Files.write(repository.resolve("empty.txt"), byteArrayOf())
+        Files.writeString(repository.resolve("duplicate.txt"), "current source")
         Files.writeString(repository.resolve("tool"), "executable source"); repository.resolve("tool").toFile().setExecutable(true)
         val outside = root.resolve("snapshot-host-secret"); Files.writeString(outside, "do not read")
         Files.createSymbolicLink(repository.resolve("outside.link"), outside)
@@ -546,6 +551,12 @@ class PortableWorkerTest {
         assertFalse(manifest.files.any { it.path == "removed.bin" || it.path == "untracked-secret" || it.path.startsWith(".git/hooks/") || it.path.startsWith(".git/logs/") })
         assertTrue(manifest.files.single { it.path == "tool" }.executable)
         assertTrue(com.eignex.lab.execution.SourceSnapshots.usable(manifest))
+        assertEquals(0L, manifest.files.single { it.path == "empty.txt" }.bytes)
+        val limited = root.resolve("snapshot-source-too-large.zip")
+        assertFailsWith<IllegalArgumentException> {
+            SourceInputs({ _, _ -> }, maxBytes = 1024).publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, limited, includeHistory = false)
+        }
+        assertFalse(Files.exists(limited), "a failed streaming budget check must not publish partial source")
 
         // A mirror repack and a new export directory must not invalidate the worker's existing ZIP-keyed cache.
         git("repack", "-adF", "--window=0")
@@ -557,6 +568,9 @@ class PortableWorkerTest {
         assertTrue(Files.size(output) * 10 < Files.size(full), "deleted historical bytes must not travel with the snapshot")
 
         val source = VerifiedCache(root.resolve("snapshot-sources")).stage(manifest) { Files.newInputStream(output) }
+        assertContentEquals(binary, Files.readAllBytes(source.resolve("binary.bin")))
+        assertEquals("current source", Files.readString(source.resolve("café.txt")), "archive attributes must not omit committed build inputs")
+        assertEquals("current source", Files.readString(source.resolve("duplicate.txt")))
         val tree = WorkerBuildCache(root.resolve("snapshot-builds"), ProcessSupervisor(socket)).prepare(manifest, source,
             ResourceBudget(1000, 512), System.getenv()) { 10000 }
         assertEquals(commit, Files.readString(tree.resolve("build/commit")).trim())
