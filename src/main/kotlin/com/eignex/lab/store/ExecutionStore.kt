@@ -113,6 +113,10 @@ internal data class PreparationExitFailure(val count: Int, val stage: String, va
 
 /** All worker mutations share Store's IMMEDIATE write transaction, including cancellation and case projection. */
 class ExecutionStore internal constructor(private val store: Store) {
+    /** The newest event id of [job], or null without events: a cheap change marker for its projected log. */
+    fun lastEventId(job: Long): Long? = store.executionRead { db ->
+        db.sqlRows("SELECT MAX(id) FROM execution_events WHERE job_id = ?", job) { it.getLong(1).takeUnless { _ -> it.wasNull() } }.single()
+    }
     fun events(job: Long): List<ExecutionEvent> = store.executionRead { db ->
         db.sqlRows("SELECT * FROM execution_events WHERE job_id = ? ORDER BY id DESC LIMIT 5000", job) {
             ExecutionEvent(it.getLong("id"), it.getString("session_id"), it.getString("detail"), it.getLong("at"))
