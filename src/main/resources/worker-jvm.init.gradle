@@ -21,3 +21,20 @@ gradle.projectsEvaluated {
     }
     gradle.startParameter.excludedTaskNames += tests
 }
+
+// The lab's shared remote build cache, reached through the worker's loopback proxy: task outputs from
+// earlier preparations on any node are reused, and this build's outputs are offered back.
+def labCache = System.getenv('LAB_GRADLE_CACHE_URL')
+if (labCache) {
+    gradle.settingsEvaluated { settings ->
+        settings.buildCache {
+            local { enabled = true }
+            remote(HttpBuildCache) {
+                url = labCache
+                push = true
+                allowInsecureProtocol = true
+                useExpectContinue = false
+            }
+        }
+    }
+}
