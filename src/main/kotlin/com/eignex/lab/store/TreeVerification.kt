@@ -82,12 +82,14 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     }
 
     /** A successful trusted filesystem copy preserves bytes. Bind it to a verified source before/after copying,
-     * then record the new private inodes. No hard links, and setup changes still require fresh checksums. */
+     * then record the new private inodes. Return the complete verified inventory only after its receipt is published;
+     * callers with no intervening setup can seal that private copy without another traversal. No hard links, and
+     * setup changes still require fresh checksums. */
     fun copy(source: Path, sourceReceipt: Path, destination: Path, receipt: Path,
-             checkActive: () -> Unit = {}, include: (Path) -> Boolean = { true }, copy: () -> Unit) {
+             checkActive: () -> Unit = {}, include: (Path) -> Boolean = { true }, copy: () -> Unit): List<InputFile>? {
         val started = System.nanoTime(); var copyingNanos = 0L
         try {
-            copyTree(source, sourceReceipt, destination, receipt, checkActive, include) {
+            return copyTree(source, sourceReceipt, destination, receipt, checkActive, include) {
                 val copyingAt = System.nanoTime()
                 try { copy() } finally { copyingNanos = System.nanoTime() - copyingAt }
             }
@@ -95,7 +97,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     }
 
     private fun copyTree(source: Path, sourceReceipt: Path, destination: Path, receipt: Path,
-                         checkActive: () -> Unit, include: (Path) -> Boolean, copy: () -> Unit) {
+                         checkActive: () -> Unit, include: (Path) -> Boolean, copy: () -> Unit): List<InputFile>? {
         val original = if (reliable(source)) previous(source, sourceReceipt) else null
         val proof = original?.let { it.copy(files = it.files.filter { file -> include(Path.of(file.file.path)) }) }
         val expectedProof = proof?.files?.associateBy { it.file.path }.orEmpty()
@@ -129,7 +131,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
         }
         val started = System.nanoTime(); unchanged(); val checked = System.nanoTime()
         copy(); val copiedAt = System.nanoTime(); unchanged(); val confirmed = System.nanoTime()
-        if (proof == null || !reliable(destination)) return // Portable checksum fallback when metadata cannot prove identity.
+        if (proof == null || !reliable(destination)) return null // Portable checksum fallback when metadata cannot prove identity.
         val expected = proof.files.associateBy { it.file.path }
         val copied = mutableListOf<Written>()
         walk(destination, checkActive) { file, observed ->
@@ -145,6 +147,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
         // Restatting the entire destination here cannot strengthen that later check.
         writeReceipt(receipt, Receipt(1, rootKey(destination), copied.sortedBy { it.file.path }))
         println("worker copy timing: sourceMs=${(checked-started)/1_000_000} copyMs=${(copiedAt-checked)/1_000_000} confirmMs=${(confirmed-copiedAt)/1_000_000} targetMs=${(observed-confirmed)/1_000_000} receiptMs=${(System.nanoTime()-observed)/1_000_000} files=${copied.size}")
+        return copied.map { it.file }
     }
 
     fun valid(tree: Path, expected: List<InputFile>, receipt: Path, checkActive: () -> Unit = {},

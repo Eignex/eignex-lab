@@ -26,6 +26,93 @@ class MacDirectoryEntriesTest {
         return bytes
     }
 
+    private fun listingRecord(name: String = "fixture", type: Int = 1): ByteArray {
+        val encoded = name.toByteArray()
+        val fixed = if (type == 1) 48 else 40
+        val bytes = ByteArray((fixed + encoded.size + 1 + 7) / 8 * 8)
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder())
+        buffer.putInt(0, bytes.size); buffer.putInt(4, 9)
+        buffer.putInt(16, if (type == 1) 0x200 else 0)
+        buffer.putInt(28, fixed - 28); buffer.putInt(32, encoded.size + 1); buffer.putInt(36, type)
+        if (type == 1) buffer.putLong(40, 17)
+        encoded.copyInto(bytes, fixed)
+        return bytes
+    }
+
+    @Test fun `listing records represent only names types and lengths including directories and links`() {
+        val records = listingRecord("é-雪") + listingRecord("directory", 2) + listingRecord("link", 5) + listingRecord(".", 2)
+        val entries = assertNotNull(MacDirectoryEntries.decodeListing(records, 4))
+        assertEquals(listOf(MacDirectoryEntries.ListingEntry("é-雪", false, true, 17),
+            MacDirectoryEntries.ListingEntry("directory", true, false, 0),
+            MacDirectoryEntries.ListingEntry("link", false, false, 0)), entries)
+        assertNull(MacDirectoryEntries.decode(records, 4), "listing hints must never satisfy strong verification metadata")
+        val partial = listingRecord("file").copyOfRange(0, 48)
+        assertNull(MacDirectoryEntries.decodeListing(partial, 1))
+    }
+
+    @Test fun `listing rejects missing attributes errors unsupported layouts and malformed name bounds`() {
+        fun rejected(change: (ByteBuffer) -> Unit) {
+            val bytes = listingRecord(); change(ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder()))
+            assertNull(MacDirectoryEntries.decodeListing(bytes, 1))
+        }
+        rejected { it.putInt(0, Int.MAX_VALUE) }
+        rejected { it.putInt(0, 39) }
+        rejected { it.putInt(0, 55) }
+        rejected { it.putInt(4, 8) }
+        rejected { it.putInt(4, 1) }
+        rejected { it.putInt(4, 11) }
+        rejected { it.putInt(8, 1) }
+        rejected { it.putInt(12, 1) }
+        rejected { it.putInt(16, 0) }
+        rejected { it.putInt(16, 0x201) }
+        rejected { it.putInt(20, 1) }
+        rejected { it.putInt(24, 5) }
+        rejected { it.putInt(28, Int.MIN_VALUE) }
+        rejected { it.putInt(28, 19) }
+        rejected { it.putInt(28, 21) }
+        rejected { it.putInt(32, Int.MAX_VALUE) }
+        rejected { it.putInt(32, 0) }
+        rejected { it.putLong(40, -1) }
+        assertNull(MacDirectoryEntries.decodeListing(listingRecord().copyOf(39), 1))
+        assertNull(MacDirectoryEntries.decodeListing(listingRecord(), 2))
+        assertNull(MacDirectoryEntries.decodeListing(listingRecord("unsafe/name"), 1))
+        assertNull(MacDirectoryEntries.decodeListing(listingRecord("unsafe\u0000name"), 1))
+        assertNull(MacDirectoryEntries.decodeListing(listingRecord(""), 1))
+        val unterminated = listingRecord(); unterminated[48 + "fixture".length] = 1
+        assertNull(MacDirectoryEntries.decodeListing(unterminated, 1))
+    }
+
+    @Test fun `native minimal listings match ordinary no-follow attributes across multiple buffers`() {
+        assumeTrue(System.getProperty("os.name").lowercase().contains("mac"))
+        val root = Files.createTempDirectory("mac-listing-metadata")
+        try {
+            repeat(1400) { Files.writeString(root.resolve("file-$it"), "value-$it") }
+            Files.writeString(root.resolve("é-雪"), "unicode")
+            Files.createDirectory(root.resolve("directory"))
+            Files.createSymbolicLink(root.resolve("file-link"), root.resolve("file-0"))
+            Files.createSymbolicLink(root.resolve("dir-link"), root.resolve("directory"))
+            val entries = assertNotNull(MacDirectoryEntries.readListing(root, {}))
+            assertEquals(1404, entries.size)
+            for (entry in entries) {
+                val expected = Files.readAttributes(root.resolve(entry.name), java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+                assertEquals(expected.isDirectory, entry.directory, entry.name)
+                assertEquals(expected.isRegularFile, entry.regular, entry.name)
+                assertEquals(if (expected.isRegularFile) expected.size() else 0L, entry.bytes, entry.name)
+            }
+            val ordinary = com.eignex.lab.domain.jobFiles(root) { _, _ -> null }
+            assertEquals(ordinary, com.eignex.lab.domain.jobFiles(root), "native hints retain the complete ordinary inventory")
+            assertFalse(entries.single { it.name == "file-link" }.regular)
+            assertFalse(entries.single { it.name == "dir-link" }.directory)
+            assertNull(MacDirectoryEntries.readListing(root.resolve("file-link"), {}))
+            assertNull(MacDirectoryEntries.readListing(root.resolve("dir-link"), {}))
+            var calls = 0
+            assertFailsWith<CancellationException> {
+                MacDirectoryEntries.readListing(root) { if (++calls == 2) throw CancellationException("listing ended") }
+            }
+            assertNotNull(MacDirectoryEntries.readListing(root, {}))
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `packed metadata handles unaligned times unicode and multiple records`() {
         val entries = assertNotNull(MacDirectoryEntries.decode(record("é-雪") + record("second"), 2))
         assertEquals(listOf("é-雪", "second"), entries.map { it.name })

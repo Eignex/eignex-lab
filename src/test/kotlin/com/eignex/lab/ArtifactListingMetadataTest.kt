@@ -43,17 +43,38 @@ class ArtifactListingMetadataTest {
         assertFailsWith<IllegalArgumentException> { store.file(1, sha) }
     }
 
+    @Test fun `unsupported listing metadata falls back without losing legacy files or following links`() {
+        val root = Files.createTempDirectory("listing-fallback")
+        try {
+            Files.createDirectories(root.resolve("cases/0/out"))
+            Files.writeString(root.resolve("cases/0/out/legacy.txt"), "legacy")
+            Files.writeString(root.resolve("job.log"), "log")
+            Files.createDirectories(root.resolve("nomad/prepared-trees/private"))
+            Files.writeString(root.resolve("nomad/prepared-trees/private/secret"), "hidden")
+            Files.createSymbolicLink(root.resolve("case-link"), root.resolve("cases"))
+            val files = jobFiles(root) { _, _ -> null }
+            assertEquals(listOf(FileEntry("cases/0/out/legacy.txt", 6), FileEntry("job.log", 3)), files)
+            if (!System.getProperty("os.name").lowercase().contains("mac")) assertNull(MacDirectoryEntries.readListing(root, {}))
+            val thread = Thread.currentThread()
+            thread.interrupt()
+            try { assertFailsWith<InterruptedException> { jobFiles(root) { _, _ -> null } } }
+            finally { Thread.interrupted() }
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `ordinary file inventory reuses directory batches and excludes links and private trees`() {
         val root = Files.createTempDirectory("job-metadata")
         Files.createDirectories(root.resolve("cases"))
         Files.createDirectories(root.resolve("nomad"))
         val visited = mutableListOf<String>()
+        fun listing(name: String, bytes: Long, directory: Boolean = false, regular: Boolean = !directory) =
+            MacDirectoryEntries.ListingEntry(name, directory, regular, bytes)
         val files = jobFiles(root) { path, _ ->
             val name = root.relativize(path).joinToString("/"); visited += name
             when (name) {
-                "" -> listOf(entry("cases", 0, directory = true), entry("nomad", 0, directory = true), entry("log-link", 0, regular = false))
-                "cases" -> listOf(entry("ordinary.txt", 21))
-                "nomad" -> listOf(entry("prepared-trees", 0, directory = true))
+                "" -> listOf(listing("cases", 0, directory = true), listing("nomad", 0, directory = true), listing("log-link", 0, regular = false))
+                "cases" -> listOf(listing("ordinary.txt", 21))
+                "nomad" -> listOf(listing("prepared-trees", 0, directory = true))
                 else -> error("private subtree was visited")
             }
         }

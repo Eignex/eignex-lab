@@ -21,6 +21,71 @@ import java.util.concurrent.RejectedExecutionException
 import kotlin.test.*
 
 class WorkerWorkspacesTest {
+    @Test fun `execution copy handoff is immediately reusable and still rejects mutations and prunes outputs`() {
+        val root = Files.createTempDirectory("execution-copy-handoff")
+        val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
+        TreeVerification().capture(source, root.resolve("source.verified.json"))
+        val cache = WorkerWorkspaces(root.resolve("workspaces")); val key = "3".repeat(64)
+        try {
+            val tree = cache.copySealed(key, source) {}
+            assertEquals(tree, cache.reuse(key) {}, "execution copies must be ready without a second explicit seal")
+            Files.writeString(tree.resolve("generated"), "output")
+            assertEquals(tree, cache.reuse(key) {})
+            assertFalse(Files.exists(tree.resolve("generated")))
+            val modified = Files.getLastModifiedTime(tree.resolve("code"))
+            Files.writeString(tree.resolve("code"), "corrupt"); Files.setLastModifiedTime(tree.resolve("code"), modified)
+            assertNull(cache.reuse(key) {}, "handoff must retain the copied source identity")
+            assertEquals("fixture", Files.readString(source.resolve("code")))
+        } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
+    }
+
+    @Test fun `execution copies without usable source proof fall back to ordinary sealing`() {
+        val root = Files.createTempDirectory("execution-copy-fallback")
+        val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
+        val cache = WorkerWorkspaces(root.resolve("workspaces"))
+        try {
+            for ((index, proof) in listOf<String?>(null, "damaged receipt").withIndex()) {
+                if (proof != null) Files.writeString(root.resolve("source.verified.json"), proof)
+                val key = (index + 4).toString().repeat(64)
+                val tree = cache.copySealed(key, source) {}
+                assertEquals(tree, cache.reuse(key) {})
+                Files.writeString(tree.resolve("code"), "corrupt")
+                assertNull(cache.reuse(key) {})
+            }
+        } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
+    }
+
+    @Test fun `cancellation after copy receipt publication cannot publish a ready execution workspace`() {
+        val root = Files.createTempDirectory("execution-copy-cancel")
+        val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
+        TreeVerification().capture(source, root.resolve("source.verified.json"))
+        val workspace = root.resolve("workspaces"); val cache = WorkerWorkspaces(workspace); val key = "6".repeat(64)
+        try {
+            assertFailsWith<CancellationException> {
+                cache.copySealed(key, source) {
+                    if (Files.exists(workspace.resolve("$key.verified.json"))) throw CancellationException("after copy")
+                }
+            }
+            assertTrue(Files.exists(workspace.resolve("$key.verified.json")), "fixture must reach completed copy publication")
+            assertNull(cache.reuse(key) {})
+        } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
+    }
+
+    @Test fun `preparation copies remain unsealed until trusted setup has finished`() {
+        val root = Files.createTempDirectory("preparation-copy-setup")
+        val source = Files.createDirectory(root.resolve("source")); Files.writeString(source.resolve("code"), "fixture")
+        TreeVerification().capture(source, root.resolve("source.verified.json"))
+        val cache = WorkerWorkspaces(root.resolve("workspaces")); val key = "7".repeat(64)
+        try {
+            val tree = cache.copy(key, source, {}, false)
+            assertNull(cache.reuse(key) {})
+            Files.writeString(tree.resolve("setup"), "prepared")
+            cache.seal(key, tree) {}
+            assertEquals(tree, cache.reuse(key) {})
+            assertEquals("prepared", Files.readString(tree.resolve("setup")))
+        } finally { assertTrue(cache.awaitCleanupIdle()); deleteTree(root) }
+    }
+
     @Test fun `ordinary Git status preserves sealed workspaces while detecting dirt and allowing required writes`() {
         val root = Files.createTempDirectory("workspace-git-status")
         val source = Files.createDirectory(root.resolve("source"))

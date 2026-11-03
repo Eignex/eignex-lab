@@ -19,6 +19,9 @@ import java.time.Instant
 internal object MacDirectoryEntries {
     data class Entry(val name: String, val directory: Boolean, val regular: Boolean, val bytes: Long,
                      val modified: String, val changed: String, val key: String, val executable: Boolean)
+    /** Listing hints cannot be mistaken for the stronger receipt/verification metadata in Entry. */
+    data class ListingEntry(val name: String, val directory: Boolean, val regular: Boolean, val bytes: Long)
+    private const val LISTING_COMMON = 0xa0000009.toInt() // returned attrs, error, name, object type only
     private const val BUFFER_BYTES = 64 * 1024
     private val common = 0xa2200c0b.toInt() // returned attrs, error, name, device, type, mtime, ctime, access, inode
     private const val FILE_LENGTH = 0x00000200
@@ -62,6 +65,72 @@ internal object MacDirectoryEntries {
                 @Suppress("UNREACHABLE_CODE") null
             } finally { functions.close.invoke(fd) }
         }
+    }
+
+    /** Only names, no-follow types and regular-file lengths; no identity, clocks or effective-access lookup.
+     * XNU attr.h defines the masks; getattrlistbulk(2) puts returned attrs/error before ordinary fields,
+     * aligns records to eight bytes and individual fields to four. See the primary docs linked above and
+     * https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/attr.h */
+    fun readListing(directory: Path, checkActive: () -> Unit): List<ListingEntry>? {
+        if (!supported(directory)) return null
+        val functions = requireNotNull(native)
+        checkActive()
+        return Arena.ofConfined().use { arena ->
+            val fd = functions.open.invoke(arena.allocateFrom(directory.toString()), 0x01100100) as Int
+            if (fd < 0) return@use null
+            try {
+                val attributes = arena.allocate(24, 4)
+                attributes.fill(0)
+                attributes.set(JAVA_SHORT, 0, 5.toShort())
+                attributes.set(JAVA_INT, 4, LISTING_COMMON)
+                attributes.set(JAVA_INT, 16, FILE_LENGTH)
+                val buffer = arena.allocate(BUFFER_BYTES.toLong(), 8)
+                val entries = mutableListOf<ListingEntry>()
+                while (true) {
+                    checkActive()
+                    val count = functions.read.invoke(fd, attributes, buffer, BUFFER_BYTES.toLong(), 8L) as Int
+                    if (count < 0) return@use null
+                    if (count == 0) return@use entries
+                    entries += decodeListing(buffer.toArray(JAVA_BYTE), count) ?: return@use null
+                }
+                @Suppress("UNREACHABLE_CODE") null
+            } finally { functions.close.invoke(fd) }
+        }
+    }
+
+    internal fun decodeListing(bytes: ByteArray, count: Int): List<ListingEntry>? {
+        // uint32 length; attribute_set_t(20); uint32 error; attrreference_t(8); fsobj_type_t(4).
+        // A regular file then has off_t length(8). Directories omit the type-specific file field.
+        if (count !in 0..bytes.size / 40) return null
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.nativeOrder())
+        val result = mutableListOf<ListingEntry>()
+        var offset = 0
+        repeat(count) {
+            if (offset > bytes.size - 40) return null
+            val length = buffer.getInt(offset)
+            if (length < 40 || length % 8 != 0 || length > bytes.size - offset) return null
+            val mask = buffer.getInt(offset + 4)
+            val fileMask = buffer.getInt(offset + 16)
+            if (mask and 9 != 9 || mask and LISTING_COMMON.inv() != 0 ||
+                buffer.getInt(offset + 8) != 0 || buffer.getInt(offset + 12) != 0 ||
+                fileMask and FILE_LENGTH.inv() != 0 || buffer.getInt(offset + 20) != 0 || buffer.getInt(offset + 24) != 0) return null
+            val type = buffer.getInt(offset + 36)
+            val regular = type == 1
+            if (regular && fileMask and FILE_LENGTH == 0) return null
+            val fixed = if (regular || fileMask and FILE_LENGTH != 0) 48 else 40
+            val nameOffset = buffer.getInt(offset + 28).toLong() + 28
+            val nameBytes = buffer.getInt(offset + 32)
+            if (nameOffset < fixed || nameOffset % 4 != 0L || nameBytes !in 1..4096 || nameOffset + nameBytes > length) return null
+            val start = offset + nameOffset.toInt()
+            if (bytes[start + nameBytes - 1] != 0.toByte()) return null
+            val name = String(bytes, start, nameBytes - 1, Charsets.UTF_8)
+            if (name.isEmpty() || '/' in name || '\u0000' in name) return null
+            val size = if (regular) buffer.getLong(offset + 40) else 0
+            if (size < 0) return null
+            if (name !in setOf(".", "..")) result += ListingEntry(name, type == 2, regular, size)
+            offset += length
+        }
+        return result
     }
 
     /** Packed records use four-byte field alignment even for 64-bit values. Validate every range and mask. */

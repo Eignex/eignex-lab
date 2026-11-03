@@ -58,7 +58,7 @@ internal class IterationExecutor(
             withInput(manifest.inputCorpus, ::checkRun) { input -> copyTree(input, corpus, ::checkRun) }
         } else Files.createDirectories(corpus)
         val inputsReady = System.nanoTime()
-        val fresh = mutableListOf<Pair<String, Path>>()
+        var fresh = 0
         val concurrent = minOf(manifest.budget.parallel, selected.size)
         // Cases running at once each get their own copy of their commit's tree: a consumer's case may build in it (a
         // koblas vendor comparison runs Gradle there), and builds sharing one tree corrupt each other. Slot 0 keeps the
@@ -73,7 +73,7 @@ internal class IterationExecutor(
                     fun copy(cached: Path): Path {
                         fun stage(destination: Path) { copyTree(cached, destination, ::checkRun) }
                         // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                        return privateWorkspaces?.copy(key, cached, ::checkRun, false)
+                        return privateWorkspaces?.copySealed(key, cached, ::checkRun)
                             ?: directory.resolve("worktrees").resolve(if (slot == 0) sha else "$sha-$slot").also(::stage)
                     }
                     val local = if (bundle.tree == null) null else nativeTrees
@@ -82,17 +82,15 @@ internal class IterationExecutor(
                         if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
                             .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
                     }
-                    fresh += key to tree
+                    fresh++
                     tree
                 })
             } }
         }
         val workspacesReady = System.nanoTime()
-        val setupReady = System.nanoTime()
-        if (privateWorkspaces != null) for ((key, tree) in fresh) privateWorkspaces.seal(key, tree, ::checkRun)
-        val sealed = System.nanoTime()
+        // Fresh private execution copies are already sealed before their paths are exposed to consumers.
         prepared()
-        println("worker staging timing: inputsMs=${(inputsReady-stagingStart)/1_000_000} workspaceMs=${(workspacesReady-inputsReady)/1_000_000} setupMs=${(setupReady-workspacesReady)/1_000_000} sealMs=${(sealed-setupReady)/1_000_000} notifyMs=${(System.nanoTime()-sealed)/1_000_000} fresh=${fresh.size}")
+        println("worker staging timing: inputsMs=${(inputsReady-stagingStart)/1_000_000} workspaceMs=${(workspacesReady-inputsReady)/1_000_000} setupMs=0 sealMs=0 notifyMs=${(System.nanoTime()-workspacesReady)/1_000_000} fresh=$fresh")
         val timedOut = java.util.concurrent.atomic.AtomicBoolean()
         val cpu = Semaphore(manifest.budget.cpuMillis)
         val threads = Executors.newFixedThreadPool(concurrent)
