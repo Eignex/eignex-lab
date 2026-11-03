@@ -1,6 +1,10 @@
 package com.eignex.lab.web
 
 import com.eignex.lab.domain.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.concurrent.*
@@ -27,7 +31,8 @@ internal class JobFileInventory(
         val charge: Long = json.length * 2L + files.sumOf { 192L + 2L * (it.path.length + (it.sha256?.length ?: 0)) }
     }
     private class Entry(var requested: Long, var snapshot: Snapshot? = null, var failed: Long? = null, var failure: ApiError? = null)
-    private data class Task(val future: CompletableFuture<Snapshot>, var completedAt: Long? = null)
+    private data class Task(val future: CompletableFuture<Snapshot>, var completedAt: Long? = null,
+                            val completion: CompletableDeferred<Snapshot> = CompletableDeferred())
     private val entries = LinkedHashMap<Long, Entry>(16, .75f, true)
     private val tasks = mutableMapOf<Long, Task>()
     private val executor = ThreadPoolExecutor(parallel, parallel, 0, TimeUnit.SECONDS, ArrayBlockingQueue(maxPending),
@@ -44,7 +49,31 @@ internal class JobFileInventory(
     /** A short bounded await never substitutes an empty or partial array for an inventory still being prepared. */
     fun get(job: Long, waitMs: Long = 1_000): Snapshot? {
         require(waitMs in 0..1_000)
-        val task = synchronized(entries) {
+        val task = request(job) ?: return null
+        return try {
+            task.future.get(waitMs, TimeUnit.MILLISECONDS).also { delivered(job, task) }
+        } catch (_: TimeoutException) { null }
+        catch (_: ExecutionException) { null }
+        catch (_: CancellationException) { null }
+    }
+
+    /** Explicit inventory fetches can wait on this request's fresh validation without occupying an IO thread. */
+    suspend fun await(job: Long, waitMs: Long): Snapshot? {
+        require(waitMs in 1..30_000)
+        val task = request(job) ?: return null
+        return try {
+            withTimeoutOrNull(waitMs) { task.completion.await() }?.also { delivered(job, task) }
+        } catch (_: Throwable) {
+            // A timed-out/disconnected caller never cancels shared work; shutdown/failure remains unavailable.
+            currentCoroutineContext().ensureActive()
+            null
+        }
+    }
+
+    private fun delivered(job: Long, task: Task) = synchronized(entries) { tasks.remove(job, task) }
+
+    private fun request(job: Long): Task? {
+        return synchronized(entries) {
             if (closed) return null
             val now = clock()
             removeEntries { _, entry -> now - entry.requested > idleMs }
@@ -85,6 +114,7 @@ internal class JobFileInventory(
                         synchronized(entries) {
                             created.completedAt = clock()
                             future.complete(snapshot)
+                            created.completion.complete(snapshot)
                             if (entry.snapshot === snapshot) tasks.remove(job, created)
                         }
                     } catch (failure: Throwable) {
@@ -93,16 +123,12 @@ internal class JobFileInventory(
                             tasks.remove(job, created)
                         }
                         future.completeExceptionally(failure)
+                        created.completion.completeExceptionally(failure)
                     } finally { completed() }
                 }
             } catch (_: RejectedExecutionException) { tasks.remove(job, created); return null }
             created
         }
-        return try {
-            task.future.get(waitMs, TimeUnit.MILLISECONDS).also { synchronized(entries) { tasks.remove(job, task) } }
-        } catch (_: TimeoutException) { null }
-        catch (_: ExecutionException) { null }
-        catch (_: CancellationException) { null }
     }
 
     fun age(snapshot: Snapshot): Long = (clock() - snapshot.at).coerceAtLeast(0)
@@ -126,7 +152,7 @@ internal class JobFileInventory(
     override fun close() {
         synchronized(entries) {
             closed = true
-            tasks.values.forEach { it.future.cancel(true) }
+            tasks.values.forEach { it.future.cancel(true); it.completion.cancel() }
             tasks.clear(); entries.clear(); names = 0; bytes = 0
         }
         executor.shutdownNow()

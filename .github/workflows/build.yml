@@ -86,7 +86,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build/inventory-test-results
-          for receipt in JobFileInventoryTest AcceptedArtifactFilesTest; do
+          for receipt in JobFileInventoryTest AcceptedArtifactFilesTest JobFilesTest; do
             if [ -f "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" ]; then
               cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/inventory-test-results/
             fi

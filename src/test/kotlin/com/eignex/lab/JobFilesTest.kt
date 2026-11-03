@@ -139,6 +139,18 @@ class JobFilesTest {
     }
 
     @Test
+    fun `explicit inventory waits preserve the complete response and enforce the request bound`() = withLab { lab ->
+        for (wait in listOf("0", "31", "-1", "bad", "999999999999999999999999")) {
+            assertEquals(HttpStatusCode.BadRequest, client.get("/jobs/${lab.id}/files?waitSec=$wait").status)
+        }
+        val response = client.get("/jobs/${lab.id}/files?waitSec=30")
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.bodyAsText()
+        assertTrue("job.log" in body && "cases/0/record.json" in body, body)
+        assertFalse("secret" in body || "leak" in body, body)
+    }
+
+    @Test
     fun `a job's files are served from LAB_JOBS when it is set`() {
         val jobs = Files.createTempDirectory("jobs")
         val config = Config(dataDir = Files.createTempDirectory("lab"), jobsDir = jobs, auth = Auth.Disabled)

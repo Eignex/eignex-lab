@@ -2,11 +2,18 @@ package com.eignex.lab
 
 import com.eignex.lab.domain.*
 import com.eignex.lab.web.*
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit.SECONDS
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
@@ -176,5 +183,85 @@ class JobFileInventoryTest {
         Files.delete(log)
         assertEquals(missing, stamp())
         assertEquals(20, probes, "validation must not enumerate a directory or inspect accepted blobs")
+    }
+
+    @Test fun `explicit wait delivers fresh inventories whose slow validations finish between short polls`() = runBlocking {
+        val entered = LinkedBlockingQueue<Int>(); val finished = LinkedBlockingQueue<Unit>()
+        val permits = Semaphore(0); val calls = AtomicInteger(); val reads = AtomicInteger()
+        var version = 1
+        JobFileInventory({ id ->
+            entered.put(calls.incrementAndGet()); permits.acquire()
+            key(id, version, Status.DONE)
+        }, { reads.incrementAndGet(); listOf(file.copy(bytes = it.version.toLong())) },
+            completed = { finished.put(Unit) }).use { inventory ->
+            try {
+                // Two default one-second waits keep each validation behind its latch for at least two seconds.
+                // Release it in the polling gap, then repeat: an already complete warm snapshot is still missed.
+                repeat(2) { attempt ->
+                    assertNull(inventory.get(1))
+                    assertNull(inventory.get(1))
+                    assertEquals(if (attempt == 0) 1 else 3, entered.poll(2, SECONDS))
+                    permits.release(if (attempt == 0) 2 else 1)
+                    if (attempt == 0) assertEquals(2, entered.poll(2, SECONDS))
+                    assertNotNull(finished.poll(2, SECONDS))
+                }
+                assertEquals(1, reads.get(), "enumeration completed; only repeated validation prevented delivery")
+                version = 2
+                val waiting = async(start = CoroutineStart.UNDISPATCHED) { inventory.await(1, 30_000) }
+                assertEquals(4, entered.poll(2, SECONDS))
+                assertFalse(waiting.isCompleted, "the request suspends while validation stays in the background")
+                permits.release(2)
+                val snapshot = assertNotNull(withTimeout(2_000) { waiting.await() })
+                assertEquals(2, snapshot.key.version)
+                assertEquals(2L, snapshot.files.single().bytes)
+                assertEquals(2, reads.get())
+            } finally { permits.release(16) }
+        }
+    }
+
+    @Test fun `long poll timeout and cancellation leave shared inventory work available to another waiter`() = runBlocking {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val reads = AtomicInteger()
+        JobFileInventory({ key(it) }, {
+            reads.incrementAndGet(); entered.countDown(); release.await(); listOf(file)
+        }).use { inventory ->
+            try {
+                val disconnected = async(start = CoroutineStart.UNDISPATCHED) { inventory.await(1, 30_000) }
+                assertTrue(entered.await(2, SECONDS))
+                val waiting = async(start = CoroutineStart.UNDISPATCHED) { inventory.await(1, 30_000) }
+                assertNull(inventory.await(1, 1), "a bounded timeout must not cancel the shared future")
+                disconnected.cancelAndJoin()
+                assertFalse(waiting.isCompleted)
+                release.countDown()
+                assertEquals(listOf(file), assertNotNull(withTimeout(2_000) { waiting.await() }).files)
+                assertEquals(1, reads.get())
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun `explicit waits keep oversized handoff generation and metadata failures strict`() = runBlocking {
+        var version = 1; var status = Status.RUNNING; var trimmed = false; var fail = false; var now = 0L
+        val reads = AtomicInteger()
+        JobFileInventory({ id ->
+            if (fail) throw ApiError.Unavailable("metadata unavailable")
+            key(id, version, status, trimmed)
+        }, { reads.incrementAndGet(); listOf(file, file.copy(path = "second.log")) }, maxNames = 1,
+            clock = { now }).use { inventory ->
+            assertEquals(2, assertNotNull(inventory.await(1, 1_000)).files.size)
+            version++
+            assertEquals(2, assertNotNull(inventory.await(1, 1_000)).key.version)
+            status = Status.DONE
+            assertEquals(Status.DONE, assertNotNull(inventory.await(1, 1_000)).key.status)
+            trimmed = true
+            assertTrue(assertNotNull(inventory.await(1, 1_000)).key.trimmed)
+            assertEquals(4, reads.get())
+            fail = true
+            assertNull(inventory.await(1, 1_000), "metadata failure cannot serve a completed oversized handoff")
+            assertEquals(503, assertNotNull(inventory.failure(1)).status.value)
+            assertEquals(4, reads.get())
+            fail = false; now = 2_001
+            assertEquals(2, assertNotNull(inventory.await(1, 1_000)).files.size)
+            assertNull(inventory.failure(1))
+        }
     }
 }
