@@ -52,45 +52,53 @@ internal class IterationExecutor(
             requireNotNull(SharedInputs.environment()) { "shared input transport is not configured" }
                 .acquire(manifest.sharedInputs, ::checkRun, required = iterationInputPaths(selected))
         } else null
+        var slotStaging: WorkerSlotStaging? = null
         try {
         val corpus = inputs?.directory ?: directory.resolve("corpus")
         if (manifest.inputCorpus != null) {
             withInput(manifest.inputCorpus, ::checkRun) { input -> copyTree(input, corpus, ::checkRun) }
         } else Files.createDirectories(corpus)
         val inputsReady = System.nanoTime()
-        var fresh = 0
         val concurrent = minOf(manifest.budget.parallel, selected.size)
         // Cases running at once each get their own copy of their commit's tree: a consumer's case may build in it (a
         // koblas vendor comparison runs Gradle there), and builds sharing one tree corrupt each other. Slot 0 keeps the
         // tree's existing key, so a serial session is unchanged.
-        val worktrees = selected.groupingBy { manifest.arms[it.arm].sha }.eachCount().mapValues { (sha, count) ->
+        val groups = selected.groupingBy { manifest.arms[it.arm].sha }.eachCount().mapValues { (sha, count) ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             val base = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
-            val slots = minOf(count, concurrent)
-            java.util.concurrent.ArrayBlockingQueue<Path>(slots).also { pool -> repeat(slots) { slot ->
+            List(minOf(count, concurrent)) { slot ->
                 val key = if (slot == 0) base else ExecutionStore.digest("$base\nslot=$slot")
-                pool.add(privateWorkspaces?.reuse(key, ::checkRun) ?: run {
-                    fun copy(cached: Path): Path {
-                        fun stage(destination: Path) { copyTree(cached, destination, ::checkRun) }
-                        // Never modify a reusable cache entry; keep it pinned until this attempt's copy is complete.
-                        return privateWorkspaces?.copySealed(key, cached, ::checkRun)
-                            ?: directory.resolve("worktrees").resolve(if (slot == 0) sha else "$sha-$slot").also(::stage)
-                    }
+                WorkerSlotStaging.Slot(sha, key, slot)
+            }
+        }
+        val slots = groups.values.flatten()
+        val staging = WorkerSlotStaging(manifest.budget, slots.size, ::checkRun).also { slotStaging = it }
+        val staged = staging.stage(slots,
+                reuse = { slot, check -> privateWorkspaces?.reuse(slot.key, check) },
+                source = { sha, check, consume ->
+                    val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
                     val local = if (bundle.tree == null) null else nativeTrees
-                    val tree = if (local != null) local.use(bundle, ::checkRun) { source, _ -> copy(source) }
-                    else withInput(bundle, ::checkRun, runtimeOnly = false) { source ->
-                        if (bundle.build == null) copy(source) else requireNotNull(buildCache) { "source build cache is not configured" }
-                            .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = ::copy)
+                    if (local != null) local.use(bundle, check) { source, _ -> consume(source) }
+                    else withInput(bundle, check, runtimeOnly = false) { source ->
+                        if (bundle.build == null) consume(source) else requireNotNull(buildCache) { "source build cache is not configured" }
+                            .withPrepared(bundle, source, manifest.budget, environment(), ::runRemaining, remainingLeaseMs, use = consume)
                     }
-                    fresh++
-                    tree
+                },
+                copy = { slot, source, check ->
+                    privateWorkspaces?.copySealed(slot.key, source, check)
+                        ?: directory.resolve("worktrees").resolve(if (slot.number == 0) slot.source else "${slot.source}-${slot.number}")
+                            .also { copyTree(source, it, check) }
                 })
-            } }
+        staging.finish()
+        val worktrees = groups.mapValues { (_, group) ->
+            java.util.concurrent.ArrayBlockingQueue<Path>(group.size).also { pool ->
+                group.forEach { slot -> pool.add(staged.paths.getValue(slot.key)) }
+            }
         }
         val workspacesReady = System.nanoTime()
         // Fresh private execution copies are already sealed before their paths are exposed to consumers.
         prepared()
-        println("worker staging timing: inputsMs=${(inputsReady-stagingStart)/1_000_000} workspaceMs=${(workspacesReady-inputsReady)/1_000_000} setupMs=0 sealMs=0 notifyMs=${(System.nanoTime()-workspacesReady)/1_000_000} fresh=$fresh")
+        println("worker staging timing: inputsMs=${(inputsReady-stagingStart)/1_000_000} workspaceMs=${(workspacesReady-inputsReady)/1_000_000} setupMs=0 sealMs=0 notifyMs=${(System.nanoTime()-workspacesReady)/1_000_000} fresh=${staged.fresh}")
         val timedOut = java.util.concurrent.atomic.AtomicBoolean()
         val cpu = Semaphore(manifest.budget.cpuMillis)
         val threads = Executors.newFixedThreadPool(concurrent)
@@ -156,7 +164,7 @@ internal class IterationExecutor(
             }
             return IterationResult(results, runTimedOut = timedOut.get())
         } finally { threads.shutdownNow() }
-        } finally { inputs?.close() }
+        } finally { try { inputs?.close() } finally { slotStaging?.close() } }
     }
 
     /** Large literal arguments stay intact in the invocation and artifact; bounded result metadata uses the planned command. */

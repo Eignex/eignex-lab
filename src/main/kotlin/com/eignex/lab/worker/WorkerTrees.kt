@@ -92,13 +92,11 @@ internal object WorkerTrees {
                 else listOf("/bin/cp", "--reflink=auto", "-Rp")) + remaining.map(Path::toString) + destination.toString()
             val started = System.nanoTime()
             val process = ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()
-            try {
+            withOwnedCopyProcess(process) {
                 while (!process.waitFor(20, TimeUnit.MILLISECONDS)) checkActive()
                 if (process.exitValue() != 0) throw java.io.IOException("private runtime copy failed")
                 val elapsed = (System.nanoTime()-started)/1_000_000
                 if (elapsed > 250) println("worker tree copy timing: group=${destination.fileName} entries=${batch.size} clone=$clone elapsedMs=$elapsed")
-            } finally {
-                if (process.isAlive) { process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS) }
             }
         }
     }
