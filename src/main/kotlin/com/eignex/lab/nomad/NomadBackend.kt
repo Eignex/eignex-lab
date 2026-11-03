@@ -115,7 +115,7 @@ class NomadBackend(
         return session
     }
 
-    fun claim(id: String, token: String, allocation: String): IterationClaim? {
+    fun claim(id: String, token: String, allocation: String, waitWhenHeld: Boolean = false): IterationClaim? {
         val session = store.execution.session(id) ?: throw ExecutionFenced("unknown session")
         // A retried claim must retain its current iteration even if priorities changed meanwhile.
         if (!store.execution.hasActiveAttempt(id) && store.execution.placement(id).native && !nativeMayRun(session.jobId)) {
@@ -124,7 +124,7 @@ class NomadBackend(
         }
         // Read the cached pressure bit at claim allocation, after replaying any existing owner.
         // Production's callback takes no journal monitor and performs no filesystem IO.
-        return store.execution.claim(id, token, allocation, allowNewSolve = ::mayStartSolve)
+        return store.execution.claim(id, token, allocation, allowNewSolve = ::mayStartSolve, waitWhenHeld = waitWhenHeld)
     }
 
     fun selectPreparation(owner: AttemptOwner, requested: List<List<Problem>>): List<List<Problem>> {

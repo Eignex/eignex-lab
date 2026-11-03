@@ -69,6 +69,7 @@ object NomadCoordinatorCli {
         val reconcileSignal = CoordinatorSignal()
         val artifacts = ResultJournal(journalRoot,
             BuildArchives.coordinator()?.let { RegionalArtifactStore(localArtifacts, it, config.dataDir.resolve("nomad/build-fetches")) } ?: localArtifacts,
+            maxBytes = config.resultJournalBytes,
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes },
             solveAdmissionChanged = { admissionSignal.wake(); reconcileSignal.wake() })
         periodic("nomad-result-journal-status", 5_000) {

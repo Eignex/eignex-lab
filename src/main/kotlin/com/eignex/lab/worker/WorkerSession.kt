@@ -120,10 +120,20 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         resourceReporter.scheduleWithFixedDelay({ checkpoint() }, 0, 5, TimeUnit.SECONDS)
         try {
+        var heldSince: Long? = null
         while (true) {
             if (interruption.requested()) return
-            val response = retry { json("claim", "{}") }
+            val response = retry { json("claim", """{"wait":true}""") }
             if (response.statusCode() == 204) return
+            if (response.statusCode() == 202) {
+                // Journal pressure: keep this session and its warm workspaces, but not indefinitely.
+                val started = heldSince ?: System.nanoTime().also { heldSince = it }
+                if (System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) return
+                val retryMs = runCatching { Json.decodeFromString<SolveWait>(String(response.body())).retryMs }.getOrDefault(5_000L)
+                Thread.sleep(retryMs.coerceIn(1_000L, 30_000L))
+                continue
+            }
+            heldSince = null
             val claim = Json.decodeFromString<IterationClaim>(String(response.body()))
             val deadline = AtomicLong(0)
             fun renew() {
@@ -449,6 +459,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     }
 
     companion object {
+        /** Longest continuous journal-pressure wait before an idle worker releases its node. */
+        internal const val MAX_SOLVE_WAIT_MS = 15 * 60_000L
+
         fun main(args: List<String>): Int = runCatching {
             require(args.isEmpty()) { "worker uses allocation environment only" }
             fun env(key: String) = requireNotNull(System.getenv(key)) { "$key is required" }

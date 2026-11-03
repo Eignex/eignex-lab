@@ -28,6 +28,9 @@ import io.ktor.util.AttributeKey
 import java.net.URI
 
 @Serializable data class WorkerRegistration(val release: String)
+/** A worker that sets [wait] keeps its session through journal pressure, asking again after [SolveWait.retryMs]. */
+@Serializable data class ClaimRequest(val wait: Boolean = false)
+@Serializable data class SolveWait(val retryMs: Long)
 @Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
 @Serializable data class WorkerBenchSelections(val owner: AttemptOwner, val keys: List<String>)
 @Serializable data class WorkerCommit(val owner: AttemptOwner, val result: IterationResult)
@@ -77,7 +80,10 @@ fun Application.workerApi(
             }
             post("/claim") {
                 check(workAllowed()); call.session
-                val c = call.credentials(); val claim = backend.claim(c.session, c.token, c.allocation)
+                val c = call.credentials()
+                val request = claimJson.decodeFromString<ClaimRequest>(call.bodyText(CLAIM_BYTES).ifBlank { "{}" })
+                val claim = try { backend.claim(c.session, c.token, c.allocation, waitWhenHeld = request.wait) }
+                    catch (_: SolveAdmissionHeld) { call.respond(HttpStatusCode.Accepted, SolveWait(SOLVE_WAIT_MS)); return@post }
                 if (claim == null) call.respond(HttpStatusCode.NoContent) else call.respond(claim)
             }
             post("/renew") {
@@ -279,6 +285,9 @@ fun Application.workerApi(
 
 /** The most a registration's body, a release name, may be. */
 private const val REGISTRATION_BYTES = 8 * 1024
+private const val CLAIM_BYTES = 1024
+internal const val SOLVE_WAIT_MS = 5_000L
+private val claimJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
 private val SESSION = AttributeKey<ExecutionSession>("WorkerSession")
 

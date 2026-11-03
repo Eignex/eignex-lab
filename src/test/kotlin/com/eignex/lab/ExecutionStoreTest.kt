@@ -19,6 +19,22 @@ import org.junit.jupiter.params.provider.CsvSource
 import kotlin.test.*
 
 class ExecutionStoreTest {
+    @Test fun `journal pressure keeps a waiting worker's session without draining it`() {
+        val id = job(problems = 3); bind(id)
+        val before = store.job(id)!!
+        assertFailsWith<SolveAdmissionHeld> {
+            store.execution.claim("s", token, "alloc-s", 1001, allowNewSolve = { false }, waitWhenHeld = true)
+        }
+        assertEquals(Desired.RUN, store.execution.session("s")!!.desired)
+        assertEquals(0, store.execution.events(id).count { it.detail == "held:journal-pressure" })
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.QUEUED && it.host == null })
+        // Once the journal drains, the same session claims normally.
+        val claim = assertNotNull(store.execution.claim("s", token, "alloc-s", 1002, waitWhenHeld = true))
+        assertTrue(claim.indices.isNotEmpty())
+        assertEquals(before.priority, store.job(id)!!.priority)
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
     @Test fun `journal pressure replays owned paired rows before declining new claims`() {
         val id = job(problems = 3); bind(id)
         val before = store.job(id)!!
