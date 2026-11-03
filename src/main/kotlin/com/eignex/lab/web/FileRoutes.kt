@@ -41,8 +41,12 @@ internal fun Route.fileRoutes(services: ApiServices) {
             else services.fileInventory.await(id, waitSec * 1_000)
         if (snapshot == null) {
             call.response.header(HttpHeaders.RetryAfter, "2")
-            services.fileInventory.failure(id)?.let { throw it }
-            throw ApiError.Unavailable("complete file inventory is being prepared or temporarily unavailable; retry shortly")
+            val detail = services.fileInventory.readiness(id).detail()
+            services.fileInventory.failure(id)?.let {
+                if (it is ApiError.Unavailable) throw ApiError.Unavailable(it.message ?: "file inventory unavailable", detail)
+                throw it
+            }
+            throw ApiError.Unavailable("complete file inventory is being prepared or temporarily unavailable; retry shortly", detail)
         }
         call.response.header("X-Lab-Inventory-Age-Ms", services.fileInventory.age(snapshot).toString())
         if (call.wantsHtml()) call.respondHtml(filesPage(id, snapshot.files))

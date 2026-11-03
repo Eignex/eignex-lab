@@ -7,6 +7,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.IOException
 import java.util.concurrent.*
 
 /** Complete inventories are built off request threads, including their filesystem validation and JSON encoding. */
@@ -24,14 +25,32 @@ internal class JobFileInventory(
     private val retryMs: Long = 2_000,
     private val idleMs: Long = 300_000,
     private val completed: () -> Unit = {},
+    private val detailedRead: ((Key, (Phase) -> Unit) -> List<FileEntry>)? = null,
 ) : AutoCloseable {
     data class Key(val job: Long, val version: Int, val status: Status, val trimmed: Boolean,
                    val logs: List<JobLogStamp> = emptyList())
     data class Snapshot(val key: Key, val at: Long, val files: List<FileEntry>, val json: String) {
         val charge: Long = json.length * 2L + files.sumOf { 192L + 2L * (it.path.length + (it.sha256?.length ?: 0)) }
     }
-    private class Entry(var requested: Long, var snapshot: Snapshot? = null, var failed: Long? = null, var failure: ApiError? = null)
-    private data class Task(val future: CompletableFuture<Snapshot>, var completedAt: Long? = null,
+    internal enum class Phase { QUEUED, VALIDATING, READING, PHYSICAL_FILES, ACCEPTED_METADATA, PREPARATION_METADATA, REVALIDATING, ENCODING }
+    internal enum class State { WAITING, BUSY, FAILED, IDLE, CLOSED }
+    internal enum class ErrorCategory { IO, UNAVAILABLE, NOT_FOUND, INVALID_METADATA, CHANGED, CANCELLED, INTERNAL }
+    internal data class Readiness(val state: State, val phase: Phase?, val elapsedMs: Long, val phaseElapsedMs: Long,
+                                  val lastError: ErrorCategory?, val lastFailurePhase: Phase?, val failureAgeMs: Long?, val snapshotAgeMs: Long?,
+                                  val snapshotStale: Boolean?, val retryInMs: Long) {
+        /** Fixed labels/numbers only; never exception text, file names, paths or payloads. A retained snapshot
+         * has not passed this unavailable request's validation, even when its age is within the cache lifetime. */
+        fun detail(): String = "state=${state.name.lowercase()} phase=${phase?.name?.lowercase() ?: "none"} " +
+            "elapsedMs=$elapsedMs phaseElapsedMs=$phaseElapsedMs lastError=${lastError?.name?.lowercase() ?: "none"} lastFailurePhase=${lastFailurePhase?.name?.lowercase() ?: "none"} " +
+            "failureAgeMs=${failureAgeMs ?: "none"} snapshotAgeMs=${snapshotAgeMs ?: "none"} " +
+            "snapshotStale=${snapshotStale ?: "none"} currentValidated=false retryInMs=$retryInMs"
+    }
+    private data class Failure(val phase: Phase, val category: ErrorCategory, val elapsedMs: Long, val phaseElapsedMs: Long)
+    private class ChangedDuringRefresh : IllegalStateException("file inventory changed during refresh")
+    private class Entry(var requested: Long, var snapshot: Snapshot? = null, var failed: Long? = null,
+                        var failure: ApiError? = null, var diagnostic: Failure? = null, var snapshotInvalidated: Boolean = false)
+    private data class Task(val future: CompletableFuture<Snapshot>, val at: Long, var phase: Phase = Phase.QUEUED,
+                            var phaseAt: Long = at, var completedAt: Long? = null,
                             val completion: CompletableDeferred<Snapshot> = CompletableDeferred())
     private val entries = LinkedHashMap<Long, Entry>(16, .75f, true)
     private val tasks = mutableMapOf<Long, Task>()
@@ -88,23 +107,36 @@ internal class JobFileInventory(
             if (prior != null) tasks.remove(job, prior)
             if (entry.failed?.let { now - it < retryMs } == true || tasks.size >= maxPending) return null
             val future = CompletableFuture<Snapshot>()
-            val created = Task(future)
+            val created = Task(future, now)
             tasks[job] = created
+            fun phase(value: Phase) = synchronized(entries) {
+                created.phase = value
+                created.phaseAt = clock()
+            }
             try {
                 executor.execute {
                     try {
+                        phase(Phase.VALIDATING)
                         val key = validate(job)
-                        val previous = synchronized(entries) { entry.snapshot ?: handoff }
+                        val previous = synchronized(entries) {
+                            (entry.snapshot ?: handoff).also {
+                                if (entry.snapshot != null && entry.snapshot?.key != key) entry.snapshotInvalidated = true
+                            }
+                        }
                         val maximum = if (key.status.isTerminal) endedAgeMs else activeAgeMs
                         val snapshot = if (previous != null && previous.key == key && clock() - previous.at <= maximum) previous else {
-                            val files = read(key)
-                            check(validate(job) == key) { "file inventory changed during refresh" }
+                            phase(Phase.READING)
+                            val files = detailedRead?.invoke(key, ::phase) ?: read(key)
+                            phase(Phase.REVALIDATING)
+                            if (validate(job) != key) throw ChangedDuringRefresh()
+                            phase(Phase.ENCODING)
                             Snapshot(key, clock(), files, Json.encodeToString(files))
                         }
                         synchronized(entries) {
                             if (entries[job] === entry && !closed) {
                                 entry.failed = null
                                 entry.failure = null
+                                entry.diagnostic = null
                                 if (snapshot.files.size <= maxNames && snapshot.charge <= maxBytes) {
                                     setSnapshot(entry, snapshot)
                                     while (names > maxNames || bytes > maxBytes) removeEntry(entries.keys.first())
@@ -119,7 +151,13 @@ internal class JobFileInventory(
                         }
                     } catch (failure: Throwable) {
                         synchronized(entries) {
-                            if (entries[job] === entry) { entry.failed = clock(); entry.failure = failure as? ApiError }
+                            if (entries[job] === entry) {
+                                val at = clock()
+                                entry.failed = at; entry.failure = failure as? ApiError
+                                entry.diagnostic = Failure(created.phase, category(failure),
+                                    (at - created.at).coerceAtLeast(0), (at - created.phaseAt).coerceAtLeast(0))
+                                if (failure is ChangedDuringRefresh && entry.snapshot != null) entry.snapshotInvalidated = true
+                            }
                             tasks.remove(job, created)
                         }
                         future.completeExceptionally(failure)
@@ -135,9 +173,41 @@ internal class JobFileInventory(
 
     fun failure(job: Long): ApiError? = synchronized(entries) { entries[job]?.failure }
 
+    /** Read cached progress only. This must never call validate/read, inspect storage, or start another refresh. */
+    fun readiness(job: Long): Readiness = synchronized(entries) {
+        val now = clock(); val entry = entries[job]; val task = tasks[job]?.takeUnless { it.future.isDone }
+        val failure = entry?.diagnostic; val failedAt = entry?.failed
+        val snapshot = entry?.snapshot; val age = snapshot?.let { (now - it.at).coerceAtLeast(0) }
+        val state = when {
+            closed -> State.CLOSED
+            task != null -> if (task.phase == Phase.QUEUED) State.WAITING else State.BUSY
+            failedAt != null -> State.FAILED
+            snapshot != null -> State.IDLE
+            else -> State.WAITING
+        }
+        Readiness(state, task?.phase ?: failure?.phase,
+            task?.let { (now - it.at).coerceAtLeast(0) } ?: failure?.elapsedMs ?: 0,
+            task?.let { (now - it.phaseAt).coerceAtLeast(0) } ?: failure?.phaseElapsedMs ?: 0,
+            failure?.category, failure?.phase, failedAt?.let { (now - it).coerceAtLeast(0) }, age,
+            snapshot?.let { entry?.snapshotInvalidated == true ||
+                requireNotNull(age) > (if (it.key.status.isTerminal) endedAgeMs else activeAgeMs) },
+            failedAt?.let { (retryMs - (now - it)).coerceIn(0, retryMs) } ?: 0)
+    }
+
+    private fun category(failure: Throwable): ErrorCategory = when (failure) {
+        is ChangedDuringRefresh -> ErrorCategory.CHANGED
+        is ApiError.Unavailable -> ErrorCategory.UNAVAILABLE
+        is ApiError.NotFound -> ErrorCategory.NOT_FOUND
+        is IOException -> ErrorCategory.IO
+        is InterruptedException, is CancellationException -> ErrorCategory.CANCELLED
+        is IllegalArgumentException -> ErrorCategory.INVALID_METADATA
+        else -> ErrorCategory.INTERNAL
+    }
+
     private fun setSnapshot(entry: Entry, snapshot: Snapshot) {
         entry.snapshot?.let { names -= it.files.size; bytes -= it.charge }
         entry.snapshot = snapshot
+        entry.snapshotInvalidated = false
         names += snapshot.files.size; bytes += snapshot.charge
     }
 
