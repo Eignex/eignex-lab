@@ -207,7 +207,7 @@ class CapacityCollector(
         val observations = observed.map { node ->
             val instance = byCapacityId.getValue(node.id)
             when {
-                !instance.draining && node.state != CapacityNodeState.DRAINING && node.id in startup.retiring &&
+                !instance.draining && node.state !in setOf(CapacityNodeState.READY, CapacityNodeState.DRAINING) && node.id in startup.retiring &&
                     (node.id !in registered || startup.retiring.getValue(node.id).authorized) -> node.copy(state = CapacityNodeState.REPLACING)
                 node.id !in registered && CapacityStartup.expired(instance, at) -> node.copy(state = CapacityNodeState.UNAVAILABLE)
                 else -> node

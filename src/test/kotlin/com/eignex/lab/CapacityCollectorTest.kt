@@ -113,6 +113,31 @@ class CapacityCollectorTest {
         assertTrue(durable.retiring.isEmpty()); assertTrue(durable.failed.isEmpty())
     }
 
+    @Test fun `ready first join remains usable after a lost retirement grant without refunding its budget`() {
+        at = 4_000_000
+        val instance = CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
+        store.execution.requestCapacity(pool.id, 1, 60_000, at)
+        sample(listOf(instance))
+        val c = collector(); c.collect(); c.grant(pool.id) // Its response never reaches the provider.
+        control.full = buildJsonObject {
+            put("ID", "late-node"); put("NodeClass", pool.nodeClass); put("Status", "ready"); put("ModifyIndex", 1)
+            putJsonObject("Meta") { put(CapacityWire.CAPACITY_ID_META, instance.id) }
+        }
+        repeat(2) { c.collect() }
+        val restarted = collector(); restarted.collect()
+        val node = restarted.snapshot().nodes.single()
+        assertEquals(CapacityNodeState.READY, node.state)
+        val demand = CapacityDemand("late-demand", 1, ResourceBudget(1000, 1024), 100, pool = pool.id)
+        val plan = CapacityPolicy.evaluate(settings, listOf(node), listOf(demand), at = at)
+        assertTrue(plan.placements.single().ready, "the joined worker must serve pending work")
+        val grant = restarted.grant(pool.id)
+        val payload = Json.parseToJsonElement(java.util.Base64.getUrlDecoder().decode(grant.payload).toString(Charsets.UTF_8)).jsonObject
+        assertFalse("startupRetirements" in payload)
+        val durable = Json.decodeFromString<CapacityStartupState>(Files.readString(state.resolveSibling("capacity-startup-state.json")))
+        assertTrue(durable.retiring.values.single().authorized, "an already issued grant can still be in flight")
+        assertEquals(1, durable.failed.getValue(pool.id).size, "joining after authorization does not refund circuit history")
+    }
+
     @Test fun `failed fresh Nomad revalidation cannot issue a startup retirement`() {
         at = 4_000_000
         sample(listOf(CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)))
