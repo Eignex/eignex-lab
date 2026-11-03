@@ -18,6 +18,15 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class BenchRunsTest {
+    @Test fun `source snapshots are explicit and invalid history contracts fail admission`() {
+        assertTrue(BenchRuns.sourceHistory("{}"))
+        assertTrue(BenchRuns.sourceHistory("""{"sourceHistory":"full"}"""))
+        assertFalse(BenchRuns.sourceHistory("""{"sourceHistory":"snapshot"}"""))
+        for (value in listOf("null", "true", "1", "{}", "\"shallow\"")) {
+            assertTrue(assertFailsWith<IllegalArgumentException> { BenchRuns.sourceHistory("{\"sourceHistory\":$value}") }.rejectsAdmission)
+        }
+    }
+
     @Test fun `cross build contracts freeze host capabilities independently of execution and preserve old wire identities`() {
         val execution = NodeSelector(require = setOf("cloud", "arch:arm64", "simd:sve", "rack:one"), exclude = setOf("spot", "simd:avx2"))
         val declaration = BenchRuns.preparation("""{"preparation":{"requiredTags":["platform:linux","arch:x86_64"],"target":{"os":"linux","arch":"arm64"}}}""")!!

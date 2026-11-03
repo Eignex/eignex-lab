@@ -2,6 +2,7 @@ package com.eignex.lab
 
 import com.eignex.lab.domain.*
 import com.eignex.lab.execution.Repositories
+import com.eignex.lab.execution.SourceSnapshots
 import com.eignex.lab.nomad.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
@@ -24,8 +25,9 @@ class SourceBundleCacheTest {
     }
     private fun reuse(job: Long, cache: SourceBundleCache = cache(), value: WorkerBundle = bundle,
                       build: WorkerBuild = WorkerBuild(), authorize: () -> Unit = {},
+                      includeHistory: Boolean = true,
                       recover: () -> Sequence<Pair<Long, WorkerBundle>> = { emptySequence() }) =
-        cache.reuse(job, value.repository, value.commit, "linux", "amd64", "jdk25", build, authorize, recover)
+        cache.reuse(job, value.repository, value.commit, "linux", "amd64", "jdk25", build, authorize, includeHistory, recover)
 
     @Test fun `restart reuses job-owned bytes without export and applies the current build and platform`() {
         publish(1); cache().remember(1, bundle, bytes.size.toLong())
@@ -51,6 +53,24 @@ class SourceBundleCacheTest {
         assertEquals(bundle.sha256, first.sha256)
         assertTrue(Files.isSameFile(artifacts.file(1, bundle.sha256), artifacts.file(2, bundle.sha256)))
         assertNotNull(reuse(3, recover = { error("recovery must populate the disposable hint") }))
+    }
+
+    @Test fun `source snapshots retain large inventories across restart without satisfying full history requests`() {
+        val marker = SourceSnapshots.receipt(bundle.commit)
+        val snapshot = bundle.copy(build = WorkerBuild(), files = listOf(InputFile(SourceSnapshots.RECEIPT, ExecutionStore.digest(marker), marker.toByteArray().size.toLong())) +
+            (0..999).map { InputFile("src/source-$it.kt", "c".repeat(64), 1) })
+        publish(1, snapshot); cache().remember(1, snapshot, bytes.size.toLong())
+        val build = WorkerBuild(listOf(":bench:installDist"), benchManifest = "bench.json")
+        val result = assertNotNull(reuse(2, value = snapshot, build = build, includeHistory = false,
+            recover = { error("snapshot metadata hit must not re-export") }))
+        assertEquals(snapshot.files, result.files); assertEquals(build, result.build)
+        assertNull(reuse(3, recover = { sequenceOf(1L to snapshot) }))
+        deleteTree(hints)
+        assertNotNull(reuse(4, includeHistory = false, recover = { sequenceOf(1L to snapshot) }))
+        deleteTree(hints)
+        assertNull(reuse(5, includeHistory = false, recover = { sequenceOf(1L to bundle) }))
+        val invalid = snapshot.copy(files = snapshot.files.filterNot { it.path == SourceSnapshots.RECEIPT })
+        assertFailsWith<IllegalArgumentException> { cache().remember(1, invalid, bytes.size.toLong()) }
     }
 
     @Test fun `different commits repositories and archives with extra inputs cannot share a source hint`() {
