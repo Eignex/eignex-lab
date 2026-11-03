@@ -130,11 +130,20 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
         // One fresh mount/space check covers this bounded small-output operation, as with a single upload chunk.
         require(blobs.size <= INLINE_FILES && blobs.values.sumOf { it.size.toLong() } <= INLINE_BYTES)
         check(writable()) { "artifact storage temporarily unavailable" }
-        for ((sha, bytes) in blobs) write(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
+        if (blobs.isEmpty()) return
+        for ((sha, bytes) in blobs) {
+            require(SHA256.matches(sha))
+            require(bytes.size.toLong() in 0..maxBytes) { "artifact size or offset limit exceeded" }
+        }
+        // A batch shares one job directory. Do not repeatedly walk its ancestors, or recreate it if a
+        // removal/unmount occurs after this check: a failed batch retains its journal-owned inputs.
+        Files.createDirectories(directory(job))
+        for ((sha, bytes) in blobs) write(job, sha, bytes.size.toLong(), 0, bytes.inputStream(), createParent = false)
     }
-    private fun write(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream): Long {
+    private fun write(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream, createParent: Boolean = true): Long {
         require(bytes in 0..maxBytes && offset in 0..bytes) { "artifact size or offset limit exceeded" }
-        val full = path(job, sha); Files.createDirectories(full.parent)
+        val full = path(job, sha)
+        if (createParent) Files.createDirectories(full.parent)
         synchronized(fileLockFor(full)) {
         FileChannel.open(full.resolveSibling("$sha.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
             val force = publishingJob.get() != job
