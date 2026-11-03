@@ -651,6 +651,8 @@ class NomadQueueTest {
         val id = job(ExperimentSpec("reclaim", vcpus = 8, priority = -2, host = HostPlacement.AUTO))
         store.setPriority(id, -2)
         queue().reconcile(); prepare(id, 8); backend.reconcile()
+        val preparationRunMs = store.job(id)!!.runMs
+        assertNull(store.job(id)!!.runningSince, "accepted preparation retains its elapsed time before waiting for a solve worker")
         // Initial policy predates capacity-aware admission and fills the remaining slot with a cloud intent.
         queue(cores = 4).reconcile()
         val pending = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE &&
@@ -661,7 +663,8 @@ class NomadQueueTest {
         assertEquals(frozen, store.execution.manifest(pending.id))
         assertTrue(store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN }
             .all { store.execution.placement(it.id).native })
-        assertEquals(0L, store.job(id)!!.runMs)
+        assertEquals(preparationRunMs, store.job(id)!!.runMs, "an unbound handoff must neither refund preparation time nor charge solve execution")
+        assertNull(store.job(id)!!.runningSince)
         assertTrue(store.execution.events(id).any { it.detail == "lost:placement-native-capacity" })
     }
 
