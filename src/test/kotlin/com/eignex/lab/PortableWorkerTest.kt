@@ -24,6 +24,58 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class PortableWorkerTest {
+    @Test fun `packed Git inputs require protocol seven and materialize the original shallow source once`(): Unit = service { socket ->
+        val repository = Files.createDirectory(root.resolve("pack-repository"))
+        fun command(directory: Path, vararg args: String): Pair<Int, String> {
+            val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + args).redirectErrorStream(true).start()
+            val text = process.inputStream.bufferedReader().readText().trim()
+            assertTrue(process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS))
+            return process.exitValue() to text
+        }
+        fun git(directory: Path, vararg args: String): String {
+            val (exit, text) = command(directory, *args); assertEquals(0, exit, text); return text
+        }
+        git(repository, "init", "--template=", "--initial-branch=main")
+        git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
+        Files.writeString(repository.resolve("removed.txt"), "old source")
+        git(repository, "add", "."); git(repository, "commit", "-m", "old source")
+        val parent = git(repository, "rev-parse", "HEAD")
+        Files.delete(repository.resolve("removed.txt"))
+        Files.writeString(repository.resolve("café.txt"), "current source")
+        Files.writeString(repository.resolve("tool"), "executable"); repository.resolve("tool").toFile().setExecutable(true)
+        val outside = root.resolve("outside-secret"); Files.writeString(outside, "not followed")
+        Files.createSymbolicLink(repository.resolve("outside.link"), outside)
+        git(repository, "add", "-A"); git(repository, "commit", "-m", "selected source")
+        val commit = git(repository, "rev-parse", "HEAD")
+        val source = Files.createDirectory(root.resolve("pack-inputs"))
+        git(source, "init", "--template=")
+        git(source, "config", "core.symlinks", "false")
+        git(source, "-c", "fetch.unpackLimit=1", "fetch", "--depth=1", "--no-tags", "--no-write-fetch-head", repository.toUri().toString(), commit)
+        Files.writeString(source.resolve(".git/HEAD"), "$commit\n")
+        val ref = source.resolve(".git/refs/lab-source/$commit"); Files.createDirectories(ref.parent); Files.writeString(ref, "$commit\n")
+        Files.writeString(source.resolve(PackedGitSource.MARKER), PackedGitSource.receipt(commit))
+        val files = Files.walk(source).use { paths -> paths.filter { Files.isRegularFile(it) }.map {
+            InputFile(source.relativize(it).toString().replace('\\', '/'), hashFile(it), Files.size(it), Files.isExecutable(it))
+        }.toList() }
+        val bundle = WorkerBundle("b".repeat(64), files, Repositories.DEFAULT, commit,
+            if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(), "fixture", build = WorkerBuild(gitBundle = PackedGitSource.MARKER))
+        assertTrue(files.all { it.path.startsWith(".git/") }); assertFalse(Files.exists(source.resolve("café.txt")))
+        val spec = ExperimentSpec("packed-source", bench = BenchSpec("bench.json"))
+        val manifest = WorkManifest("packed", "release", spec, Experiments.arms(spec).map { PlannedArm(it, commit) },
+            emptyList(), listOf(bundle), ResourceBudget(1000, 512), preparationTimeoutSec = 60)
+        assertEquals(7, manifest.schemaVersion)
+        assertFailsWith<IllegalArgumentException> { manifest.copy(schemaVersion = 6) }
+        assertFailsWith<IllegalArgumentException> { bundle.copy(commit = parent) }
+        val tree = WorkerBuildCache(root.resolve("pack-builds"), ProcessSupervisor(socket)).prepare(bundle, source,
+            ResourceBudget(1000, 512), System.getenv()) { 10000 }
+        assertEquals("current source", Files.readString(tree.resolve("café.txt")))
+        assertTrue(Files.isExecutable(tree.resolve("tool")))
+        assertEquals(outside.toString(), Files.readString(tree.resolve("outside.link"))); assertFalse(Files.isSymbolicLink(tree.resolve("outside.link")))
+        assertEquals(commit, git(tree, "rev-parse", "HEAD")); assertEquals("1", git(tree, "rev-list", "--count", "HEAD"))
+        assertEquals("true", git(tree, "rev-parse", "--is-shallow-repository")); assertNotEquals(0, command(tree, "cat-file", "-e", parent).first)
+        assertFalse(Files.exists(tree.resolve("removed.txt"))); assertFalse(Files.exists(source.resolve("café.txt")))
+    }
+
     @Test fun `preparation builds on its source host but publishes only the explicitly declared output platform`(): Unit = service { socket ->
         val outputArch = if (workerArch() == "arm64") "amd64" else "arm64"
         val target = WorkerBuildTarget(if (CliMeasurements.localMacOs) "mac" else "linux", outputArch)

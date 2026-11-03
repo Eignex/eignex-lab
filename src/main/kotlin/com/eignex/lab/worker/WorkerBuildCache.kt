@@ -101,7 +101,13 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                     }
                 }
                 source { source -> trace.step("checkout") {
-                    if (build.gitBundle != null) {
+                    if (build.gitBundle == PackedGitSource.MARKER) {
+                        require(PackedGitSource.usable(bundle)) { "invalid packed source receipt" }
+                        copy(source, tree, ::checkRun)
+                        run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", bundle.commit), tree,
+                            env.filterKeys { !it.startsWith("GIT_") } + mapOf("GIT_CONFIG_NOSYSTEM" to "1", "GIT_CONFIG_GLOBAL" to "/dev/null", "GIT_NO_REPLACE_OBJECTS" to "1"))
+                        verifyCheckoutTree(tree, ::checkRun)
+                    } else if (build.gitBundle != null) {
                         Files.createDirectory(tree)
                         run(listOf("git", "-c", "core.hooksPath=/dev/null", "init"), tree)
                         // Portable checkouts retain symlink blobs as plain files and never follow host paths.
