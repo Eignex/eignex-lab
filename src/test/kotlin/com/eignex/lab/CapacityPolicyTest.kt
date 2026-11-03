@@ -195,6 +195,14 @@ class CapacityPolicyTest {
         assertEquals(2, CapacityPolicy.evaluate(settings, nodes, emptyList(), listOf(manual), at = 350000).desired[pool.id])
         assertEquals(1, CapacityPolicy.evaluate(settings, nodes, emptyList(), listOf(manual), at = 400000).desired[pool.id])
     }
+    @Test fun `warm nodes stay ready without demand and never exceed the pool`() {
+        val warm = CapacitySettings(listOf(pool.copy(warmNodes = 1)), 64)
+        assertEquals(1, CapacityPolicy.evaluate(warm, emptyList(), emptyList(), at = 0).desired[pool.id], "an empty pool starts its warm node")
+        val idle = listOf(CapacityNode("old", pool.id, CapacityNodeState.READY, emptySince = 0), CapacityNode("older", pool.id, CapacityNodeState.READY, emptySince = 0))
+        assertEquals(1, CapacityPolicy.evaluate(warm, idle, emptyList(), at = 1_000_000).desired[pool.id], "idle retirement stops at the warm floor")
+        assertEquals(0, CapacityPolicy.evaluate(settings, idle, emptyList(), at = 1_000_000).desired[pool.id])
+        assertFailsWith<IllegalArgumentException> { pool.copy(warmNodes = pool.maxNodes + 1) }
+    }
     @Test fun `a terminating instance still consumes quota but cannot restore an old desired count`() {
         val node = CapacityNode("terminating", pool.id, CapacityNodeState.DRAINING, countedInTarget = false)
         val plan = CapacityPolicy.evaluate(settings.copy(maxVcpus = 16), listOf(node), listOf(demand("new")))
