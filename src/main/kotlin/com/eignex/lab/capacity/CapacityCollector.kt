@@ -207,7 +207,8 @@ class CapacityCollector(
         val observations = observed.map { node ->
             val instance = byCapacityId.getValue(node.id)
             when {
-                !instance.draining && node.state !in setOf(CapacityNodeState.READY, CapacityNodeState.DRAINING) && node.id in startup.retiring &&
+                !instance.draining && node.state !in setOf(CapacityNodeState.READY, CapacityNodeState.DRAINING) &&
+                    node.id in startup.retiring && node.id !in startup.everReady &&
                     (node.id !in registered || startup.retiring.getValue(node.id).authorized) -> node.copy(state = CapacityNodeState.REPLACING)
                 node.id !in registered && CapacityStartup.expired(instance, at) -> node.copy(state = CapacityNodeState.UNAVAILABLE)
                 else -> node
@@ -288,7 +289,7 @@ class CapacityCollector(
     fun grant(pool: String): CapacityGrant {
         val sample = snapshot()
         val definition = requireNotNull(pools[pool]) { "unknown capacity pool" }
-        val candidates = startupState.retiring.filterKeys { id -> id.substringBefore(':') == pool && sample.nodes.any { it.id == id } }
+        val candidates = startupState.retiring.filterKeys { id -> id.substringBefore(':') == pool && id !in startupState.everReady && sample.nodes.any { it.id == id } }
         // Bypass the node cache and revalidate server absence immediately before authorizing replacement.
         // A first join after this check is normal Spot-like loss: durable whole-row replacement retains its costs.
         val freshNodes = if (candidates.isEmpty()) emptyList() else nomad.nodes()

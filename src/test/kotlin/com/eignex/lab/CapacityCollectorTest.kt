@@ -148,6 +148,35 @@ class CapacityCollectorTest {
         assertTrue(durable.failed.isEmpty()); assertFalse(durable.retiring.values.single().authorized)
     }
 
+    @Test fun `lost grant history does not block a distinct failed neighbor or reissue after a ready node disappears`() {
+        at = 4_000_000
+        val original = CapacityInstance("i-original", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
+        val neighbor = original.copy(id = "i-neighbor")
+        store.execution.requestCapacity(pool.id, 2, 60_000, at)
+        sample(listOf(original)); val c = collector(); c.collect(); c.grant(pool.id)
+        control.full = buildJsonObject {
+            put("ID", "joined-node"); put("NodeClass", pool.nodeClass); put("Status", "ready"); put("ModifyIndex", 1)
+            putJsonObject("Meta") { put(CapacityWire.CAPACITY_ID_META, original.id) }
+        }
+        sample(listOf(original, neighbor)); c.collect()
+        fun retirementIds(grant: CapacityGrant): List<String> {
+            val payload = Json.parseToJsonElement(java.util.Base64.getUrlDecoder().decode(grant.payload).toString(Charsets.UTF_8)).jsonObject
+            return payload["startupRetirements"]?.jsonArray.orEmpty().map { it.jsonObject.getValue("id").jsonPrimitive.content }
+        }
+        assertEquals(listOf(neighbor.id), retirementIds(c.grant(pool.id)))
+        control.full = null
+        c.collect()
+        val restarted = collector(); restarted.collect()
+        assertEquals(listOf(neighbor.id), retirementIds(restarted.grant(pool.id)), "the original ready identity must never be reissued as a startup retirement")
+        val nodes = restarted.snapshot().nodes.associateBy { it.id }
+        assertEquals(CapacityNodeState.UNAVAILABLE, nodes.getValue(CapacityStartup.key(original)).state)
+        assertEquals(CapacityNodeState.REPLACING, nodes.getValue(CapacityStartup.key(neighbor)).state)
+        val durable = Json.decodeFromString<CapacityStartupState>(Files.readString(state.resolveSibling("capacity-startup-state.json")))
+        assertEquals(setOf(CapacityStartup.key(original), CapacityStartup.key(neighbor)), durable.retiring.keys)
+        assertTrue(durable.retiring.values.all { it.authorized })
+        assertEquals(2, durable.failed.getValue(pool.id).size, "old history remains charged without blocking the next exact identity")
+    }
+
     @Test fun `expired capacity sample cannot authorize startup retirement`() {
         at = 4_000_000
         sample(listOf(CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)))

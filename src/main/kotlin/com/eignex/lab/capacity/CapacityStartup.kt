@@ -46,7 +46,7 @@ internal object CapacityStartup {
             id.substringBefore(':') !in freshPools || present[id]?.let { it.launchedAt == null || it.launchedAt == action.launchedAt } == true
         }
         for (pool in freshPools) {
-            if (retiring.keys.any { it.substringBefore(':') == pool } || failures[pool].orEmpty().size >= MAX_REPLACEMENTS) continue
+            if (retiring.keys.any { it.substringBefore(':') == pool && it !in ever } || failures[pool].orEmpty().size >= MAX_REPLACEMENTS) continue
             val candidate = instances.filter { it.pool == pool && !it.draining && it.countedInTarget && expired(it, at) && key(it) !in ever && key(it) !in registered }
                 .minWithOrNull(compareBy<CapacityInstance> { it.launchedAt }.thenBy { it.id }) ?: continue
             val id = key(candidate)
@@ -59,7 +59,8 @@ internal object CapacityStartup {
     fun authorize(previous: CapacityStartupState, pool: String, registered: Set<String>): CapacityStartupState {
         val retiring = previous.retiring.toMutableMap()
         val failed = previous.failed.toMutableMap()
-        for ((key, action) in previous.retiring.filterKeys { it.substringBefore(':') == pool }) {
+        // Retain issued history, but startup recovery ends once that exact live identity was ready.
+        for ((key, action) in previous.retiring.filterKeys { it.substringBefore(':') == pool && it !in previous.everReady }) {
             if (action.id in registered) {
                 if (!action.authorized) retiring.remove(key)
                 continue
