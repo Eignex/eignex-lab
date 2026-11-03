@@ -284,7 +284,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.session(id)!!
     }
 
-    fun claim(id: String, token: String, allocation: String, at: Long = now(), leaseMs: Long = LEASE_MS): IterationClaim? {
+    fun claim(id: String, token: String, allocation: String, at: Long = now(), leaseMs: Long = LEASE_MS, allowNewSolve: () -> Boolean = { true }): IterationClaim? {
         expire(at)
         return store.executionTransaction { db ->
             require(leaseMs in 1..LEASE_MS)
@@ -300,6 +300,15 @@ class ExecutionStore internal constructor(private val store: Store) {
                 // Claim tokens are derived from the scoped session secret; only their digest is persisted.
                 val claimToken = claimToken(token, active.iteration, active.generation)
                 return@executionTransaction IterationClaim(AttemptOwner(id, allocation, active.iteration, active.generation, claimToken), active.indices, active.leaseUntil, active.parallel)
+            }
+            // Replay above keeps ownership valid even if pressure arrived after the claim response was lost.
+            // The decision and idle retirement share the claim transaction: no concurrent request can own a row
+            // between an external hasActiveAttempt check and a drain. The callback must read a cached hint only,
+            // never filesystem/journal locks while holding this transaction. Old workers exit normally on null/HTTP204.
+            if (session.executionClass == ExecutionClass.SOLVE && !allowNewSolve()) {
+                db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain', observation = 'journal-pressure' WHERE id = ? AND desired = 'run'", id)
+                db.event(session.jobId, id, "held:journal-pressure", at)
+                return@executionTransaction null
             }
             if (session.executionClass == ExecutionClass.PREPARE) {
                 if (store.job(session.jobId)!!.setupDone || db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { it.getInt(1) }.isNotEmpty()) return@executionTransaction null

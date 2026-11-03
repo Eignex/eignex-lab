@@ -27,6 +27,24 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `journal pressure permits preparation and planning then holds only new solves without source churn`() {
+        solveAdmissionAllowed = false
+        val id = job(wide); val admission = queue()
+        admission.reconcile()
+        assertEquals(listOf(ExecutionClass.PREPARE), store.execution.sessions(id).map { it.executionClass })
+        prepare(id, 6)
+        repeat(5) { admission.reconcile() }
+        assertTrue(store.job(id)!!.setupDone); assertEquals(6, store.job(id)!!.commands.size)
+        assertEquals(1, publications); assertEquals(1, store.execution.accepted(id).size)
+        assertTrue(store.execution.sessions(id).none { it.executionClass == ExecutionClass.SOLVE })
+        assertFalse(store.job(id)!!.paused); assertEquals(wide.vcpus, store.job(id)!!.vcpus)
+        val accepted = store.execution.acceptedPreparation(id)
+        solveAdmissionAllowed = true; admission.reconcile()
+        assertTrue(store.execution.sessions(id).any { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN })
+        assertEquals(accepted, store.execution.acceptedPreparation(id)); assertEquals(1, publications)
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
     @Test fun `a target that conflicts with execution placement is refused before allocating or retrying`() {
         val host = settings.targets.single { !it.native }
         val runtime = host.copy(template = host.template.copy(nodeClass = "arm-runtime"), tags = setOf("arch:arm64", "simd:sve"))
@@ -701,7 +719,8 @@ class NomadQueueTest {
         override fun allocation(id: String): NomadAllocation? = null
         override fun jwks() = buildJsonObject { putJsonArray("keys") {} }
     }
-    private val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") })
+    private var solveAdmissionAllowed = true
+    private val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, solveAllowed = { solveAdmissionAllowed })
     private fun target(platform: NomadPlatform, name: String, market: CapacityMarket = CapacityMarket.SPOT): NomadQueueTarget {
         val mac = platform == NomadPlatform.MAC
         return NomadQueueTarget(NomadBatchJob("template", platform, name, NomadCpuCapacity(8000, 8), ResourceBudget(4000, 4096, 2),

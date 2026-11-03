@@ -19,6 +19,88 @@ import org.junit.jupiter.params.provider.CsvSource
 import kotlin.test.*
 
 class ExecutionStoreTest {
+    @Test fun `journal pressure replays owned paired rows before declining new claims`() {
+        val id = job(problems = 3); bind(id)
+        val before = store.job(id)!!
+        val owned = store.execution.claim("s", token, "alloc-s", 1001)!!
+        assertEquals(owned, Store(file).execution.claim("s", token, "alloc-s", 1002,
+            allowNewSolve = { error("owned claim replay must precede the new-admission gate") }))
+        assertEquals(Desired.RUN, store.execution.session("s")!!.desired)
+        store.execution.renew(owned.owner, 1003)
+        store.execution.phase(owned.owner, "executing", 1004)
+        store.execution.phase(owned.owner, "uploading", 1005)
+        assertTrue(store.execution.commit(owned.owner, result(owned), 1006))
+        assertTrue(store.execution.commit(owned.owner, result(owned), 1007))
+        assertNull(store.execution.claim("s", token, "alloc-s", 1008, allowNewSolve = { false }))
+        assertEquals(Desired.DRAIN, store.execution.session("s")!!.desired)
+        repeat(4) { assertNull(store.execution.claim("s", token, "alloc-s", 1009, allowNewSolve = { false })) }
+        assertEquals(1, store.execution.events(id).count { it.detail == "held:journal-pressure" })
+        assertEquals(1, store.execution.accepted(id).size)
+        val after = store.job(id)!!
+        assertEquals(before.experiment, after.experiment); assertEquals(before.priority, after.priority)
+        assertEquals(before.paused, after.paused); assertEquals(before.runMs, after.runMs)
+        assertTrue(after.commands.filter { it.index !in owned.indices }.all { it.status == Status.QUEUED && it.host == null })
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
+    @Test fun `simultaneous ordinary and pressure claims either preserve one owner or atomically drain idle`() {
+        val second = Store(file)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            repeat(12) { round ->
+                val id = job(); val session = "pressure-race-$round"; val allocation = "alloc-$session"
+                bind(id, session)
+                val start = java.util.concurrent.CountDownLatch(1)
+                val ordinary = pool.submit(Callable { start.await(); store.execution.claim(session, token, allocation, 1001) })
+                val pressured = pool.submit(Callable { start.await(); second.execution.claim(session, token, allocation, 1001, allowNewSolve = { false }) })
+                start.countDown()
+                val a = ordinary.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                val b = pressured.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                assertEquals(a, b, "a concurrent pressure request cannot drain between assigning and replaying ownership")
+                if (a == null) {
+                    assertEquals(Desired.DRAIN, store.execution.session(session)!!.desired)
+                    assertFalse(store.execution.hasActiveAttempt(session))
+                    assertTrue(store.job(id)!!.commands.all { it.host == null })
+                } else {
+                    assertEquals(Desired.RUN, store.execution.session(session)!!.desired)
+                    assertEquals(a, store.execution.claim(session, token, allocation, 1002, allowNewSolve = { false }))
+                    store.execution.phase(a.owner, "uploading", 1003)
+                    assertTrue(store.execution.commit(a.owner, result(a), 1004))
+                }
+            }
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test fun `pressure retirement and worker registration serialize without revoking owned rows`() {
+        val second = Store(file); val pool = Executors.newFixedThreadPool(2)
+        try {
+            repeat(12) { round ->
+                val id = job(); val session = "registration-race-$round"; val allocation = "alloc-$session"
+                store.execution.createSession(session, id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000)
+                val start = java.util.concurrent.CountDownLatch(1)
+                val retired = pool.submit(Callable { start.await(); store.execution.loseUnallocatedSession(session, "journal-pressure", 1001) })
+                val bound = pool.submit(Callable {
+                    start.await()
+                    try { second.execution.bind(session, token, allocation, "node", "release-1", 1001) }
+                    catch (_: ExecutionFenced) { null }
+                })
+                start.countDown()
+                if (retired.get(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    assertNull(bound.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                    assertEquals(Desired.STOP, store.execution.session(session)!!.desired)
+                    assertFailsWith<ExecutionFenced> { store.execution.claim(session, token, allocation, 1002) }
+                } else {
+                    assertNotNull(bound.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                    assertNull(store.execution.claim(session, token, allocation, 1002, allowNewSolve = { false }))
+                    assertEquals(Desired.DRAIN, store.execution.session(session)!!.desired)
+                }
+                assertFalse(store.execution.hasActiveAttempt(session))
+                assertTrue(store.job(id)!!.commands.all { it.host == null && it.status == Status.QUEUED })
+                assertTrue(store.execution.accepted(id).isEmpty())
+            }
+        } finally { pool.shutdownNow() }
+    }
+
     private fun checkpoint(elapsed: Long, cpu: Long, retirement: String? = null) = ResourceCheckpoint(elapsed,
         budget, "cgroup-v2-hard", "200000 100000", (budget.memoryMiB * 1024L * 1024).toString(),
         mapOf("cpu.stat" to "usage_usec $cpu"), "worker-cumulative-lower-bound", retirement)

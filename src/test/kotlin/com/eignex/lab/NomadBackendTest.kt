@@ -39,6 +39,146 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @Test fun `terminal solve workers stop the finite run clock while the last accepted projection waits`() {
+        val spec = ExperimentSpec("pressure-projection", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60,
+            classpath = listOf("tools/lib/*")), host = HostPlacement.AUTO)
+        val id = setup(problems = 1, spec = spec); register()
+        val owned = backend().claim(session.id, token, "allocation")!!
+        var ready = false
+        val held = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, solveAllowed = { false },
+            projectResult = { _, _, work -> if (!ready) false else { work(); true } })
+        store.execution.phase(owned.owner, "uploading")
+        assertTrue(held.commit(owned.owner, IterationResult(owned.indices.map { ExecutionCaseResult(it, 0, now() - 1, now()) })))
+        assertEquals(0, store.unclaimed(id))
+        assertNull(held.claim(session.id, token, "allocation"))
+        held.reconcile(); assertNotNull(store.job(id)!!.runningSince)
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        repeat(3) { held.reconcile() }
+        val waiting = store.job(id)!!
+        assertEquals(Status.RUNNING, waiting.status); assertNull(waiting.runningSince)
+        assertEquals(waiting.runMs, waiting.elapsedMs(now() + 120000))
+        store.execution.expireRunDeadlines(now() + 120000)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertEquals(1, store.execution.accepted(id).size); assertTrue(store.execution.ingested(id).isEmpty())
+        ready = true; held.reconcile()
+        assertEquals(Status.DONE, store.job(id)!!.status)
+        assertEquals(waiting.runMs, store.job(id)!!.runMs)
+        assertEquals(1, store.execution.accepted(id).size); assertEquals(0, store.execution.failureCount(id))
+    }
+
+    @Test fun `enqueue pressure holds only new solve identities and preserves idempotent existing sessions`() {
+        val id = setup()
+        val held = backend(solveAllowed = { false })
+        val template = NomadBatchJob("placeholder", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(4000, 4), manifest.budget,
+            listOf("worker"), "registry/worker@sha256:" + "d".repeat(64))
+        assertEquals(session, held.enqueue(id, manifest, template, "http://127.0.0.1:8091"))
+        assertFailsWith<IllegalStateException> { held.enqueue(id, manifest.copy(session = "held-solve"), template, "http://127.0.0.1:8091") }
+        assertEquals(1, store.execution.sessions(id).size); assertEquals(Status.QUEUED, store.job(id)!!.status)
+        assertFalse(store.job(id)!!.paused); assertNull(store.job(id)!!.error)
+    }
+
+    @Test fun `journal pressure preserves owned results and allowance then waits without replacement spin`() {
+        val spec = ExperimentSpec("pressure-clock", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60,
+            classpath = listOf("tools/lib/*")), host = HostPlacement.AUTO)
+        val id = setup(problems = 3, spec = spec); register()
+        val owned = backend().claim(session.id, token, "allocation")!!
+        val frozen = manifest; val before = store.job(id)!!
+        var allowed = false
+        val held = backend(solveAllowed = { allowed })
+        held.reconcile()
+        assertEquals(Desired.RUN, store.execution.session(session.id)!!.desired)
+        assertEquals(owned, held.claim(session.id, token, "allocation"))
+        store.execution.renew(owned.owner)
+        store.execution.phase(owned.owner, "uploading")
+        assertTrue(held.commit(owned.owner, IterationResult(owned.indices.map { ExecutionCaseResult(it, 0, now() - 1, now()) })))
+        assertNull(held.claim(session.id, token, "allocation"))
+        assertNotNull(store.job(id)!!.runningSince, "the clock cannot stop before the real worker exits")
+        held.reconcile(); assertNotNull(store.job(id)!!.runningSince)
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "complete")
+        repeat(6) { held.reconcile() }
+        val suspended = store.job(id)!!
+        assertNull(suspended.runningSince); assertTrue(suspended.runMs >= before.runMs)
+        assertEquals(suspended.runMs, suspended.elapsedMs(now() + 120000))
+        store.execution.expireRunDeadlines(now() + 120000)
+        assertEquals(Status.RUNNING, store.job(id)!!.status)
+        assertEquals(1, store.execution.sessions(id).size); assertEquals(1, store.execution.accepted(id).size)
+        assertEquals(0, store.execution.failureCount(id)); assertEquals(before.experiment, suspended.experiment)
+        assertEquals(before.priority, suspended.priority); assertEquals(before.paused, suspended.paused)
+        allowed = true; held.reconcile()
+        val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
+        assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+        assertEquals(suspended.runMs, store.job(id)!!.runMs)
+        useReplacement(id, "after-pressure", "replacement-node")
+        assertNotNull(store.job(id)!!.runningSince)
+        assertEquals(suspended.runMs, store.job(id)!!.runMs)
+        val next = held.claim(session.id, token, "after-pressure")!!
+        assertTrue(next.indices.none { it in owned.indices })
+    }
+
+    @Test fun `pressure retires unbound solve submission without spin but still admits preparation`() {
+        val id = setup()
+        val frozen = manifest; val original = session
+        var allowed = false
+        val held = backend(solveAllowed = { allowed })
+        repeat(6) { held.reconcile() }
+        assertEquals(0, control.submissions)
+        assertEquals(Desired.STOP, store.execution.session(original.id)!!.desired)
+        assertEquals("journal-pressure", store.execution.reports(id).single().observation)
+        assertEquals(1, store.execution.sessions(id).size); assertNull(store.job(id)!!.runningSince)
+        assertTrue(store.execution.intents().isEmpty()); assertEquals(0, store.execution.failureCount(id))
+        allowed = true; held.reconcile()
+        val replacement = store.execution.sessions(id).single { it.desired == Desired.RUN }
+        assertEquals(frozen.copy(session = replacement.id), store.execution.manifest(replacement.id))
+        held.reconcile(); assertEquals(1, control.submissions)
+
+        val preparing = setup(name = "preparation", preparation = true, sessionId = "preparation", admitting = held)
+        allowed = false; held.reconcile(); register()
+        val claim = held.claim(session.id, token, "allocation")!!
+        assertEquals(ExecutionStore.PREPARATION, claim.owner.iteration)
+        assertEquals(ExecutionClass.PREPARE, store.execution.session(session.id)!!.executionClass)
+        assertTrue(store.execution.sessions(preparing).any { it.desired == Desired.RUN })
+    }
+
+    @Test fun `a full journal permits owned renewal logs progress and idempotent durable acceptance before idle204`() = testApplication {
+        val id = setup(problems = 3); register()
+        val owned = backend().claim(session.id, token, "allocation")!!
+        val capture = "already durable capture".toByteArray(); val sha = ExecutionStore.digest(String(capture))
+        val journal = ResultJournal(root.resolve("pressure-journal"), artifacts, maxBytes = 65536, start = false)
+        val held = NomadBackend(store, control, journal, { root.resolve("jobs/$it") }, solveAllowed = journal::allowsNewSolve)
+        application { workerApi(store, held, journal) { true } }
+        suspend fun post(path: String, body: String) = client.post("/worker/v1/sessions/${session.id}/$path") {
+            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            setBody(body)
+        }
+        try {
+            journal.putAll(id, mapOf(sha to capture))
+            var full = false
+            for (n in 0 until 32) try { journal.putAll(id, mapOf(ExecutionStore.digest("filler-$n") to "filler-$n".toByteArray())) }
+                catch (_: IllegalStateException) { full = true; break }
+            assertTrue(full); assertFalse(journal.allowsNewSolve())
+            val charged = journal.status().bytes
+            val replay = post("claim", "{}")
+            assertEquals(HttpStatusCode.OK, replay.status)
+            assertEquals(owned, Json.decodeFromString<IterationClaim>(replay.bodyAsText()))
+            assertEquals(HttpStatusCode.OK, post("renew", Json.encodeToString(owned.owner)).status)
+            assertEquals(HttpStatusCode.NoContent, post("phase", Json.encodeToString(WorkerPhase(owned.owner, "executing"))).status)
+            assertEquals(HttpStatusCode.NoContent, post("progress", Json.encodeToString(WorkerProgress(owned.owner, owned.indices.first()))).status)
+            val log = client.put("/worker/v1/sessions/${session.id}/logs/${owned.indices.first()}/out?offset=0") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                header("X-Lab-Attempt", Json.encodeToString(owned.owner)); setBody("owned progress")
+            }
+            assertEquals(HttpStatusCode.OK, log.status)
+            assertEquals(HttpStatusCode.NoContent, post("phase", Json.encodeToString(WorkerPhase(owned.owner, "uploading"))).status)
+            val result = IterationResult(owned.indices.map { ExecutionCaseResult(it, 0, now() - 1, now()) }, mapOf("${owned.indices.first()}.out" to sha))
+            val body = Json.encodeToString(WorkerInlineCommit(owned.owner, result, mapOf(sha to Base64.getEncoder().encodeToString(capture))))
+            repeat(2) { assertEquals(HttpStatusCode.NoContent, post("commit-inline", body).status) }
+            assertEquals(charged, journal.status().bytes); assertEquals(1, store.execution.accepted(id).size)
+            assertEquals(HttpStatusCode.NoContent, post("claim", "{}").status)
+            assertEquals(Desired.DRAIN, store.execution.session(session.id)!!.desired)
+            assertEquals(0, store.execution.failureCount(id))
+        } finally { journal.close() }
+    }
+
     @Test fun `packed data batches retain ownership and durability without accepting a partial row`() = testApplication {
         val id = setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!
@@ -714,11 +854,11 @@ class NomadBackendTest {
             return buildJsonObject { putJsonArray("keys") { add(buildJsonObject { put("kid", keyId); put("kty", "RSA"); put("n", b64(key.modulus.toByteArray().dropWhile { it == 0.toByte() }.toByteArray())); put("e", b64(key.publicExponent.toByteArray())) }) } }
         }
     }
-    private fun backend(s: Store = store) = NomadBackend(s, control, artifacts, { root.resolve("jobs/$it") })
+    private fun backend(s: Store = store, solveAllowed: () -> Boolean = { true }) = NomadBackend(s, control, artifacts, { root.resolve("jobs/$it") }, solveAllowed = solveAllowed)
     private lateinit var session: ExecutionSession
     private lateinit var token: String
     private lateinit var manifest: WorkManifest
-    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = HostPlacement.AUTO), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session"): Long {
+    private fun setup(problems: Int = 2, spec: ExperimentSpec = ExperimentSpec("test", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")), seeds = listOf(1), host = HostPlacement.AUTO), name: String = spec.name, platform: NomadPlatform = NomadPlatform.LINUX, preparation: Boolean = false, sessionId: String = "session", admitting: NomadBackend = backend()): Long {
         val spec = if (preparation && !spec.isProfile && spec.work.bench == null) spec.copy(problems = emptyList(), bench = BenchSpec("bench.json",
             referenceFilter = spec.problems.firstOrNull()?.get("reference")?.let { ReferenceFilterMode.valueOf(it.uppercase()) } ?: ReferenceFilterMode.ANY)) else spec
         val arms = Experiments.arms(spec).map { PlannedArm(it, "a".repeat(40)) }
@@ -730,7 +870,7 @@ class NomadBackendTest {
         manifest = WorkManifest(sessionId, "release", spec, arms, if (preparation) emptyList() else cases.mapIndexed { index, case -> WorkCase(index, case.arm, plannedProblems[case.problem], case.seed, case.repeat, 5) }, listOf(bundle), ResourceBudget(2000, 1024, 2), preparationTimeoutSec = if (preparation) 60 else null)
         val command = if (platform == NomadPlatform.LINUX) listOf("worker") else listOf("/releases/fixture/bin/eignex-lab", "worker")
         val image = if (platform == NomadPlatform.LINUX) "registry/worker@sha256:" + "d".repeat(64) else null
-        session = backend().enqueue(id, manifest, NomadBatchJob("placeholder", platform, "fixture", NomadCpuCapacity(4000, 4), manifest.budget, command, image), "http://127.0.0.1:8091")
+        session = admitting.enqueue(id, manifest, NomadBatchJob("placeholder", platform, "fixture", NomadCpuCapacity(4000, 4), manifest.budget, command, image), "http://127.0.0.1:8091")
         token = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0].jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
         control.allocations["allocation"] = NomadAllocation("allocation", session.nomadJobId, "node", "running", "run")
         return id
