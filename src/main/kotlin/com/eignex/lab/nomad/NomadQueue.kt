@@ -195,8 +195,10 @@ class NomadQueue(
                             memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
                     val available = ordered.mapNotNull { target -> fitting(target)?.takeIf { it.cpuMillis <= remainingCpu }?.let { target to it } }
                         .filter { (target, _) ->
-                            // Wait for the previous cloud placement before deciding which hosts still have parallel slots.
-                            if (!target.native) cloudSessions().none { it.node == null } else mayUseNative(job.id, target)
+                            // A per-host cap needs the previous cloud placement bound before deciding which hosts still have
+                            // parallel slots. Without one, the job's sessions place together, bounded by its CPU limit.
+                            if (!target.native) this.settings.perHostParallel == null || cloudSessions().none { it.node == null }
+                            else mayUseNative(job.id, target)
                         }
                     val (target, budget) = available.firstOrNull { (target, budget) ->
                         if (!target.native) cloudMayRun(target, current, budget) else {
