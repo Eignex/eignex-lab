@@ -371,23 +371,24 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         }
         val approved = arms.map { it.sha }.toSet()
         val inputs = SourceInputs({ repository, sha -> require(repository == spec.repository && sha in approved); trust.requireRepository() })
-        val declarations = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().map { sha ->
+        val declarations = spec.work.bench?.let { bench -> arms.map { it.sha }.distinct().associateWith { sha ->
             val text = checked(mirror, "show", "$sha:${bench.manifest}")
             val value = com.eignex.lab.bench.BenchProtocol.json.parseToJsonElement(text).jsonObject["runtime"]
             val runtime = value?.let { com.eignex.lab.bench.BenchProtocol.json.decodeFromJsonElement(BenchRuns.Runtime.serializer(), it) } ?: BenchRuns.Runtime()
             runtime.validate()
-            runtime.requiredTags to BenchRuns.preparation(text)?.also { it.target.validateRequirements(runtime.requiredTags) }
+            Triple(runtime.requiredTags, BenchRuns.preparation(text)?.also { it.target.validateRequirements(runtime.requiredTags) }, BenchRuns.sourceHistory(text))
         } }.orEmpty()
-        val requirements = declarations.flatMap { it.first }.toSet()
-        val contracts = declarations.map { it.second }.distinct()
+        val requirements = declarations.values.flatMap { it.first }.toSet()
+        val contracts = declarations.values.map { it.second }.distinct()
         require(contracts.size <= 1) { "preparation contracts differ between comparison arms" }
         val build = WorkerBuild(spec.work.profile?.let { ProfileRuns.buildTasks(spec.repository, it) } ?: emptyList(), settings.preparationTimeoutSec,
             benchManifest = spec.work.bench?.manifest, requiredTags = requirements, preparation = contracts.singleOrNull())
         val platforms = targets.distinctBy { it.os to it.arch }
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
             val first = platforms.first()
+            val includeHistory = declarations[sha]?.third ?: true
             val reused = sourceCache.reuse(job.id, spec.repository, sha, first.os, first.arch, "jdk25", build,
-                authorize = { require(sha in approved); trust.requireRepository() }) {
+                authorize = { require(sha in approved); trust.requireRepository() }, includeHistory = includeHistory) {
                 store.active(withCommands = false).asSequence().filter { it.id != job.id && it.experiment?.repository == spec.repository }.take(32).flatMap { other ->
                     store.execution.sessions(other.id).asSequence().filter { it.executionClass == ExecutionClass.PREPARE }.mapNotNull { session ->
                         runCatching { other.id to store.execution.manifest(session.id) }.getOrNull()
@@ -400,7 +401,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             }
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
             try {
-                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output)
+                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output, includeHistory = includeHistory)
                 if (artifacts.reuse(job.id, bundle.sha256) == null) {
                     val offset = artifacts.offset(job.id, bundle.sha256)
                     Files.newInputStream(output).use { stream -> stream.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, Files.size(output), offset, stream) }

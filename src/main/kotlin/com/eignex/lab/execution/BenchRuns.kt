@@ -14,6 +14,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 import java.nio.file.Path
@@ -81,6 +82,13 @@ internal object BenchRuns {
             try { BenchProtocol.json.decodeFromJsonElement(WorkerPreparation.serializer(), it) }
             catch (failure: kotlinx.serialization.SerializationException) { throw IllegalArgumentException("invalid committed preparation contract", failure) }
         }
+    }
+
+    /** Full history is retained unless the committed manifest explicitly needs only its current source snapshot. */
+    internal fun sourceHistory(text: String): Boolean {
+        val value = BenchProtocol.json.parseToJsonElement(text).jsonObject["sourceHistory"] ?: return true
+        require(value is JsonPrimitive && value.isString && value.content in setOf("full", "snapshot")) { "sourceHistory must be full or snapshot" }
+        return value.content == "full"
     }
 
     /** Opt-in private workspace contents; omitted manifests retain the entire built tree. */

@@ -214,6 +214,14 @@ Independent source checks run when requested.
 It does not copy earlier solver outcomes or reset the source job's spent allowance. Retain the source job's
 full preparation, failed work and retirement costs alongside the replay's own bounded costs.
 
+A bench manifest may opt into `"sourceHistory": "snapshot"` when its build and tools need only the selected
+revision. The coordinator exports its exact files and a shallow Git repository at the original commit ID;
+`git rev-parse HEAD`, `git ls-files` and `git show HEAD:path` still work. Ancestors, tags, other branches,
+repository hooks and credentials are not exported. Existing workers consume this as a verified source ZIP.
+Omitting the field, or setting `"sourceHistory": "full"`, retains the original history bundle; use that mode
+for tools such as `git describe` or builds that inspect ancestors. Profiles retain full history. The source
+hint cache separates both modes, and snapshot exports normalize Git pack and index metadata for stable reuse.
+
 A bench manifest may declare top-level `workspaceInputs`, a nonempty list of portable relative file or directory
 paths to copy from the verified build. The manifest itself is included automatically. This asserts that `describe`,
 `plan` and `run` need only those paths, generated files and the declared corpus: include installed classpaths,
