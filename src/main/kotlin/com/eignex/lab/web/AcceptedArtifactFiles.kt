@@ -19,6 +19,7 @@ internal class AcceptedArtifactFiles(private val config: Config, private val sto
     }
     private val cache = LinkedHashMap<Long, Entry>(16, 0.75f, true)
     private var cachedNames = 0
+    private val sizes = LinkedHashMap<Pair<Long, String>, Long>(16, 0.75f, true)
     init { require(maxNames in 1..MAX_NAMES) }
 
     private fun accepted(job: Long, wanted: String? = null): Map<String, String> {
@@ -73,8 +74,19 @@ internal class AcceptedArtifactFiles(private val config: Config, private val sto
                 }
             }
         }
-        val logical = visibleNames.filterKeys { !archive(it) }.map { (name, sha) ->
-            val bytes = try { artifacts.size(job, sha) } catch (_: Exception) { FileEntry.UNKNOWN_BYTES }
+        val wanted = visibleNames.filterKeys { !archive(it) }
+        val hashes = wanted.values.toSet()
+        val known = synchronized(sizes) { hashes.mapNotNull { sha -> sizes[job to sha]?.let { sha to it } }.toMap() }
+        val missing = hashes - known.keys
+        val found = try { if (missing.isEmpty()) emptyMap() else artifacts.sizes(job, missing) }
+            catch (failure: InterruptedException) { throw failure }
+            catch (_: Exception) { emptyMap() }
+        synchronized(sizes) {
+            found.forEach { (sha, bytes) -> sizes[job to sha] = bytes }
+            while (sizes.size > MAX_NAMES) sizes.remove(sizes.keys.first())
+        }
+        val logical = wanted.map { (name, sha) ->
+            val bytes = known[sha] ?: found[sha] ?: FileEntry.UNKNOWN_BYTES
             FileEntry(name, bytes, sha)
         }
         return (physical.associateBy { it.path } + logical.associateBy { it.path }).values.sortedBy { it.path }

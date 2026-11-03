@@ -143,7 +143,7 @@ object Placement {
         require(template.networkMode == null && template.statusHostVolume == "lab-status") { "cloud workers require private container networking and read-only interruption status" }
         val pool = requireNotNull(cluster.poolOf(template)) { "cloud pool is not configured" }
         require(manifest.budget.cpuMillis <= pool.cpuMillis && manifest.budget.memoryMiB <= pool.availableMemoryMiB && template.cpuCapacity.logicalCpus == pool.vcpus)
-        require(NodeTags.matches(manifest.experiment.nodeTags, pool.capabilities))
+        require(NodeTags.matches(manifest.placementTags, pool.capabilities))
         require(pool.market == NodeTags.market(manifest.experiment.nodeTags))
     }
 }

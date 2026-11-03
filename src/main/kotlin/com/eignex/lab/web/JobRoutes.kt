@@ -76,8 +76,12 @@ internal fun Route.jobRoutes(services: ApiServices) {
             ?: DEFAULT_WAIT_SEC).coerceIn(1, MAX_WAIT_SEC)
         val deadline = now() + timeoutSec * 1000
         while (true) {
-            val job = io { store.job(id) } ?: throw ApiError.NotFound("no such job $id")
-            if (job.status.isTerminal || now() >= deadline) return@get call.respond(job)
+            val status = io { store.jobStatus(id) } ?: throw ApiError.NotFound("no such job $id")
+            if (status.isTerminal || now() >= deadline) {
+                val job = io { store.job(id) } ?: throw ApiError.NotFound("no such job $id")
+                // A manual retry may have reopened it between the scalar check and the full response read.
+                if (job.status.isTerminal || now() >= deadline) return@get call.respond(job)
+            }
             delay(WAIT_POLL_MS)
         }
     }
@@ -118,18 +122,18 @@ internal fun Route.jobRoutes(services: ApiServices) {
     // A download's hold on a job's files: the trim leaves the job alone until it is released or lapses ([Hold]).
     // `?ttlSec=` asks for less than the 2 h a hold lasts, never more; a long download renews it instead.
     post("/jobs/{id}/hold") {
-        val job = io { call.job(store) }
-        call.respond(HttpStatusCode.Created, io { store.holds.take(job.id, holdMs(call.parameters["ttlSec"])) })
+        val id = io { call.existingJobId(store) }
+        call.respond(HttpStatusCode.Created, io { store.holds.take(id, holdMs(call.parameters["ttlSec"])) })
     }
     post("/jobs/{id}/hold/{lease}") {
-        val job = io { call.job(store) }
-        val hold = io { store.holds.renew(job.id, call.parameters["lease"]!!, holdMs(call.parameters["ttlSec"])) }
+        val id = io { call.existingJobId(store) }
+        val hold = io { store.holds.renew(id, call.parameters["lease"]!!, holdMs(call.parameters["ttlSec"])) }
             ?: throw ApiError.NotFound("no such hold, or it lapsed")
         call.respond(hold)
     }
     delete("/jobs/{id}/hold/{lease}") {
-        val job = io { call.job(store) }
-        if (!io { store.holds.release(job.id, call.parameters["lease"]!!) }) throw ApiError.NotFound("no such hold")
+        val id = io { call.existingJobId(store) }
+        if (!io { store.holds.release(id, call.parameters["lease"]!!) }) throw ApiError.NotFound("no such hold")
         call.respond(HttpStatusCode.OK, "released")
     }
 }

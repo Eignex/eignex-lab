@@ -203,8 +203,9 @@ class WorkerWorkspacesTest {
 
     @Test fun `sealed private workspaces retain setup reject changed files and remove generated outputs`() {
         val root = Files.createTempDirectory("private-workspaces")
+        val cache = WorkerWorkspaces(root)
         try {
-            val cache = WorkerWorkspaces(root); val key = "a".repeat(64)
+            val key = "a".repeat(64)
             assertNull(cache.reuse(key) {})
             val tree = cache.create(key, {}) { Files.createDirectories(it); Files.writeString(it.resolve("code"), "fixture") }
             Files.writeString(tree.resolve("provenance.json"), tree.toString())
@@ -223,18 +224,28 @@ class WorkerWorkspacesTest {
             assertFalse(Files.exists(restored.resolve("extra")))
             assertFalse(Files.exists(restored.resolve("extra-link"), java.nio.file.LinkOption.NOFOLLOW_LINKS))
             assertEquals("outside", Files.readString(outside))
-        } finally { deleteTree(root) }
+        } finally {
+            assertTrue(cache.awaitCleanupIdle())
+            deleteTree(root)
+        }
     }
 
     @Test fun `unsealed setup cannot be reused after failure or a worker restart`() {
         val root = Files.createTempDirectory("unsealed-workspaces")
+        val cache = WorkerWorkspaces(root)
+        var restarted: WorkerWorkspaces? = null
         try {
-            val key = "b".repeat(64); val cache = WorkerWorkspaces(root)
+            val key = "b".repeat(64)
             val tree = cache.create(key, {}) { Files.createDirectory(it); Files.writeString(it.resolve("code"), "fixture") }
             assertNull(cache.reuse(key) {})
             cache.seal(key, tree) {}
             assertNotNull(cache.reuse(key) {})
-            assertNull(WorkerWorkspaces(root).reuse(key) {})
-        } finally { deleteTree(root) }
+            restarted = WorkerWorkspaces(root)
+            assertNull(restarted.reuse(key) {})
+        } finally {
+            assertTrue(cache.awaitCleanupIdle())
+            assertTrue(restarted?.awaitCleanupIdle() ?: true)
+            deleteTree(root)
+        }
     }
 }

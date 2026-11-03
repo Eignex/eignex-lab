@@ -33,12 +33,16 @@ internal fun Route.fileRoutes(services: ApiServices) {
     val store = services.store
     get("/jobs/{id}/files") {
         val id = io { call.existingJobId(store) }
-        requireJobFiles(config.paths)
-        val files = io {
-            (services.acceptedFiles.entries(id, jobFiles(config.jobDir(id))).associateBy { it.path } + services.preparedArchives.entries(id).associateBy { it.path })
-                .values.sortedBy { it.path }
+        call.response.header(HttpHeaders.CacheControl, "no-store")
+        val snapshot = io { services.fileInventory.get(id) }
+        if (snapshot == null) {
+            call.response.header(HttpHeaders.RetryAfter, "2")
+            services.fileInventory.failure(id)?.let { throw it }
+            throw ApiError.Unavailable("complete file inventory is being prepared or temporarily unavailable; retry shortly")
         }
-        if (call.wantsHtml()) call.respondHtml(filesPage(id, files)) else call.respond(files)
+        call.response.header("X-Lab-Inventory-Age-Ms", services.fileInventory.age(snapshot).toString())
+        if (call.wantsHtml()) call.respondHtml(filesPage(id, snapshot.files))
+        else call.respondText(snapshot.json, ContentType.Application.Json)
     }
     get("/jobs/{id}/files/{path...}") {
         val id = io { call.existingJobId(store) }

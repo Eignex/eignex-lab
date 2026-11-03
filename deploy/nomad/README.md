@@ -347,6 +347,20 @@ attempt and survive coordinator restart; timings are also uploaded as the accept
 flush. Partial and larger transfers retain their resumable upload path; background drain resumes any existing
 external prefix after interruption.
 
+File inventories are complete background snapshots, including ordinary files, accepted logical aliases and
+preparation archives. A cold or invalidated inventory waits at most one second on its request, then answers
+503 with `Retry-After` rather than returning an empty or partial array. The maintained `lab files`, `lab stdout`
+and `lab fetch` commands retry this state for up to 600 seconds (`LAB_FILE_LIST_TIMEOUT`, at most 3600 seconds).
+The first inventory still pays for filesystem metadata enumeration; macOS batches both ordinary-directory and
+CAS-size metadata, and repeated aliases share one size lookup. The local CAS path reads no accepted payloads for listing.
+Snapshots expose their age, revalidate accepted version, job state, retention marker and volume availability in
+the background, and expire after five seconds for active jobs or thirty seconds for ended jobs. Snapshot/size
+caches and pending work are bounded; oversized completed inventories use a one-response handoff without
+truncation. Ended-job validation also checks metadata for four mutable coordinator root logs, since final log
+publication can follow the terminal database transition. A changed log invalidates the complete snapshot;
+unavailable log metadata returns 503. This fixed background probe reads no log contents or CAS tree. A log
+can still change between listing and download; downloads retain their existing length and checksum checks.
+
 `SourceInputs` exports an approved Git tip and its reachable history only after its mandatory source-trust
 callback succeeds. The archive contains Git objects, never the mirror's remotes, hooks, credentials or configuration.
 Source export must itself run in the budgeted preparation/helper allocation so Git packing and compression are
@@ -458,6 +472,14 @@ allocation loss. These are canary reporting checks; automatic queue planning/adm
 open as documented in the migration plan.
 
 ### Allocation-scoped preparation
+
+Committed bench manifests may opt into independent preparation capabilities and an explicit same-OS output platform
+through the `preparation` contract documented in [`lab-bench`](../../lab-bench/README.md#paired-runs-and-runtime-declarations).
+Worker protocol 6 freezes that contract. Admission and autoscaling use its host selector for preparation while preserving
+the job's location and purchasing policy; solves use the accepted output platform and their original selectors. Manifests
+without this declaration retain the existing shared preparation/execution constraints. Cross-build recipes must themselves
+produce the declared architecture; changing placement never converts a host binary into a target binary.
+
 
 A preparation manifest sets `preparationTimeoutSec` and has no cases. The worker uses its existing allocation
 identity, renewable attempt lease, process supervisor and CPU/memory reservation to build approved source inputs,

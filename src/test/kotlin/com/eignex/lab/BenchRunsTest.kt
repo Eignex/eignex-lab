@@ -18,6 +18,55 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class BenchRunsTest {
+    @Test fun `cross build contracts freeze host capabilities independently of execution and preserve old wire identities`() {
+        val execution = NodeSelector(require = setOf("cloud", "arch:arm64", "simd:sve", "rack:one"), exclude = setOf("spot", "simd:avx2"))
+        val declaration = BenchRuns.preparation("""{"preparation":{"requiredTags":["platform:linux","arch:x86_64"],"target":{"os":"linux","arch":"arm64"}}}""")!!
+        val selector = declaration.selector(execution)
+        assertEquals(setOf("cloud", "rack:one", "platform:linux", "arch:x86_64"), selector.require)
+        assertEquals(setOf("spot"), selector.exclude)
+        assertEquals(CapacityMarket.ON_DEMAND, NodeTags.market(selector))
+        val spec = ExperimentSpec("cross-build", bench = BenchSpec("bench.json"), nodeTags = execution)
+        val arm = PlannedArm(Experiments.arms(spec).single(), "a".repeat(40))
+        val plain = WorkerBundle("b".repeat(64), listOf(InputFile("fixture", "c".repeat(64), 0)), spec.repository, arm.sha,
+            "linux", "amd64", "test", build = WorkerBuild(benchManifest = "bench.json", requiredTags = setOf("arch:arm64")))
+        val legacy = WorkManifest("prepare", "release", spec, listOf(arm), emptyList(), listOf(plain), ResourceBudget(1000, 1024), preparationTimeoutSec = 60)
+        val previous = Json.encodeToString(legacy)
+        assertEquals("""{"benchManifest":"bench.json","requiredTags":["arch:arm64"]}""", Json.encodeToString(plain.build))
+        assertEquals(3, legacy.schemaVersion); assertEquals(execution, legacy.placementTags)
+        val cross = legacy.copy(bundles = listOf(plain.copy(build = plain.build!!.copy(preparation = declaration))), schemaVersion = 6)
+        assertEquals(selector, cross.placementTags)
+        assertEquals(cross, Json.decodeFromString<WorkManifest>(Json.encodeToString(cross)))
+        assertEquals(previous, Json.encodeToString(Json.decodeFromString<WorkManifest>(previous)))
+        assertFailsWith<IllegalArgumentException> { cross.copy(schemaVersion = 5) }
+        val pool = CapacityPool("host", "x86-host", 16, 32768, 1, setOf("arch:x86_64", "rack:one"), market = CapacityMarket.ON_DEMAND)
+        val template = NomadBatchJob("host", NomadPlatform.LINUX, pool.nodeClass, NomadCpuCapacity(16000, 16), legacy.budget,
+            listOf("worker"), "registry/worker@sha256:" + "d".repeat(64), statusHostVolume = "lab-status")
+        val queue = NomadQueueSettings("release", "http://127.0.0.1:8091", listOf(NomadQueueTarget(template, pool.tags, pool.market)))
+        val cluster = ClusterSettings(queue, CapacitySettings(listOf(pool), 16))
+        Placement.admit(cluster, cross, template, 4, 4)
+        assertFailsWith<IllegalArgumentException> { Placement.admit(cluster, legacy, template, 4, 4) }
+        assertNull(BenchRuns.preparation("""{"runtime":{"requiredTags":["arch:arm64"]}}"""))
+    }
+
+    @Test fun `preparation contracts reject purchasing overrides unsupported platforms and incompatible targets`() {
+        val target = WorkerBuildTarget("linux", "arm64")
+        for (tags in listOf(setOf("platform:linux", "spot"), setOf("platform:linux", "cloud"), setOf("platform:mac"), emptySet())) {
+            assertFailsWith<IllegalArgumentException> { WorkerPreparation(tags, target) }
+        }
+        assertFailsWith<IllegalArgumentException> { WorkerBuildTarget("windows", "arm64") }
+        assertFailsWith<IllegalArgumentException> { WorkerBuildTarget("linux", "x86_64") }
+        val contract = WorkerPreparation(setOf("platform:linux", "arch:x86_64"), target)
+        target.validateRequirements(setOf("arch:arm64", "platform:linux", "simd:sve"))
+        for (tags in listOf(setOf("arch:x86_64"), setOf("platform:mac"))) {
+            assertFailsWith<IllegalArgumentException> { WorkerBuild(benchManifest = "bench.json", requiredTags = tags, preparation = contract) }
+        }
+        assertFailsWith<IllegalArgumentException> { WorkerBuild(preparation = contract) }
+        for (text in listOf("""{"preparation":{}}""", """{"preparation":{"requiredTags":false,"target":{"os":"linux","arch":"arm64"}}}""")) {
+            val failure = assertFailsWith<IllegalArgumentException> { BenchRuns.preparation(text) }
+            assertTrue(failure.rejectsAdmission, "bad committed declarations cannot become infrastructure retries")
+        }
+    }
+
     @Test fun `adapter resource mode encloses runtime preflight and the frozen SDK invocation`() {
         val root = Files.createTempDirectory("bench-adapter-resources")
         try {

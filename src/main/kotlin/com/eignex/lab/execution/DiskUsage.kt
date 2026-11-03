@@ -62,7 +62,8 @@ internal data class DiskUsageState(val report: DiskReport? = null, val jobs: Map
  * Measured with `du` ([DuRunner]: each walk under a timeout, never outliving the lab) on a background thread, first
  * [START_DELAY_MIN] minutes after startup, so restarts on updates do not each start a walk, then every [INTERVAL_MIN]
  * minutes. At most one measurement runs at a time, and its walks run one after another with [PAUSE_MS] between them,
- * so the disk load is spread out rather than a burst that could skew the timings of cases running then.
+ * so the disk load is spread out. Automatic accounting yields while work is active, including between metadata
+ * reads and while a `du` process runs. Deferred accounting retries shortly after the lab becomes idle.
  *
  * A walk is cheap only where few files are, so most is not walked every time:
  * - Job directories are measured one by one and each size kept; a directory is measured again only when it is new,
@@ -83,10 +84,13 @@ class DiskUsage internal constructor(
     private val clock: () -> Long,
     /** Waits between two walks. */
     private val pause: () -> Unit = {},
+    /** Deep accounting yields to real work; cached reports and volume safety probes remain independent. */
+    private val busy: () -> Boolean = { false },
 ) : AutoCloseable {
-    constructor(paths: DataPaths, docker: DockerPolicy, active: () -> Set<Long> = { emptySet() }, pauseMs: Long = PAUSE_MS) :
+    constructor(paths: DataPaths, docker: DockerPolicy, active: () -> Set<Long> = { emptySet() }, pauseMs: Long = PAUSE_MS,
+                busy: () -> Boolean = { false }) :
         this(paths, docker, active, DuRunner(paths.dataDir.resolve(DuRunner.PID_DIR)), SETTLE_MS, System::currentTimeMillis,
-            { if (pauseMs > 0) Thread.sleep(pauseMs) })
+            { if (pauseMs > 0) Thread.sleep(pauseMs) }, busy)
 
     @Volatile var latest: DiskReport? = null
         private set
@@ -94,6 +98,7 @@ class DiskUsage internal constructor(
     private val home = System.getProperty("user.home")
     private val stateFile = paths.dataDir.resolve(STATE_FILE)
     private val lock = ReentrantLock()
+    private var nextMeasurementAt = clock() + START_DELAY_MIN * 60_000
     private var loaded = false
     private var jobs: MutableMap<Long, JobSize> = mutableMapOf()
     private val placesAt: MutableMap<String, DiskPlace> = mutableMapOf()
@@ -134,13 +139,17 @@ class DiskUsage internal constructor(
         if (!lock.tryLock()) return null
         try {
             load()
+            val check = ActivityCheck(busy)
+            check()
             val now = clock()
-            val activeIds = runCatching(active).getOrDefault(emptySet())
-            val jobTotal = measureJobs(activeIds, now)
+            val activeIds = active()
+            val jobTotal = measureJobs(activeIds, now, check)
             val homeStore = store(Path(home))
-            val places = places().filter { (_, path) -> Files.exists(path) }.map { (label, path) ->
-                if (label == "job files") DiskPlace(label, path.toString(), jobTotal + otherJobEntries(homeStore, now), now)
-                else place(label, path, homeStore, now)
+            check()
+            val places = places().filter { (_, path) -> check(); Files.exists(path) }.map { (label, path) ->
+                check()
+                if (label == "job files") DiskPlace(label, path.toString(), jobTotal + otherJobEntries(homeStore, now, check), now)
+                else place(label, path, homeStore, now, check)
             }
             // The corpus sits under ~/.cache: the other caches are what is left of it.
             val corpus = places.firstOrNull { it.label == "corpus cache" }?.bytes ?: 0
@@ -150,11 +159,14 @@ class DiskUsage internal constructor(
             val largest = jobs.entries.sortedByDescending { it.value.bytes }.take(TOP_JOBS).map { it.key to it.value.bytes }
             val report = DiskReport(
                 now, freeBytes(paths.dataDir), adjusted.sortedByDescending { it.bytes ?: -1 }, largest,
-                docker(), DockerCleanup.last(paths.dockerCleanupState),
+                docker(check), DockerCleanup.last(paths.dockerCleanupState),
             )
+            check()
             latest = report
             save()
             return report
+        } catch (_: AccountingDeferred) {
+            return null
         } finally {
             lock.unlock()
         }
@@ -182,20 +194,28 @@ class DiskUsage internal constructor(
      * Each job directory measured again when due, the rest kept as they were; directories gone are dropped. Measured in
      * chunks of [JOB_CHUNK], each saved, so a long first pass is not lost to a restart. The job directories' total.
      */
-    private fun measureJobs(activeIds: Set<Long>, now: Long): Long {
-        val dirs = paths.jobsDir.toFile().listFiles { f -> f.isDirectory && f.name.toLongOrNull() != null }.orEmpty()
-            .associate { it.name.toLong() to it }
+    private fun measureJobs(activeIds: Set<Long>, now: Long, check: () -> Unit): Long {
+        val dirs = linkedMapOf<Long, java.io.File>()
+        if (Files.isDirectory(paths.jobsDir)) Files.newDirectoryStream(paths.jobsDir).use { entries ->
+            for (entry in entries) {
+                check()
+                val id = entry.fileName.toString().toLongOrNull() ?: continue
+                if (Files.isDirectory(entry)) dirs[id] = entry.toFile()
+            }
+        }
         jobs.keys.retainAll(dirs.keys)
         val due = dirs.filter { (id, dir) ->
+            check()
             val cached = jobs[id]
             cached == null || id in activeIds || cached.active || dir.lastModified() != cached.mtime ||
                 cached.at - cached.mtime < settleMs
         }
         for (chunk in due.entries.sortedBy { it.key }.chunked(JOB_CHUNK)) {
             // The mtime before the walk: a change during it is seen as one next time.
-            val mtimes = chunk.associate { (id, dir) -> id to dir.lastModified() }
+            val mtimes = chunk.associate { (id, dir) -> check(); id to dir.lastModified() }
             pause()
-            val sizes = parse(du.run(chunk.map { it.value.path }) ?: continue)
+            check()
+            val sizes = parse(du.run(chunk.map { it.value.path }, check) ?: continue)
             for ((id, dir) in chunk) {
                 val bytes = sizes[dir.path] ?: continue
                 jobs[id] = JobSize(bytes, mtimes.getValue(id), now, id in activeIds)
@@ -206,17 +226,28 @@ class DiskUsage internal constructor(
     }
 
     /** What in the job files' directory is not a job directory, measured as a place. */
-    private fun otherJobEntries(homeStore: FileStore?, now: Long): Long =
-        paths.jobsDir.toFile().listFiles { f -> !(f.isDirectory && f.name.toLongOrNull() != null) }.orEmpty()
-            .sumOf { place("job files: ${it.name}", it.toPath(), homeStore, now).bytes ?: 0 }
+    private fun otherJobEntries(homeStore: FileStore?, now: Long, check: () -> Unit): Long {
+        if (!Files.isDirectory(paths.jobsDir)) return 0
+        return Files.newDirectoryStream(paths.jobsDir).use { entries ->
+            var bytes = 0L
+            for (entry in entries) {
+                check()
+                if (entry.fileName.toString().toLongOrNull() != null && Files.isDirectory(entry)) continue
+                bytes += place("job files: ${entry.fileName}", entry, homeStore, now, check).bytes ?: 0
+            }
+            bytes
+        }
+    }
 
     /** [path]'s last measurement when it is slow to walk and not yet [SLOW_INTERVAL_H] old, otherwise a new one. */
-    private fun place(label: String, path: Path, homeStore: FileStore?, now: Long): DiskPlace {
+    private fun place(label: String, path: Path, homeStore: FileStore?, now: Long, check: () -> Unit): DiskPlace {
+        check()
         val last = placesAt[label]?.takeIf { it.path == path.toString() && it.bytes != null }
         val slow = path.startsWith(paths.corpusDir) || paths.corpusDir.startsWith(path) || store(path) != homeStore
         if (last != null && slow && now - (last.at ?: 0) < SLOW_INTERVAL_H * HOUR_MS) return last
         pause()
-        val bytes = du.run(listOf(path.toString()))?.let { parse(it).values.firstOrNull() }
+        check()
+        val bytes = du.run(listOf(path.toString()), check)?.let { parse(it).values.firstOrNull() }
         // A walk that timed out or failed keeps the last number, with its time.
         return (if (bytes == null && last != null) last else DiskPlace(label, path.toString(), bytes, now)).also { placesAt[label] = it }
     }
@@ -224,7 +255,8 @@ class DiskUsage internal constructor(
     private fun store(path: Path): FileStore? = runCatching { Files.getFileStore(path) }.getOrNull()
 
     /** What Docker holds, by `docker system df`, when the lab uses it. */
-    private fun docker(): List<DockerUsage> = if (!docker.required) emptyList() else runCatching {
+    private fun docker(check: () -> Unit): List<DockerUsage> = if (!docker.required) emptyList() else runCatching {
+        check()
         val process = ProcessBuilder(Background.prefix + listOf("docker", "system", "df", "--format", "{{json .}}"))
             .redirectError(ProcessBuilder.Redirect.DISCARD).start()
         val out = process.inputStream.bufferedReader().readText()
@@ -239,8 +271,34 @@ class DiskUsage internal constructor(
         DuRunner.reapLeftovers(paths.dataDir.resolve(DuRunner.PID_DIR))
         lock.lock()
         try { load() } finally { lock.unlock() }
-        schedule.scheduleWithFixedDelay({ runCatching { measure() }.onFailure { println("disk usage: ${it.message}") } },
-            START_DELAY_MIN, INTERVAL_MIN, TimeUnit.MINUTES)
+        schedule.scheduleWithFixedDelay({ runCatching { measureDue() }.onFailure { println("disk usage: ${it.message}") } },
+            START_DELAY_MIN * 60_000, RETRY_MS, TimeUnit.MILLISECONDS)
+    }
+
+    /** Busy deferrals do not consume the six-hour interval. A completed report keeps its original age until replaced. */
+    internal fun measureDue(): DiskReport? {
+        if (clock() < nextMeasurementAt) return null
+        return measure()?.also { nextMeasurementAt = clock() + INTERVAL_MIN * 60_000 }
+    }
+
+    private class AccountingDeferred : RuntimeException(null, null, false, false)
+
+    /** Metadata loops share one activity poll; querying job state for every file would itself be needless work. */
+    private class ActivityCheck(private val busy: () -> Boolean) : () -> Unit {
+        private var polledAt: Long? = null
+        private var deferred = false
+        override fun invoke() {
+            if (deferred) throw AccountingDeferred()
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
+            val now = System.nanoTime()
+            if (polledAt?.let { now - it < TimeUnit.MILLISECONDS.toNanos(ACTIVITY_POLL_MS) } == true) return
+            polledAt = now
+            // A failed activity read cannot establish that deep accounting is safe to run.
+            if (runCatching(busy).getOrDefault(true)) {
+                deferred = true
+                throw AccountingDeferred()
+            }
+        }
     }
 
     private val schedule = Executors.newSingleThreadScheduledExecutor { Thread(it, "disk-usage").apply { isDaemon = true } }
@@ -251,6 +309,8 @@ class DiskUsage internal constructor(
     }
 
     internal companion object {
+        const val ACTIVITY_POLL_MS = 250L
+        const val RETRY_MS = 30_000L
         const val START_DELAY_MIN = 10L
         const val INTERVAL_MIN = 360L
         const val SLOW_INTERVAL_H = 24L
@@ -284,9 +344,11 @@ internal class DuRunner(
 ) {
     /** What `du` printed for [paths], line by line (whatever its exit, as it says why on stderr); null when it timed out
      *  or could not start. */
-    fun run(paths: List<String>): List<String>? {
+    fun run(paths: List<String>, check: () -> Unit = {}): List<String>? {
+        check()
         val out = runCatching { Files.createTempFile("lab-du", ".out") }.getOrElse { return null }
         try {
+            check()
             val process = runCatching {
                 ProcessBuilder(inSession(*(command + paths).toTypedArray()))
                     .redirectError(ProcessBuilder.Redirect.DISCARD).redirectOutput(out.toFile()).start()
@@ -294,11 +356,22 @@ internal class DuRunner(
             RUNNING.add(process)
             val record = record(process)
             var finished = false
+            var timedOut = false
+            val started = System.nanoTime()
             try {
-                finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+                while (true) {
+                    check()
+                    val remaining = timeoutMs - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                    if (remaining <= 0) { timedOut = true; break }
+                    if (process.waitFor(minOf(remaining, DiskUsage.ACTIVITY_POLL_MS), TimeUnit.MILLISECONDS)) {
+                        finished = true
+                        check()
+                        break
+                    }
+                }
             } finally {
                 if (!finished) {
-                    println("du over ${paths.size} path(s) ran past ${timeoutMs / 1000} s; killed")
+                    if (timedOut) println("du over ${paths.size} path(s) ran past ${timeoutMs / 1000} s; killed")
                     kill(process)
                 }
                 RUNNING.remove(process)

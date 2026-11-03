@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -341,6 +341,11 @@ internal object Schema {
     /** Step 17: one bounded cumulative resource snapshot per worker, independent of result acceptance. */
     private fun resourceCheckpoints(db: Connection) {
         db.createStatement().use { if ("resource_checkpoint" !in it.columns("execution_sessions")) it.execute("ALTER TABLE execution_sessions ADD COLUMN resource_checkpoint TEXT") }
+    }
+
+    /** Step 18: activity guards read only indexed state, without old recipes or command aggregates. */
+    private fun jobActivityIndex(db: Connection) {
+        db.createStatement().use { it.execute("CREATE INDEX IF NOT EXISTS jobs_activity ON jobs (status, paused, cancel_requested)") }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */

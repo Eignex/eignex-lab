@@ -153,6 +153,20 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         jobsWhere("status IN (?, ?) ORDER BY id", Status.QUEUED.name, Status.RUNNING.name, withCommands = withCommands)
     }
 
+    /** Activity guards read ids alone, without recipes or per-command progress. */
+    fun activeJobIds(): Set<Long> = reading {
+        connection.prepareStatement("SELECT id FROM jobs WHERE status IN ('QUEUED', 'RUNNING')").use { statement ->
+            statement.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toSet() }
+        }
+    }
+
+    /** Conservatively protect preparation and execution whenever unpaused work is queued or running. */
+    fun hasActiveWork(): Boolean = reading {
+        connection.prepareStatement(
+            "SELECT 1 FROM jobs WHERE status IN ('QUEUED', 'RUNNING') AND paused = 0 AND cancel_requested = 0 LIMIT 1",
+        ).use { statement -> statement.executeQuery().use { it.next() } }
+    }
+
     private fun jobsWhere(where: String, vararg values: Any?, withCommands: Boolean = true): List<Job> =
         connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
             values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
@@ -210,6 +224,14 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         connection.prepareStatement("SELECT 1 FROM jobs WHERE id = ?").use { statement ->
             statement.setLong(1, id)
             statement.executeQuery().use { it.next() }
+        }
+    }
+
+    /** A waiter's state check reads no recipe or command rows. Missing jobs have no status. */
+    fun jobStatus(id: Long): Status? = reading {
+        connection.prepareStatement("SELECT status FROM jobs WHERE id = ?").use { statement ->
+            statement.setLong(1, id)
+            statement.executeQuery().use { rows -> if (rows.next()) Status.valueOf(rows.getString(1)) else null }
         }
     }
 

@@ -15,7 +15,7 @@ object JobFileNames {
     const val PREPARED_TREES = "nomad/prepared-trees"
 }
 
-/** A listed job file; [bytes] is [UNKNOWN_BYTES] when its size cannot be read just now (a regional archive). */
+/** A listed job file; [bytes] is [UNKNOWN_BYTES] when size metadata cannot be read just now. */
 @Serializable
 data class FileEntry(val path: String, val bytes: Long, val sha256: String? = null) {
     companion object { const val UNKNOWN_BYTES = -1L }
@@ -25,18 +25,33 @@ data class FileEntry(val path: String, val bytes: Long, val sha256: String? = nu
  * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a
  * job's files are what it wrote there, and a link could lead anywhere on the machine.
  */
-internal fun jobFiles(root: Path): List<FileEntry> {
+internal fun jobFiles(root: Path, entries: (Path, () -> Unit) -> List<MacDirectoryEntries.Entry>? = MacDirectoryEntries::read): List<FileEntry> {
     if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return emptyList()
     val files = mutableListOf<FileEntry>()
-    Files.walkFileTree(root, object : java.nio.file.SimpleFileVisitor<Path>() {
-        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult =
-            if (root.relativize(dir).joinToString("/") == JobFileNames.PREPARED_TREES) java.nio.file.FileVisitResult.SKIP_SUBTREE
+    val fallback = object : java.nio.file.SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
+            return if (root.relativize(dir).joinToString("/") == JobFileNames.PREPARED_TREES) java.nio.file.FileVisitResult.SKIP_SUBTREE
             else java.nio.file.FileVisitResult.CONTINUE
+        }
         override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
             if (attrs.isRegularFile) files += FileEntry(root.relativize(file).joinToString("/"), attrs.size())
             return java.nio.file.FileVisitResult.CONTINUE
         }
-    })
+    }
+    fun visit(dir: Path) {
+        if (Thread.currentThread().isInterrupted) throw InterruptedException()
+        if (root.relativize(dir).joinToString("/") == JobFileNames.PREPARED_TREES) return
+        val bulk = entries(dir) { if (Thread.currentThread().isInterrupted) throw InterruptedException() }
+        if (bulk == null) { Files.walkFileTree(dir, fallback); return }
+        for (entry in bulk) {
+            val path = dir.resolve(entry.name)
+            if (entry.directory) visit(path)
+            else if (entry.regular) files += FileEntry(root.relativize(path).joinToString("/"), entry.bytes)
+        }
+    }
+    visit(root)
     return files.sortedBy { it.path }
 }
 

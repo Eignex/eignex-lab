@@ -11,7 +11,7 @@ import com.eignex.lab.util.*
 /** Recheck native work between iterations, as well as at admission and replacement. */
 internal class NativePriority(private val store: Store) {
     fun allows(id: Long, tags: Set<String>? = null): Boolean {
-        val job = store.job(id) ?: return false
+        val job = store.jobsByIds(listOf(id)).singleOrNull() ?: return false
         val schedules = store.schedules.all()
         fun reserved(job: Job): Boolean = Placement.localOnly(job.experiment, job.origin, Placement.cloudSchedule(job.origin, schedules))
         val pinned = reserved(job)

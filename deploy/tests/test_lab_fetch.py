@@ -33,6 +33,9 @@ elif path.endswith('/files'):
     if mode == 'literal-name':
         files = [{'path':'names/a b\t%#\n','bytes':5,'sha256':hashlib.sha256(b'first').hexdigest()}]
     body = json.dumps(files).encode()
+    listings = Path(os.environ['FAKE_CALLS']).read_text().count('GET /jobs/1/files\n')
+    if mode == 'inventory-unavailable' or mode == 'inventory-loading' and listings <= 2:
+        status, body = '503', b'{"error":"complete file inventory is being prepared"}'
 elif path.endswith('archive.zip'):
     body = b'complete'
     if mode == 'bad-hash': body = b'incorrec'
@@ -59,7 +62,7 @@ raise SystemExit(exit_code)
 
 
 class FetchTest(unittest.TestCase):
-    def fetch(self, mode, dest, root):
+    def fetch(self, mode, dest, root, extra_env=None):
         bin_dir = root / 'bin'
         bin_dir.mkdir(exist_ok=True)
         curl = bin_dir / 'curl'
@@ -68,8 +71,30 @@ class FetchTest(unittest.TestCase):
         env = os.environ | {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'],
                             'LAB_PASSWORD': 'fixture', 'LAB_URL': 'https://fixture.invalid',
                             'FAKE_MODE': mode, 'FAKE_CALLS': str(root / 'calls')}
+        env.update(extra_env or {})
         return subprocess.run(['bash', str(ROOT / 'deploy/lab'), 'fetch', '1', str(dest)],
                               env=env, capture_output=True, text=True)
+
+    def test_loading_inventory_is_retried_before_fetching_the_complete_array(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dest = root / 'download'
+            result = self.fetch('inventory-loading', dest, root)
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = (root / 'calls').read_text()
+            self.assertEqual(3, calls.count('GET /jobs/1/files\n'))
+            self.assertEqual(b'complete', (dest / 'preparation/archive.zip').read_bytes())
+            self.assertIn('DELETE /jobs/1/hold/ab12', calls)
+
+    def test_unavailable_inventory_has_a_bounded_retry_and_never_claims_empty_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dest = root / 'download'
+            result = self.fetch('inventory-unavailable', dest, root, {'LAB_FILE_LIST_TIMEOUT': '0'})
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse((dest / 'preparation/archive.zip').exists())
+            self.assertIn('complete file inventory unavailable', result.stderr)
+            self.assertIn('DELETE /jobs/1/hold/ab12', (root / 'calls').read_text())
 
     def test_transport_failure_and_short_http_200_body_are_incomplete_and_resumable(self):
         for mode in ('transport', 'short', 'full-body-error', 'http'):

@@ -27,6 +27,77 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `a target that conflicts with execution placement is refused before allocating or retrying`() {
+        val host = settings.targets.single { !it.native }
+        val runtime = host.copy(template = host.template.copy(nodeClass = "arm-runtime"), tags = setOf("arch:arm64", "simd:sve"))
+        val policy = settings.copy(targets = listOf(host, runtime))
+        val id = job(ExperimentSpec("bad-cross-target", bench = BenchSpec("bench.json"), host = Experiments.AWS_HOST,
+            nodeTags = NodeSelector(require = setOf("simd:sve"))))
+        var calls = 0
+        val queue = NomadQueue(config, store, backend, artifacts, policy, { true }, source = { job, targets, _ ->
+            calls++
+            Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { target ->
+                input(job.id, target.os, target.arch).copy(build = WorkerBuild(benchManifest = "bench.json", requiredTags = setOf("simd:sve"),
+                    preparation = WorkerPreparation(setOf("platform:linux", "arch:x86_64"), WorkerBuildTarget("linux", "amd64"))))
+            }
+        })
+        repeat(2) { queue.reconcile() }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "declared preparation target")
+        assertTrue(store.execution.sessions(id).isEmpty()); assertEquals(1, calls)
+    }
+
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `explicit preparation host contracts permit cross builds while legacy tags and complete paired rows stay binding`(crossBuild: Boolean) {
+        val host = settings.targets.single { !it.native }
+        val runtime = host.copy(template = host.template.copy(nodeClass = "arm-runtime"), tags = setOf("arch:arm64", "simd:sve"))
+        val policy = settings.copy(targets = listOf(host, runtime))
+        val spec = ExperimentSpec("cross-platform-pair", bench = BenchSpec("bench.json"), host = Experiments.AWS_HOST,
+            nodeTags = NodeSelector(require = setOf("simd:sve")), configs = listOf(mapOf("ref" to "before"), mapOf("ref" to "after")))
+        val id = job(spec)
+        val declaration = WorkerPreparation(setOf("platform:linux", "arch:x86_64"), WorkerBuildTarget("linux", "arm64"))
+        val queue = NomadQueue(config, store, backend, artifacts, policy, { true }, nativeAllowed = { true },
+            source = { job, targets, _ -> Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) } to
+                targets.distinctBy { it.os to it.arch }.map { target -> input(job.id, target.os, target.arch).copy(build =
+                    WorkerBuild(benchManifest = "bench.json", requiredTags = setOf("arch:arm64", "simd:sve"),
+                        preparation = declaration.takeIf { crossBuild })) }
+            })
+        queue.reconcile()
+        val preparation = store.execution.sessions(id).single()
+        assertEquals(if (crossBuild) host.template.nodeClass else runtime.template.nodeClass, store.execution.placement(preparation.id).nodeClass)
+        val (claim, recipe) = preparing(id)
+        assertEquals(if (crossBuild) 6 else 3, recipe.schemaVersion)
+        assertEquals(spec, recipe.experiment)
+        val output = recipe.bundles.single { it.arch == "arm64" }.copy(build = null)
+        val outputs = mapOf("preparation/${output.commit}.zip" to output.sha256)
+        val plan = com.eignex.lab.bench.BenchPlan(listOf(com.eignex.lab.bench.BenchCase("paired",
+            resources = com.eignex.lab.bench.BenchResources(1, 512, 1, setOf("arch:arm64", "simd:sve")))))
+        store.execution.phase(claim.owner, "preparing")
+        val selected = backend.selectPreparation(claim.owner, listOf(plan.cases.map(BenchRuns::problem)))
+        val result = PreparationResult(selected, listOf(output), artifacts = outputs, benchPlan = plan,
+            benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "cross-build fixture"),
+            armPlans = recipe.arms.associate { it.arm.label to plan })
+        store.execution.phase(claim.owner, "uploading")
+        if (crossBuild) {
+            val wrong = result.copy(bundles = listOf(recipe.bundles.single { it.arch == "amd64" }.copy(build = null)))
+            assertFailsWith<IllegalArgumentException> { backend.commit(claim.owner, IterationResult(emptyList(), outputs, preparation = wrong)) }
+            assertNull(store.execution.acceptedPreparation(id))
+        }
+        backend.commit(claim.owner, IterationResult(emptyList(), outputs, preparation = result))
+        backend.reconcile(); queue.reconcile()
+        val solving = store.execution.sessions(id).single { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN }
+        assertEquals(runtime.template.nodeClass, store.execution.placement(solving.id).nodeClass)
+        val manifest = store.execution.manifest(solving.id)
+        assertEquals(spec.nodeTags, manifest.placementTags)
+        assertTrue(manifest.bundles.filter { it.arch == "arm64" }.all { it.build == null })
+        if (crossBuild) assertEquals(setOf("arm64"), manifest.bundles.map { it.arch }.toSet())
+        val token = solveToken(solving)
+        store.execution.bind(solving.id, token, "cross-solve", "runtime-node", "release")
+        val pair = store.execution.claim(solving.id, token, "cross-solve")!!
+        assertEquals(setOf(0, 1), manifest.cases.filter { it.index in pair.indices }.map { it.arm }.toSet())
+        assertEquals(spec, store.job(id)!!.experiment)
+    }
+
     @ParameterizedTest @ValueSource(ints = [2, 8])
     fun `a shrunken native session retains its paired row while spare capacity admits another session`(rows: Int) {
         val fixture = shrunkenNative(rows)
@@ -327,20 +398,25 @@ class NomadQueueTest {
         listOf(first, second).forEach { store.setPriority(it, 100) }
         val cloud = job(ExperimentSpec("later-cloud", host = Experiments.AWS_HOST))
         val calls = java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger>()
+        val discovered = mutableSetOf<Long>()
         var nativeAvailable = false
         CoordinatorWork<QueueSourceKey, Pair<List<PlannedArm>, List<WorkerBundle>>>("source-test", 1).use { work ->
             val admission = NomadQueue(config, store, backend, artifacts, settings, { true }, nativeAllowed = { nativeAvailable },
                 source = { job, targets, frozen ->
-                    val key = QueueSourceKey(job.id, job.experiment, targets, frozen)
-                    work.poll(key) {
-                        calls.computeIfAbsent(job.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
-                        val arms = Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) }
-                        val bundles = targets.distinctBy { it.os to it.arch }.map { target ->
-                            input(job.id, target.os, target.arch).let { bundle ->
-                                if (job.id == cloud) bundle else bundle.copy(build = WorkerBuild(requiredTags = setOf("platform:mac", "arch:arm64")))
+                    // Establish both deferred publications before cloud admission owns the compiler slot.
+                    // Otherwise valid async timing can admit cloud before the second source even starts.
+                    if (job.id == cloud && !discovered.containsAll(listOf(first, second))) null else {
+                        val key = QueueSourceKey(job.id, job.experiment, targets, frozen)
+                        work.poll(key) {
+                            calls.computeIfAbsent(job.id) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                            val arms = Experiments.arms(job.experiment).map { PlannedArm(it, "a".repeat(40)) }
+                            val bundles = targets.distinctBy { it.os to it.arch }.map { target ->
+                                input(job.id, target.os, target.arch).let { bundle ->
+                                    if (job.id == cloud) bundle else bundle.copy(build = WorkerBuild(requiredTags = setOf("platform:mac", "arch:arm64")))
+                                }
                             }
-                        }
-                        arms to bundles
+                            arms to bundles
+                        }.also { if (it != null) discovered += job.id }
                     }
                 })
             val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
