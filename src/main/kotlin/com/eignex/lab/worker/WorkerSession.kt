@@ -278,7 +278,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     }
                 } // Provisional output retries independently; accepted artifacts still transfer in full.
             }
-        }, 0, 1, TimeUnit.SECONDS)
+        }, 0, LIVE_LOG_INTERVAL_SEC, TimeUnit.SECONDS)
         return AutoCloseable { service.shutdownNow() }
     }
 
@@ -461,6 +461,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     companion object {
         /** Longest continuous journal-pressure wait before an idle worker releases its node. */
         internal const val MAX_SOLVE_WAIT_MS = 15 * 60_000L
+        /** Provisional output only: each upload is a coordinator write per stream, and accepted output transfers in full. */
+        internal const val LIVE_LOG_INTERVAL_SEC = 5L
 
         fun main(args: List<String>): Int = runCatching {
             require(args.isEmpty()) { "worker uses allocation environment only" }
