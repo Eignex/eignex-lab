@@ -63,6 +63,15 @@ jobs:
               cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/journal-test-results/
             fi
           done
+      - name: Preserve initial staging IO regression receipts
+        if: always()
+        run: |
+          mkdir -p build/staging-io-test-results
+          for receipt in TreeVerificationTest WorkerWorkspacesTest NativePreparedTreesTest MacDirectoryEntriesTest ArtifactListingMetadataTest; do
+            if [ -f "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" ]; then
+              cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/staging-io-test-results/
+            fi
+          done
       - name: Preserve independent checker test receipts
         if: always()
         run: |
@@ -141,6 +150,7 @@ jobs:
             build/disk-test-results/
             build/inventory-test-results/
             build/artifact-verification-test-results/
+            build/staging-io-test-results/
             build/reports/tests/
             lab-bench/build/test-results/
             lab-bench/build/reports/tests/

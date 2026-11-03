@@ -70,16 +70,35 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
     internal fun awaitCleanupIdle(timeoutMs: Long = 10_000): Boolean = cleanup.awaitIdle(timeoutMs)
 
     internal fun copy(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean, paths: List<String>? = null): Path =
-        create(key, checkActive) { destination ->
+        copyWithProof(key, source, checkActive, runtimeOnly, paths).first
+
+    /** Execution has no setup between the trusted private copy and its first use. Keep its complete copy proof;
+     * preparation callers still use [copy] and seal after their mutable planning/setup work. */
+    internal fun copySealed(key: String, source: Path, checkActive: () -> Unit): Path {
+        val (tree, files) = copyWithProof(key, source, checkActive, false, null)
+        checkActive()
+        val sealing = System.nanoTime()
+        if (files == null) seal(key, tree, checkActive)
+        else ready[key] = Ready(tree, files, root.resolve("$key.verified.json"))
+        println("worker workspace seal: copyProof=${if (files == null) 0 else 1} elapsedMs=${(System.nanoTime()-sealing)/1_000_000}")
+        return tree
+    }
+
+    private fun copyWithProof(key: String, source: Path, checkActive: () -> Unit, runtimeOnly: Boolean,
+                              paths: List<String>?): Pair<Path, List<InputFile>?> {
+        var files: List<InputFile>? = null
+        val tree = create(key, checkActive) { destination ->
             val sourceReceipt = if (Files.isRegularFile(source.parent.resolve("manifest.json"))) source.parent.resolve("verified.json")
                 else source.resolveSibling("${source.fileName}.verified.json")
             val selected = paths?.map(::safeRelative)
-            TreeVerification().copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive,
+            files = TreeVerification().copy(source, sourceReceipt, destination, root.resolve("$key.verified.json"), checkActive,
                 { path -> (selected == null || selected.any { path.startsWith(it) }) && (!runtimeOnly || WorkerTrees.runtimePath(path)) }) {
                 if (paths != null) WorkerTrees.copySelected(source, destination, paths, checkActive)
                 else if (runtimeOnly) WorkerTrees.copyRuntime(source, destination, checkActive) else WorkerTrees.copy(source, destination, checkActive)
             }
         }
+        return tree to files
+    }
 
     /** Seal after trusted measurement installation/provenance capture, which bind this stable private path. */
     internal fun seal(key: String, tree: Path, checkActive: () -> Unit) {

@@ -25,7 +25,7 @@ data class FileEntry(val path: String, val bytes: Long, val sha256: String? = nu
  * The regular files under job directory [root], relative to it. Symbolic links are neither listed nor followed: a
  * job's files are what it wrote there, and a link could lead anywhere on the machine.
  */
-internal fun jobFiles(root: Path, entries: (Path, () -> Unit) -> List<MacDirectoryEntries.Entry>? = MacDirectoryEntries::read): List<FileEntry> {
+internal fun jobFiles(root: Path, entries: (Path, () -> Unit) -> List<MacDirectoryEntries.ListingEntry>? = MacDirectoryEntries::readListing): List<FileEntry> {
     if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return emptyList()
     val files = mutableListOf<FileEntry>()
     val fallback = object : java.nio.file.SimpleFileVisitor<Path>() {
