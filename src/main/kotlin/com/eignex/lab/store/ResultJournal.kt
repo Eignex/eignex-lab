@@ -142,7 +142,8 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
             }).start()
         if (start) maintenance.scheduleWithFixedDelay({
             try {
-                if (synchronized(monitor) { !closed && (batches.size >= 256 || used >= maxBytes / 2) }) compactOne()
+                // While solve claims wait, publication alone reclaims space; compaction would compete for the same volume.
+                if (synchronized(monitor) { !closed && !solveHeld && (batches.size >= 256 || used >= maxBytes / 2) }) compactOne()
             } catch (failure: Exception) {
                 synchronized(monitor) { compactionErrors++; lastCompactionError = failure.javaClass.simpleName }
             }

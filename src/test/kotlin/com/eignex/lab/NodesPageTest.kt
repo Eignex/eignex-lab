@@ -127,3 +127,17 @@ class NodesPageTest {
         assertEquals(HttpStatusCode.OK, response.status)
     }
 }
+
+class JournalHoldTextTest {
+    private fun report(bytes: Long, held: Boolean, ageMs: Long = 1000) = ResultJournalReport(1, ResultJournal.Status(5, bytes, 128L * 1024 * 1024, null,
+        solveAdmission = ResultJournal.SolveAdmission(held, 96L * 1024 * 1024, 64L * 1024 * 1024)), ageMs)
+
+    @Test fun `a held fresh journal names its fill and resume point`() {
+        assertEquals("result journal 100/128 MiB, new solve claims resume below 64 MiB", Waiting.journalHold(report(100L * 1024 * 1024, true)))
+    }
+
+    @Test fun `an open or stale journal report says nothing`() {
+        assertNull(Waiting.journalHold(report(100L * 1024 * 1024, false)))
+        assertNull(Waiting.journalHold(report(100L * 1024 * 1024, true, ageMs = 60_000)))
+    }
+}
