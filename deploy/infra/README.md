@@ -117,6 +117,30 @@ lab ownership tags that independent expiry verifies. After 30 minutes without re
 exactly tagged lab workers. Detection is within 35 minutes plus provider execution/termination latency. A six-hour
 host watchdog is a secondary bound; it does not replace expiry because an ASG replaces independently stopped hosts.
 
+AWS startup recovery uses the provider's actual instance launch time. After fifteen minutes without Nomad
+registration, the collector records a replacement intent, keeps its existing target as `REPLACING`, and rechecks
+all Nomad node identities before signing an exact-instance replacement grant. The renewal function verifies the
+owned group, unprotected membership, launch timestamp, ownership tags and grant freshness, then uses the normal
+ASG replacement operation without decrementing or increasing desired capacity. A registration observed before
+signing prevents removal. A first join racing an already issued grant uses the same unfinished-row recovery and
+cost retention as ordinary Spot loss. Registered workers and workloads are not otherwise retired by this policy.
+
+The separate durable `capacity-startup-state.json` records successful ready identities and replacement
+authorizations across controller restarts. Each instance and launch timestamp spends one authorization,
+independent of HTTP/provider retries. Three distinct authorizations without a newly successful ready boot open
+the pool's circuit: further replacements and target growth stop, while existing ready capacity remains usable.
+An old healthy neighbor does not repeatedly reset the circuit. Provider-managed replacement and the emergency
+host lifetime remain separate finite-capacity safeguards; the circuit does not terminate healthy workers or
+reset jobs, claims, deadlines, accepted work or accumulated costs.
+
+Deploy startup recovery in order: the updated renewal function and its exact-group termination permission,
+the compatible controller, then the AWS inventory adapter that publishes launch times. Ordinary grants remain
+schema 1. Action grants use schema 2, so older functions reject the unsupported action instead of silently
+ignoring it. Older inventory without launch metadata remains readable and cannot authorize startup removal.
+GCP renewal explicitly rejects startup actions until that provider implements the same recovery contract.
+New host images/templates arm the existing six-hour lifetime timer before secret retrieval or bootstrap
+prechecks; existing hosts need their ordinary lifecycle replacement to receive that guard.
+
 The image bootstrap checks the actual vCPU count, available memory, architecture and common SIMD flags before
 enabling the client. Templates provide an initial `attr.cpu.usablecompute` calibration. The coordinator reads
 ready, eligible clients and recalibrates the Nomad CPU request and exact frequency constraint together for each

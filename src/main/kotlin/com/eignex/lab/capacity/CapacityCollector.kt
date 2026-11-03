@@ -14,11 +14,13 @@ import kotlinx.serialization.json.*
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.*
+import java.nio.channels.FileChannel
+import java.nio.file.StandardOpenOption.READ
 import java.util.concurrent.atomic.AtomicReference
 
 /** Provider adapters supply inventory only. This contract contains no credentials or provider API concepts. */
 @Serializable
-data class CapacityInstance(val id: String, val pool: String, val draining: Boolean = false, val countedInTarget: Boolean = true)
+data class CapacityInstance(val id: String, val pool: String, val draining: Boolean = false, val countedInTarget: Boolean = true, val launchedAt: Long? = null)
 @Serializable
 data class CapacityInventory(val observedAt: Long, val pools: Set<String>, val instances: List<CapacityInstance>, val failures: Map<String, String> = emptyMap())
 @Serializable
@@ -153,6 +155,9 @@ class CapacityCollector(
     private data class Sample(val snapshot: CapacitySnapshot, val nanos: Long)
     private val latest = AtomicReference<Sample?>()
     private var state = if (Files.isRegularFile(stateFile)) Json.decodeFromString<CapacityState>(Files.readString(stateFile)) else CapacityState()
+    private val startupFile = stateFile.resolveSibling("capacity-startup-state.json")
+    private var startupState = if (Files.isRegularFile(startupFile)) Json.decodeFromString<CapacityStartupState>(Files.readString(startupFile)) else CapacityStartupState()
+    private var startupDurable = true
     private val pools = settings.pools.associateBy { it.id }
     private data class CachedNode(val index: Long, val node: JsonObject)
     private val nodeCache = mutableMapOf<String, CachedNode>()
@@ -186,9 +191,28 @@ class CapacityCollector(
         // Only the sessions this decision reads: those owning the nodes' allocations, and those not yet stopped.
         val allocations = byInstance.values.associate { node -> node.id to nomad.nodeAllocations(node.id).map(CapacityObservation.AllocationView::of) }
         val byJob = store.execution.sessionsOfNomadJobs(allocations.values.flatten().map { it.job }).associateBy { it.nomadJobId }
-        val (observations, idle) = CapacityObservation.observeNodes(instances, pools, byInstance, { node ->
+        val (observed, idle) = CapacityObservation.observeNodes(instances, pools, byInstance, { node ->
             allocations[node] ?: nomad.nodeAllocations(node).map(CapacityObservation.AllocationView::of)
         }, byJob, state.idleSince, at)
+        val registered = instances.filter { (pools.getValue(it.pool).nodeClass to it.id) in byInstance }.map(CapacityStartup::key).toSet()
+        val ready = observed.filter { it.state == CapacityNodeState.READY }.map { it.id }.toSet()
+        val retainedStartup = startupState.copy(
+            everReady = startupState.everReady.filterKeys { it.substringBefore(':') in pools },
+            retiring = startupState.retiring.filterKeys { it.substringBefore(':') in pools },
+            failed = startupState.failed.filterKeys { it in pools },
+        )
+        val startup = CapacityStartup.observe(retainedStartup, instances, fresh.flatMap { it.pools }.toSet(), registered, ready, at)
+        saveStartup(startup)
+        val byCapacityId = instances.associateBy(CapacityStartup::key)
+        val observations = observed.map { node ->
+            val instance = byCapacityId.getValue(node.id)
+            when {
+                !instance.draining && node.state != CapacityNodeState.DRAINING && node.id in startup.retiring &&
+                    (node.id !in registered || startup.retiring.getValue(node.id).authorized) -> node.copy(state = CapacityNodeState.REPLACING)
+                node.id !in registered && CapacityStartup.expired(instance, at) -> node.copy(state = CapacityNodeState.UNAVAILABLE)
+                else -> node
+            }
+        }
         val pending = store.execution.liveSessions().filter { s -> s.desired == Desired.RUN && (s.executionClass != ExecutionClass.SOLVE || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
             !nomad.hasActiveAllocation(s.nomadJobId) }
         val demands = pending.mapNotNull { s ->
@@ -198,25 +222,44 @@ class CapacityCollector(
         }.filter { it.pool !in stalePools }
         val inventoryAge = fresh.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }
-        val evaluated = CapacityPolicy.evaluate(settings, observations, demands, store.execution.capacityLeases(at), state.history, at)
+        val blocked = startup.failed.filterValues { it.size >= CapacityStartup.MAX_REPLACEMENTS }.keys
+        val evaluated = CapacityPolicy.evaluate(settings, observations, demands, store.execution.capacityLeases(at), state.history, at, growthBlocked = blocked)
         // A stale pool keeps what it last had: neither grown on demand it cannot see nor shrunk to nothing.
         val held = stale.flatMap { inventory -> inventory.pools.map { pool ->
             pool to (state.desired[pool] ?: inventory.instances.count { it.pool == pool && it.countedInTarget })
         } }.toMap()
         val decision = evaluated.copy(desired = evaluated.desired + held)
         state = CapacityState(decision.history, idle.filterKeys { id -> observations.any { it.id == id } }, decision.desired)
-        Files.createDirectories(stateFile.parent)
-        val temporary = Files.createTempFile(stateFile.parent, ".capacity-", ".tmp")
-        try { Files.writeString(temporary, Json.encodeToString(state)); Files.move(temporary, stateFile, ATOMIC_MOVE, REPLACE_EXISTING) }
-        finally { Files.deleteIfExists(temporary) }
+        saveState()
+        val startupFailures = instances.filter { CapacityStartup.key(it) !in registered && CapacityStartup.expired(it, at) }
+            .groupBy { it.pool }.mapValues { (_, failed) -> "${failed.size} instances exceeded Nomad registration grace; replacement pending" } +
+            blocked.associateWith { "startup replacement circuit open after ${CapacityStartup.MAX_REPLACEMENTS} distinct authorizations; review startup failure or register a healthy new worker" }
         val failures = inventories.flatMap { it.failures.entries }.associate { it.toPair() } +
-            stalePools.associateWith { "inventory stale: holding ${held[it]} nodes" }
+            stalePools.associateWith { "inventory stale: holding ${held[it]} nodes" } + startupFailures
         val snapshot = CapacitySnapshot(at - inventoryAge, inventoryAge, decision, observations, failures, settings.pools)
         val report = stateFile.resolveSibling("capacity-report.json")
         val pendingReport = Files.createTempFile(report.parent, ".report-", ".tmp")
         try { Files.writeString(pendingReport, Json.encodeToString(snapshot)); Files.move(pendingReport, report, ATOMIC_MOVE, REPLACE_EXISTING) }
         finally { Files.deleteIfExists(pendingReport) }
         latest.set(Sample(snapshot, started - inventoryAge * 1_000_000))
+    }
+
+    /** Keep rare destructive-action history durable without adding a barrier to every capacity refresh. */
+    private fun saveStartup(next: CapacityStartupState) {
+        if (next == startupState && startupDurable) return
+        startupState = next
+        startupDurable = false
+        Files.createDirectories(startupFile.parent)
+        startupFile.writeAtomically(Json.encodeToString(next))
+        FileChannel.open(startupFile.parent, READ).use { it.force(true) }
+        startupDurable = true
+    }
+
+    private fun saveState() {
+        Files.createDirectories(stateFile.parent)
+        val temporary = Files.createTempFile(stateFile.parent, ".capacity-", ".tmp")
+        try { Files.writeString(temporary, Json.encodeToString(state)); Files.move(temporary, stateFile, ATOMIC_MOVE, REPLACE_EXISTING) }
+        finally { Files.deleteIfExists(temporary) }
     }
 
     /** The Nomad nodes of [classes], read whole only when they changed since the last read. */
@@ -241,13 +284,29 @@ class CapacityCollector(
         return sample.snapshot.copy(ageMs = age)
     }
     /** Only a fresh reconciliation may renew provider capacity. The provider verifies with its own clock. */
+    @Synchronized
     fun grant(pool: String): CapacityGrant {
         val sample = snapshot()
         val definition = requireNotNull(pools[pool]) { "unknown capacity pool" }
+        val candidates = startupState.retiring.filterKeys { id -> id.substringBefore(':') == pool && sample.nodes.any { it.id == id } }
+        // Bypass the node cache and revalidate server absence immediately before authorizing replacement.
+        // A first join after this check is normal Spot-like loss: durable whole-row replacement retains its costs.
+        val freshNodes = if (candidates.isEmpty()) emptyList() else nomad.nodes()
+            .mapNotNull { brief -> nomad.node(brief.getValue("ID").jsonPrimitive.content) }
+        val registered = candidates.values.filter { action -> freshNodes.any { CapacityStartup.registered(it, action.id) } }.map { it.id }.toSet()
+        if (candidates.isNotEmpty()) {
+            saveStartup(CapacityStartup.authorize(startupState, pool, registered))
+        }
+        val retirements = startupState.retiring.filterKeys { it in candidates }.values.filter { it.id !in registered }
+        snapshot() // Slow/failed revalidation never authorizes an expired observation.
         val payload = buildJsonObject {
-            put("schemaVersion", CapacityWire.GRANT_SCHEMA_VERSION); put("pool", pool); put("maxNodes", definition.maxNodes)
+            put("schemaVersion", if (retirements.isEmpty()) CapacityWire.GRANT_SCHEMA_VERSION else CapacityWire.STARTUP_GRANT_SCHEMA_VERSION)
+            put("pool", pool); put("maxNodes", definition.maxNodes)
             put("desired", sample.decision.desired.getValue(pool)); put("issuedAt", clock())
             put("nonce", java.util.UUID.randomUUID().toString())
+            if (retirements.isNotEmpty()) putJsonArray("startupRetirements") {
+                retirements.forEach { item -> add(buildJsonObject { put("id", item.id); put("launchedAt", item.launchedAt) }) }
+            }
         }.toString().toByteArray(Charsets.UTF_8)
         val mac = javax.crypto.Mac.getInstance("HmacSHA256")
         val key = Files.readString(tokenFile).trim().toByteArray(Charsets.UTF_8)

@@ -75,7 +75,9 @@ class Cloud:
 def renew_pool(grant, cloud, key, clock=time.time):
     c = cloud.config
     def fresh():
-        verify(grant, key, c['POOL'], int(c['MAX_NODES']), int(clock()*1000))
+        value = verify(grant, key, c['POOL'], int(c['MAX_NODES']), int(clock()*1000))
+        if value.get('startupRetirements'):
+            raise ValueError('startup retirement is not supported by this provider')
     fresh(); cloud.owned(); fresh()
     until = int(clock()) + LEASE_SECONDS
     cloud.write_lease(until)

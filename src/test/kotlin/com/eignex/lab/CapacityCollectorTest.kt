@@ -37,13 +37,17 @@ class CapacityCollectorTest {
         var full: JsonObject? = null
         var allocations = emptyList<JsonObject>()
         var nodeReads = 0
+        var nodesFailure = false
         override fun job(id: String): JsonObject? = null
         override fun submit(job: JsonObject) { error("collector cannot submit") }
         override fun stop(id: String) { error("collector cannot stop") }
         override fun allocations(job: String) = emptyList<NomadAllocation>()
         override fun allocation(id: String): NomadAllocation? = null
         override fun jwks() = buildJsonObject { }
-        override fun nodes() = full?.let { listOf(JsonObject(it - "Meta")) } ?: emptyList()
+        override fun nodes(): List<JsonObject> {
+            check(!nodesFailure) { "Nomad inventory unavailable" }
+            return full?.let { listOf(JsonObject(it - "Meta")) } ?: emptyList()
+        }
         override fun node(id: String): JsonObject? { nodeReads++; return full }
         override fun nodeAllocations(id: String) = allocations
     }
@@ -75,6 +79,57 @@ class CapacityCollectorTest {
         return output
     }
     private fun collector() = CapacityCollector(settings, listOf(inventory), tokenFile, state, store, control, { writable }, setOf("local"), { at }, { nanos })
+
+    @Test fun `overdue unregistered boot is replaced without increasing target and intent survives restart`() {
+        at = 4_000_000
+        val instance = CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
+        store.execution.requestCapacity(pool.id, 1, 60_000, at)
+        sample(listOf(instance))
+        val c = collector(); c.collect()
+        assertEquals(1, c.snapshot().decision.desired[pool.id])
+        assertEquals(CapacityNodeState.REPLACING, c.snapshot().nodes.single().state)
+        fun payload(grant: CapacityGrant) = Json.parseToJsonElement(java.util.Base64.getUrlDecoder().decode(grant.payload).toString(Charsets.UTF_8)).jsonObject
+        val first = payload(c.grant(pool.id))
+        assertEquals(CapacityWire.STARTUP_GRANT_SCHEMA_VERSION, first.getValue("schemaVersion").jsonPrimitive.int)
+        assertEquals(instance.id, first.getValue("startupRetirements").jsonArray.single().jsonObject.getValue("id").jsonPrimitive.content)
+        val restarted = collector(); restarted.collect()
+        assertEquals(first.getValue("startupRetirements"), payload(restarted.grant(pool.id)).getValue("startupRetirements"))
+        val durable = Json.decodeFromString<CapacityStartupState>(Files.readString(state.resolveSibling("capacity-startup-state.json")))
+        assertEquals(1, durable.failed.getValue(pool.id).size, "polling and restart must not spend another replacement")
+    }
+
+    @Test fun `fresh registration before signing prevents retirement even outside the expected node class`() {
+        at = 4_000_000
+        val instance = CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
+        sample(listOf(instance)); val c = collector(); c.collect()
+        control.full = buildJsonObject {
+            put("ID", "late-node"); put("NodeClass", "wrong-class"); put("Name", "wrong-pool-${instance.id}"); put("Status", "ready")
+        }
+        val grant = c.grant(pool.id)
+        val payload = Json.parseToJsonElement(java.util.Base64.getUrlDecoder().decode(grant.payload).toString(Charsets.UTF_8)).jsonObject
+        assertFalse("startupRetirements" in payload)
+        assertEquals(CapacityWire.GRANT_SCHEMA_VERSION, payload.getValue("schemaVersion").jsonPrimitive.int)
+        val durable = Json.decodeFromString<CapacityStartupState>(Files.readString(state.resolveSibling("capacity-startup-state.json")))
+        assertTrue(durable.retiring.isEmpty()); assertTrue(durable.failed.isEmpty())
+    }
+
+    @Test fun `failed fresh Nomad revalidation cannot issue a startup retirement`() {
+        at = 4_000_000
+        sample(listOf(CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)))
+        val c = collector(); c.collect()
+        control.nodesFailure = true
+        assertEquals("Nomad inventory unavailable", assertFailsWith<IllegalStateException> { c.grant(pool.id) }.message)
+        val durable = Json.decodeFromString<CapacityStartupState>(Files.readString(state.resolveSibling("capacity-startup-state.json")))
+        assertTrue(durable.failed.isEmpty()); assertFalse(durable.retiring.values.single().authorized)
+    }
+
+    @Test fun `expired capacity sample cannot authorize startup retirement`() {
+        at = 4_000_000
+        sample(listOf(CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)))
+        val c = collector(); c.collect()
+        nanos += 31_000_000_000
+        assertFailsWith<IllegalStateException> { c.grant(pool.id) }
+    }
 
     @Test fun `unchanged historical nodes do not require full reads on every refresh`() {
         sample(listOf(CapacityInstance("vm", pool.id)))

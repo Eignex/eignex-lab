@@ -199,7 +199,8 @@ resource "aws_iam_role_policy_attachment" "expiry_logs" {
 resource "aws_iam_role_policy" "renew" {
   role = aws_iam_role.renew.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups"], Resource = "*" },
+    { Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups", "ec2:DescribeInstances"], Resource = "*" },
+    { Effect = "Allow", Action = ["autoscaling:TerminateInstanceInAutoScalingGroup"], Resource = aws_autoscaling_group.workers.arn },
     { Effect = "Allow", Action = ["autoscaling:UpdateAutoScalingGroup"], Resource = aws_autoscaling_group.workers.arn },
     { Effect = "Allow", Action = ["dynamodb:PutItem"], Resource = aws_dynamodb_table.leases.arn, Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = [var.pool_id] } } },
     { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.signing_secret_arn }
@@ -286,7 +287,7 @@ resource "aws_iam_role" "adapter" {
 resource "aws_iam_role_policy" "adapter" {
   role = aws_iam_role.adapter.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:DescribeScalingActivities"], Resource = "*" },
+    { Effect = "Allow", Action = ["autoscaling:DescribeAutoScalingGroups", "autoscaling:DescribeScalingActivities", "ec2:DescribeInstances"], Resource = "*" },
     { Effect = "Allow", Action = ["lambda:InvokeFunction"], Resource = aws_lambda_function.renew.arn }
   ] })
 }

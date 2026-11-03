@@ -17,6 +17,8 @@ object CapacityWire {
     /** What a grant's HMAC is computed over, before its payload. */
     const val GRANT_DOMAIN = "eignex-capacity-v1\n"
     const val GRANT_SCHEMA_VERSION = 1
+    const val STARTUP_GRANT_SCHEMA_VERSION = 2
+    const val STARTUP_GRACE_MS = 900_000L
     /** How long a grant, and the sample it was issued from, stays fresh. */
     const val FRESH_MS = 30_000L
     /** How far ahead of the verifier's clock a grant may be issued. */

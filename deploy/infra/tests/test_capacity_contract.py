@@ -26,6 +26,8 @@ class WireTest(unittest.TestCase):
     def test_grants_bootstrap_and_autoscaler_speak_the_shared_wire_format(self):
         self.assertEqual(self.wire['grantDomain'].encode(), capacity_grants.DOMAIN)
         self.assertEqual(self.wire['grantSchemaVersion'], capacity_grants.SCHEMA_VERSION)
+        self.assertEqual(self.wire['startupGrantSchemaVersion'], capacity_grants.STARTUP_SCHEMA_VERSION)
+        self.assertEqual(self.wire['startupGraceMs'], capacity_grants.STARTUP_GRACE_MS)
         self.assertEqual(self.wire['grantFreshMs'], capacity_grants.FRESH_MS)
         self.assertEqual(self.wire['grantClockSkewMs'], capacity_grants.CLOCK_SKEW_MS)
         bootstrap = module('host_bootstrap', ROOT / 'deploy/infra/common/bootstrap.py')
