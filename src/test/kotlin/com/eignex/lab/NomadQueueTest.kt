@@ -909,6 +909,16 @@ class NomadQueueTest {
         assertEquals(1, publications)
     }
 
+    @Test fun `without a per host cap a job's cloud sessions place together within its CPU limit`() {
+        val id = job(ExperimentSpec("cloud-fanout", problems = listOf(mapOf("suite" to "s")), vcpus = 8, host = Experiments.AWS_HOST))
+        val narrow = narrow(1000)
+        queue(policy = narrow).reconcile(); prepare(id, 4); backend.reconcile(); queue(policy = narrow).reconcile()
+        val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
+        assertTrue(solves.size > 1, "unplaced sessions no longer wait for each other's node")
+        assertTrue(solves.all { it.node == null })
+        assertTrue(solves.sumOf { it.budget.cpuMillis } <= 8000, "the job's vCPUs still bound its sessions")
+    }
+
     @Test fun `explicit cloud per host cap is independent of worker CPU requests`() {
         val id = job(ExperimentSpec("cloud-slots", problems = listOf(mapOf("suite" to "s")), vcpus = 8, host = Experiments.AWS_HOST))
         val narrow = narrow(1000)
