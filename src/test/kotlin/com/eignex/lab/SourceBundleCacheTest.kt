@@ -83,6 +83,25 @@ class SourceBundleCacheTest {
         assertFailsWith<IllegalArgumentException> { cache().remember(1, extra, bytes.size.toLong()) }
     }
 
+    @Test fun `packed source hints survive restart and never satisfy older source transports`() {
+        val content = PackedGitSource.receipt(bundle.commit)
+        val packed = bundle.copy(build = WorkerBuild(gitBundle = PackedGitSource.MARKER), files = listOf(
+            InputFile(PackedGitSource.MARKER, ExecutionStore.digest(content), content.toByteArray().size.toLong()),
+            InputFile(".git/objects/pack/fixture.pack", "c".repeat(64), 1)))
+        publish(1, packed); cache().remember(1, packed, bytes.size.toLong())
+        val build = WorkerBuild(listOf(":bench:installDist"), gitBundle = PackedGitSource.MARKER, benchManifest = "bench.json")
+        val reused = assertNotNull(reuse(2, build = build, includeHistory = false, recover = { error("packed metadata must survive restart") }))
+        assertEquals(packed.files, reused.files); assertEquals(build, reused.build)
+        assertNull(reuse(3, recover = { sequenceOf(1L to packed) }))
+        assertNull(reuse(4, includeHistory = false, recover = { sequenceOf(1L to packed) }))
+        deleteTree(hints)
+        assertNotNull(reuse(5, build = build, includeHistory = false, recover = { sequenceOf(1L to packed) }))
+        deleteTree(hints)
+        assertNull(reuse(6, build = build, includeHistory = false, recover = { sequenceOf(1L to bundle) }))
+        val extra = packed.copy(files = packed.files + InputFile("lab-inputs/model", "d".repeat(64), 1))
+        assertFailsWith<IllegalArgumentException> { cache().remember(1, extra, bytes.size.toLong()) }
+    }
+
     @Test fun `missing or corrupt retained source is a miss and never becomes a new job artifact`() {
         publish(1); cache().remember(1, bundle, bytes.size.toLong())
         val original = blobs.resolve("1/${bundle.sha256}")

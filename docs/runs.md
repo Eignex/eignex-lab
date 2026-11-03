@@ -217,10 +217,14 @@ full preparation, failed work and retirement costs alongside the replay's own bo
 A bench manifest may opt into `"sourceHistory": "snapshot"` when its build and tools need only the selected
 revision. The coordinator exports its exact files and a shallow Git repository at the original commit ID;
 `git rev-parse HEAD`, `git ls-files` and `git show HEAD:path` still work. Ancestors, tags, other branches,
-repository hooks and credentials are not exported. Existing workers consume this as a verified source ZIP.
+repository hooks and credentials are not exported. With `packedSourceSnapshots` enabled in queue settings,
+the verified ZIP contains only shallow Git metadata and objects; a protocol-7 worker checks out the files once
+in its private build directory. Enable this setting only after every pinned native launcher and cloud worker
+image supports protocol 7. Its default is false; older frozen queue recipes retain the file-based snapshot ZIP.
 Omitting the field, or setting `"sourceHistory": "full"`, retains the original history bundle; use that mode
 for tools such as `git describe` or builds that inspect ancestors. Profiles retain full history. The source
-hint cache separates both modes, and snapshot exports normalize Git pack and index metadata for stable reuse.
+hint cache separates history bundles, file snapshots and packed snapshots; exports normalize their Git metadata
+for stable reuse. Additional declared inputs remain bound to their own checksums and are not source-only hints.
 
 A bench manifest may declare top-level `workspaceInputs`, a nonempty list of portable relative file or directory
 paths to copy from the verified build. The manifest itself is included automatically. This asserts that `describe`,

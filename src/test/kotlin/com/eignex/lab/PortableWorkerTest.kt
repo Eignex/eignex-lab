@@ -564,7 +564,7 @@ class PortableWorkerTest {
         assertEquals(0, tracked.waitFor())
     }
 
-    @Test fun `snapshot export preserves current Git authority without ancestors credentials or worker changes`(): Unit = service { socket ->
+    @Test fun `source snapshot transports preserve current Git authority without ancestors or credentials`(): Unit = service { socket ->
         val repository = Files.createDirectory(root.resolve("snapshot-repo"))
         fun command(directory: Path, vararg args: String): Pair<Int, String> {
             val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + args).redirectErrorStream(true).start()
@@ -596,48 +596,60 @@ class PortableWorkerTest {
         Files.writeString(repository.resolve("untracked-secret"), "do not export")
         val inputs = SourceInputs({ repo, sha -> assertEquals(Repositories.DEFAULT, repo); assertEquals(commit, sha) })
         val os = if (CliMeasurements.localMacOs) "mac" else "linux"
-        val build = WorkerBuild(listOf("installDist"))
-        val output = root.resolve("snapshot-source.zip")
-        val manifest = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, output, includeHistory = false)
-        assertNull(manifest.build!!.gitBundle)
-        assertFalse(manifest.files.any { it.path == "removed.bin" || it.path == "untracked-secret" || it.path.startsWith(".git/hooks/") || it.path.startsWith(".git/logs/") })
-        assertTrue(manifest.files.single { it.path == "tool" }.executable)
-        assertTrue(com.eignex.lab.execution.SourceSnapshots.usable(manifest))
-        assertEquals(0L, manifest.files.single { it.path == "empty.txt" }.bytes)
-        val limited = root.resolve("snapshot-source-too-large.zip")
-        assertFailsWith<IllegalArgumentException> {
-            SourceInputs({ _, _ -> }, maxBytes = 1024).publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, limited, includeHistory = false)
+        for (packed in listOf(false, true)) {
+            val mode = if (packed) "packed-snapshot" else "file-snapshot"
+            val build = WorkerBuild(listOf("installDist"), gitBundle = if (packed) PackedGitSource.MARKER else null)
+            val output = root.resolve("$mode-source.zip")
+            val manifest = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, output, includeHistory = false)
+            if (packed) {
+                assertTrue(PackedGitSource.usable(manifest))
+                assertTrue(manifest.files.size < 16 && manifest.files.all { it.path.startsWith(".git/") }, "packed inputs must not extract working files before checkout")
+            } else {
+                assertNull(manifest.build!!.gitBundle)
+                assertTrue(manifest.files.single { it.path == "tool" }.executable)
+                assertTrue(com.eignex.lab.execution.SourceSnapshots.usable(manifest))
+                assertEquals(0L, manifest.files.single { it.path == "empty.txt" }.bytes)
+            }
+            assertFalse(manifest.files.any { it.path == "removed.bin" || it.path == "untracked-secret" || it.path.startsWith(".git/hooks/") || it.path.startsWith(".git/logs/") })
+            val limited = root.resolve("$mode-source-too-large.zip")
+            assertFailsWith<IllegalArgumentException> {
+                SourceInputs({ _, _ -> }, maxBytes = 1024).publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, limited, includeHistory = false)
+            }
+            assertFalse(Files.exists(limited), "a failed streaming budget check must not publish partial source")
+
+            // A mirror repack and a new export directory must not invalidate the worker's existing ZIP-keyed cache.
+            git("repack", "-adF", "--window=0")
+            val repeated = root.resolve("$mode-source-repeated.zip")
+            val second = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, repeated, includeHistory = false)
+            assertEquals(manifest, second)
+            val full = root.resolve("$mode-source-with-history.zip")
+            inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, full)
+            assertTrue(Files.size(output) * 10 < Files.size(full), "deleted historical bytes must not travel with the snapshot")
+
+            val source = VerifiedCache(root.resolve("$mode-sources")).stage(manifest) { Files.newInputStream(output) }
+            if (packed) assertFalse(Files.exists(source.resolve("binary.bin"))) else {
+                assertContentEquals(binary, Files.readAllBytes(source.resolve("binary.bin")))
+                assertEquals("current source", Files.readString(source.resolve("café.txt")), "archive attributes must not omit committed build inputs")
+            }
+            val tree = WorkerBuildCache(root.resolve("$mode-builds"), ProcessSupervisor(socket)).prepare(manifest, source,
+                ResourceBudget(1000, 512), System.getenv()) { 10000 }
+            assertContentEquals(binary, Files.readAllBytes(tree.resolve("binary.bin")))
+            assertEquals("current source", Files.readString(tree.resolve("duplicate.txt")))
+            assertTrue(Files.isExecutable(tree.resolve("tool"))); assertEquals(0L, Files.size(tree.resolve("empty.txt")))
+            assertEquals(commit, Files.readString(tree.resolve("build/commit")).trim())
+            assertEquals("1", Files.readString(tree.resolve("build/history")).trim())
+            assertEquals("current source", Files.readString(tree.resolve("build/from-git")))
+            assertEquals(outside.toString(), Files.readString(tree.resolve("outside.link"))); assertFalse(Files.isSymbolicLink(tree.resolve("outside.link")))
+            assertEquals(0 to "", command(tree, "status", "--porcelain", "--untracked-files=no"))
+            assertEquals(0 to "current source", command(tree, "show", "HEAD:café.txt"))
+            assertEquals(0 to "true", command(tree, "rev-parse", "--is-shallow-repository"))
+            assertNotEquals(0, command(tree, "cat-file", "-e", parent).first)
+            assertNotEquals(0, command(tree, "cat-file", "-e", oldBlob).first)
+            assertEquals(0 to "", command(tree, "tag", "--list"))
+            assertTrue(Files.isDirectory(tree.resolve(".git/refs/heads")))
+            assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
+            assertEquals("", git("for-each-ref", "--format=%(refname)", "refs/lab-source"))
         }
-        assertFalse(Files.exists(limited), "a failed streaming budget check must not publish partial source")
-
-        // A mirror repack and a new export directory must not invalidate the worker's existing ZIP-keyed cache.
-        git("repack", "-adF", "--window=0")
-        val repeated = root.resolve("snapshot-source-repeated.zip")
-        val second = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, repeated, includeHistory = false)
-        assertEquals(manifest, second)
-        val full = root.resolve("snapshot-source-with-history.zip")
-        inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, full)
-        assertTrue(Files.size(output) * 10 < Files.size(full), "deleted historical bytes must not travel with the snapshot")
-
-        val source = VerifiedCache(root.resolve("snapshot-sources")).stage(manifest) { Files.newInputStream(output) }
-        assertContentEquals(binary, Files.readAllBytes(source.resolve("binary.bin")))
-        assertEquals("current source", Files.readString(source.resolve("café.txt")), "archive attributes must not omit committed build inputs")
-        assertEquals("current source", Files.readString(source.resolve("duplicate.txt")))
-        val tree = WorkerBuildCache(root.resolve("snapshot-builds"), ProcessSupervisor(socket)).prepare(manifest, source,
-            ResourceBudget(1000, 512), System.getenv()) { 10000 }
-        assertEquals(commit, Files.readString(tree.resolve("build/commit")).trim())
-        assertEquals("1", Files.readString(tree.resolve("build/history")).trim())
-        assertEquals("current source", Files.readString(tree.resolve("build/from-git")))
-        assertEquals(outside.toString(), Files.readString(tree.resolve("outside.link"))); assertFalse(Files.isSymbolicLink(tree.resolve("outside.link")))
-        assertEquals(0 to "", command(tree, "status", "--porcelain", "--untracked-files=no"))
-        assertEquals(0 to "current source", command(tree, "show", "HEAD:café.txt"))
-        assertEquals(0 to "true", command(tree, "rev-parse", "--is-shallow-repository"))
-        assertNotEquals(0, command(tree, "cat-file", "-e", parent).first)
-        assertNotEquals(0, command(tree, "cat-file", "-e", oldBlob).first)
-        assertEquals(0 to "", command(tree, "tag", "--list"))
-        assertTrue(Files.isDirectory(tree.resolve(".git/refs/heads")))
-        assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
-        assertEquals("", git("for-each-ref", "--format=%(refname)", "refs/lab-source"))
     }
 
     @Test fun `declared preparation verifies planner and runtime inputs without visiting compiler scratch`(): Unit = service { socket ->
