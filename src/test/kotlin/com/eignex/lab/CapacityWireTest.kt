@@ -27,6 +27,8 @@ class CapacityWireTest {
         val wire = Json.parseToJsonElement(Files.readString(Path.of("deploy/capacity-wire.json"))).jsonObject
         assertEquals(wire.getValue("grantDomain").jsonPrimitive.content, CapacityWire.GRANT_DOMAIN)
         assertEquals(wire.getValue("grantSchemaVersion").jsonPrimitive.int, CapacityWire.GRANT_SCHEMA_VERSION)
+        assertEquals(wire.getValue("startupGrantSchemaVersion").jsonPrimitive.int, CapacityWire.STARTUP_GRANT_SCHEMA_VERSION)
+        assertEquals(wire.getValue("startupGraceMs").jsonPrimitive.long, CapacityWire.STARTUP_GRACE_MS)
         assertEquals(wire.getValue("grantFreshMs").jsonPrimitive.long, CapacityWire.FRESH_MS)
         assertEquals(wire.getValue("grantClockSkewMs").jsonPrimitive.long, CapacityWire.CLOCK_SKEW_MS)
         assertEquals(wire.getValue("desiredMetric").jsonPrimitive.content, CapacityWire.DESIRED_METRIC)

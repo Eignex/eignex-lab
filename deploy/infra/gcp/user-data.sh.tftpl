@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+# Arm the existing emergency bound even when secret retrieval or bootstrap validation fails.
+systemctl enable --now lab-lifetime.timer
 mkdir -p /etc/eignex-lab
 cat > /etc/eignex-lab/node.json <<'EIGNEX_NODE_CONFIG'
 ${config}

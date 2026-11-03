@@ -49,6 +49,16 @@ class GcpCapacityTest(unittest.TestCase):
             renew_pool(self.grant(at=900000),self.cloud,self.key,clock=lambda:1000)
         self.assertEqual(1,self.cloud.renew_iam.call_count)
 
+    def test_unsupported_startup_actions_fail_closed_before_provider_mutations(self):
+        value = dict(schemaVersion=2, pool='general', maxNodes=4, desired=1, issuedAt=1000000,
+                     startupRetirements=[dict(id='node', launchedAt=1000)])
+        raw = json.dumps(value).encode()
+        grant = dict(payload=base64.urlsafe_b64encode(raw).decode().rstrip('='),
+                     signature=hmac.new(self.key.encode(), DOMAIN + raw, hashlib.sha256).hexdigest())
+        with self.assertRaisesRegex(ValueError, 'not supported'):
+            renew_pool(grant, self.cloud, self.key, clock=lambda: 1000)
+        self.cloud.write_lease.assert_not_called(); self.cloud.renew_iam.assert_not_called()
+
     def test_expiry_stops_replacement_while_a_fresh_lease_keeps_the_group_running(self):
         self.assertTrue(expire_pool(self.cloud,clock=lambda:1000)['expired'])
         self.cloud.owned.assert_called_once(); self.cloud.close.assert_called_once()

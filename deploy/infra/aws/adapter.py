@@ -29,7 +29,7 @@ def error_code(error):
     return code
 
 
-def inventory(asg, group, deployment, pool, at=None):
+def inventory(asg, group, deployment, pool, at=None, ec2=None):
     groups = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[group])["AutoScalingGroups"]
     if not groups:
         raise ValueError("pool group missing")
@@ -40,7 +40,20 @@ def inventory(asg, group, deployment, pool, at=None):
     instances = [(item["InstanceId"], item["LifecycleState"].startswith("Terminating")) for item in value["Instances"]]
     activities = asg.describe_scaling_activities(AutoScalingGroupName=group, MaxRecords=1)["Activities"]
     failure = (activities[0].get("StatusMessage") or "capacity unavailable") if activities and activities[0]["StatusCode"] == "Failed" else None
-    return observation(pool, instances, value["DesiredCapacity"], failure, at)
+    result = observation(pool, instances, value["DesiredCapacity"], failure, at)
+    if ec2 is not None and instances:
+        launched = {}
+        ids = [item[0] for item in instances]
+        for offset in range(0, len(ids), 100):
+            # ASG membership can lag Spot termination. Filters omit vanished IDs instead of rejecting the fleet.
+            response = ec2.describe_instances(Filters=[{'Name': 'instance-id', 'Values': ids[offset:offset + 100]}])
+            for reservation in response['Reservations']:
+                for instance in reservation['Instances']:
+                    launched[instance['InstanceId']] = int(instance['LaunchTime'].timestamp() * 1000)
+        for instance in result['instances']:
+            if instance['id'] in launched:
+                instance['launchedAt'] = launched[instance['id']]
+    return result
 
 
 
@@ -54,13 +67,13 @@ def definitions(config):
     return pools
 
 
-def publish_inventory(config, asg):
+def publish_inventory(config, asg, ec2=None):
     started = time.monotonic()
     pools = definitions(config)
     # Each pool is independent; serial SDK calls can age a larger fleet past the
     # collector's freshness bound before its next inventory can be published.
     with ThreadPoolExecutor(max_workers=min(4, len(pools))) as workers:
-        observations = list(workers.map(lambda pool: inventory(asg, pool["group"], pool["deployment"], pool["pool"]), pools))
+        observations = list(workers.map(lambda pool: inventory(asg, pool["group"], pool["deployment"], pool["pool"], **({'ec2': ec2} if ec2 is not None else {})), pools))
     value = merge(observations)
     if time.monotonic() - started > 20:
         raise ValueError("inventory request exceeded freshness bound")
@@ -100,8 +113,8 @@ def renew_capacity(config, functions):
         raise RenewalError("capacity renewal held for " + ", ".join(f"{pool}={reason}" for pool, reason in failed))
 
 
-def once(config, asg, functions):
-    publish_inventory(config, asg)
+def once(config, asg, functions, ec2=None):
+    publish_inventory(config, asg, ec2)
     renew_capacity(config, functions)
 
 
@@ -113,6 +126,7 @@ def main():
     sdk = Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2})
     session = boto3.Session(profile_name=config.get("profile"), region_name=config["region"])
     asg = session.client("autoscaling", config=sdk); functions = session.client("lambda", config=sdk)
+    ec2 = session.client("ec2", config=sdk)
     def run(operation):
         while True:
             try:
@@ -123,14 +137,14 @@ def main():
             time.sleep(10)
     if args.once:
         try:
-            once(config, asg, functions)
+            once(config, asg, functions, ec2)
         except Exception as error:
             detail = f": {error}" if isinstance(error, RenewalError) else ""
             print(f"AWS capacity adapter held: {error_code(error)}{detail}", flush=True)
             raise SystemExit(1)
         return
     # Publishing inventory must never wait for coordinator HTTP or provider renewal calls across the fleet.
-    threading.Thread(target=run, args=(lambda: publish_inventory(config, asg),), name="aws-inventory", daemon=True).start()
+    threading.Thread(target=run, args=(lambda: publish_inventory(config, asg, ec2),), name="aws-inventory", daemon=True).start()
     run(lambda: renew_capacity(config, functions))
 
 

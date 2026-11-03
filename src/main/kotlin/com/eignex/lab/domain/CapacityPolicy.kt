@@ -17,7 +17,7 @@ enum class CapacityMarket(val tag: String) { @SerialName("spot") SPOT("spot"), @
 @Serializable
 enum class CapacityWork { SOLVE, MEASUREMENT, PROFILE, BUILD }
 @Serializable
-enum class CapacityNodeState { READY, BOOTING, DRAINING, UNAVAILABLE }
+enum class CapacityNodeState { READY, BOOTING, REPLACING, DRAINING, UNAVAILABLE }
 
 /** A homogeneous, provider-neutral pool. Physical logical-vCPU quota and schedulable budgets stay distinct. */
 @Serializable
@@ -97,13 +97,13 @@ data class CapacitySettings(val pools: List<CapacityPool>, val maxVcpus: Int) {
 /** Pure packing/admission policy. No provider types, credentials, SDKs, instance names or cloud commands. */
 object CapacityPolicy {
     fun evaluate(settings: CapacitySettings, nodes: List<CapacityNode>, demands: List<CapacityDemand>,
-                 manual: List<ManualCapacityLease> = emptyList(), previous: Map<String, CapacityHistory> = emptyMap(), at: Long = now()): CapacityDecision {
+                 manual: List<ManualCapacityLease> = emptyList(), previous: Map<String, CapacityHistory> = emptyMap(), at: Long = now(), growthBlocked: Set<String> = emptySet()): CapacityDecision {
         require(nodes.map { it.id }.distinct().size == nodes.size && demands.map { it.id }.distinct().size == demands.size)
         val pools = settings.pools.associateBy { it.id }
         require(nodes.all { it.pool in pools } && manual.all { it.pool in pools && it.nodes <= pools.getValue(it.pool).maxNodes })
         data class Bin(val node: CapacityNode, val allocations: MutableList<CapacityReservation>)
         // Unavailable instances still spend provider quota, but cannot satisfy pending work.
-        val bins = nodes.filter { it.state in setOf(CapacityNodeState.READY, CapacityNodeState.BOOTING) }
+        val bins = nodes.filter { it.state in setOf(CapacityNodeState.READY, CapacityNodeState.BOOTING, CapacityNodeState.REPLACING) }
             .map { Bin(it, it.reservations.toMutableList()) }.toMutableList()
         val counts = settings.pools.associate { it.id to nodes.count { node -> node.pool == it.id && node.countedInTarget } }.toMutableMap()
         val history = previous.toMutableMap()
@@ -144,7 +144,7 @@ object CapacityPolicy {
                     .sortedWith(compareByDescending<CapacityPool> { it.vcpus }.thenByDescending { it.memoryMiB }.thenBy { it.id })
                 val p = candidates.firstOrNull { p ->
                     val h = history.getValue(p.id)
-                    (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&
+                    p.id !in growthBlocked && (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&
                         (h.lastIncrease == null || at - h.lastIncrease >= p.cooldownMs) && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus && (d.perHostParallel == null || d.caseParallel <= d.perHostParallel)
                 }
                 if (p != null) {
@@ -154,6 +154,7 @@ object CapacityPolicy {
                     history[p.id] = history.getValue(p.id).copy(lastIncrease = at)
                 } else waiting += CapacityWait(d.id, when {
                     candidates.isEmpty() -> "no compatible ${d.market.tag} pool"
+                    candidates.all { it.id in growthBlocked } -> "startup replacement circuit open"
                     candidates.all { counts.getValue(it.id) >= it.maxNodes || quota < it.vcpus } -> "capacity or vCPU limit"
                     else -> "sustained pressure or cooldown"
                 })
@@ -167,10 +168,10 @@ object CapacityPolicy {
             val floor = maxOf(p.warmNodes, manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0)
             val idle = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.READY && it.allocations.isEmpty() && it.node.emptySince?.let { since -> at - since >= p.idleMs } == true }
             // A launch request with no remaining work must not survive indefinitely when Spot is unavailable.
-            val unusedLaunches = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.BOOTING && it.allocations.isEmpty() }
+            val unusedLaunches = bins.count { it.node.pool == p.id && it.node.state in setOf(CapacityNodeState.BOOTING, CapacityNodeState.REPLACING) && it.allocations.isEmpty() }
             counts[p.id] = maxOf(counts.getValue(p.id) - idle - unusedLaunches, minOf(floor, counts.getValue(p.id)))
             // Manual capacity is still finite, quota-bounded and expires. It cannot change purchasing market.
-            while (counts.getValue(p.id) < floor && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus) {
+            while (p.id !in growthBlocked && counts.getValue(p.id) < floor && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus) {
                 counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus
             }
         }
