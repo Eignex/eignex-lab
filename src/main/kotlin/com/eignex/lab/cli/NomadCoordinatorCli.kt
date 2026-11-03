@@ -78,6 +78,8 @@ object NomadCoordinatorCli {
             if (MacRenameSwap.supported) periodic("nomad-artifact-archive", 300_000) { if (Files.isDirectory(archive)) archiver.pass() }
             else System.err.println("artifact archive: atomic rename swap unsupported on this host; archiving off")
         }
+        // Preparations on any node share task outputs through this bounded cache on the internal volume.
+        val gradleCache = config.gradleCacheBytes.takeIf { it > 0 }?.let { GradleBuildCache(config.dataDir.resolve("nomad/gradle-cache"), it) }
         periodic("nomad-result-journal-status", 5_000) {
             writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)
         }
@@ -165,7 +167,7 @@ object NomadCoordinatorCli {
             connectors.add(EngineConnectorBuilder().apply { host = settings.bindAddress; port = settings.workerPort })
             settings.privateBindAddress?.let { address -> connectors.add(EngineConnectorBuilder().apply { host = address; port = settings.workerPort }) }
             requestReadTimeoutSeconds = 30; responseWriteTimeoutSeconds = 30
-        }) { workerApi(store, backend, artifacts, workAllowed = disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
+        }) { workerApi(store, backend, artifacts, gradleCache = gradleCache, workAllowed = disk::allowsWork); capacity?.let { capacityApi(it, artifacts::status) } }.start(wait = true)
         0
     }.getOrElse { System.err.println("nomad-coordinator: ${it.message}"); 2 }
 }
