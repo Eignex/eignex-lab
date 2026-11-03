@@ -27,7 +27,9 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
     private val eviction = Any()
     private val cleanup = WorkerCacheCleanup(root, cleanupExecutor)
 
-    private inline fun <T> guarded(key: String, use: () -> T): T = synchronized(fileLockFor(root.resolve(key))) { use() }
+    private fun <T> guarded(key: String, use: () -> T): T = operations.withLock(root.resolve(key), use)
+
+    private companion object { val operations = WorkspaceOperationLocks() }
 
     internal fun reuse(key: String, checkActive: () -> Unit): Path? = guarded(key) {
         val entry = ready[key] ?: run {
@@ -117,5 +119,26 @@ class WorkerWorkspaces(private val root: Path, cleanupExecutor: Executor? = null
         val receipt = root.resolve("$key.verified.json")
         val files = TreeVerification().capture(tree, receipt, checkActive)
         ready[key] = Ready(tree, files, receipt)
+    }
+}
+
+/** Retain exact-path monitors only while operations own or await them. No filesystem work or caller callback
+ * runs under the registry monitor. Intrinsic monitors retain same-path reentrancy and existing wait semantics. */
+internal class WorkspaceOperationLocks {
+    private class Entry { val monitor = Any(); var references = 0 }
+    private val entries = mutableMapOf<Path, Entry>()
+
+    internal val retainedPaths: Int get() = synchronized(entries) { entries.size }
+
+    fun <T> withLock(path: Path, use: () -> T): T {
+        val key = path.toAbsolutePath().normalize()
+        val entry = synchronized(entries) {
+            entries.getOrPut(key) { Entry() }.also { it.references++ }
+        }
+        try { return synchronized(entry.monitor) { use() } }
+        finally { synchronized(entries) {
+            check(entry.references > 0)
+            if (--entry.references == 0) check(entries.remove(key) === entry)
+        } }
     }
 }

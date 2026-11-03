@@ -28,6 +28,121 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 
 class WorkerWorkspacesTest {
+    @Test fun `distinct workspace keys with the same old stripe can enter copy callbacks concurrently`() {
+        val root = Files.createTempDirectory("workspace-lock-collision")
+        val queued = ConcurrentLinkedQueue<Runnable>(); val cache = WorkerWorkspaces(root, Executor { queued.add(it) })
+        val keys = (0..256).map { ExecutionStore.digest("collision-$it") }
+            .groupBy { fileLockFor(root.resolve(it)) }.values.first { it.size > 1 }.take(2)
+        assertNotEquals(keys[0], keys[1]); assertSame(fileLockFor(root.resolve(keys[0])), fileLockFor(root.resolve(keys[1])))
+        val firstEntered = CountDownLatch(1); val release = CountDownLatch(1); val secondEntered = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        fun worker(key: String, entered: CountDownLatch, hold: Boolean) = Thread {
+            try { cache.create(key, {}) { tree ->
+                entered.countDown()
+                if (hold) assertTrue(release.await(30, TimeUnit.SECONDS))
+                Files.createDirectory(tree); Files.writeString(tree.resolve("code"), "fixture")
+            } } catch (error: Throwable) { failure.compareAndSet(null, error) }
+        }
+        val first = worker(keys[0], firstEntered, true); val second = worker(keys[1], secondEntered, false)
+        try {
+            first.start(); assertTrue(firstEntered.await(10, TimeUnit.SECONDS))
+            second.start(); assertTrue(secondEntered.await(10, TimeUnit.SECONDS), "unrelated full paths were serialized")
+            assertEquals(1L, release.count, "the first callback must still be held")
+        } finally {
+            release.countDown(); first.join(15_000); if (second.state != Thread.State.NEW) second.join(15_000)
+            assertFalse(first.isAlive); assertFalse(second.isAlive)
+            while (true) (queued.poll() ?: break).run()
+            assertTrue(cache.awaitCleanupIdle()); deleteTree(root)
+        }
+        failure.get()?.let { throw it }
+    }
+
+    @Test fun `normalized same workspace path remains exclusive across workspace instances`() {
+        val root = Files.createTempDirectory("workspace-lock-same-path"); val key = "9".repeat(64)
+        Files.createDirectory(root.resolve("unused")) // Keep the noncanonical path resolvable by the filesystem too.
+        val queued = ConcurrentLinkedQueue<Runnable>()
+        val firstCache = WorkerWorkspaces(root, Executor { queued.add(it) })
+        val secondCache = WorkerWorkspaces(root.resolve("unused/.."), Executor { queued.add(it) })
+        val firstEntered = CountDownLatch(1); val release = CountDownLatch(1); val secondStarted = CountDownLatch(1)
+        val secondEntered = AtomicBoolean(); val failure = AtomicReference<Throwable?>()
+        val first = Thread {
+            try { firstCache.create(key, {}) { tree ->
+                firstEntered.countDown(); assertTrue(release.await(30, TimeUnit.SECONDS))
+                Files.createDirectory(tree); Files.writeString(tree.resolve("code"), "first")
+            } } catch (error: Throwable) { failure.compareAndSet(null, error) }
+        }
+        val second = Thread {
+            secondStarted.countDown()
+            try { secondCache.create(key, {}) { tree ->
+                secondEntered.set(true); Files.createDirectory(tree); Files.writeString(tree.resolve("code"), "second")
+            } } catch (error: Throwable) { failure.compareAndSet(null, error) }
+        }
+        try {
+            first.start(); assertTrue(firstEntered.await(10, TimeUnit.SECONDS))
+            second.start(); assertTrue(secondStarted.await(10, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (second.state != Thread.State.BLOCKED && !secondEntered.get() && second.isAlive && System.nanoTime() < deadline) Thread.sleep(1)
+            assertEquals(Thread.State.BLOCKED, second.state, "same-path operation did not wait on the owner monitor")
+            assertFalse(secondEntered.get())
+        } finally {
+            release.countDown(); first.join(15_000); if (second.state != Thread.State.NEW) second.join(15_000)
+            assertFalse(first.isAlive); assertFalse(second.isAlive)
+            while (true) (queued.poll() ?: break).run()
+            assertTrue(firstCache.awaitCleanupIdle()); assertTrue(secondCache.awaitCleanupIdle()); deleteTree(root)
+        }
+        failure.get()?.let { throw it }; assertTrue(secondEntered.get())
+    }
+
+    @Test fun `an existing waiter retains the exact path entry after the prior owner exits`() {
+        val locks = WorkspaceOperationLocks(); val path = Path.of("workspace-waiter")
+        val ownerEntered = CountDownLatch(1); val releaseOwner = CountDownLatch(1)
+        val waiterStarted = CountDownLatch(1); val waiterEntered = CountDownLatch(1); val releaseWaiter = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val owner = Thread {
+            try { locks.withLock(path) { ownerEntered.countDown(); assertTrue(releaseOwner.await(30, TimeUnit.SECONDS)) } }
+            catch (error: Throwable) { failure.compareAndSet(null, error) }
+        }
+        val waiter = Thread {
+            waiterStarted.countDown()
+            try { locks.withLock(path) { waiterEntered.countDown(); assertTrue(releaseWaiter.await(30, TimeUnit.SECONDS)) } }
+            catch (error: Throwable) { failure.compareAndSet(null, error) }
+        }
+        try {
+            owner.start(); assertTrue(ownerEntered.await(10, TimeUnit.SECONDS))
+            waiter.start(); assertTrue(waiterStarted.await(10, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (waiter.state != Thread.State.BLOCKED && waiter.isAlive && System.nanoTime() < deadline) Thread.sleep(1)
+            assertEquals(Thread.State.BLOCKED, waiter.state)
+            releaseOwner.countDown(); assertTrue(waiterEntered.await(10, TimeUnit.SECONDS)); owner.join(15_000)
+            assertFalse(owner.isAlive); assertEquals(1, locks.retainedPaths, "a waiter must retain its monitor through ownership")
+        } finally {
+            releaseOwner.countDown(); releaseWaiter.countDown(); owner.join(15_000)
+            if (waiter.state != Thread.State.NEW) waiter.join(15_000)
+            assertFalse(owner.isAlive); assertFalse(waiter.isAlive)
+        }
+        failure.get()?.let { throw it }; assertEquals(0, locks.retainedPaths)
+    }
+
+    @Test fun `operation lock entries retire after nested failures cancellation and distinct path history`() {
+        val locks = WorkspaceOperationLocks(); val root = Path.of("workspace-operation-locks"); val path = root.resolve("slot")
+        val failure = IllegalStateException("nested failure")
+        assertSame(failure, assertFailsWith<IllegalStateException> {
+            locks.withLock(path) {
+                assertEquals(1, locks.retainedPaths)
+                locks.withLock(path.resolve("../slot")) { assertEquals(1, locks.retainedPaths); throw failure }
+            }
+        })
+        assertEquals(0, locks.retainedPaths)
+        assertFailsWith<CancellationException> { locks.withLock(path) { throw CancellationException("lease ended") } }
+        assertEquals(0, locks.retainedPaths)
+        repeat(512) { index ->
+            locks.withLock(root.resolve("slot-$index")) { assertEquals(1, locks.retainedPaths) }
+            assertEquals(0, locks.retainedPaths, "idle paths must not accumulate in a global cache")
+        }
+        locks.withLock(path) { locks.withLock(path) { assertEquals(1, locks.retainedPaths) } }
+        assertEquals(0, locks.retainedPaths)
+    }
+
     @Test fun `slot staging overlaps independent reuse within the existing CPU and concurrency budget`() {
         val slots = List(6) { WorkerSlotStaging.Slot("source", "key-$it", it) }
         val started = CountDownLatch(2); val release = CountDownLatch(1)
