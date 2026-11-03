@@ -34,6 +34,10 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     internal data class Stats(var checkedFiles: Int = 0, var hashedFiles: Int = 0, var hashedBytes: Long = 0,
                               var verificationNanos: Long = 0, var readAheadFiles: Int = 0, var bulkFiles: Int = 0,
                               var removedFiles: Int = 0, var rejection: Rejection = Rejection.NONE)
+    // RAM-only single-file proof; do not change the existing serialized tree receipt's Stamp format.
+    internal data class FileMetadata(val stamp: Stamp, val mode: Int) {
+        val reusable get() = stamp.reusable
+    }
     val stats = Stats()
     private fun checksum(path: Path, checkActive: () -> Unit, bytes: Long): String {
         stats.hashedFiles++; stats.hashedBytes = Math.addExact(stats.hashedBytes, bytes)
@@ -41,8 +45,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
     }
     private class Invalid(val reason: Rejection) : RuntimeException()
 
-    private fun reliable(tree: Path) = Files.getFileStore(tree).type().lowercase() in
-        setOf("apfs", "ext4", "xfs", "btrfs", "overlay", "tmpfs", "zfs")
+    private fun reliable(tree: Path) = reliableMetadata(tree)
 
     private fun previous(tree: Path, receipt: Path): Receipt? = runCatching {
         require(Files.isRegularFile(receipt, NOFOLLOW_LINKS))
@@ -257,20 +260,11 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
      * Keep access(2) for effective-user/ACL executable semantics, even when ctime/inode are unchanged. */
     private class Observed(val file: Path, val directory: Boolean, val regular: Boolean,
                            val bytes: Long, val modified: String, val changed: String?, val key: String?,
-                           private val executable: Boolean? = null) {
+                           private val executable: Boolean? = null, val mode: Int? = null) {
         fun stamp(): Stamp {
             if (!regular) throw IOException("verification requires a regular file")
             return Stamp(bytes, modified, changed, key, executable ?: Files.isExecutable(file))
         }
-    }
-
-    private fun observe(file: Path): Observed {
-        val unix = try { Files.readAttributes(file, "unix:size,lastModifiedTime,ctime,fileKey,isRegularFile,isDirectory", NOFOLLOW_LINKS) }
-            catch (_: UnsupportedOperationException) { null }
-        if (unix != null) return Observed(file, unix["isDirectory"] == true, unix["isRegularFile"] == true,
-            unix["size"] as Long, unix["lastModifiedTime"].toString(), unix["ctime"]?.toString(), unix["fileKey"]?.toString())
-        val basic = Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-        return Observed(file, basic.isDirectory, basic.isRegularFile, basic.size(), basic.lastModifiedTime().toString(), null, basic.fileKey()?.toString())
     }
 
     private fun stamp(file: Path): Stamp {
@@ -304,6 +298,26 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
             }
         }
         if (include(tree.relativize(tree))) directory(tree)
+    }
+
+    companion object {
+        internal fun reliableMetadata(path: Path) = Files.getFileStore(path).type().lowercase() in
+            setOf("apfs", "ext4", "xfs", "btrfs", "overlay", "tmpfs", "zfs")
+
+        internal fun fileStamp(file: Path): Stamp = observe(file).stamp()
+        internal fun fileMetadata(file: Path): FileMetadata? = observe(file, includeMode = true).let { observed ->
+            observed.mode?.let { FileMetadata(observed.stamp(), it) }
+        }
+
+        private fun observe(file: Path, includeMode: Boolean = false): Observed {
+            val attributes = "unix:size,lastModifiedTime,ctime,fileKey,isRegularFile,isDirectory"
+            val unix = try { Files.readAttributes(file, if (includeMode) "$attributes,mode" else attributes, NOFOLLOW_LINKS) }
+                catch (_: UnsupportedOperationException) { null }
+            if (unix != null) return Observed(file, unix["isDirectory"] == true, unix["isRegularFile"] == true,
+                unix["size"] as Long, unix["lastModifiedTime"].toString(), unix["ctime"]?.toString(), unix["fileKey"]?.toString(), mode = unix["mode"] as? Int)
+            val basic = Files.readAttributes(file, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+            return Observed(file, basic.isDirectory, basic.isRegularFile, basic.size(), basic.lastModifiedTime().toString(), null, basic.fileKey()?.toString())
+        }
     }
 }
 

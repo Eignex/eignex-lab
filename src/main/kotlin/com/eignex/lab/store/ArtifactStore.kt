@@ -42,11 +42,14 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
                          private val writable: () -> Boolean = { true }) : ArtifactStore {
     private val reuseIndex = ArtifactReuseIndex(root)
     private val publishingJob = ThreadLocal<Long>()
+    private val publishingProofs = ThreadLocal<LinkedHashMap<Pair<Path, String>, TreeVerification.FileMetadata>>()
+    private var verification = ArtifactFileVerification()
+    internal constructor(root: Path, verification: ArtifactFileVerification) : this(root) { this.verification = verification }
     private fun directory(job: Long): Path { require(job > 0); return root.resolve(job.toString()) }
     private fun path(job: Long, sha: String): Path { require(SHA256.matches(sha)); return directory(job).resolve(sha) }
     override fun readFile(job: Long, sha: String): Path = path(job, sha).also { require(Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS)) }
     override fun file(job: Long, sha: String): Path = readFile(job, sha).also {
-        require(hashFile(it) == sha) { "artifact missing or corrupt" }
+        verification.verify(it, sha)
     }
     override fun sizes(job: Long, hashes: Set<String>): Map<String, Long> = sizes(job, hashes, MacDirectoryEntries::read)
 
@@ -72,13 +75,18 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
         val target = directory(job)
         check(writable()) { "artifact storage temporarily unavailable" }
         val prior = publishingJob.get()
+        val priorProofs = publishingProofs.get()
+        val proofs = LinkedHashMap<Pair<Path, String>, TreeVerification.FileMetadata>()
         publishingJob.set(job)
+        publishingProofs.set(proofs)
         try {
             publish()
             // Both data and renamed directory entries must reach the volume before journal reclamation.
             if (Files.isDirectory(target)) flush(target)
+            proofs.forEach { (key, stamp) -> verification.published(key.first, key.second, stamp) }
         } finally {
             if (prior == null) publishingJob.remove() else publishingJob.set(prior)
+            if (priorProofs == null) publishingProofs.remove() else publishingProofs.set(priorProofs)
         }
     }
 
@@ -150,10 +158,22 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
                 }
             } catch (e: IllegalArgumentException) { Files.deleteIfExists(partial); throw e }
             if (Files.size(partial) == bytes) {
+                // This private partial has one trusted writer under the existing per-SHA OS lock. A fresh
+                // checksum covers bytes passed through that writer; a resumed checksum also rereads its prefix.
+                // Metadata is a hint only: it cannot replace either checksum or the publication barriers.
+                val before = if (bytes >= ArtifactFileVerification.MIN_PUBLICATION_BYTES) verification.capture(partial) else null
                 if ((streamed?.digest()?.hex() ?: hashFile(partial)) != sha) { Files.delete(partial); error("artifact checksum mismatch") }
+                val verified = before?.takeIf { verification.capture(partial) == it }
                 if (force) FileChannel.open(partial, WRITE).use { it.force(true) }
                 Files.move(partial, full, ATOMIC_MOVE)
                 if (force) FileChannel.open(full.parent, READ).use { it.force(true) }
+                val published = verification.renamed(full, verified)
+                if (force) verification.published(full, sha, published)
+                else if (published != null) publishingProofs.get()?.let { proofs ->
+                    proofs[full to sha] = published
+                    // Hints remain bounded even for a publisher containing many tiny blobs.
+                    while (proofs.size > 1024) proofs.remove(proofs.keys.first())
+                }
                 // The verified complete write is already published; do not stat it again to rediscover its size.
                 return bytes
             }
