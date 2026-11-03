@@ -53,14 +53,20 @@ internal object CapacityObservation {
     }
 
     /** An allocation on a node, and the Nomad job it belongs to. */
-    data class AllocationView(val id: String, val job: String, val status: String?) {
+    data class AllocationView(val id: String, val job: String, val status: String?, val desired: String? = null) {
         val holds get() = status in setOf("pending", "running", "unknown")
+        /** The same rule as [NomadAllocation.active], which a per-job allocation lookup applies. */
+        val active get() = status in setOf("pending", "running") && desired == "run"
 
         companion object {
             fun of(allocation: JsonObject) = AllocationView(allocation.getValue("ID").jsonPrimitive.content,
-                allocation.getValue("JobID").jsonPrimitive.content, allocation["ClientStatus"]?.jsonPrimitive?.content)
+                allocation.getValue("JobID").jsonPrimitive.content, allocation["ClientStatus"]?.jsonPrimitive?.content,
+                allocation["DesiredStatus"]?.jsonPrimitive?.content)
         }
     }
+
+    /** Nomad jobs with an active allocation among node allocations already read this pass. */
+    fun activeJobs(allocations: Collection<AllocationView>): Set<String> = allocations.filter { it.active }.mapTo(hashSetOf()) { it.job }
 
     /**
      * Each provider instance as a [CapacityNode]: its state from its Nomad node ([byInstance], by node class and instance
@@ -189,8 +195,10 @@ class CapacityCollector(
         val (observations, idle) = CapacityObservation.observeNodes(instances, pools, byInstance, { node ->
             allocations[node] ?: nomad.nodeAllocations(node).map(CapacityObservation.AllocationView::of)
         }, byJob, state.idleSince, at)
+        // A job already seen active on a capacity node needs no per-job lookup; others (native, unplaced) still ask Nomad.
+        val active = CapacityObservation.activeJobs(allocations.values.flatten())
         val pending = store.execution.liveSessions().filter { s -> s.desired == Desired.RUN && (s.executionClass != ExecutionClass.SOLVE || store.unclaimed(s.jobId) > 0) && store.job(s.jobId)?.let { it.status.isActive && !it.paused && !it.cancelRequested } == true &&
-            !nomad.hasActiveAllocation(s.nomadJobId) }
+            s.nomadJobId !in active && !nomad.hasActiveAllocation(s.nomadJobId) }
         val demands = pending.mapNotNull { s ->
             val job = store.job(s.jobId) ?: return@mapNotNull null
             val manifest = store.execution.manifest(s.id)

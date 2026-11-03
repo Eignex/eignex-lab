@@ -76,6 +76,13 @@ class CapacityCollectorTest {
     }
     private fun collector() = CapacityCollector(settings, listOf(inventory), tokenFile, state, store, control, { writable }, setOf("local"), { at }, { nanos })
 
+    @Test fun `node allocations mark a job active only when pending or running and desired to run`() {
+        fun view(job: String, client: String?, desired: String?) = CapacityObservation.AllocationView("a-$job", job, client, desired)
+        val active = CapacityObservation.activeJobs(listOf(view("running", "running", "run"), view("pending", "pending", "run"),
+            view("stopping", "running", "stop"), view("complete", "complete", "run"), view("unknown", "unknown", "run"), view("legacy", "running", null)))
+        assertEquals(setOf("running", "pending"), active)
+    }
+
     @Test fun `unchanged historical nodes do not require full reads on every refresh`() {
         sample(listOf(CapacityInstance("vm", pool.id)))
         control.full = buildJsonObject {
