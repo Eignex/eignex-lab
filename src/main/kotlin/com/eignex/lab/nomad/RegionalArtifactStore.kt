@@ -15,6 +15,9 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal class RegionalArtifactStore(private val local: ArtifactStore, private val builds: BuildArchives,
                                      private val staging: Path) : ArtifactStore by local {
+    // Complete result publication belongs to the local CAS, not the regional preparation archive store.
+    override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> InputStream) =
+        local.putComplete(job, blobs, source)
     private val fetches = ConcurrentHashMap<Pair<Long, String>, Any>()
     private fun held(job: Long, sha: String) = runCatching { local.readFile(job, sha) }.isSuccess
 

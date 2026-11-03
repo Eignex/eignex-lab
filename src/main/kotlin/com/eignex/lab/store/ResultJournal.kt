@@ -578,10 +578,12 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         }
     }
     private fun publish(batch: Batch) {
+        if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES) {
+            external.putComplete(batch.manifest.job, batch.manifest.blobs) { blob -> ByteArrayInputStream(read(batch, blob.sha)) }
+            return
+        }
         val offsets = batch.manifest.blobs.associate { it.sha to external.offset(batch.manifest.job, it.sha) }
-        if (batch.manifest.blobs.sumOf { it.bytes } <= INLINE_BYTES && offsets.values.all { it == 0L }) {
-            external.putAll(batch.manifest.job, batch.manifest.blobs.associate { it.sha to read(batch, it.sha) })
-        } else ZipFile(batch.path.toFile()).use { zip ->
+        ZipFile(batch.path.toFile()).use { zip ->
             for (blob in batch.manifest.blobs) {
                 val offset = offsets.getValue(blob.sha)
                 require(offset in 0..blob.bytes) { "external artifact size changed" }

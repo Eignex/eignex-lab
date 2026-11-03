@@ -32,6 +32,24 @@ interface ArtifactStore {
     fun regional(job: Long, sha: String): Boolean = false
     /** Return only after all writes in [publish] are durable; providers may share one waited barrier. */
     fun publishBatch(job: Long, publish: () -> Unit) { publish() }
+    /** Complete bounded sources; the default retains ordinary confirmed-offset resumable semantics.
+     * A provider may replace only unpublished partial state, under its normal per-SHA writer lock.
+     * Existing complete content still needs verification and the enclosing publication barrier.
+     * Stores wrapping writes must apply the same write checks to this method. */
+    fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> InputStream) {
+        validateResultBlobs(blobs)
+        require(blobs.sumOf { it.bytes } <= INLINE_BYTES)
+        for (blob in blobs) {
+            val confirmed = offset(job, blob.sha)
+            require(confirmed in 0..blob.bytes) { "external artifact size changed" }
+            val written = if (confirmed == blob.bytes) put(job, blob.sha, blob.bytes, confirmed, InputStream.nullInputStream())
+            else source(blob).use { input ->
+                input.skipNBytes(confirmed)
+                put(job, blob.sha, blob.bytes, confirmed, input)
+            }
+            check(written == blob.bytes) { "incomplete artifact source" }
+        }
+    }
     fun putAll(job: Long, blobs: Map<String, ByteArray>) {
         for ((sha, bytes) in blobs) put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
     }
@@ -140,7 +158,20 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
         Files.createDirectories(directory(job))
         for ((sha, bytes) in blobs) write(job, sha, bytes.size.toLong(), 0, bytes.inputStream(), createParent = false)
     }
-    private fun write(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream, createParent: Boolean = true): Long {
+    override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> InputStream) {
+        validateResultBlobs(blobs)
+        require(blobs.sumOf { it.bytes } <= INLINE_BYTES)
+        for (blob in blobs) require(blob.bytes <= maxBytes) { "artifact size or offset limit exceeded" }
+        check(writable()) { "artifact storage temporarily unavailable" }
+        // This is the same bounded parent/volume guard as putAll. Never recreate a removed batch parent.
+        Files.createDirectories(directory(job))
+        for (blob in blobs) {
+            val written = write(job, blob.sha, blob.bytes, 0, InputStream.nullInputStream(), createParent = false) { source(blob) }
+            check(written == blob.bytes) { "incomplete artifact source" }
+        }
+    }
+    private fun write(job: Long, sha: String, bytes: Long, offset: Long, input: InputStream,
+                      createParent: Boolean = true, completeSource: (() -> InputStream)? = null): Long {
         require(bytes in 0..maxBytes && offset in 0..bytes) { "artifact size or offset limit exceeded" }
         val full = path(job, sha)
         if (createParent) Files.createDirectories(full.parent)
@@ -154,16 +185,21 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
                 return bytes
             }
             val partial = full.resolveSibling("$sha.partial")
-            val current = if (Files.exists(partial)) Files.size(partial) else 0
+            val current = if (completeSource != null) 0 else if (Files.exists(partial)) Files.size(partial) else 0
             require(offset == current) { "upload offset changed" }
+            // Open only after the locked complete-file check. A failed source leaves prior partial state intact.
+            val contents = completeSource?.invoke() ?: input
+            try {
             // A complete upload already passes every byte through this process. Verify that stream before
             // publication instead of reading the newly written external file a second time. Resumed uploads
             // still hash the complete on-disk prefix and suffix, including state from an earlier process.
             val streamed = if (current == 0L) java.security.MessageDigest.getInstance("SHA-256") else null
             try {
-                Files.newOutputStream(partial, CREATE, APPEND).use { output ->
+                val output = if (completeSource == null) Files.newOutputStream(partial, CREATE, APPEND)
+                    else Files.newOutputStream(partial, CREATE, TRUNCATE_EXISTING, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                output.use { output ->
                     val buffer = ByteArray(64 * 1024); var total = current
-                    while (true) { val n = input.read(buffer); if (n < 0) break; total += n; require(total <= bytes) { "artifact exceeds declared size" }; output.write(buffer, 0, n); streamed?.update(buffer, 0, n) }
+                    while (true) { val n = contents.read(buffer); if (n < 0) break; total += n; require(total <= bytes) { "artifact exceeds declared size" }; output.write(buffer, 0, n); streamed?.update(buffer, 0, n) }
                 }
             } catch (e: IllegalArgumentException) { Files.deleteIfExists(partial); throw e }
             if (Files.size(partial) == bytes) {
@@ -187,6 +223,7 @@ class LocalArtifactStore(private val root: Path, private val maxBytes: Long = 32
                 return bytes
             }
             return offset(job, sha)
+            } finally { if (completeSource != null) contents.close() }
         } }
         }
     }

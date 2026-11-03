@@ -48,6 +48,10 @@ class ResultJournalTest {
     @Test fun `failed shared reclamation retains every charge and retries missing paths without republication`() {
         var syncs = 0; var fail = false; var at = 1000L; var publications = 0
         val destination = object : ArtifactStore by external {
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) { publications++; external.putAll(job, blobs) }
         }
         ResultJournal(journal, destination, maxBytes = 2L * 1024 * 1024, start = false, retryClock = { at }, syncDirectory = {
@@ -258,6 +262,10 @@ class ResultJournalTest {
     @Test fun `blocked external writes cannot delay reading or acknowledging another bounded batch`() {
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val blocked = object : ArtifactStore by external {
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 entered.countDown(); check(release.await(10, SECONDS)); external.putAll(job, blobs)
             }
@@ -283,6 +291,10 @@ class ResultJournalTest {
         val entered = CountDownLatch(2); val release = CountDownLatch(1)
         val jobs = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
         val blocked = object : ArtifactStore by external {
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 assertTrue(jobs.add(job), "a pack must have exactly one publishing owner")
                 entered.countDown(); check(release.await(10, SECONDS)); external.putAll(job, blobs)
@@ -304,6 +316,10 @@ class ResultJournalTest {
 
     @Test fun `a failed publication backs off its pack while another job can drain`() {
         val destination = object : ArtifactStore by external {
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 if (job == 1L) throw java.io.IOException("injected publication failure")
                 external.putAll(job, blobs)
@@ -321,6 +337,10 @@ class ResultJournalTest {
     @Test fun `a failed reclamation barrier retains its charge and backs off without starving other packs`() {
         var failCleanup = false; var syncs = 0; var publications = 0
         val destination = object : ArtifactStore by external {
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 publications++; external.putAll(job, blobs)
             }
@@ -364,6 +384,10 @@ class ResultJournalTest {
 
     @Test fun `partial external publication preserves the complete journal for recovery`() {
         val partial = object : ArtifactStore by external {
+            // Keep this provider's publication fault/counter on the new complete-input path too.
+            override fun putComplete(job: Long, blobs: List<ResultBlob>, source: (ResultBlob) -> java.io.InputStream) {
+                putAll(job, blobs.associate { blob -> blob.sha to source(blob).use { it.readAllBytes() } })
+            }
             override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
                 val (sha, bytes) = blobs.entries.first()
                 external.put(job, sha, bytes.size.toLong(), 0, bytes.inputStream())
