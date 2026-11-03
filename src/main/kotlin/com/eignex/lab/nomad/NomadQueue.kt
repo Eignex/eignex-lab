@@ -394,7 +394,8 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         val bundles = arms.map { it.sha }.distinct().flatMap { sha ->
             val first = platforms.first()
             val includeHistory = declarations[sha]?.third ?: true
-            val reused = sourceCache.reuse(job.id, spec.repository, sha, first.os, first.arch, "jdk25", build,
+            val sourceBuild = if (!includeHistory && settings.packedSourceSnapshots) build.copy(gitBundle = PackedGitSource.MARKER) else build
+            val reused = sourceCache.reuse(job.id, spec.repository, sha, first.os, first.arch, "jdk25", sourceBuild,
                 authorize = { require(sha in approved); trust.requireRepository() }, includeHistory = includeHistory) {
                 store.active(withCommands = false).asSequence().filter { it.id != job.id && it.experiment?.repository == spec.repository }.take(32).flatMap { other ->
                     store.execution.sessions(other.id).asSequence().filter { it.executionClass == ExecutionClass.PREPARE }.mapNotNull { session ->
@@ -408,7 +409,7 @@ internal class TrustedQueueSources(private val config: Config, private val artif
             }
             val output = Files.createTempFile(directory, ".source-", ".zip"); Files.delete(output)
             try {
-                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", build, output, includeHistory = includeHistory)
+                val bundle = inputs.publish(mirror, spec.repository, sha, first.os, first.arch, "jdk25", sourceBuild, output, includeHistory = includeHistory)
                 if (artifacts.reuse(job.id, bundle.sha256) == null) {
                     val offset = artifacts.offset(job.id, bundle.sha256)
                     Files.newInputStream(output).use { stream -> stream.skipNBytes(offset); artifacts.put(job.id, bundle.sha256, Files.size(output), offset, stream) }

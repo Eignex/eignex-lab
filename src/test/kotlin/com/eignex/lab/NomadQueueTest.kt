@@ -27,6 +27,14 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class NomadQueueTest {
+    @Test fun `packed source readiness is explicit and old frozen queue settings preserve their transport`() {
+        val original = Json.encodeToString(settings)
+        assertFalse(original.contains("packedSourceSnapshots"))
+        assertFalse(Json.decodeFromString<NomadQueueSettings>(original).packedSourceSnapshots)
+        val enabled = settings.copy(packedSourceSnapshots = true)
+        assertTrue(Json.decodeFromString<NomadQueueSettings>(Json.encodeToString(enabled)).packedSourceSnapshots)
+    }
+
     @Test fun `journal pressure permits preparation and planning then holds only new solves without source churn`() {
         solveAdmissionAllowed = false
         val id = job(wide); val admission = queue()

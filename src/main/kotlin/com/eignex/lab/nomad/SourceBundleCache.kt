@@ -20,42 +20,45 @@ internal class SourceBundleCache(private val root: Path, private val artifacts: 
                                  private val maxEntries: Int = 256, private val ttlMs: Long = 7L * 24 * 60 * 60 * 1000) {
     @Serializable private data class Entry(val bundle: WorkerBundle, val bytes: Long, val checksum: String)
     private fun checksum(bundle: WorkerBundle, bytes: Long) = ExecutionStore.digest(Json.encodeToString(bundle) + "\n$bytes")
-    private fun key(repository: String, commit: String, includeHistory: Boolean): String {
+    private fun key(repository: String, commit: String, includeHistory: Boolean, packed: Boolean): String {
         Repositories.requireAllowed(repository); require(CommitSha.isValid(commit))
-        val format = if (includeHistory) "approved-git-bundle-v1" else "approved-source-snapshot-v1"
+        val format = if (includeHistory) "approved-git-bundle-v1" else if (packed) "approved-source-pack-v1" else "approved-source-snapshot-v1"
         return ExecutionStore.digest("$format\n$repository\n$commit")
     }
-    private fun usable(bundle: WorkerBundle, repository: String, commit: String, includeHistory: Boolean) =
+    private fun usable(bundle: WorkerBundle, repository: String, commit: String, includeHistory: Boolean, packed: Boolean) =
         bundle.repository == repository && bundle.commit == commit && bundle.tree == null &&
             bundle.buildOptions.isEmpty() && (if (includeHistory) {
                 bundle.build?.gitBundle == "source.git.bundle" && bundle.files.singleOrNull()?.path == "source.git.bundle"
-            } else SourceSnapshots.usable(bundle))
+            } else if (packed) PackedGitSource.usable(bundle) && bundle.files.all { it.path.startsWith(".git/") }
+            else SourceSnapshots.usable(bundle))
 
-    private fun metadataLimit(includeHistory: Boolean): Long = if (includeHistory) 65_536 else 8L * 1024 * 1024
+    private fun metadataLimit(includeHistory: Boolean, packed: Boolean): Long = if (includeHistory || packed) 65_536 else 8L * 1024 * 1024
 
     fun reuse(job: Long, repository: String, commit: String, os: String, arch: String, toolchain: String, build: WorkerBuild,
               authorize: () -> Unit,
               includeHistory: Boolean = true,
               recover: () -> Sequence<Pair<Long, WorkerBundle>> = { emptySequence() }): WorkerBundle? {
         authorize()
-        val hint = root.resolve(key(repository, commit, includeHistory))
+        val packed = !includeHistory && build.gitBundle == PackedGitSource.MARKER
+        val hint = root.resolve(key(repository, commit, includeHistory, packed))
         val cached = runCatching {
-            require(Files.isRegularFile(hint, NOFOLLOW_LINKS) && Files.size(hint) <= metadataLimit(includeHistory))
+            require(Files.isRegularFile(hint, NOFOLLOW_LINKS) && Files.size(hint) <= metadataLimit(includeHistory, packed))
             require(now() - Files.getLastModifiedTime(hint).toMillis() <= ttlMs)
             Json.decodeFromString<Entry>(Files.readString(hint)).also {
-                require(it.bytes > 0 && usable(it.bundle, repository, commit, includeHistory) && it.checksum == checksum(it.bundle, it.bytes))
+                require(it.bytes > 0 && usable(it.bundle, repository, commit, includeHistory, packed) && it.checksum == checksum(it.bundle, it.bytes))
             }
         }.getOrNull()
         fun receive(bundle: WorkerBundle, bytes: Long?): WorkerBundle? {
             val received = artifacts.reuse(job, bundle.sha256) ?: return null
             if (bytes != null && received != bytes) return null
-            return bundle.copy(os = os, arch = arch, toolchain = toolchain, build = build.copy(gitBundle = if (includeHistory) "source.git.bundle" else null))
+            return bundle.copy(os = os, arch = arch, toolchain = toolchain, build = build.copy(gitBundle =
+                if (includeHistory) "source.git.bundle" else if (packed) PackedGitSource.MARKER else null))
         }
         if (cached != null) receive(cached.bundle, cached.bytes)?.let { return it }
         runCatching { Files.deleteIfExists(hint) }
         // A restart/upgrade need not export again when another active preparation already retained this commit.
         for ((owner, bundle) in recover()) {
-            if (!usable(bundle, repository, commit, includeHistory)) continue
+            if (!usable(bundle, repository, commit, includeHistory, packed)) continue
             artifacts.remember(owner, bundle.sha256)
             receive(bundle, null)?.let { result -> remember(job, result, artifacts.size(job, result.sha256)); return result }
         }
@@ -63,8 +66,9 @@ internal class SourceBundleCache(private val root: Path, private val artifacts: 
     }
 
     fun remember(job: Long, bundle: WorkerBundle, bytes: Long) {
-        val includeHistory = bundle.build?.gitBundle != null
-        require(bytes > 0 && usable(bundle, bundle.repository, bundle.commit, includeHistory))
+        val includeHistory = bundle.build?.gitBundle == "source.git.bundle"
+        val packed = bundle.build?.gitBundle == PackedGitSource.MARKER
+        require(bytes > 0 && usable(bundle, bundle.repository, bundle.commit, includeHistory, packed))
         artifacts.remember(job, bundle.sha256)
         // Hints are not authoritative. A crash or a full metadata directory simply makes the next export cold.
         runCatching {
@@ -72,9 +76,9 @@ internal class SourceBundleCache(private val root: Path, private val artifacts: 
             val temporary = Files.createTempFile(root, ".source-", ".tmp")
             try {
                 val encoded = Json.encodeToString(Entry(bundle, bytes, checksum(bundle, bytes)))
-                require(encoded.toByteArray().size <= metadataLimit(includeHistory)) { "source hint exceeds metadata limit" }
+                require(encoded.toByteArray().size <= metadataLimit(includeHistory, packed)) { "source hint exceeds metadata limit" }
                 Files.writeString(temporary, encoded)
-                Files.move(temporary, root.resolve(key(bundle.repository, bundle.commit, includeHistory)), ATOMIC_MOVE, REPLACE_EXISTING)
+                Files.move(temporary, root.resolve(key(bundle.repository, bundle.commit, includeHistory, packed)), ATOMIC_MOVE, REPLACE_EXISTING)
             } finally { Files.deleteIfExists(temporary) }
             ProcessFilePin.tryLock(root.resolve("maintenance.lock"))?.use {
                 val hints = Files.list(root).use { paths -> paths.filter { it.fileName.toString().matches(SHA256) && Files.isRegularFile(it, NOFOLLOW_LINKS) }
