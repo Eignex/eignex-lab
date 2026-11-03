@@ -58,7 +58,7 @@ jobs:
         if: always()
         run: |
           mkdir -p build/journal-test-results
-          for receipt in JournalCompactionTest GroupedJournalTest ResultJournalTest ArtifactReuseTest PackedJournalTest NomadBackendTest PreparedArchiveFilesTest ArtifactFileVerificationTest; do
+          for receipt in JournalCompactionTest GroupedJournalTest ResultJournalTest ArtifactReuseTest PackedJournalTest NomadBackendTest ExecutionStoreTest NomadQueueTest PreparedArchiveFilesTest ArtifactFileVerificationTest; do
             if [ -f "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" ]; then
               cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/journal-test-results/
             fi

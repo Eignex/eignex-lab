@@ -24,6 +24,112 @@ import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.*
 
 class ResultJournalTest {
+    @Test fun `conversion from a receiving reservation never reopens admission in the hysteresis band`() {
+        ResultJournal(journal, external, maxBytes = 65536, start = false).use { store ->
+            val bytes = ByteArray(30000) { 3 }; val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+            store.putPacked(1, listOf(ResultBlob(sha, bytes.size.toLong())), bytes.inputStream())
+            val status = store.status(); val thresholds = status.solveAdmission!!
+            assertTrue(status.bytes in (thresholds.resumeAtBytes + 1) until thresholds.holdAtBytes)
+            assertFalse(store.allowsNewSolve(), "the high receiving reservation is replaced atomically by its actual pack charge")
+            assertEquals(0, status.receiving); assertEquals(0L, status.receivingReservedBytes)
+            assertContentEquals(bytes, store.open(1, sha).use { it.readAllBytes() })
+            assertTrue(store.drainOne()); assertTrue(store.allowsNewSolve())
+        }
+    }
+
+    @ParameterizedTest @ValueSource(longs = [57344, 51200])
+    fun `solve pressure threshold boundaries include the high and low water marks`(limit: Long) {
+        ResultJournal(journal, external, maxBytes = limit, start = false).use { store ->
+            repeat(4) { store.putAll(it + 1L, blobs("boundary-$it")) }
+            val status = store.status(); val thresholds = status.solveAdmission!!
+            if (limit == 57344L) assertEquals(thresholds.holdAtBytes, status.bytes)
+            assertFalse(store.allowsNewSolve())
+            assertTrue(store.drainOne()); assertFalse(store.allowsNewSolve())
+            assertTrue(store.drainOne()); assertTrue(store.allowsNewSolve())
+            if (limit == 51200L) assertEquals(thresholds.resumeAtBytes, store.status().bytes)
+        }
+    }
+
+    @Test fun `a failing admission wakeup never interrupts durable result accounting or deduplication`() {
+        ResultJournal(journal, external, maxBytes = 65536, start = false,
+            solveAdmissionChanged = { throw IllegalStateException("injected disposable wakeup failure") }).use { store ->
+            repeat(5) { store.putAll(it + 1L, blobs("wakeup-$it")) }
+            val before = store.status().bytes
+            assertFalse(store.allowsNewSolve())
+            repeat(5) { assertEquals("wakeup-$it", read(store, it + 1L, "wakeup-$it")) }
+            store.putAll(5, blobs("wakeup-4")); assertEquals(before, store.status().bytes)
+            repeat(5) { assertTrue(store.drainOne()) }
+            assertTrue(store.allowsNewSolve()); assertEquals(8192L, store.status().bytes)
+        }
+    }
+
+    @Test fun `solve admission holds through hysteresis and recovers conservatively in the middle band`() {
+        var transitions = 0
+        ResultJournal(journal, external, maxBytes = 65536, start = false, solveAdmissionChanged = { transitions++ }).use { store ->
+            assertTrue(store.allowsNewSolve())
+            repeat(5) { store.putAll(it + 1L, blobs("pressure-$it")) }
+            assertFalse(store.allowsNewSolve())
+            val pressure = store.status().solveAdmission!!
+            assertEquals(49152L, pressure.holdAtBytes); assertEquals(32768L, pressure.resumeAtBytes)
+            assertTrue(store.status().bytes >= pressure.holdAtBytes)
+            assertTrue(store.drainOne())
+            assertTrue(store.status().bytes in (pressure.resumeAtBytes + 1) until pressure.holdAtBytes)
+            assertFalse(store.allowsNewSolve(), "falling below the high threshold does not reopen admission")
+        }
+        ResultJournal(journal, external, maxBytes = 65536, start = false).use { recovered ->
+            assertFalse(recovered.allowsNewSolve(), "restart must preserve a conservative hold in the middle band")
+            while (recovered.status().bytes > recovered.status().solveAdmission!!.resumeAtBytes) assertTrue(recovered.drainOne())
+            assertTrue(recovered.allowsNewSolve())
+            assertTrue(recovered.status().bytes <= 32768L)
+            assertContains(recovered.status().metrics(), "lab_result_journal_solve_admission_held 0")
+        }
+        assertTrue(transitions > 0)
+    }
+
+    @Test fun `a receiving reservation holds solve admission without blocking its cached read`() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val pool = Executors.newSingleThreadExecutor()
+        ResultJournal(journal, external, maxBytes = 57856, start = false).use { store ->
+            val bytes = ByteArray(40000) { 1 }; val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+            val input = object : java.io.InputStream() {
+                override fun read(): Int = error("bulk reads expected")
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    entered.countDown(); check(release.await(5, SECONDS)); throw java.io.IOException("injected receiver failure")
+                }
+            }
+            val writer = pool.submit { assertFailsWith<java.io.IOException> { store.putPacked(1, listOf(ResultBlob(sha, bytes.size.toLong())), input) } }
+            try {
+                assertTrue(entered.await(5, SECONDS))
+                assertFalse(store.allowsNewSolve())
+                val pending = store.status()
+                assertEquals(1, pending.receiving); assertTrue(pending.receivingReservedBytes > 0)
+                assertTrue(pending.bytes >= pending.solveAdmission!!.holdAtBytes); assertEquals(pending.limit, pending.bytes)
+                assertFailsWith<IllegalStateException> { store.putAll(2, blobs("x".repeat(20000))) }
+                assertEquals(pending.bytes, store.status().bytes, "refused uploads do not change charged capacity")
+                release.countDown(); writer.get(5, SECONDS)
+                assertTrue(store.allowsNewSolve()); assertEquals(8192L, store.status().bytes)
+            } finally { release.countDown(); pool.shutdownNow() }
+        }
+    }
+
+    @Test fun `externally published packs retain the pressure hold until internal reclamation is durable`() {
+        var fail = false; var at = 1000L
+        ResultJournal(journal, external, maxBytes = 65536, start = false, retryClock = { at }, syncDirectory = {
+            if (fail) { fail = false; throw java.io.IOException("injected reclamation barrier failure") }
+        }).use { store ->
+            repeat(5) { store.putAll(it + 1L, blobs("pressure-$it")) }
+            val before = store.status().bytes
+            fail = true
+            assertFailsWith<java.io.IOException> { store.drainOne() }
+            assertEquals("pressure-0", read(external, 1, "pressure-0"))
+            assertEquals(before, store.status().bytes); assertFalse(store.allowsNewSolve())
+            assertEquals(1, store.status().phases.getValue(ResultJournal.Phase.flushedCleanup).batches)
+            at += 5000
+            repeat(5) { store.drainOne() }
+            assertTrue(store.allowsNewSolve()); assertEquals(8192L, store.status().bytes)
+        }
+    }
+
     private val root = Files.createTempDirectory("result-journal")
     private val external = LocalArtifactStore(root.resolve("external"))
     private val journal = root.resolve("internal")

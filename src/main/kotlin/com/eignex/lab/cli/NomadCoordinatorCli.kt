@@ -65,14 +65,15 @@ object NomadCoordinatorCli {
         java.nio.channels.FileChannel.open(config.dataDir, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
         val localArtifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config.paths, config.minFreeBytes) == null })
         // Cloud preparations leave their build archives in the regional store; this machine fetches one only to read it.
+        val admissionSignal = CoordinatorSignal()
+        val reconcileSignal = CoordinatorSignal()
         val artifacts = ResultJournal(journalRoot,
             BuildArchives.coordinator()?.let { RegionalArtifactStore(localArtifacts, it, config.dataDir.resolve("nomad/build-fetches")) } ?: localArtifacts,
-            writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes })
+            writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes },
+            solveAdmissionChanged = { admissionSignal.wake(); reconcileSignal.wake() })
         periodic("nomad-result-journal-status", 5_000) {
             writeResultJournalReport(config.dataDir.resolve("nomad/result-journal-status.json"), artifacts)
         }
-        val admissionSignal = CoordinatorSignal()
-        val reconcileSignal = CoordinatorSignal()
         val projections = CoordinatorWork<Pair<Long, String>, Unit>("nomad-result-files", completed = reconcileSignal::wake)
         val logWrites = CoordinatorWork<Long, Unit>("nomad-job-logs")
         val client = NomadClient(URI.create(settings.address), Path.of(settings.tokenFile), NomadClient.tlsClient(Path.of(settings.keyStore), Path.of(settings.trustStore), Path.of(settings.passwordFile)), settings.namespace)
@@ -89,7 +90,7 @@ object NomadCoordinatorCli {
         val cluster = ClusterSettings(queueSettings, capacityFile?.let(CapacitySettings::read))
         val capacitySettings = cluster.capacity
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
-            changed = { admissionSignal.wake(); reconcileSignal.wake() },
+            changed = { admissionSignal.wake(); reconcileSignal.wake() }, solveAllowed = artifacts::allowsNewSolve,
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
             writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
             val (problem, arm) = store.plans.caseOf(job, index) ?: error("case missing")

@@ -51,6 +51,11 @@ lab_result_journal_last_drain_blobs $lastDrainBlobs
         append("lab_result_journal_phase_readers{phase=\"${phase.name}\"} ${state.readers}\n")
         append("lab_result_journal_phase_oldest_age_seconds{phase=\"${phase.name}\"} ${state.oldestAgeMs / 1000.0}\n")
     }
+    solveAdmission?.let {
+        append("lab_result_journal_solve_admission_held ${if (it.held) 1 else 0}\n")
+        append("lab_result_journal_solve_hold_at_bytes ${it.holdAtBytes}\n")
+        append("lab_result_journal_solve_resume_at_bytes ${it.resumeAtBytes}\n")
+    }
     append("lab_result_journal_receiving $receiving\n")
     append("lab_result_journal_receiving_reserved_bytes $receivingReservedBytes\n")
     append("lab_result_journal_last_publish_batch_seconds ${(lastPublishBatchMs ?: 0) / 1000.0}\n")

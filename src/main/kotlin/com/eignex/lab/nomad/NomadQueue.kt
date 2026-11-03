@@ -127,6 +127,7 @@ class NomadQueue(
                 val current = store.job(job.id) ?: continue
                 if (current.cancelRequested || current.paused || current.status.isTerminal) continue
                 if (store.unclaimed(job.id) == 0) continue
+                if (!backend.mayStartSolve()) continue
                 val cases = store.plans.casePlan(job.id).map { row ->
                     val armIndex = recipe.arms.indexOfFirst { it.arm.label == row.arm }
                     val execution = preparation.armPlans[row.arm]?.cases?.single { BenchRuns.key(it) == BenchRuns.key(requireNotNull(row.problem.benchCase)) }
@@ -179,6 +180,7 @@ class NomadQueue(
                     session.desired != Desired.STOP && store.execution.placement(session.id).enforcement == enforcement }
                 fun cloudSessions() = solving(CpuEnforcement.HARD_QUOTA)
                 for (index in active.size until limit) {
+                    if (!backend.mayStartSolve()) break
                     val remainingCpu = cpuLimit - sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }.sumOf { it.budget.cpuMillis }
                     val reserved = store.execution.nativeReservation()
                     val nativeSessions = solving(CpuEnforcement.ADVISORY_NATIVE)
