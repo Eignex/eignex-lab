@@ -146,7 +146,7 @@ internal class NativeStartupCapture(
         var failure: String? = null
         try {
             supervisor.run(sampleCommand(sampleTool, target.pid, sample), worktree, emptyMap(), stdout, stderr,
-                2, graceMs = 0, runRemainingMs = remainingMs().coerceAtMost(SAMPLE_LIMIT_MS),
+                2, graceMs = 0, runRemainingMs = remainingMs(),
                 observeTermination = { termination = it }, remainingLeaseMs = {
                     if (Thread.currentThread().isInterrupted || current(target) == null) {
                         throw CancellationException("sample target ended or changed identity")
@@ -230,8 +230,9 @@ internal class NativeStartupCapture(
 
         internal fun sampleCommand(tool: Path, pid: Long, output: Path): List<String> {
             require(pid > 0)
+            // Verified samples require a live target through symbolication, so defer symbol lookup until after sampling.
             // The file ceiling applies only to the sampler, not the workload it observes.
-            return listOf("bash", "-c", "ulimit -f 1024 || exit 125; exec \"\$1\" \"\$2\" 1 10 -mayDie -file \"\$3\"",
+            return listOf("bash", "-c", "ulimit -f 1024 || exit 125; exec \"\$1\" \"\$2\" 1 10 -file \"\$3\"",
                 "lab-native-sample", tool.toString(), pid.toString(), output.toString())
         }
     }

@@ -109,6 +109,13 @@ class PortableWorkerTest {
                 supervisor.run(it.argv, root, environment, root.resolve("observer.out"), root.resolve("observer.err"),
                     4, graceMs = 0, runRemainingMs = remaining(), remainingLeaseMs = { 80000 })
             }
+            val evidence = Files.createDirectories(Path.of("build/native-startup-tests/observer"))
+            Files.list(output).use { entries -> entries.forEach {
+                Files.copy(it, evidence.resolve(it.fileName.toString()), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            } }
+            Files.copy(root.resolve("observer.err"), evidence.resolve("target.stderr"), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            Files.writeString(evidence.resolve("fixture.txt"),
+                "Copied JDK launcher suspended by JDWP; validates observer ownership and capture, not a MiniZinc stall or reliability repair.\n")
             assertEquals(124, exit, Files.readString(root.resolve("observer.err")))
             val receiptFile = output.resolve("capture-1.json")
             assertTrue(Files.isRegularFile(receiptFile), Files.readString(output.resolve("status.json")))
@@ -120,12 +127,6 @@ class PortableWorkerTest {
             assertEquals(executable.toRealPath().toString(), target.executable)
             assertEquals("--version", target.option)
             assertTrue(Files.size(output.resolve(assertNotNull(receipt.sample))) in 1..1024L * 1024)
-            val evidence = Files.createDirectories(Path.of("build/native-startup-tests/observer"))
-            Files.list(output).use { entries -> entries.forEach {
-                Files.copy(it, evidence.resolve(it.fileName.toString()), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            } }
-            Files.writeString(evidence.resolve("fixture.txt"),
-                "Copied JDK launcher suspended by JDWP; validates observer ownership and capture, not a MiniZinc stall or reliability repair.\n")
         }
     }
 
