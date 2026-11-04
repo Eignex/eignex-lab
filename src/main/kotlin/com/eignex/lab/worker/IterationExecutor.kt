@@ -144,9 +144,15 @@ internal class IterationExecutor(
                             supervisor, { minOf((caseDeadline - System.nanoTime()) / 1_000_000,
                                 runRemaining() ?: Long.MAX_VALUE, remainingLeaseMs()).coerceAtLeast(0) }, os == "mac")
                     } else null
-                    var exit = try { capture.use { supervisor.run(it?.argv ?: listOf("bash", "-c", command), worktree, env,
-                        directory.resolve("${case.index}.out"), directory.resolve("${case.index}.err"), case.timeoutSec,
-                        graceMs = graceMs, runRemainingMs = processRunMs, remainingLeaseMs = remainingLeaseMs) }
+                    var exit = try { capture.use {
+                        val timeout = if (it == null) case.timeoutSec else NativeStartupCapture.remainingCaseSeconds(caseDeadline, System.nanoTime())
+                        if (timeout == 0L) {
+                            Termination.record(directory.resolve("${case.index}.termination"), "timeout: native diagnostic setup exhausted the case allowance")
+                            124
+                        } else supervisor.run(it?.argv ?: listOf("bash", "-c", command), worktree, env,
+                            directory.resolve("${case.index}.out"), directory.resolve("${case.index}.err"), timeout,
+                            graceMs = graceMs, runRemainingMs = runRemaining(), remainingLeaseMs = remainingLeaseMs)
+                    }
                     } catch (_: RunDeadlineExceeded) {
                         timedOut.set(true)
                         Termination.record(directory.resolve("${case.index}.termination"), Termination.deadline(graceMs))

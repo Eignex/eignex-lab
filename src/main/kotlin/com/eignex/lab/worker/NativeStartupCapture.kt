@@ -225,6 +225,9 @@ internal class NativeStartupCapture(
         internal fun sameProcess(target: Target, startedAt: String?, executable: String?, arguments: List<String>?): Boolean =
             target.startedAt == startedAt && target.executable == executable && arguments == listOf(target.option)
 
+        internal fun remainingCaseSeconds(deadlineNs: Long, nowNs: Long): Long =
+            ((deadlineNs - nowNs) / 1_000_000_000).coerceAtLeast(0)
+
         internal fun sampleCommand(tool: Path, pid: Long, output: Path): List<String> {
             require(pid > 0)
             // The file ceiling applies only to the sampler, not the workload it observes.

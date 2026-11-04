@@ -135,7 +135,8 @@ only an executable named `minizinc` within that case's private worktree, with ex
 checked before and after sampling. After a query has lived for 500 ms, the worker may run
 `/usr/bin/sample` for one second at 10 ms intervals. Each sampler has a two-second ceiling,
 zero stop grace and its own file-size limit; at most two captures are attempted per case.
-Capture also spends the remaining case, whole-run and lease allowances. Cancellation closes
+Capture setup spends the original case allowance; the remaining case limit is rounded down to
+whole seconds before launch. Capture also spends the remaining whole-run and lease allowances. Cancellation closes
 the sampler's supervisor connection; it does not signal or wait for the query being observed.
 
 Accepted artifacts are under `cases/N/native-startup/`, accessible through authenticated
