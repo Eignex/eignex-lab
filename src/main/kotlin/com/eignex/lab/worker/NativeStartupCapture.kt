@@ -111,9 +111,8 @@ internal class NativeStartupCapture(
         val info = child.info()
         val executable = info.command().orElse(null) ?: return null
         val arguments = info.arguments().orElse(null)?.toList() ?: return null
-        if (!matches(executable, arguments, worktree)) return null
         val path = Path.of(executable).toRealPath()
-        if (!path.startsWith(worktree.toRealPath())) return null
+        if (!matches(path.toString(), arguments, worktree.toRealPath())) return null
         val start = info.startInstant().orElse(null) ?: return null
         val rootStart = root.info().startInstant().orElse(null) ?: return null
         val attributes = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java)
@@ -125,8 +124,9 @@ internal class NativeStartupCapture(
         val root = root() ?: return null
         if (root.pid() != target.rootPid || root.info().startInstant().orElse(null)?.toString() != target.rootStartedAt) return null
         val child = ProcessHandle.of(target.pid).orElse(null) ?: return null
+        val executable = child.info().command().orElse(null)?.let { Path.of(it).toRealPath().toString() }
         if (!child.isAlive || !sameProcess(target, child.info().startInstant().orElse(null)?.toString(),
-                child.info().command().orElse(null), child.info().arguments().orElse(null)?.toList())) return null
+                executable, child.info().arguments().orElse(null)?.toList())) return null
         val attributes = Files.readAttributes(Path.of(target.executable), java.nio.file.attribute.BasicFileAttributes::class.java)
         if (attributes.fileKey()?.toString() != target.fileKey || attributes.size() != target.executableBytes ||
             attributes.lastModifiedTime().toString() != target.executableModifiedAt) return null
@@ -196,7 +196,10 @@ internal class NativeStartupCapture(
                 write(it.copy(outcome = "capture-cancelled", cancelled = true, sample = partial,
                     elapsedMs = (System.nanoTime() - activeStartedNs) / 1_000_000))
             }
-            if (enabled && captures == 0 && !Files.exists(output.resolve("status.json"))) write(Receipt(binding, "no-matching-query-observed"))
+            if (enabled && !Files.exists(output.resolve("status.json"))) {
+                write(Receipt(binding, if (captures == 0) "no-matching-query-observed" else "finished",
+                    diagnostic = "captureAttempts=$captures"))
+            }
         }
         // Closing the supervisor connection kills the sampler's own tree; it never signals the target.
         monitor?.interrupt()
