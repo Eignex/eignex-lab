@@ -275,7 +275,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.sqlUpdate("INSERT INTO execution_outbox (id, job_id, session_id, operation, payload) VALUES (?, ?, ?, 'submit', ?)", "$id:submit", jobId, id, payload)
         db.sqlUpdate("UPDATE execution_sessions SET placement = ?, cpu_enforcement = ?, preparation_slots = ? WHERE id = ?",
             placement.json(), placement.enforcement?.stored, placement.preparationSlots, id)
-        if (manifest != null) db.sqlUpdate("INSERT INTO execution_manifests (session_id, manifest) VALUES (?, ?)", id, manifest)
+        if (manifest != null) db.sqlUpdate("INSERT INTO execution_manifests (session_id, manifest) VALUES (?, ?)", id, db.splitManifest(manifest))
         db.event(jobId, id, "session-created", at)
         db.session(id)!!
     }
@@ -600,7 +600,59 @@ class ExecutionStore internal constructor(private val store: Store) {
         val text = db.sqlRows("SELECT manifest FROM execution_manifests WHERE session_id = ?", id) { it.getString(1) }.singleOrNull()
             // Not yet moved ([moveManifests]).
             ?: db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.single()
-        Json.decodeFromString(requireNotNull(text) { "session $id: its manifest was dropped after its job was done" })
+        Json.decodeFromString(db.joinManifest(requireNotNull(text) { "session $id: its manifest was dropped after its job was done" }))
+    }
+
+    /** [manifest] as it is stored: its [MANIFEST_PARTS], which every session of a job repeats, kept once each in
+     *  `manifest_parts` by their sha256 and named as `<key>PartRef` in their place. */
+    private fun Tx.splitManifest(manifest: String): String {
+        val parsed = runCatching { Json.parseToJsonElement(manifest) }.getOrNull() as? JsonObject ?: return manifest
+        if (MANIFEST_PARTS.none { parsed[it] is JsonArray || parsed[it] is JsonObject }) return manifest
+        val stored = LinkedHashMap<String, JsonElement>(parsed.size)
+        for ((key, value) in parsed) {
+            if (key in MANIFEST_PARTS && (value is JsonArray || value is JsonObject)) {
+                val text = Json.encodeToString(JsonElement.serializer(), value); val sha = digest(text)
+                sqlUpdate("INSERT OR IGNORE INTO manifest_parts (sha, part) VALUES (?, ?)", sha, text)
+                stored[key + PART_REF] = JsonPrimitive(sha)
+            } else stored[key] = value
+        }
+        return Json.encodeToString(JsonElement.serializer(), JsonObject(stored))
+    }
+
+    /** [manifest] as it was written: each `<key>PartRef` back to the part it names, in its place. */
+    private fun Tx.joinManifest(manifest: String): String {
+        if (PART_REF !in manifest) return manifest
+        val parsed = Json.parseToJsonElement(manifest) as? JsonObject ?: return manifest
+        val joined = LinkedHashMap<String, JsonElement>(parsed.size)
+        for ((key, value) in parsed) {
+            if (!key.endsWith(PART_REF)) { joined[key] = value; continue }
+            val sha = (value as JsonPrimitive).content
+            val part = sqlRows("SELECT part FROM manifest_parts WHERE sha = ?", sha) { it.getString(1) }.singleOrNull()
+                ?: error("manifest part $sha is missing")
+            joined[key.removeSuffix(PART_REF)] = Json.parseToJsonElement(part)
+        }
+        return Json.encodeToString(JsonElement.serializer(), JsonObject(joined))
+    }
+
+    /**
+     * Split at most [batch] session manifests stored whole, after rowid [after] ([splitManifest]); returns the last
+     * rowid looked at, null once none is left. Call again with it until null.
+     */
+    fun splitManifests(after: Long, batch: Int = 5): Long? = store.executionTransaction { db ->
+        val rows = db.sqlRows("SELECT rowid, manifest FROM execution_manifests WHERE rowid > ? ORDER BY rowid LIMIT ?", after, batch) {
+            it.getLong(1) to it.getString(2)
+        }
+        for ((rowid, text) in rows) {
+            val split = db.splitManifest(text)
+            if (split != text) db.sqlUpdate("UPDATE execution_manifests SET manifest = ? WHERE rowid = ?", split, rowid)
+        }
+        rows.lastOrNull()?.first
+    }
+
+    /** Drop the manifest parts no kept manifest names any more; how many went. */
+    fun dropUnusedManifestParts(): Int = store.executionTransaction { db ->
+        db.sqlUpdate("""DELETE FROM manifest_parts WHERE sha NOT IN (SELECT value FROM execution_manifests m, json_each(m.manifest)
+            WHERE json_valid(m.manifest) AND key LIKE '%$PART_REF')""")
     }
 
     /**
@@ -613,7 +665,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     fun moveManifests(batch: Int = 5): Int = store.executionTransaction { db ->
         val ids = db.sqlRows("SELECT id FROM execution_sessions WHERE manifest IS NOT NULL LIMIT ?", batch) { it.getString(1) }
         for (id in ids) {
-            db.sqlUpdate("INSERT OR IGNORE INTO execution_manifests (session_id, manifest) SELECT id, manifest FROM execution_sessions WHERE id = ?", id)
+            db.sqlRows("SELECT manifest FROM execution_sessions WHERE id = ?", id) { it.getString(1) }.singleOrNull()?.let { manifest ->
+                db.sqlUpdate("INSERT OR IGNORE INTO execution_manifests (session_id, manifest) VALUES (?, ?)", id, db.splitManifest(manifest))
+            }
             db.sqlUpdate("UPDATE execution_sessions SET manifest = NULL WHERE id = ?", id)
         }
         ids.size
@@ -884,6 +938,9 @@ class ExecutionStore internal constructor(private val store: Store) {
             }
         }
         private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"), r.getString("result_sha256"))
+        /** Manifest keys every session of a job repeats, kept once each ([splitManifest]). */
+        private val MANIFEST_PARTS = setOf("cases", "bundles", "sharedInputs")
+        private const val PART_REF = "PartRef"
         /** [result] as a committed attempt keeps it: without its case records, which `cases` keeps. */
         internal fun slim(result: IterationResult) = result.copy(cases = result.cases.map { it.copy(record = null) })
         /** API and coordinator may initialize the same database concurrently. A column snapshot is only a

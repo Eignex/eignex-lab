@@ -6,7 +6,10 @@ import com.eignex.lab.util.*
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** What an experiment was planned into (`arms`, `problems`, `cases`) and what its cases recorded, provenances kept once. */
 class PlanRepository internal constructor(db: Database, lock: Any) : Repository(db, lock) {
@@ -103,13 +106,72 @@ synchronized(lock) {
             }
     }
 
-    /** The build provenance kept under [sha], parsed; the most recently read are kept ([PROVENANCES]). */
+    /** The build provenance kept under [sha], parsed, its shared parts back in place; the most recently read are kept
+     *  ([PROVENANCES]). */
     private fun provenance(sha: String): JsonElement? = provenances[sha] ?: connection.prepareStatement(
         "SELECT provenance FROM provenances WHERE sha = ?",
     ).use { statement ->
         statement.setString(1, sha)
         statement.executeQuery().use { r -> if (r.next()) recordOf(r.getString(1)) else null }
-    }?.also { provenances[sha] = it }
+    }?.let(::joinParts)?.also { provenances[sha] = it }
+
+    /** [provenance] with each `<key>PartRef` replaced by the part it names, in its place; a missing part stays a reference. */
+    private fun joinParts(provenance: JsonElement): JsonElement {
+        if (provenance !is JsonObject || provenance.keys.none { it.endsWith(PART_REF) }) return provenance
+        val joined = LinkedHashMap<String, JsonElement>(provenance.size)
+        for ((key, value) in provenance) {
+            val part = if (key.endsWith(PART_REF)) (value as? JsonPrimitive)?.content?.let(::part) else null
+            if (part != null) joined[key.removeSuffix(PART_REF)] = part else joined[key] = value
+        }
+        return JsonObject(joined)
+    }
+
+    private fun part(sha: String): JsonElement? = parts[sha] ?: connection.prepareStatement("SELECT part FROM provenance_parts WHERE sha = ?").use { s ->
+        s.setString(1, sha)
+        s.executeQuery().use { r -> if (r.next()) recordOf(r.getString(1)) else null }
+    }?.also { parts[sha] = it }
+
+    private val parts = object : LinkedHashMap<String, JsonElement>(PROVENANCES, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JsonElement>) = size > PROVENANCES
+    }
+
+    /**
+     * [json] as a provenance is stored: its [SHARED_PARTS] kept once each in `provenance_parts` under their sha256 and
+     * named as `<key>PartRef` in their place. In a transaction. A provenance without them is stored as it is.
+     */
+    private fun splitParts(json: String): String {
+        val parsed = recordOf(json) as? JsonObject ?: return json
+        if (SHARED_PARTS.none { parsed[it] is JsonObject || parsed[it] is JsonArray }) return json
+        val stored = LinkedHashMap<String, JsonElement>(parsed.size)
+        for ((key, value) in parsed) {
+            if (key in SHARED_PARTS && (value is JsonObject || value is JsonArray)) {
+                val text = Json.encodeToString(JsonElement.serializer(), value)
+                val sha = java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it) }
+                update("INSERT OR IGNORE INTO provenance_parts (sha, part) VALUES (?, ?)", sha, text)
+                stored[key + PART_REF] = JsonPrimitive(sha)
+            } else stored[key] = value
+        }
+        return Json.encodeToString(JsonElement.serializer(), JsonObject(stored))
+    }
+
+    /**
+     * Split at most [batch] provenances stored whole, after rowid [after] ([splitParts]); returns the last rowid looked
+     * at, null once none is left. Call again with it until null.
+     */
+    fun splitProvenances(after: Long, batch: Int = 50): Long? = synchronized(lock) {
+        transaction {
+            val rows = connection.prepareStatement("SELECT rowid, provenance FROM provenances WHERE rowid > ? ORDER BY rowid LIMIT ?").use { s ->
+                s.setLong(1, after); s.setInt(2, batch)
+                s.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) to r.getString(2) else null }.toList() }
+            }
+            for ((rowid, text) in rows) {
+                val split = splitParts(text)
+                if (split != text) update("UPDATE provenances SET provenance = ? WHERE rowid = ?", split, rowid)
+            }
+            rows.lastOrNull()?.first
+        }
+    }
 
     private val provenances = object : LinkedHashMap<String, JsonElement>(PROVENANCES, LOAD_FACTOR, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JsonElement>) = size > PROVENANCES
@@ -224,8 +286,9 @@ synchronized(lock) {
         }
     }
 
+    /** Keep provenance [json] under [sha], the sha256 of [json] itself, its shared parts kept once ([splitParts]). */
     internal fun keepProvenance(sha: String, json: String) =
-        update("INSERT OR IGNORE INTO provenances (sha, provenance) VALUES (?, ?)", sha, json)
+        update("INSERT OR IGNORE INTO provenances (sha, provenance) VALUES (?, ?)", sha, splitParts(json))
 
     internal fun insertCommands(jobId: Long, commands: List<CaseCommand>) = connection.prepareStatement(
         "INSERT INTO commands (job_id, idx, cmd, timeout_sec, status, cores) VALUES (?, ?, ?, ?, ?, ?)",
@@ -242,3 +305,7 @@ synchronized(lock) {
         statement.executeBatch()
     }
 }
+
+/** Provenance keys whose values repeat across thousands of provenances, kept once each ([PlanRepository.keepProvenance]). */
+private val SHARED_PARTS = setOf("harness", "runtime")
+private const val PART_REF = "PartRef"
