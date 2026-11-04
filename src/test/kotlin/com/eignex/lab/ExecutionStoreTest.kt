@@ -290,6 +290,51 @@ class ExecutionStoreTest {
         assertFailsWith<IllegalArgumentException> { store.execution.manifest("done") }
     }
 
+    @Test fun `a committed attempt keeps its metadata and digest, not its case records, and still fences a retry`() {
+        val id = job(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
+        store.execution.phase(claim.owner, "uploading", 1010)
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1010, 1020, """{"finalWitness":"${"x".repeat(1000)}"}""") },
+            artifacts = mapOf("cases/0/out/record.json" to "a".repeat(64)))
+
+        assertTrue(store.execution.commit(claim.owner, result, 1030))
+
+        val kept = store.execution.accepted(id).single().second
+        assertTrue(kept.cases.all { it.record == null }, "records live in cases, not in the attempt")
+        assertEquals(result.artifacts, kept.artifacts)
+        assertEquals(result.cases.map { it.index to it.exitCode }, kept.cases.map { it.index to it.exitCode })
+        assertTrue(store.plans.cases(id).filter { it.index in claim.indices }.all { it.record.toString().contains("finalWitness") })
+        val restarted = Store(file)
+        assertTrue(restarted.execution.commit(claim.owner, result, 1031), "an identical retry is acknowledged")
+        val different = result.copy(cases = result.cases.map { it.copy(record = "{}") })
+        assertFailsWith<ExecutionFenced> { restarted.execution.commit(claim.owner, different, 1032) }
+        assertFailsWith<ExecutionFenced> { restarted.execution.authorizeCommit(claim.owner, different, 1032) }
+    }
+
+    @Test fun `results committed before slimming are slimmed in batches and keep fencing retries`() {
+        val id = job(); bind(id)
+        val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
+        store.execution.phase(claim.owner, "uploading", 1010)
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1010, 1020, """{"stats":{"n":1}}""") })
+        store.execution.commit(claim.owner, result, 1030)
+        // As an earlier release kept it: the whole result and no digest.
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.prepareStatement("UPDATE iteration_attempts SET result = ?, result_sha256 = NULL WHERE job_id = ?").use {
+                it.setString(1, kotlinx.serialization.json.Json.encodeToString(IterationResult.serializer(), result)); it.setLong(2, id); it.executeUpdate()
+            }
+        }
+        assertEquals(result, store.execution.accepted(id).single().second)
+
+        var cursor: Long? = 0L; var batches = 0
+        while (cursor != null) { cursor = store.execution.slimAcceptedResults(cursor, batch = 1); if (cursor != null) batches++ }
+
+        assertEquals(1, batches)
+        assertEquals(ExecutionStore.slim(result), store.execution.accepted(id).single().second)
+        assertTrue(store.execution.commit(claim.owner, result, 1031), "the original result still matches by digest")
+        assertFailsWith<ExecutionFenced> { store.execution.commit(claim.owner, ExecutionStore.slim(result), 1032) }
+        assertNull(store.execution.slimAcceptedResults(0L), "nothing is left to slim")
+    }
+
     @Test fun `coordinator record metadata preserves the accepted manifest for acknowledgement retries`() {
         val id = job(); bind(id)
         val claim = store.execution.claim("s", token, "alloc-s", 1001)!!
@@ -302,7 +347,7 @@ class ExecutionStoreTest {
         restarted.execution.authorizeCommit(claim.owner, result, 1021)
 
         assertTrue(restarted.execution.commit(claim.owner, result, 1021))
-        assertEquals(result, restarted.execution.accepted(id).single().second)
+        assertEquals(ExecutionStore.slim(result), restarted.execution.accepted(id).single().second)
         assertTrue(restarted.plans.cases(id).filter { it.index in claim.indices }.all {
             it.record.toString() == projected
         })
@@ -335,7 +380,7 @@ class ExecutionStoreTest {
         val restarted = Store(file)
         assertTrue(restarted.execution.commit(claim.owner, result, 1801))
         assertEquals(Status.FAILED, restarted.job(id)!!.status)
-        assertEquals(result, restarted.execution.accepted(id).single().second)
+        assertEquals(ExecutionStore.slim(result), restarted.execution.accepted(id).single().second)
         assertTrue(restarted.execution.sessions(id).all { it.desired == Desired.STOP })
     }
 
@@ -378,7 +423,7 @@ class ExecutionStoreTest {
         val result = IterationResult(emptyList(), preparation = PreparationResult(emptyList(), emptyList()))
         assertTrue(store.execution.commit(next.owner, result, 1302))
         val restarted = Store(file)
-        assertEquals(result, restarted.execution.accepted(id).single().second)
+        assertEquals(ExecutionStore.slim(result), restarted.execution.accepted(id).single().second)
         assertTrue(restarted.execution.commit(next.owner, result, 1303))
         assertNull(restarted.execution.claim("replacement", token, "allocation-2", 1304))
         assertFalse(restarted.job(id)!!.setupDone)
@@ -478,7 +523,7 @@ class ExecutionStoreTest {
         assertTrue(store.retry(id))
         store.execution.expireRunDeadlines(1802)
         assertEquals(Status.QUEUED, store.job(id)!!.status)
-        assertEquals(result, store.execution.accepted(id).single().second)
+        assertEquals(ExecutionStore.slim(result), store.execution.accepted(id).single().second)
         val spent = store.job(id)!!.runMs
         store.execution.createSession("retried", id, ExecutionClass.SOLVE, "release", budget, token, "{}", 3000)
         store.execution.bind("retried", token, "retried-allocation", "node", "release", 3000)

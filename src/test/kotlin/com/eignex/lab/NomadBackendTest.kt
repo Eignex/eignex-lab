@@ -215,7 +215,7 @@ class NomadBackendTest {
                     setBody(Json.encodeToString(WorkerCommit(claim.owner, result)))
                 }.status)
             }
-            assertEquals(result, store.execution.accepted(id).single().second)
+            assertEquals(ExecutionStore.slim(result), store.execution.accepted(id).single().second)
             assertTrue(journal.drainGroup()); assertEquals(0, journal.status().batches)
             outputs.forEach { (sha, bytes) -> artifacts.open(id, sha).use { assertContentEquals(bytes, it.readAllBytes()) } }
         } finally { journal.close() }
@@ -319,7 +319,7 @@ class NomadBackendTest {
             assertEquals(HttpStatusCode.Conflict, send(claim.owner.copy(generation = claim.owner.generation + 1), true).status)
             assertEquals(HttpStatusCode.NoContent, send(claim.owner, true).status)
             assertEquals(HttpStatusCode.NoContent, send(claim.owner, true).status)
-            assertEquals(result, store.execution.accepted(id).single().second)
+            assertEquals(ExecutionStore.slim(result), store.execution.accepted(id).single().second)
         } finally { journal.close() }
     }
 
@@ -1414,7 +1414,7 @@ class NomadBackendTest {
             assertEquals(Status.RUNNING, restarted.job(id)!!.status)
             assertNull(restarted.job(id)!!.error)
             assertEquals(accepted.indices.size, restarted.job(id)!!.done)
-            assertEquals(result, restarted.execution.accepted(id).single().second)
+            assertEquals(ExecutionStore.slim(result), restarted.execution.accepted(id).single().second)
             assertFailsWith<ExecutionFenced> { restarted.execution.renew(claim.owner) }
             assertFailsWith<ExecutionFenced> { backend(restarted).commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, now() - 1, now(), "{}") })) }
             val replacement = restarted.execution.sessions(id).single { it.desired == Desired.RUN }

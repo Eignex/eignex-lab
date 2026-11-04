@@ -502,7 +502,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                         benchSelections: List<com.eignex.lab.execution.BenchSelectionEntry> = emptyList()): Boolean = store.executionTransaction { db ->
         val a = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (a.state == AttemptState.COMMITTED) {
-            if (a.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
+            if (!a.accepts(result)) throw ExecutionFenced("result differs from accepted manifest")
             return@executionTransaction true
         }
         db.attempt(owner, at)
@@ -520,8 +520,10 @@ class ExecutionStore internal constructor(private val store: Store) {
                 if (case.exitCode == 0) "DONE" else "FAILED", case.exitCode, case.startedAt, case.finishedAt, node, case.command, a.jobId, case.index)
             db.sqlUpdate("UPDATE cases SET record = ?, lab_check = NULL WHERE job_id = ? AND idx = ?", record?.let(store.plans::storedRecord), a.jobId, case.index)
         }
-        db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
-            Json.encodeToString(result), at, a.jobId, owner.iteration, owner.generation)
+        // The case records went to `cases` above: the attempt keeps the rest of the result and the digest of all of it.
+        val whole = Json.encodeToString(result)
+        db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, result_sha256 = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
+            Json.encodeToString(slim(result)), digest(whole), at, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "committed:${owner.iteration}:${owner.generation}", at)
         // The newest acceptance owns a key: its inputs are the likeliest to remain, and the older job may be deleted.
         for (entry in benchSelections) db.sqlUpdate("INSERT OR REPLACE INTO bench_selections (selection_key, job_id, entry, created_at) VALUES (?, ?, ?, ?)",
@@ -589,7 +591,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     internal fun authorizeCommit(owner: AttemptOwner, result: IterationResult, at: Long = now()): Long = store.executionRead { db ->
         val attempt = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (attempt.state == AttemptState.COMMITTED) {
-            if (attempt.result != Json.encodeToString(result)) throw ExecutionFenced("result differs from accepted manifest")
+            if (!attempt.accepts(result)) throw ExecutionFenced("result differs from accepted manifest")
         } else db.attempt(owner, at)
         attempt.jobId
     }
@@ -630,6 +632,21 @@ class ExecutionStore internal constructor(private val store: Store) {
             it.getInt(1) != 0
         }.single()
     }
+    /**
+     * Slim at most [batch] committed attempts that still carry their case records, after rowid [after]: each keeps its
+     * result without the records, already in `cases`, and the digest of the whole result it was committed with. Returns
+     * the last rowid looked at, null once none is left. Call again with it until null.
+     */
+    fun slimAcceptedResults(after: Long, batch: Int = 20): Long? = store.executionTransaction { db ->
+        val rows = db.sqlRows("SELECT rowid, result FROM iteration_attempts WHERE rowid > ? AND state = 'committed' AND result_sha256 IS NULL ORDER BY rowid LIMIT ?",
+            after, batch) { it.getLong(1) to it.getString(2) }
+        for ((rowid, text) in rows) {
+            val slimmed = text?.let { runCatching { Json.encodeToString(slim(Json.decodeFromString<IterationResult>(it))) }.getOrNull() } ?: text
+            db.sqlUpdate("UPDATE iteration_attempts SET result = ?, result_sha256 = ? WHERE rowid = ?", slimmed, text?.let(::digest), rowid)
+        }
+        rows.lastOrNull()?.first
+    }
+
     fun drain(id: String) = store.executionTransaction { db -> db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain' WHERE id = ? AND desired = 'run'", id) }
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->
         db.sqlRows("SELECT iteration_id, result FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) { it.getString(1) to Json.decodeFromString<IterationResult>(it.getString(2)) }
@@ -859,8 +876,16 @@ class ExecutionStore internal constructor(private val store: Store) {
         /** What [sessionRow] reads. Sessions are scanned on every coordinator pass; `SELECT *` would also read each manifest. */
         private const val SESSION_COLUMNS = "id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, allocation_id, node_id"
         private fun sessionRow(r: ResultSet) = ExecutionSession(r.getString("id"), r.getLong("job_id"), r.getInt("generation"), ExecutionClass.of(r.getString("execution_class")), r.getString("release"), Json.decodeFromString(r.getString("budget")), r.getString("nomad_job_id"), Desired.of(r.getString("desired")), r.getString("allocation_id"), r.getString("node_id"))
-        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: AttemptState, val leaseUntil: Long, val tokenHash: String, val result: String?, val parallel: Int)
-        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"))
+        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: AttemptState, val leaseUntil: Long, val tokenHash: String, val result: String?, val parallel: Int, val resultSha256: String? = null) {
+            /** Whether [offered] is the result this attempt committed: by the digest of the whole result once it was kept
+             *  slim, by the result itself before. */
+            fun accepts(offered: IterationResult): Boolean = Json.encodeToString(offered).let { whole ->
+                if (resultSha256 != null) digest(whole) == resultSha256 else result == whole
+            }
+        }
+        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"), r.getString("result_sha256"))
+        /** [result] as a committed attempt keeps it: without its case records, which `cases` keeps. */
+        internal fun slim(result: IterationResult) = result.copy(cases = result.cases.map { it.copy(record = null) })
         /** API and coordinator may initialize the same database concurrently. A column snapshot is only a
          * hint: another autocommit connection can publish the ALTER before ours. Recheck the schema after a
          * failed ALTER, accepting only the now-present column rather than hiding unrelated SQL failures. */
