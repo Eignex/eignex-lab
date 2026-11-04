@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy every green build of main to this lab host, unattended (launchd, as root, every few minutes).
+"""Deploy every green build of main to this lab host, unattended (launchd, as the lab's user, every few minutes).
 
 One pass: find the newest successful `build` run of a push to main; when it is newer than the running release and both
 of its worker images are published (the `worker-image` workflow), stage its tested native distribution under
@@ -25,8 +25,11 @@ QUEUE = f'{DATA}/nomad/queue.json'
 NATIVE = f'{DATA}/nomad/native-services.json'
 ADAPTERS = f'{DATA}/nomad/host-adapters'
 LOG = f'{DATA}/logs/autodeploy.log'
-SERVICES = ['com.eignex.lab.nomad-coordinator', 'com.eignex.lab.api', 'com.eignex.lab.runner']
-ADAPTER_SERVICE = 'com.eignex.lab.capacity-adapter'
+# Each service runs as the lab's user with launchd KeepAlive, so ending its process restarts it on the new release:
+# no root needed, which a launchd daemon running as root would also be refused inside the user's home (TCC).
+SERVICES = {'com.eignex.lab.nomad-coordinator': r'MainKt nomad-coordinator( |$)', 'com.eignex.lab.api': r'MainKt api( |$)',
+            'com.eignex.lab.runner': r'MainKt runner( |$)'}
+ADAPTER_SERVICE = {'com.eignex.lab.capacity-adapter': r'host-adapters/aws/adapter\.py'}
 ARCHES = {'x86_64': 'amd64', 'amd64': 'amd64', 'arm64': 'arm64', 'aarch64': 'arm64'}
 
 
@@ -96,6 +99,8 @@ def sha256(path):
 
 
 def chown_tree(path):
+    if os.geteuid() != 0:
+        return
     owner = pwd.getpwnam(OWNER)
     for root, dirs, files in os.walk(path):
         for name in [root] + [os.path.join(root, f) for f in dirs + files]:
@@ -141,7 +146,7 @@ def write_json(path, data):
     with os.fdopen(fd, 'w') as out:
         json.dump(data, out, indent=2); out.write('\n'); out.flush(); os.fsync(out.fileno())
     os.chmod(tmp, mode)
-    owner = pwd.getpwnam(OWNER); os.chown(tmp, owner.pw_uid, owner.pw_gid)
+    chown(tmp)
     os.replace(tmp, path)
 
 
@@ -181,7 +186,7 @@ def refresh_adapters(sha):
             with os.fdopen(fd, 'wb') as out:
                 out.write(data)
             os.chmod(tmp, 0o755 if entry['name'].endswith('.sh') else 0o644)
-            owner = pwd.getpwnam(OWNER); os.chown(tmp, owner.pw_uid, owner.pw_gid)
+            chown(tmp)
             os.replace(tmp, path)
 
 
@@ -202,19 +207,39 @@ def point_current(name):
     if os.path.lexists(link):
         os.remove(link)
     os.symlink(name, link)
-    owner = pwd.getpwnam(OWNER); os.lchown(link, owner.pw_uid, owner.pw_gid)
+    chown(link)
     os.replace(link, f'{RELEASES}/current')
 
 
-def restart(labels):
-    for label in labels:
-        plist = f'/Library/LaunchDaemons/{label}.plist'
-        subprocess.run(['launchctl', 'bootout', f'system/{label}'], capture_output=True)
-        for _ in range(60):
-            if subprocess.run(['launchctl', 'print', f'system/{label}'], capture_output=True).returncode != 0:
+def chown(path):
+    """[path] owned by the lab's user, when this pass runs as root (it normally runs as that user)."""
+    if os.geteuid() == 0:
+        owner = pwd.getpwnam(OWNER); os.lchown(path, owner.pw_uid, owner.pw_gid)
+
+
+def pids(pattern):
+    found = subprocess.run(['pgrep', '-U', OWNER, '-f', pattern], capture_output=True, text=True).stdout.split()
+    return {int(pid) for pid in found if int(pid) != os.getpid()}
+
+
+def restart(services):
+    """End each service's process and wait for launchd (KeepAlive) to start it again."""
+    for label, pattern in services.items():
+        before = pids(pattern)
+        for pid in before:
+            try:
+                os.kill(pid, 15)
+            except ProcessLookupError:
+                pass
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            now = pids(pattern)
+            if now and not (now & before):
                 break
-            time.sleep(1)
-        subprocess.run(['launchctl', 'bootstrap', 'system', plist], check=True)
+            time.sleep(2)
+        else:
+            log(f'{label} did not come back by itself; asking launchd')
+            subprocess.run(['launchctl', 'kickstart', f'system/{label}'], capture_output=True)
 
 
 def healthy(timeout=90):
@@ -256,7 +281,7 @@ def deploy(run, dry_run):
     old_release = switch_workers(run['head_sha'], name, digests)
     refresh_adapters(run['head_sha'])
     point_current(name)
-    restart(SERVICES + [ADAPTER_SERVICE])
+    restart({**SERVICES, **ADAPTER_SERVICE})
     ok = healthy()
     outcome = {'at': stamp, 'from': current, 'to': name, 'run': run['id'], 'sha': run['head_sha'], 'images': digests,
                'workerRelease': {'from': old_release, 'to': run['head_sha']}, 'healthy': ok}
