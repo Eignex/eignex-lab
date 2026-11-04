@@ -46,7 +46,8 @@ internal fun trendView(store: Store, cache: TrendCache, requested: String?, allR
     val all = allRequested || current == null
     val computing = ArrayList<Long>()
     val pointless = ArrayList<Long>()
-    val runs = name?.let { Trend.runs(TrendData.of(store), it, cache, experiment = current.takeUnless { all }, missing = computing, pointless = pointless) }
+    // Only stored rows are read here: every point is computed on the cache's background thread ([Trend.stored]).
+    val runs = name?.let { Trend.stored(TrendData.of(store), it, cache, experiment = current.takeUnless { all }, missing = computing, pointless = pointless) }
         .orEmpty()
     // The problems the latest run of that spec planned: a set redrawn since is another line, as an edit is.
     val latest = runs.lastOrNull { it.experiment == current }?.spec
