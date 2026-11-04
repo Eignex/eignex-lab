@@ -78,6 +78,23 @@ class Runner(
                 Thread.sleep(100)
             }
             if (slimmed > 0) println("slimmed $slimmed batches of committed results to their metadata")
+            // Provenances stored whole before their shared parts were kept once.
+            var split = 0
+            var provenanceCursor: Long? = 0L
+            while (!stopping && provenanceCursor != null) {
+                provenanceCursor = store.plans.splitProvenances(provenanceCursor)?.also { split++ }
+                Thread.sleep(100)
+            }
+            if (split > 0) println("split the shared parts out of $split batches of provenances")
+            var manifests = 0
+            var manifestCursor: Long? = 0L
+            while (!stopping && manifestCursor != null) {
+                manifestCursor = store.execution.splitManifests(manifestCursor)?.also { manifests++ }
+                Thread.sleep(100)
+            }
+            if (manifests > 0) println("split the shared parts out of $manifests batches of session manifests")
+            val unused = store.execution.dropUnusedManifestParts()
+            if (unused > 0) println("dropped $unused manifest parts no kept manifest names")
         }
         while (!stopping) {
             val ownership = NativeExecutionLock.tryAcquire(config.nativeExecutionLock)
