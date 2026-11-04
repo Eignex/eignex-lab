@@ -83,6 +83,52 @@ class PortableWorkerTest {
         }
     }
 
+    @Test fun `native startup observer captures its supervised executable`() {
+        if (!CliMeasurements.localMacOs) return
+        service { socket ->
+            val javaHome = Path.of(System.getProperty("java.home")).toRealPath()
+            val fixture = Files.createDirectory(root.resolve("observer-jdk"))
+            Files.list(javaHome).use { entries ->
+                entries.filter { it.fileName.toString() != "bin" }.forEach {
+                    Files.createSymbolicLink(fixture.resolve(it.fileName.toString()), it)
+                }
+            }
+            val executable = Files.createDirectory(fixture.resolve("bin")).resolve("minizinc")
+            Files.copy(javaHome.resolve("bin/java"), executable)
+            assertTrue(executable.toFile().setExecutable(true))
+            val environment = System.getenv() + ("JAVA_TOOL_OPTIONS" to
+                "-Xmx32m -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0")
+            val supervisor = ProcessSupervisor(socket)
+            val output = root.resolve("observer-evidence")
+            val binding = NativeStartupCapture.Binding("observer-fixture", 0, 1, "worker", "source")
+            val deadline = System.nanoTime() + 6_000_000_000
+            val remaining = { ((deadline - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
+            val capture = NativeStartupCapture(listOf(executable.toString(), "--version"), root, output, root,
+                binding, supervisor, remaining, true)
+            val exit = capture.use {
+                supervisor.run(it.argv, root, environment, root.resolve("observer.out"), root.resolve("observer.err"),
+                    4, graceMs = 0, runRemainingMs = remaining(), remainingLeaseMs = { 80000 })
+            }
+            assertEquals(124, exit, Files.readString(root.resolve("observer.err")))
+            val receiptFile = output.resolve("capture-1.json")
+            assertTrue(Files.isRegularFile(receiptFile), Files.readString(output.resolve("status.json")))
+            val receipt = Json.decodeFromString<NativeStartupCapture.Receipt>(Files.readString(receiptFile))
+            assertEquals("captured", receipt.outcome, receipt.toString())
+            assertTrue(receipt.sampleVerified)
+            assertEquals(binding, receipt.binding)
+            val target = assertNotNull(receipt.target)
+            assertEquals(executable.toRealPath().toString(), target.executable)
+            assertEquals("--version", target.option)
+            assertTrue(Files.size(output.resolve(assertNotNull(receipt.sample))) in 1..1024L * 1024)
+            val evidence = Files.createDirectories(Path.of("build/native-startup-tests/observer"))
+            Files.list(output).use { entries -> entries.forEach {
+                Files.copy(it, evidence.resolve(it.fileName.toString()), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            } }
+            Files.writeString(evidence.resolve("fixture.txt"),
+                "Copied JDK launcher suspended by JDWP; validates observer ownership and capture, not a MiniZinc stall or reliability repair.\n")
+        }
+    }
+
     @Test fun `packed Git inputs require protocol seven and materialize the original shallow source once`(): Unit = service { socket ->
         val repository = Files.createDirectory(root.resolve("pack-repository"))
         fun command(directory: Path, vararg args: String): Pair<Int, String> {
