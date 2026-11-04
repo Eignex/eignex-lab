@@ -51,7 +51,9 @@ class Runner(
             runCatching { store.references.retireStale() }.onFailure { println("references: ${describeFailure(it)}") }
             runCatching { store.references.bindLabSources(store.plans::scoringCases) }
         }
-        JobTrim(config.jobsDir, store::ended, { freeBytes(config.jobsDir) }, ::log,
+        // Ended jobs live on the archive volume once archived; that is the space trimming keeps free.
+        val trimmed = config.jobsArchive ?: config.jobsDir
+        JobTrim(trimmed, store::ended, { freeBytes(trimmed) }, ::log,
             held = { store.holds.active().mapTo(HashSet()) { it.job } }, graceMs = config.trimGraceMs,
             criticalFreeBytes = config.trimCriticalFreeBytes, targetFreeBytes = config.jobsTargetFreeBytes,
             maxAgeMs = config.trimAgeMs).start()
