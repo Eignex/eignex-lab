@@ -138,6 +138,8 @@ zero stop grace and its own file-size limit; at most two captures are attempted 
 Capture setup spends the original case allowance; the remaining case limit is rounded down to
 whole seconds before launch. Capture also spends the remaining whole-run and lease allowances. Cancellation closes
 the sampler's supervisor connection; it does not signal or wait for the query being observed.
+The helper's two-second execution limit is separate from the remaining containing allowance.
+Symbol lookup follows sampling; a verified report requires the target to remain alive and retain its identity through both.
 
 Accepted artifacts are under `cases/N/native-startup/`, accessible through authenticated
 `deploy/lab files ID --json` and `deploy/lab cat ID PATH`. Receipts bind session, case, attempt
