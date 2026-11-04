@@ -397,6 +397,53 @@ class PortableWorkerTest {
         assertEquals(bundle.sha256, result.artifacts["preparation/${bundle.commit}.zip"])
     }
 
+    @Test fun `declared checksum mismatches fail preparation before publication including after materialization`(): Unit = service { socket ->
+        val declared = ExecutionStore.digest("declared")
+        val program = """package fixture;
+            import java.nio.file.*;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    if (args[0].equals("describe")) {
+                        System.out.print("{\"id\":\"fixture\",\"description\":\"declared input\"}");
+                    } else if (args[0].equals("plan")) {
+                        Path corpus = Path.of(System.getenv("LAB_CORPUS"));
+                        Files.writeString(corpus.resolve("plans"), "plan\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                        if (System.getenv("LAB_DECLARED_INPUTS") == null) Files.writeString(corpus.resolve("model.cnf"), "local");
+                        System.out.print("{\"cases\":[{\"id\":\"p\",\"inputs\":[{\"path\":\"model.cnf\",\"root\":\"CORPUS\",\"role\":\"model\",\"sha256\":\"$declared\"}]}]}");
+                    } else throw new Exception("unexpected invocation");
+                }
+            }
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("Bench.java" to program,
+            "bench.json" to """{"main":"fixture.Bench","classpath":["build/classes"],"buildTasks":["installDist"]}""",
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val source = input.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("checksum", bench = BenchSpec("bench.json"))
+        val manifest = WorkManifest("checksum", "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
+            emptyList(), listOf(source), ResourceBudget(1000, 2048), preparationTimeoutSec = 60)
+        val transport = object : InputTransport {
+            override fun stored(key: String, sha: String): Long? = null
+            override fun matches(key: String, file: InputFile, md5: String) = error("unexpected local publication")
+            override fun put(key: String, source: Path, sha: String) = error("mismatched input must not be uploaded")
+            override fun get(key: String, destination: Path) = error("preparation must not fetch case inputs")
+        }
+        for (materialize in listOf(false, true)) {
+            val corpus = Files.createDirectories(root.resolve("corpus-$materialize"))
+            if (!materialize) Files.writeString(corpus.resolve("model.cnf"), "local")
+            val directory = root.resolve("checksum-$materialize")
+            val failure = assertFailsWith<WorkerBuildFailure> {
+                PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+                    WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) },
+                    source.os, source.arch, shared = SharedInputs(corpus, transport)).run(manifest, directory, { null }, { 80000 }) {
+                        error("failed preparation must not publish an archive")
+                    }
+            }
+            assertEquals("declared input checksum mismatch: model.cnf (declared $declared, local ${ExecutionStore.digest("local")}, 5 bytes)", failure.detail)
+            assertEquals(if (materialize) 2 else 1, Files.readAllLines(corpus.resolve("plans")).size)
+            assertEquals("local", Files.readString(corpus.resolve("model.cnf")))
+        }
+    }
+
     @Test fun `an accepted selection with the same key skips describe plan and pinning`(): Unit = service { socket ->
         fun source(program: String, data: String): Pair<WorkerBundle, ByteArray> {
             val java = """package fixture;

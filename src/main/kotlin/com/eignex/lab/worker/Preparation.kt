@@ -79,7 +79,13 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             selectProblems: (List<List<Problem>>) -> List<List<Problem>> = { it },
             cachedSelections: (List<String>) -> List<BenchSelectionEntry> = { emptyList() }, upload: (Path) -> String): PreparationResult =
         builds.withDependenciesPinned {
-            runPinned(manifest, directory, remainingRunMs, remainingLeaseMs, selectProblems, cachedSelections, upload)
+            try {
+                runPinned(manifest, directory, remainingRunMs, remainingLeaseMs, selectProblems, cachedSelections, upload)
+            } catch (failure: SharedInputs.DeclaredInputMismatch) {
+                // Replacing the worker cannot repair the recipe's input identity. Report it through the
+                // permanent preparation-failure path instead of spending the worker-crash retry budget.
+                throw WorkerBuildFailure(failure.detail)
+            }
         }
 
     private fun runPinned(manifest: WorkManifest, directory: Path, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
