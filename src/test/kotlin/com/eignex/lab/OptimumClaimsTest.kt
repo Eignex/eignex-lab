@@ -10,6 +10,7 @@ import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class OptimumClaimsTest {
@@ -293,6 +294,19 @@ class OptimumClaimsTest {
         assertEquals(evidence, result.evidenceJob)
         assertEquals(1, Compare.compare(listOf("claim"), listOf(guarded)).arms.single().contradictedOptima)
         assertEquals(true, store.plans.cases(claim).single().record!!.jsonObject["proven"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `trend scoring shares retained evidence but sees evidence a later job retains`() {
+        val store = Store(Files.createTempDirectory("optimum-trend-evidence").resolve("lab.db"))
+        val claim = retain(store, point("45650", proven = true))
+        val data = TrendData.of(store)
+        val before = OptimumClaims.assessment(data.scoringCases(claim).single().record)
+        assertNotEquals(OptimumAssessment.CONTRADICTED, before?.state)
+        val evidence = retain(store, point("43000").copy(seed = 3))
+        val after = requireNotNull(OptimumClaims.assessment(data.scoringCases(claim).single().record))
+        assertEquals(OptimumAssessment.CONTRADICTED, after.state, "a finished job invalidates the shared evidence")
+        assertEquals(evidence, after.evidenceJob)
     }
 
     @Test
