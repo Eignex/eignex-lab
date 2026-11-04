@@ -541,7 +541,7 @@ class ExecutionStore internal constructor(private val store: Store) {
         // The case records went to `cases` above: the attempt keeps the rest of the result and the digest of all of it.
         val whole = Json.encodeToString(result)
         db.sqlUpdate("UPDATE iteration_attempts SET state = 'committed', result = ?, result_sha256 = ?, finished_at = ? WHERE job_id = ? AND iteration_id = ? AND generation = ?",
-            Json.encodeToString(slim(result)), digest(whole), at, a.jobId, owner.iteration, owner.generation)
+            db.splitResult(Json.encodeToString(slim(result))), digest(whole), at, a.jobId, owner.iteration, owner.generation)
         db.event(a.jobId, owner.session, "committed:${owner.iteration}:${owner.generation}", at)
         // The newest acceptance owns a key: its inputs are the likeliest to remain, and the older job may be deleted.
         for (entry in benchSelections) db.sqlUpdate("INSERT OR REPLACE INTO bench_selections (selection_key, job_id, entry, created_at) VALUES (?, ?, ?, ?)",
@@ -626,30 +626,71 @@ class ExecutionStore internal constructor(private val store: Store) {
     private fun Tx.splitManifest(manifest: String): String {
         val parsed = runCatching { Json.parseToJsonElement(manifest) }.getOrNull() as? JsonObject ?: return manifest
         if (MANIFEST_PARTS.none { parsed[it] is JsonArray || parsed[it] is JsonObject }) return manifest
-        val stored = LinkedHashMap<String, JsonElement>(parsed.size)
-        for ((key, value) in parsed) {
-            if (key in MANIFEST_PARTS && (value is JsonArray || value is JsonObject)) {
+        return Json.encodeToString(JsonElement.serializer(), splitParts(parsed, MANIFEST_PARTS))
+    }
+
+    /** [obj] with its [keys] kept once each in `manifest_parts` by their sha256, named as `<key>PartRef` in their place. */
+    private fun Tx.splitParts(obj: JsonObject, keys: Set<String>): JsonObject {
+        val stored = LinkedHashMap<String, JsonElement>(obj.size)
+        for ((key, value) in obj) {
+            if (key in keys && (value is JsonArray || value is JsonObject)) {
                 val text = Json.encodeToString(JsonElement.serializer(), value); val sha = digest(text)
                 sqlUpdate("INSERT OR IGNORE INTO manifest_parts (sha, part) VALUES (?, ?)", sha, text)
                 stored[key + PART_REF] = JsonPrimitive(sha)
             } else stored[key] = value
         }
-        return Json.encodeToString(JsonElement.serializer(), JsonObject(stored))
+        return JsonObject(stored)
     }
 
-    /** [manifest] as it was written: each `<key>PartRef` back to the part it names, in its place. */
-    private fun Tx.joinManifest(manifest: String): String {
-        if (PART_REF !in manifest) return manifest
-        val parsed = Json.parseToJsonElement(manifest) as? JsonObject ?: return manifest
-        val joined = LinkedHashMap<String, JsonElement>(parsed.size)
-        for ((key, value) in parsed) {
+    /** [obj] as it was written: each `<key>PartRef` back to the part it names, in its place. */
+    private fun Tx.joinParts(obj: JsonObject): JsonObject {
+        val joined = LinkedHashMap<String, JsonElement>(obj.size)
+        for ((key, value) in obj) {
             if (!key.endsWith(PART_REF)) { joined[key] = value; continue }
             val sha = (value as JsonPrimitive).content
             val part = sqlRows("SELECT part FROM manifest_parts WHERE sha = ?", sha) { it.getString(1) }.singleOrNull()
                 ?: error("manifest part $sha is missing")
             joined[key.removeSuffix(PART_REF)] = Json.parseToJsonElement(part)
         }
-        return Json.encodeToString(JsonElement.serializer(), JsonObject(joined))
+        return JsonObject(joined)
+    }
+
+    /** [manifest] as it was written: each `<key>PartRef` back to the part it names, in its place. */
+    private fun Tx.joinManifest(manifest: String): String {
+        if (PART_REF !in manifest) return manifest
+        val parsed = Json.parseToJsonElement(manifest) as? JsonObject ?: return manifest
+        return Json.encodeToString(JsonElement.serializer(), joinParts(parsed))
+    }
+
+    /** A committed result as it is stored: its preparation's bundles, the file inventories every session manifest of the
+     *  job repeats (about a megabyte), kept once in `manifest_parts`. */
+    private fun Tx.splitResult(result: String): String {
+        val parsed = runCatching { Json.parseToJsonElement(result) }.getOrNull() as? JsonObject ?: return result
+        val preparation = parsed["preparation"] as? JsonObject ?: return result
+        if (PREPARATION_PARTS.none { preparation[it] is JsonArray || preparation[it] is JsonObject }) return result
+        return Json.encodeToString(JsonElement.serializer(), JsonObject(parsed + ("preparation" to splitParts(preparation, PREPARATION_PARTS))))
+    }
+
+    /** A stored result as it was committed: its preparation's parts back in place. */
+    private fun Tx.joinResult(result: String): String {
+        if (PART_REF !in result) return result
+        val parsed = Json.parseToJsonElement(result) as? JsonObject ?: return result
+        val preparation = parsed["preparation"] as? JsonObject ?: return result
+        return Json.encodeToString(JsonElement.serializer(), JsonObject(parsed + ("preparation" to joinParts(preparation))))
+    }
+
+    /**
+     * Split at most [batch] committed preparations stored whole, after rowid [after] ([splitResult]); returns the last
+     * rowid looked at, null once none is left. Call again with it until null.
+     */
+    fun splitPreparationResults(after: Long, batch: Int = 10): Long? = store.executionTransaction { db ->
+        val rows = db.sqlRows("SELECT rowid, result FROM iteration_attempts WHERE rowid > ? AND iteration_id = ? AND state = 'committed' ORDER BY rowid LIMIT ?",
+            after, PREPARATION, batch) { it.getLong(1) to it.getString(2) }
+        for ((rowid, text) in rows) {
+            val split = text?.let { db.splitResult(it) } ?: continue
+            if (split != text) db.sqlUpdate("UPDATE iteration_attempts SET result = ? WHERE rowid = ?", split, rowid)
+        }
+        rows.lastOrNull()?.first
     }
 
     /**
@@ -670,7 +711,9 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Drop the manifest parts no kept manifest names any more; how many went. */
     fun dropUnusedManifestParts(): Int = store.executionTransaction { db ->
         db.sqlUpdate("""DELETE FROM manifest_parts WHERE sha NOT IN (SELECT value FROM execution_manifests m, json_each(m.manifest)
-            WHERE json_valid(m.manifest) AND key LIKE '%$PART_REF')""")
+            WHERE json_valid(m.manifest) AND key LIKE '%$PART_REF')
+            AND sha NOT IN (SELECT value FROM iteration_attempts a, json_each(a.result, '$.preparation')
+            WHERE a.iteration_id = '$PREPARATION' AND a.state = 'committed' AND json_valid(a.result) AND key LIKE '%$PART_REF')""")
     }
 
     /**
@@ -721,7 +764,8 @@ class ExecutionStore internal constructor(private val store: Store) {
 
     fun drain(id: String) = store.executionTransaction { db -> db.sqlUpdate("UPDATE execution_sessions SET desired = 'drain' WHERE id = ? AND desired = 'run'", id) }
     fun accepted(jobId: Long): List<Pair<String, IterationResult>> = store.executionRead { db ->
-        db.sqlRows("SELECT iteration_id, result FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) { it.getString(1) to Json.decodeFromString<IterationResult>(it.getString(2)) }
+        db.sqlRows("SELECT iteration_id, result FROM iteration_attempts WHERE job_id = ? AND state = 'committed' ORDER BY iteration_id", jobId) { it.getString(1) to it.getString(2) }
+            .map { (iteration, text) -> iteration to Json.decodeFromString<IterationResult>(db.joinResult(text)) }
     }
     /** Small invalidation token for file readers; committed attempts retain their immutable artifact maps. */
     fun acceptedArtifactVersion(jobId: Long): Int = store.executionRead { db ->
@@ -737,8 +781,8 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** The job's accepted result of [iteration], read alone: results are large, and most readers want one of them. */
     fun accepted(jobId: Long, iteration: String): IterationResult? = store.executionRead { db ->
         db.sqlRows("SELECT result FROM iteration_attempts WHERE job_id = ? AND iteration_id = ? AND state = 'committed'", jobId, iteration) {
-            Json.decodeFromString<IterationResult>(it.getString(1))
-        }.singleOrNull()
+            it.getString(1)
+        }.singleOrNull()?.let { Json.decodeFromString<IterationResult>(db.joinResult(it)) }
     }
     /** The job's accepted preparation, the one iteration whose result carries one. */
     fun acceptedPreparation(jobId: Long): PreparationResult? = accepted(jobId, PREPARATION)?.preparation
@@ -958,6 +1002,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"), r.getString("result_sha256"))
         /** Manifest keys every session of a job repeats, kept once each ([splitManifest]). */
         private val MANIFEST_PARTS = setOf("cases", "bundles", "sharedInputs")
+        /** Preparation result keys its job's session manifests repeat, kept once in the same table ([splitResult]). */
+        private val PREPARATION_PARTS = setOf("bundles")
         private const val PART_REF = "PartRef"
         /** [result] as a committed attempt keeps it: without its case records, which `cases` keeps. */
         internal fun slim(result: IterationResult) = result.copy(cases = result.cases.map { it.copy(record = null) })
