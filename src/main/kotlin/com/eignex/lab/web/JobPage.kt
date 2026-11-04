@@ -70,6 +70,9 @@ internal fun jobPage(
     job.experiment.capped.takeIf { it.isNotEmpty() }?.let { caps ->
         append(Html("<dt>capped</dt><dd>") + (caps.joinHtml(Html("<br>")) { esc(it) }) + Html("</dd>"))
     }
+    if (job.experiment.measurement == Measurement.NATIVE_STARTUP) {
+        append(Html("<dt>instrumented</dt><dd>native startup sampling: times are no runtime measurement</dd>"))
+    }
     job.experiment.compilationRecording?.let { mode ->
         val recording = if (mode == Experiments.COMPILATION_JFR_LOG) "compilation and HotSpot log" else "compilation recording"
         append(Html("<dt>instrumented</dt><dd><span class=\"PARTIAL\">") + recording + Html("</span>: every compilation of each "))

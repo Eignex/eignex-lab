@@ -24,6 +24,52 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class PortableWorkerTest {
+    @Test fun `native startup wrapper preserves literal arguments and case exit`(): Unit = service { socket ->
+        val marker = root.resolve("native-root.pid")
+        val command = NativeStartupCapture.wrap(listOf("bash", "-c", "printf '%s' \"\$1\"; exit 7", "fixture", "literal argument"), marker)
+        val exit = ProcessSupervisor(socket).run(command, root, System.getenv(), root.resolve("native.out"), root.resolve("native.err"), 5) { 80000 }
+        assertEquals(7, exit)
+        assertEquals("literal argument", Files.readString(root.resolve("native.out")))
+        assertTrue(Files.readString(marker).trim().toLong() > 0)
+    }
+
+    @Test fun `native startup observation cannot extend the supervised case deadline`(): Unit = service { socket ->
+        val supervisor = ProcessSupervisor(socket)
+        val output = root.resolve("native-evidence")
+        val deadline = System.nanoTime() + 1_000_000_000
+        val capture = NativeStartupCapture(listOf("sleep", "30"), root, output, root,
+            NativeStartupCapture.Binding("session", 0, 1, "worker", "source"), supervisor,
+            { ((deadline - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }, true, Path.of("/usr/bin/true"))
+        val exit = capture.use {
+            supervisor.run(it.argv, root, System.getenv(), root.resolve("timeout.out"), root.resolve("timeout.err"), 1, graceMs = 0) { 80000 }
+        }
+        assertEquals(124, exit)
+        assertTrue(System.nanoTime() < deadline + 3_000_000_000)
+        val receipt = Json.decodeFromString<NativeStartupCapture.Receipt>(Files.readString(output.resolve("status.json")))
+        assertEquals("no-matching-query-observed", receipt.outcome)
+    }
+
+    @Test fun `native sampling captures an owned live process without extending its lifetime`() {
+        if (!CliMeasurements.localMacOs) return
+        service { socket ->
+            val target = ProcessBuilder("/bin/sleep", "10").start()
+            val identity = target.info().startInstant().orElseThrow()
+            val report = root.resolve("native-sample.txt")
+            try {
+                val exit = ProcessSupervisor(socket).run(NativeStartupCapture.sampleCommand(Path.of("/usr/bin/sample"), target.pid(), report),
+                    root, System.getenv(), root.resolve("sample.out"), root.resolve("sample.err"), 2, graceMs = 0) { 80000 }
+                assertEquals(0, exit, Files.readString(root.resolve("sample.err")))
+                assertTrue(Files.size(report) in 1..1024L * 1024)
+                assertTrue(Files.readString(report).contains("sleep"))
+                assertEquals(identity, target.info().startInstant().orElseThrow())
+                assertTrue(target.isAlive)
+            } finally {
+                target.destroyForcibly()
+                target.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            }
+        }
+    }
+
     @Test fun `packed Git inputs require protocol seven and materialize the original shallow source once`(): Unit = service { socket ->
         val repository = Files.createDirectory(root.resolve("pack-repository"))
         fun command(directory: Path, vararg args: String): Pair<Int, String> {

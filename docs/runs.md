@@ -123,6 +123,37 @@ deploy/lab profile --repo Eignex/eignex-lab --build installDist \
 
 ## Optional controls
 
+Repository bench jobs may set top-level `"measurement": "native-startup"` for worker-owned
+MiniZinc discovery sampling. Submit the existing experiment JSON with `deploy/lab run`; omit
+placement tags as usual. This mode defaults to one vCPU and marks every case instrumented,
+including cases where sampling is unavailable. Its times are not ordinary runtime measurements.
+Use a coordinator and workers that support this measurement mode.
+
+On Mac, a private wrapper identifies the case's supervised process tree. The worker considers
+only an executable named `minizinc` within that case's private worktree, with exactly one argument:
+`--config-dirs` or `--version`. Process start identities, ancestry and executable metadata are
+checked before and after sampling. After a query has lived for 500 ms, the worker may run
+`/usr/bin/sample` for one second at 10 ms intervals. Each sampler has a two-second ceiling,
+zero stop grace and its own file-size limit; at most two captures are attempted per case.
+Capture also spends the remaining case, whole-run and lease allowances. Cancellation closes
+the sampler's supervisor connection; it does not signal or wait for the query being observed.
+
+Accepted artifacts are under `cases/N/native-startup/`, accessible through authenticated
+`deploy/lab files ID --json` and `deploy/lab cat ID PATH`. Receipts bind session, case, attempt
+generation, worker, source commit, query, executable metadata, PID/start identity, CPU observations,
+sampler exit/signal, elapsed time and cancellation. Only samples whose target still matches after
+capture are marked `captured` and `sampleVerified=true`; bounded partial samples remain explicitly
+unverified. Temporary output is outside the accepted case directory. Non-Mac workers,
+missing tools, denied permissions, exited targets and incomplete captures retain explicit
+unavailability; absent CPU observations remain null. No matching query observed is not proof
+that startup was fast: discovery may finish between polls or lie beyond the 128-descendant scan.
+
+Sampling uses the existing worker account without sudo. Native call stacks can identify blocked
+calls, but do not supply a filesystem or scheduler timeline. Those traces remain explicitly
+unavailable; a captured stack does not by itself certify a filesystem-versus-descheduling cause.
+Automatic placement, containing deadlines, accepted paired rows and failed-attempt costs remain
+authoritative. Sampling success does not qualify a compiler repair or a performance benefit.
+
 Most jobs omit hardware and recording options:
 
 ```sh

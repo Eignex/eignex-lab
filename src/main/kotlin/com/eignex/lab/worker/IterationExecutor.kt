@@ -136,9 +136,17 @@ internal class IterationExecutor(
                     val start = now()
                     val processRunMs = runRemaining()
                     val graceMs = minOf(Experiments.STOP_GRACE_SEC * 1000, processRunMs?.let { (it / 10).coerceAtLeast(0) } ?: Long.MAX_VALUE)
-                    var exit = try { supervisor.run(listOf("bash", "-c", command), worktree, env,
+                    val caseDeadline = System.nanoTime() + case.timeoutSec * 1_000_000_000
+                    val capture = if (manifest.experiment.measurement == Measurement.NATIVE_STARTUP) {
+                        NativeStartupCapture(listOf("bash", "-c", command), worktree,
+                            directory.resolve("cases/${case.index}/native-startup"), directory,
+                            NativeStartupCapture.Binding(manifest.session, case.index, generation, host, manifest.arms[case.arm].sha),
+                            supervisor, { minOf((caseDeadline - System.nanoTime()) / 1_000_000,
+                                runRemaining() ?: Long.MAX_VALUE, remainingLeaseMs()).coerceAtLeast(0) }, os == "mac")
+                    } else null
+                    var exit = try { capture.use { supervisor.run(it?.argv ?: listOf("bash", "-c", command), worktree, env,
                         directory.resolve("${case.index}.out"), directory.resolve("${case.index}.err"), case.timeoutSec,
-                        graceMs = graceMs, runRemainingMs = processRunMs, remainingLeaseMs = remainingLeaseMs)
+                        graceMs = graceMs, runRemainingMs = processRunMs, remainingLeaseMs = remainingLeaseMs) }
                     } catch (_: RunDeadlineExceeded) {
                         timedOut.set(true)
                         Termination.record(directory.resolve("${case.index}.termination"), Termination.deadline(graceMs))

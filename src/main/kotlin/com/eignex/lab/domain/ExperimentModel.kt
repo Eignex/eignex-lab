@@ -143,7 +143,8 @@ enum class Measurement {
     @SerialName("resources") RESOURCES,
     @SerialName("jfr") JFR,
     @SerialName("compilation") COMPILATION,
-    @SerialName("compilation+log") COMPILATION_LOG;
+    @SerialName("compilation+log") COMPILATION_LOG,
+    @SerialName("native-startup") NATIVE_STARTUP;
 
     val recordsJfr: Boolean get() = this == JFR || this == COMPILATION || this == COMPILATION_LOG
     val compilationRecording: String? get() = when (this) {
@@ -240,15 +241,15 @@ val ProfileMain.entry: ProfileEntry get() = script?.let { ProfileEntry.Script(it
 val ExperimentSpec.isAnalysis: Boolean get() = work is Work.Analysis
 
 /** Whether each CLI process runs under the lab's physical resource measurement wrapper. */
-val ExperimentSpec.measuresCli: Boolean get() = measurement != Measurement.NONE
+val ExperimentSpec.measuresCli: Boolean get() = measurement != Measurement.NONE && measurement != Measurement.NATIVE_STARTUP
 
 val ExperimentSpec.recordsCliJfr: Boolean get() = measurement.recordsJfr
 
 /** The recording detail passed to the JFR and HotSpot launchers. */
 val ExperimentSpec.compilationRecording: String? get() = measurement.compilationRecording
 
-/** Whether [this] job's cases are instrumented: their CLI recorded every compilation, so their times are no runtime measurement. */
-val ExperimentSpec.instrumented: Boolean get() = compilationRecording != null
+/** Whether diagnostic instrumentation makes this job unsuitable for uninstrumented runtime comparisons. */
+val ExperimentSpec.instrumented: Boolean get() = compilationRecording != null || measurement == Measurement.NATIVE_STARTUP
 
 /** Whether [this] is a profile job rather than an experiment over problems. */
 val ExperimentSpec.isProfile: Boolean get() = work is Work.Profile
