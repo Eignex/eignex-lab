@@ -85,6 +85,9 @@ data class Config(
     val resultJournalBytes: Long = Defaults.RESULT_JOURNAL_MB * BYTES_PER_MB,
     /** Where ended jobs' artifact directories move from the hot store under [dataDir] ([ArtifactArchiver]); null keeps them. */
     val artifactArchive: Path? = null,
+    /** Where ended jobs' directories move from [jobsDir] ([JobDirArchiver]): [jobsDir] then holds active jobs only, on
+     *  the fast volume, and a job found only here is read and written here. Null keeps every job under [jobsDir]. */
+    val jobsArchive: Path? = null,
     /** The coordinator's shared Gradle remote build cache size for preparations; 0 turns it off. */
     val gradleCacheBytes: Long = 0,
     /** How long after a job ends its artifacts stay on the hot store before archiving. */
@@ -109,7 +112,7 @@ data class Config(
         nomadQueueSettings?.let { kotlinx.serialization.json.Json.decodeFromString<NomadQueueSettings>(Files.readString(it)) }
     }
     /** Where the lab keeps its files. */
-    val paths: DataPaths get() = DataPaths(dataDir, jobsDir, corpusDir, volumesRoot, volumeAccess)
+    val paths: DataPaths get() = DataPaths(dataDir, jobsDir, corpusDir, volumesRoot, volumeAccess, jobsArchive)
     /** The local machine as the lab schedules work on it. */
     val local: LocalNode get() = LocalNode(cores, maxParallel, defaultParallel, localNodeTags)
     /** What the status pages and the queue's read side show of the settings. */
@@ -192,6 +195,7 @@ data class Config(
                 archiveMaxBytes = read.long("LAB_ARCHIVE_MAX_MB", Defaults.ARCHIVE_MAX_MB, 1L..10_000_000) * BYTES_PER_MB,
                 resultJournalBytes = read.long("LAB_RESULT_JOURNAL_MB", Defaults.RESULT_JOURNAL_MB, 1L..65_536) * BYTES_PER_MB,
                 artifactArchive = read.optionalPath("LAB_ARTIFACT_ARCHIVE"),
+                jobsArchive = read.optionalPath("LAB_JOBS_ARCHIVE"),
                 gradleCacheBytes = read.long("LAB_GRADLE_CACHE_GB", 0L, 0L..10_000) * BYTES_PER_GB,
                 artifactArchiveGraceMs = read.long("LAB_ARTIFACT_ARCHIVE_GRACE_MIN", Defaults.ARTIFACT_ARCHIVE_GRACE_MIN, 0L..60L * 24 * 30) * 60_000L,
                 archiveMaxUnpackedBytes = read.long("LAB_ARCHIVE_MAX_UNPACKED_MB", Defaults.ARCHIVE_MAX_UNPACKED_MB, 1L..100_000_000) * BYTES_PER_MB,
@@ -232,6 +236,8 @@ data class DataPaths(
     val corpusDir: Path,
     val volumesRoot: Path = Path.of("/Volumes"),
     val volumeAccess: VolumeAccess = VolumeAccess(),
+    /** Ended jobs' directories, moved off [jobsDir] ([Config.jobsArchive]). */
+    val jobsArchive: Path? = null,
 ) {
     val database: Path get() = dataDir.resolve("lab.db")
     /** Saved-capture archives an analysis job may name by a path under it ([CaptureArchives]). */
@@ -250,14 +256,21 @@ data class DataPaths(
     val mirror: Path get() = dataDir.resolve("repo.git")
     /** The lab's mirrors of the repositories it builds, one bare repository each ([Repositories.mirror]). */
     val repositories: Path get() = dataDir.resolve("repos")
-    fun jobDir(id: Long): Path = jobsDir.resolve(id.toString())
+    /** Job [id]'s directory: under [jobsDir] unless it was archived ([jobsArchive]) and has no directory there. */
+    fun jobDir(id: Long): Path {
+        val hot = jobsDir.resolve(id.toString())
+        val archived = jobsArchive?.resolve(id.toString()) ?: return hot
+        return if (!Files.isDirectory(hot) && Files.isDirectory(archived)) archived else hot
+    }
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
 
     /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
      *  does not answer ([Volumes]). */
     fun createJobDir(id: Long): Path {
         Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
-        return Files.createDirectories(jobDir(id))
+        val directory = jobDir(id)
+        jobsArchive?.takeIf { directory.startsWith(it) }?.let { Volumes.ensure(Volumes.JOB_FILES, it, volumesRoot, volumeAccess) }
+        return Files.createDirectories(directory)
     }
 }
 

@@ -78,6 +78,11 @@ object NomadCoordinatorCli {
             if (MacRenameSwap.supported) periodic("nomad-artifact-archive", 300_000) { if (Files.isDirectory(archive)) archiver.pass() }
             else System.err.println("artifact archive: atomic rename swap unsupported on this host; archiving off")
         }
+        config.jobsArchive?.let { archive ->
+            // Ended jobs' directories leave the internal SSD the same way, after the same grace; active jobs stay hot.
+            val archiver = JobDirArchiver(config.jobsDir, archive, store::ended, config.artifactArchiveGraceMs)
+            periodic("nomad-job-archive", 300_000) { if (Files.isDirectory(archive) && Files.isDirectory(config.jobsDir)) archiver.pass() }
+        }
         // Preparations on any node share task outputs through this bounded cache on the internal volume.
         val gradleCache = config.gradleCacheBytes.takeIf { it > 0 }?.let { GradleBuildCache(config.dataDir.resolve("nomad/gradle-cache"), it) }
         periodic("nomad-result-journal-status", 5_000) {
