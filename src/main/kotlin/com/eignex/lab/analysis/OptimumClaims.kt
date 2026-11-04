@@ -42,12 +42,27 @@ object OptimumClaims {
         ?.let { runCatching { json.decodeFromJsonElement<OptimumAssessment>(it) }.getOrNull() }
 
     /** Derived copies only: neither a producer record nor a checking receipt is rewritten. */
-    fun qualify(cases: List<CaseResult>, evidence: List<CaseResult> = emptyList()): List<CaseResult> {
+    fun qualify(cases: List<CaseResult>, evidence: List<CaseResult> = emptyList()): List<CaseResult> =
+        assess(cases, points(cases + evidence))
+
+    /**
+     * One problem's retained, independently checked points as [qualify] compares them, without the records and final
+     * witnesses they were read from: small enough that a caller scoring many runs of the same problems can share it.
+     */
+    class Evidence internal constructor(internal val points: List<Point>)
+
+    /** [runs] of [claim]'s problem reduced to their checked points; the witnesses are verified here and then dropped. */
+    fun evidence(claim: CaseResult, runs: List<ProblemRun>): Evidence = Evidence(points(runs.map { run ->
+        claim.copy(index = run.case, status = run.status, record = run.record, arm = run.arm,
+            seed = run.seed, repeat = run.repeat, origin = CaseOrigin(run.job, null))
+    }))
+
+    private fun points(cases: List<CaseResult>): List<Point> = cases.filter { it.status == Status.DONE }.mapNotNull(::point)
+
+    private fun assess(cases: List<CaseResult>, evidence: List<Point>): List<CaseResult> {
         val claimedSources = cases.mapNotNull { (it.record as? JsonObject)?.takeIf(::nativeOptimum)?.get("sourceHashes") }.toSet()
         if (cases.none { (it.record as? JsonObject)?.let(::nativeOptimum) == true }) return cases
-        val points = (cases + evidence).filter { it.status == Status.DONE &&
-            (it.record as? JsonObject)?.get("sourceHashes") in claimedSources }.mapNotNull(::point)
-            .groupBy { it.scope }
+        val points = evidence.filter { it.scope.sources in claimedSources }.groupBy { it.scope }
         return cases.map { case ->
             val record = case.record as? JsonObject ?: return@map case
             if (!nativeOptimum(record)) return@map case
@@ -70,7 +85,7 @@ object OptimumClaims {
                         better != null -> OptimumAssessment(OptimumAssessment.CONTRADICTED,
                             "a scope-matched independently checked original-source point improves the native optimum",
                             mapped.toString(), better.objective.toString(), better.witness, better.policy,
-                            better.case.origin?.job, better.case.index,
+                            better.job, better.index,
                             if (record["optimalityScope"] is JsonObject) "declared-scope" else "published-source-contract")
                         !checkedClaim -> OptimumAssessment(OptimumAssessment.UNVERIFIED,
                             "the claimed point has no scope-matched independent check in the supplied evidence", mapped.toString())
@@ -91,28 +106,27 @@ object OptimumClaims {
         }
     }
 
-    /** All retained points for the claimed problems, including other seeds, arms and revisions. [evidence] reads one
-     * problem's retained runs with their witnesses; a caller scoring many runs of the same problems may share them. */
+    /** All retained points for the claimed problems, including other seeds, arms and revisions. [evidence] reads the
+     * claimed problem's retained points ([evidence]); a caller scoring many runs of the same problems may share them. */
     fun qualify(store: Store, cases: List<CaseResult>,
-                evidence: (collection: String, problem: String) -> List<ProblemRun> = { collection, problem -> store.problemRuns(collection, problem, withWitness = true) }): List<CaseResult> {
+                evidence: (claim: CaseResult) -> Evidence = { claim -> retained(store, claim) }): List<CaseResult> {
         val claimed = cases.filter { (it.record as? JsonObject)?.let(::nativeOptimum) == true }
             .distinctBy { it.problem.referenceKey }
-        val retained = claimed.flatMap { case ->
-            val key = case.problem.referenceKey
-            evidence(key.collection, key.problem).map { run ->
-                case.copy(index = run.case, status = run.status, record = run.record, arm = run.arm,
-                    seed = run.seed, repeat = run.repeat, origin = CaseOrigin(run.job, null))
-            }
-        }
-        return qualify(cases, retained)
+        if (claimed.isEmpty()) return cases
+        return assess(cases, points(cases) + claimed.flatMap { evidence(it).points })
     }
 
-    private data class Scope(val sources: JsonObject, val semantics: String, val maximize: Boolean,
+    /** The retained evidence of [claim]'s problem as [store] keeps it. */
+    fun retained(store: Store, claim: CaseResult): Evidence = claim.problem.referenceKey.let { key ->
+        evidence(claim, store.problemRuns(key.collection, key.problem, withWitness = true))
+    }
+
+    internal data class Scope(val sources: JsonObject, val semantics: String, val maximize: Boolean,
                              val units: String, val objective: String, val assumptions: JsonArray)
     private data class Mapping(val scale: Q, val offset: Q) {
         fun apply(value: Q) = scale * value + offset
     }
-    private data class Point(val scope: Scope, val objective: Q, val witness: String, val policy: String, val case: CaseResult)
+    internal data class Point(val scope: Scope, val objective: Q, val witness: String, val policy: String, val job: Long?, val index: Int)
 
     private fun nativeOptimum(record: JsonObject): Boolean = text(record, "kind") == "optimize" &&
         (text(record, "proven") == "true" || text(record["stats"] as? JsonObject, "reportedProven") == "true") &&
@@ -190,7 +204,7 @@ object OptimumClaims {
             val bound = check["optimumEvidence"] as? JsonObject ?: return null
             if (bound["scope"] != record["optimalityScope"] || Q.parse(text(bound, "objective")) != value) return null
         }
-        return Point(scope, value, witness, policy, case)
+        return Point(scope, value, witness, policy, case.origin?.job, case.index)
     }
 
     private fun mapping(record: JsonObject): Mapping? {
@@ -213,7 +227,7 @@ object OptimumClaims {
     private fun digest(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
     private val HASH = Regex("[0-9a-f]{64}")
 
-    private data class Q private constructor(val n: BigInteger, val d: BigInteger) : Comparable<Q> {
+    internal data class Q private constructor(val n: BigInteger, val d: BigInteger) : Comparable<Q> {
         override fun compareTo(other: Q) = (n * other.d).compareTo(other.n * d)
         operator fun plus(other: Q) = of(n * other.d + other.n * d, d * other.d)
         operator fun times(other: Q) = of(n * other.n, d * other.d)
