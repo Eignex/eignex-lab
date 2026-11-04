@@ -89,4 +89,10 @@ class NativeStartupCaptureTest {
         assertFalse(NativeStartupCapture.sameProcess(target, "child-start", "/other/minizinc", listOf("--version")))
         assertFalse(NativeStartupCapture.sameProcess(target, "child-start", "/owned/minizinc", listOf("--config-dirs")))
     }
+
+    @Test fun `diagnostic setup spends the original case allowance without rounding it up`() {
+        assertEquals(7L, NativeStartupCapture.remainingCaseSeconds(10_000_000_000, 2_500_000_000))
+        assertEquals(0L, NativeStartupCapture.remainingCaseSeconds(10_000_000_000, 9_500_000_000))
+        assertEquals(0L, NativeStartupCapture.remainingCaseSeconds(10_000_000_000, 11_000_000_000))
+    }
 }
