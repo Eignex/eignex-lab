@@ -1,0 +1,120 @@
+name: worker-image
+
+# Publishes the Nomad worker image of one successful `build` run: the run's tested Linux distribution, with the
+# Dockerfile, entrypoint and process supervisor of the same commit, built natively per architecture and pushed to
+# public ECR as <commit>-amd64 and <commit>-arm64. A tag that already exists is never overwritten. Pushing assumes the
+# AWS role in the AWS_WORKER_IMAGE_ROLE repository variable through GitHub OIDC (deploy/infra/aws/github-worker-images.sh);
+# switching the fleet to the new images stays a separate, guarded step on the lab host.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID of a successful build workflow run whose distribution to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: worker-image-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+env:
+  REPOSITORY: public.ecr.aws/i7d5w3s6/eignex-lab-worker
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.run.outputs.sha }}
+    steps:
+      - id: run
+        name: Resolve the build run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be numeric"; exit 1; }
+          run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")
+          name=$(jq -r .name <<<"$run"); conclusion=$(jq -r .conclusion <<<"$run"); sha=$(jq -r .head_sha <<<"$run")
+          [ "$name" = build ] || { echo "run $RUN_ID is workflow '$name', not build"; exit 1; }
+          [ "$conclusion" = success ] || { echo "run $RUN_ID concluded '$conclusion'"; exit 1; }
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "unexpected head sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Publishing build run $RUN_ID at $sha" >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: source
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: eignex-lab-distribution
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/distribution
+      - name: Lay out the image context
+        run: |
+          set -euo pipefail
+          zip=$(ls "$RUNNER_TEMP"/distribution/*.zip); [ "$(ls "$RUNNER_TEMP"/distribution/*.zip | wc -l)" = 1 ]
+          rm -rf build/install && mkdir -p build/install "$RUNNER_TEMP/unpacked"
+          unzip -q "$zip" -d "$RUNNER_TEMP/unpacked"
+          [ "$(ls "$RUNNER_TEMP/unpacked" | wc -l)" = 1 ]
+          mv "$RUNNER_TEMP"/unpacked/* build/install/eignex-lab
+          # An image whose launchers lost their exec bits starts and exits 126 on every node.
+          for f in build/install/eignex-lab/bin/eignex-lab deploy/nomad/worker-entrypoint.sh src/main/resources/nomad/process_supervisor.py; do
+            test -x "$f" || { echo "$f is not executable"; exit 1; }
+          done
+      - name: Refuse to overwrite a published tag
+        run: |
+          if docker manifest inspect "$REPOSITORY:$SHA-$ARCH" > /dev/null 2>&1; then
+            echo "$REPOSITORY:$SHA-$ARCH already exists"; exit 1
+          fi
+      - name: Build
+        run: |
+          set -euo pipefail
+          docker build --platform "linux/$ARCH" --build-arg "WORKER_RELEASE=$SHA" -f deploy/nomad/worker.Dockerfile \
+            -t "$REPOSITORY:$SHA-$ARCH" .
+      - name: Verify the image
+        run: |
+          set -euo pipefail
+          image="$REPOSITORY:$SHA-$ARCH"
+          [ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$SHA" ]
+          docker run --rm --network none --entrypoint sh "$image" -c '
+            test -x /opt/lab/worker-entrypoint.sh && test -x /opt/lab/process_supervisor.py && test -x /opt/lab/bin/eignex-lab &&
+            test "$LAB_WORKER_RELEASE" = "'"$SHA"'" && java -version 2>&1 | head -1 && minizinc --version | head -1'
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_WORKER_IMAGE_ROLE }}
+          aws-region: us-east-1
+      - uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+      - name: Push
+        run: |
+          set -euo pipefail
+          docker push "$REPOSITORY:$SHA-$ARCH"
+          pinned=$(docker image inspect --format '{{index .RepoDigests 0}}' "$REPOSITORY:$SHA-$ARCH")
+          echo "$ARCH: \`$pinned\` (tag \`$SHA-$ARCH\`)" >> "$GITHUB_STEP_SUMMARY"
