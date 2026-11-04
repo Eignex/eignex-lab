@@ -7,6 +7,10 @@ OWNER=${1:-${SUDO_USER:-$(id -un)}}
 HOME_DIR=$(dscl . -read "/Users/$OWNER" NFSHomeDirectory | awk '{print $2}')
 DIR="$HOME_DIR/eignex-lab-data/autodeploy"
 LABEL=com.eignex.lab.autodeploy
+# The host adapters' interpreter: under launchd, macOS refuses /usr/bin/python3 (an Xcode shim) reads inside the home
+# directory that this one, which the capacity adapter already runs on, is allowed.
+PYTHON="$HOME_DIR/eignex-lab-data/nomad/host-venv/bin/python3"
+[ -x "$PYTHON" ] || { echo "missing $PYTHON (deploy/infra host venv)"; exit 1; }
 PLIST=/Library/LaunchDaemons/$LABEL.plist
 install -d -o "$OWNER" -m 755 "$DIR"
 install -o "$OWNER" -m 755 "$(dirname "$0")/autodeploy.py" "$DIR/autodeploy.py"
@@ -16,7 +20,7 @@ cat > "$PLIST" <<PLIST
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>-I</string><string>$DIR/autodeploy.py</string></array>
+  <key>ProgramArguments</key><array><string>$PYTHON</string><string>-I</string><string>$DIR/autodeploy.py</string></array>
   <key>UserName</key><string>$OWNER</string>
   <key>EnvironmentVariables</key><dict><key>LAB_AUTODEPLOY_USER</key><string>$OWNER</string><key>HOME</key><string>$HOME_DIR</string></dict>
   <key>StartInterval</key><integer>300</integer>
