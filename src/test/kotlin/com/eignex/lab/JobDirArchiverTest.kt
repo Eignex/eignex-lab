@@ -14,8 +14,8 @@ class JobDirArchiverTest {
     private val paths = DataPaths(root, hot, root.resolve("corpus"), volumesRoot = root.resolve("volumes"), jobsArchive = archive)
     private val logs = mutableListOf<String>()
 
-    private fun archiver(ended: List<Pair<Long, Long>>, at: Long = 10_000_000) =
-        JobDirArchiver(hot, archive, { ended }, graceMs = 60_000, flush = { }, clock = { at }, log = { logs += it })
+    private fun archiver(ended: List<Pair<Long, Long>>, at: Long = 10_000_000, urgent: Boolean = false) =
+        JobDirArchiver(hot, archive, { ended }, graceMs = 60_000, urgent = { urgent }, flush = { }, clock = { at }, log = { logs += it })
 
     private fun job(id: Long, vararg files: Pair<String, String>): Path = Files.createDirectories(hot.resolve("$id")).also { dir ->
         for ((name, body) in files) Files.createDirectories(dir.resolve(name).parent).also { Files.writeString(dir.resolve(name), body) }
@@ -43,6 +43,13 @@ class JobDirArchiverTest {
         assertEquals(emptyList(), archiver(listOf(2L to 9_990_000L, 3L to 0L)).pass())
         assertEquals(hot.resolve("1"), paths.jobDir(1))
         assertEquals(hot.resolve("2"), paths.jobDir(2))
+    }
+
+    @Test fun `a hot volume short of space archives an ended job inside its grace`() {
+        job(2, "job.log" to "just ended")
+        assertEquals(emptyList(), archiver(listOf(2L to 9_990_000L)).pass())
+        assertEquals(listOf(2L), archiver(listOf(2L to 9_990_000L), urgent = true).pass())
+        assertEquals(archive.resolve("2"), paths.jobDir(2))
     }
 
     @Test fun `a new job and one never archived are created on the hot volume, an archived one is written in place`() {

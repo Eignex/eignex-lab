@@ -92,6 +92,8 @@ data class Config(
     val gradleCacheBytes: Long = 0,
     /** How long after a job ends its artifacts stay on the hot store before archiving. */
     val artifactArchiveGraceMs: Long = Defaults.ARTIFACT_ARCHIVE_GRACE_MIN * 60_000L,
+    /** Free space the hot volume ([dataDir]) is kept above: below it, ended jobs are archived at once, without their grace. */
+    val hotTargetFreeBytes: Long = Defaults.HOT_TARGET_FREE_GB * BYTES_PER_GB,
     /** The most an archive may unpack to, by its manifest, which also bounds what an analysis job extracts of it. */
     val archiveMaxUnpackedBytes: Long = Defaults.ARCHIVE_MAX_UNPACKED_MB * BYTES_PER_MB,
     /** Where external volumes mount, as macOS mounts them: a directory under it needs its volume mounted ([Volumes]). */
@@ -198,6 +200,7 @@ data class Config(
                 jobsArchive = read.optionalPath("LAB_JOBS_ARCHIVE"),
                 gradleCacheBytes = read.long("LAB_GRADLE_CACHE_GB", 0L, 0L..10_000) * BYTES_PER_GB,
                 artifactArchiveGraceMs = read.long("LAB_ARTIFACT_ARCHIVE_GRACE_MIN", Defaults.ARTIFACT_ARCHIVE_GRACE_MIN, 0L..60L * 24 * 30) * 60_000L,
+                hotTargetFreeBytes = read.long("LAB_SSD_TARGET_FREE_GB", Defaults.HOT_TARGET_FREE_GB, 0L..100_000) * BYTES_PER_GB,
                 archiveMaxUnpackedBytes = read.long("LAB_ARCHIVE_MAX_UNPACKED_MB", Defaults.ARCHIVE_MAX_UNPACKED_MB, 1L..100_000_000) * BYTES_PER_MB,
                 nodeTags = list(read.string("LAB_NODE_TAGS", "")),
                 cpuCapabilities = cpu,
@@ -319,6 +322,8 @@ object Defaults {
     const val MIN_FREE_GB = 10L
     const val TRIM_GRACE_HOURS = 6L
     const val JOBS_TARGET_FREE_GB = 25L
+    /** Below this much free on the hot volume, ended jobs are archived without waiting out their grace. */
+    const val HOT_TARGET_FREE_GB = 25L
     const val TRIM_AGE_DAYS = 7L
     const val MAX_EXPERIMENT_HOURS = 24L
     const val DOCKER_CLEANUP_DAYS = 7L

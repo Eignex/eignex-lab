@@ -22,14 +22,22 @@ class ArtifactArchiverTest {
         Files.move(first, parked); Files.move(second, first); Files.move(parked, second)
     }
 
-    private fun archiver(ended: List<Pair<Long, Long>>, pending: Set<Long> = emptySet(), at: Long = 10_000_000, swap: (Path, Path) -> Unit = ::swap) =
-        ArtifactArchiver(hot, archive, { ended }, { it in pending }, graceMs = 60_000, swap = swap, flush = { }, clock = { at }, log = { logs += it })
+    private fun archiver(ended: List<Pair<Long, Long>>, pending: Set<Long> = emptySet(), at: Long = 10_000_000, swap: (Path, Path) -> Unit = ::swap,
+                         urgent: Boolean = false) =
+        ArtifactArchiver(hot, archive, { ended }, { it in pending }, graceMs = 60_000, urgent = { urgent }, swap = swap, flush = { }, clock = { at }, log = { logs += it })
 
     private fun job(id: Long, vararg files: Pair<String, String>): Path = Files.createDirectories(hot.resolve("$id")).also { dir ->
         for ((name, body) in files) Files.writeString(dir.resolve(name), body)
     }
 
     @AfterTest fun cleanup() { root.toFile().deleteRecursively() }
+
+    @Test fun `a hot store short of space archives an ended job inside its grace`() {
+        job(7, sha to "result")
+        assertEquals(emptyList(), archiver(listOf(7L to 9_990_000L)).pass())
+        assertEquals(listOf(7L), archiver(listOf(7L to 9_990_000L), urgent = true).pass())
+        assertTrue(Files.isSymbolicLink(hot.resolve("7")))
+    }
 
     @Test fun `an ended job moves to the archive and its hot path becomes a link`() {
         job(7, sha to "result", "$sha.lock" to "")

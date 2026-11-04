@@ -21,6 +21,8 @@ class ArtifactArchiver(
     private val ended: () -> List<Pair<Long, Long>>,
     private val pending: (Long) -> Boolean,
     private val graceMs: Long = 60 * 60_000L,
+    /** Whether the hot volume is short of space: ended jobs then leave it at once instead of after [graceMs]. */
+    private val urgent: () -> Boolean = { false },
     private val swap: (Path, Path) -> Unit = MacRenameSwap::swap,
     private val flush: (Path) -> Unit = { if (MacVolumeSync.supported) MacVolumeSync.flush(it) {} },
     private val clock: () -> Long = ::now,
@@ -30,7 +32,8 @@ class ArtifactArchiver(
     fun pass(limit: Int = 8): List<Long> {
         require(Files.isDirectory(archive)) { "artifact archive volume unavailable: $archive" }
         val at = clock()
-        val candidates = ended().filter { (_, finished) -> at - finished >= graceMs }.sortedBy { it.second }.map { it.first }
+        val grace = if (urgent()) 0L else graceMs
+        val candidates = ended().filter { (_, finished) -> at - finished >= grace }.sortedBy { it.second }.map { it.first }
             .filter { job -> hot.resolve(job.toString()).let { Files.isDirectory(it, NOFOLLOW_LINKS) } && !pending(job) }
         val archived = mutableListOf<Long>()
         for (job in candidates.take(limit)) {
