@@ -134,7 +134,8 @@ jobs:
       - name: Start isolated Nomad prototype
         run: python3 deploy/nomad/sandbox.py start
       - name: Verify shared sessions and hard resource limits
-        run: python3 deploy/nomad/sandbox.py verify
+        # Disk usage decides when a Nomad client collects finished allocations; shown for diagnosing log reads.
+        run: df -h / && python3 deploy/nomad/sandbox.py verify
       - name: Stop Nomad prototype
         if: always()
         run: python3 deploy/nomad/sandbox.py stop

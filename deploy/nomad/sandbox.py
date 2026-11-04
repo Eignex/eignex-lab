@@ -126,7 +126,12 @@ class Sandbox:
             "server": {"enabled": True, "bootstrap_expect": 1},
             "client": {"enabled": True, "node_class": "lab-prototype-linux" if linux else "lab-prototype-mac",
                        "host_volume": [{"lab-status": {"path": str(self.state / "status"), "read_only": True}}],
-                       "servers": [f"127.0.0.1:{self.port + 1}"], "reserved": {"cpu": 500, "memory": 256}},
+                       "servers": [f"127.0.0.1:{self.port + 1}"], "reserved": {"cpu": 500, "memory": 256},
+                       # The verification reads finished allocations' logs. Nomad's default client GC collects terminal
+                       # allocations every minute once the disk is 80% used, which a CI runner after its builds often
+                       # is, and their logs then answer 404. This throwaway agent keeps them until it is stopped.
+                       "gc_interval": "24h", "gc_disk_usage_threshold": 99, "gc_inode_usage_threshold": 99,
+                       "gc_max_allocs": 1000},
             "acl": {"enabled": True},
             "tls": {"http": True, "rpc": True, "verify_server_hostname": True, "verify_https_client": True,
                     "ca_file": str(self.state / "nomad-agent-ca.pem"),
