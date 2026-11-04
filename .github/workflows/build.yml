@@ -173,7 +173,8 @@ jobs:
 
   native-worker:
     runs-on: macos-15
-    timeout-minutes: 15
+    # Usually 12-13 minutes; slow macOS runners pushed whole runs past a 15-minute limit.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
         with:
