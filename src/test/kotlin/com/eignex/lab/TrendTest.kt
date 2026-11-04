@@ -56,6 +56,35 @@ class TrendTest {
     }
 
     @Test
+    fun `stored trend points survive a restart and another job finishing does not recompute them`() {
+        val store = Store(Files.createTempDirectory("stored-trend").resolve("lab.db"))
+        run(store, "sweep@first", listOf(true)); run(store, "sweep@second", listOf(false))
+        TrendCache(TrendPoints.of(store)).use { cache -> assertEquals(2, Trend.runs(TrendData.of(store), "sweep", cache).size) }
+        run(store, "other@unrelated", listOf(true))
+        TrendCache(TrendPoints.of(store)).use { restarted ->
+            val missing = mutableListOf<Long>()
+            val runs = Trend.runs(TrendData.of(store), "sweep", restarted, missing = missing)
+            assertEquals(emptyList(), missing, "every finished run is read from its stored row")
+            assertEquals(listOf(1.0, 0.0), runs.map { it.solved.value })
+        }
+    }
+
+    @Test
+    fun `a stored point past its maximum age is served and recomputed`() {
+        val store = Store(Files.createTempDirectory("aged-trend").resolve("lab.db"))
+        run(store, "sweep@first", listOf(true))
+        var now = 1_000_000L
+        TrendCache(TrendPoints.of(store), maxAgeMs = 1000, clock = { now }).use { cache ->
+            Trend.runs(TrendData.of(store), "sweep", cache)
+            val version = TrendCache.version(store.job(store.jobs(name = "sweep").single().id)!!, TrendData.of(store).caseRevision(store.jobs(name = "sweep").single().id))
+            val id = store.jobs(name = "sweep").single().id
+            assertEquals(true, cache.lookup(id, version, cache.sync(TrendData.of(store)))?.fresh)
+            now += 1001
+            assertEquals(false, cache.lookup(id, version, cache.sync(TrendData.of(store)))?.fresh)
+        }
+    }
+
+    @Test
     fun `rechecking a finished run refreshes its cached outcome count`() {
         val store = Store(Files.createTempDirectory("rechecked-trend").resolve("lab.db"))
         val id = run(store, "sweep@checked", listOf(true))

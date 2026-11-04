@@ -22,7 +22,10 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ApiServices(val config: Config, val store: Store, val host: HostReport,
                   private val archiveArtifacts: ArtifactStore? = null) : AutoCloseable {
-    val trends = TrendCache()
+    /** Finished runs' trend points, one stored row per run ([TrendPoints.of]), so a restart keeps every point. */
+    val trends = TrendCache(TrendPoints.of(store))
+    private val trendData = TrendData.of(store)
+    private var trendWarming: Thread? = null
     internal val references = ReferenceCache(store)
 
     /** The finished runs the queue page's estimates learn from, reread at most once a minute. */
@@ -105,7 +108,9 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
         queuePage.start()
         disk.start()
         references.warm()
-        Trend.warm(TrendData.of(store), trends)
+        // Each round queues every schedule once; runs already stored at their version are read, not recomputed, so a
+        // round costs the newly finished runs and the points past their age, and a page finds them stored.
+        trendWarming = periodic("trend-warm", TREND_WARM_MS) { Trend.warm(trendData, trends) }
     }
 
     override fun close() {
@@ -113,10 +118,14 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
         queuePage.close()
         pageStorage.close()
         disk.close()
+        trendWarming?.interrupt()
         trends.close()
         references.close()
     }
 }
+
+/** How often the API queues every schedule's trend: new runs gain their stored point within this. */
+private const val TREND_WARM_MS = 5 * 60_000L
 
 /**
  * A file's contents as [parse] reads them, read again only when the file changes (its modification time or size); null
