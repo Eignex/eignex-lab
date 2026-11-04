@@ -87,8 +87,59 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     private fun <T> publicationRetry(operation: () -> T): T = retries.runWhileOwned({
         minOf(leaseRemainingMs(), runRemainingMs() ?: Long.MAX_VALUE)
     }, operation)
+    /** Appends what [console] holds past the last accepted offset to the job's files, a chunk at a time. */
+    private class ConsoleUpload(val console: WorkerConsole) { var offset = 0L; var unsupported = false }
+
+    private fun uploadConsole(upload: ConsoleUpload) = synchronized(upload) {
+        if (upload.unsupported) return@synchronized
+        System.out.flush()
+        try {
+            while (upload.offset < WorkerLogs.MAX_WORKER_BYTES) {
+                val bytes = java.io.RandomAccessFile(upload.console.file.toFile(), "r").use { input ->
+                    val count = minOf((input.length() - upload.offset).coerceAtLeast(0), WorkerLogs.CHUNK_BYTES.toLong()).toInt()
+                    input.seek(upload.offset); ByteArray(count).also { input.readFully(it) }
+                }
+                if (bytes.isEmpty()) break
+                val response = request("worker-log?offset=${upload.offset}", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes))
+                val accepted = Json.decodeFromString<UploadReply>(String(response.body())).offset
+                require(accepted in upload.offset..upload.offset + bytes.size)
+                if (accepted == upload.offset) break
+                upload.offset = accepted
+            }
+        } catch (failure: IllegalStateException) {
+            // A coordinator without the route answers 404: stop asking rather than retry every interval.
+            if (failure.message?.endsWith("HTTP 404") == true) upload.unsupported = true
+        } catch (_: Exception) {
+            // Diagnostics only; the next interval resumes from the last accepted offset.
+        }
+    }
+
+    /** The failure [run] already printed to the uploaded console, which [main] need not print again. */
+    @Volatile private var reported: Throwable? = null
+
     fun run() {
         Files.createDirectories(root)
+        val console = ConsoleUpload(WorkerConsole(root.resolve("worker-console.log"), WorkerLogs.MAX_WORKER_BYTES))
+        val consoleUploads = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-console").apply { isDaemon = true } }
+        val consoleHook = Thread({ uploadConsole(console) }, "worker-console-final")
+        Runtime.getRuntime().addShutdownHook(consoleHook)
+        try {
+            consoleUploads.scheduleWithFixedDelay({ uploadConsole(console) }, CONSOLE_UPLOAD_SEC, CONSOLE_UPLOAD_SEC, TimeUnit.SECONDS)
+            runSession()
+        } catch (failure: Throwable) {
+            // Printed here, inside the uploaded console, so the job's worker log ends with why the session ended.
+            printFailure(failure)
+            reported = failure
+            throw failure
+        } finally {
+            consoleUploads.shutdownNow()
+            uploadConsole(console)
+            runCatching { Runtime.getRuntime().removeShutdownHook(consoleHook) }
+            console.console.close()
+        }
+    }
+
+    private fun runSession() {
         val manifest = retry { Json.decodeFromString<WorkManifest>(String(json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
@@ -467,21 +518,27 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         internal const val MAX_SOLVE_WAIT_MS = 15 * 60_000L
         /** Provisional output only: each upload is a coordinator write per stream, and accepted output transfers in full. */
         internal const val LIVE_LOG_INTERVAL_SEC = 5L
+        /** How often the worker's console is appended to its job's files: one small coordinator write per session. */
+        internal const val CONSOLE_UPLOAD_SEC = 10L
 
         fun main(args: List<String>): Int = runCatching {
             require(args.isEmpty()) { "worker uses allocation environment only" }
             fun env(key: String) = requireNotNull(System.getenv(key)) { "$key is required" }
             val root = Path.of(System.getenv("LAB_WORKER_ROOT") ?: env("NOMAD_TASK_DIR") + "/worker").toAbsolutePath()
-            WorkerSession(URI.create(env("LAB_WORKER_API")), env("LAB_WORKER_SESSION"), env("LAB_WORKER_TOKEN"), env("NOMAD_ALLOC_ID"),
-                Path.of(env("LAB_WORKER_IDENTITY_FILE")), env("LAB_WORKER_RELEASE"), root, Path.of(env("LAB_SUPERVISOR_SOCKET")),
-                env("LAB_WORKER_LAUNCHER"), System.getenv("LAB_WORKER_PRIVATE_TRANSPORT") == "true").run()
+            var session: WorkerSession? = null
+            runCatching {
+                WorkerSession(URI.create(env("LAB_WORKER_API")), env("LAB_WORKER_SESSION"), env("LAB_WORKER_TOKEN"), env("NOMAD_ALLOC_ID"),
+                    Path.of(env("LAB_WORKER_IDENTITY_FILE")), env("LAB_WORKER_RELEASE"), root, Path.of(env("LAB_SUPERVISOR_SOCKET")),
+                    env("LAB_WORKER_LAUNCHER"), System.getenv("LAB_WORKER_PRIVATE_TRANSPORT") == "true").also { session = it }.run()
+            }.onFailure { error -> if (session?.reported !== error) printFailure(error) }.getOrThrow()
             0
-        }.getOrElse { error ->
+        }.getOrElse { error -> workerProcessExit(generateSequence(error) { it.cause }.last()) }
+
+        private fun printFailure(error: Throwable) {
             val cause = generateSequence(error) { it.cause }.last()
             System.err.println("worker: ${cause.javaClass.simpleName}: ${when (cause) { is java.nio.file.NoSuchFileException -> "missing file ${cause.file}"; is ExecutionFenced -> "allocation fenced"; is IllegalStateException -> cause.message?.take(160); else -> "session ended" }}")
             // Frames identify failed runtime checks without logging manifests, environment, or credentials.
             cause.stackTrace.take(12).forEach { frame -> System.err.println("worker: at $frame") }
-            workerProcessExit(cause)
         }
     }
 }
