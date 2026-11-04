@@ -164,9 +164,12 @@ class SharedInputsTest {
             inputs.publish(listOf("collection/local"), declared = mapOf("collection/local" to sha)))
         assertEquals(1, transport.puts.size, "a stored declared input is not uploaded again")
         Files.writeString(root.resolve("collection/changed"), "changed")
-        assertFailsWith<IllegalArgumentException> {
+        val mismatch = assertFailsWith<IllegalArgumentException> {
             inputs.publish(listOf("collection/changed"), declared = mapOf("collection/changed" to ExecutionStore.digest("other")))
         }
+        // Job diagnostics name both bindings: what the plan declared and what this node held.
+        assertEquals("declared input checksum mismatch: collection/changed (declared ${ExecutionStore.digest("other")}, " +
+            "local ${ExecutionStore.digest("changed")}, 7 bytes)", mismatch.message)
     }
 
     @Test fun `planning transfers no bytes and checking fetches only the case inputs`() {
