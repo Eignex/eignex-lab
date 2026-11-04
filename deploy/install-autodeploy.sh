@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install deploy/autodeploy.py as a root launchd job on the lab Mac: every 5 minutes it deploys the newest green build of
+# Install deploy/autodeploy.py as a launchd job running as the lab's user on the lab Mac (installing needs sudo once): every 5 minutes it deploys the newest green build of
 # main (see the script). The script lives under the data directory and refreshes itself from each deployed commit.
 # Usage (on the Mac, from a checkout): sudo bash deploy/install-autodeploy.sh [OWNER]
 set -euo pipefail
@@ -9,7 +9,7 @@ DIR="$HOME_DIR/eignex-lab-data/autodeploy"
 LABEL=com.eignex.lab.autodeploy
 PLIST=/Library/LaunchDaemons/$LABEL.plist
 install -d -o "$OWNER" -m 755 "$DIR"
-install -o root -m 755 "$(dirname "$0")/autodeploy.py" "$DIR/autodeploy.py"
+install -o "$OWNER" -m 755 "$(dirname "$0")/autodeploy.py" "$DIR/autodeploy.py"
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -17,7 +17,8 @@ cat > "$PLIST" <<PLIST
 <dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>-I</string><string>$DIR/autodeploy.py</string></array>
-  <key>EnvironmentVariables</key><dict><key>LAB_AUTODEPLOY_USER</key><string>$OWNER</string></dict>
+  <key>UserName</key><string>$OWNER</string>
+  <key>EnvironmentVariables</key><dict><key>LAB_AUTODEPLOY_USER</key><string>$OWNER</string><key>HOME</key><string>$HOME_DIR</string></dict>
   <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>$HOME_DIR/eignex-lab-data/logs/autodeploy.stdout.log</string>
