@@ -22,6 +22,7 @@ install -m 755 "$root"/deploy/infra/common/*.py "$root"/deploy/infra/aws/bootstr
 install -m 755 "$root/src/main/resources/node-capabilities.sh" /opt/eignex-lab/
 install -m 644 "$root"/deploy/infra/common/*.service "$root"/deploy/infra/common/*.timer /etc/systemd/system/
 docker pull "$LAB_WORKER_IMAGE"
+timeout 30s docker run --rm --network none "$LAB_WORKER_IMAGE" --smoke-test
 docker image inspect "$LAB_WORKER_IMAGE" > /opt/eignex-lab/worker-image.json
 /opt/eignex-lab/host-venv/bin/python3 -m pip freeze > /opt/eignex-lab/host-python.lock
 systemctl daemon-reload

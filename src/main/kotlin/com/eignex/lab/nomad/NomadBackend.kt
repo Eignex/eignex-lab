@@ -400,14 +400,16 @@ class NomadBackend(
             val bound = allocations.firstOrNull { it.id == s.allocation }
             if ((s.allocation != null && (bound == null || !bound.active)) ||
                 (s.allocation == null && allocations.isNotEmpty() && allocations.none { it.active })) {
-                val exited = bound ?: allocations.singleOrNull()
+                val exited = bound ?: allocations.maxByOrNull { it.createdAt }
                 // Persist a bounded, credential-free receipt before retiring the attempt, including old worker releases.
-                val evidence = if (s.executionClass == ExecutionClass.PREPARE && exited != null)
+                val evidence = if ((s.executionClass == ExecutionClass.PREPARE || s.allocation == null) && exited != null)
                     runCatching { nomad.allocation(exited.id) }.getOrNull() ?: exited else exited
                 if (s.executionClass == ExecutionClass.PREPARE) {
                     val detail = evidence?.termination?.let { Json.encodeToString(it) } ?: "unavailable"
                     store.execution.note(job.id, s.id, "preparation-termination:$detail")
                 }
+                if (!current.paused && s.desired == Desired.RUN && s.allocation == null && evidence != null &&
+                    startupFailure(s, evidence) >= 3) continue
                 if (!current.paused && s.desired == Desired.RUN && s.executionClass == ExecutionClass.PREPARE && exited?.client == "failed") {
                     // List stubs can omit task events. Fetch full evidence before classifying a worker crash.
                     val exit = exited.workerExit ?: evidence?.workerExit
@@ -473,6 +475,42 @@ class NomadBackend(
         Files.createDirectories(path.parent)
         if (!Files.isRegularFile(path) || Files.readString(path) != text) path.writeAtomically(text)
         projectedLogs[job] = marker
+    }
+
+    private fun startupFailure(session: ExecutionSession, evidence: NomadAllocation): Int {
+        val submission = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject
+        val task = submission.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray
+            .map { it.jsonObject }.single { it["Name"]?.jsonPrimitive?.content == "worker" }
+        val config = task.getValue("Config").jsonObject
+        val image = config["image"]?.jsonPrimitive?.contentOrNull
+        val executable = if (image != null) "/opt/lab/worker-entrypoint.sh" else config["command"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+        // Do not retain arbitrary environment dumps in ordinary logs. Known credentials and JWTs are redacted.
+        val secrets = task["Env"]?.jsonObject.orEmpty().filterKeys {
+            Regex("(?i)token|password|secret|credential|key").containsMatchIn(it)
+        }.values.mapNotNull { it.jsonPrimitive.contentOrNull }.filter { it.isNotEmpty() }
+        fun clean(value: String): String {
+            var text = value
+            for (secret in secrets) text = text.replace(secret, "[redacted]")
+            return text.replace(Regex("eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"), "[redacted-jwt]")
+                .map { if (it.isISOControl()) ' ' else it }.joinToString("")
+        }
+        val exit = evidence.workerExit?.code
+        val kind = when {
+            evidence.client != "failed" || evidence.desired != "run" -> null
+            exit in setOf(126, 127) -> "exit-$exit"
+            evidence.launchError != null -> when {
+                evidence.launchError.contains("permission denied", ignoreCase = true) -> "exec-permission"
+                evidence.launchError.contains("exec format error", ignoreCase = true) -> "exec-format"
+                else -> "exec-missing"
+            }
+            else -> null
+        }
+        val stderr = runCatching { nomad.startupStderr(evidence.id) }.getOrNull()
+        val diagnostic = clean("allocation=${evidence.id}, executable=$executable, image=${image ?: "native"}, release=${session.release}, " +
+            "exit=${exit ?: evidence.termination?.exitCode ?: "unknown"}; " +
+            "launch=${evidence.launchError?.let(::clean)?.take(2048) ?: "unavailable"}; stderr=${stderr?.let(::clean)?.takeLast(4096) ?: "unavailable"}").take(8192)
+        val fingerprint = kind?.let { ExecutionStore.digest("${session.release}:$config:$it") }
+        return store.execution.workerStartupFailed(session.id, fingerprint, diagnostic)
     }
 
     /** The native reservation's limits a session on [pool] holds to: its own, else the native worker's capacity. */

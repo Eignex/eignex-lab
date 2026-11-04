@@ -16,6 +16,10 @@ import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Flow
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyStore
@@ -31,6 +35,8 @@ interface NomadControl : ClusterNodes {
     fun stop(id: String)
     fun allocations(job: String): List<NomadAllocation>
     fun allocation(id: String): NomadAllocation?
+    /** Best-effort, bounded stderr from the worker before it could register or upload its own logs. */
+    fun startupStderr(id: String): String? = null
     fun jwks(): JsonObject
     override fun nodes(): List<JsonObject> = emptyList()
     override fun node(id: String): JsonObject? = null
@@ -50,7 +56,8 @@ data class NomadTaskTermination(val client: String?, val desired: String?, val t
     val killReported: Boolean, val driverErrorReported: Boolean, val setupErrorReported: Boolean)
 
 data class NomadAllocation(val id: String, val job: String, val node: String, val client: String, val desired: String, val createdAt: Long = 0,
-                           val workerExit: NomadWorkerExit? = null, val termination: NomadTaskTermination? = null) {
+                           val workerExit: NomadWorkerExit? = null, val termination: NomadTaskTermination? = null,
+                           val launchError: String? = null) {
     val active get() = client in setOf("pending", "running") && desired == "run"
 }
 
@@ -63,6 +70,14 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
     override fun stop(id: String) { request("DELETE", "/v1/job/${encode(id)}", missing = true) }
     override fun allocations(job: String): List<NomadAllocation> = request("GET", "/v1/job/${encode(job)}/allocations", missing = true)?.jsonArray?.map { allocationRow(it.jsonObject) } ?: emptyList()
     override fun allocation(id: String) = request("GET", "/v1/allocation/${encode(id)}", missing = true)?.jsonObject?.let(::allocationRow)
+    override fun startupStderr(id: String): String? {
+        val uri = URI.create(address.toString().trimEnd('/') + "/v1/client/fs/logs/${encode(id)}" +
+            "?namespace=${encode(namespace)}&task=worker&type=stderr&origin=end&offset=$STARTUP_LOG_BYTES&plain=true&follow=false")
+        val request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5))
+            .header("X-Nomad-Token", Files.readString(tokenFile).trim()).GET().build()
+        val response = client.send(request, HttpResponse.BodyHandler { BoundedBody(STARTUP_LOG_BYTES) })
+        return if (response.statusCode() in 200..299) String(response.body(), Charsets.UTF_8) else null
+    }
     override fun nodes() = request("GET", "/v1/nodes")!!.jsonArray.map { it.jsonObject }
     override fun node(id: String) = request("GET", "/v1/node/${encode(id)}", missing = true)?.jsonObject
     override fun nodeAllocations(id: String) = request("GET", "/v1/node/${encode(id)}/allocations")!!.jsonArray.map { it.jsonObject }
@@ -92,7 +107,52 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
         internal fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
         internal fun allocationRow(j: JsonObject) = NomadAllocation(j.getValue("ID").jsonPrimitive.content, j.getValue("JobID").jsonPrimitive.content,
             j.getValue("NodeID").jsonPrimitive.content, j.getValue("ClientStatus").jsonPrimitive.content, j.getValue("DesiredStatus").jsonPrimitive.content, j["CreateTime"]?.jsonPrimitive?.longOrNull ?: 0,
-            workerExit(j), termination(j))
+            workerExit(j), termination(j), launchError(j))
+
+        /** Only executable launch errors consume a startup budget; image pulls and node loss remain recoverable. */
+        private fun launchError(j: JsonObject): String? {
+            if (j["ClientStatus"]?.jsonPrimitive?.contentOrNull != "failed" || j["DesiredStatus"]?.jsonPrimitive?.contentOrNull != "run") return null
+            val worker = (j["TaskStates"] as? JsonObject)?.get("worker") as? JsonObject ?: return null
+            val events = (worker["Events"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
+            if (worker["State"]?.jsonPrimitive?.contentOrNull != "dead" || events.any {
+                it["Type"]?.jsonPrimitive?.contentOrNull in setOf("Started", "Killing", "Killed") ||
+                    !it["KillReason"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()
+            }) return null
+            val ended = termination(j)
+            if (ended?.oomKilled == true || ended?.signal?.let { it != 0 } == true) return null
+            return events.asReversed().flatMap { event ->
+                listOfNotNull(event["DriverError"]?.jsonPrimitive?.contentOrNull,
+                    event["SetupError"]?.jsonPrimitive?.contentOrNull,
+                    event["DisplayMessage"]?.jsonPrimitive?.contentOrNull?.takeIf {
+                        event["Type"]?.jsonPrimitive?.contentOrNull in setOf("Driver Failure", "Setup Failure", "Failed Validation")
+                    })
+            }.firstOrNull { message ->
+                Regex("(?is)(exec|executable|start.*process).*?(permission denied|exec format error|no such file or directory|executable file not found)")
+                    .containsMatchIn(message)
+            }?.take(STARTUP_LOG_BYTES)
+        }
+
+        internal const val STARTUP_LOG_BYTES = 8192
+
+        /** Cancel the HTTP body once the evidence bound is reached, even if a server ignores offset/follow. */
+        private class BoundedBody(private val limit: Int) : HttpResponse.BodySubscriber<ByteArray> {
+            private val result = CompletableFuture<ByteArray>()
+            private val output = ByteArrayOutputStream()
+            private lateinit var subscription: Flow.Subscription
+            override fun getBody() = result
+            override fun onSubscribe(value: Flow.Subscription) { subscription = value; value.request(Long.MAX_VALUE) }
+            override fun onNext(buffers: List<ByteBuffer>) {
+                for (buffer in buffers) {
+                    val bytes = ByteArray(minOf(buffer.remaining(), limit - output.size()))
+                    buffer.get(bytes); output.write(bytes)
+                    if (output.size() == limit) {
+                        result.complete(output.toByteArray()); subscription.cancel(); return
+                    }
+                }
+            }
+            override fun onError(error: Throwable) { result.completeExceptionally(error) }
+            override fun onComplete() { result.complete(output.toByteArray()) }
+        }
 
         private fun termination(j: JsonObject): NomadTaskTermination? {
             val worker = (j["TaskStates"] as? JsonObject)?.get("worker") as? JsonObject ?: return null
@@ -121,10 +181,12 @@ class NomadClient(private val address: URI, private val tokenFile: Path, private
             // Positive process-exit evidence only. Kill/eviction, signals, driver/setup errors, OOM and unknown
             // event sequences remain infrastructure recovery, rather than spending a deterministic-error budget.
             val ordinary = setOf("Received", "Task Setup", "Started", "Terminated", "Not Restarting")
-            if (events.any { it["Type"]?.jsonPrimitive?.content !in ordinary } || events.none { it["Type"]?.jsonPrimitive?.content == "Started" }) return null
+            if (events.any { it["Type"]?.jsonPrimitive?.content !in ordinary }) return null
             val ended = events.lastOrNull { it["Type"]?.jsonPrimitive?.content == "Terminated" } ?: return null
             val details = ended["Details"] as? JsonObject
             val code = ended["ExitCode"]?.jsonPrimitive?.intOrNull ?: details?.get("exit_code")?.jsonPrimitive?.intOrNull ?: return null
+            // A launcher can report 126/127 without a Started event; other exits still require process-start evidence.
+            if (code !in setOf(126, 127) && events.none { it["Type"]?.jsonPrimitive?.content == "Started" }) return null
             val signal = ended["Signal"]?.jsonPrimitive?.intOrNull ?: details?.get("signal")?.jsonPrimitive?.intOrNull ?: return null
             if (code == 0 || signal != 0 || details?.get("oom_killed")?.jsonPrimitive?.booleanOrNull != false ||
                 listOf("KillReason", "DriverError", "SetupError").any { !ended[it]?.jsonPrimitive?.contentOrNull.isNullOrEmpty() }) return null

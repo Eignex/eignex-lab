@@ -119,6 +119,7 @@ jobs:
           docker run --rm --network none --entrypoint sh "$image" -c '
             test -x /opt/lab/worker-entrypoint.sh && test -x /opt/lab/process_supervisor.py && test -x /opt/lab/bin/eignex-lab &&
             test "$LAB_WORKER_RELEASE" = "'"$SHA"'" && java -version 2>&1 | head -1 && minizinc --version | head -1'
+          timeout 30s docker run --rm --network none "$image" --smoke-test
       - uses: aws-actions/configure-aws-credentials@v5
         if: steps.tag.outputs.exists != 'true'
         with:

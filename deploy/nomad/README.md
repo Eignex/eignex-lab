@@ -126,6 +126,17 @@ Record the resulting registry digest in pool configuration. The pinned multi-arc
 providers; no cloud CLI, provider credential or database is included. The image entrypoint starts its allocation's
 supervisor before invoking the requested worker command.
 
+Image construction sets the executable modes of the entrypoint, supervisor and JVM launcher explicitly. Before
+publishing or activating a digest, run `timeout 30s docker run --rm --network none IMAGE --smoke-test` (on macOS,
+use an equivalent 30-second process timeout). This starts the actual entrypoint and supervisor and invokes the
+packaged JVM launcher offline. Image publishing, host-image baking and the connected CI probe enforce this gate.
+The coordinator ACL needs `read-logs` to retain up to 8 KiB of startup stderr. A missing or collected log remains
+`unavailable`; executable driver errors are retained even when no process starts. Ordinary `job.log` diagnostics
+identify the allocation, entrypoint or native launcher, image and release, with known worker credentials redacted.
+Three proven exit-126/127 or executable driver failures for the same runtime before registration stop automatic
+replacement across coordinator restarts. Manual retry starts a fresh budget; prior sessions, costs and accepted
+case rows remain retained. Image-pull failures, OOM, eviction and node loss keep their infrastructure recovery policy.
+
 The worker includes MiniZinc 2.10.1 and its bundled reference solvers from a pinned multi-architecture distribution.
 MiniZinc is on `PATH` for compilation and explicit reference runs. Checkers may only validate supplied assignments or
 proofs; they must never invoke a full solver, search for a missing assignment, or rerun an optimization problem.
