@@ -39,6 +39,47 @@ import kotlin.test.assertTrue
 class DbCompactionTest {
     private val host = HostReport("Test/Arm64", 4, "java")
 
+    /** A solver record as [BenchRuns.record] writes it, the domain record repeated as its envelope's details, then the
+     *  keys the lab adds before storing it. */
+    private fun solverRecord(producer: String? = null): JsonObject {
+        val domain = Json.parseToJsonElement("""{"kind":"optimize","objective":7,"finalWitness":"${"w".repeat(256)}",
+            "stats":{"solveTime":"9.5"${producer?.let { ",\"${StoredRecords.PRODUCER_RECORD}\":$it" } ?: ""}},
+            "${StoredRecords.PROVENANCE}":${provenance(1)}}""").jsonObject
+        val envelope = Json.parseToJsonElement("""{"caseId":"c","status":"OK","metrics":{"m":1},"artifacts":{},"message":null,"protocolVersion":1}""").jsonObject
+        return JsonObject(domain + (StoredRecords.BENCH to JsonObject(envelope + ("details" to domain))) +
+            ("labExecution" to JsonPrimitive("e")))
+    }
+
+    @Test fun `a bench envelope keeps its details once and reads back as written`() {
+        val written = solverRecord()
+        val compacted = assertNotNull(StoredRecords.compact(written.toString()))
+        val stored = Json.parseToJsonElement(compacted.text).jsonObject
+        val bench = stored.getValue(StoredRecords.BENCH).jsonObject
+        assertNull(bench["details"], "the details are not stored twice")
+        assertEquals(listOf("labExecution"), bench.getValue(StoredRecords.DETAILS_OMITTED).jsonArray.map { it.jsonPrimitive.content })
+        assertTrue(compacted.text.length * 2 < written.toString().length)
+        val provenances = mapOf(compacted.provenance!!.first to written.getValue(StoredRecords.PROVENANCE))
+        assertEquals(written, StoredRecords.inflate(stored, provenances::get))
+        assertNull(StoredRecords.compact(compacted.text), "a compacted record stays as it is")
+    }
+
+    @Test fun `details that differ from the record are kept, and a cut producer record is cut in both`() {
+        val written = solverRecord()
+        val bench = written.getValue(StoredRecords.BENCH).jsonObject
+        val drifted = JsonObject(written + (StoredRecords.BENCH to JsonObject(bench + ("details" to
+            JsonObject(bench.getValue("details").jsonObject + ("objective" to JsonPrimitive(8)))))))
+        val kept = Json.parseToJsonElement(assertNotNull(StoredRecords.compact(drifted.toString())).text).jsonObject
+        assertNotNull(kept.getValue(StoredRecords.BENCH).jsonObject["details"], "different details are not dropped")
+
+        val withProducer = solverRecord(producer = producer(timeToBest = 42))
+        val compacted = assertNotNull(StoredRecords.compact(withProducer.toString()))
+        val stored = Json.parseToJsonElement(compacted.text).jsonObject
+        assertNull(stored.getValue(StoredRecords.BENCH).jsonObject["details"])
+        val provenances = mapOf(compacted.provenance!!.first to withProducer.getValue(StoredRecords.PROVENANCE))
+        val read = StoredRecords.inflate(stored, provenances::get)!!.jsonObject
+        assertEquals(read.getValue("stats"), read.getValue(StoredRecords.BENCH).jsonObject.getValue("details").jsonObject.getValue("stats"))
+    }
+
     /** A build provenance like the bench's: tens of kilobytes, one per arm here, with numbers and text kept as written. */
     private fun provenance(arm: Int, kib: Int = 4): String {
         val files = (0 until kib * 8).joinToString(",") { "\"lib/dep-$it.jar\":\"${"%064x".format(arm * 100_000 + it)}\"" }
@@ -226,6 +267,28 @@ class DbCompactionTest {
         assertEquals(0, again.changed)
         assertEquals(stored, (0 until 30).map { storedText(file, id, it) })
         assertEquals(again, DbCompaction(store, { Long.MAX_VALUE }, { false }, log = {}, pauseMs = 0).migrate())
+    }
+
+    @Test
+    fun `a newer compaction version goes over records an earlier pass finished`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val id = experiment(store, problems = 3, arms = 1)
+        val written = solverRecord()
+        storeRaw(file, id, (0 until 3).associateWith { written.toString() })
+        // As the first compaction left its state: done, before envelopes were kept once.
+        DriverManager.getConnection("jdbc:sqlite:$file").use {
+            it.createStatement().execute("""INSERT OR REPLACE INTO compaction (id, state) VALUES (0, '{"migratedAt":1,"vacuum":"kept"}')""")
+        }
+
+        val done = DbCompaction(store, { Long.MAX_VALUE }, { false }, log = {}, pauseMs = 0).migrate()
+
+        assertEquals(StoredRecords.VERSION, done.version)
+        assertEquals(3, done.changed)
+        assertEquals("kept", done.vacuum)
+        assertTrue((0 until 3).all { "\"details\"" !in storedText(file, id, it) })
+        assertTrue(store.plans.cases(id).all { json(it.record) == json(written) }, "whole records read back as written")
+        assertEquals(done, DbCompaction(store, { Long.MAX_VALUE }, { false }, log = {}, pauseMs = 0).migrate())
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -25,6 +26,13 @@ internal object StoredRecords {
     const val PROVENANCE_REF = "buildProvenanceRef"
     const val PRODUCER_RECORD = "sourceValidationProducerRecordJson"
     private const val TIME_TO_BEST = "timeToBestMs"
+    /** A solver record's bench envelope, whose `details` is the domain record the top level already holds. */
+    const val BENCH = "labBench"
+    private const val DETAILS = "details"
+    /** Stored in place of an envelope's `details`: the top-level keys the lab added after the bench wrote them. */
+    const val DETAILS_OMITTED = "detailsOmitted"
+    /** The version of [compact] a stored record has been through; [Compaction.version] runs the pass again below it. */
+    const val VERSION = 2
 
     /** A record as stored, and the provenance it refers to as its sha256 and compact JSON, when it has one. */
     data class Compacted(val text: String, val provenance: Pair<String, String>?)
@@ -55,6 +63,9 @@ internal object StoredRecords {
                 else -> stored[key] = value
             }
         }
+        // A solver record's envelope repeats the whole domain record as its details, often most of the record's bytes.
+        // Kept once: the envelope names the top-level keys the lab added since, and [inflate] puts the details back.
+        (stored[BENCH] as? JsonObject)?.let { bench -> withoutDetails(bench, stored)?.let { stored[BENCH] = it; changed = true } }
         if (!changed) return null
         return Compacted(Json.encodeToString(JsonElement.serializer(), JsonObject(stored)), provenance)
     }
@@ -69,15 +80,46 @@ internal object StoredRecords {
         return JsonObject(stats + (PRODUCER_RECORD to JsonPrimitive(trimmed)))
     }
 
-    /** [record] with its provenance back in place of its `buildProvenanceRef`, by [provenance]; as it is when it has no
-     *  reference or the provenance is not found. */
+    /**
+     * [bench] without its `details` when they are the domain record [stored] holds at its top level (with stats cut as
+     * [trimProducer] cuts them, and the provenance by its reference), naming the top-level keys the details lack; null
+     * when there are no details or they differ, so nothing is lost.
+     */
+    private fun withoutDetails(bench: JsonObject, stored: Map<String, JsonElement>): JsonObject? {
+        val details = bench[DETAILS] as? JsonObject ?: return null
+        if (DETAILS_OMITTED in bench) return null
+        val reference = (stored[PROVENANCE_REF] as? JsonPrimitive)?.content
+        for ((key, value) in details) {
+            val same = when {
+                key == PROVENANCE && value is JsonObject && reference != null ->
+                    sha256(Json.encodeToString(JsonElement.serializer(), value)) == reference
+                key == "stats" && value is JsonObject -> stored[key] == trimProducer(value)
+                else -> stored[key] == value
+            }
+            if (!same || key == BENCH) return null
+        }
+        val provenanceKey = if (PROVENANCE in details) PROVENANCE_REF else null
+        val omitted = stored.keys.filter { it != BENCH && it !in details && it != provenanceKey }
+        return JsonObject(bench.filterKeys { it != DETAILS } + (DETAILS_OMITTED to JsonArray(omitted.map(::JsonPrimitive))))
+    }
+
+    /**
+     * [record] as it was written: its provenance back in place of its `buildProvenanceRef`, by [provenance] (kept as the
+     * reference when not found), and its bench envelope's details back, the top-level record without the keys it names.
+     */
     fun inflate(record: JsonElement?, provenance: (String) -> JsonElement?): JsonElement? {
         if (record !is JsonObject) return record
-        val sha = (record[PROVENANCE_REF] as? JsonPrimitive)?.content ?: return record
-        val value = provenance(sha) ?: return record
-        val inflated = LinkedHashMap<String, JsonElement>(record.size)
-        for ((key, element) in record) if (key == PROVENANCE_REF) inflated[PROVENANCE] = value else inflated[key] = element
-        return JsonObject(inflated)
+        val withProvenance = (record[PROVENANCE_REF] as? JsonPrimitive)?.content?.let(provenance)?.let { value ->
+            val inflated = LinkedHashMap<String, JsonElement>(record.size)
+            for ((key, element) in record) if (key == PROVENANCE_REF) inflated[PROVENANCE] = value else inflated[key] = element
+            JsonObject(inflated)
+        } ?: record
+        val bench = withProvenance[BENCH] as? JsonObject ?: return withProvenance
+        val omitted = (bench[DETAILS_OMITTED] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }?.toSet() ?: return withProvenance
+        val details = JsonObject(withProvenance.filterKeys { it != BENCH && it !in omitted })
+        val restored = LinkedHashMap<String, JsonElement>(bench.size)
+        for ((key, value) in bench) if (key == DETAILS_OMITTED) restored[DETAILS] = details else restored[key] = value
+        return JsonObject(withProvenance + (BENCH to JsonObject(restored)))
     }
 
     private fun sha256(text: String): String =
@@ -101,6 +143,8 @@ data class Compaction(
     val startedAt: Long? = null,
     /** When every record had been compacted; null while it runs. */
     val migratedAt: Long? = null,
+    /** The [StoredRecords.VERSION] this pass compacts to; a newer one goes over every record again. */
+    val version: Int = 1,
     /** What the last vacuum did or why it was skipped, and when. */
     val vacuum: String? = null,
     val vacuumAt: Long? = null,
@@ -140,6 +184,7 @@ class DbCompaction(
     /** Compact every record not yet done; returns the state once all are. */
     fun migrate(): Compaction {
         var state = store.maintenance.compaction()
+        if (state.version < StoredRecords.VERSION) state = store.maintenance.restartCompaction(StoredRecords.VERSION)
         if (state.migratedAt != null) return state
         if (state.startedAt == null) {
             state = store.maintenance.startCompaction()
