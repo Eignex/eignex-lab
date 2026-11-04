@@ -63,7 +63,12 @@ class TrendTest {
         run(store, "other@unrelated", listOf(true))
         TrendCache(TrendPoints.of(store)).use { restarted ->
             val missing = mutableListOf<Long>()
-            val runs = Trend.runs(TrendData.of(store), "sweep", restarted, missing = missing)
+            // A page load reads stored rows only: no run is scored on it.
+            val reading = object : TrendData by TrendData.of(store) {
+                override fun scoringCases(job: Long): List<CaseResult> = error("a page load scored run $job")
+                override fun arms(job: Long): List<PlannedArm> = error("a page load read the arms of run $job")
+            }
+            val runs = Trend.stored(reading, "sweep", restarted, missing = missing)
             assertEquals(emptyList(), missing, "every finished run is read from its stored row")
             assertEquals(listOf(1.0, 0.0), runs.map { it.solved.value })
         }
@@ -98,21 +103,19 @@ class TrendTest {
     }
 
     @Test
-    fun `rechecking a completed confirmation refreshes its cached losses`() {
-        val record = kotlinx.serialization.json.Json.parseToJsonElement("""{"kind":"satisfy","feasible":true}""")
-        val absent = kotlinx.serialization.json.Json.parseToJsonElement("""{"kind":"satisfy"}""")
-        val problem = Problem("s", "p")
-        val cases = (0..2).flatMap { repeat -> listOf(
-            CaseResult(repeat * 2, Status.DONE, problem, Confirm.BEFORE, record = record, repeat = repeat),
-            CaseResult(repeat * 2 + 1, Status.DONE, problem, Confirm.AFTER, record = absent, repeat = repeat)) }
-        val rejected = cases.map { case -> if (case.arm != Confirm.BEFORE) case else case.copy(record = withLabCheck(
-            case.record, com.eignex.lab.checker.LabCheck("fixture", "invalid", "rejected", "fixture").json())) }
+    fun `a confirmation ending or being rechecked makes its run's stored point another version`() {
+        val store = Store(Files.createTempDirectory("confirmed-trend").resolve("lab.db"))
+        val id = run(store, "sweep@aaa", listOf(true))
+        val confirmation = store.job(run(store, "sweep${Confirm.SUFFIX}@aaa", listOf(true)))!!
+        val job = store.job(id)!!
+        val versions = listOf(TrendCache.version(job), TrendCache.version(job, confirmation = confirmation),
+            TrendCache.version(job, confirmation = confirmation, confirmationRevision = 1))
+        assertEquals(3, versions.toSet().size)
         TrendCache().use { cache ->
-            assertEquals(1, cache.confirmed(1, 0) { Confirm.confirmed(cases) }.lost.size)
-
-            val refreshed = cache.confirmed(1, 1) { Confirm.confirmed(rejected) }
-
-            assertEquals(0, refreshed.lost.size)
+            cache.put(id, TrendCache.version(job), null, null, emptySet())
+            val point = cache.stored(listOf(id)).getValue(id)
+            assertFalse(cache.expired(job, point, null))
+            assertEquals(true, cache.expired(job, point, confirmation), "a page load sees the confirmation ended and recomputes")
         }
     }
 
@@ -274,7 +277,7 @@ class TrendTest {
 
         val missing = ArrayList<Long>()
         val pointless = ArrayList<Long>()
-        val runs = Trend.runs(TrendData.of(store), "sweep", cache, missing = missing, pointless = pointless)
+        val runs = Trend.stored(TrendData.of(store), "sweep", cache, missing = missing, pointless = pointless)
 
         assertEquals(listOf(done), runs.map { it.job })
         assertEquals(emptyList(), missing)
@@ -316,21 +319,21 @@ class TrendTest {
     }
 
     @Test
-    fun `a page load leaves an uncached finished run to the background and shows it once computed`() {
+    fun `a page load computes no run and shows each once the background stored it, a running one too`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val done = run(store, "sweep@aaa", listOf(true, false))
         val going = run(store, "sweep@bbb", listOf(true), finish = false)
         val cache = TrendCache()
         val missing = ArrayList<Long>()
 
-        val first = Trend.runs(TrendData.of(store), "sweep", cache, missing = missing)
+        val first = Trend.stored(TrendData.of(store), "sweep", cache, missing = missing)
 
-        assertEquals(listOf(going), first.map { it.job })
-        assertEquals(listOf(done), missing)
+        assertEquals(emptyList(), first.map { it.job })
+        assertEquals(listOf(done, going), missing)
         val deadline = System.currentTimeMillis() + 10_000
-        while (cache.lookup(done, TrendCache.version(store.job(done)!!, TrendData.of(store).caseRevision(done)), store.references.stamp()) == null && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        while (cache.stored(listOf(done, going)).size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(20)
         val later = ArrayList<Long>()
-        assertEquals(listOf(done, going), Trend.runs(TrendData.of(store), "sweep", cache, missing = later).map { it.job })
+        assertEquals(listOf(done, going), Trend.stored(TrendData.of(store), "sweep", cache, missing = later).map { it.job })
         assertEquals(emptyList(), later)
     }
 
@@ -387,7 +390,7 @@ class TrendTest {
         assertEquals(SuiteShare(1, 1.0), point.themes.getValue("sat"))
         assertEquals(1, point.disagreements)
         assertEquals(mapOf("sat" to 1), point.disagreementsByTheme)
-        assertEquals(listOf(point), Trend.runs(TrendData.of(store), "sweep", cache, missing = mutableListOf()))
+        assertEquals(listOf(point), Trend.stored(TrendData.of(store), "sweep", cache, missing = mutableListOf()))
     }
 
 }
