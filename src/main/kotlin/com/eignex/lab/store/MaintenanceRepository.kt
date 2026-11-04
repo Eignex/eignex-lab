@@ -15,7 +15,8 @@ class MaintenanceRepository internal constructor(private val db: Database, lock:
     /** The compaction's progress ([DbCompaction]): where it is, or a fresh state before it started. */
     fun compaction(): Compaction = synchronized(lock) {
         connection.prepareStatement("SELECT state FROM compaction WHERE id = 0").use { statement ->
-            statement.executeQuery().use { r -> if (r.next()) Json.decodeFromString<Compaction>(r.getString(1)) else Compaction() }
+            // A state saved before compaction versions decodes as version 1; a database without one starts at the current.
+            statement.executeQuery().use { r -> if (r.next()) Json.decodeFromString<Compaction>(r.getString(1)) else Compaction(version = StoredRecords.VERSION) }
         }
     }
 
@@ -23,6 +24,11 @@ class MaintenanceRepository internal constructor(private val db: Database, lock:
         "INSERT INTO compaction (id, state) VALUES (0, ?) ON CONFLICT (id) DO UPDATE SET state = excluded.state",
         Json.encodeToString(state),
     )
+
+    /** Go over every record again for compaction [version], keeping the last vacuum's outcome. */
+    fun restartCompaction(version: Int): Compaction = synchronized(lock) {
+        transaction { compaction().let { Compaction(vacuum = it.vacuum, vacuumAt = it.vacuumAt, version = version) }.also(::saveCompaction) }
+    }
 
     /** Start the compaction: count the cases it has to go over. */
     fun startCompaction(): Compaction = synchronized(lock) {
