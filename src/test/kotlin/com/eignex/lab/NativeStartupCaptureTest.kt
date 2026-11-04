@@ -64,6 +64,8 @@ class NativeStartupCaptureTest {
         assertTrue(spec.instrumented)
         assertFalse(spec.measuresCli)
         assertEquals(1, spec.vcpus)
+        Experiments.validate(spec, 4)
+        assertNotEquals(Experiments.fingerprint(spec.copy(measurement = Measurement.NONE)), Experiments.fingerprint(spec))
         val store = Store(Files.createTempDirectory("native-startup-store").resolve("lab.db"))
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)
         store.plan(id, Experiments.arms(spec).map { PlannedArm(it, "sha") }, listOf(Problem("bench", "p")),

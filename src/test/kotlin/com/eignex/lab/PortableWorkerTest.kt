@@ -63,6 +63,10 @@ class PortableWorkerTest {
                 assertTrue(Files.readString(report).contains("sleep"))
                 assertEquals(identity, target.info().startInstant().orElseThrow())
                 assertTrue(target.isAlive)
+                val evidence = Path.of("build/native-startup-tests")
+                Files.createDirectories(evidence)
+                Files.copy(report, evidence.resolve("owned-process.sample.txt"), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                Files.writeString(evidence.resolve("owned-process.json"), """{"fixture":"owned sleep process, not a MiniZinc reliability run","pid":${target.pid()},"startedAt":"$identity","samplerExit":$exit,"nativeSampleRetained":true}""")
             } finally {
                 target.destroyForcibly()
                 target.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
