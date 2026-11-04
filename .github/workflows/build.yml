@@ -221,4 +221,6 @@ jobs:
         if: always()
         with:
           name: native-worker-tests
-          path: build/test-results/
+          path: |
+            build/test-results/
+            build/native-startup-tests/
