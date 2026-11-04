@@ -70,6 +70,14 @@ class Runner(
             var dropped = 0
             while (!stopping) { val batch = store.execution.dropDoneManifests(before); if (batch == 0) break; dropped += batch; Thread.sleep(200) }
             if (dropped > 0) println("dropped the manifests of $dropped sessions of jobs done over a day ago")
+            // Committed attempts from before results were kept slim: their case records already live in `cases`.
+            var slimmed = 0
+            var cursor: Long? = 0L
+            while (!stopping && cursor != null) {
+                cursor = store.execution.slimAcceptedResults(cursor)?.also { slimmed++ }
+                Thread.sleep(100)
+            }
+            if (slimmed > 0) println("slimmed $slimmed batches of committed results to their metadata")
         }
         while (!stopping) {
             val ownership = NativeExecutionLock.tryAcquire(config.nativeExecutionLock)
