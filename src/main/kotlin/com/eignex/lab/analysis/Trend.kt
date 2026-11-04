@@ -136,8 +136,8 @@ object Trend {
      * finished run's point comes from [cache] when its source-check revision matches. Reference rows can also change
      * its disagreement and shortfall counts, so a cached point is recomputed once the rows of one of its problems
      * changed and it is older than [TrendCache.maxReferenceLagMs]. A finished run with no point, one whose setup failed
-     * before any case ran, is remembered as such until the job changes. A confirmation's counts are read afresh, since
-     * it can end after its run.
+     * before any case ran, is remembered as such until the job changes. A confirmation's counts are part of its run's
+     * point, recomputed when the confirmation ends after it. This scores runs: page loads read [stored] instead.
      */
     fun runs(
         data: TrendData,
@@ -146,21 +146,10 @@ object Trend {
         refreshing: Boolean = false,
         /** Only the runs of this experiment ([Experiments.trendFingerprint]); null for every run. */
         experiment: String? = null,
-        /**
-         * For a page load: a finished run [cache] has no point for yet is not computed here but added to this, left out,
-         * and computed on the cache's background thread, so no load waits on it, however many runs a restart left
-         * uncached. Null computes every run.
-         */
-        missing: MutableList<Long>? = null,
-        /** Collects the finished runs known to have no point, which are neither shown nor being computed. */
-        pointless: MutableList<Long>? = null,
     ): List<TrendRun> {
         // Filtered by experiment before any case is read: a run's experiment is its spec's alone.
-        val jobs = scheduled(data, name)
-            .filter { job -> experiment == null || job.experiment.let(Experiments::trendFingerprint) == experiment }
-        val confirmations = data.runs(name + Confirm.SUFFIX, MAX_RUNS)
-            .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
-            .associateBy { it.name }
+        val jobs = scheduled(data, name, experiment)
+        val confirmations = confirmations(data, name)
         val stamp = cache?.sync(data)
         // Compare only matching runtime/control series even when the chart joins the same experiment and problem set.
         val previous = HashMap<String, Long>()
@@ -173,60 +162,88 @@ object Trend {
         val runs = jobs.mapNotNull { job ->
             val finished = job.status.isTerminal
             // A stale point is still served, and refreshed off the request (see [TrendCache]); a refresh recomputes it.
-            // A running one's point too, for [TrendCache.LIVE_MS]: its cases finish one by one, and a page load that
-            // finds it older is served it while it is recomputed.
-            val version = TrendCache.version(job, data.caseRevision(job.id))
-            val cached = cache?.let { if (finished) it.lookup(job.id, version, stamp) else it.lookupLive(job.id) }?.takeIf { it.fresh || !refreshing }
+            // A running one's point too, for [TrendCache.LIVE_MS]: its cases finish one by one. The confirmation of a
+            // run is part of its point, so one that ends later makes the point another version.
+            val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
+            val version = TrendCache.version(job, data.caseRevision(job.id), confirmation,
+                confirmation?.takeIf { it.status == Status.DONE }?.let { data.caseRevision(it.id) } ?: 0)
+            val cached = cache?.lookup(job.id, version, stamp, live = !finished)?.takeIf { it.fresh || !refreshing }
             if (cached?.fresh == false) stale = true
             // Known to have no point: neither shown nor counted as being computed.
-            if (cached != null && cached.run == null) {
-                pointless?.add(job.id)
-                return@mapNotNull null
-            }
-            if (cached == null && finished && missing != null && cache != null) {
-                missing += job.id
-                stale = true
-                return@mapNotNull null
-            }
-            val base = cached?.run ?: run {
+            if (cached != null && cached.run == null) return@mapNotNull null
+            val point = cached?.run ?: run {
                 val arms = data.arms(job.id)
                 val cases = data.scoringCases(job.id)
                 ownCases[job.id] = cases.filter { it.arm == arms.firstOrNull()?.arm?.label }
                 val keys = cases.map { it.problem.referenceKey }
                 val trend = run(job, arms, cases, data.references(keys, References.sources(cases)), data.features(keys.distinct()))
                 if (trend == null) {
-                    if (finished) cache?.put(job.id, version, stamp, null, emptySet())
-                    pointless?.add(job.id)
+                    cache?.put(job.id, version, stamp, null, emptySet())
                     return@mapNotNull null
                 }
                 val flips = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE }
                     ?.let { Confirm.flips(own(it), own(job.id)) }
+                val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(data.scoringCases(it.id)) }
                 trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
                     proofLost = flips?.proofLost?.size, proofGained = flips?.proofGained?.size,
-                    objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size)
-                    .also { if (finished) cache?.put(job.id, version, stamp, it, keys.toSet()) else cache?.putLive(job.id, it) }
+                    objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size,
+                    confirmJob = confirmation?.id,
+                    confirmedLost = confirmed?.lost?.size,
+                    confirmedGained = confirmed?.gained?.size,
+                    confirmedProofLost = confirmed?.proofLost?.size,
+                    confirmedProofGained = confirmed?.proofGained?.size,
+                    confirmedObjectiveLost = confirmed?.objectiveLost?.size,
+                    confirmedObjectiveGained = confirmed?.objectiveGained?.size)
+                    .also { cache?.put(job.id, version, stamp, it, keys.toSet()) }
             }
-            if (job.status == Status.DONE) previous[comparisonKey(base)] = job.id
-            val confirmation = confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)]
-            val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { done ->
-                cache?.confirmed(done.id, data.caseRevision(done.id)) { Confirm.confirmed(data.scoringCases(done.id)) }
-                    ?: Confirm.confirmed(data.scoringCases(done.id))
-            }
-            base.copy(
-                confirmJob = confirmation?.id,
-                confirmedLost = confirmed?.lost?.size,
-                confirmedGained = confirmed?.gained?.size,
-                confirmedProofLost = confirmed?.proofLost?.size,
-                confirmedProofGained = confirmed?.proofGained?.size,
-                confirmedObjectiveLost = confirmed?.objectiveLost?.size,
-                confirmedObjectiveGained = confirmed?.objectiveGained?.size,
-            )
+            if (job.status == Status.DONE) previous[comparisonKey(point)] = job.id
+            point
         }
         if (stale && cache != null) {
             cache.refreshLater("$name/${experiment.orEmpty()}") { runs(data, name, cache, refreshing = true, experiment = experiment) }
         }
         return runs
     }
+
+    /**
+     * What a page load shows: every run's stored point ([TrendCache.stored]), read in one query beside the run list and
+     * its confirmations, with nothing scored or checked on the request, however old the runs. A run with no stored point
+     * yet is added to [missing], one stored as having none to [pointless]. When any is missing or its stored point is
+     * past its age or another finish state ([TrendCache.expired]), the schedule is recomputed ([runs]) on the cache's
+     * background thread, which also takes in reference and source-check changes.
+     */
+    fun stored(
+        data: TrendData,
+        name: String,
+        cache: TrendCache,
+        experiment: String? = null,
+        missing: MutableList<Long>? = null,
+        pointless: MutableList<Long>? = null,
+    ): List<TrendRun> {
+        val jobs = scheduled(data, name, experiment)
+        val confirmations = confirmations(data, name)
+        val points = cache.stored(jobs.map { it.id })
+        var stale = false
+        val runs = jobs.mapNotNull { job ->
+            val point = points[job.id]
+            if (point == null) {
+                missing?.add(job.id)
+                stale = true
+                return@mapNotNull null
+            }
+            if (cache.expired(job, point, confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)])) stale = true
+            point.run ?: run {
+                pointless?.add(job.id)
+                null
+            }
+        }
+        if (stale) cache.refreshLater("$name/${experiment.orEmpty()}") { runs(data, name, cache, refreshing = true, experiment = experiment) }
+        return runs
+    }
+
+    private fun confirmations(data: TrendData, name: String): Map<String, Job> = data.runs(name + Confirm.SUFFIX, MAX_RUNS)
+        .filter { it.name.startsWith("$name${Confirm.SUFFIX}@") }
+        .associateBy { it.name }
 
     /** Statistical comparisons retain their stricter controls independently of visual chart grouping. */
     private fun comparisonKey(run: TrendRun): String = run.spec +
@@ -247,8 +264,9 @@ object Trend {
     }
 
     /** Every run a schedule named [name] queued and did not cancel, oldest first, none of them read. */
-    fun scheduled(data: TrendData, name: String): List<Job> = data.runs(name, MAX_RUNS)
+    fun scheduled(data: TrendData, name: String, experiment: String? = null): List<Job> = data.runs(name, MAX_RUNS)
         .filter { it.origin == JobOrigin.Scheduled(name) && it.status != Status.CANCELLED }
+        .filter { job -> experiment == null || job.experiment.let(Experiments::trendFingerprint) == experiment }
         .sortedBy { it.id }
 
     fun run(
@@ -317,8 +335,8 @@ object Trend {
 }
 
 /**
- * Finished runs' trend points, kept between requests and only in memory: a schedule's trend reads every run it has, and
- * recomputing a hundred finished runs on a page load took seconds. A point whose problems' reference rows changed since
+ * Every run's trend point, one stored row per run ([TrendPoints]): a page load only reads them ([Trend.stored]), and every
+ * point is computed on one background thread. A running job's point is recomputed after [LIVE_MS]. A point whose problems' reference rows changed since
  * it was computed, and which is older than [maxReferenceLagMs], is stale: still served, and recomputed off the request on
  * one background thread, so no page load waits on a recompute and a schedule is refreshed once however many loads find it
  * stale. A change to one problem's rows leaves every point that did not run it fresh.
@@ -337,7 +355,6 @@ class TrendCache(
     /** A cached point, null for a run known to have none, and whether it is fresh. */
     class Cached(val run: TrendRun?, val fresh: Boolean)
 
-    private class Entry(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<ProblemKey>)
     private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val background = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread(task, "trend-refresh").apply { isDaemon = true }
@@ -376,9 +393,10 @@ class TrendCache(
      * [job]'s point as cached for this [version] of the job ([TrendCache.version]), none for another: fresh unless the
      * rows of one of its problems changed after it was computed ([stamp]) and it is older than [maxReferenceLagMs].
      */
-    fun lookup(job: Long, version: String, stamp: Long?): Cached? {
-        val entry = points.load(job)?.takeIf { it.version == version } ?: return null
+    fun lookup(job: Long, version: String, stamp: Long?, live: Boolean = false): Cached? {
+        val entry = points.load(listOf(job))[job]?.takeIf { it.version == version } ?: return null
         val age = clock() - entry.at
+        if (live) return Cached(entry.run, age <= LIVE_MS)
         val moved = entry.stamp != stamp && (everyPointBefore?.let { before -> entry.stamp == null || entry.stamp < before } == true ||
             entry.problems.any { problem -> changed[problem]?.let { at -> entry.stamp == null || at > entry.stamp } == true })
         return Cached(entry.run, (!moved || age <= maxReferenceLagMs) && age <= maxAgeMs)
@@ -389,19 +407,21 @@ class TrendCache(
         points.save(job, TrendPoints.Point(version, stamp, clock(), run, problems))
     }
 
-    private val live = Lru<Long, Entry>(MAX_LIVE)
+    /** The stored points of [jobs], whatever their version or age: what a page load shows ([Trend.stored]). */
+    fun stored(jobs: Collection<Long>): Map<Long, TrendPoints.Point> = points.load(jobs)
 
-    /** A running [job]'s point, fresh for [LIVE_MS]. */
-    fun lookupLive(job: Long): Cached? = live[job]?.let { Cached(it.run, clock() - it.at <= LIVE_MS) }
-
-    fun putLive(job: Long, run: TrendRun) {
-        live[job] = Entry("", null, clock(), run, emptySet())
+    /**
+     * Whether [point], stored for [job], is due a recompute that a page load can tell without reading anything more:
+     * the job or its [confirmation] reached another finish state, or the point is past its age ([maxAgeMs], or
+     * [LIVE_MS] for a running job). Source-check and reference changes are found by the background recompute.
+     */
+    fun expired(job: Job, point: TrendPoints.Point, confirmation: Job?): Boolean {
+        val parts = point.version.split('/')
+        val age = clock() - point.at
+        return parts.getOrNull(0) != job.status.toString() || parts.getOrNull(1) != job.finishedAt.toString() ||
+            parts.filter { it.startsWith(CONFIRMATION) } != listOfNotNull(confirmation?.let(::confirmationPart)) ||
+            age > if (job.status.isTerminal) maxAgeMs else LIVE_MS
     }
-
-    private val confirmations = Lru<Pair<Long, Long>, Flips>(MAX_JOBS)
-
-    /** A finished confirmation's flips for its current source-check revision. */
-    fun confirmed(job: Long, revision: Long = 0, compute: () -> Flips): Flips = confirmations.getOrPut(job to revision, compute)
 
     /** Run [refresh] of [key] on the background thread, unless a refresh of it is already waiting or running. */
     fun refreshLater(key: String, refresh: () -> Unit) {
@@ -423,15 +443,17 @@ class TrendCache(
     }
 
     companion object {
-        /** The confirmations whose flips are kept, the least recently read leaving first. */
-        private const val MAX_JOBS = 4096
-        /** The running jobs whose points are kept. */
-        private const val MAX_LIVE = 256
         /** The changed problems tracked before every point is recomputed instead. */
         private const val MAX_CHANGED = 100_000
 
-        /** A retry changes the job's finish state; a source recheck changes its case revision. */
-        fun version(job: Job, revision: Long = 0): String = "${job.status}/${job.finishedAt}" + if (revision == 0L) "" else "/checks-$revision"
+        /** A retry changes the job's finish state; a source recheck changes its case revision. A run's confirmation is
+         *  part of its point, so its finish state and case revision are part of the version too. */
+        fun version(job: Job, revision: Long = 0, confirmation: Job? = null, confirmationRevision: Long = 0): String =
+            "${job.status}/${job.finishedAt}" + (if (revision == 0L) "" else "/checks-$revision") +
+                (confirmation?.let { "/" + confirmationPart(it) + if (confirmationRevision == 0L) "" else "/confirmed-checks-$confirmationRevision" } ?: "")
+
+        private const val CONFIRMATION = "confirmation-"
+        private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L
         private const val DEFAULT_MAX_AGE_MS = 6 * 60 * 60_000L
@@ -444,7 +466,7 @@ class TrendCache(
 interface TrendPoints {
     class Point(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<ProblemKey>)
 
-    fun load(job: Long): Point?
+    fun load(jobs: Collection<Long>): Map<Long, Point>
     fun save(job: Long, point: Point)
 
     companion object {
@@ -453,17 +475,17 @@ interface TrendPoints {
         /** Points in [store]'s `trend_points`, one row per run, kept across restarts. A row that no longer decodes
          *  (an older point format) reads as absent and is recomputed. */
         fun of(store: Store): TrendPoints = object : TrendPoints {
-            override fun load(job: Long): Point? = store.trendPoints.load(listOf(job))[job]?.let { row ->
-                val run = row.run?.let { runCatching { json.decodeFromString(TrendRun.serializer(), it) }.getOrNull() ?: return null }
-                Point(row.version, row.referenceStamp, row.computedAt, run, row.problems)
-            }
+            override fun load(jobs: Collection<Long>): Map<Long, Point> = store.trendPoints.load(jobs).mapNotNull { (job, row) ->
+                val run = row.run?.let { runCatching { json.decodeFromString(TrendRun.serializer(), it) }.getOrNull() ?: return@mapNotNull null }
+                job to Point(row.version, row.referenceStamp, row.computedAt, run, row.problems)
+            }.toMap()
             override fun save(job: Long, point: Point) = store.trendPoints.save(job,
                 StoredTrendPoint(point.version, point.stamp, point.at, point.run?.let { json.encodeToString(TrendRun.serializer(), it) }, point.problems))
         }
 
         fun memory(): TrendPoints = object : TrendPoints {
             private val points = java.util.concurrent.ConcurrentHashMap<Long, Point>()
-            override fun load(job: Long) = points[job]
+            override fun load(jobs: Collection<Long>) = jobs.mapNotNull { job -> points[job]?.let { job to it } }.toMap()
             override fun save(job: Long, point: Point) { points[job] = point }
         }
     }
