@@ -113,7 +113,9 @@ interface TrendData {
                     evidence.getOrPut(Triple(collection, problem, stamp)) { store.problemRuns(collection, problem, withWitness = true) }
                 }
             }
-            override fun caseRevision(job: Long) = store.plans.caseRevision(job) + store.plans.checkRevision() + (store.lastFinished() ?: 0)
+            // A run's own cases and the lab's source checks. Evidence later jobs retain reaches stored points through
+            // their maximum age ([TrendCache.maxAgeMs]) instead of invalidating every point whenever any job finishes.
+            override fun caseRevision(job: Long) = store.plans.caseRevision(job) + store.plans.checkRevision()
             override fun references(keys: Collection<ProblemKey>, sources: Map<ProblemKey, String?>) = store.references.matching(keys, sources = sources)
             override fun features(keys: Collection<ProblemKey>) = store.references.features(keys)
             override fun schedules() = store.schedules.all()
@@ -316,13 +318,21 @@ object Trend {
  * one background thread, so no page load waits on a recompute and a schedule is refreshed once however many loads find it
  * stale. A change to one problem's rows leaves every point that did not run it fresh.
  */
-class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private val clock: () -> Long = System::currentTimeMillis) : AutoCloseable {
+class TrendCache(
+    /** Where finished runs' points are kept: one stored row per run in production ([TrendPoints.of]). */
+    private val points: TrendPoints = TrendPoints.memory(),
+    val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS,
+    /** How long a stored point is served before it is recomputed off the request, which picks up evidence later runs
+     *  retained (a contradicted optimum) without recomputing every point whenever any job finishes. */
+    val maxAgeMs: Long = DEFAULT_MAX_AGE_MS,
+    private val clock: () -> Long = System::currentTimeMillis,
+) : AutoCloseable {
+    constructor(maxReferenceLagMs: Long, clock: () -> Long) : this(TrendPoints.memory(), maxReferenceLagMs, DEFAULT_MAX_AGE_MS, clock)
+
     /** A cached point, null for a run known to have none, and whether it is fresh. */
     class Cached(val run: TrendRun?, val fresh: Boolean)
 
     private class Entry(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<ProblemKey>)
-
-    private val entries = Lru<Long, Entry>(MAX_JOBS)
     private val refreshing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val background = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread(task, "trend-refresh").apply { isDaemon = true }
@@ -330,6 +340,8 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
 
     /** The reference stamp last synced, and when each problem's rows last changed since the first sync. */
     private var synced = false
+    /** Past [MAX_CHANGED] changed problems, every point computed against an earlier stamp than this is stale. */
+    @Volatile private var everyPointBefore: Long? = null
     private var lastStamp: Long? = null
     private val changed = java.util.concurrent.ConcurrentHashMap<ProblemKey, Long>()
 
@@ -345,7 +357,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
             // Past this many changed problems, every point is recomputed instead of tracking them all.
             if (changed.size > MAX_CHANGED) {
                 changed.clear()
-                entries.clear()
+                everyPointBefore = stamp
             }
         }
         synced = true
@@ -360,16 +372,16 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
      * rows of one of its problems changed after it was computed ([stamp]) and it is older than [maxReferenceLagMs].
      */
     fun lookup(job: Long, version: String, stamp: Long?): Cached? {
-        val entry = entries[job]?.takeIf { it.version == version } ?: return null
-        val moved = entry.stamp != stamp && entry.problems.any { problem ->
-            changed[problem]?.let { at -> entry.stamp == null || at > entry.stamp } == true
-        }
-        return Cached(entry.run, !moved || clock() - entry.at <= maxReferenceLagMs)
+        val entry = points.load(job)?.takeIf { it.version == version } ?: return null
+        val age = clock() - entry.at
+        val moved = entry.stamp != stamp && (everyPointBefore?.let { before -> entry.stamp == null || entry.stamp < before } == true ||
+            entry.problems.any { problem -> changed[problem]?.let { at -> entry.stamp == null || at > entry.stamp } == true })
+        return Cached(entry.run, (!moved || age <= maxReferenceLagMs) && age <= maxAgeMs)
     }
 
-    /** Caches [job]'s point, or null for a run with none, computed against reference [stamp] from [problems]' rows. */
+    /** Stores [job]'s point, or null for a run with none, computed against reference [stamp] from [problems]' rows. */
     fun put(job: Long, version: String, stamp: Long?, run: TrendRun?, problems: Set<ProblemKey>) {
-        entries[job] = Entry(version, stamp, clock(), run, problems)
+        points.save(job, TrendPoints.Point(version, stamp, clock(), run, problems))
     }
 
     private val live = Lru<Long, Entry>(MAX_LIVE)
@@ -406,7 +418,7 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
     }
 
     companion object {
-        /** The finished runs whose points are kept, the least recently read leaving first. */
+        /** The confirmations whose flips are kept, the least recently read leaving first. */
         private const val MAX_JOBS = 4096
         /** The running jobs whose points are kept. */
         private const val MAX_LIVE = 256
@@ -417,7 +429,37 @@ class TrendCache(val maxReferenceLagMs: Long = DEFAULT_REFERENCE_LAG_MS, private
         fun version(job: Job, revision: Long = 0): String = "${job.status}/${job.finishedAt}" + if (revision == 0L) "" else "/checks-$revision"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L
+        private const val DEFAULT_MAX_AGE_MS = 6 * 60 * 60_000L
         /** How long a running job's point is served before it is recomputed. */
         const val LIVE_MS = 20_000L
+    }
+}
+
+/** Where [TrendCache] keeps finished runs' points: one row per run in the lab's database, or a map for tests. */
+interface TrendPoints {
+    class Point(val version: String, val stamp: Long?, val at: Long, val run: TrendRun?, val problems: Set<ProblemKey>)
+
+    fun load(job: Long): Point?
+    fun save(job: Long, point: Point)
+
+    companion object {
+        private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+        /** Points in [store]'s `trend_points`, one row per run, kept across restarts. A row that no longer decodes
+         *  (an older point format) reads as absent and is recomputed. */
+        fun of(store: Store): TrendPoints = object : TrendPoints {
+            override fun load(job: Long): Point? = store.trendPoints.load(listOf(job))[job]?.let { row ->
+                val run = row.run?.let { runCatching { json.decodeFromString(TrendRun.serializer(), it) }.getOrNull() ?: return null }
+                Point(row.version, row.referenceStamp, row.computedAt, run, row.problems)
+            }
+            override fun save(job: Long, point: Point) = store.trendPoints.save(job,
+                StoredTrendPoint(point.version, point.stamp, point.at, point.run?.let { json.encodeToString(TrendRun.serializer(), it) }, point.problems))
+        }
+
+        fun memory(): TrendPoints = object : TrendPoints {
+            private val points = java.util.concurrent.ConcurrentHashMap<Long, Point>()
+            override fun load(job: Long) = points[job]
+            override fun save(job: Long, point: Point) { points[job] = point }
+        }
     }
 }
