@@ -12,7 +12,7 @@ anything leaves a receipt under operations/autodeploy-<stamp>/; everything is lo
 Nothing here builds code: the bytes deployed are the ones CI tested. The schema only moves forward on main, and a
 release that does not start is rolled back before the next pass. Run by hand with --dry-run to see what a pass would do.
 """
-import argparse, datetime, fcntl, hashlib, io, json, os, pwd, shutil, subprocess, sys, tempfile, time, urllib.request, zipfile
+import argparse, base64, datetime, fcntl, hashlib, io, json, os, pwd, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request, zipfile
 
 OWNER = os.environ.get('LAB_AUTODEPLOY_USER', 'rasmusros')
 HOME = pwd.getpwnam(OWNER).pw_dir
@@ -37,12 +37,25 @@ def log(message):
         out.write(line + '\n')
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
 def github(path, raw=False):
+    """GitHub API [path] of the repository. A redirect (an artifact download) is followed without the token, which the
+    storage it points at neither needs nor accepts."""
     token = open(f'{DATA}/github-token').read().strip()
     request = urllib.request.Request(f'https://api.github.com/repos/{REPO}/{path}', headers={
         'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'eignex-lab-autodeploy'})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        body = response.read()
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(request, timeout=60) as response:
+            body = response.read()
+    except urllib.error.HTTPError as error:
+        if error.code not in (301, 302, 303, 307, 308):
+            raise
+        with urllib.request.urlopen(error.headers['Location'], timeout=600) as response:
+            body = response.read()
     return body if raw else json.loads(body)
 
 
@@ -163,15 +176,25 @@ def refresh_adapters(sha):
             if entry['type'] != 'file':
                 continue
             path = f'{ADAPTERS}/{part}/{entry["name"]}'
-            body = github(f'contents/{entry["path"]}?ref={sha}', raw=False)
-            import base64
-            data = base64.b64decode(body['content'])
+            data = base64.b64decode(github(f'contents/{entry["path"]}?ref={sha}')['content'])
             fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.autodeploy-')
             with os.fdopen(fd, 'wb') as out:
                 out.write(data)
             os.chmod(tmp, 0o755 if entry['name'].endswith('.sh') else 0o644)
             owner = pwd.getpwnam(OWNER); os.chown(tmp, owner.pw_uid, owner.pw_gid)
             os.replace(tmp, path)
+
+
+def refresh_self(sha):
+    """This script as deploy/autodeploy.py holds it at [sha], for the next pass."""
+    data = base64.b64decode(github(f'contents/deploy/autodeploy.py?ref={sha}')['content'])
+    compile(data, 'autodeploy.py', 'exec')
+    me = os.path.abspath(__file__)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(me), prefix='.autodeploy-')
+    with os.fdopen(fd, 'wb') as out:
+        out.write(data)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, me)
 
 
 def point_current(name):
@@ -245,6 +268,11 @@ def deploy(run, dry_run):
         outcome['rolledBack'] = healthy()
     json.dump(outcome, open(f'{ops}/receipt.json', 'w'), indent=2)
     log(f'{"deployed" if ok else "rolled back"} {name}; receipt {ops}')
+    if ok:
+        try:
+            refresh_self(run['head_sha'])
+        except Exception as error:  # a commit before this script existed, or GitHub busy: the running copy stays
+            log(f'kept the running autodeploy script: {type(error).__name__}: {error}')
 
 
 def main():
