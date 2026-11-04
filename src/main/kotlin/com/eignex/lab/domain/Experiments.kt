@@ -189,6 +189,7 @@ object Experiments {
 
     /** Refuse a spec the runner could not turn into commands; the message names the first problem. */
     fun validate(spec: ExperimentSpec, maxVcpus: Int, cores: Int = Int.MAX_VALUE) {
+        require(spec.measurement != Measurement.NATIVE_STARTUP || spec.isBench) { "native-startup measurement requires a repository bench" }
         require(spec.name.isNotBlank()) { "name is required" }
         NodeTags.validate(spec.nodeTags)
         if (!spec.isAnalysis) Repositories.requireAllowed(spec.repository)

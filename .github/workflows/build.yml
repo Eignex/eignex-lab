@@ -195,6 +195,8 @@ jobs:
         run: ./gradlew :test --tests com.eignex.lab.ColdBuildVerificationTest --tests com.eignex.lab.WarmBuildSourceTest
       - name: Verify interruption deadlines and bounded cost evidence
         run: ./gradlew :test --tests com.eignex.lab.WorkerInterruptionTest
+      - name: Verify bounded native startup diagnostics
+        run: ./gradlew :test --tests com.eignex.lab.NativeStartupCaptureTest --tests 'com.eignex.lab.PortableWorkerTest.native startup*' --tests 'com.eignex.lab.PortableWorkerTest.native sampling*'
       - name: Verify accepted artifact names on the native filesystem
         run: ./gradlew :test --tests com.eignex.lab.AcceptedArtifactFilesTest --tests com.eignex.lab.PreparedArchiveFilesTest
       - name: Verify native worker, detached process cleanup and durable ownership

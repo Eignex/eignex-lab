@@ -494,7 +494,7 @@ internal const val LAB_DEBUG = "CASE WHEN j.bench = 0 THEN " +
     "THEN (json_extract(c.record, '$.stats.labDebug') = 'true') ELSE NULL END AS lab_debug"
 
 /** Instrumented captures are identified per result, including repository-owned paired arms. */
-internal const val INSTRUMENTED = "COALESCE(j.measurement IN ('compilation', 'compilation+log') OR " +
+internal const val INSTRUMENTED = "COALESCE(j.measurement IN ('compilation', 'compilation+log', 'native-startup') OR " +
     "CASE WHEN json_valid(c.record) THEN json_extract(c.record, '$.stats.labMeasurement') IN ('compilation', 'compilation+log') ELSE 0 END, 0) AS instrumented"
 
 /** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */

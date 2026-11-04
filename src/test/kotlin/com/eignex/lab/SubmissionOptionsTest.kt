@@ -118,11 +118,11 @@ class SubmissionOptionsTest {
     }
 
     @Test
-    fun `bench instrumentation belongs to the repository request`() {
+    fun `CLI instrumentation belongs to the repository request while native capture is worker owned`() {
         val bench = BenchSpec("bench.json", com.eignex.lab.bench.BenchRequest(mapOf("measurement" to "jfr")))
         for (mode in Measurement.entries) {
             val experiment = ExperimentSpec("e", bench = bench, measurement = mode, vcpus = 4)
-            if (mode == Measurement.NONE) Experiments.validate(experiment, 4)
+            if (mode == Measurement.NONE || mode == Measurement.NATIVE_STARTUP) Experiments.validate(experiment, 4)
             else assertFailsWith<IllegalArgumentException> { Experiments.validate(experiment, 4) }
         }
     }
