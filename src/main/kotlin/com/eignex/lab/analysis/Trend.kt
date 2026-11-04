@@ -100,17 +100,22 @@ interface TrendData {
     fun referencesChangedSince(stamp: Long): Map<ProblemKey, Long>
 
     companion object {
+        /** Problems whose checked points [of] keeps between runs; each is a handful of small points. */
+        private const val MAX_EVIDENCE = 1024
+
         /** The trend's data as [store] keeps it. */
         fun of(store: Store): TrendData = object : TrendData {
             // Every run of a schedule claims optima on the same problems; one retained-evidence read per problem serves
             // them all until another run finishes or a source check changes, instead of a full scan per run.
-            private val evidence = Lru<Triple<String, String, Long>, List<ProblemRun>>(64)
+            // Only the compact checked points are kept: retained runs with their witnesses can be tens of megabytes each.
+            private val evidence = Lru<Triple<String, String, Long>, OptimumClaims.Evidence>(MAX_EVIDENCE)
             override fun runs(series: String, limit: Int) = store.jobs(limit = limit, name = series, withCommands = false)
             override fun arms(job: Long) = store.plans.arms(job)
             override fun scoringCases(job: Long): List<CaseResult> {
                 val stamp = (store.lastFinished() ?: 0) + store.plans.checkRevision()
-                return OptimumClaims.qualify(store, store.plans.scoringCases(job)) { collection, problem ->
-                    evidence.getOrPut(Triple(collection, problem, stamp)) { store.problemRuns(collection, problem, withWitness = true) }
+                return OptimumClaims.qualify(store, store.plans.scoringCases(job)) { claim ->
+                    val key = claim.problem.referenceKey
+                    evidence.getOrPut(Triple(key.collection, key.problem, stamp)) { OptimumClaims.retained(store, claim) }
                 }
             }
             // A run's own cases and the lab's source checks. Evidence later jobs retain reaches stored points through
