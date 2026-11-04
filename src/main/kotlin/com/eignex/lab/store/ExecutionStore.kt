@@ -490,6 +490,24 @@ class ExecutionStore internal constructor(private val store: Store) {
         PreparationExitFailure(count, stage, session.release)
     }
 
+    /** Startup evidence survives replacement/restart; only a proven executable failure spends this budget. */
+    internal fun workerStartupFailed(id: String, fingerprint: String?, diagnostic: String, at: Long = now()): Int = store.executionTransaction { db ->
+        val session = db.session(id) ?: return@executionTransaction 0
+        if (session.desired != Desired.RUN || session.allocation != null) return@executionTransaction 0
+        if (db.sqlRows("SELECT 1 FROM execution_events WHERE session_id = ? AND detail LIKE 'worker-startup:%'", id) { true }.isEmpty())
+            db.event(session.jobId, id, "worker-startup:${diagnostic.take(8192)}", at)
+        if (fingerprint == null) return@executionTransaction 0
+        val key = "worker-startup-failure:$fingerprint"
+        if (db.sqlRows("SELECT 1 FROM execution_events WHERE session_id = ? AND detail = ?", id, key) { true }.isEmpty())
+            db.event(session.jobId, id, key, at)
+        val count = db.sqlRows("""SELECT COUNT(*) FROM execution_events WHERE job_id = ? AND detail = ? AND id > COALESCE(
+            (SELECT MAX(id) FROM execution_events WHERE job_id = ? AND detail = 'manual-retry'), 0)""",
+            session.jobId, key, session.jobId) { it.getInt(1) }.single()
+        if (count >= 3) db.failActive(session.jobId,
+            "Nomad worker startup stopped after $count identical executable launch failures; fix the worker runtime and retry: ${diagnostic.take(8192)}", at)
+        count
+    }
+
     fun caseStarted(owner: AttemptOwner, index: Int, at: Long = now()) = store.executionTransaction { db ->
         val a = db.attempt(owner, at); require(index in a.indices && a.state == AttemptState.EXECUTING) { "case start outside executing iteration" }
         db.sqlUpdate("UPDATE commands SET status = 'RUNNING', started_at = COALESCE(started_at, ?) WHERE job_id = ? AND idx = ?", at, a.jobId, index)

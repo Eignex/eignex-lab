@@ -22,4 +22,6 @@ LABEL org.opencontainers.image.revision=$WORKER_RELEASE
 COPY build/install/eignex-lab/ /opt/lab/
 COPY src/main/resources/nomad/process_supervisor.py /opt/lab/process_supervisor.py
 COPY deploy/nomad/worker-entrypoint.sh /opt/lab/worker-entrypoint.sh
+RUN chmod 0755 /opt/lab/worker-entrypoint.sh /opt/lab/process_supervisor.py /opt/lab/bin/eignex-lab \
+    && test -x /opt/lab/worker-entrypoint.sh && test -x /opt/lab/process_supervisor.py && test -x /opt/lab/bin/eignex-lab
 ENTRYPOINT ["/opt/lab/worker-entrypoint.sh"]

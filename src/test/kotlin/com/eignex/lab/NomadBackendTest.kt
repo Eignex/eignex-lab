@@ -836,6 +836,7 @@ class NomadBackendTest {
     private val control = object : NomadControl {
         override var namespace = "default"
         val jobs = mutableMapOf<String, JsonObject>(); val allocations = mutableMapOf<String, NomadAllocation>()
+        val allocationDetails = mutableMapOf<String, NomadAllocation>()
         val nodeInventory = mutableMapOf<String, JsonObject>()
         val nodeTasks = mutableMapOf<String, List<JsonObject>>()
         override fun nodes() = nodeInventory.values.toList()
@@ -846,7 +847,13 @@ class NomadBackendTest {
         override fun submit(job: JsonObject) { submissions++; jobs[job.getValue("ID").jsonPrimitive.content] = job; if (failAfterSubmit) { failAfterSubmit = false; error("lost acknowledgement") } }
         override fun stop(id: String) { jobs.remove(id) }
         override fun allocations(job: String) = allocations.values.filter { it.job == job }
-        override fun allocation(id: String) = allocations[id]
+        override fun allocation(id: String) = allocationDetails[id] ?: allocations[id]
+        var startupErrors: String? = null
+        var startupLogUnavailable = false
+        override fun startupStderr(id: String): String? {
+            check(!startupLogUnavailable) { "logs already collected" }
+            return startupErrors
+        }
         var keyReads = 0; var keyId = "test"; var keyFailure = false
         override fun jwks(): JsonObject {
             keyReads++; check(!keyFailure) { "issuer unavailable" }
@@ -1030,6 +1037,116 @@ class NomadBackendTest {
         assertContains(store.job(id)!!.error!!, "3 worker exits without acceptance at stage registration")
         assertEquals(3, store.execution.sessions(id).size)
         assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `exit 126 before registration has bounded diagnostics and a durable replacement budget`(preparation: Boolean) {
+        val id = setup(preparation = preparation)
+        val original = manifest
+        var allocation = "allocation"
+        val credentials = mutableListOf<String>()
+        repeat(3) { index ->
+            val env = Json.parseToJsonElement(store.execution.submission(session.id)).jsonObject.getValue("TaskGroups").jsonArray[0]
+                .jsonObject.getValue("Tasks").jsonArray[0].jsonObject.getValue("Env").jsonObject
+            credentials += env.getValue("LAB_WORKER_TOKEN").jsonPrimitive.content
+            control.startupErrors = "x".repeat(20_000) + "\n/opt/lab/bin/eignex-lab: Permission denied ${credentials.last()}"
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(client = "failed", workerExit = NomadWorkerExit(126))
+            backend(Store(file)).reconcile()
+            if (index < 2) {
+                session = store.execution.sessions(id).single { it.desired == Desired.RUN }
+                assertEquals(original.copy(session = session.id), store.execution.manifest(session.id))
+                allocation = "exit126-$index"
+                control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, "node-$index", "running", "run")
+            }
+        }
+        val failed = store.job(id)!!
+        assertEquals(Status.FAILED, failed.status)
+        assertContains(failed.error!!, "3 identical executable launch failures")
+        assertContains(failed.error!!, "executable=/opt/lab/worker-entrypoint.sh")
+        assertContains(failed.error!!, "/opt/lab/bin/eignex-lab: Permission denied")
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
+        val events = store.execution.events(id)
+        assertEquals(3, events.count { it.detail.startsWith("worker-startup-failure:") })
+        val receipts = events.filter { it.detail.startsWith("worker-startup:") }
+        assertEquals(3, receipts.size)
+        assertTrue(receipts.all { it.detail.length <= 8192 + "worker-startup:".length })
+        val log = Files.readString(root.resolve("jobs/$id/job.log"))
+        credentials.forEach { assertFalse(log.contains(it)) }
+        assertContains(log, "[redacted]")
+        repeat(3) { backend(Store(file)).reconcile() }
+        assertEquals(3, store.execution.sessions(id).size)
+        assertTrue(store.retry(id)); backend(Store(file)).reconcile()
+        session = store.execution.sessions(id).single { it.desired == Desired.RUN }
+        control.allocations["manual"] = NomadAllocation("manual", session.nomadJobId, "repaired", "failed", "run", workerExit = NomadWorkerExit(126))
+        control.startupLogUnavailable = true
+        backend(Store(file)).reconcile()
+        assertTrue(store.job(id)!!.status.isActive, "manual retry resets the startup budget even when logs are unavailable")
+        assertContains(store.execution.events(id).last { it.detail.startsWith("worker-startup:") }.detail, "stderr=unavailable")
+    }
+
+    @Test fun `driver executable failures before registration are bounded without a process exit`() {
+        val id = setup(preparation = true)
+        var allocation = "allocation"
+        repeat(3) { index ->
+            // List stubs omit task errors, and one session can have several Nomad rescheduling allocations.
+            val stub = control.allocations.getValue(allocation).copy(client = "failed", createdAt = 2)
+            control.allocations[allocation] = stub
+            control.allocations["old-$index"] = stub.copy(id = "old-$index", createdAt = 1)
+            control.allocationDetails[allocation] = stub.copy(
+                launchError = "unable to start container process: exec: /opt/lab/worker-entrypoint.sh: permission denied")
+            backend(Store(file)).reconcile()
+            if (index < 2) {
+                session = store.execution.sessions(id).single { it.desired == Desired.RUN }
+                allocation = "driver-$index"
+                control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, "node-$index", "running", "run")
+            }
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertContains(store.job(id)!!.error!!, "worker-entrypoint.sh: permission denied")
+        assertContains(Files.readString(root.resolve("jobs/$id/job.log")), "stderr=unavailable")
+    }
+
+    @Test fun `unproven startup exits and node losses retain evidence without exhausting the executable budget`() {
+        val id = setup(preparation = true)
+        var allocation = "allocation"
+        repeat(9) { index ->
+            control.allocations[allocation] = control.allocations.getValue(allocation).copy(
+                client = if (index % 3 == 0) "lost" else "failed",
+                workerExit = when (index % 3) { 0 -> null; 1 -> NomadWorkerExit(1); else -> NomadWorkerExit(WORKER_TEMPORARY_EXIT) })
+            control.startupLogUnavailable = true
+            backend(Store(file)).reconcile()
+            assertTrue(store.job(id)!!.status.isActive)
+            session = store.execution.sessions(id).single { it.desired == Desired.RUN }
+            allocation = "infra-startup-$index"
+            control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, "node-$index", "running", "run")
+        }
+        assertEquals(9, store.execution.events(id).count { it.detail.startsWith("worker-startup:") })
+        assertFalse(store.execution.events(id).any { it.detail.startsWith("worker-startup-failure:") })
+    }
+
+    @Test fun `startup exit 127 retains prior attempts costs and accepted solve work`() {
+        val id = setup(problems = 3); register()
+        val claim = backend().claim(session.id, token, "allocation")!!
+        val started = now() - 2000
+        store.execution.phase(claim.owner, "executing", started)
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, started, now()) })
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(backend().commit(claim.owner, result)); backend().reconcile()
+        control.allocations["allocation"] = control.allocations.getValue("allocation").copy(client = "lost")
+        backend().reconcile()
+        val before = store.job(id)!!
+        repeat(3) { index ->
+            session = store.execution.sessions(id).single { it.desired == Desired.RUN }
+            val allocation = "missing-launcher-$index"
+            control.allocations[allocation] = NomadAllocation(allocation, session.nomadJobId, "node-$index", "failed", "run", workerExit = NomadWorkerExit(127))
+            backend(Store(file)).reconcile()
+        }
+        assertEquals(Status.FAILED, store.job(id)!!.status)
+        assertTrue(store.job(id)!!.runMs >= before.runMs)
+        assertEquals(result, store.execution.accepted(id, claim.owner.iteration))
+        assertTrue(store.job(id)!!.commands.filter { it.index in claim.indices }.all { it.status == Status.DONE })
+        assertEquals(4, store.execution.sessions(id).size)
     }
 
     private fun benchProblem(name: String, collection: String = "") = BenchRuns.problem(com.eignex.lab.bench.BenchCase(name,

@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
+import tempfile
 from sandbox import Sandbox, ROOT, run
 
 
@@ -45,7 +47,22 @@ def main():
              "registry@sha256:01cd312e67026f06f5d89c3e133a4a9adc7cb9eeb9b1194e0b2954dfd770efd2"])
         registered = True
         subprocess.run([ROOT / "gradlew", "installDist"], cwd=ROOT, check=True)
-        subprocess.run(["docker", "build", "-f", ROOT / "deploy/nomad/worker.Dockerfile", "--build-arg", "WORKER_RELEASE=connected-probe", "-t", image, ROOT], check=True)
+        # Simulate an archive/build context that lost executable bits, including the packaged JVM launcher.
+        with tempfile.TemporaryDirectory(prefix="image-context-", dir=state) as temporary:
+            context = Path(temporary)
+            shutil.copytree(ROOT / "build/install/eignex-lab", context / "build/install/eignex-lab")
+            for name in ("deploy/nomad/worker.Dockerfile", "deploy/nomad/worker-entrypoint.sh", "src/main/resources/nomad/process_supervisor.py"):
+                target = context / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / name, target)
+            for name in ("build/install/eignex-lab/bin/eignex-lab", "deploy/nomad/worker-entrypoint.sh", "src/main/resources/nomad/process_supervisor.py"):
+                (context / name).chmod(0o644)
+            subprocess.run(["docker", "build", "-f", context / "deploy/nomad/worker.Dockerfile", "--build-arg", "WORKER_RELEASE=connected-probe", "-t", image, context], check=True)
+        subprocess.run(["docker", "run", "--rm", "--network", "none", image, "--smoke-test"], check=True, timeout=30)
+        broken = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh", image, "-c",
+                                 "chmod a-x /opt/lab/bin/eignex-lab; exec /opt/lab/worker-entrypoint.sh --smoke-test"],
+                                text=True, capture_output=True, timeout=30)
+        assert broken.returncode == 126 and "/opt/lab/bin/eignex-lab" in broken.stderr, broken
         run(["docker", "push", image])
         digest = json.loads(run(["docker", "image", "inspect", image]))[0]["RepoDigests"][0]
         nodes = box.api("nodes")
