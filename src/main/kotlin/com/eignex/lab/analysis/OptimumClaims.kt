@@ -91,18 +91,20 @@ object OptimumClaims {
         }
     }
 
-    /** All retained points for the claimed problems, including other seeds, arms and revisions. */
-    fun qualify(store: Store, cases: List<CaseResult>): List<CaseResult> {
+    /** All retained points for the claimed problems, including other seeds, arms and revisions. [evidence] reads one
+     * problem's retained runs with their witnesses; a caller scoring many runs of the same problems may share them. */
+    fun qualify(store: Store, cases: List<CaseResult>,
+                evidence: (collection: String, problem: String) -> List<ProblemRun> = { collection, problem -> store.problemRuns(collection, problem, withWitness = true) }): List<CaseResult> {
         val claimed = cases.filter { (it.record as? JsonObject)?.let(::nativeOptimum) == true }
             .distinctBy { it.problem.referenceKey }
-        val evidence = claimed.flatMap { case ->
+        val retained = claimed.flatMap { case ->
             val key = case.problem.referenceKey
-            store.problemRuns(key.collection, key.problem, withWitness = true).map { run ->
+            evidence(key.collection, key.problem).map { run ->
                 case.copy(index = run.case, status = run.status, record = run.record, arm = run.arm,
                     seed = run.seed, repeat = run.repeat, origin = CaseOrigin(run.job, null))
             }
         }
-        return qualify(cases, evidence)
+        return qualify(cases, retained)
     }
 
     private data class Scope(val sources: JsonObject, val semantics: String, val maximize: Boolean,

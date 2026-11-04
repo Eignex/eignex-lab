@@ -102,9 +102,17 @@ interface TrendData {
     companion object {
         /** The trend's data as [store] keeps it. */
         fun of(store: Store): TrendData = object : TrendData {
+            // Every run of a schedule claims optima on the same problems; one retained-evidence read per problem serves
+            // them all until another run finishes or a source check changes, instead of a full scan per run.
+            private val evidence = Lru<Triple<String, String, Long>, List<ProblemRun>>(64)
             override fun runs(series: String, limit: Int) = store.jobs(limit = limit, name = series, withCommands = false)
             override fun arms(job: Long) = store.plans.arms(job)
-            override fun scoringCases(job: Long) = OptimumClaims.qualify(store, store.plans.scoringCases(job))
+            override fun scoringCases(job: Long): List<CaseResult> {
+                val stamp = (store.lastFinished() ?: 0) + store.plans.checkRevision()
+                return OptimumClaims.qualify(store, store.plans.scoringCases(job)) { collection, problem ->
+                    evidence.getOrPut(Triple(collection, problem, stamp)) { store.problemRuns(collection, problem, withWitness = true) }
+                }
+            }
             override fun caseRevision(job: Long) = store.plans.caseRevision(job) + store.plans.checkRevision() + (store.lastFinished() ?: 0)
             override fun references(keys: Collection<ProblemKey>, sources: Map<ProblemKey, String?>) = store.references.matching(keys, sources = sources)
             override fun features(keys: Collection<ProblemKey>) = store.references.features(keys)
