@@ -109,6 +109,7 @@ internal fun Application.api(services: ApiServices) {
         referenceRoutes(services)
         trendRoutes(services)
         fileRoutes(services)
+        corpusRoutes(CorpusIndexes(services.config.corpusDir))
         capacityRoutes(services)
     }
 }

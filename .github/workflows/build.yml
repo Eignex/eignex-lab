@@ -192,7 +192,7 @@ jobs:
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Verify native metadata interface and receipt compatibility
-        run: ./gradlew :test --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
+        run: ./gradlew :test --tests com.eignex.lab.CorpusIndexesTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
       - name: Verify cold build scope and cache compatibility
         run: ./gradlew :test --tests com.eignex.lab.ColdBuildVerificationTest --tests com.eignex.lab.WarmBuildSourceTest
       - name: Verify interruption deadlines and bounded cost evidence

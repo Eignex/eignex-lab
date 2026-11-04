@@ -40,6 +40,7 @@ dependencies {
     implementation("io.ktor:ktor-server-status-pages:$ktor")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
     implementation("com.github.luben:zstd-jni:1.5.7-24")
+    implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation("io.ktor:ktor-server-test-host:$ktor")
     testImplementation("com.eignex:klause-jvm:0.0.1-20261021.091620-860")
