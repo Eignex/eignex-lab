@@ -10,7 +10,12 @@ import kotlinx.serialization.Serializable
 
 /** One suite's share of solved problems in one run. */
 @Serializable
-data class SuiteShare(val problems: Int, val solved: Double)
+data class SuiteShare(
+    val problems: Int,
+    val solved: Double,
+    /** The share with a proof: an optimum proven or infeasibility shown, as the run's own [TrendRun.proven] counts. */
+    val proven: Double? = null,
+)
 
 /**
  * One run of a schedule, as a point in its trend: shares of the problems it ran with results so far, so a run still
@@ -291,7 +296,8 @@ object Trend {
         fun shares(group: (Problem) -> List<String>) = outcomes.entries.flatMap { e -> group(e.key).map { it to e } }
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, problems) ->
-                SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average())
+                SuiteShare(problems.size, problems.map { (_, runs) -> runs.map { if (it.rank > 0) 1.0 else 0.0 }.average() }.average(),
+                    problems.map { (_, runs) -> runs.map { if (!it.error && (it.proven || it.feasible == false)) 1.0 else 0.0 }.average() }.average())
             }.toSortedMap()
         val themesOf = outcomes.keys.associate { p ->
             (p.referenceKey) to Scoreboard.values(Dimension.THEME, p, features[p.referenceKey], emptyList())
@@ -418,7 +424,7 @@ class TrendCache(
     fun expired(job: Job, point: TrendPoints.Point, confirmation: Job?): Boolean {
         val parts = point.version.split('/')
         val age = clock() - point.at
-        return parts.getOrNull(0) != job.status.toString() || parts.getOrNull(1) != job.finishedAt.toString() ||
+        return parts.getOrNull(0) != job.status.toString() || parts.getOrNull(1) != job.finishedAt.toString() || POINT_FORMAT !in parts ||
             parts.filter { it.startsWith(CONFIRMATION) } != listOfNotNull(confirmation?.let(::confirmationPart)) ||
             age > if (job.status.isTerminal) maxAgeMs else LIVE_MS
     }
@@ -449,10 +455,12 @@ class TrendCache(
         /** A retry changes the job's finish state; a source recheck changes its case revision. A run's confirmation is
          *  part of its point, so its finish state and case revision are part of the version too. */
         fun version(job: Job, revision: Long = 0, confirmation: Job? = null, confirmationRevision: Long = 0): String =
-            "${job.status}/${job.finishedAt}" + (if (revision == 0L) "" else "/checks-$revision") +
+            "${job.status}/${job.finishedAt}/$POINT_FORMAT" + (if (revision == 0L) "" else "/checks-$revision") +
                 (confirmation?.let { "/" + confirmationPart(it) + if (confirmationRevision == 0L) "" else "/confirmed-checks-$confirmationRevision" } ?: "")
 
         private const val CONFIRMATION = "confirmation-"
+        /** What a stored point holds; a point stored in an earlier format is recomputed (here: proven per theme). */
+        private const val POINT_FORMAT = "format-2"
         private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L

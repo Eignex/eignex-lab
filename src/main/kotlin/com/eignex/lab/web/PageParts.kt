@@ -643,8 +643,9 @@ tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
 .multiples{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px 20px}
 .mtitle{font-size:12px;color:var(--muted);margin-bottom:2px}
 .tip{position:absolute;z-index:5;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;
-font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px}
-.tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted)}
+font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px;max-width:min(420px,calc(100vw - 16px))}
+.tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted);flex:none}
+.tip b{text-align:right;overflow-wrap:anywhere;min-width:0}
 """
 
 /** Filtering, actions and a refresh that swaps the live parts in place, so scrolling, a selection and a half-typed

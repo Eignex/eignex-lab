@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 import kotlinx.serialization.json.*
 
 class TrendTest {
@@ -358,6 +359,22 @@ class TrendTest {
     }
 
     @Test
+    fun `a run's proven problems are counted by theme as the run's own proven count`() {
+        val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
+        val id = run(store, "sweep@aaa", listOf(true, true, false))
+        store.caseRecord(id, 0, """{"kind":"optimize","feasible":true,"objective":3,"proven":true,"budgetMs":1000}""")
+        store.caseRecord(id, 1, """{"kind":"satisfy","feasible":false,"budgetMs":1000}""")
+        store.references.putFeatures((0..2).map { ProblemFeatures("", "p$it", listOf("mip")) })
+
+        val run = Trend.runs(TrendData.of(store), "sweep").single()
+
+        val mip = run.themes.getValue("mip")
+        assertEquals(3, mip.problems)
+        assertEquals(run.proven, mip.proven!!, 1e-9, "the theme of every problem proves what the run does")
+        assertTrue(mip.proven!! > 0, "a proven optimum counts")
+    }
+
+    @Test
     fun `a run's solved problems are counted by theme, a problem of several themes in each`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         run(store, "sweep@aaa", listOf(true, false))
@@ -387,7 +404,7 @@ class TrendTest {
         val cache = TrendCache()
         val point = Trend.runs(TrendData.of(store), "sweep", cache).single()
         assertEquals(id, point.job)
-        assertEquals(SuiteShare(1, 1.0), point.themes.getValue("sat"))
+        assertEquals(SuiteShare(1, 1.0, proven = 0.0), point.themes.getValue("sat"))
         assertEquals(1, point.disagreements)
         assertEquals(mapOf("sat" to 1), point.disagreementsByTheme)
         assertEquals(listOf(point), Trend.stored(TrendData.of(store), "sweep", cache, missing = mutableListOf()))

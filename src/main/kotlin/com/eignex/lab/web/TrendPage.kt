@@ -168,7 +168,7 @@ private const val TREND_SCRIPT = """<script>
     const themes = {};
     for (const t of Object.keys(base.themes || {})) {
       const own = (r.themes || {})[t];
-      if (own) themes[t] = {problems: base.themes[t].problems, solved: own.solved};
+      if (own) themes[t] = {problems: base.themes[t].problems, solved: own.solved, proven: own.proven};
     }
     return Object.assign({}, r, {problems: base.problems, themes: themes, projectedFrom: r.problems});
   }).filter(Boolean);
@@ -302,12 +302,17 @@ private const val TREND_SCRIPT = """<script>
     hit.style.cursor = 'pointer';
   }
 
+  // A comparison series names hashes of 64 hex digits; their first 8 tell series apart, the label part reads as is.
+  function shortSeries(series) {
+    return String(series).split(':').map(function (part) { return /^[0-9a-f]{64}$/.test(part) ? part.slice(0, 8) : part; }).join(':');
+  }
+
   function show(r, evt, suite) {
     const rows = [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['checked points', r.checkedPoints], ['native proof claims', r.nativeProofClaims],
       ['contradicted optima', r.contradictedOptima], ['unverified scope/check', r.unverifiedOptima],
-      ['comparison series', (r.comparisonSeries || ['historical-unqualified']).join(', ')],
+      ['comparison series', (r.comparisonSeries || ['historical-unqualified']).map(shortSeries).join(', ')],
       ['solved', (r.solved.value * r.problems).toFixed(1) + ' of ' + r.problems + ' (' + pct(r.solved.value) + ')' +
         (r.projectedFrom != null ? ', projected from the ' + r.projectedFrom + ' done so far' : '')],
       ['proven', (r.proven * r.problems).toFixed(1) + ' (' + pct(r.proven) + ')'], ['PAR-2', r.par2.value.toFixed(2) + ' s'],
@@ -320,12 +325,18 @@ private const val TREND_SCRIPT = """<script>
       ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];
     const group = suite && (r.themes || {})[suite];
-    if (group) rows.unshift([suite, Math.round(group.solved * group.problems) + ' of ' + group.problems + ' (' + pct(group.solved) + ')']);
+    if (group) {
+      if (group.proven != null) rows.unshift([suite + ' proven', Math.round(group.proven * group.problems) + ' of ' + group.problems + ' (' + pct(group.proven) + ')']);
+      rows.unshift([suite + ' solved', Math.round(group.solved * group.problems) + ' of ' + group.problems + ' (' + pct(group.solved) + ')']);
+    }
     tip.innerHTML = rows.map(function (kv) { return '<div><span>' + kv[0] + '</span><b>' + kv[1] + '</b></div>'; }).join('');
     tip.hidden = false;
     const w = tip.offsetWidth, h = tip.offsetHeight;
+    // Kept inside the window on both sides, so a label never ends up off screen.
+    const minLeft = window.scrollX + 8, maxLeft = window.scrollX + document.documentElement.clientWidth - w - 8;
     let left = evt.pageX + 14, top = evt.pageY - h - 10;
-    if (left + w > window.scrollX + document.documentElement.clientWidth - 8) left = evt.pageX - w - 14;
+    if (left > maxLeft) left = evt.pageX - w - 14;
+    left = Math.max(minLeft, Math.min(left, maxLeft));
     if (top < window.scrollY + 8) top = evt.pageY + 16;
     tip.style.left = left + 'px'; tip.style.top = top + 'px';
   }
@@ -370,10 +381,12 @@ private const val TREND_SCRIPT = """<script>
       cell.appendChild(plot);
       grid.appendChild(cell);
       const value = function (r) { const g = (r.themes || {})[s]; return g ? g.solved * g.problems : null; };
-      const seen = runs.map(value).filter(function (v) { return v != null; });
+      const proven = function (r) { const g = (r.themes || {})[s]; return g && g.proven != null ? g.proven * g.problems : null; };
+      const seen = runs.map(value).concat(runs.map(proven)).filter(function (v) { return v != null; });
       const size = Math.max.apply(null, runs.map(function (r) { const g = (r.themes || {})[s]; return g ? g.problems : 0; }));
-      draw(plot, [{name: s, color: 'var(--series-1)', value: value}], rangeAxis(seen, size),
-        {height: 130, endLabels: false, title: s + ' problems solved per run', suite: s,
+      draw(plot, [{name: 'solved', color: 'var(--series-1)', value: value}, {name: 'proven', color: 'var(--series-2)', value: proven}],
+        rangeAxis(seen, size),
+        {height: 130, endLabels: false, title: s + ' problems solved and proven per run', suite: s,
           flagged: function (r) { return ((r.disagreementsByTheme || {})[s] || 0) > 0; }});
     }
   }
