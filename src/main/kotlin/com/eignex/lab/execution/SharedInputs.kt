@@ -65,7 +65,9 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
             val key = "input-blobs/$sha"
             val path = root.resolve(safeRelative(relative))
             val size = available[sha] ?: if (Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical)) {
-                require(hashFile(path) == sha) { "declared input checksum mismatch: $relative" }
+                val observed = hashFile(path)
+                // Both bindings, so a job's diagnostics show which bytes the node held against which the plan declared.
+                require(observed == sha) { "declared input checksum mismatch: $relative (declared $sha, local $observed, ${Files.size(path)} bytes)" }
                 requests.run("upload", checkActive) { transport.put(key, path, sha) }
                 Files.size(path).also { available[sha] = it }
             } else { missing += relative; null }
