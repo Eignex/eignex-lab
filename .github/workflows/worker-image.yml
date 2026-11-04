@@ -3,10 +3,15 @@ name: worker-image
 # Publishes the Nomad worker image of one successful `build` run: the run's tested Linux distribution, with the
 # Dockerfile, entrypoint and process supervisor of the same commit, built natively per architecture and pushed to
 # public ECR as <commit>-amd64 and <commit>-arm64. A tag that already exists is never overwritten. Pushing assumes the
-# AWS role in the AWS_WORKER_IMAGE_ROLE repository variable through GitHub OIDC (deploy/infra/aws/github-worker-images.sh);
-# switching the fleet to the new images stays a separate, guarded step on the lab host.
+# AWS role in the AWS_WORKER_IMAGE_ROLE repository variable through GitHub OIDC (deploy/infra/aws/github-worker-images.sh).
+# It runs by itself after every successful build of a push to main, so each merge has its images; a tag that already
+# exists is then left as it is. The lab host switches its fleet to them ([SelfUpdater]).
 
 on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       run_id:
@@ -20,14 +25,19 @@ permissions:
   id-token: write
 
 concurrency:
-  group: worker-image-${{ inputs.run_id }}
+  group: worker-image-${{ inputs.run_id || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 env:
   REPOSITORY: public.ecr.aws/i7d5w3s6/eignex-lab-worker
+  RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+  # A merge's images may already exist (a rerun); only a hand-dispatched run insists on a new tag.
+  AUTOMATIC: ${{ github.event_name == 'workflow_run' }}
 
 jobs:
   source:
+    # Only a successful build of a push to main publishes on its own.
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -37,7 +47,6 @@ jobs:
         name: Resolve the build run
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.run_id }}
         run: |
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "run_id must be numeric"; exit 1; }
@@ -72,7 +81,7 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: eignex-lab-distribution
-          run-id: ${{ inputs.run_id }}
+          run-id: ${{ env.RUN_ID }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/distribution
       - name: Lay out the image context
@@ -87,17 +96,22 @@ jobs:
           for f in build/install/eignex-lab/bin/eignex-lab deploy/nomad/worker-entrypoint.sh src/main/resources/nomad/process_supervisor.py; do
             test -x "$f" || { echo "$f is not executable"; exit 1; }
           done
-      - name: Refuse to overwrite a published tag
+      - id: tag
+        name: Refuse to overwrite a published tag
         run: |
           if docker manifest inspect "$REPOSITORY:$SHA-$ARCH" > /dev/null 2>&1; then
-            echo "$REPOSITORY:$SHA-$ARCH already exists"; exit 1
+            echo "$REPOSITORY:$SHA-$ARCH already exists"
+            [ "$AUTOMATIC" = true ] || exit 1
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Build
+        if: steps.tag.outputs.exists != 'true'
         run: |
           set -euo pipefail
           docker build --platform "linux/$ARCH" --build-arg "WORKER_RELEASE=$SHA" -f deploy/nomad/worker.Dockerfile \
             -t "$REPOSITORY:$SHA-$ARCH" .
       - name: Verify the image
+        if: steps.tag.outputs.exists != 'true'
         run: |
           set -euo pipefail
           image="$REPOSITORY:$SHA-$ARCH"
@@ -106,13 +120,16 @@ jobs:
             test -x /opt/lab/worker-entrypoint.sh && test -x /opt/lab/process_supervisor.py && test -x /opt/lab/bin/eignex-lab &&
             test "$LAB_WORKER_RELEASE" = "'"$SHA"'" && java -version 2>&1 | head -1 && minizinc --version | head -1'
       - uses: aws-actions/configure-aws-credentials@v5
+        if: steps.tag.outputs.exists != 'true'
         with:
           role-to-assume: ${{ vars.AWS_WORKER_IMAGE_ROLE }}
           aws-region: us-east-1
       - uses: aws-actions/amazon-ecr-login@v2
+        if: steps.tag.outputs.exists != 'true'
         with:
           registry-type: public
       - name: Push
+        if: steps.tag.outputs.exists != 'true'
         run: |
           set -euo pipefail
           docker push "$REPOSITORY:$SHA-$ARCH"
