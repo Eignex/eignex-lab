@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex, ::trendPoints)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex, ::trendPoints, ::acceptedResultDigests)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -354,6 +354,17 @@ internal object Schema {
             it.execute("CREATE TABLE IF NOT EXISTS trend_points (job_id INTEGER PRIMARY KEY, version TEXT NOT NULL, " +
                 "reference_stamp INTEGER, computed_at INTEGER NOT NULL, run TEXT, problems TEXT NOT NULL)")
         }
+    }
+
+    /**
+     * Step 20: a committed attempt keeps its result without the case records it carried, which already live in `cases`,
+     * and the sha256 of the whole result as committed, which a retried commit is compared with. Existing rows are
+     * slimmed in small batches after startup ([ExecutionStore.slimAcceptedResults]), not here.
+     */
+    private fun acceptedResultDigests(db: Connection) {
+        val columns = db.createStatement().use { s -> s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r ->
+            generateSequence { if (r.next()) r.getString("name") else null }.toSet() } }
+        if ("result_sha256" !in columns) db.createStatement().use { it.execute("ALTER TABLE iteration_attempts ADD COLUMN result_sha256 TEXT") }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */
