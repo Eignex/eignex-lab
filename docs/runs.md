@@ -127,7 +127,7 @@ Repository bench jobs may set top-level `"measurement": "native-startup"` for wo
 MiniZinc discovery sampling. Submit the existing experiment JSON with `deploy/lab run`; omit
 placement tags as usual. This mode defaults to one vCPU and marks every case instrumented,
 including cases where sampling is unavailable. Its times are not ordinary runtime measurements.
-Use a coordinator and workers that support this measurement mode.
+Use an updated coordinator and workers supporting protocol 8; older manifests cannot request this mode.
 
 On Mac, a private wrapper identifies the case's supervised process tree. The worker considers
 only an executable named `minizinc` within that case's private worktree, with exactly one argument:

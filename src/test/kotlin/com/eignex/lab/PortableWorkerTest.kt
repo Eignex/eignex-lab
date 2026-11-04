@@ -24,6 +24,15 @@ import java.util.zip.ZipOutputStream
 import kotlin.test.*
 
 class PortableWorkerTest {
+    @Test fun `native startup manifests require protocol eight`() {
+        val (input, _) = bundle(mapOf("fixture" to "bytes"))
+        val spec = ExperimentSpec("capture", bench = BenchSpec("bench.json"), measurement = Measurement.NATIVE_STARTUP)
+        val manifest = WorkManifest("capture", "release", spec, Experiments.arms(spec).map { PlannedArm(it, input.commit) },
+            emptyList(), listOf(input), ResourceBudget(1000, 512), preparationTimeoutSec = 30)
+        assertEquals(8, manifest.schemaVersion)
+        assertFailsWith<IllegalArgumentException> { manifest.copy(schemaVersion = 7) }
+    }
+
     @Test fun `native startup wrapper preserves literal arguments and case exit`(): Unit = service { socket ->
         val marker = root.resolve("native-root.pid")
         val command = NativeStartupCapture.wrap(listOf("bash", "-c", "printf '%s' \"\$1\"; exit 7", "fixture", "literal argument"), marker)

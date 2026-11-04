@@ -78,6 +78,7 @@ data class WorkManifest(
     val cases: List<WorkCase>, val bundles: List<WorkerBundle>, val budget: ResourceBudget,
     val solveJavaOptions: String = "",
     @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
+        experiment.measurement == Measurement.NATIVE_STARTUP -> 8
         !experiment.isBench -> 1
         bundles.any { it.build?.gitBundle == PackedGitSource.MARKER } -> 7
         bundles.any { it.build?.preparation != null } -> 6
@@ -94,7 +95,8 @@ data class WorkManifest(
         bundles.firstOrNull()?.build?.preparation?.selector(experiment.nodeTags) ?: experiment.nodeTags
 
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..7) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..8) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(experiment.measurement != Measurement.NATIVE_STARTUP || schemaVersion >= 8) { "native startup capture requires worker protocol 8" }
         require(bundles.none { it.build?.gitBundle == PackedGitSource.MARKER } || schemaVersion >= 7) { "packed source requires worker protocol 7" }
         require(bundles.none { it.build?.preparation != null } || schemaVersion >= 6) { "separate preparation platforms require worker protocol 6" }
         require(bundles.map { it.build?.preparation }.distinct().size <= 1) { "preparation contracts differ between source bundles" }
