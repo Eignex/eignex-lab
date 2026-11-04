@@ -28,6 +28,7 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** Downloads' holds on jobs' files. */
     val holds = HoldRepository(db, this)
+    val trendPoints = TrendPointRepository(db, this)
 
     /** Experiments' plans: arms, problems, cases and their records. */
     val plans = PlanRepository(db, this)

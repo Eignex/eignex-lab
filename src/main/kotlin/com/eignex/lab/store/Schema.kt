@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex, ::trendPoints)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -348,8 +348,16 @@ internal object Schema {
         db.createStatement().use { it.execute("CREATE INDEX IF NOT EXISTS jobs_activity ON jobs (status, paused, cancel_requested)") }
     }
 
+    /** Step 19: each finished scheduled run's trend point, kept across restarts so the trend page only reads rows. */
+    private fun trendPoints(db: Connection) {
+        db.createStatement().use {
+            it.execute("CREATE TABLE IF NOT EXISTS trend_points (job_id INTEGER PRIMARY KEY, version TEXT NOT NULL, " +
+                "reference_stamp INTEGER, computed_at INTEGER NOT NULL, run TEXT, problems TEXT NOT NULL)")
+        }
+    }
+
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */
     val JOB_TABLES = listOf("commands", "arms", "problems", "cases", "holds", "execution_ingestion", "execution_checks",
         "execution_queue_recipes", "execution_selections", "execution_events", "iteration_attempts", "execution_outbox",
-        "execution_sessions")
+        "execution_sessions", "trend_points")
 }
