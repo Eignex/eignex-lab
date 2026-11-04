@@ -153,6 +153,15 @@ fun Application.workerApi(
                     call.respond(UploadReply(offset))
                 }
             }
+            put("/worker-log") {
+                // The worker's own console, appended at an offset like a case log; any session state may still send it.
+                withContext(CoordinatorIo.artifacts) {
+                    val s = call.session
+                    val bytes = call.receiveChannel().readRemaining((WorkerLogs.CHUNK_BYTES + 1).toLong()).readByteArray()
+                    require(bytes.size <= WorkerLogs.CHUNK_BYTES)
+                    call.respond(UploadReply(backend.logs.appendWorker(s, call.request.queryParameters["offset"]!!.toLong(), bytes)))
+                }
+            }
             post("/build-failed") {
                 // Lease and status updates must survive admission holds.
                 val s = call.session; val body = Json.decodeFromString<WorkerBuildError>(call.bodyText())
