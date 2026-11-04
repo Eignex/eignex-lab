@@ -24,6 +24,8 @@ class JobDirArchiver(
     private val archive: Path,
     private val ended: () -> List<Pair<Long, Long>>,
     private val graceMs: Long = 60 * 60_000L,
+    /** Whether the hot volume is short of space: ended jobs then leave it at once instead of after [graceMs]. */
+    private val urgent: () -> Boolean = { false },
     private val flush: (Path) -> Unit = { if (MacVolumeSync.supported) MacVolumeSync.flush(it) {} },
     private val clock: () -> Long = ::now,
     private val log: (String) -> Unit = { System.err.println("job archive: $it") },
@@ -32,7 +34,8 @@ class JobDirArchiver(
     fun pass(limit: Int = 8): List<Long> {
         require(Files.isDirectory(archive)) { "job archive volume unavailable: $archive" }
         val at = clock()
-        val candidates = ended().filter { (_, finished) -> at - finished >= graceMs }.sortedBy { it.second }.map { it.first }
+        val grace = if (urgent()) 0L else graceMs
+        val candidates = ended().filter { (_, finished) -> at - finished >= grace }.sortedBy { it.second }.map { it.first }
             .filter { job -> Files.isDirectory(hot.resolve(job.toString()), NOFOLLOW_LINKS) }
         val archived = mutableListOf<Long>()
         for (job in candidates.take(limit)) {

@@ -148,12 +148,15 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val response = request("gradle-cache/$key", method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
             response.statusCode() to response.body()
         })
+        // A host whose cache shares a small disk with other data (the lab Mac's SSD) sets smaller caps than a cloud node's.
+        fun cacheBytes(name: String, default: Long) = System.getenv(name)?.toLongOrNull()?.takeIf { it > 0 }?.let { it shl 30 } ?: default
         val builds = WorkerBuildCache(cacheRoot.resolve("builds"), ProcessSupervisor(supervisorSocket),
+            maxBytes = cacheBytes("LAB_WORKER_BUILD_CACHE_GB", 32L shl 30),
             observeBuild = { stdout, stderr, exit -> preparationRecorder?.build(stdout, stderr, exit) }, remoteCache = { gradleCache.url })
         Thread({
             try { builds.maintain() } catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
         }, "worker-build-cleanup").apply { isDaemon = true; start() }
-        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"), builds = builds)
+        val inputCache = WorkerInputCache(cacheRoot.resolve("inputs"), maxBytes = cacheBytes("LAB_WORKER_INPUT_CACHE_GB", 8L shl 30), builds = builds)
         val workspaceStorage = WorkerWorkspaceStorage(cacheRoot.resolve("workspaces"))
         val executor = IterationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
             { bundle -> download(bundle) }, launcher, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),

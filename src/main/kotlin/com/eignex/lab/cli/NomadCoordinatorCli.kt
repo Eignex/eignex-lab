@@ -74,13 +74,15 @@ object NomadCoordinatorCli {
             solveAdmissionChanged = { admissionSignal.wake(); reconcileSignal.wake() })
         config.artifactArchive?.let { archive ->
             // Ended jobs leave the internal SSD for the archive volume; active jobs keep writing to the hot store.
-            val archiver = ArtifactArchiver(config.dataDir.resolve("nomad/artifacts"), archive, store::ended, artifacts::pending, config.artifactArchiveGraceMs)
+            val archiver = ArtifactArchiver(config.dataDir.resolve("nomad/artifacts"), archive, store::ended, artifacts::pending, config.artifactArchiveGraceMs,
+                urgent = { freeBytes(config.dataDir) < config.hotTargetFreeBytes })
             if (MacRenameSwap.supported) periodic("nomad-artifact-archive", 300_000) { if (Files.isDirectory(archive)) archiver.pass() }
             else System.err.println("artifact archive: atomic rename swap unsupported on this host; archiving off")
         }
         config.jobsArchive?.let { archive ->
             // Ended jobs' directories leave the internal SSD the same way, after the same grace; active jobs stay hot.
-            val archiver = JobDirArchiver(config.jobsDir, archive, store::ended, config.artifactArchiveGraceMs)
+            val archiver = JobDirArchiver(config.jobsDir, archive, store::ended, config.artifactArchiveGraceMs,
+                urgent = { freeBytes(config.jobsDir) < config.hotTargetFreeBytes })
             periodic("nomad-job-archive", 300_000) { if (Files.isDirectory(archive) && Files.isDirectory(config.jobsDir)) archiver.pass() }
         }
         // Preparations on any node share task outputs through this bounded cache on the internal volume.
