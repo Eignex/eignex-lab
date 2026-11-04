@@ -86,18 +86,25 @@ class PortableWorkerTest {
     @Test fun `native startup observer captures its supervised executable`() {
         if (!CliMeasurements.localMacOs) return
         service { socket ->
-            val javaHome = Path.of(System.getProperty("java.home")).toRealPath()
-            val fixture = Files.createDirectory(root.resolve("observer-jdk"))
-            Files.list(javaHome).use { entries ->
-                entries.filter { it.fileName.toString() != "bin" }.forEach {
-                    Files.createSymbolicLink(fixture.resolve(it.fileName.toString()), it)
+            // Sampling a suspended JVM can spend the entire sampler budget processing JDK symbols.
+            // A tiny native executable exercises the same ownership checks without that unrelated work.
+            val executable = root.resolve("minizinc")
+            val source = root.resolve("observer.c")
+            Files.writeString(source, """
+                #include <string.h>
+                #include <unistd.h>
+                int main(int argc, char **argv) {
+                    if (argc != 2 || strcmp(argv[1], "--version") != 0) return 2;
+                    for (;;) pause();
                 }
-            }
-            val executable = Files.createDirectory(fixture.resolve("bin")).resolve("minizinc")
-            Files.copy(javaHome.resolve("bin/java"), executable)
-            assertTrue(executable.toFile().setExecutable(true))
-            val environment = System.getenv() + ("JAVA_TOOL_OPTIONS" to
-                "-Xmx32m -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0")
+            """.trimIndent())
+            val compilerLog = root.resolve("observer-compiler.log")
+            val compiler = ProcessBuilder("/usr/bin/cc", "-O0", source.toString(), "-o", executable.toString())
+                .redirectErrorStream(true).redirectOutput(compilerLog.toFile()).start()
+            try {
+                assertTrue(compiler.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "native observer fixture compilation timed out")
+                assertEquals(0, compiler.exitValue(), Files.readString(compilerLog))
+            } finally { compiler.destroyForcibly() }
             val supervisor = ProcessSupervisor(socket)
             val output = root.resolve("observer-evidence")
             val binding = NativeStartupCapture.Binding("observer-fixture", 0, 1, "worker", "source")
@@ -106,7 +113,7 @@ class PortableWorkerTest {
             val capture = NativeStartupCapture(listOf(executable.toString(), "--version"), root, output, root,
                 binding, supervisor, remaining, true)
             val exit = capture.use {
-                supervisor.run(it.argv, root, environment, root.resolve("observer.out"), root.resolve("observer.err"),
+                supervisor.run(it.argv, root, System.getenv(), root.resolve("observer.out"), root.resolve("observer.err"),
                     4, graceMs = 0, runRemainingMs = remaining(), remainingLeaseMs = { 80000 })
             }
             val evidence = Files.createDirectories(Path.of("build/native-startup-tests/observer"))
@@ -115,7 +122,7 @@ class PortableWorkerTest {
             } }
             Files.copy(root.resolve("observer.err"), evidence.resolve("target.stderr"), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
             Files.writeString(evidence.resolve("fixture.txt"),
-                "Copied JDK launcher suspended by JDWP; validates observer ownership and capture, not a MiniZinc stall or reliability repair.\n")
+                "Native fixture waiting in pause(); validates observer ownership and capture, not a MiniZinc stall or reliability repair.\n")
             assertEquals(124, exit, Files.readString(root.resolve("observer.err")))
             val receiptFile = output.resolve("capture-1.json")
             assertTrue(Files.isRegularFile(receiptFile), Files.readString(output.resolve("status.json")))
