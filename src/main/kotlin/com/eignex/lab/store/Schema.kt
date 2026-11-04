@@ -14,7 +14,7 @@ import com.eignex.lab.analysis.References
  * A step is never edited once released: a change to the schema is a new step at the end.
  */
 internal object Schema {
-    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex, ::trendPoints, ::acceptedResultDigests)
+    private val steps: List<(Connection) -> Unit> = listOf(::baseline, ::endedJobFlags, ::cascadeAndInvariants, ::jobLifecycle, ::experimentColumns, ::jobOrigins, ::commandLifecycle, ::sessionPlacement, ::preparationAdmission, ::preparationDiagnostics, ::coordinatorIndexes, ::sessionManifests, ::benchSelections, ::liveSessionIndex, ::retryDeadlines, ::checkRevisions, ::resourceCheckpoints, ::jobActivityIndex, ::trendPoints, ::acceptedResultDigests, ::provenanceParts)
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = steps.size
@@ -365,6 +365,18 @@ internal object Schema {
         val columns = db.createStatement().use { s -> s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r ->
             generateSequence { if (r.next()) r.getString("name") else null }.toSet() } }
         if ("result_sha256" !in columns) db.createStatement().use { it.execute("ALTER TABLE iteration_attempts ADD COLUMN result_sha256 TEXT") }
+    }
+
+    /**
+     * Step 21: parts many rows share, kept once each by their sha256: a build provenance's harness and runtime
+     * ([PlanRepository.keepProvenance]), and a session manifest's cases, bundles and shared inputs, which every session
+     * of a job repeats ([ExecutionStore.manifest]). Existing rows are split in batches after startup.
+     */
+    private fun provenanceParts(db: Connection) {
+        db.createStatement().use {
+            it.execute("CREATE TABLE IF NOT EXISTS provenance_parts (sha TEXT PRIMARY KEY, part TEXT NOT NULL)")
+            it.execute("CREATE TABLE IF NOT EXISTS manifest_parts (sha TEXT PRIMARY KEY, part TEXT NOT NULL)")
+        }
     }
 
     /** Every table that keeps rows of one job, by `job_id`: what deleting the job deletes. */

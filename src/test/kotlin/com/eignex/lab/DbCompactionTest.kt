@@ -292,6 +292,42 @@ class DbCompactionTest {
     }
 
     @Test
+    fun `provenances keep their shared harness and runtime once and read back whole`() {
+        val file = Files.createTempDirectory("lab").resolve("lab.db")
+        val store = Store(file)
+        val id = experiment(store, problems = 2, arms = 1)
+        val harness = """{"klause":"${"h".repeat(4096)}","tool":"v1"}"""
+        fun provenanceWith(options: String) = """{"harness":$harness,"runtime":{"vm":"${"r".repeat(2048)}"},"runtimeOptions":{"o":"$options"}}"""
+        fun withProvenance(options: String) = """{"kind":"satisfy","feasible":true,"buildProvenance":${provenanceWith(options)}}"""
+        // One case written before parts were kept once, stored whole as an earlier release did.
+        val old = withProvenance("old")
+        val oldCompacted = assertNotNull(StoredRecords.compact(old))
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.prepareStatement("INSERT INTO provenances (sha, provenance) VALUES (?, ?)").use {
+                it.setString(1, oldCompacted.provenance!!.first); it.setString(2, oldCompacted.provenance!!.second); it.executeUpdate()
+            }
+            c.prepareStatement("UPDATE cases SET record = ? WHERE job_id = ? AND idx = 0").use { it.setString(1, oldCompacted.text); it.setLong(2, id); it.executeUpdate() }
+        }
+        val fresh = withProvenance("new")
+        store.caseRecord(id, 1, fresh)
+
+        var cursor: Long? = 0L
+        while (cursor != null) cursor = store.plans.splitProvenances(cursor)
+
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.createStatement().executeQuery("SELECT count(*), sum(length(part)) FROM provenance_parts").use { r ->
+                r.next(); assertEquals(2, r.getInt(1), "one harness and one runtime, shared by both provenances")
+            }
+            c.createStatement().executeQuery("SELECT provenance FROM provenances").use { r ->
+                while (r.next()) assertFalse("\"harness\":" in r.getString(1), "no provenance keeps the harness inline")
+            }
+        }
+        val read = Store(file).plans.cases(id).associate { it.index to json(it.record) }
+        assertEquals(json(Json.parseToJsonElement(old)), read[0])
+        assertEquals(json(Json.parseToJsonElement(fresh)), read[1])
+    }
+
+    @Test
     fun `a record written during the migration is left as its writer stored it`() {
         val file = Files.createTempDirectory("lab").resolve("lab.db")
         val store = Store(file)

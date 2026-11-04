@@ -277,6 +277,35 @@ class ExecutionStoreTest {
         store.execution.commit(claim.owner, result(claim, at), at + 10)
     }
 
+    @Test fun `sessions of a job keep their repeated manifest parts once and read them back whole`() {
+        val id = job()
+        val spec = store.job(id)!!.experiment
+        val arms = store.plans.arms(id).map { it.copy(sha = "d".repeat(40)) }
+        val cases = store.plans.casePlan(id).map { WorkCase(it.index, arms.indexOfFirst { a -> a.arm.label == it.arm }, it.problem, it.seed, it.repeat, 60) }
+        val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("fixture", "c".repeat(64), 0)), spec.repository, "d".repeat(40), "linux", "amd64", "test")
+        fun manifest(session: String) = WorkManifest(session, "release-1", spec, arms, cases, listOf(bundle), ResourceBudget(8000, 8192))
+        store.execution.createSession("first", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000,
+            manifest = kotlinx.serialization.json.Json.encodeToString(WorkManifest.serializer(), manifest("first")))
+        store.execution.createSession("second", id, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1001,
+            manifest = kotlinx.serialization.json.Json.encodeToString(WorkManifest.serializer(), manifest("second")))
+
+        assertEquals(manifest("first"), store.execution.manifest("first"))
+        assertEquals(manifest("second"), Store(file).execution.manifest("second"))
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { db ->
+            db.createStatement().executeQuery("SELECT count(*) FROM manifest_parts").use { r -> r.next(); assertEquals(2, r.getInt(1), "cases and bundles, once for both sessions") }
+            // As an earlier release kept it: the whole manifest in the row.
+            db.prepareStatement("UPDATE execution_manifests SET manifest = ? WHERE session_id = 'first'").use {
+                it.setString(1, kotlinx.serialization.json.Json.encodeToString(WorkManifest.serializer(), manifest("first"))); it.executeUpdate()
+            }
+        }
+        var cursor: Long? = 0L
+        while (cursor != null) cursor = store.execution.splitManifests(cursor)
+        assertEquals(manifest("first"), store.execution.manifest("first"))
+        assertEquals(0, store.execution.dropUnusedManifestParts(), "every part is still named")
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().execute("DELETE FROM execution_manifests") }
+        assertEquals(2, store.execution.dropUnusedManifestParts(), "parts go with the last manifest naming them")
+    }
+
     @Test fun `done jobs lose their stopped sessions' manifests while failed jobs keep theirs for a retry`() {
         val done = job(); val failed = job()
         store.execution.createSession("done", done, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000, manifest = "{}")
