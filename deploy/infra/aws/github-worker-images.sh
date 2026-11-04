@@ -8,6 +8,10 @@ REPO_SLUG=${REPO_SLUG:-Eignex/eignex-lab}
 ROLE=${ROLE:-eignex-lab-worker-image-publisher}
 ECR_REPOSITORY=${ECR_REPOSITORY:-eignex-lab-worker}
 ISSUER=token.actions.githubusercontent.com
+# GitHub's subject claim prefix for this repository: "repo:<owner>/<repo>" by default, or the immutable
+# "repo:<owner>@<id>/<repo>@<id>" form when the repository uses immutable subjects.
+SUB_PREFIX=${SUB_PREFIX:-$(gh api "repos/${REPO_SLUG}/actions/oidc/customization/sub" -q '.sub_claim_prefix // empty' 2>/dev/null || true)}
+SUB_PREFIX=${SUB_PREFIX:-repo:${REPO_SLUG}}
 
 account=$(aws sts get-caller-identity --query Account --output text)
 provider="arn:aws:iam::${account}:oidc-provider/${ISSUER}"
@@ -28,7 +32,7 @@ trust=$(cat <<EOF
     "Condition": {
       "StringEquals": {
         "${ISSUER}:aud": "sts.amazonaws.com",
-        "${ISSUER}:sub": "repo:${REPO_SLUG}:ref:refs/heads/main"
+        "${ISSUER}:sub": "${SUB_PREFIX}:ref:refs/heads/main"
       }
     }
   }]
