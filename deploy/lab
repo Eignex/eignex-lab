@@ -40,6 +40,7 @@
 #                                                            arm's debug) and the full record, its finalWitness and the
 #                                                            lab's verdict (record.labCheck) included
 #   lab csv <id> [arm] [seed]                               every case as CSV, or one arm's results as CSV
+#   lab corpus-index <collection>                         stored-byte catalog metadata as JSON; no corpus download
 #   lab references [--json] <text> [solver] [verdict]       find reference results; --json retains all metadata
 #                                                            verdict: optimum unproven satisfied infeasible unknown
 #   lab references retire <collection> <solver> [budget-sec]
@@ -489,6 +490,25 @@ fetch)
   fi
   rm -f "$receipt" ;;
 corpus) rsync -az --info=progress2 "$corpus/" "${host:?set LAB_HOST to the corpus server SSH destination}:$remote_corpus/" ;;
+corpus-index)
+  [[ $# -eq 1 && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#1} -le 200 ]] ||
+    { echo 'usage: lab corpus-index <collection>' >&2; exit 2; }
+  response=$(mktemp)
+  transport=0
+  code=$(curl -sS --max-time 45 -o "$response" -w '%{http_code}' "$url/corpus/indexes/$1") || transport=$?
+  if [[ "$transport" -eq 0 && "$code" == 200 ]]; then
+    status=0
+    jq . "$response" || status=$?
+  else
+    cat "$response" >&2
+    echo "lab corpus-index: metadata unavailable (HTTP $code, curl $transport)" >&2
+    status=1
+    # Only an explicit API index-missing response is an unpublished index; old servers also return 404.
+    if [[ "$transport" -eq 0 && "$code" == 404 ]] &&
+      jq -e --arg expected "no published corpus index for $1" '.error == $expected' "$response" >/dev/null 2>&1; then status=3; fi
+  fi
+  rm -f "$response"
+  exit "$status" ;;
 health) curl -fsS "$url/health" | jq . ;;
 *) sed -n '2,/^set /{/^#/p}' "$0"; exit 2 ;;
 esac

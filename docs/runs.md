@@ -6,6 +6,66 @@ Use `deploy/lab` and the authenticated HTTP API at `https://lab.eignex.com` from
 SSH access, host discovery and server administration belong to agents explicitly working on eignex-lab
 operations. Report a concrete operational dependency to that owner instead of opening a server session.
 
+## Corpus catalog metadata
+
+Fetch an existing catalog index over authenticated HTTP before selecting inputs:
+
+```sh
+deploy/lab corpus-index pb-comp-2024 > pb24-index.json
+deploy/lab corpus-index pb-comp-2025 > pb25-index.json
+jq -r '.files[] | [.path, .sha256, .bytes] | @tsv' pb24-index.json
+```
+
+The general endpoint is `GET /corpus/indexes/{collection}`; it uses the same HTTP Basic
+password as every lab call. Collection IDs contain letters, digits, `.`, `_` and `-`, start
+with a letter or digit, and have at most 200 characters. There is no PB-specific allowlist.
+An HTTP 200 response is versioned JSON:
+
+```json
+{
+  "version": 1,
+  "collection": "pb-comp-2024",
+  "files": [
+    {"path": "PB24/family/example.opb.xz", "sha256": "<64 lowercase hex digits>", "bytes": 123}
+  ]
+}
+```
+
+This example illustrates the schema, not an actual catalog member. `collection` and the
+collection-relative `path` identify a stored source; `sha256` and `bytes` bind its exact
+stored bytes, including compression. A `.xz` or `.zst` member's checksum describes the
+packed file, not its decompressed contents. PB24 and PB25 use collection IDs `pb-comp-2024`
+and `pb-comp-2025`; their source paths retain the `PB24/` and `PB25/` prefixes. Adapters own
+upstream provenance, normalization and any separate identity for materialized plain sources.
+
+Select members from this metadata, then declare only the selected corpus paths and hashes
+with the existing Bench SDK `BenchInput`/declared-input protocol. A corpus path includes
+its collection prefix, for example `pb-comp-2024/PB24/family/example.opb.xz`. The lab resolves
+declared bytes through its existing shared input store and verifies them at execution.
+An index alone does not guarantee that every member has been published as an individual
+input blob; ordinary preparation must materialize/publish a selected input that is missing
+there. The index request never falls back to a complete pack download or generates metadata.
+Capture and commit metadata before running a planner: `plan` and `describe` remain offline.
+
+HTTP 404 with `{"error":"no published corpus index for <collection>"}` means the configured
+backend has no index. Invalid collection IDs return 400. Storage, signing, authorization,
+transport, malformed-index and unsupported-version failures return 503, rather than an empty
+catalog or 404. Lab password failures retain 401/429. The client exits 0 on success, 3 only
+for that explicit missing-index response, 2 for bad arguments, and 1 for HTTP/transport
+failures (including an older server's bare route-not-found 404). A non-JSON success also
+fails. Inspect stderr; do not interpret every failure as an empty collection.
+
+The API service reads `<collection>.index.tar` (one `index.json`, at most 256 MiB) from
+`LAB_CORPUS_MIRROR`, or from `LAB_SHARED_INPUT_URL/corpus-packs` when no mirror is set.
+With `LAB_SHARED_INPUT_SIGNER`, the service obtains a short-lived GET capability for
+`corpus-packs/<collection>.index.tar`; without it the mirror must permit direct HTTPS reads.
+Only metadata crosses this route, and credentials and signed URLs stay on the service.
+When neither remote setting is present, the service reads the existing
+`$LAB_SHARED_INPUT_ROOT/.index/<collection>.json`, falling back to
+`$LAB_CORPUS/.index/<collection>.json`. A missing or unreadable local root is 503.
+Operators must configure these settings on the API service as well as the workers.
+This route reads existing sidecars; publication remains the adapter's responsibility.
+
 ## Experiments
 
 Submit one experiment per question. Save this as `experiment.json`:

@@ -380,6 +380,12 @@ input capabilities; adapters own their pack formats and downloads. Replace older
 worker variables when deploying the matching coordinator/worker release. Provider credentials
 and worker authentication tokens are not forwarded to consumer processes.
 
+For metadata-only discovery outside planning, use `deploy/lab corpus-index <collection>`
+or authenticated `GET /corpus/indexes/{collection}`. The [catalog metadata contract](../docs/runs.md#corpus-catalog-metadata)
+documents the generic format, packed-byte identities, PB24/PB25 collection IDs, backend
+configuration and missing-index versus transport failures. Commit captured metadata so
+`plan` and `describe` need no network; declare selected inputs through the usual protocol.
+
 Metrics CSV identifies each arm, seed and repeat. Solver-v1 records retain the normal
 solver comparison and source-check views alongside SDK artifacts. Per-result
 `stats.labMeasurement` marks compilation-instrumented captures, and `stats.labDebug`
