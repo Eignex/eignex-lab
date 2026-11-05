@@ -32,20 +32,27 @@ object ClaspReference {
      *  on stdin (OPB and WCNF get their problem line synthesized first). Objective sense is always minimise for
      *  OPB (clasp's only PB mode); DIMACS has none — both report `maximize=false`. */
     fun run(instance: Instance, budget: Budget): ReferenceResult {
+        val started = System.nanoTime()
+        val identity = ReferenceIdentity.image(IMAGE, budget.timeoutMillis)
+        val pinned = DockerReference(identity.executable, CONTAINER_LABEL, "clasp")
         val file = instance.model
         // Streamed, never held: a MaxSAT instance can be gigabytes of text, and several run at once.
         val input = ClaspInput.of(instance.format) { CorpusFiles.open(file).bufferedReader() }
-        val timeoutSec = (budget.timeoutMillis / 1000).coerceAtLeast(1)
+        val remaining = budget.timeoutMillis - (System.nanoTime() - started) / 1_000_000
+        check(remaining > 0) { "clasp identity exhausted the reference case budget" }
+        val timeoutSec = (remaining / 1000).coerceAtLeast(1)
         val name = docker.containerName()
-        val cmd = docker.command(name, arguments = listOf(
+        val cmd = pinned.command(name, arguments = listOf(
             "--time-limit=$timeoutSec",
             "--parallel-mode=1",
             // No models: on a large MaxSAT instance every improving model is gigabytes of `v` lines, and the
             // reference reads only the status and `o` lines.
             "--quiet=2,0",
         ), interactive = true)
-        val run = docker.exec(cmd, name, budget.timeoutMillis, input::writeTo)
-        return parse(run.stdout, run.elapsedMs, cmd)
+        val run = pinned.exec(cmd, name, remaining, input::writeTo)
+        val result = parse(run.stdout, (System.nanoTime() - started) / 1_000_000, cmd)
+        return result.copy(stats = result.stats + identity.stats +
+            ("referenceVersion" to "${identity.stats.getValue("referenceVersion")}|--parallel-mode=1,--quiet=2,0|clasp-reference-v1"))
     }
 
     /** clasp's status is a `s <STATUS>` line; a PB optimisation streams incumbents as `o <cost>` lines

@@ -139,6 +139,11 @@ MiniZinc reference cases retain the compiler binary hash and version, the select
 registered version, executable hash and configuration. Missing versions fail preparation. Identity preparation
 spends the case's time allowance; the remaining allowance goes to compilation and solving. Reference completion
 markers are native claims, separate from independent assignment or proof validation.
+Kissat and cvc5 reference records retain the reported solver version and executable SHA-256;
+Clasp records retain its immutable Docker image ID and execute that image rather than its mutable tag.
+These identities include the adapter policy and fixed solver options. Identity lookup must succeed and
+spends the case allowance before solving. Historical rows without an identity remain unqualified for
+comparisons on captured sources; rerun them with updated workers to obtain qualified reference rows.
 For a focused reference receipt, the committed `com.eignex.lab.cli.MainKt reference` entry point accepts `OUT` from
 the lab when `out=` is omitted. `src/test/resources/reference/affine-objective.mzn` is its deterministic source
 control; an instrumented capture establishes adapter consumption, not throughput or independent checking.
