@@ -134,6 +134,12 @@ internal fun jobPage(
     when (spec.work) {
         is Work.Analysis -> append(analysisSection(job, spec, files))
         is Work.Bench -> {
+            if (job.origin is JobOrigin.Confirmation && job.status.isTerminal && BenchTransitions.enabled(cases)) {
+                val transitions = Confirm.confirmed(cases)
+                append(Html("<p>Confirmed benchmark transitions: ") + transitions.benchmarkFailed.size + Html(" failures, ") +
+                    transitions.benchmarkRecovered.size + Html(" recoveries; ") + transitions.metricLost.size +
+                    Html(" metric regressions, ") + transitions.metricGained.size + Html(" improvements.</p>"))
+            }
             if (cases.any { it.problem.benchCase?.attributes?.get("recordSchema") == "solver-v1" })
                 append(experimentSection(status.repoUrl, job.id, arms, cases, references))
             append(benchSection(job, cases, arms))
