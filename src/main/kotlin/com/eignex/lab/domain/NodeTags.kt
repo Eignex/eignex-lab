@@ -9,9 +9,6 @@ import java.util.concurrent.TimeUnit
 @Serializable
 data class NodeSelector(val require: Set<String> = emptySet(), val exclude: Set<String> = emptySet())
 
-@Serializable
-data class NodeObservation(val host: String, val tags: Set<String>, val cpu: CpuCapabilities? = null)
-
 /** OS-visible CPU facts, kept separately from operator labels. */
 @Serializable
 data class CpuCapabilities(val arch: String = "unknown", val features: Set<String> = emptySet(), val model: String? = null, val detected: Boolean = false) {

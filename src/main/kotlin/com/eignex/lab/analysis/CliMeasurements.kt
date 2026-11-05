@@ -6,13 +6,8 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
-import kotlin.concurrent.thread
-import kotlin.io.path.createDirectories
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -188,88 +183,3 @@ internal data class CliMeasurementManifest(
     /** The job's [ExperimentSpec.compilationRecording], null without one. */
     val compilation: String? = null,
 )
-
-internal class FileTransferFailure(val exit: Int?, message: String) : IllegalStateException(message)
-
-internal fun retryFileTransfer(
-    backoff: Backoff,
-    cancelled: () -> Boolean,
-    onFailure: (Int, FileTransferFailure) -> Unit = { _, _ -> },
-    sleep: (Long) -> Unit = Thread::sleep,
-    transfer: () -> Unit,
-): Int {
-    var attempt = 1
-    while (true) {
-        check(!cancelled()) { "file transfer cancelled" }
-        try {
-            transfer()
-            return attempt
-        } catch (error: FileTransferFailure) {
-            try {
-                onFailure(attempt, error)
-            } catch (report: Throwable) {
-                if (report !== error) error.addSuppressed(report)
-                throw error
-            }
-            if (error.suppressed.isNotEmpty() || error.exit != null && error.exit != 255 ||
-                attempt >= backoff.attempts || cancelled()
-            ) throw error
-            var remaining = backoff.delayAfter(attempt)
-            while (remaining > 0L && !cancelled()) {
-                val slice = minOf(remaining, 1_000L)
-                sleep(slice)
-                remaining -= slice
-            }
-            check(!cancelled()) { "file transfer cancelled" }
-            attempt++
-        }
-    }
-}
-
-// Publish only complete, successful transfers. Failed SSH output must not masquerade as a usable recording.
-internal fun receiveFile(process: Process, destination: Path, timeoutSec: Long, cancelled: () -> Boolean) {
-    require(timeoutSec > 0)
-    destination.parent.createDirectories()
-    val temporary = destination.resolveSibling("${destination.fileName}.part")
-    val failure = AtomicReference<Throwable>()
-    val reader = thread(isDaemon = true) {
-        try {
-            Files.newOutputStream(temporary).use { output -> process.inputStream.use { it.copyTo(output) } }
-        } catch (error: Throwable) {
-            failure.set(error)
-        }
-    }
-    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSec)
-    var primary: Throwable? = null
-    try {
-        while (!process.waitFor(100, TimeUnit.MILLISECONDS)) {
-            check(!cancelled()) { "file transfer cancelled" }
-            if (System.nanoTime() >= deadline) throw FileTransferFailure(null, "file transfer timed out")
-        }
-        reader.join(5_000)
-        check(!reader.isAlive) { "file transfer did not finish reading" }
-        if (process.exitValue() != 0) throw FileTransferFailure(process.exitValue(), "file transfer exited ${process.exitValue()}")
-        failure.get()?.let { throw IllegalStateException("file transfer failed", it) }
-        check(!cancelled()) { "file transfer cancelled" }
-        Files.move(temporary, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-            java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-    } catch (error: Throwable) {
-        primary = error
-        throw error
-    } finally {
-        var cleanup: Throwable? = null
-        for (action in listOf<() -> Unit>(
-            { if (process.isAlive) process.destroyForcibly() },
-            { process.inputStream.close() },
-            { check(process.waitFor(5, TimeUnit.SECONDS)) { "file transfer process did not stop" } },
-            { reader.join(5_000); check(!reader.isAlive) { "file transfer reader did not stop" } },
-            { Files.deleteIfExists(temporary) },
-        )) {
-            try { action() } catch (error: Throwable) {
-                val previous = primary ?: cleanup
-                if (previous == null) cleanup = error else if (previous !== error) previous.addSuppressed(error)
-            }
-        }
-        cleanup?.let { throw it }
-    }
-}

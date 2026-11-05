@@ -314,7 +314,6 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
         internal fun reliableMetadata(path: Path) = Files.getFileStore(path).type().lowercase() in
             setOf("apfs", "ext4", "xfs", "btrfs", "overlay", "tmpfs", "zfs")
 
-        internal fun fileStamp(file: Path): Stamp = observe(file).stamp()
         internal fun fileMetadata(file: Path): FileMetadata? = observe(file, includeMode = true).let { observed ->
             observed.mode?.let { FileMetadata(observed.stamp(), it) }
         }

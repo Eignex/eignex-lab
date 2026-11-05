@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "aws"))
-from capacity_grants import verify, DOMAIN
+from capacity_grants import DOMAIN
 from functions import expire_pool, renew_pool
 from adapter import inventory
 

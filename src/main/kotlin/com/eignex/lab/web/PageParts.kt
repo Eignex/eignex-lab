@@ -339,9 +339,6 @@ private fun describe(arm: Arm) = arm.values.toSortedMap().entries.joinToString("
 
 internal const val SEARCH_LIMIT = 200
 
-/** Test fixtures, not benchmarks: kept in the store, left out of the coverage view. */
-private val HIDDEN_COLLECTIONS = emptyList<String>()
-
 internal fun problemLink(collection: String, problem: String) = "/problem${query("collection" to collection, "problem" to problem)}"
 
 /** A filter dropdown that submits its form on change; [options] are (value, label). */

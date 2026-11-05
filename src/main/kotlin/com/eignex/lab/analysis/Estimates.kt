@@ -127,15 +127,6 @@ object Estimates {
         }.getOrNull()
     }
 
-    /**
-     * The core-hours queued [job] adds to the cloud pressure: its [estimate], from measured or earlier runs' case times
-     * when there are any, so the pool reacts to the work a queue really holds. Each case's whole timeout
-     * ([WorkEstimates.coreHours]) is the fallback when the estimate cannot be made.
-     */
-    fun pressureCoreHours(job: Job, history: (Job) -> CaseHistory?, cores: Int): Double =
-        estimate(job, history, cores)?.coreHours
-            ?: WorkEstimates.coreHours(checkNotNull(job.experiment), job.total.takeIf { it > 0 }?.let { it - job.done - job.running })
-
     /** Whether [spec]'s cases are known before it is planned: an exact problem list, or every selection one problem. */
     private fun exact(spec: ExperimentSpec): Boolean =
         spec.isProfile || spec.problemList.isNotEmpty() || spec.problems.isNotEmpty() && spec.problems.all { "name" in it }
