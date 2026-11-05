@@ -13,6 +13,8 @@ import com.eignex.lab.cli.*
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
@@ -83,8 +85,12 @@ class PortableWorkerTest {
         }
     }
 
-    @Test fun `native startup observer captures its supervised executable`() {
-        if (!CliMeasurements.localMacOs) return
+    @ParameterizedTest
+    @ValueSource(strings = ["success", "failure", "native"])
+    fun `native startup observer verifies its supervised executable and sampler exit`(sampler: String) {
+        val nativeSampler = sampler == "native"
+        if (nativeSampler && !CliMeasurements.localMacOs) return
+        val samplerExit = if (sampler == "failure") 7 else 0
         service { socket ->
             // Sampling a suspended JVM can spend the entire sampler budget processing JDK symbols.
             // A tiny native executable exercises the same ownership checks without that unrelated work.
@@ -108,32 +114,44 @@ class PortableWorkerTest {
             val supervisor = ProcessSupervisor(socket)
             val output = root.resolve("observer-evidence")
             val binding = NativeStartupCapture.Binding("observer-fixture", 0, 1, "worker", "source")
+            // Exercise receipt verification deterministically on both platforms, plus the real
+            // sampler against the small native fixture on macOS.
+            val sampleTool = if (nativeSampler) Path.of("/usr/bin/sample") else root.resolve("sample-fixture").also {
+                Files.writeString(it, """#!/bin/bash
+                test "${'$'}#" -eq 5 && test "${'$'}2" = 1 && test "${'$'}3" = 10 && test "${'$'}4" = -file || exit 2
+                printf 'sampled pid=%s\n' "${'$'}1" > "${'$'}5"
+                exit $samplerExit
+                """.trimIndent())
+                assertTrue(it.toFile().setExecutable(true))
+            }
             val deadline = System.nanoTime() + 6_000_000_000
             val remaining = { ((deadline - System.nanoTime()) / 1_000_000).coerceAtLeast(0) }
             val capture = NativeStartupCapture(listOf(executable.toString(), "--version"), root, output, root,
-                binding, supervisor, remaining, true)
+                binding, supervisor, remaining, true, sampleTool)
             val exit = capture.use {
                 supervisor.run(it.argv, root, System.getenv(), root.resolve("observer.out"), root.resolve("observer.err"),
                     4, graceMs = 0, runRemainingMs = remaining(), remainingLeaseMs = { 80000 })
             }
-            val evidence = Files.createDirectories(Path.of("build/native-startup-tests/observer"))
+            val evidence = Files.createDirectories(Path.of("build/native-startup-tests/observer-$sampler"))
             Files.list(output).use { entries -> entries.forEach {
                 Files.copy(it, evidence.resolve(it.fileName.toString()), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
             } }
             Files.copy(root.resolve("observer.err"), evidence.resolve("target.stderr"), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
             Files.writeString(evidence.resolve("fixture.txt"),
-                "Native fixture waiting in pause(); validates observer ownership and capture, not a MiniZinc stall or reliability repair.\n")
+                "Native fixture waiting in pause() with $sampler sampler; validates observer ownership and receipt verification.\n")
             assertEquals(124, exit, Files.readString(root.resolve("observer.err")))
             val receiptFile = output.resolve("capture-1.json")
             assertTrue(Files.isRegularFile(receiptFile), Files.readString(output.resolve("status.json")))
             val receipt = Json.decodeFromString<NativeStartupCapture.Receipt>(Files.readString(receiptFile))
-            assertEquals("captured", receipt.outcome, receipt.toString())
-            assertTrue(receipt.sampleVerified)
+            assertEquals(if (samplerExit == 0) "captured" else "sample-unavailable", receipt.outcome, receipt.toString())
+            assertEquals(samplerExit, receipt.exitCode, receipt.toString())
+            assertEquals(samplerExit == 0, receipt.sampleVerified)
             assertEquals(binding, receipt.binding)
             val target = assertNotNull(receipt.target)
             assertEquals(executable.toRealPath().toString(), target.executable)
             assertEquals("--version", target.option)
             assertTrue(Files.size(output.resolve(assertNotNull(receipt.sample))) in 1..1024L * 1024)
+            if (!nativeSampler) assertEquals("sampled pid=${target.pid}\n", Files.readString(output.resolve(receipt.sample)))
         }
     }
 
