@@ -60,6 +60,7 @@
 #   lab reschedule <id> <experiment.json|-> [interval-sec|-] [next-in-hours]
 #                                                            change a schedule's experiment, interval or next check
 #   lab schedules | lab unschedule <id>
+#   lab rename-schedule <id> <name>                          rename a schedule and retain its run/confirmation history
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
 #   lab execution <id>                                   Nomad session, allocation, generation and phase diagnostics
@@ -360,6 +361,8 @@ describe) jq -n --arg description "${*:2}" '{description: $description}' |
 retry) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/retry"; echo; done ;;
 rm) for id in "$@"; do printf '%s\t' "$id"; curl -sS -X POST "$url/jobs/$id/delete"; echo; done ;;
 unschedule) curl -sS -X POST "$url/schedules/$1/delete"; echo ;;
+rename-schedule) jq -n --arg name "$2" '{name: $name}' |
+  curl -fsS -H 'Content-Type: application/json' --data-binary @- "$url/schedules/$1"; echo ;;
 pause) curl -sS -X POST "$url/jobs/$1/pause"; echo ;;
 resume) curl -sS -X POST "$url/jobs/$1/resume"; echo ;;
 tail)
