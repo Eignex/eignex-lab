@@ -6,6 +6,9 @@ import com.eignex.lab.util.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import com.eignex.lab.analysis.SourceValidation
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 /** Schedules (`schedules`): experiments queued again whenever their ref moves ([Schedules]). */
 class ScheduleRepository internal constructor(db: Database, lock: Any) : Repository(db, lock) {
@@ -27,7 +30,7 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
     }
 
     fun all(): List<Schedule> = reading {
-        connection.prepareStatement("SELECT * FROM schedules ORDER BY id").use { statement ->
+        connection.prepareStatement("SELECT * FROM schedules ORDER BY priority DESC, id").use { statement ->
             statement.executeQuery().use { rows ->
                 generateSequence {
                     if (!rows.next()) return@generateSequence null
@@ -41,6 +44,35 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
                     )
                 }.toList()
             }
+        }
+    }
+
+    /** Rename a series without losing its runs, confirmations, cadence or last accepted revision. */
+    fun rename(id: Long, name: String): Boolean = synchronized(lock) {
+        require(name.isNotBlank()) { "name is required" }
+        Experiments.requirePlainName(name)
+        transaction {
+            val schedules = all()
+            val old = schedules.singleOrNull { it.id == id } ?: return@transaction false
+            require(schedules.none { it.id != id && it.name == name }) { "schedule name already exists" }
+            if (old.name == name) return@transaction true
+            update("UPDATE schedules SET name = ?, experiment = ? WHERE id = ?", name,
+                Json.encodeToString(old.experiment.copy(name = name)), id)
+            for (suffix in listOf("", "~confirm")) {
+                val series = old.name + suffix
+                val replacement = name + suffix
+                val jobs = connection.sqlRows("SELECT id, name, experiment FROM jobs WHERE series = ? AND origin = ?",
+                    series, if (suffix.isEmpty()) JobOrigin.SCHEDULED else JobOrigin.CONFIRMATION) {
+                    Triple(it.getLong(1), it.getString(2), it.getString(3))
+                }
+                for ((job, before, text) in jobs) {
+                    val after = if (before.startsWith("$series@")) replacement + before.removePrefix(series) else before
+                    val experiment = text?.let { Json.parseToJsonElement(it).jsonObject }
+                    update("UPDATE jobs SET name = ?, series = ?, experiment = ? WHERE id = ?", after, replacement,
+                        experiment?.let { JsonObject(it + ("name" to JsonPrimitive(after))).toString() }, job)
+                }
+            }
+            true
         }
     }
 

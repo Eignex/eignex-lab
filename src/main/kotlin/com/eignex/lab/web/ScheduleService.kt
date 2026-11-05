@@ -36,8 +36,10 @@ class ScheduleService internal constructor(private val services: ApiServices) {
         require(spec.intervalSec == null || spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
         require(spec.nextCheckInSec == null || spec.nextCheckInSec >= 0) { "nextCheckInSec must not be negative" }
         spec.experiment?.let(::validate)
+        if (spec.name != null && !store.schedules.rename(id, spec.name)) return Action.Missing("no such schedule")
         val nextCheckAt = spec.nextCheckInSec?.let { System.currentTimeMillis() + it * 1000 }
-        return if (store.schedules.update(id, spec.experiment, spec.intervalSec, nextCheckAt)) Action.Done("updated") else Action.Missing("no such schedule")
+        val experiment = spec.experiment?.let { if (spec.name == null) it else it.copy(name = spec.name) }
+        return if (store.schedules.update(id, experiment, spec.intervalSec, nextCheckAt)) Action.Done("updated") else Action.Missing("no such schedule")
     }
 
     /** The runner's schedule thread finds it due within seconds; a push hook or relay can call this instead of waiting. */

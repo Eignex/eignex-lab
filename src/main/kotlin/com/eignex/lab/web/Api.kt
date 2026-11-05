@@ -57,7 +57,8 @@ data class ScheduleSpec(
 
 /** A change to a schedule: each field set replaces its value; [nextCheckInSec] sets when it is next checked. */
 @Serializable
-data class ScheduleUpdate(val experiment: ExperimentSpec? = null, val intervalSec: Long? = null, val nextCheckInSec: Long? = null)
+data class ScheduleUpdate(val experiment: ExperimentSpec? = null, val intervalSec: Long? = null, val nextCheckInSec: Long? = null,
+                          val name: String? = null)
 
 /** A queued job's [id], with [notes] on what the lab made of its spec, such as a profile's time limit (none for most),
  *  [placement], where the lab placed it, in words, and [host], the same as `local`, `cloud` or `auto`

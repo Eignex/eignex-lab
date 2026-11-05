@@ -565,3 +565,9 @@ Parallel CLI/JIT/harness processes share the aggregate group grant. Cgroup CPU
 counters can accumulate across iterations; sampled current memory is not a peak.
 Independent witness checks retain their policy and unsupported states. Native
 optimality/UNSAT flags remain distinct from independently checked source proofs.
+
+## Schedule names and ordering
+
+Schedules are listed by priority, highest first, with creation order breaking ties. Rename a schedule with
+`deploy/lab rename-schedule <id> <name>`. Its ID, last revision, check cadence and all scheduled run and confirmation
+history are retained; the renamed series continues comparing with its existing baseline.
