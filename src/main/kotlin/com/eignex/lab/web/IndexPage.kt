@@ -38,36 +38,43 @@ internal fun indexPage(
     loading: Boolean = false,
 ): Html = buildHtml {
     val front = before == null && name == null
-    append(head("eignex lab", live = true))
+    append(head("eignex lab", live = true, bodyClass = "lab-page queue-page"))
+    append(Html("<main>"))
     append(Html("<header><h1>Queue</h1>"))
-    append(Html("<p id=\"summary\" data-live class=\"muted\">") + (if (loading) Html("Loading queue…") else summary(status, host, active, nodes, free, held)) + Html("</p></header>"))
+    append(Html("<div id=\"summary\" data-live>") + (if (loading) Html("Loading queue…") else summary(status, host, active, nodes, free, held)) + Html("</div></header>"))
     append(Html("<p id=\"queue-snapshot\" data-live class=\"muted small\"><!--queue-snapshot--></p>"))
+    append(Html("<nav class=\"queue-sections\" aria-label=\"Queue sections\">"))
+    if (front) append(Html("<a href=\"#active-section\">Active jobs</a><a href=\"#schedules-section\">Schedules</a>"))
+    append(Html("<a href=\"#history-section\">History</a><a href=\"/nodes\">Nodes &amp; capacity</a></nav>"))
     if (front) {
         // One pass over the active jobs: the per-row estimates and the summary's totals read the same numbers.
         val estimates = active.mapNotNull { job ->
             Estimates.estimate(job, caseHistory, status.local.cores, status.local.maxParallel)?.let { job.id to it }
         }.toMap()
-        append(Html("<section><h2>Active</h2><div id=\"work\" data-live>") + (if (loading) Html("Loading…") else workSummary(status, active, estimates)) + Html("</div>"))
+        append(Html("<section id=\"active-section\" aria-labelledby=\"active-heading\"><h2 id=\"active-heading\">Active jobs</h2><div id=\"work\" data-live>") + (if (loading) Html("Loading…") else workSummary(status, active, estimates)) + Html("</div>"))
         append(Html("<div id=\"active\" data-live>") + (if (loading) Html("Loading…") else activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes, instances)) + Html("</div></section>"))
-        append(Html("<section><h2>Schedules</h2><div id=\"schedules\" data-live>") +
+        append(Html("<section id=\"schedules-section\" aria-labelledby=\"schedules-heading\"><details class=\"schedule-panel\"><summary><h2 id=\"schedules-heading\">Schedules</h2> <span id=\"schedule-count\" data-live class=\"muted small\">") +
+            (if (loading) "Loading…" else "${schedules.size} recurring schedules") + Html("</span></summary><div id=\"schedules\" data-live>") +
             (if (loading) Html("Loading…") else if (schedules.isEmpty()) Html("<p>No schedules.</p>") else schedulesTable(schedules)) +
-            Html("</div></section>"))
+            Html("</div></details></section>"))
     }
-    append(Html("<section><h2>"))
+    append(Html("<section id=\"history-section\" aria-labelledby=\"history-heading\"><h2 id=\"history-heading\">"))
     append(if (name == null) Html("History") else (Html("Runs of ") + esc(name) + Html(" <small><a href=\"/\">all jobs</a></small>")))
-    append(Html("</h2><div class=\"tools\"><input id=\"q\" type=\"search\" placeholder=\"filter by name or ref\">"))
+    append(Html("</h2><div class=\"tools history-tools\"><label class=\"history-search\" for=\"q\"><span>Search history</span><input id=\"q\" type=\"search\" placeholder=\"Name, ID, ref or description\" aria-controls=\"history\"></label><div class=\"history-chips\" role=\"group\" aria-label=\"Filter history by status\">"))
     for (chip in listOf("all", "failed", "done", "cancelled", "active")) {
         if (chip == "active" && front) continue
-        append(Html("<button class=\"chip") + (if (chip == "all") " on" else "") + Html("\" data-chip=\"") + chip + Html("\">") + chip + Html("</button>"))
+        append(Html("<button type=\"button\" class=\"chip") + (if (chip == "all") " on" else "") + Html("\" aria-pressed=\"") + (chip == "all") + Html("\" data-chip=\"") + chip + Html("\">") + chip.replaceFirstChar { it.uppercase() } + Html("</button>"))
     }
-    append(Html("</div><div id=\"history\" data-live>"))
+    append(Html("</div><button type=\"button\" id=\"clear-history\" hidden>Clear filters</button></div><p id=\"history-count\" class=\"muted small\" role=\"status\"></p><p class=\"muted small\">Filters apply to the runs loaded below.</p><div id=\"history\" data-live>"))
     val shown = if (front) history.filter { it.status.isTerminal } else history
     append(if (loading) Html("<p>Loading history…</p>") else jobTable(status, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes, instances = instances))
+    append(Html("<p id=\"history-empty\" class=\"empty-state\" hidden>No runs match these filters. Try another search or clear the filters.</p>"))
     append(Html("<p class=\"pager\">"))
     if (before != null) append(Html("<a href=\"/") + query("name" to name) + Html("\">newest</a> "))
     if (history.size == limit) append(Html("<a href=\"/") + (query("name" to name, "before" to history.last().id.toString())) + Html("\">older</a>"))
-    append(Html("</p></div></section>"))
+    append(Html("</p></div></section></main>"))
     append(Html(SCRIPT))
+    append(Html(QUEUE_SCRIPT))
     append(Html("</body></html>"))
 }
 
@@ -160,8 +167,8 @@ private fun jobTable(
     instances: Map<Long, List<String>> = emptyMap(),
 ): Html = buildHtml {
     if (jobs.isEmpty()) return Html("<p class=\"muted\">No jobs.</p>")
-    append(Html("<div class=\"scroll\"><table><tr><th>id</th><th>name</th><th>ref</th><th>where</th><th>status</th><th>progress</th>"))
-    append(Html("<th>created</th><th>elapsed</th><th></th></tr>"))
+    append(Html("<div class=\"scroll\" role=\"region\" aria-label=\"") + (if (filterable) "History jobs" else "Active jobs") + Html("\" tabindex=\"0\"><table class=\"jobs-table\"><thead><tr><th scope=\"col\">ID</th><th scope=\"col\">Job</th><th scope=\"col\">Ref</th><th scope=\"col\">Location</th><th scope=\"col\">Status</th><th scope=\"col\">Progress</th>"))
+    append(Html("<th scope=\"col\">Created</th><th scope=\"col\" title=\"Time spent running; queue waits excluded\">Run time</th><th scope=\"col\"><span class=\"sr-only\">Files</span></th></tr></thead><tbody>"))
     for (job in jobs) {
         if (filterable) {
             val state = when {
@@ -169,25 +176,26 @@ private fun jobTable(
                 job.status.isActive -> "active"
                 else -> job.status.name.lowercase()
             }
-            val text = esc(listOfNotNull(job.name, job.ref, job.sha, job.experiment.description).joinToString(" ").lowercase())
+            val text = esc(listOfNotNull(job.id.toString(), job.name, job.ref, job.sha, job.experiment.description).joinToString(" ").lowercase())
             append(Html("<tr data-state=\"") + state + Html("\" data-text=\"") + text + Html("\">"))
         } else {
             append(Html("<tr>"))
         }
         append(Html("<td><a href=\"/jobs/") + job.id + Html("\">") + job.id + Html("</a></td>"))
         val base = job.origin.series
-        append(Html("<td><a class=\"plain\" href=\"/") + query("name" to base) + Html("\" title=\"all runs of ") + esc(base) + Html("\">") + esc(job.name) + Html("</a>"))
+        append(Html("<td class=\"job-name\"><a class=\"plain job-link\" href=\"/jobs/") + job.id + Html("\">") + esc(job.name) + Html("</a>"))
         append(Html(" <span class=\"kind\">") + kindOf(job) + Html("</span>"))
+        append(Html(" <a class=\"series-link small\" href=\"/") + query("name" to base) + Html("\" aria-label=\"All runs of ") + esc(base) + Html("\">all runs</a>"))
         job.experiment.description.takeIf { it.isNotBlank() }?.let {
             append(Html("<div class=\"desc\" title=\"") + esc(it) + Html("\">") + esc(it) + Html("</div>"))
         }
         append(Html("</td>"))
-        append(Html("<td>") + refText(status.repoUrl, job) + Html("</td><td>") + (hostCell(job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty(), instances[job.id].orEmpty())) + Html("</td><td>") + (statusCell(job, positions[job.id], nodes[job.id].orEmpty())) + Html("</td>"))
+        append(Html("<td class=\"job-ref\">") + refText(status.repoUrl, job) + Html("</td><td class=\"job-location\">") + (hostCell(job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty(), instances[job.id].orEmpty())) + Html("</td><td class=\"job-status\">") + (statusCell(job, positions[job.id], nodes[job.id].orEmpty())) + Html("</td>"))
         append(Html("<td>") + progress(job) + (estimates?.let { estimateText(status, job, it[job.id]) }.orEmpty()) + Html("</td>"))
-        append(Html("<td>") + ago(job.createdAt) + Html("</td><td>") + elapsed(job) + Html("</td>"))
+        append(Html("<td class=\"job-time\">") + ago(job.createdAt) + Html("</td><td class=\"job-time\">") + elapsed(job) + Html("</td>"))
         append(Html("<td><a href=\"/jobs/") + job.id + Html("/files\">files</a></td></tr>"))
     }
-    append(Html("</table></div>"))
+    append(Html("</tbody></table></div>"))
 }
 
 /**
@@ -214,8 +222,8 @@ internal fun kindOf(job: Job): String {
 }
 
 private fun schedulesTable(schedules: List<Schedule>): Html = buildHtml {
-    append(Html("<div class=\"scroll\"><table><tr><th>name</th><th>ref</th><th>every</th><th>arms</th>"))
-    append(Html("<th>last run</th><th>checked</th><th>next check</th><th></th></tr>"))
+    append(Html("<div class=\"scroll\" role=\"region\" aria-label=\"Recurring schedules\" tabindex=\"0\"><table class=\"schedules-table\"><thead><tr><th scope=\"col\">Name</th><th scope=\"col\">Ref</th><th scope=\"col\">Every</th><th scope=\"col\">Arms</th>"))
+    append(Html("<th scope=\"col\">Last run</th><th scope=\"col\">Checked</th><th scope=\"col\">Next check</th><th scope=\"col\"><span class=\"sr-only\">Actions</span></th></tr></thead><tbody>"))
     for (schedule in schedules) {
         val blocked = schedule.blockedReason()
         append(Html("<tr><td><a class=\"plain\" href=\"/") + query("name" to schedule.name) + Html("\">") + esc(schedule.name) + Html("</a>"))
@@ -244,5 +252,56 @@ private fun schedulesTable(schedules: List<Schedule>): Html = buildHtml {
         }
         append(Html("</td></tr>"))
     }
-    append(Html("</table></div>"))
+    append(Html("</tbody></table></div>"))
 }
+
+/** Local filtering and navigation run only on the queue page. */
+private const val QUEUE_SCRIPT = """<script>
+let chip = 'all';
+function applyFilter() {
+  const q = document.getElementById('q');
+  const text = q ? q.value.trim().toLowerCase() : '';
+  const rows = document.querySelectorAll('#history tr[data-state]');
+  let visible = 0;
+  rows.forEach(function (row) {
+    row.hidden = !((!text || row.dataset.text.includes(text)) && (chip === 'all' || row.dataset.state === chip));
+    if (!row.hidden) visible++;
+  });
+  const count = document.getElementById('history-count');
+  const message = visible + ' of ' + rows.length + ' runs shown';
+  if (count && count.textContent !== message) count.textContent = message;
+  const empty = document.getElementById('history-empty');
+  if (empty) empty.hidden = rows.length === 0 || visible > 0;
+  const clear = document.getElementById('clear-history');
+  if (clear) clear.hidden = !text && chip === 'all';
+}
+document.getElementById('q')?.addEventListener('input', applyFilter);
+document.querySelectorAll('[data-chip]').forEach(function (button) {
+  button.addEventListener('click', function () {
+    chip = button.dataset.chip;
+    document.querySelectorAll('[data-chip]').forEach(function (b) {
+      b.classList.toggle('on', b === button);
+      b.setAttribute('aria-pressed', String(b === button));
+    });
+    applyFilter();
+  });
+});
+document.getElementById('clear-history')?.addEventListener('click', function () {
+  const q = document.getElementById('q');
+  if (q) q.value = '';
+  document.querySelector('[data-chip="all"]')?.click();
+  q?.focus();
+});
+// Opening schedules is an explicit choice and survives live updates.
+function revealSchedules() {
+  if (location.hash === '#schedules-section') openSchedules();
+}
+document.querySelector('a[href="#schedules-section"]')?.addEventListener('click', openSchedules);
+function openSchedules() {
+  const panel = document.querySelector('.schedule-panel');
+  if (panel) panel.open = true;
+}
+window.addEventListener('hashchange', revealSchedules);
+revealSchedules();
+applyFilter();
+</script>"""
