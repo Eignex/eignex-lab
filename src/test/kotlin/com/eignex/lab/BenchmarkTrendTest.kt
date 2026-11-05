@@ -85,12 +85,33 @@ class BenchmarkTrendTest {
     }
 
     @Test fun `old empty benchmark points are invalidated after deploying benchmark trends`() {
-        val cache = TrendCache()
-        val job = Job(1, "koblas-sweep@a", "a", status = Status.DONE, cancelRequested = false,
-            setupDone = true, createdAt = 0, experiment = spec)
+        val store = Store(Files.createTempDirectory("benchmark-upgrade").resolve("lab.db"))
+        val job = run(store, "a".repeat(40))
+        val points = TrendPoints.memory()
         val old = TrendPoints.Point("DONE/null/format-2", null, System.currentTimeMillis(), null, emptySet())
-        assertTrue(cache.expired(job, old, null))
-        cache.close()
+        points.save(job, old)
+        TrendCache(points).use { cache ->
+            assertTrue(cache.expired(store.job(job)!!, old, null))
+            val missing = mutableListOf<Long>()
+            val pointless = mutableListOf<Long>()
+            Trend.stored(TrendData.of(store), spec.name, cache, missing = missing, pointless = pointless)
+            assertEquals(listOf(job), missing)
+            assertTrue(pointless.isEmpty(), "the page must keep polling while an empty old point is recomputed")
+        }
+    }
+
+    @Test fun `launching a sweep keeps polling while its plan is still empty`() {
+        val store = Store(Files.createTempDirectory("benchmark-launch").resolve("lab.db"))
+        val experiment = spec.copy(name = "${spec.name}@aaa")
+        val job = store.create(experiment.name, "aaa", emptyList(), experiment = experiment)
+        TrendCache().use { cache ->
+            cache.put(job, TrendCache.version(store.job(job)!!), null, null, emptySet())
+            val missing = mutableListOf<Long>()
+            Trend.stored(TrendData.of(store), spec.name, cache, missing = missing)
+            assertEquals(listOf(job), missing)
+            val page = trendPage(spec.name, emptyList(), "https://example.com", computing = missing.size).toString()
+            assertTrue("/trend/progress" in page)
+        }
     }
 
     @Test fun `renamed sweep HTTP page lists actual benchmark runs and launch action is accepted`() = io.ktor.server.testing.testApplication {

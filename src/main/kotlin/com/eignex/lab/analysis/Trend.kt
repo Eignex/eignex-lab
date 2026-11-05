@@ -240,7 +240,14 @@ object Trend {
                 stale = true
                 return@mapNotNull null
             }
-            if (cache.expired(job, point, confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)])) stale = true
+            val expired = cache.expired(job, point, confirmations[Confirm.name(name, job.sha ?: job.ref, job.id)])
+            if (expired) stale = true
+            // An old empty point may become a benchmark point after an upgrade. Active jobs may also have no
+            // planned cases yet. Keep the page polling both instead of treating them as permanently pointless.
+            if (point.run == null && (expired || job.status.isActive)) {
+                missing?.add(job.id)
+                return@mapNotNull null
+            }
             point.run ?: run {
                 pointless?.add(job.id)
                 null
