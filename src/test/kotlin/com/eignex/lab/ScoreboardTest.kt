@@ -183,11 +183,11 @@ class ScoreboardTest {
         val same = page(shortArm, equal)
 
         assertContains(mixed, "10 s vs 10–60 s")
-        assertContains(mixed, "quality only, budgets differ</small>")
+        assertContains(mixed, "Budgets differ</small>")
         assertContains(mixed, "reference had a longer budget")
         assertContains(mixed, "<td class=\"num\">10 s vs 60 s</td><td class=\"PARTIAL\">no, budgets differ: 10 s vs 60 s</td>")
         assertContains(same, "10 s vs 10 s</small>")
-        assertFalse(same.contains("quality only, budgets differ</small>"))
+        assertFalse(same.contains("Budgets differ</small>"))
         assertContains(same, "<td class=\"num\">10 s vs 10 s</td><td class=\"muted\">yes</td>")
         assertContains(same, "lab a/b experiment")
     }

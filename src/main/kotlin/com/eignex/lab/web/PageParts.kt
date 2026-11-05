@@ -344,9 +344,9 @@ private val HIDDEN_COLLECTIONS = emptyList<String>()
 
 internal fun problemLink(collection: String, problem: String) = "/problem${query("collection" to collection, "problem" to problem)}"
 
-/** A filter dropdown that submits its form on change; [options] are (value, label). */
-internal fun select(name: String, any: String, options: List<Pair<String, String>>, chosen: String?): Html = buildHtml {
-    append(Html("<select name=\"") + name + Html("\" onchange=\"this.form.submit()\"><option value=\"\">") + esc(any) + Html("</option>"))
+/** A filter dropdown; [options] are (value, label), [submitOnChange] preserves immediate filters by default. */
+internal fun select(name: String, any: String, options: List<Pair<String, String>>, chosen: String?, submitOnChange: Boolean = true): Html = buildHtml {
+    append(Html("<select name=\"") + name + Html("\"") + (if (submitOnChange) Html(" onchange=\"this.form.submit()\"") else Html("")) + Html("><option value=\"\">") + esc(any) + Html("</option>"))
     for ((value, label) in options) {
         append(Html("<option value=\"") + esc(value) + Html("\"") + (if (value == chosen) " selected" else "") + Html(">") + esc(label) + Html("</option>"))
     }
@@ -718,6 +718,32 @@ body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-heigh
 .state-ready{color:var(--ok)}.state-booting,.state-replacing{color:var(--run)}.state-draining{color:var(--warn)}.state-unavailable{color:var(--bad)}
 .nodes-page #node-feedback:empty{display:none}.nodes-page #node-feedback{font-size:13px;border-left:3px solid var(--link);padding-left:10px}
 @media(max-width:800px){.node-panels{grid-template-columns:1fr}.nodes-page .node-panel{padding:14px}.nodes-page #node-request label:first-child{min-width:0;flex-basis:100%}.nodes-page #node-count{width:100%}.nodes-page #node-request label{flex:1}.node-fields>button{width:100%}}
+
+.reference-page .reference-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:16px;background:var(--soft);border:1px solid var(--line);border-radius:8px;margin:12px 0}
+.reference-form label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;min-width:150px;flex:1}
+.reference-form label:first-of-type{flex:2;min-width:230px}.reference-form label span{color:var(--muted)}
+.reference-form input:not([type=hidden]),.reference-form select{font:inherit;font-weight:400;font-size:13px;min-height:38px;width:100%;min-width:0;padding:7px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
+.reference-page .reference-form>button{min-height:38px;background:var(--link);border-color:var(--link);color:var(--bg)}
+.reference-page .reference-form>a{padding:8px;white-space:nowrap;font-size:13px}
+.reference-page .comparison-filters{flex-basis:100%;border-top:1px solid var(--line);padding-top:10px}.comparison-filters summary{cursor:pointer;font-size:13px}
+.reference-filter-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px}
+.reference-page .reference-filter-fields label{min-width:0}.reference-page .reference-help{font-size:13px;color:var(--muted);margin:12px 0}
+.reference-help summary{cursor:pointer}.reference-help p{max-width:120ch;line-height:1.6}
+.reference-warning,.reference-budget-note{padding:12px 16px;border-radius:6px;font-size:13px;background:var(--soft);border-left:3px solid var(--warn)}
+.reference-warning{border-color:var(--bad)}.score-legend{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:13px;margin:16px 0 8px}
+.reference-page .reference-board{min-width:900px}.reference-board th:first-child{min-width:200px}.reference-board td{min-width:140px}
+.reference-board .score-value{display:block;font-size:18px;font-weight:650;font-variant-numeric:tabular-nums;color:var(--fg)}
+.reference-board .score-budget,.reference-board .budget-flag{display:block;margin-top:2px}.reference-board .score-count{display:block;margin-top:2px;white-space:nowrap;font-size:11px}
+.reference-page .reference-board td a{display:block}.reference-board a:hover .score-value{text-decoration:underline}.reference-board small{font-size:11px}
+.reference-board .no-score{vertical-align:middle}.reference-board .total{background:var(--soft)}
+.reference-page .reference-results{min-width:900px}.reference-page .score-details{min-width:900px}
+.reference-page .coverage-table{min-width:900px}.coverage-table td:first-child{width:45%;overflow-wrap:anywhere}.coverage-table td:last-child{white-space:nowrap}
+.reference-page .coverage-toggle{padding:0;border:0;background:none;text-align:left;color:var(--link);font-weight:600;white-space:normal}
+.coverage-toggle small{display:block;font-weight:400;margin:2px 0 0 16px}.reference-page tr[data-in] td:first-child{padding-left:28px}
+.reference-page .reference-conflicts{border:1px solid var(--line);border-left:3px solid var(--bad);border-radius:6px;padding:12px 16px;margin-top:24px}
+.reference-conflicts summary{cursor:pointer;font-size:14px}.reference-conflicts li{margin:8px 0;overflow-wrap:anywhere}
+.reference-page .reference-results td,.reference-page .score-details td{overflow-wrap:anywhere}.reference-page .reference-results td.num,.reference-page .score-details td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
+@media(max-width:800px){.reference-form label:first-of-type{min-width:0;flex-basis:100%}.reference-form label{min-width:140px}.reference-page .reference-form>button{width:100%}.reference-filter-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
 
 """
 
