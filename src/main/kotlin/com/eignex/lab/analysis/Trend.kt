@@ -83,6 +83,8 @@ data class TrendRun(
     val nativeProofClaims: Int = 0,
     val contradictedOptima: Int = 0,
     val unverifiedOptima: Int = 0,
+    /** Generic benchmark results, independent of solver feasibility and proof claims. */
+    val benchmark: BenchmarkTrend? = null,
 )
 
 /**
@@ -186,7 +188,7 @@ object Trend {
                     cache?.put(job.id, version, stamp, null, emptySet())
                     return@mapNotNull null
                 }
-                val flips = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE }
+                val flips = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE || trend.benchmark != null && job.status == Status.FAILED }
                     ?.let { Confirm.flips(own(it), own(job.id)) }
                 val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(data.scoringCases(it.id)) }
                 trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
@@ -198,10 +200,12 @@ object Trend {
                     confirmedProofLost = confirmed?.proofLost?.size,
                     confirmedProofGained = confirmed?.proofGained?.size,
                     confirmedObjectiveLost = confirmed?.objectiveLost?.size,
-                    confirmedObjectiveGained = confirmed?.objectiveGained?.size)
+                    confirmedObjectiveGained = confirmed?.objectiveGained?.size,
+                    benchmark = trend.benchmark?.copy(changes = flips?.let(BenchmarkChanges::of),
+                        confirmed = confirmed?.let(BenchmarkChanges::of)))
                     .also { cache?.put(job.id, version, stamp, it, keys.toSet()) }
             }
-            if (job.status == Status.DONE) previous[comparisonKey(point)] = job.id
+            if (job.status == Status.DONE || point.benchmark != null && job.status == Status.FAILED) previous[comparisonKey(point)] = job.id
             point
         }
         if (stale && cache != null) {
@@ -284,6 +288,19 @@ object Trend {
     ): TrendRun? {
         val label = arms.firstOrNull()?.arm?.label ?: return null
         val raw = cases.filter { it.arm == label }
+        if (BenchTransitions.enabled(raw)) {
+            val benchmark = BenchmarkTrends.summarize(raw)
+            val zero = Estimate(0.0, 0.0, 0.0)
+            return TrendRun(job.id, job.sha ?: job.ref,
+                Experiments.trendFingerprint(job.experiment, raw.map { it.problem }.distinct()),
+                experiment = Experiments.trendFingerprint(job.experiment), at = job.finishedAt ?: job.createdAt,
+                finished = job.status.isTerminal, cases = raw.size, problems = raw.map { it.problem }.distinct().size,
+                solved = zero, proven = 0.0, unsupported = 0, errors = benchmark.failed, par2 = zero, suites = emptyMap(),
+                comparisonSeries = raw.mapNotNull { (it.record as? kotlinx.serialization.json.JsonObject)
+                    ?.get("details")?.let { details -> (details as? kotlinx.serialization.json.JsonObject)?.get("benchmarkControls") }
+                    ?.let { controls -> "benchmark:" + ExecutionStore.digest(controls.toString()) } }.distinct().sorted(),
+                benchmark = benchmark)
+        }
         val own = OptimumClaims.local(raw.map { case ->
             if ((case.record as? kotlinx.serialization.json.JsonObject)?.get("comparisonControls") == null) case
             else case.copy(problem = case.problem.copy(problem = ComparisonControls.problem(case).second, benchCase = null))
@@ -460,7 +477,7 @@ class TrendCache(
 
         private const val CONFIRMATION = "confirmation-"
         /** What a stored point holds; a point stored in an earlier format is recomputed (here: proven per theme). */
-        private const val POINT_FORMAT = "format-2"
+        private const val POINT_FORMAT = "format-3"
         private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L

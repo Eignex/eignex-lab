@@ -517,6 +517,14 @@ another refresh; a new successful request still returns the complete ordinary in
 
 ## Controlled sweep migrations
 
+Opt-in `metric-v1` benchmark sweeps have benchmark trends: successful, failed,
+skipped and pending cases, and a selectable metric for each workload in its own unit.
+They do not use solver solved/proven rates or PAR-2. The run table includes benchmark
+failures, recoveries, metric changes and their paired confirmations. Timings are never
+averaged across unlike workloads; chart lines break across case-set or benchmark-control
+changes. `lab trend <schedule-name>` reads the plotted points as JSON. Renaming a schedule
+preserves the job history, and older cached empty benchmark points are recomputed.
+
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,
 processor/memory/deadline controls and normalized runtime/compiler identities.
 Separate harness and library fingerprints retain bench class bytes and runtime dependencies;

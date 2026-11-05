@@ -60,6 +60,7 @@
 #   lab reschedule <id> <experiment.json|-> [interval-sec|-] [next-in-hours]
 #                                                            change a schedule's experiment, interval or next check
 #   lab schedules | lab unschedule <id>
+#   lab trend [name]                                        a schedule's plotted runs as JSON
 #   lab rename-schedule <id> <name>                          rename a schedule and retain its run/confirmation history
 #   lab check <id>                                          check a schedule's ref now instead of at its next interval
 #   lab launch <id>                                         queue a schedule's run now, even if its ref has not moved
@@ -162,6 +163,7 @@ submission_payload() {
 }
 cmd="${1:-ls}"; shift || true
 case "$cmd" in
+trend) curl -fsS -G "$url/trend" --data-urlencode "name=${1:-}" | jq . ;;
 journal) curl -fsS "$url/journal" | jq . ;;
 run)
   while [[ $# -gt 0 ]]; do

@@ -69,6 +69,13 @@ internal fun trendPage(
         append(Html("</p>") + trendPoll(runs.size, computing))
         return@page
     }
+    if (runs.any { it.benchmark != null }) {
+        append(benchmarkTrendContent(runs, repoUrl))
+        append(Html("<script type=\"application/json\" id=\"trend-data\">") +
+            Html(trendJson.encodeToString(runs).replace("</", "<\\/")) + Html("</script>"))
+        append(trendPoll(runs.size, computing))
+        return@page
+    }
     append(Html("<div class=\"trend-toolbar\"><nav class=\"queue-sections\" aria-label=\"Regression sections\"><a href=\"#performance\">Performance</a><a href=\"#themes\">Themes</a><a href=\"#runs\">Runs</a></nav>"))
     append(Html("<div class=\"tools\" role=\"group\" aria-label=\"x-axis\"><span class=\"muted\">X-axis</span>"))
     append(Html("<button type=\"button\" class=\"chip on\" aria-pressed=\"true\" data-x=\"commit\">Commit</button><button type=\"button\" class=\"chip\" aria-pressed=\"false\" data-x=\"date\">Date</button></div></div>"))

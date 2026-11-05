@@ -6,7 +6,7 @@
   if (!data) return;
   const all = JSON.parse(data.textContent);
   const runs = all.map(function (r, i) {
-    if (r.finished) return r;
+    if (r.finished || r.benchmark) return r;
     const base = all.slice(0, i).reverse().find(function (p) { return p.finished && p.spec === r.spec; });
     if (!base) return null;
     const themes = {};
@@ -22,6 +22,21 @@
   try { xMode = localStorage.getItem('trend-x') === 'date' ? 'date' : 'commit'; } catch (e) {}
   // The small multiples are by theme, the groups the sweep set was drawn by.
   const themes = Array.from(new Set(runs.flatMap(function (r) { return Object.keys(r.themes || {}); }))).sort();
+  const benchmarkMode = all.some(function (r) { return r.benchmark; });
+  const metricKey = function (m) { return JSON.stringify([m.caseId, m.name, m.unit, m.direction]); };
+  const metricSelect = document.getElementById('benchmark-metric');
+  if (metricSelect) {
+    const seen = new Map();
+    all.forEach(function (r) { (r.benchmark?.metrics || []).forEach(function (m) { seen.set(metricKey(m), m); }); });
+    for (const [key, metric] of seen) {
+      const option = document.createElement('option');
+      option.value = key;
+      option.textContent = metric.caseId + ' · ' + metric.name + ' (' + metric.unit + ')';
+      metricSelect.appendChild(option);
+    }
+    metricSelect.addEventListener('change', render);
+  }
+  function lineKey(r) { return r.spec + (r.benchmark ? JSON.stringify(r.comparisonSeries) : ''); }
 
   function el(name, attrs, parent) {
     const node = document.createElementNS(NS, name);
@@ -73,7 +88,7 @@
     }
     // A run of a different experiment than the one before it starts a new line, behind a dashed marker.
     for (let k = 1; k < order.length; k++) {
-      if (runs[order[k]].spec === runs[order[k - 1]].spec) continue;
+      if (lineKey(runs[order[k]]) === lineKey(runs[order[k - 1]])) continue;
       const bx = (x(order[k]) + x(order[k - 1])) / 2;
       el('line', {x1: bx, x2: bx, y1: m.t, y2: m.t + ph, stroke: 'var(--muted)', 'stroke-dasharray': '4 4'}, svg);
     }
@@ -106,9 +121,10 @@
           el('path', {d: d, fill: s.color, 'fill-opacity': 0.1, stroke: 'none'}, svg);
         }
       }
-      const pts = order.map(function (i) { const v = s.value(runs[i]); return v == null ? null : [x(i), yy(v), runs[i]]; }).filter(Boolean);
+      const pts = order.map(function (i, k) { const v = s.value(runs[i]); return v == null ? null : [x(i), yy(v), runs[i], k]; }).filter(Boolean);
       if (pts.length > 1) {
-        const d = pts.map(function (p, k) { return (k > 0 && pts[k - 1][2].spec === p[2].spec ? 'L' : 'M') + p[0] + ',' + p[1]; }).join('');
+        const d = pts.map(function (p, k) { return (k > 0 && lineKey(pts[k - 1][2]) === lineKey(p[2]) &&
+          (!benchmarkMode || pts[k - 1][3] === p[3] - 1) ? 'L' : 'M') + p[0] + ',' + p[1]; }).join('');
         el('path', {d: d, fill: 'none', stroke: s.color,
           'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
       }
@@ -153,7 +169,13 @@
   }
 
   function show(r, evt, suite) {
-    const rows = [
+    const metric = (r.benchmark?.metrics || []).find(function (m) { return metricKey(m) === metricSelect?.value; });
+    const rows = r.benchmark ? [
+      ['commit', r.sha.slice(0, 9)], ['when', when(r.at)], ['job', '#' + r.job],
+      ['successful', r.benchmark.succeeded], ['failed', r.benchmark.failed],
+      ['skipped', r.benchmark.skipped], ['pending', r.benchmark.pending],
+      ['selected metric', metric ? metric.value.toPrecision(5) + ' ' + metric.unit : 'unavailable'],
+    ] : [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['checked points', r.checkedPoints], ['native proof claims', r.nativeProofClaims],
       ['contradicted optima', r.contradictedOptima], ['unverified scope/check', r.unverifiedOptima],
@@ -174,7 +196,11 @@
       if (group.proven != null) rows.unshift([suite + ' proven', Math.round(group.proven * group.problems) + ' of ' + group.problems + ' (' + pct(group.proven) + ')']);
       rows.unshift([suite + ' solved', Math.round(group.solved * group.problems) + ' of ' + group.problems + ' (' + pct(group.solved) + ')']);
     }
-    tip.innerHTML = rows.map(function (kv) { return '<div><span>' + kv[0] + '</span><b>' + kv[1] + '</b></div>'; }).join('');
+    tip.replaceChildren();
+    rows.forEach(function (kv) {
+      const row = document.createElement('div'), label = document.createElement('span'), value = document.createElement('b');
+      label.textContent = kv[0]; value.textContent = kv[1]; row.append(label, value); tip.appendChild(row);
+    });
     tip.hidden = false;
     const w = tip.offsetWidth, h = tip.offsetHeight;
     // Kept inside the window on both sides, so a label never ends up off screen.
@@ -187,6 +213,25 @@
   }
 
   function render() {
+    if (benchmarkMode) {
+      const most = Math.max(1, ...runs.map(function (r) { return r.cases; }));
+      draw(document.getElementById('chart-benchmark-status'), [
+        {name: 'successful', color: 'var(--series-1)', value: function (r) { return r.benchmark?.succeeded; }},
+        {name: 'failed', color: 'var(--bad)', value: function (r) { return r.benchmark?.failed; }},
+      ], {max: most, ticks: [0, Math.round(most / 2), most], fmt: function (v) { return String(v); }},
+      {height: 260, endLabels: true, title: 'Successful and failed benchmark cases per run'});
+      const selected = metricSelect.value;
+      const metricOf = function (r) { return (r.benchmark?.metrics || []).find(function (m) { return metricKey(m) === selected; }); };
+      const metrics = runs.map(metricOf).filter(Boolean);
+      const host = document.getElementById('chart-benchmark-metric');
+      if (!metrics.length) { host.textContent = 'No successful measurements yet.'; return; }
+      const top = niceMax(Math.max(...metrics.map(function (m) { return m.value; })));
+      const unit = metrics[0].unit;
+      draw(host, [{name: metrics[0].name, color: 'var(--series-1)', value: function (r) { return metricOf(r)?.value; }}],
+        {max: top, ticks: [0, top / 2, top], fmt: function (v) { return Number(v.toPrecision(4)) + ' ' + unit; }},
+        {height: 260, endLabels: false, title: metrics[0].caseId + ' ' + metrics[0].name + ' in ' + unit});
+      return;
+    }
     if (!runs.length) {
       for (const id of ['chart-solved', 'chart-par2', 'suites']) {
         document.getElementById(id).innerHTML = '<p class="muted small">Charts appear once a completed run provides a baseline.</p>';
