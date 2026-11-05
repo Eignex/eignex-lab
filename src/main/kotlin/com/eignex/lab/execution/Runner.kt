@@ -93,6 +93,13 @@ class Runner(
                 Thread.sleep(100)
             }
             if (manifests > 0) println("split the shared parts out of $manifests batches of session manifests")
+            var preparations = 0
+            var preparationCursor: Long? = 0L
+            while (!stopping && preparationCursor != null) {
+                preparationCursor = store.execution.splitPreparationResults(preparationCursor)?.also { preparations++ }
+                Thread.sleep(100)
+            }
+            if (preparations > 0) println("split the bundles out of $preparations batches of preparation results")
             val unused = store.execution.dropUnusedManifestParts()
             if (unused > 0) println("dropped $unused manifest parts no kept manifest names")
         }
