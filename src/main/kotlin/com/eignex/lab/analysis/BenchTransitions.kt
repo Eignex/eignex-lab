@@ -2,7 +2,6 @@ package com.eignex.lab.analysis
 
 import com.eignex.lab.bench.*
 import com.eignex.lab.domain.*
-import com.eignex.lab.execution.BenchRuns
 import kotlinx.serialization.json.JsonObject
 
 /** Opt-in benchmark transitions, separate from solver feasibility, proof and objective claims. */
@@ -32,8 +31,8 @@ internal object BenchTransitions {
                 val threshold = cx.attributes["regressionThreshold"]?.toDoubleOrNull()
                     ?.takeIf { it.isFinite() && it > 0 && it < 1 } ?: continue
                 val metric = cx.attributes["regressionMetric"] ?: continue
-                val rx = BenchRuns.result(x.record?.toString()) ?: continue
-                val ry = BenchRuns.result(y.record?.toString()) ?: continue
+                val rx = result(x) ?: continue
+                val ry = result(y) ?: continue
                 if (rx.caseId != cx.id || ry.caseId != cy.id) continue
                 val controls = rx.details?.get("benchmarkControls") as? JsonObject ?: continue
                 if (controls.isEmpty() || controls != ry.details?.get("benchmarkControls")) continue
@@ -69,5 +68,9 @@ internal object BenchTransitions {
         }
         return Flips(emptyList(), emptyList(), benchmarkFailed = failed, benchmarkRecovered = recovered,
             metricLost = slower, metricGained = faster)
+    }
+
+    private fun result(case: CaseResult): BenchResult? = case.record?.let {
+        runCatching { BenchProtocol.json.decodeFromJsonElement(BenchResult.serializer(), it) }.getOrNull()
     }
 }

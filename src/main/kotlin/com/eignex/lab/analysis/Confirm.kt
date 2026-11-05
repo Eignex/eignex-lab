@@ -201,7 +201,7 @@ object Confirm {
         val identities = selected.map { it.suite to (it.benchCase?.attributes?.get("problem") ?: it.problem) }.toSet()
         val frozen = sourceCases.filter { ComparisonControls.problem(it) in identities }.mapNotNull { it.problem.benchCase }
             .distinctBy { if (it.attributes["regressionPolicy"] == "metric-v1")
-                listOf(com.eignex.lab.execution.BenchRuns.key(it)) else
+                listOf(it.attributes["comparisonKey"] ?: it.id) else
                 listOf(it.attributes["suite"], it.attributes["problem"], it.parameters["engine"], it.parameters["seed"], it.attributes["propagationControl"]) }
             .ifEmpty { selected.mapNotNull { it.benchCase } }
         require(!spec.isBench || selected.isEmpty() || frozen.isNotEmpty()) { "Confirmation lost its frozen workloads" }
