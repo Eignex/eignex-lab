@@ -73,7 +73,6 @@ data class QueueView(val localQueue: List<Long>, val localNext: Long?, val local
 
 object Waiting {
     const val SETUP = "setup"
-    const val CASES = "cases"
     fun localWork(job: Job, dir: Path?): LocalWork = LocalWork(job.id, job.name, job.priority, "analysis",
         done = job.done, total = job.total, running = job.running, doing = "analysing retained results")
 

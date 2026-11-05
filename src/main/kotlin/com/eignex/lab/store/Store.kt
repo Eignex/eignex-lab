@@ -497,9 +497,6 @@ internal const val LAB_DEBUG = "CASE WHEN j.bench = 0 THEN " +
 internal const val INSTRUMENTED = "COALESCE(j.measurement IN ('compilation', 'compilation+log', 'native-startup') OR " +
     "CASE WHEN json_valid(c.record) THEN json_extract(c.record, '$.stats.labMeasurement') IN ('compilation', 'compilation+log') ELSE 0 END, 0) AS instrumented"
 
-/** The host a job runs on, from its experiment ([ExperimentSpec.host]): the lab machine unless it names another. */
-private const val HOST = "host"
-
 /** A stored case record, or null for one that does not parse: one bad record must not take a page or a trend down. */
 internal fun recordOf(text: String): kotlinx.serialization.json.JsonElement? = runCatching { Json.parseToJsonElement(text) }.getOrNull()
 

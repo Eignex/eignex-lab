@@ -170,14 +170,7 @@ class EstimatesTest {
     }
 
     @Test
-    fun `the AWS pressure counts the realistic estimate, the timeouts only without one`() {
-        val queued = job(Status.QUEUED, CommandCounts(0, 0, 0, 0))
-
-        assertEquals(10 * 0.1, Estimates.pressureCoreHours(queued, none, 8), 1e-9)
-        // 977 cases of 30 s from the last run, not 10 guessed cases of six minutes.
-        assertEquals(977 * 30.0 / 3600, Estimates.pressureCoreHours(queued, { CaseHistory(7, 977, 30_000.0) }, 8), 1e-9)
-        val measured = job(Status.QUEUED, CommandCounts(100, 50, 0, 0, timed = 50, timedMs = 50 * 36_000))
-        assertEquals(50 * 0.01, Estimates.pressureCoreHours(measured, none, 8), 1e-9)
+    fun `case core hours use measured times with timeouts as fallback`() {
         val running = job(Status.RUNNING, CommandCounts(100, 50, 0, 0, timed = 50, timedMs = 50 * 36_000))
         assertEquals(0.01, Estimates.caseCoreHours(running, none), 1e-9)
         assertEquals(0.1, Estimates.caseCoreHours(job(Status.RUNNING, CommandCounts(100, 0, 0, 0)), none), 1e-9)

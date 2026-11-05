@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import plistlib
 import pwd
-import shutil
 import subprocess
 import urllib.request
 import zipfile

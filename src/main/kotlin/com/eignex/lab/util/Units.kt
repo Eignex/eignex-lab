@@ -7,7 +7,6 @@ package com.eignex.lab.util
 
 const val BYTES_PER_GB = 1_000_000_000L
 const val BYTES_PER_MB = 1_000_000L
-const val BYTES_PER_MIB = 1024L * 1024
 
 const val MS_PER_SEC = 1000L
 const val MS_PER_HOUR = 3_600_000L

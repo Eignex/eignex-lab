@@ -31,19 +31,6 @@ data class PreparationResult(
     val selectionCache: List<BenchSelectionEntry> = emptyList(),
 )
 
-/** Relative roots in the domain plan have the same meaning on every worker. */
-internal fun portableProblem(problem: Problem, source: Path, corpus: Path): Problem {
-    fun path(value: String): String {
-        val file = Path.of(value).let { if (it.isAbsolute) it else source.resolve(it) }.toAbsolutePath().normalize()
-        return when {
-            file.startsWith(corpus.toAbsolutePath().normalize()) -> "lab-corpus/" + corpus.toAbsolutePath().normalize().relativize(file)
-            file.startsWith(source.toAbsolutePath().normalize()) -> "lab-source/" + source.toAbsolutePath().normalize().relativize(file)
-            else -> error("selection returned a path outside its source and corpus")
-        }.replace('\\', '/').also { safeRelative(it) }
-    }
-    return problem.copy(model = problem.model?.let(::path), data = problem.data?.let(::path), includeDirs = problem.includeDirs.map(::path))
-}
-
 internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> {
     val cache = environment["XDG_CACHE_HOME"] ?: if (mac) null else environment["LAB_WORKER_CACHE_ROOT"]?.let { "$it/consumer" }
     return environment.filterKeys {
