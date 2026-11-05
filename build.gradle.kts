@@ -56,6 +56,21 @@ eignexLint { enabled.set(false) }
 // The in-process Klause MPS parser still uses foreign downcalls and the Vector API.
 val parserJvmArgs = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
 
+// The local UI uses test fixtures and a simulated cluster, never the production launcher or a worker.
+tasks.register<JavaExec>("devUi") {
+    group = "application"
+    description = "Serve the UI at http://127.0.0.1:8080 with sample data and fake Nomad (override with -PuiPort)."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().output + sourceSets.main.get().runtimeClasspath
+    mainClass.set("com.eignex.lab.dev.LocalUiKt")
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) })
+    maxHeapSize = "512m"
+    jvmArgs(parserJvmArgs)
+    systemProperty("lab.ui.assets", file("src/main/resources/web").absolutePath)
+    systemProperty("logback.configurationFile", file("src/test/resources/dev-logback.xml").absolutePath)
+    args(providers.gradleProperty("uiPort").orElse("8080").get(), layout.buildDirectory.dir("dev-ui").get().asFile.absolutePath)
+}
+
 application {
     mainClass.set("com.eignex.lab.cli.MainKt")
     applicationDefaultJvmArgs = parserJvmArgs

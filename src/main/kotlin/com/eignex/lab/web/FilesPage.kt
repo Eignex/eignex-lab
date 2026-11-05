@@ -13,8 +13,7 @@ import com.eignex.lab.worker.*
 
 import java.net.URLEncoder
 
-internal fun filesPage(jobId: Long, files: List<FileEntry>): Html = buildHtml {
-    append(head("${jobId} files · eignex lab", live = false))
+internal fun filesPage(jobId: Long, files: List<FileEntry>): Html = page("${jobId} files · eignex lab") {
     append(Html("<header><h1><a href=\"/jobs/") + jobId + Html("\">") + jobId + Html("</a> / files</h1></header>"))
     if (files.isEmpty()) append(Html("<p class=\"muted\">No files yet.</p>"))
     append(Html("<div class=\"scroll\"><table><tr><th>path</th><th class=\"num\">size</th></tr>"))
@@ -22,7 +21,7 @@ internal fun filesPage(jobId: Long, files: List<FileEntry>): Html = buildHtml {
         append(Html("<tr><td><a href=\"/jobs/") + jobId + Html("/files/") + pathUrl(file.path) + Html("\"><code>") + esc(file.path) + Html("</code></a></td>"))
         append(Html("<td class=\"num\">") + size(file.bytes) + Html("</td></tr>"))
     }
-    append(Html("</table></div></body></html>"))
+    append(Html("</table></div>"))
 }
 
 internal fun pathUrl(path: String) =

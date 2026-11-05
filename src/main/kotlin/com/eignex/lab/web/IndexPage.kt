@@ -36,10 +36,8 @@ internal fun indexPage(
     free: Long? = runCatching { freeBytes(status.paths.dataDir) }.getOrNull(),
     held: String? = runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(),
     loading: Boolean = false,
-): Html = buildHtml {
+): Html = page("eignex lab", live = true, script = PageScripts.queue) {
     val front = before == null && name == null
-    append(head("eignex lab", live = true, bodyClass = "lab-page queue-page"))
-    append(Html("<main>"))
     append(Html("<header><h1>Queue</h1>"))
     append(Html("<div id=\"summary\" data-live>") + (if (loading) Html("Loading queue…") else summary(status, host, active, nodes, free, held)) + Html("</div></header>"))
     append(Html("<p id=\"queue-snapshot\" data-live class=\"muted small\"><!--queue-snapshot--></p>"))
@@ -72,10 +70,7 @@ internal fun indexPage(
     append(Html("<p class=\"pager\">"))
     if (before != null) append(Html("<a href=\"/") + query("name" to name) + Html("\">newest</a> "))
     if (history.size == limit) append(Html("<a href=\"/") + (query("name" to name, "before" to history.last().id.toString())) + Html("\">older</a>"))
-    append(Html("</p></div></section></main>"))
-    append(Html(SCRIPT))
-    append(Html(QUEUE_SCRIPT))
-    append(Html("</body></html>"))
+    append(Html("</p></div></section>"))
 }
 
 /** Where a job's remaining work may run, as the work summary splits it. */
@@ -254,54 +249,3 @@ private fun schedulesTable(schedules: List<Schedule>): Html = buildHtml {
     }
     append(Html("</tbody></table></div>"))
 }
-
-/** Local filtering and navigation run only on the queue page. */
-private const val QUEUE_SCRIPT = """<script>
-let chip = 'all';
-function applyFilter() {
-  const q = document.getElementById('q');
-  const text = q ? q.value.trim().toLowerCase() : '';
-  const rows = document.querySelectorAll('#history tr[data-state]');
-  let visible = 0;
-  rows.forEach(function (row) {
-    row.hidden = !((!text || row.dataset.text.includes(text)) && (chip === 'all' || row.dataset.state === chip));
-    if (!row.hidden) visible++;
-  });
-  const count = document.getElementById('history-count');
-  const message = visible + ' of ' + rows.length + ' runs shown';
-  if (count && count.textContent !== message) count.textContent = message;
-  const empty = document.getElementById('history-empty');
-  if (empty) empty.hidden = rows.length === 0 || visible > 0;
-  const clear = document.getElementById('clear-history');
-  if (clear) clear.hidden = !text && chip === 'all';
-}
-document.getElementById('q')?.addEventListener('input', applyFilter);
-document.querySelectorAll('[data-chip]').forEach(function (button) {
-  button.addEventListener('click', function () {
-    chip = button.dataset.chip;
-    document.querySelectorAll('[data-chip]').forEach(function (b) {
-      b.classList.toggle('on', b === button);
-      b.setAttribute('aria-pressed', String(b === button));
-    });
-    applyFilter();
-  });
-});
-document.getElementById('clear-history')?.addEventListener('click', function () {
-  const q = document.getElementById('q');
-  if (q) q.value = '';
-  document.querySelector('[data-chip="all"]')?.click();
-  q?.focus();
-});
-// Opening schedules is an explicit choice and survives live updates.
-function revealSchedules() {
-  if (location.hash === '#schedules-section') openSchedules();
-}
-document.querySelector('a[href="#schedules-section"]')?.addEventListener('click', openSchedules);
-function openSchedules() {
-  const panel = document.querySelector('.schedule-panel');
-  if (panel) panel.open = true;
-}
-window.addEventListener('hashchange', revealSchedules);
-revealSchedules();
-applyFilter();
-</script>"""

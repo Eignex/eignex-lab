@@ -61,7 +61,7 @@ internal fun experimentSection(
     if (repeats > 1) append(Html(" × ") + repeats + Html(" repeats"))
     if (job != null) append(Html(" · <a href=\"/experiments/") + job + Html("/cases.csv\">cases.csv</a>"))
     append(Html("</small></h2>"))
-    append(Html("<div class=\"scroll\"><table><tr><th>arm</th><th>commit</th><th>build / validation</th><th class=\"num\">done</th><th class=\"num\">solved</th>"))
+    append(Html("<div class=\"scroll\"><table class=\"arms-table\"><tr><th>arm</th><th>commit</th><th>build / validation</th><th class=\"num\">done</th><th class=\"num\">solved</th>"))
     append(Html("<th class=\"num\">eligible native proofs</th><th>proof evidence</th><th class=\"num\">unsupported</th><th class=\"num\">errors</th><th class=\"num\">PAR-2 s</th>"))
     if (compared) append(Html("<th class=\"num\">score</th><th>vs ") + (esc(labels.first())) + Html("</th>"))
     append(if (job != null) Html("<th>bench csv</th></tr>") else Html("</tr>"))
@@ -76,8 +76,11 @@ internal fun experimentSection(
         append(Html("<td><code>") + commit + Html("</code></td><td>") + provenance(summary) + Html("</td>"))
         append(Html("<td class=\"num\">") + summary.cases + Html("/") + (total[summary.label]?.size ?: 0) + Html("</td>"))
         append(Html("<td class=\"num\">") + estimate(armStats.solved, "%.1f") + Html("</td><td class=\"num\">") + summary.proven + Html("</td>"))
-        append(Html("<td>") + summary.nativeProofClaims + Html(" native claims; ") + summary.contradictedOptima + Html(" contradicted; ") +
-            summary.unverifiedOptima + Html(" unverified scope/check</td>"))
+        append(Html("<td><details id=\"proof-evidence-") + index + Html("\"><summary>") + summary.nativeProofClaims + Html(" native claims</summary><p>") +
+            summary.contradictedOptima + Html(" contradicted; ") + summary.unverifiedOptima + Html(" unverified scope/check</p></details>"))
+        if (summary.contradictedOptima > 0) append(Html("<span class=\"FAILED\">") + summary.contradictedOptima + Html(" contradicted optima</span>"))
+        if (summary.unverifiedOptima > 0) append(Html("<span class=\"PARTIAL\">") + summary.unverifiedOptima + Html(" unverified scope/check</span>"))
+        append(Html("</td>"))
         append(Html("<td class=\"num\">") + (if (summary.unsupported > 0) (Html("<span class=\"PARTIAL\">") + summary.unsupported + Html("</span>")) else "0") + Html("</td>"))
         append(Html("<td class=\"num\">") + (if (summary.errors > 0) (Html("<span class=\"FAILED\">") + summary.errors + Html("</span>")) else "0") + Html("</td>"))
         append(Html("<td class=\"num\">") + estimate(armStats.par2, "%.2f") + Html("</td>"))
@@ -93,7 +96,7 @@ internal fun experimentSection(
         append(Html("</tr>"))
     }
     append(Html("</table></div>"))
-    append(Html("<p class=\"muted\"><small>Intervals are 95%, bootstrapped over problems, a problem's seeds and repeats averaged. "))
+    append(Html("<details id=\"scoring-notes\" class=\"scoring-notes\"><summary>How to read these results</summary><p class=\"muted\"><small>Intervals are 95%, bootstrapped over problems, a problem's seeds and repeats averaged. "))
     append(Html("PAR-2 charges an unsolved run twice its budget."))
     append(Html(" Checked witnesses establish feasible points. Eligible native proofs exclude contradicted optima and unavailable scope/checks; absence of a counterexample is not an independent proof."))
     if (compared) {
@@ -101,7 +104,7 @@ internal fun experimentSection(
         append(Html("solved; its p is a Wilcoxon signed-rank test. Equal results whose times differ by less than 0.25 s or 10% are a "))
         append(Html("tie. Better and worse count problems by the score, with a sign test. p below 0.05 is bold."))
     }
-    append(Html("</small></p>"))
+    append(Html("</small></p></details>"))
     if (comparison.disagreements.isNotEmpty()) {
         append(Html("<h2 class=\"FAILED\">Disagreements <small>") + comparison.disagreements.size + Html("</small></h2><ul class=\"error\">"))
         for (d in comparison.disagreements) append(Html("<li><code>") + (esc(name(d.problem))) + Html("</code>: ") + esc(d.reason) + Html("</li>"))
@@ -159,10 +162,12 @@ private fun provenance(summary: ArmSummary): Html = buildHtml {
     if (summary.buildFingerprints.size > 1 || summary.validationPolicies.size > 1) {
         append(Html("<span class=\"PARTIAL\">mixed provenance</span><br>"))
     }
-    append(summary.buildFingerprints.joinHtml(Html("<br>")) { (Html("<code title=\"") + esc(it) + Html("\">") + (esc(it.take(12))) + Html("</code>")) })
+    append(Html("<details class=\"provenance\" id=\"provenance-") + URLEncoder.encode(summary.label, Charsets.UTF_8) + Html("\"><summary>") + summary.buildFingerprints.size + Html(" builds · ") + summary.validationPolicies.size + Html(" policies</summary><div>"))
+    append(summary.buildFingerprints.joinHtml(Html("<br>")) { Html("<code>") + it + Html("</code>") })
     if (summary.validationPolicies.isNotEmpty()) {
-        append(Html("<br><small>") + (summary.validationPolicies.joinHtml(Html(", ")) { esc(it) }) + Html("</small>"))
+        append(Html("<p>") + summary.validationPolicies.joinHtml(Html("<br>")) { esc(it) } + Html("</p>"))
     }
+    append(Html("</div></details>"))
     if (summary.missingProvenance > 0) {
         append(Html("<br><span class=\"PARTIAL\">records missing provenance: ") + summary.missingProvenance + Html("</span>"))
     }
@@ -186,8 +191,9 @@ private fun pValue(p: Double): Html {
 
 /** Problems whose runs of one arm disagree, the most unsettled first. */
 private fun noiseTable(noise: List<Noise>): Html = buildHtml {
-    append(Html("<h2>Noisy problems <small>") + noise.size + Html(": runs that disagree on the verdict, or whose time to best spreads over "))
-    append(Html("25% of its mean</small></h2><div class=\"scroll\"><table><tr><th>problem</th><th>arm</th>"))
+    append(Html("<details id=\"noisy-problems\" class=\"result-diagnostics\"><summary><b>Noisy problems</b> · ") + noise.size + Html("</summary>"))
+    append(Html("<p class=\"muted\">Runs that disagree on the verdict, or whose time to best spreads over 25% of its mean.</p>"))
+    append(Html("<div class=\"scroll\"><table><tr><th>problem</th><th>arm</th>"))
     append(Html("<th class=\"num\">runs</th><th class=\"num\">verdicts</th><th class=\"num\">time spread</th></tr>"))
     for (n in noise.take(NOISE_ROWS)) {
         append(Html("<tr><td><code>") + (esc(name(n.problem))) + Html("</code></td><td>") + esc(n.arm) + Html("</td><td class=\"num\">") + n.runs + Html("</td>"))
@@ -196,6 +202,7 @@ private fun noiseTable(noise: List<Noise>): Html = buildHtml {
     }
     append(Html("</table></div>"))
     if (noise.size > NOISE_ROWS) append(Html("<p class=\"muted\">") + (noise.size - NOISE_ROWS) + Html(" more in cases.csv</p>"))
+    append(Html("</details>"))
 }
 
 private const val SIGNIFICANT = 0.05
@@ -210,10 +217,11 @@ private fun problemGrid(
     compared: Boolean = true,
 ): Html = buildHtml {
     val byProblem = cases.groupBy { it.problem }
-    append(Html("<h2>Problems"))
+    append(Html("<section id=\"problems\" data-result-list><h2>Problems <small>") + byProblem.size + Html(" total</small>"))
     if (compared) append(Html(" <small><label><input type=\"checkbox\" id=\"differ\"> only where arms differ</label></small>"))
     append(Html("</h2>"))
-    append(Html("<div class=\"scroll\"><table class=\"grid\"><tr><th>problem</th>"))
+    append(resultFilters("problem"))
+    append(Html("<div class=\"scroll problem-scroll\" tabindex=\"0\" aria-label=\"Problem results\"><table class=\"grid\"><tr><th>problem</th>"))
     for (label in labels) append(Html("<th>") + esc(label) + Html("</th>"))
     if (references.isNotEmpty()) append(Html("<th class=\"ref\">reference</th>"))
     append(Html("</tr>"))
@@ -229,7 +237,7 @@ private fun problemGrid(
         val best = points.values.maxOrNull()?.takeIf { top -> points.values.any { it < top } }
         val label = (Html("<code>") + (esc(name(problem))) + Html("</code>"))
         val cell = if (problem.collection.isEmpty()) label else (Html("<a class=\"plain\" href=\"") + problemLink(problem.collection, problem.problem) + Html("\">") + label + Html("</a>"))
-        append(Html("<tr data-differ=\"") + (verdicts.distinct().size > 1) + Html("\"><td>") + cell + Html("</td>"))
+        append(Html("<tr data-result-row data-search=\"") + name(problem) + Html("\" data-differ=\"") + (verdicts.distinct().size > 1) + Html("\"><td>") + cell + Html("</td>"))
         for (label in labels) {
             val cls = if (best != null && points[label] == best) Html(" class=\"best\"") else ""
             append(Html("<td") + cls + Html(">"))
@@ -243,7 +251,7 @@ private fun problemGrid(
         if (references.isNotEmpty()) append(Html("<td class=\"ref\">") + referenceVerdict(references[problem.referenceKey]) + Html("</td>"))
         append(Html("</tr>"))
     }
-    append(Html("</table></div>"))
+    append(Html("</table></div><p class=\"muted\" data-result-count aria-live=\"polite\"></p><p data-result-empty hidden>No matching problems.</p></section>"))
 }
 
 /** A reference verdict in a word, the solver beside it and its time against its own budget on hover. */
@@ -589,248 +597,6 @@ internal inline fun buildHtml(block: HtmlBuilder.() -> Unit): Html = HtmlBuilder
 
 private const val TAIL_BYTES = 65_536
 
-/** The lab's views, as the tab bar shows them. */
-internal enum class Tab(val label: String, val href: String) {
-    QUEUE("Queue", "/"), NODES("Nodes", "/nodes"), REGRESSION("Regression", "/trend"), REFERENCE("Reference", "/references")
-}
-
-internal fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE, bodyClass: String? = null): Html = Html("""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE${pageStyle(bodyClass)}</style></head>
-<body${bodyClass?.let { " class=\"${esc(it)}\"" } ?: ""}${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">eignex lab</a>${tabs(tab)}</nav>""")
-
-/** Screen-specific CSS is inline only on the screen that needs it, with no extra asset requests. */
-private fun pageStyle(bodyClass: String?): String = when {
-    bodyClass == null -> ""
-    "nodes-page" in bodyClass -> NODES_PAGE_STYLE
-    "reference-page" in bodyClass -> REFERENCE_PAGE_STYLE
-    "lab-page" in bodyClass -> LAB_STYLE
-    else -> ""
-}
-
-private fun tabs(active: Tab): Html = Tab.entries.joinHtml {
-    (Html("<a href=\"") + it.href + Html("\"") + (if (it == active) Html(" class=\"on\" aria-current=\"page\"") else "") + Html(">") + it.label + Html("</a>"))
-}
-
-private const val STYLE = """
-:root{--bg:#fff;--fg:#111;--muted:#666;--line:#ddd;--soft:#f3f3f3;--link:#0969da;
---run:#0550ae;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--off:#888;--series-1:#2a78d6;--series-2:#eb6834}
-@media (prefers-color-scheme: dark){:root{--bg:#111;--fg:#ddd;--muted:#999;--line:#333;--soft:#222;--link:#58a6ff;
---run:#6cb6ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--off:#888;--series-1:#3987e5;--series-2:#d95926}}
-body{font:14px system-ui,sans-serif;margin:0 auto;max-width:1440px;padding:24px 32px 48px;background:var(--bg);color:var(--fg)}
-@media (max-width:700px){body{padding:16px}}
-a{color:var(--link)}a.plain{color:inherit;text-decoration:none}a.plain:hover{text-decoration:underline}
-h1{margin:0 0 4px}h1 code{font-size:inherit}h1 a{color:inherit;text-decoration:none}h2{font-size:16px;margin:32px 0 10px}h2 small{font-weight:normal}
-.muted{color:var(--muted)}p.description{margin:4px 0 0;max-width:80ch}
-td .desc{color:var(--muted);font-size:.85em;max-width:60ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.scroll{overflow-x:auto}
-table{border-collapse:collapse;width:100%}td,th{padding:6px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th.num,td.num{text-align:right}tr.sub td{border-top:0;padding-top:0;font-size:12px}tr.sub div{margin:2px 0}
-code{font-size:12px;word-break:break-all}
-.RUNNING{color:var(--run)}.DONE{color:var(--ok)}.PARTIAL{color:var(--warn)}.FAILED{color:var(--bad)}.CANCELLED,.QUEUED{color:var(--off)}
-.PARTIAL a{color:inherit}
-.badge{background:var(--warn);color:var(--bg);border-radius:3px;padding:0 4px}
-.where{border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.kind{font-size:.8em;color:var(--muted);border:1px solid var(--line);border-radius:3px;padding:0 4px;white-space:nowrap}.where.aws{border-color:var(--link);color:var(--link)}
-.bar{display:flex;width:90px;height:6px;margin:6px 0 2px;background:var(--soft);border-radius:3px;overflow:hidden}
-.bar i{display:block}.bar .ok{background:var(--ok)}.bar .bad{background:var(--bad)}.bar .run{background:var(--run)}
-td .est{color:var(--muted);font-size:12px}.small{font-size:12px}.warn{color:var(--warn)}
-.work{display:flex;flex-direction:column;gap:4px;margin:0 0 12px;line-height:1.5;overflow-wrap:anywhere}
-.gauge{display:inline-block;width:120px;max-width:30vw;height:6px;background:var(--soft);border-radius:3px;overflow:hidden;vertical-align:middle}
-.gauge i{display:block;height:100%;background:var(--run)}.gauge i.over{background:var(--warn)}
-.tools{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}.tools input{font:inherit;padding:3px 6px;min-width:200px}
-button{font:inherit;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--soft);color:var(--fg);cursor:pointer}
-pre.script{background:var(--soft);padding:8px;overflow-x:auto;max-width:120ch}table.board tr.total td{font-weight:600;border-bottom:2px solid var(--line)}.chip.on{border-color:var(--link);color:var(--link)}button.danger{color:var(--bad);border-color:var(--bad)}
-.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}.actions input{width:4em;font:inherit}
-dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0}dl.meta dt{color:var(--muted)}dl.meta dd{margin:0}
-table.grid{width:auto}table.grid td{min-width:110px}
-table.grid .ref{border-left:1px solid var(--line);color:var(--muted)}
-table.grid td.best{background:color-mix(in srgb,var(--ok) 14%,transparent)}ul.error{color:var(--bad)}
-pre.error{color:var(--bad);white-space:pre-wrap;word-break:break-all;background:var(--soft);padding:8px}
-.pager{margin-top:12px}
-p.note{background:var(--soft);border-left:3px solid var(--link);padding:8px 12px;margin:16px 0}
-nav.tabs{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--line);margin:-8px 0 20px;flex-wrap:wrap}
-nav.tabs a{padding:8px 14px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
-nav.tabs a:hover{color:var(--fg)}nav.tabs a.on{color:var(--fg);border-bottom-color:var(--link);font-weight:600}
-nav.tabs a.brand{color:var(--fg);font-weight:700;padding-left:0;margin-right:12px}
-a.chip{text-decoration:none;display:inline-block}
-tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
-.filters{align-items:center}.filters input[type=checkbox]{min-width:0;margin:0 4px 0 0}.filters label{display:inline-flex;align-items:center;white-space:nowrap}.filters select{font:inherit;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
-#node-request{align-items:center;gap:12px}#node-request label{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-#node-request select{font:inherit;padding:4px;max-width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
-#node-request input{min-width:0}#node-request label:first-child{flex-basis:100%}#node-pool{min-width:0}
-.chart svg,.multiple svg{display:block}.chart{width:100%}
-.grid{stroke:var(--line);stroke-width:1}.tick{fill:var(--muted);font-size:11px}.tick.mono{font-family:ui-monospace,monospace}
-.endlabel{fill:var(--fg);font-size:12px}.cross{stroke:var(--muted);stroke-width:1}
-.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin:-4px 0 6px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-.legend i.hollow{border:2px solid var(--series-1);width:6px;height:6px}.legend i.flag{border:2px solid var(--bad);width:6px;height:6px;background:none}
-.multiples{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px 20px}
-.mtitle{font-size:12px;color:var(--muted);margin-bottom:2px}
-.tip{position:absolute;z-index:5;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;
-font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px;max-width:min(420px,calc(100vw - 16px))}
-.tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted);flex:none}
-.tip b{text-align:right;overflow-wrap:anywhere;min-width:0}
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
-"""
-
-private const val LAB_STYLE = """
-/* Shared layout for the queue and node inventory. */
-body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-height:1.45}
-.lab-page *{box-sizing:border-box}.lab-page [hidden]{display:none!important}
-.lab-page h1{font-size:28px;letter-spacing:-.5px}.lab-page h2{font-size:18px;margin:24px 0 12px}
-.lab-page section{scroll-margin-top:16px}.lab-page a:focus-visible,.lab-page button:focus-visible,.lab-page input:focus-visible,.lab-page summary:focus-visible,.lab-page .scroll:focus-visible{outline:2px solid var(--link);outline-offset:3px}
-.queue-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0 12px}
-.queue-stat{display:flex;align-items:baseline;gap:12px;padding:14px 18px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
-.queue-stat strong{font-size:28px;line-height:1.2;font-variant-numeric:tabular-nums}.queue-stat span{color:var(--muted);font-size:13px}
-.queue-stat.capacity-wait{color:var(--warn)}.queue-stat.QUEUED{color:var(--muted)}
-.queue-capacity{display:flex;flex-wrap:wrap;gap:6px 24px}.lab-page #queue-snapshot{margin:6px 0 12px}
-.queue-sections{display:flex;flex-wrap:wrap;gap:8px 20px;border-bottom:1px solid var(--line);padding:0 0 12px;font-size:13px}
-.queue-sections a{text-decoration:none}.queue-sections a:hover{text-decoration:underline}
-.lab-page .work{border-left:3px solid var(--line);padding-left:12px;margin-bottom:16px;gap:2px}
-.lab-page .scroll{border:1px solid var(--line);border-radius:8px}
-.lab-page table{font-size:13px}.lab-page th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap;background:var(--soft)}
-.lab-page td,.lab-page th{padding:12px;line-height:1.45}.lab-page tbody tr:last-child td{border-bottom:0}
-.lab-page tbody tr:hover{background:color-mix(in srgb,var(--link) 4%,var(--bg))}
-.lab-page .jobs-table{min-width:1400px;table-layout:fixed}
-.jobs-table th:nth-child(1){width:72px}.jobs-table th:nth-child(2){width:28%}.jobs-table th:nth-child(3){width:112px}
-.jobs-table th:nth-child(4){width:14%}.jobs-table th:nth-child(5){width:12%}.jobs-table th:nth-child(6){width:15%}
-.jobs-table th:nth-child(7){width:100px}.jobs-table th:nth-child(8){width:94px}.jobs-table th:nth-child(9){width:56px}
-.lab-page .job-name{overflow-wrap:anywhere}.lab-page .job-link{font-weight:600}.lab-page .series-link{white-space:nowrap}
-.lab-page td .desc{max-width:none;white-space:normal;overflow:hidden;margin-top:5px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.lab-page .job-ref code{word-break:normal;overflow-wrap:anywhere}.lab-page .job-ref code a{display:inline-block;white-space:nowrap}
-.lab-page .job-location{overflow-wrap:anywhere}.lab-page .job-location small{color:var(--muted)}
-.lab-page .job-time{white-space:nowrap;font-variant-numeric:tabular-nums}
-.lab-page .job-status>span:first-child{display:inline-block;font-size:11px;letter-spacing:.03em;font-weight:650;padding:3px 7px;border-radius:4px;background:color-mix(in srgb,currentColor 10%,transparent)}
-.lab-page .job-status>span.QUEUED{color:var(--warn)}.lab-page .job-status small{display:inline-block;margin-top:3px;overflow-wrap:anywhere}
-.lab-page .bar{width:100%;max-width:160px;height:8px;margin:5px 0}.lab-page td .est{margin-top:4px;font-size:11px}
-.lab-page .schedule-panel{margin-top:24px;border:1px solid var(--line);border-radius:8px}
-.schedule-panel>summary{padding:12px 16px;cursor:pointer}.lab-page .schedule-panel h2{display:inline;margin:0 12px 0 4px;font-size:16px}
-.lab-page .schedule-panel .scroll{border:0;border-top:1px solid var(--line);border-radius:0 0 8px 8px}.schedule-panel>div>p{padding:0 16px}
-.lab-page .schedules-table{min-width:1000px}.lab-page .schedules-table td:not(:first-child){white-space:nowrap}
-.lab-page .history-tools{align-items:flex-end;gap:12px;margin-bottom:8px}.history-search{display:flex;flex-direction:column;gap:5px;min-width:240px;max-width:420px;flex:1;font-size:12px;font-weight:600}
-.lab-page .history-search input{width:100%;min-width:0;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg);font-size:13px;font-weight:400}
-.history-chips{display:flex;flex-wrap:wrap;gap:6px}.lab-page button{min-height:36px;font-size:13px}.lab-page button:hover{border-color:var(--muted)}
-.lab-page .chip.on{background:color-mix(in srgb,var(--link) 10%,var(--bg));font-weight:600}
-.lab-page #history-count{display:inline-block;margin:0 12px 8px 0}.lab-page #history-count+p{display:inline-block;margin:0 0 8px}
-.lab-page .empty-state{padding:24px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted)}
-@media(min-width:1900px){body.lab-page{max-width:2200px}}
-@media(max-width:800px){.queue-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.queue-stat{padding:10px 12px;gap:8px}.queue-stat strong{font-size:24px}.history-search{max-width:none;flex-basis:100%}.lab-page .tabs a{padding:8px 10px}.lab-page .tabs .brand{flex-basis:100%}}
-"""
-
-private const val NODES_STYLE = """
-.node-panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}
-.nodes-page .node-panel{border:1px solid var(--line);border-radius:8px;padding:16px 20px;min-width:0}
-.nodes-page .node-panel h2{margin:0 0 10px;font-size:16px}.node-panel p{margin:8px 0;overflow-wrap:anywhere}.node-panel summary{cursor:pointer}
-.nodes-page .request-panel{background:var(--soft)}
-.nodes-page #node-request{display:block;margin:16px 0 8px}.nodes-page #node-request fieldset{padding:0;margin:0;border:0;min-width:0}
-.node-fields{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
-.nodes-page #node-request label{display:flex;flex-direction:column;align-items:stretch;gap:6px;font-size:12px;font-weight:600;flex-basis:auto}
-.nodes-page #node-request label:first-child{flex:1;min-width:240px}
-.nodes-page #node-request input,.nodes-page #node-request select{font:inherit;font-size:13px;font-weight:400;min-height:38px;border:1px solid var(--line);border-radius:5px;padding:8px;background:var(--bg);color:var(--fg)}
-.nodes-page #node-count{width:160px}.nodes-page #node-request button{min-height:38px;background:var(--link);border-color:var(--link);color:var(--bg)}
-.nodes-page button:disabled{opacity:.55;cursor:default}.nodes-page fieldset:disabled{opacity:.7}
-.nodes-page .capacity-message{font-size:13px;padding:10px 12px;background:var(--soft);border-radius:5px;overflow-wrap:anywhere}
-.nodes-page .pool-table{min-width:980px}.nodes-page .pool-table td:first-child{font-weight:600}.nodes-page .pool-table small{font-weight:400}
-.nodes-page .pool-table td:not(:first-child){white-space:nowrap}.nodes-page td.num{font-variant-numeric:tabular-nums}
-.nodes-page .allocation-table{min-width:850px;table-layout:fixed}.nodes-page .allocation-table th:nth-child(1){width:26%}.nodes-page .allocation-table th:nth-child(2){width:15%}.nodes-page .allocation-table th:nth-child(3){width:37%}.nodes-page .allocation-table th:nth-child(4){width:22%}
-.nodes-page .allocation-table td{overflow-wrap:anywhere}.nodes-page .lease-table{min-width:520px}
-.node-state{display:inline-block;font-size:12px;padding:3px 7px;border-radius:4px;background:color-mix(in srgb,currentColor 10%,transparent);white-space:nowrap}
-.state-ready{color:var(--ok)}.state-booting,.state-replacing{color:var(--run)}.state-draining{color:var(--warn)}.state-unavailable{color:var(--bad)}
-.nodes-page #node-feedback:empty{display:none}.nodes-page #node-feedback{font-size:13px;border-left:3px solid var(--link);padding-left:10px}
-@media(max-width:800px){.node-panels{grid-template-columns:1fr}.nodes-page .node-panel{padding:14px}.nodes-page #node-request label:first-child{min-width:0;flex-basis:100%}.nodes-page #node-count{width:100%}.nodes-page #node-request label{flex:1}.node-fields>button{width:100%}}
-"""
-
-private const val REFERENCE_STYLE = """
-.reference-page .reference-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:16px;background:var(--soft);border:1px solid var(--line);border-radius:8px;margin:12px 0}
-.reference-form label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;min-width:150px;flex:1}
-.reference-form label:first-of-type{flex:2;min-width:230px}.reference-form label span{color:var(--muted)}
-.reference-form input:not([type=hidden]),.reference-form select{font:inherit;font-weight:400;font-size:13px;min-height:38px;width:100%;min-width:0;padding:7px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg)}
-.reference-page .reference-form>button{min-height:38px;background:var(--link);border-color:var(--link);color:var(--bg)}
-.reference-page .reference-form>a{padding:8px;white-space:nowrap;font-size:13px}
-.reference-page .comparison-filters{flex-basis:100%;border-top:1px solid var(--line);padding-top:10px}.comparison-filters summary{cursor:pointer;font-size:13px}
-.reference-filter-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px}
-.reference-page .reference-filter-fields label{min-width:0}.reference-page .reference-help{font-size:13px;color:var(--muted);margin:12px 0}
-.reference-help summary{cursor:pointer}.reference-help p{max-width:120ch;line-height:1.6}
-.reference-warning,.reference-budget-note{padding:12px 16px;border-radius:6px;font-size:13px;background:var(--soft);border-left:3px solid var(--warn)}
-.reference-warning{border-color:var(--bad)}.score-legend{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:13px;margin:16px 0 8px}
-.reference-page .reference-board{min-width:900px}.reference-board th:first-child{min-width:200px}.reference-board td{min-width:140px}
-.reference-board .score-value{display:block;font-size:18px;font-weight:650;font-variant-numeric:tabular-nums;color:var(--fg)}
-.reference-board .score-budget,.reference-board .budget-flag{display:block;margin-top:2px}.reference-board .score-count{display:block;margin-top:2px;white-space:nowrap;font-size:11px}
-.reference-page .reference-board td a{display:block}.reference-board a:hover .score-value{text-decoration:underline}.reference-board small{font-size:11px}
-.reference-board .no-score{vertical-align:middle}.reference-board .total{background:var(--soft)}
-.reference-page .reference-results{min-width:900px}.reference-page .score-details{min-width:900px}
-.reference-page .coverage-table{min-width:900px}.coverage-table td:first-child{width:45%;overflow-wrap:anywhere}.coverage-table td:last-child{white-space:nowrap}
-.reference-page .coverage-toggle{padding:0;border:0;background:none;text-align:left;color:var(--link);font-weight:600;white-space:normal}
-.coverage-toggle small{display:block;font-weight:400;margin:2px 0 0 16px}.reference-page tr[data-in] td:first-child{padding-left:28px}
-.reference-page .reference-conflicts{border:1px solid var(--line);border-left:3px solid var(--bad);border-radius:6px;padding:12px 16px;margin-top:24px}
-.reference-conflicts summary{cursor:pointer;font-size:14px}.reference-conflicts li{margin:8px 0;overflow-wrap:anywhere}
-.reference-page .reference-results td,.reference-page .score-details td{overflow-wrap:anywhere}.reference-page .reference-results td.num,.reference-page .score-details td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
-@media(max-width:800px){.reference-form label:first-of-type{min-width:0;flex-basis:100%}.reference-form label{min-width:140px}.reference-page .reference-form>button{width:100%}.reference-filter-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
-"""
-
-private const val NODES_PAGE_STYLE = LAB_STYLE + NODES_STYLE
-private const val REFERENCE_PAGE_STYLE = LAB_STYLE + REFERENCE_STYLE
-
-/** Filtering, actions and a refresh that swaps the live parts in place, so scrolling, a selection and a half-typed
- *  input survive it. A page stops refreshing once its fresh copy says nothing is live any more. */
-internal const val SCRIPT = """<script>
-const liveMarkup = new WeakMap();
-document.querySelectorAll('[data-live]').forEach(function (part) { liveMarkup.set(part, part.innerHTML); });
-function applyDiffer() {
-  const only = document.getElementById('differ')?.checked;
-  document.querySelectorAll('tr[data-differ]').forEach(function (row) { row.hidden = only && row.dataset.differ !== 'true'; });
-}
-document.addEventListener('change', function (e) { if (e.target.id === 'differ') applyDiffer(); });
-async function act(path, body, ask) {
-  if (ask && !confirm(ask)) return;
-  const response = await fetch(path, body
-    ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}
-    : {method: 'POST'});
-  if (!response.ok) alert(await response.text());
-  location.reload();
-}
-let timer = null;
-let refreshPending = null;
-async function refresh(force = false) {
-  // Slow responses must not accumulate another poll every ten seconds.
-  if (refreshPending) {
-    if (!force) return;
-    await refreshPending;
-    return refresh(true);
-  }
-  if (!force && (document.hidden || String(getSelection()).length)) return;
-  if (!force && document.activeElement && document.activeElement.closest('[data-live]')) return;
-  refreshPending = updateLiveParts();
-  try { await refreshPending; }
-  finally { refreshPending = null; }
-}
-async function updateLiveParts() {
-  const controller = new AbortController();
-  const timeout = setTimeout(function () { controller.abort(); }, 30000);
-  try {
-    const response = await fetch(location.href, {headers: {Accept: 'text/html'}, signal: controller.signal});
-    if (!response.ok) return;
-    const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
-    let historyChanged = false;
-    fresh.querySelectorAll('[data-live]').forEach(function (part) {
-      const old = document.getElementById(part.id);
-      if (old) {
-        const markup = part.innerHTML;
-        if (liveMarkup.get(old) === markup) return;
-        const scrolls = Array.from(old.querySelectorAll('.scroll')).map(function (el) { return el.scrollLeft; });
-        old.innerHTML = markup;
-        liveMarkup.set(old, markup);
-        if (part.id === 'history') historyChanged = true;
-        old.querySelectorAll('.scroll').forEach(function (el, i) { el.scrollLeft = scrolls[i] || 0; });
-      }
-    });
-    if (historyChanged && typeof applyFilter === 'function') applyFilter();
-    applyDiffer();
-    if (!fresh.body.hasAttribute('data-refresh')) clearInterval(timer);
-  } catch (e) {}
-  finally { clearTimeout(timeout); }
-}
-if (document.body.hasAttribute('data-refresh')) timer = setInterval(refresh, 10000);
-</script>"""
-
 internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()): Html {
     val status = report.preparation ?: return Html("")
     val snapshot = status.progress
@@ -863,4 +629,20 @@ internal fun preparationDetails(report: ExecutionSessionReport, at: Long = now()
             })
         }
     }
+}
+
+/** Small native controls reused by the problem grid and benchmark case disclosures. */
+internal fun resultFilters(id: String, arms: List<String> = emptyList(), statuses: List<String> = emptyList()): Html = buildHtml {
+    append(Html("<div class=\"result-filters\"><label>Search <input type=\"search\" id=\"") + id + Html("-query\" data-result-query placeholder=\"Problem, path or case\"></label>"))
+    if (arms.isNotEmpty()) {
+        append(Html("<label>Arm <select id=\"") + id + Html("-arm\" data-result-arm><option value=\"\">All arms</option>"))
+        arms.forEach { append(Html("<option>") + it + Html("</option>")) }
+        append(Html("</select></label>"))
+    }
+    if (statuses.isNotEmpty()) {
+        append(Html("<label>Status <select id=\"") + id + Html("-status\" data-result-status><option value=\"\">All statuses</option>"))
+        statuses.forEach { append(Html("<option>") + it + Html("</option>")) }
+        append(Html("</select></label>"))
+    }
+    append(Html("</div>"))
 }

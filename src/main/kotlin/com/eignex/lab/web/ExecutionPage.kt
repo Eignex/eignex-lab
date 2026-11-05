@@ -11,11 +11,10 @@ import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
 
-internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): Html = buildHtml {
-    append(head("Execution · job ${job}", live = true))
+internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): Html = page("Execution · job ${job}", live = true) {
     append(Html("<header><h1>Execution · job ") + job + Html("</h1></header><div id=\"execution\" data-live>"))
     append(Html("<p><a href=\"/jobs/") + job + Html("\">Experiment</a> · <a href=\"/jobs/") + job + Html("/files/job.log\">Log</a> · <a href=\"/nodes\">Nodes</a></p>"))
-    append(Html("<table><thead><tr><th>Session / allocation</th><th>Node</th><th>Phase / generation</th><th>Budget</th><th>Accepted iterations</th></tr></thead><tbody>"))
+    append(Html("<div class=\"scroll\" role=\"region\" aria-label=\"Execution sessions\" tabindex=\"0\"><table><thead><tr><th>Session / allocation</th><th>Node</th><th>Phase / generation</th><th>Budget</th><th>Accepted iterations</th></tr></thead><tbody>"))
     for (report in reports) {
         val session = report.session
         append(Html("<tr><td>") + esc(session.id) + Html("<br>") + esc(session.allocation ?: "pending") + Html("</td><td>") + esc(session.node ?: "pending") + Html("</td>"))
@@ -29,5 +28,5 @@ internal fun executionPage(job: Long, reports: List<ExecutionSessionReport>): Ht
             append(Html(" · snapshot excludes later cleanup and delivery; additional CPU unknown</td></tr>"))
         }
     }
-    append(Html("</tbody></table><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div></body></html>"))
+    append(Html("</tbody></table></div><p>Live case output is provisional and limited to the first 8 MiB per stream. Full output and captures appear after the paired iteration is accepted.</p></div>"))
 }
