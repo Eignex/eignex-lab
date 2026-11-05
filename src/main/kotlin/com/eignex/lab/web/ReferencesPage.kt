@@ -24,6 +24,8 @@ internal fun referencesPage(
 ): Html = buildHtml {
     val visible = coverage
     val context = scoreboard?.let(::scoreboardParameters).orEmpty()
+    val contextQuery = query(*context.toList().toTypedArray())
+    val coveragePrefix = esc("/references" + if (contextQuery.isEmpty()) "?" else "$contextQuery&")
     append(head("reference · eignex lab", live = false, tab = Tab.REFERENCE, bodyClass = "lab-page reference-page"))
     append(Html("<main>"))
     append(Html("<header><h1>Reference</h1><p class=\"muted\">") + (visible.sumOf { it.rows }) + Html(" results from "))
@@ -88,7 +90,7 @@ internal fun referencesPage(
         val family = FAMILIES.firstOrNull { (_, member) -> member(c.collection) }?.first
         val members = families[family].orEmpty()
         if (family == null || members.size < 2) {
-            append(Html("<tr>") + coverageCells(c, context) + Html("</tr>"))
+            append(Html("<tr>") + coverageCells(c, coveragePrefix) + Html("</tr>"))
             continue
         }
         if (!drawn.add(family)) continue
@@ -96,7 +98,7 @@ internal fun referencesPage(
         append(Html("<td>") + (esc(members.map { it.solver }.distinct().joinToString())) + Html("</td><td class=\"num\">") + (members.sumOf { it.rows }) + Html("</td>"))
         append(Html("<td class=\"num\">") + (members.sumOf { it.decided }) + Html("</td><td class=\"num\">") + (members.sumOf { it.proven }) + Html("</td>"))
         append(Html("<td class=\"num\">") + (members.sumOf { it.infeasible }) + Html("</td><td>") + ago(members.maxOf { it.updatedAt }) + Html("</td></tr>"))
-        for (member in members) append(Html("<tr data-in=\"") + esc(family) + Html("\" hidden>") + coverageCells(member, context) + Html("</tr>"))
+        for (member in members) append(Html("<tr data-in=\"") + esc(family) + Html("\" hidden>") + coverageCells(member, coveragePrefix) + Html("</tr>"))
     }
     append(Html("</tbody></table></div></section></main>"))
     append(Html(SCRIPT))
@@ -112,8 +114,9 @@ private fun scoreboardSection(view: ScoreboardView, search: ReferenceFilter): Ht
         append(Html("<p class=\"muted\">No finished scheduled run to score yet.</p>"))
         return@buildHtml
     }
+    val linkContext = scoreboardParameters(view) + searchParameters(search)
     fun link(vararg changes: Pair<String, String?>): String {
-        val current = (scoreboardParameters(view) + searchParameters(search)).toMutableMap()
+        val current = linkContext.toMutableMap()
         for ((k, v) in changes) current[k] = v
         return "/references${query(*current.entries.map { it.key to it.value }.toTypedArray())}"
     }
@@ -256,12 +259,18 @@ private val FAMILIES: List<Pair<String, (String) -> Boolean>> = listOf(
 )
 
 /** One collection's coverage cells: the collection (linked to its results), solver, and counts. */
-private fun coverageCells(c: ReferenceCoverage, context: Map<String, String?>): Html {
-    val params = context + mapOf("collection" to c.collection, "solver" to c.solver)
-    val link = "/references${query(*params.toList().toTypedArray())}#reference-search"
-    return (Html("<td><a class=\"plain\" href=\"") + link + Html("\">") + esc(c.collection) + Html("</a></td><td>") + esc(c.solver) + Html("</td>")) +
-        (Html("<td class=\"num\">") + c.rows + Html("</td><td class=\"num\">") + c.decided + Html("</td><td class=\"num\">") + c.proven + Html("</td>")) +
-        (Html("<td class=\"num\">") + c.infeasible + Html("</td><td>") + ago(c.updatedAt) + Html("</td>"))
+private fun coverageCells(c: ReferenceCoverage, prefix: Html): Html = buildHtml {
+    // The selected run's query parameters are encoded and escaped once for the whole table.
+    append(Html("<td><a class=\"plain\" href=\""))
+    append(prefix)
+    append(esc(query("collection" to c.collection, "solver" to c.solver).removePrefix("?")))
+    append(Html("#reference-search\">"))
+    append(esc(c.collection))
+    append(Html("</a></td><td>"))
+    append(esc(c.solver))
+    append(Html("</td><td class=\"num\">") + c.rows + Html("</td><td class=\"num\">") + c.decided)
+    append(Html("</td><td class=\"num\">") + c.proven + Html("</td><td class=\"num\">") + c.infeasible)
+    append(Html("</td><td>") + ago(c.updatedAt) + Html("</td>"))
 }
 
 /** Explicit submission lets an operator choose several filters before reloading. */

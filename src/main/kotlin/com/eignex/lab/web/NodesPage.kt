@@ -37,6 +37,7 @@ internal fun nodesPage(local: LocalNode, host: HostReport, snapshot: CapacitySna
     append(Html("</section></div>"))
     val pools = settings?.pools ?: snapshot?.pools.orEmpty()
     val configured = settings != null
+    val observed = snapshot?.nodes?.groupingBy { it.pool }?.eachCount()
     append(Html("<section id=\"start-nodes\" class=\"node-panel request-panel\"><h2>Start or keep cloud nodes</h2>"))
     if (configured) {
         val first = pools.firstOrNull { minOf(it.maxNodes, settings.maxVcpus / it.vcpus) > 0 }
@@ -56,7 +57,7 @@ internal fun nodesPage(local: LocalNode, host: HostReport, snapshot: CapacitySna
         append(Html("<div class=\"scroll\" role=\"region\" aria-label=\"Cloud pools\" tabindex=\"0\"><table class=\"pool-table\"><thead><tr><th scope=\"col\">Pool / class</th><th scope=\"col\">Hardware per node</th><th scope=\"col\">Architecture / SIMD</th><th scope=\"col\">Market</th><th scope=\"col\" class=\"num\">Observed</th><th scope=\"col\" class=\"num\">Desired</th><th scope=\"col\" class=\"num\">Pool limit</th><th scope=\"col\"><span class=\"sr-only\">Select pool</span></th></tr></thead><tbody>"))
         for (pool in pools) {
             append(Html("<tr><td>") + esc(pool.id) + Html("<br><small class=\"muted\">") + esc(pool.nodeClass) + Html("</small></td><td>") + pool.vcpus + Html(" vCPU / ") + pool.memoryMiB + Html(" MiB</td>"))
-            append(Html("<td>") + esc(NodeTags.hardwareProfile(pool.tags)) + Html("</td><td><span class=\"where\">") + esc(pool.market.tag) + Html("</span></td><td class=\"num\">") + (snapshot?.nodes?.count { it.pool == pool.id } ?: "?") + Html("</td><td class=\"num\">") + (snapshot?.decision?.desired?.get(pool.id) ?: "?") + Html("</td><td class=\"num\">") + pool.maxNodes + Html("</td><td>"))
+            append(Html("<td>") + esc(NodeTags.hardwareProfile(pool.tags)) + Html("</td><td><span class=\"where\">") + esc(pool.market.tag) + Html("</span></td><td class=\"num\">") + (observed?.getOrDefault(pool.id, 0) ?: "?") + Html("</td><td class=\"num\">") + (snapshot?.decision?.desired?.get(pool.id) ?: "?") + Html("</td><td class=\"num\">") + pool.maxNodes + Html("</td><td>"))
             if (configured && minOf(pool.maxNodes, settings.maxVcpus / pool.vcpus) > 0) {
                 append(Html("<button type=\"button\" data-select-pool=\"") + esc(pool.id) + Html("\" aria-label=\"Use pool ") + esc(pool.id) + Html("\">Use pool</button>"))
             }
@@ -104,10 +105,12 @@ internal fun nodesPage(local: LocalNode, host: HostReport, snapshot: CapacitySna
 /** Live counts use the same inventory as the tables; missing inventory stays explicitly unknown. */
 private fun nodeOverview(snapshot: CapacitySnapshot?, leases: List<ManualCapacityLease>): Html = buildHtml {
     append(Html("<div class=\"queue-overview\" role=\"group\" aria-label=\"Cloud capacity overview\">"))
+    val states = snapshot?.nodes?.groupingBy { it.state }?.eachCount()
+    fun count(vararg kinds: CapacityNodeState): Int? = states?.let { values -> kinds.sumOf { values[it] ?: 0 } }
     val counts = listOf(
-        Triple(snapshot?.nodes?.count { it.state == CapacityNodeState.READY }, "Ready nodes", "DONE"),
-        Triple(snapshot?.nodes?.count { it.state in setOf(CapacityNodeState.BOOTING, CapacityNodeState.REPLACING) }, "Starting / replacing", "RUNNING"),
-        Triple(snapshot?.nodes?.count { it.state in setOf(CapacityNodeState.DRAINING, CapacityNodeState.UNAVAILABLE) }, "Draining / unavailable", "capacity-wait"),
+        Triple(count(CapacityNodeState.READY), "Ready nodes", "DONE"),
+        Triple(count(CapacityNodeState.BOOTING, CapacityNodeState.REPLACING), "Starting / replacing", "RUNNING"),
+        Triple(count(CapacityNodeState.DRAINING, CapacityNodeState.UNAVAILABLE), "Draining / unavailable", "capacity-wait"),
         Triple(leases.size, "Manual requests", "QUEUED"),
     )
     for ((count, label, cls) in counts) append(Html("<div class=\"queue-stat ") + cls + Html("\"><strong>") + (count ?: "?") + Html("</strong><span>") + label + Html("</span></div>"))

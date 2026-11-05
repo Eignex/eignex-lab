@@ -498,13 +498,20 @@ internal fun refText(repoUrl: String, job: Job): Html {
     return Html("<code>") + listOfNotNull(esc(job.ref).takeUnless { isSha }, commit).joinHtml(Html(" ")) { it } + Html("</code>")
 }
 
-internal fun progress(job: Job): Html {
+internal fun progress(job: Job): Html = buildHtml {
     val total = job.total.coerceAtLeast(1)
     val running = job.running
-    fun part(cls: String, count: Int) = if (count == 0) "" else (Html("<i class=\"") + cls + Html("\" style=\"width:") + (100.0 * count / total) + Html("%\"></i>"))
-    val bar = (Html("<span class=\"bar\" role=\"img\" aria-label=\"") + esc("${job.done} of ${job.total} completed, ${job.failed} failed, $running running") + Html("\">") + part("ok", job.done - job.failed) + part("bad", job.failed) + part("run", running) + Html("</span>"))
-    val vcpus = if (job.vcpus > 1) " ${job.vcpus} vCPU" else ""
-    return (Html("") + bar + Html("<small>") + job.done + Html("/") + job.total + vcpus + Html("</small>"))
+    fun part(cls: String, count: Int): Html = if (count == 0) Html("") else
+        Html("<i class=\"") + cls + Html("\" style=\"width:") + (100.0 * count / total) + Html("%\"></i>")
+    append(Html("<span class=\"bar\" role=\"img\" aria-label=\""))
+    append(esc("${job.done} of ${job.total} completed, ${job.failed} failed, $running running"))
+    append(Html("\">"))
+    append(part("ok", job.done - job.failed))
+    append(part("bad", job.failed))
+    append(part("run", running))
+    append(Html("</span><small>") + job.done + Html("/") + job.total)
+    if (job.vcpus > 1) append(Html(" ") + job.vcpus + Html(" vCPU"))
+    append(Html("</small>"))
 }
 
 internal fun output(jobId: Long, files: JobDirView, name: String, running: Boolean): Html {
@@ -591,8 +598,17 @@ internal enum class Tab(val label: String, val href: String) {
 }
 
 internal fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE, bodyClass: String? = null): Html = Html("""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE</style></head>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE${pageStyle(bodyClass)}</style></head>
 <body${bodyClass?.let { " class=\"${esc(it)}\"" } ?: ""}${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">eignex lab</a>${tabs(tab)}</nav>""")
+
+/** Screen-specific CSS is inline only on the screen that needs it, with no extra asset requests. */
+private fun pageStyle(bodyClass: String?): String = when {
+    bodyClass == null -> ""
+    "nodes-page" in bodyClass -> NODES_PAGE_STYLE
+    "reference-page" in bodyClass -> REFERENCE_PAGE_STYLE
+    "lab-page" in bodyClass -> LAB_STYLE
+    else -> ""
+}
 
 private fun tabs(active: Tab): Html = Tab.entries.joinHtml {
     (Html("<a href=\"") + it.href + Html("\"") + (if (it == active) Html(" class=\"on\" aria-current=\"page\"") else "") + Html(">") + it.label + Html("</a>"))
@@ -655,6 +671,10 @@ tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
 font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px;max-width:min(420px,calc(100vw - 16px))}
 .tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted);flex:none}
 .tip b{text-align:right;overflow-wrap:anywhere;min-width:0}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+"""
+
+private const val LAB_STYLE = """
 /* Shared layout for the queue and node inventory. */
 body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-height:1.45}
 .lab-page *{box-sizing:border-box}.lab-page [hidden]{display:none!important}
@@ -694,10 +714,11 @@ body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-heigh
 .lab-page .chip.on{background:color-mix(in srgb,var(--link) 10%,var(--bg));font-weight:600}
 .lab-page #history-count{display:inline-block;margin:0 12px 8px 0}.lab-page #history-count+p{display:inline-block;margin:0 0 8px}
 .lab-page .empty-state{padding:24px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted)}
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 @media(min-width:1900px){body.lab-page{max-width:2200px}}
 @media(max-width:800px){.queue-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.queue-stat{padding:10px 12px;gap:8px}.queue-stat strong{font-size:24px}.history-search{max-width:none;flex-basis:100%}.lab-page .tabs a{padding:8px 10px}.lab-page .tabs .brand{flex-basis:100%}}
+"""
 
+private const val NODES_STYLE = """
 .node-panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}
 .nodes-page .node-panel{border:1px solid var(--line);border-radius:8px;padding:16px 20px;min-width:0}
 .nodes-page .node-panel h2{margin:0 0 10px;font-size:16px}.node-panel p{margin:8px 0;overflow-wrap:anywhere}.node-panel summary{cursor:pointer}
@@ -718,7 +739,9 @@ body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-heigh
 .state-ready{color:var(--ok)}.state-booting,.state-replacing{color:var(--run)}.state-draining{color:var(--warn)}.state-unavailable{color:var(--bad)}
 .nodes-page #node-feedback:empty{display:none}.nodes-page #node-feedback{font-size:13px;border-left:3px solid var(--link);padding-left:10px}
 @media(max-width:800px){.node-panels{grid-template-columns:1fr}.nodes-page .node-panel{padding:14px}.nodes-page #node-request label:first-child{min-width:0;flex-basis:100%}.nodes-page #node-count{width:100%}.nodes-page #node-request label{flex:1}.node-fields>button{width:100%}}
+"""
 
+private const val REFERENCE_STYLE = """
 .reference-page .reference-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;padding:16px;background:var(--soft);border:1px solid var(--line);border-radius:8px;margin:12px 0}
 .reference-form label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;min-width:150px;flex:1}
 .reference-form label:first-of-type{flex:2;min-width:230px}.reference-form label span{color:var(--muted)}
@@ -744,64 +767,21 @@ body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-heigh
 .reference-conflicts summary{cursor:pointer;font-size:14px}.reference-conflicts li{margin:8px 0;overflow-wrap:anywhere}
 .reference-page .reference-results td,.reference-page .score-details td{overflow-wrap:anywhere}.reference-page .reference-results td.num,.reference-page .score-details td.num{white-space:nowrap;font-variant-numeric:tabular-nums}
 @media(max-width:800px){.reference-form label:first-of-type{min-width:0;flex-basis:100%}.reference-form label{min-width:140px}.reference-page .reference-form>button{width:100%}.reference-filter-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
-
 """
+
+private const val NODES_PAGE_STYLE = LAB_STYLE + NODES_STYLE
+private const val REFERENCE_PAGE_STYLE = LAB_STYLE + REFERENCE_STYLE
 
 /** Filtering, actions and a refresh that swaps the live parts in place, so scrolling, a selection and a half-typed
  *  input survive it. A page stops refreshing once its fresh copy says nothing is live any more. */
 internal const val SCRIPT = """<script>
-let chip = 'all';
-function applyFilter() {
-  const q = document.getElementById('q');
-  const text = q ? q.value.trim().toLowerCase() : '';
-  const rows = document.querySelectorAll('#history tr[data-state]');
-  let visible = 0;
-  rows.forEach(function (row) {
-    row.hidden = !((!text || row.dataset.text.includes(text)) && (chip === 'all' || row.dataset.state === chip));
-    if (!row.hidden) visible++;
-  });
-  const count = document.getElementById('history-count');
-  const message = visible + ' of ' + rows.length + ' runs shown';
-  if (count && count.textContent !== message) count.textContent = message;
-  const empty = document.getElementById('history-empty');
-  if (empty) empty.hidden = rows.length === 0 || visible > 0;
-  const clear = document.getElementById('clear-history');
-  if (clear) clear.hidden = !text && chip === 'all';
-}
-document.getElementById('q')?.addEventListener('input', applyFilter);
+const liveMarkup = new WeakMap();
+document.querySelectorAll('[data-live]').forEach(function (part) { liveMarkup.set(part, part.innerHTML); });
 function applyDiffer() {
   const only = document.getElementById('differ')?.checked;
   document.querySelectorAll('tr[data-differ]').forEach(function (row) { row.hidden = only && row.dataset.differ !== 'true'; });
 }
 document.addEventListener('change', function (e) { if (e.target.id === 'differ') applyDiffer(); });
-document.querySelectorAll('[data-chip]').forEach(function (button) {
-  button.addEventListener('click', function () {
-    chip = button.dataset.chip;
-    document.querySelectorAll('[data-chip]').forEach(function (b) {
-      b.classList.toggle('on', b === button);
-      b.setAttribute('aria-pressed', String(b === button));
-    });
-    applyFilter();
-  });
-});
-document.getElementById('clear-history')?.addEventListener('click', function () {
-  const q = document.getElementById('q');
-  if (q) q.value = '';
-  document.querySelector('[data-chip="all"]')?.click();
-  q?.focus();
-});
-// Opening schedules is an explicit choice and survives live updates.
-function revealSchedules() {
-  if (location.hash === '#schedules-section') openSchedules();
-}
-document.querySelector('a[href="#schedules-section"]')?.addEventListener('click', openSchedules);
-function openSchedules() {
-  const panel = document.querySelector('.schedule-panel');
-  if (panel) panel.open = true;
-}
-window.addEventListener('hashchange', revealSchedules);
-revealSchedules();
-applyFilter();
 async function act(path, body, ask) {
   if (ask && !confirm(ask)) return;
   const response = await fetch(path, body
@@ -811,25 +791,45 @@ async function act(path, body, ask) {
   location.reload();
 }
 let timer = null;
+let refreshPending = null;
 async function refresh(force = false) {
+  // Slow responses must not accumulate another poll every ten seconds.
+  if (refreshPending) {
+    if (!force) return;
+    await refreshPending;
+    return refresh(true);
+  }
   if (!force && (document.hidden || String(getSelection()).length)) return;
   if (!force && document.activeElement && document.activeElement.closest('[data-live]')) return;
+  refreshPending = updateLiveParts();
+  try { await refreshPending; }
+  finally { refreshPending = null; }
+}
+async function updateLiveParts() {
+  const controller = new AbortController();
+  const timeout = setTimeout(function () { controller.abort(); }, 30000);
   try {
-    const response = await fetch(location.href, {headers: {Accept: 'text/html'}});
+    const response = await fetch(location.href, {headers: {Accept: 'text/html'}, signal: controller.signal});
     if (!response.ok) return;
     const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
+    let historyChanged = false;
     fresh.querySelectorAll('[data-live]').forEach(function (part) {
       const old = document.getElementById(part.id);
       if (old) {
+        const markup = part.innerHTML;
+        if (liveMarkup.get(old) === markup) return;
         const scrolls = Array.from(old.querySelectorAll('.scroll')).map(function (el) { return el.scrollLeft; });
-        old.innerHTML = part.innerHTML;
+        old.innerHTML = markup;
+        liveMarkup.set(old, markup);
+        if (part.id === 'history') historyChanged = true;
         old.querySelectorAll('.scroll').forEach(function (el, i) { el.scrollLeft = scrolls[i] || 0; });
       }
     });
-    applyFilter();
+    if (historyChanged && typeof applyFilter === 'function') applyFilter();
     applyDiffer();
     if (!fresh.body.hasAttribute('data-refresh')) clearInterval(timer);
   } catch (e) {}
+  finally { clearTimeout(timeout); }
 }
 if (document.body.hasAttribute('data-refresh')) timer = setInterval(refresh, 10000);
 </script>"""
