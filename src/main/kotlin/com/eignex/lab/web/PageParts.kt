@@ -389,8 +389,17 @@ internal fun summary(
         (held?.let { Html(" · <span class=\"FAILED\">queue held: ") + esc(it) + Html("</span>") } ?: Html("")) + Html(" (<a href=\"/disk\">what uses it</a>)")
     val counts = "${running} running · ${queued} queued" + (if (waiting > 0) " · ${waiting} waiting for capacity" else "") +
         (if (checking > 0) " · ${checking} checking results" else "")
-    return esc(counts) + Html(" · ") + disk + Html(" · ") + esc(host.host) + Html(", ") + host.cores + Html(" cores · ") +
-        esc(NodeTags.hardwareProfile(host.cpu.tags))
+    return buildHtml {
+        append(Html("<div class=\"queue-overview\" role=\"group\" aria-label=\"") + esc(counts) + Html("\">"))
+        for ((count, label, cls) in listOf(
+            Triple(running, "Running", "RUNNING"), Triple(queued, "Queued", "QUEUED"),
+            Triple(waiting, "Waiting for capacity", "capacity-wait"), Triple(checking, "Checking results", "QUEUED"),
+        )) {
+            append(Html("<div class=\"queue-stat ") + cls + Html("\"><strong>") + count + Html("</strong><span>") + label + Html("</span></div>"))
+        }
+        append(Html("</div><div class=\"queue-capacity muted small\"><span>") + disk + Html("</span><span>Local host: ") + esc(host.host) + Html(" · ") + host.cores + Html(" cores · ") +
+            esc(NodeTags.hardwareProfile(host.cpu.tags)) + Html("</span></div>"))
+    }
 }
 
 /**
@@ -493,7 +502,7 @@ internal fun progress(job: Job): Html {
     val total = job.total.coerceAtLeast(1)
     val running = job.running
     fun part(cls: String, count: Int) = if (count == 0) "" else (Html("<i class=\"") + cls + Html("\" style=\"width:") + (100.0 * count / total) + Html("%\"></i>"))
-    val bar = (Html("<span class=\"bar\">") + part("ok", job.done - job.failed) + part("bad", job.failed) + part("run", running) + Html("</span>"))
+    val bar = (Html("<span class=\"bar\" role=\"img\" aria-label=\"") + esc("${job.done} of ${job.total} completed, ${job.failed} failed, $running running") + Html("\">") + part("ok", job.done - job.failed) + part("bad", job.failed) + part("run", running) + Html("</span>"))
     val vcpus = if (job.vcpus > 1) " ${job.vcpus} vCPU" else ""
     return (Html("") + bar + Html("<small>") + job.done + Html("/") + job.total + vcpus + Html("</small>"))
 }
@@ -581,9 +590,9 @@ internal enum class Tab(val label: String, val href: String) {
     QUEUE("Queue", "/"), NODES("Nodes", "/nodes"), REGRESSION("Regression", "/trend"), REFERENCE("Reference", "/references")
 }
 
-internal fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE): Html = Html("""<!doctype html><html><head><meta charset="utf-8">
+internal fun head(title: String, live: Boolean, tab: Tab = Tab.QUEUE, bodyClass: String? = null): Html = Html("""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>$STYLE</style></head>
-<body${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">eignex lab</a>${tabs(tab)}</nav>""")
+<body${bodyClass?.let { " class=\"${esc(it)}\"" } ?: ""}${if (live) " data-refresh" else ""}><nav class="tabs"><a class="brand" href="/">eignex lab</a>${tabs(tab)}</nav>""")
 
 private fun tabs(active: Tab): Html = Tab.entries.joinHtml {
     (Html("<a href=\"") + it.href + Html("\"") + (if (it == active) Html(" class=\"on\" aria-current=\"page\"") else "") + Html(">") + it.label + Html("</a>"))
@@ -646,6 +655,49 @@ tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
 font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px;max-width:min(420px,calc(100vw - 16px))}
 .tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted);flex:none}
 .tip b{text-align:right;overflow-wrap:anywhere;min-width:0}
+/* The queue keeps long job names readable while protecting identifiers and times from wrapping. */
+body.queue-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-height:1.45}
+.queue-page *{box-sizing:border-box}.queue-page [hidden]{display:none!important}
+.queue-page h1{font-size:28px;letter-spacing:-.5px}.queue-page h2{font-size:18px;margin:24px 0 12px}
+.queue-page section{scroll-margin-top:16px}.queue-page a:focus-visible,.queue-page button:focus-visible,.queue-page input:focus-visible,.queue-page summary:focus-visible,.queue-page .scroll:focus-visible{outline:2px solid var(--link);outline-offset:3px}
+.queue-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0 12px}
+.queue-stat{display:flex;align-items:baseline;gap:12px;padding:14px 18px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.queue-stat strong{font-size:28px;line-height:1.2;font-variant-numeric:tabular-nums}.queue-stat span{color:var(--muted);font-size:13px}
+.queue-stat.capacity-wait{color:var(--warn)}.queue-stat.QUEUED{color:var(--muted)}
+.queue-capacity{display:flex;flex-wrap:wrap;gap:6px 24px}.queue-page #queue-snapshot{margin:6px 0 12px}
+.queue-sections{display:flex;flex-wrap:wrap;gap:8px 20px;border-bottom:1px solid var(--line);padding:0 0 12px;font-size:13px}
+.queue-sections a{text-decoration:none}.queue-sections a:hover{text-decoration:underline}
+.queue-page .work{border-left:3px solid var(--line);padding-left:12px;margin-bottom:16px;gap:2px}
+.queue-page .scroll{border:1px solid var(--line);border-radius:8px}
+.queue-page table{font-size:13px}.queue-page th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap;background:var(--soft)}
+.queue-page td,.queue-page th{padding:12px;line-height:1.45}.queue-page tbody tr:last-child td{border-bottom:0}
+.queue-page tbody tr:hover{background:color-mix(in srgb,var(--link) 4%,var(--bg))}
+.queue-page .jobs-table{min-width:1400px;table-layout:fixed}
+.jobs-table th:nth-child(1){width:72px}.jobs-table th:nth-child(2){width:28%}.jobs-table th:nth-child(3){width:112px}
+.jobs-table th:nth-child(4){width:14%}.jobs-table th:nth-child(5){width:12%}.jobs-table th:nth-child(6){width:15%}
+.jobs-table th:nth-child(7){width:100px}.jobs-table th:nth-child(8){width:94px}.jobs-table th:nth-child(9){width:56px}
+.queue-page .job-name{overflow-wrap:anywhere}.queue-page .job-link{font-weight:600}.queue-page .series-link{white-space:nowrap}
+.queue-page td .desc{max-width:none;white-space:normal;overflow:hidden;margin-top:5px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.queue-page .job-ref code{word-break:normal;overflow-wrap:anywhere}.queue-page .job-ref code a{display:inline-block;white-space:nowrap}
+.queue-page .job-location{overflow-wrap:anywhere}.queue-page .job-location small{color:var(--muted)}
+.queue-page .job-time{white-space:nowrap;font-variant-numeric:tabular-nums}
+.queue-page .job-status>span:first-child{display:inline-block;font-size:11px;letter-spacing:.03em;font-weight:650;padding:3px 7px;border-radius:4px;background:color-mix(in srgb,currentColor 10%,transparent)}
+.queue-page .job-status>span.QUEUED{color:var(--warn)}.queue-page .job-status small{display:inline-block;margin-top:3px;overflow-wrap:anywhere}
+.queue-page .bar{width:100%;max-width:160px;height:8px;margin:5px 0}.queue-page td .est{margin-top:4px;font-size:11px}
+.queue-page .schedule-panel{margin-top:24px;border:1px solid var(--line);border-radius:8px}
+.schedule-panel>summary{padding:12px 16px;cursor:pointer}.queue-page .schedule-panel h2{display:inline;margin:0 12px 0 4px;font-size:16px}
+.queue-page .schedule-panel .scroll{border:0;border-top:1px solid var(--line);border-radius:0 0 8px 8px}.schedule-panel>div>p{padding:0 16px}
+.queue-page .schedules-table{min-width:1000px}.queue-page .schedules-table td:not(:first-child){white-space:nowrap}
+.queue-page .history-tools{align-items:flex-end;gap:12px;margin-bottom:8px}.history-search{display:flex;flex-direction:column;gap:5px;min-width:240px;max-width:420px;flex:1;font-size:12px;font-weight:600}
+.queue-page .history-search input{width:100%;min-width:0;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg);font-size:13px;font-weight:400}
+.history-chips{display:flex;flex-wrap:wrap;gap:6px}.queue-page button{min-height:36px;font-size:13px}.queue-page button:hover{border-color:var(--muted)}
+.queue-page .chip.on{background:color-mix(in srgb,var(--link) 10%,var(--bg));font-weight:600}
+.queue-page #history-count{display:inline-block;margin:0 12px 8px 0}.queue-page #history-count+p{display:inline-block;margin:0 0 8px}
+.queue-page .empty-state{padding:24px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+@media(min-width:1900px){body.queue-page{max-width:2200px}}
+@media(max-width:800px){.queue-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.queue-stat{padding:10px 12px;gap:8px}.queue-stat strong{font-size:24px}.history-search{max-width:none;flex-basis:100%}.queue-page .tabs a{padding:8px 10px}.queue-page .tabs .brand{flex-basis:100%}}
+
 """
 
 /** Filtering, actions and a refresh that swaps the live parts in place, so scrolling, a selection and a half-typed
@@ -655,9 +707,19 @@ let chip = 'all';
 function applyFilter() {
   const q = document.getElementById('q');
   const text = q ? q.value.trim().toLowerCase() : '';
-  document.querySelectorAll('tr[data-state]').forEach(function (row) {
+  const rows = document.querySelectorAll('#history tr[data-state]');
+  let visible = 0;
+  rows.forEach(function (row) {
     row.hidden = !((!text || row.dataset.text.includes(text)) && (chip === 'all' || row.dataset.state === chip));
+    if (!row.hidden) visible++;
   });
+  const count = document.getElementById('history-count');
+  const message = visible + ' of ' + rows.length + ' runs shown';
+  if (count && count.textContent !== message) count.textContent = message;
+  const empty = document.getElementById('history-empty');
+  if (empty) empty.hidden = rows.length === 0 || visible > 0;
+  const clear = document.getElementById('clear-history');
+  if (clear) clear.hidden = !text && chip === 'all';
 }
 document.getElementById('q')?.addEventListener('input', applyFilter);
 function applyDiffer() {
@@ -668,10 +730,31 @@ document.addEventListener('change', function (e) { if (e.target.id === 'differ')
 document.querySelectorAll('[data-chip]').forEach(function (button) {
   button.addEventListener('click', function () {
     chip = button.dataset.chip;
-    document.querySelectorAll('[data-chip]').forEach(function (b) { b.classList.toggle('on', b === button); });
+    document.querySelectorAll('[data-chip]').forEach(function (b) {
+      b.classList.toggle('on', b === button);
+      b.setAttribute('aria-pressed', String(b === button));
+    });
     applyFilter();
   });
 });
+document.getElementById('clear-history')?.addEventListener('click', function () {
+  const q = document.getElementById('q');
+  if (q) q.value = '';
+  document.querySelector('[data-chip="all"]')?.click();
+  q?.focus();
+});
+// Opening schedules is an explicit choice and survives live updates.
+function revealSchedules() {
+  if (location.hash === '#schedules-section') openSchedules();
+}
+document.querySelector('a[href="#schedules-section"]')?.addEventListener('click', openSchedules);
+function openSchedules() {
+  const panel = document.querySelector('.schedule-panel');
+  if (panel) panel.open = true;
+}
+window.addEventListener('hashchange', revealSchedules);
+revealSchedules();
+applyFilter();
 async function act(path, body, ask) {
   if (ask && !confirm(ask)) return;
   const response = await fetch(path, body
@@ -690,7 +773,11 @@ async function refresh() {
     const fresh = new DOMParser().parseFromString(await response.text(), 'text/html');
     fresh.querySelectorAll('[data-live]').forEach(function (part) {
       const old = document.getElementById(part.id);
-      if (old) old.innerHTML = part.innerHTML;
+      if (old) {
+        const scrolls = Array.from(old.querySelectorAll('.scroll')).map(function (el) { return el.scrollLeft; });
+        old.innerHTML = part.innerHTML;
+        old.querySelectorAll('.scroll').forEach(function (el, i) { el.scrollLeft = scrolls[i] || 0; });
+      }
     });
     applyFilter();
     applyDiffer();
