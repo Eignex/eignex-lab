@@ -19,8 +19,7 @@ internal fun diskPage(
     volumes: List<VolumeReport> = emptyList(),
     /** Why the runner holds its queue ([Volumes.hold]); null when it does not. */
     held: String? = null,
-): Html = buildHtml {
-    append(head("disk · eignex lab", live = false))
+): Html = page("disk · eignex lab") {
     append(Html("<header><h1>Disk</h1></header>"))
     if (held != null) append(Html("<p class=\"FAILED\">The queue is held: ") + esc(held) + Html("</p>"))
     if (volumes.isNotEmpty()) append(volumesSection(volumes))
@@ -36,8 +35,8 @@ internal fun diskPage(
         append(Html("</table></div>"))
     }
     if (report == null) {
-        append(Html("<p class=\"muted\">Not measured yet: the first measurement runs 10 minutes after the API starts and can take a while.</p></body></html>"))
-        return@buildHtml
+        append(Html("<p class=\"muted\">Not measured yet: the first measurement runs 10 minutes after the API starts and can take a while.</p>"))
+        return@page
     }
     append(Html("<h2>What uses it</h2><p class=\"muted\">") + size(report.freeBytes) + Html(" free on the data directory's volume"))
     append(Html(" · measured ") + ago(report.at) + Html(", every 6 hours; the corpus and what is on another volume (the external drive) "))
@@ -56,7 +55,6 @@ internal fun diskPage(
         append(Html("</table></div>"))
     }
     append(dockerSection(report))
-    append(Html("</body></html>"))
 }
 
 /** The disk page's volumes: each file system the lab writes to, its free and total space, and the lab's directories on it. */

@@ -4,6 +4,32 @@ Benchmark runner for Eignex repositories: repository-owned bench adapters and co
 
 [Setup](deploy/SETUP.md) · [Usage](docs/runs.md) · [Bench SDK](lab-bench/README.md)
 
+## Local UI development
+
+```sh
+./gradlew devUi
+```
+
+Open [localhost:8080](http://127.0.0.1:8080). The launcher serves the real UI and API on loopback, without a
+password, using fresh synthetic jobs, schedules, regression history, reference results, and an in-memory fake
+Nomad. It does not start workers, execute case commands, or use the Mac, Docker, SSH, or cloud credentials.
+It builds its own configuration instead of reading `LAB_*` deployment settings. The launcher and simulator live
+under `src/test` and are excluded from production distributions.
+
+The `preview-bench` job includes a dense four-arm comparison with metrics and downloadable case artifacts.
+The regression samples include 12 themes across 96 problems, with improving, regressing, and plateauing histories.
+Job controls work against the local store; simulated paired rows progress every three seconds. Manual node
+requests pass through the real capacity collector and create fake nodes that boot after three seconds. Releasing
+a request lets idle fake nodes retire. Only the seeded fixture commands are simulated; new API submissions are
+not built or executed.
+
+Edit files under `src/main/resources/web/` and refresh the browser to pick up CSS and JavaScript changes.
+The queue's cached display can take up to five seconds to pick up those edits. Restart the command after Kotlin
+changes. Each start creates a fresh directory under `build/dev-ui/`; `Ctrl+C`
+stops the preview, and `./gradlew clean` removes its data. Use `./gradlew devUi -PuiPort=8081` to choose another port.
+
+## Lab access
+
 Agents working in consuming repositories use `deploy/lab` and the authenticated HTTP API at
 `https://lab.eignex.com`. Server access and administration belong to agents explicitly working on
 eignex-lab operations; report operational dependencies to that owner.

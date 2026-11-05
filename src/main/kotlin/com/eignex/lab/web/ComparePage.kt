@@ -21,13 +21,10 @@ internal fun comparePage(
     arms: List<PlannedArm>,
     cases: List<CaseResult>,
     references: Map<ProblemKey, Reference> = emptyMap(),
-): Html = buildHtml {
-    append(head("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab", live = false))
+): Html = page("compare ${jobs.joinToString(", ") { it.id.toString() }} · eignex lab") {
     append(Html("<header><h1>Compare "))
     append(jobs.joinHtml(Html(" · ")) { (Html("<a href=\"/jobs/") + it.id + Html("\">") + it.id + Html(" ") + esc(it.name) + Html("</a>")) })
     append(Html("</h1></header><div>"))
     append(experimentSection(repoUrl, null, arms, cases, references))
     append(Html("</div>"))
-    append(Html(SCRIPT))
-    append(Html("</body></html>"))
 }

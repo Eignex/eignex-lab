@@ -35,26 +35,31 @@ internal fun jobPage(
     /** What the job's directory holds ([JobDirView.read]); the route reads it before rendering, behind the volume probe. */
     files: JobDirView = JobDirView.read(status.paths, job),
     parallelism: Pair<Int, Int>? = null,
-): Html = buildHtml {
+): Html = page("${job.id} ${job.name} · eignex lab", live = job.status.isActive) {
     val active = job.status.isActive
-    append(head("${job.id} ${job.name} · eignex lab", live = active))
     append(Html("<header><h1>") + job.id + Html(" ") + esc(job.name) + Html("</h1>"))
     job.experiment.description.takeIf { it.isNotBlank() }?.let { append(Html("<p class=\"description\">") + esc(it) + Html("</p>")) }
     append(Html("</header>"))
     append(Html("<div id=\"job\" data-live>"))
-    append(Html("<dl class=\"meta\">"))
-    append(Html("<dt>status</dt><dd>") + statusCell(job, null, nodes) + Html("</dd>"))
+    append(Html("<section class=\"job-overview\" aria-label=\"Job overview\">"))
+    append(Html("<div><span class=\"eyebrow\">Status</span>") + statusCell(job, null, nodes) + Html("</div>"))
+    append(Html("<div><span class=\"eyebrow\">Case progress</span>") + progress(job) + Html("</div>"))
+    append(Html("<div><span class=\"eyebrow\">Elapsed</span><strong>") + elapsed(job) + Html("</strong></div>"))
+    append(Html("<div><span class=\"eyebrow\">Repository / ref</span>") + job.experiment.repository + Html("<br>") + refText(status.repoUrl, job) + Html("</div></section>"))
+    waiting?.let { append(Html("<p class=\"note\">") + it + Html("</p>")) }
+    append(Html("<nav class=\"section-links\" aria-label=\"Job sections\"><a href=\"#results\">Results</a><a href=\"#job-details\">Execution details</a>"))
+    if (job.experiment.work == Work.Recipe || cases.any { it.problem.benchCase?.attributes?.get("recordSchema") == "solver-v1" })
+        append(Html("<a href=\"#problems\">Problems</a>"))
+    if (job.experiment.work is Work.Bench) append(Html("<a href=\"#bench-results\">Case metrics</a>"))
+    append(Html("<a href=\"/jobs/\"") + job.id + Html("/files\">Files &amp; logs</a></nav>"))
+    append(Html("<details id=\"job-details\" class=\"panel job-details\"><summary>Execution details <span class=\"muted\">· preparation, placement and configuration</span></summary><dl class=\"meta\">"))
     if (job.backend == Backend.NOMAD) append(Html("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/") + job.id + Html("/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>"))
     for (report in preparation.filter { it.preparation != null }) {
         append(Html("<dt>preparation</dt><dd>") + preparationDetails(report) + Html("</dd>"))
     }
-    append(Html("<dt>repository</dt><dd>") + esc(job.experiment.repository) + Html("</dd>"))
-    append(Html("<dt>ref</dt><dd>") + refText(status.repoUrl, job) + Html("</dd>"))
-    append(Html("<dt>progress</dt><dd>") + progress(job) + Html("</dd>"))
     append(Html("<dt>created</dt><dd>") + ago(job.createdAt) + Html("</dd>"))
     if (job.startedAt != null) append(Html("<dt>started</dt><dd>") + ago(job.startedAt) + Html("</dd>"))
     if (job.finishedAt != null) append(Html("<dt>finished</dt><dd>") + ago(job.finishedAt) + Html("</dd>"))
-    append(Html("<dt>elapsed</dt><dd>") + elapsed(job) + Html("</dd>"))
     append(Html("<dt>where</dt><dd>") + hostCell(job, hosts, nodes, files.instances) + Html("</dd>"))
     job.experiment.nodeTags?.let { selector ->
         append(Html("<dt>node tags</dt><dd>"))
@@ -67,6 +72,17 @@ internal fun jobPage(
         append(Html("<dt>hosts</dt><dd>") + (hosts.joinHtml(Html("<br>")) { esc(it.text()) }))
         append(Html("<br><small class=\"muted\">each iteration's arms ran on one machine; timing across iterations mixes machines</small></dd>"))
     }
+    append(Html("<dt>vcpus</dt><dd>") + job.vcpus + Html("</dd><dt>priority</dt><dd>") + job.priority + Html("</dd>"))
+    append(Html("<dt>files</dt><dd><a href=\"/jobs/") + job.id + Html("/files\">all files</a>"))
+    for (log in listOf("setup.log", "job.log")) {
+        if (log in files.logs) append(Html(" · <a href=\"/jobs/") + job.id + Html("/files/") + log + Html("\">") + log + Html("</a>"))
+    }
+    append(Html("</dd>"))
+    holds.maxOfOrNull { it.expiresAt }?.let { end ->
+        append(Html("<dt>held</dt><dd>held for download until ") + clockTime(end) + Html(": the disk's trim leaves its files alone</dd>"))
+    }
+    append(Html("</dl></details>"))
+    append(Html("<dl class=\"meta job-notices\">"))
     job.experiment.capped.takeIf { it.isNotEmpty() }?.let { caps ->
         append(Html("<dt>capped</dt><dd>") + (caps.joinHtml(Html("<br>")) { esc(it) }) + Html("</dd>"))
     }
@@ -78,15 +94,6 @@ internal fun jobPage(
         append(Html("<dt>instrumented</dt><dd><span class=\"PARTIAL\">") + recording + Html("</span>: every compilation of each "))
         append(Html("case's CLI is recorded, so its times are no runtime measurement</dd>"))
     }
-    append(Html("<dt>vcpus</dt><dd>") + job.vcpus + Html("</dd><dt>priority</dt><dd>") + job.priority + Html("</dd>"))
-    append(Html("<dt>files</dt><dd><a href=\"/jobs/") + job.id + Html("/files\">all files</a>"))
-    for (log in listOf("setup.log", "job.log")) {
-        if (log in files.logs) append(Html(" · <a href=\"/jobs/") + job.id + Html("/files/") + log + Html("\">") + log + Html("</a>"))
-    }
-    append(Html("</dd>"))
-    holds.maxOfOrNull { it.expiresAt }?.let { end ->
-        append(Html("<dt>held</dt><dd>held for download until ") + clockTime(end) + Html(": the disk's trim leaves its files alone</dd>"))
-    }
     append(Html("</dl>"))
     parallelism?.takeIf { active }?.let { (executing, pending) ->
         append(Html("<p>") + executing + Html(" executing / ") + Experiments.caseConcurrency(job.vcpus, Experiments.caseCpus(job.experiment)) + Html(" requested slots"))
@@ -95,12 +102,12 @@ internal fun jobPage(
     }
     job.error?.let { append(Html("<pre class=\"error\">") + esc(it) + Html("</pre>")) }
     if (job.backend == Backend.NOMAD && (job.status == Status.FAILED || job.status == Status.CANCELLED)) {
-        append(Html("<div class=\"actions\"><button onclick=\"act('/jobs/") + job.id + Html("/retry', null, 'Queue job ") + job.id + Html(" again?')\">retry</button>"))
+        append(Html("<div class=\"actions job-actions\"><button onclick=\"act('/jobs/") + job.id + Html("/retry', null, 'Queue job ") + job.id + Html(" again?')\">retry</button>"))
         append(Html("<span class=\"muted\">queues its unfinished cases again; finished ones are kept</span></div>"))
     }
     if (active) {
         val id = job.id
-        append(Html("<div class=\"actions\">"))
+        append(Html("<div class=\"actions job-actions\">"))
         append(
             if (job.paused) {
                 (Html("<button onclick=\"act('/jobs/") + id + Html("/resume')\">resume</button>"))
@@ -108,10 +115,10 @@ internal fun jobPage(
                 (Html("<button onclick=\"act('/jobs/") + id + Html("/pause')\">pause</button>"))
             },
         )
-        append(Html("<label>priority <input id=\"priority\" type=\"number\" value=\"") + job.priority + Html("\"></label>"))
-        append(Html("<button onclick=\"act('/jobs/") + id + Html("/priority', {priority: +document.getElementById('priority').value})\">set</button>"))
-        append(Html("<label>vcpus <input id=\"vcpus\" type=\"number\" min=\"1\" value=\"") + job.vcpus + Html("\"></label>"))
-        append(Html("<button onclick=\"act('/jobs/") + id + Html("/vcpus', {vcpus: +document.getElementById('vcpus').value})\">set</button>"))
+        append(Html("<label>priority <input aria-label=\"Job priority\" id=\"priority\" type=\"number\" value=\"") + job.priority + Html("\"></label>"))
+        append(Html("<button onclick=\"act('/jobs/") + id + Html("/priority', {priority: +document.getElementById('priority').value})\" aria-label=\"Set priority\">set</button>"))
+        append(Html("<label>vcpus <input aria-label=\"Job vCPUs\" id=\"vcpus\" type=\"number\" min=\"1\" value=\"") + job.vcpus + Html("\"></label>"))
+        append(Html("<button onclick=\"act('/jobs/") + id + Html("/vcpus', {vcpus: +document.getElementById('vcpus').value})\" aria-label=\"Set vCPUs\">set</button>"))
         if (!job.cancelRequested) {
             append(Html("<button class=\"danger\" onclick=\"act('/jobs/") + id + Html("/cancel', null, 'Cancel job ") + id + Html("?')\">cancel</button>"))
         }
@@ -122,6 +129,7 @@ internal fun jobPage(
         append(Html("<a href=\"/compare?jobs=") + previous + Html(",") + job.id + Html("\">compare with it</a> · "))
         append(Html("<a href=\"/trend") + query("name" to job.origin.series) + Html("\">trend</a></p>"))
     }
+    append(Html("<div id=\"results\"></div>"))
     val spec = job.experiment
     when (spec.work) {
         is Work.Analysis -> append(analysisSection(job, spec, files))
@@ -135,12 +143,10 @@ internal fun jobPage(
     }
     if (!showCommands) {
         append(Html("<p><a href=\"/jobs/") + job.id + Html("?commands\">every case's command</a></p></div>"))
-        append(Html(SCRIPT))
-        append(Html("</body></html>"))
-        return@buildHtml
+        return@page
     }
     val commands = if (failedOnly) job.commands.filter { it.status == Status.FAILED } else job.commands
-    append(Html("<h2>Commands"))
+    append(Html("<h2 id=\"commands\">Commands"))
     if (failedOnly) {
         append(Html(" <small>") + commands.size + Html(" failed of ") + job.commands.size + Html(" · <a href=\"/jobs/") + job.id + Html("\">show all</a></small>"))
     } else if (job.failed > 0) {
@@ -165,8 +171,6 @@ internal fun jobPage(
         append(Html("</td></tr>"))
     }
     append(Html("</table></div></div>"))
-    append(Html(SCRIPT))
-    append(Html("</body></html>"))
 }
 
 /** A profile job, or a retired script job: what it ran, its exit, and what it left in `$OUT`, each readable with the job's files. */
@@ -275,21 +279,36 @@ private fun benchSection(job: Job, cases: List<CaseResult>, arms: List<PlannedAr
     append(Html("<h2>Bench results</h2><p>Repository <code>") + esc(job.experiment.repository) + Html("</code> · "))
     append(Html("<a href=\"/experiments/") + job.id + Html("/metrics.csv\">metrics CSV</a> · "))
     append(Html("<a href=\"/experiments/") + job.id + Html("/cases\">case records</a> · <a href=\"/jobs/") + job.id + Html("/files\">all files</a></p>"))
-    for (case in cases) {
-        val result = BenchRuns.result(case.record?.toString())
+    append(Html("<section id=\"bench-results\" data-result-list data-result-limit=\"25\">"))
+    val results = cases.map { it to BenchRuns.result(it.record?.toString()) }
+    append(resultFilters("bench", cases.map { it.arm }.distinct(), results.map { (case, result) -> result?.status?.name ?: case.status.name }.distinct()))
+    for ((case, result) in results) {
+        val path = case.problem.problem
+        val shortName = if (path.substringAfterLast('/').toLongOrNull() != null) path.split('/').takeLast(3).joinToString("/")
+            else path.substringAfterLast('/')
+        append(Html("<details class=\"case-result\" id=\"case-") + case.index + Html("\" data-result-row data-search=\"") +
+            "${case.problem.problem} ${case.arm} ${case.seed ?: ""} ${case.repeat + 1}" + Html("\" data-status=\"") + (result?.status?.name ?: case.status.name) + Html("\" data-arm=\"") + case.arm + Html("\"><summary>"))
+        append(Html("<span class=\"case-name\" title=\"") + case.problem.problem + Html("\">") + shortName + Html("</span><span class=\"badge\">") + case.arm + Html("</span>"))
+        append(Html("<span class=\"muted\">"))
+        case.seed?.let { append(Html("seed ") + it + Html(" · ")) }
+        append(Html("repeat ") + (case.repeat + 1) + Html("</span><span class=\"") + case.status.name + Html("\">") + (result?.status?.name ?: case.status.name) + Html("</span>"))
+        append(Html("<small class=\"muted\">") + (result?.metrics?.size ?: 0) + Html(" metrics · ") + (result?.artifacts?.size ?: 0) + Html(" files</small></summary><div class=\"case-body\">"))
         append(Html("<h3>") + esc(case.problem.problem) + Html(" · ") + esc(case.arm) + Html("</h3><p>") + esc(result?.status?.name ?: case.status.name))
         arms.firstOrNull { it.arm.label == case.arm }?.let { append(Html(" · commit <code>") + (esc(it.sha.take(12))) + Html("</code>")) }
         case.seed?.let { append(Html(" · seed ") + it) }
         append(Html(" · repeat ") + (case.repeat + 1) + Html("</p>"))
         result?.message?.let { append(Html("<p>") + esc(it) + Html("</p>")) }
         if (result != null && result.metrics.isNotEmpty()) {
-            append(Html("<table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Direction</th></tr>"))
+            append(Html("<div class=\"scroll\"><table><tr><th>Metric</th><th>Value</th><th>Unit</th><th>Direction</th></tr>"))
             result.metrics.forEach { metric -> append(Html("<tr><td>") + esc(metric.name) + Html("</td><td>") + metric.value + Html("</td><td>") + esc(metric.unit) + Html("</td><td>") + metric.direction.name.lowercase() + Html("</td></tr>")) }
-            append(Html("</table>"))
+            append(Html("</table></div>"))
         }
+        append(Html("<ul class=\"artifact-links\">"))
         result?.artifacts?.forEach { artifact ->
             val path = artifact.path.split('/').joinToString("/") { java.net.URLEncoder.encode(it, Charsets.UTF_8).replace("+", "%20") }
-            append(Html("<p><a href=\"/jobs/") + job.id + Html("/files/cases/") + case.index + Html("/out/") + path + Html("\">") + esc(artifact.path) + Html("</a></p>"))
+            append(Html("<li><a href=\"/jobs/") + job.id + Html("/files/cases/") + case.index + Html("/out/") + path + Html("\">") + esc(artifact.path) + Html("</a></li>"))
         }
+        append(Html("</ul></div></details>"))
     }
+    append(Html("<p class=\"muted\" data-result-count aria-live=\"polite\"></p><button type=\"button\" data-result-more hidden>Show 25 more cases</button><p data-result-empty hidden>No matching cases.</p></section>"))
 }

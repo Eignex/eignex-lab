@@ -12,8 +12,7 @@ import com.eignex.lab.util.*
 import com.eignex.lab.worker.*
 
 /** One problem: every reference solver's verdict on it, and every time the lab ran it. */
-internal fun problemPage(report: ProblemReport, repoUrl: String): Html = buildHtml {
-    append(head("${report.problem} · eignex lab", live = report.runs.any { it.status.isActive }, tab = Tab.REFERENCE))
+internal fun problemPage(report: ProblemReport, repoUrl: String): Html = page("${report.problem} · eignex lab", live = report.runs.any { it.status.isActive }, tab = Tab.REFERENCE) {
     append(Html("<header><h1><code>") + esc(report.problem) + Html("</code></h1><p class=\"muted\">"))
     append(Html("<a href=\"/references") + query("collection" to report.collection) + Html("\">") + esc(report.collection) + Html("</a></p></header>"))
     append(Html("<h2>Reference <small>") + report.references.size + Html(" solvers, strongest first</small></h2>"))
@@ -62,8 +61,6 @@ internal fun problemPage(report: ProblemReport, repoUrl: String): Html = buildHt
         }
         append(Html("</table></div>"))
     }
-    append(Html(SCRIPT))
-    append(Html("</body></html>"))
 }
 
 /** A reference verdict in a word, without the solver beside it. */

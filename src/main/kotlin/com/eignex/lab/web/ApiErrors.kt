@@ -95,7 +95,7 @@ internal fun ApplicationCall.existingJobId(store: Store): Long = longParam().als
     if (!store.jobExists(id)) throw ApiError.NotFound("no such job $id")
 }
 
-private fun errorPage(status: HttpStatusCode, message: String): Html =
-    Html("<!doctype html><html><head><meta charset=\"utf-8\"><title>") + status.value + Html(" ") + status.description + Html("</title></head>") +
-        Html("<body><h1>") + status.value + Html(" ") + status.description + Html("</h1><p>") + message +
-        Html("</p><p><a href=\"/\">Back to the queue</a></p></body></html>")
+private fun errorPage(status: HttpStatusCode, message: String): Html = page("${status.value} ${status.description}", script = Html("")) {
+    append(Html("<header><h1>") + status.value + Html(" ") + status.description + Html("</h1></header><p>") + message +
+        Html("</p><p><a href=\"/\">Back to the queue</a></p>"))
+}

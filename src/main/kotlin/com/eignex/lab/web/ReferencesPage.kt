@@ -21,13 +21,11 @@ internal fun referencesPage(
     conflicts: List<Disagreement> = emptyList(),
     /** A candidate run against the references, which the tab leads with. */
     scoreboard: ScoreboardView? = null,
-): Html = buildHtml {
+): Html = page("reference · eignex lab", tab = Tab.REFERENCE, script = PageScripts.reference) {
     val visible = coverage
     val context = scoreboard?.let(::scoreboardParameters).orEmpty()
     val contextQuery = query(*context.toList().toTypedArray())
     val coveragePrefix = esc("/references" + if (contextQuery.isEmpty()) "?" else "$contextQuery&")
-    append(head("reference · eignex lab", live = false, tab = Tab.REFERENCE, bodyClass = "lab-page reference-page"))
-    append(Html("<main>"))
     append(Html("<header><h1>Reference</h1><p class=\"muted\">") + (visible.sumOf { it.rows }) + Html(" results from "))
     append(Html("") + (visible.map { it.solver }.distinct().size) + Html(" solvers over ") + (visible.map { it.collection }.distinct().size) + Html(" collections"))
     append(Html("</p></header>"))
@@ -100,10 +98,7 @@ internal fun referencesPage(
         append(Html("<td class=\"num\">") + (members.sumOf { it.infeasible }) + Html("</td><td>") + ago(members.maxOf { it.updatedAt }) + Html("</td></tr>"))
         for (member in members) append(Html("<tr data-in=\"") + esc(family) + Html("\" hidden>") + coverageCells(member, coveragePrefix) + Html("</tr>"))
     }
-    append(Html("</tbody></table></div></section></main>"))
-    append(Html(SCRIPT))
-    append(Html(REFERENCE_SCRIPT))
-    append(Html("</body></html>"))
+    append(Html("</tbody></table></div></section>"))
 }
 
 /** A candidate run against every reference solver: a row per group, a cell per solver, each cell candidate's Borda share. */
@@ -289,30 +284,3 @@ private fun scoreboardParameters(view: ScoreboardView): Map<String, String?> = l
 private fun hiddenParameters(params: Map<String, String?>): Html = params.entries.filter { it.value != null }.joinHtml {
     Html("<input type=\"hidden\" name=\"") + esc(it.key) + Html("\" value=\"") + esc(it.value.orEmpty()) + Html("\">")
 }
-
-private const val REFERENCE_SCRIPT = """<script>
-document.querySelectorAll('.coverage-toggle').forEach(function (button) {
-  button.addEventListener('click', function () {
-    const open = button.getAttribute('aria-expanded') !== 'true';
-    button.setAttribute('aria-expanded', String(open));
-    button.querySelector('[data-family-icon]').textContent = open ? '▾' : '▸';
-    document.querySelectorAll('#reference-coverage tr[data-in]').forEach(function (row) {
-      if (row.dataset.in === button.dataset.family) row.hidden = !open;
-    });
-  });
-});
-function revealReferenceConflicts() {
-  if (location.hash === '#reference-conflicts') {
-    const details = document.querySelector('.reference-conflicts');
-    if (details) details.open = true;
-  }
-}
-document.querySelectorAll('a[href="#reference-conflicts"]').forEach(function (link) {
-  link.addEventListener('click', function () {
-    const details = document.querySelector('.reference-conflicts');
-    if (details) details.open = true;
-  });
-});
-window.addEventListener('hashchange', revealReferenceConflicts);
-revealReferenceConflicts();
-</script>"""
