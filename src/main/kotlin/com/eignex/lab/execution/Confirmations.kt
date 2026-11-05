@@ -15,12 +15,15 @@ internal class Confirmations(private val local: LocalNode, private val paths: Da
         val series = (job.origin as? JobOrigin.Scheduled)?.schedule ?: return
         if (!spec.isBench) return
         val schedule = store.schedules.all().singleOrNull { it.name == series } ?: return
+        val currentCases = firstArmCases(job.id)
+        val benchmarks = BenchTransitions.enabled(currentCases)
+        if (job.status != Status.DONE && !(benchmarks && job.status == Status.FAILED)) return
         val fingerprint = Experiments.fingerprint(spec)
         val history = store.jobs(limit = PREVIOUS_RUNS, name = series)
-            .filter { it.id < job.id && it.status == Status.DONE && it.experiment.let(Experiments::fingerprint) == fingerprint }
+            .filter { it.id < job.id && (it.status == Status.DONE || benchmarks && it.status == Status.FAILED) &&
+                it.experiment.let(Experiments::fingerprint) == fingerprint }
             .sortedByDescending { it.id }
         val previous = history.firstOrNull() ?: return
-        val currentCases = firstArmCases(job.id)
         val previousCases = firstArmCases(previous.id)
         var reference = previous
         var flips = Confirm.flips(previousCases, currentCases)
@@ -44,6 +47,8 @@ internal class Confirmations(private val local: LocalNode, private val paths: Da
         val id = store.create(confirmation.name, after, emptyList(), confirmation.vcpus ?: local.defaultParallel, confirmation.priority, confirmation,
             origin)
         logJob(paths, job.id, "${flips.lost.size} feasibility lost, ${flips.gained.size} gained; " +
+            "${flips.benchmarkFailed.size} benchmark failures, ${flips.benchmarkRecovered.size} recoveries; " +
+            "${flips.metricLost.size} metric regressions, ${flips.metricGained.size} improvements; " +
             "${flips.proofLost.size} proof lost, ${flips.proofGained.size} gained; " +
             "${flips.objectiveLost.size} objective worse, ${flips.objectiveGained.size} better against job ${reference.id}: queued confirmation job $id")
     }

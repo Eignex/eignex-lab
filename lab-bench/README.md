@@ -334,6 +334,18 @@ Changed requests or missing retained builds are refused.
 It repeats paired blocks three times. Invalid witnesses and exact objective/proof semantics keep the
 same solver-v1 interpretation. Generic metric-only suites do not claim solver regressions.
 
+Generic suites can opt into benchmark confirmations with case attributes `regressionPolicy=metric-v1`,
+`regressionMetric=<name>` and `regressionThreshold=<fraction between 0 and 1>`. Each result must retain identical
+nonempty `details.benchmarkControls` for comparable runtimes and hardware. Only equal pinned cases, input bytes,
+parameters and resource controls compare. Successful positive metrics with equal units and a LOWER/HIGHER direction
+trigger a rerun beyond the relative threshold; explicit SUCCESS/FAILED transitions trigger correctness reruns.
+Skipped, missing, instrumented and inconsistent results cannot vote. Failed scheduled jobs also receive completion
+processing. Confirmations reuse both retained builds and selected inputs, at the schedule priority plus one, with
+three complete same-machine paired blocks; a majority is required and changed worker attempts cannot be combined.
+At most 40 workloads are selected per confirmation, with correctness transitions selected before timing changes.
+The confirmation job page reports benchmark failures/recoveries and metric regressions/improvements separately
+from solver feasibility and proof claims. Changing this opt-in policy or its measurement controls starts a new series.
+
 New paired worker manifests use schema 3 so older workers cannot silently execute a canonical case
 for every arm. Deploy matching workers and coordinator before migrating schedules. Legacy solver
 recipes are refused at admission; their owning repository supplies the translation and profile wrapper.

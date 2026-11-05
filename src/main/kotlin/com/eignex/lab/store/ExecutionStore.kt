@@ -893,7 +893,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     }
 
     fun pendingDomainCompletion(): List<Long> = store.executionRead { db ->
-        db.sqlRows("SELECT j.id FROM jobs j WHERE j.backend = 'nomad' AND j.status = 'DONE' AND NOT EXISTS (SELECT 1 FROM execution_events e WHERE e.job_id = j.id AND e.detail = 'domain-completed') ORDER BY j.id LIMIT 100") { it.getLong(1) }
+        db.sqlRows("SELECT j.id FROM jobs j WHERE j.backend = 'nomad' AND j.status IN ('DONE', 'FAILED') AND NOT EXISTS (SELECT 1 FROM execution_events e WHERE e.job_id = j.id AND e.detail = 'domain-completed') ORDER BY j.id LIMIT 100") { it.getLong(1) }
     }
     fun domainCompleted(job: Long) = store.executionTransaction { db -> db.event(job, null, "domain-completed", now()) }
 

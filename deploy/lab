@@ -341,8 +341,10 @@ reschedule)
     '{intervalSec: $interval, experiment: $experiment, nextCheckInSec: $next}' |
     curl -sS --fail-with-body -H 'Content-Type: application/json' --data-binary @- "$url/schedules/$1"; echo ;;
 compare) echo "$url/compare?jobs=$(IFS=,; echo "$*")" ;;
-schedules) curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
-      "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv' ;;
+schedules)
+  if [[ "${1:-}" == --json ]]; then curl -fsS "$url/schedules"
+  else curl -fsS "$url/schedules" | jq -r '.[] | [.id, .name, .ref, "every \(.intervalSec)s", "p\(.priority)",
+      "last \(.lastSha // "-" | .[0:9]) job \(.lastJob // "-")"] | @tsv'; fi ;;
 check) curl -sS --fail-with-body -X POST "$url/schedules/$1/check"; echo ;;
 launch) curl -sS -X POST "$url/schedules/$1/launch"; echo ;;
 update) curl -sS -X POST "$url/update"; echo ;;

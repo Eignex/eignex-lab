@@ -25,14 +25,20 @@ data class Flips(
     val objectiveLost: List<Problem> = emptyList(),
     val objectiveGained: List<Problem> = emptyList(),
     val persistentObjectiveLost: List<Problem> = emptyList(),
+    val benchmarkFailed: List<Problem> = emptyList(),
+    val benchmarkRecovered: List<Problem> = emptyList(),
+    val metricLost: List<Problem> = emptyList(),
+    val metricGained: List<Problem> = emptyList(),
 ) {
-    val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained).distinctBy { it.suite to it.problem }
+    val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained +
+        benchmarkFailed + benchmarkRecovered + metricLost + metricGained).distinctBy { it.suite to it.problem }
 
     /**
      * Solutions/proofs gained or lost, plus objective losses that persist against one retained baseline.
      * A single unproved objective movement remains unconfirmed.
      */
-    val confirmable: List<Problem> get() = (lost + gained + proofLost + proofGained + persistentObjectiveLost).distinctBy {
+    val confirmable: List<Problem> get() = (lost + gained + proofLost + proofGained + persistentObjectiveLost +
+        benchmarkFailed + benchmarkRecovered + metricLost + metricGained).distinctBy {
         it.suite to (it.benchCase?.attributes?.get("problem") ?: it.problem)
     }
 
@@ -66,7 +72,10 @@ object Confirm {
      */
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
         val guarded = OptimumClaims.local(before + after)
-        return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size))
+        val benchmarks = BenchTransitions.flips(before, after)
+        return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size)).copy(
+            benchmarkFailed = benchmarks.benchmarkFailed, benchmarkRecovered = benchmarks.benchmarkRecovered,
+            metricLost = benchmarks.metricLost, metricGained = benchmarks.metricGained)
     }
 
     private fun qualifiedFlips(before: List<CaseResult>, after: List<CaseResult>): Flips {
@@ -191,7 +200,9 @@ object Confirm {
         val selected = flips.confirmable.take(MAX_PROBLEMS)
         val identities = selected.map { it.suite to (it.benchCase?.attributes?.get("problem") ?: it.problem) }.toSet()
         val frozen = sourceCases.filter { ComparisonControls.problem(it) in identities }.mapNotNull { it.problem.benchCase }
-            .distinctBy { listOf(it.attributes["suite"], it.attributes["problem"], it.parameters["engine"], it.parameters["seed"], it.attributes["propagationControl"]) }
+            .distinctBy { if (it.attributes["regressionPolicy"] == "metric-v1")
+                listOf(com.eignex.lab.execution.BenchRuns.key(it)) else
+                listOf(it.attributes["suite"], it.attributes["problem"], it.parameters["engine"], it.parameters["seed"], it.attributes["propagationControl"]) }
             .ifEmpty { selected.mapNotNull { it.benchCase } }
         require(!spec.isBench || selected.isEmpty() || frozen.isNotEmpty()) { "Confirmation lost its frozen workloads" }
         return SourceValidation.scheduled(ExperimentSpec(
@@ -199,6 +210,8 @@ object Confirm {
             description = "Confirms run $job against reference job $beforeJob at ${before.take(SHA_LENGTH)}: " +
                 "${flips.lost.size} feasibility lost and ${flips.gained.size} gained; " +
                 "${flips.proofLost.size} proof lost and ${flips.proofGained.size} gained; " +
+                "${flips.benchmarkFailed.size} benchmark failures and ${flips.benchmarkRecovered.size} recoveries; " +
+                "${flips.metricLost.size} metric regressions and ${flips.metricGained.size} improvements; " +
                 "rerun $REPEATS times on both commits, including ${flips.persistentObjectiveLost.size} persistent objective losses (${flips.objectiveLost.size} objective worse and " +
                 "${flips.objectiveGained.size} better are not rerun).",
             problems = emptyList(),
