@@ -38,7 +38,7 @@ internal fun indexPage(
     loading: Boolean = false,
 ): Html = buildHtml {
     val front = before == null && name == null
-    append(head("eignex lab", live = true, bodyClass = "queue-page"))
+    append(head("eignex lab", live = true, bodyClass = "lab-page queue-page"))
     append(Html("<main>"))
     append(Html("<header><h1>Queue</h1>"))
     append(Html("<div id=\"summary\" data-live>") + (if (loading) Html("Loading queue…") else summary(status, host, active, nodes, free, held)) + Html("</div></header>"))

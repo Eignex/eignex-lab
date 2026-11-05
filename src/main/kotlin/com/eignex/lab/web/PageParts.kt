@@ -655,48 +655,69 @@ tr.family{cursor:pointer}tr.family:hover td{background:var(--soft)}
 font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;min-width:180px;max-width:min(420px,calc(100vw - 16px))}
 .tip div{display:flex;justify-content:space-between;gap:12px}.tip span{color:var(--muted);flex:none}
 .tip b{text-align:right;overflow-wrap:anywhere;min-width:0}
-/* The queue keeps long job names readable while protecting identifiers and times from wrapping. */
-body.queue-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-height:1.45}
-.queue-page *{box-sizing:border-box}.queue-page [hidden]{display:none!important}
-.queue-page h1{font-size:28px;letter-spacing:-.5px}.queue-page h2{font-size:18px;margin:24px 0 12px}
-.queue-page section{scroll-margin-top:16px}.queue-page a:focus-visible,.queue-page button:focus-visible,.queue-page input:focus-visible,.queue-page summary:focus-visible,.queue-page .scroll:focus-visible{outline:2px solid var(--link);outline-offset:3px}
+/* Shared layout for the queue and node inventory. */
+body.lab-page{max-width:1800px;padding:24px clamp(16px,3vw,48px) 48px;line-height:1.45}
+.lab-page *{box-sizing:border-box}.lab-page [hidden]{display:none!important}
+.lab-page h1{font-size:28px;letter-spacing:-.5px}.lab-page h2{font-size:18px;margin:24px 0 12px}
+.lab-page section{scroll-margin-top:16px}.lab-page a:focus-visible,.lab-page button:focus-visible,.lab-page input:focus-visible,.lab-page summary:focus-visible,.lab-page .scroll:focus-visible{outline:2px solid var(--link);outline-offset:3px}
 .queue-overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0 12px}
 .queue-stat{display:flex;align-items:baseline;gap:12px;padding:14px 18px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
 .queue-stat strong{font-size:28px;line-height:1.2;font-variant-numeric:tabular-nums}.queue-stat span{color:var(--muted);font-size:13px}
 .queue-stat.capacity-wait{color:var(--warn)}.queue-stat.QUEUED{color:var(--muted)}
-.queue-capacity{display:flex;flex-wrap:wrap;gap:6px 24px}.queue-page #queue-snapshot{margin:6px 0 12px}
+.queue-capacity{display:flex;flex-wrap:wrap;gap:6px 24px}.lab-page #queue-snapshot{margin:6px 0 12px}
 .queue-sections{display:flex;flex-wrap:wrap;gap:8px 20px;border-bottom:1px solid var(--line);padding:0 0 12px;font-size:13px}
 .queue-sections a{text-decoration:none}.queue-sections a:hover{text-decoration:underline}
-.queue-page .work{border-left:3px solid var(--line);padding-left:12px;margin-bottom:16px;gap:2px}
-.queue-page .scroll{border:1px solid var(--line);border-radius:8px}
-.queue-page table{font-size:13px}.queue-page th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap;background:var(--soft)}
-.queue-page td,.queue-page th{padding:12px;line-height:1.45}.queue-page tbody tr:last-child td{border-bottom:0}
-.queue-page tbody tr:hover{background:color-mix(in srgb,var(--link) 4%,var(--bg))}
-.queue-page .jobs-table{min-width:1400px;table-layout:fixed}
+.lab-page .work{border-left:3px solid var(--line);padding-left:12px;margin-bottom:16px;gap:2px}
+.lab-page .scroll{border:1px solid var(--line);border-radius:8px}
+.lab-page table{font-size:13px}.lab-page th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap;background:var(--soft)}
+.lab-page td,.lab-page th{padding:12px;line-height:1.45}.lab-page tbody tr:last-child td{border-bottom:0}
+.lab-page tbody tr:hover{background:color-mix(in srgb,var(--link) 4%,var(--bg))}
+.lab-page .jobs-table{min-width:1400px;table-layout:fixed}
 .jobs-table th:nth-child(1){width:72px}.jobs-table th:nth-child(2){width:28%}.jobs-table th:nth-child(3){width:112px}
 .jobs-table th:nth-child(4){width:14%}.jobs-table th:nth-child(5){width:12%}.jobs-table th:nth-child(6){width:15%}
 .jobs-table th:nth-child(7){width:100px}.jobs-table th:nth-child(8){width:94px}.jobs-table th:nth-child(9){width:56px}
-.queue-page .job-name{overflow-wrap:anywhere}.queue-page .job-link{font-weight:600}.queue-page .series-link{white-space:nowrap}
-.queue-page td .desc{max-width:none;white-space:normal;overflow:hidden;margin-top:5px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.queue-page .job-ref code{word-break:normal;overflow-wrap:anywhere}.queue-page .job-ref code a{display:inline-block;white-space:nowrap}
-.queue-page .job-location{overflow-wrap:anywhere}.queue-page .job-location small{color:var(--muted)}
-.queue-page .job-time{white-space:nowrap;font-variant-numeric:tabular-nums}
-.queue-page .job-status>span:first-child{display:inline-block;font-size:11px;letter-spacing:.03em;font-weight:650;padding:3px 7px;border-radius:4px;background:color-mix(in srgb,currentColor 10%,transparent)}
-.queue-page .job-status>span.QUEUED{color:var(--warn)}.queue-page .job-status small{display:inline-block;margin-top:3px;overflow-wrap:anywhere}
-.queue-page .bar{width:100%;max-width:160px;height:8px;margin:5px 0}.queue-page td .est{margin-top:4px;font-size:11px}
-.queue-page .schedule-panel{margin-top:24px;border:1px solid var(--line);border-radius:8px}
-.schedule-panel>summary{padding:12px 16px;cursor:pointer}.queue-page .schedule-panel h2{display:inline;margin:0 12px 0 4px;font-size:16px}
-.queue-page .schedule-panel .scroll{border:0;border-top:1px solid var(--line);border-radius:0 0 8px 8px}.schedule-panel>div>p{padding:0 16px}
-.queue-page .schedules-table{min-width:1000px}.queue-page .schedules-table td:not(:first-child){white-space:nowrap}
-.queue-page .history-tools{align-items:flex-end;gap:12px;margin-bottom:8px}.history-search{display:flex;flex-direction:column;gap:5px;min-width:240px;max-width:420px;flex:1;font-size:12px;font-weight:600}
-.queue-page .history-search input{width:100%;min-width:0;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg);font-size:13px;font-weight:400}
-.history-chips{display:flex;flex-wrap:wrap;gap:6px}.queue-page button{min-height:36px;font-size:13px}.queue-page button:hover{border-color:var(--muted)}
-.queue-page .chip.on{background:color-mix(in srgb,var(--link) 10%,var(--bg));font-weight:600}
-.queue-page #history-count{display:inline-block;margin:0 12px 8px 0}.queue-page #history-count+p{display:inline-block;margin:0 0 8px}
-.queue-page .empty-state{padding:24px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted)}
+.lab-page .job-name{overflow-wrap:anywhere}.lab-page .job-link{font-weight:600}.lab-page .series-link{white-space:nowrap}
+.lab-page td .desc{max-width:none;white-space:normal;overflow:hidden;margin-top:5px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.lab-page .job-ref code{word-break:normal;overflow-wrap:anywhere}.lab-page .job-ref code a{display:inline-block;white-space:nowrap}
+.lab-page .job-location{overflow-wrap:anywhere}.lab-page .job-location small{color:var(--muted)}
+.lab-page .job-time{white-space:nowrap;font-variant-numeric:tabular-nums}
+.lab-page .job-status>span:first-child{display:inline-block;font-size:11px;letter-spacing:.03em;font-weight:650;padding:3px 7px;border-radius:4px;background:color-mix(in srgb,currentColor 10%,transparent)}
+.lab-page .job-status>span.QUEUED{color:var(--warn)}.lab-page .job-status small{display:inline-block;margin-top:3px;overflow-wrap:anywhere}
+.lab-page .bar{width:100%;max-width:160px;height:8px;margin:5px 0}.lab-page td .est{margin-top:4px;font-size:11px}
+.lab-page .schedule-panel{margin-top:24px;border:1px solid var(--line);border-radius:8px}
+.schedule-panel>summary{padding:12px 16px;cursor:pointer}.lab-page .schedule-panel h2{display:inline;margin:0 12px 0 4px;font-size:16px}
+.lab-page .schedule-panel .scroll{border:0;border-top:1px solid var(--line);border-radius:0 0 8px 8px}.schedule-panel>div>p{padding:0 16px}
+.lab-page .schedules-table{min-width:1000px}.lab-page .schedules-table td:not(:first-child){white-space:nowrap}
+.lab-page .history-tools{align-items:flex-end;gap:12px;margin-bottom:8px}.history-search{display:flex;flex-direction:column;gap:5px;min-width:240px;max-width:420px;flex:1;font-size:12px;font-weight:600}
+.lab-page .history-search input{width:100%;min-width:0;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--fg);font-size:13px;font-weight:400}
+.history-chips{display:flex;flex-wrap:wrap;gap:6px}.lab-page button{min-height:36px;font-size:13px}.lab-page button:hover{border-color:var(--muted)}
+.lab-page .chip.on{background:color-mix(in srgb,var(--link) 10%,var(--bg));font-weight:600}
+.lab-page #history-count{display:inline-block;margin:0 12px 8px 0}.lab-page #history-count+p{display:inline-block;margin:0 0 8px}
+.lab-page .empty-state{padding:24px;border:1px dashed var(--line);border-radius:8px;text-align:center;color:var(--muted)}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
-@media(min-width:1900px){body.queue-page{max-width:2200px}}
-@media(max-width:800px){.queue-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.queue-stat{padding:10px 12px;gap:8px}.queue-stat strong{font-size:24px}.history-search{max-width:none;flex-basis:100%}.queue-page .tabs a{padding:8px 10px}.queue-page .tabs .brand{flex-basis:100%}}
+@media(min-width:1900px){body.lab-page{max-width:2200px}}
+@media(max-width:800px){.queue-overview{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.queue-stat{padding:10px 12px;gap:8px}.queue-stat strong{font-size:24px}.history-search{max-width:none;flex-basis:100%}.lab-page .tabs a{padding:8px 10px}.lab-page .tabs .brand{flex-basis:100%}}
+
+.node-panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}
+.nodes-page .node-panel{border:1px solid var(--line);border-radius:8px;padding:16px 20px;min-width:0}
+.nodes-page .node-panel h2{margin:0 0 10px;font-size:16px}.node-panel p{margin:8px 0;overflow-wrap:anywhere}.node-panel summary{cursor:pointer}
+.nodes-page .request-panel{background:var(--soft)}
+.nodes-page #node-request{display:block;margin:16px 0 8px}.nodes-page #node-request fieldset{padding:0;margin:0;border:0;min-width:0}
+.node-fields{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.nodes-page #node-request label{display:flex;flex-direction:column;align-items:stretch;gap:6px;font-size:12px;font-weight:600;flex-basis:auto}
+.nodes-page #node-request label:first-child{flex:1;min-width:240px}
+.nodes-page #node-request input,.nodes-page #node-request select{font:inherit;font-size:13px;font-weight:400;min-height:38px;border:1px solid var(--line);border-radius:5px;padding:8px;background:var(--bg);color:var(--fg)}
+.nodes-page #node-count{width:160px}.nodes-page #node-request button{min-height:38px;background:var(--link);border-color:var(--link);color:var(--bg)}
+.nodes-page button:disabled{opacity:.55;cursor:default}.nodes-page fieldset:disabled{opacity:.7}
+.nodes-page .capacity-message{font-size:13px;padding:10px 12px;background:var(--soft);border-radius:5px;overflow-wrap:anywhere}
+.nodes-page .pool-table{min-width:980px}.nodes-page .pool-table td:first-child{font-weight:600}.nodes-page .pool-table small{font-weight:400}
+.nodes-page .pool-table td:not(:first-child){white-space:nowrap}.nodes-page td.num{font-variant-numeric:tabular-nums}
+.nodes-page .allocation-table{min-width:850px;table-layout:fixed}.nodes-page .allocation-table th:nth-child(1){width:26%}.nodes-page .allocation-table th:nth-child(2){width:15%}.nodes-page .allocation-table th:nth-child(3){width:37%}.nodes-page .allocation-table th:nth-child(4){width:22%}
+.nodes-page .allocation-table td{overflow-wrap:anywhere}.nodes-page .lease-table{min-width:520px}
+.node-state{display:inline-block;font-size:12px;padding:3px 7px;border-radius:4px;background:color-mix(in srgb,currentColor 10%,transparent);white-space:nowrap}
+.state-ready{color:var(--ok)}.state-booting,.state-replacing{color:var(--run)}.state-draining{color:var(--warn)}.state-unavailable{color:var(--bad)}
+.nodes-page #node-feedback:empty{display:none}.nodes-page #node-feedback{font-size:13px;border-left:3px solid var(--link);padding-left:10px}
+@media(max-width:800px){.node-panels{grid-template-columns:1fr}.nodes-page .node-panel{padding:14px}.nodes-page #node-request label:first-child{min-width:0;flex-basis:100%}.nodes-page #node-count{width:100%}.nodes-page #node-request label{flex:1}.node-fields>button{width:100%}}
 
 """
 
@@ -764,9 +785,9 @@ async function act(path, body, ask) {
   location.reload();
 }
 let timer = null;
-async function refresh() {
-  if (document.hidden || String(getSelection()).length) return;
-  if (document.activeElement && document.activeElement.closest('[data-live]')) return;
+async function refresh(force = false) {
+  if (!force && (document.hidden || String(getSelection()).length)) return;
+  if (!force && document.activeElement && document.activeElement.closest('[data-live]')) return;
   try {
     const response = await fetch(location.href, {headers: {Accept: 'text/html'}});
     if (!response.ok) return;
