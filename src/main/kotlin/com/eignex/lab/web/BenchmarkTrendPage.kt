@@ -26,5 +26,6 @@ internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html 
 }
 
 private fun benchmarkChanges(changes: BenchmarkChanges?): Html = changes?.let {
-    Html("${it.failed} failures, ${it.recovered} recoveries; ${it.regressed} metric regressions, ${it.improved} improvements")
+    Html("") + it.failed + Html(" failures, ") + it.recovered + Html(" recoveries; ") +
+        it.regressed + Html(" metric regressions, ") + it.improved + Html(" improvements")
 } ?: Html("–")
