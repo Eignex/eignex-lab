@@ -14,14 +14,20 @@ object KissatReference {
 
     fun available(): Boolean = NativeReference.available(BINARY)
 
-    fun run(instance: Instance, budget: Budget): ReferenceResult {
+    fun run(instance: Instance, budget: Budget, binary: String = BINARY): ReferenceResult {
+        val started = System.nanoTime()
+        val identity = ReferenceIdentity.native(binary, budget.timeoutMillis)
         val file = instance.model
         val input = ClaspReference.ClaspInput.of(Format.DIMACS) { CorpusFiles.open(file).bufferedReader() }
-        val timeoutSec = (budget.timeoutMillis / MS_PER_SEC).coerceAtLeast(1)
+        val remaining = budget.timeoutMillis - (System.nanoTime() - started) / 1_000_000
+        check(remaining > 0) { "kissat identity exhausted the reference case budget" }
+        val timeoutSec = (remaining / MS_PER_SEC).coerceAtLeast(1)
         // -q: no progress, -n: no witness; the status line is all the reference reads.
-        val cmd = listOf(BINARY, "-q", "-n", "--time=$timeoutSec")
-        val (stdout, elapsedMs) = NativeReference.exec(cmd, budget.timeoutMillis, input::writeTo)
-        return parse(stdout, elapsedMs, cmd)
+        val cmd = listOf(identity.executable, "-q", "-n", "--time=$timeoutSec")
+        val (stdout, _) = NativeReference.exec(cmd, remaining, input::writeTo)
+        val result = parse(stdout, (System.nanoTime() - started) / 1_000_000, cmd)
+        return result.copy(stats = result.stats + identity.stats +
+            ("referenceVersion" to "${identity.stats.getValue("referenceVersion")}|-q,-n|kissat-reference-v1"))
     }
 
     fun parse(stdout: String, elapsedMs: Long, cmd: List<String>): ReferenceResult {
