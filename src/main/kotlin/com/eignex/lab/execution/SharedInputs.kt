@@ -46,6 +46,9 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     class MissingInputs(val paths: List<String>) :
         IllegalStateException("${paths.size} declared input(s) are neither stored nor local, first ${paths.first()}")
 
+    /** A rejected plan/local binding is deterministic, not a transport failure or missing input. */
+    class DeclaredInputMismatch(val detail: String) : IllegalArgumentException(detail)
+
     /**
      * Publishes [paths] under the shared root and returns their inventory. A file in [declared] (path to sha256, from
      * the bench plan) is resolved by content hash first: when `input-blobs/<sha>` already exists its local bytes are
@@ -67,7 +70,8 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
             val size = available[sha] ?: if (Files.isRegularFile(path, NOFOLLOW_LINKS) && path.toRealPath().startsWith(canonical)) {
                 val observed = hashFile(path)
                 // Both bindings, so a job's diagnostics show which bytes the node held against which the plan declared.
-                require(observed == sha) { "declared input checksum mismatch: $relative (declared $sha, local $observed, ${Files.size(path)} bytes)" }
+                if (observed != sha) throw DeclaredInputMismatch(
+                    "declared input checksum mismatch: $relative (declared $sha, local $observed, ${Files.size(path)} bytes)")
                 requests.run("upload", checkActive) { transport.put(key, path, sha) }
                 Files.size(path).also { available[sha] = it }
             } else { missing += relative; null }

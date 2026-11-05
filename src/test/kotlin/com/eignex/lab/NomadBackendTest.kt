@@ -954,6 +954,45 @@ class NomadBackendTest {
         assertEquals(8, store.execution.failureCount(id))
     }
 
+    @Test fun `provider interruptions replace preparation but a declared checksum failure stops it immediately`() = testApplication {
+        val id = setup(preparation = true); register()
+        var allocation = "allocation"
+        repeat(4) { index ->
+            val claim = backend().claim(session.id, token, allocation)!!
+            val checkpoint = ResourceCheckpoint(100, session.budget, "cgroup-v2-hard", "200000 100000", "1073741824",
+                mapOf("cpu.stat" to "usage_usec 1000"), "worker-cumulative-lower-bound", "provider-interruption")
+            store.execution.resourceCheckpoint(claim.owner, checkpoint)
+            backend(Store(file)).reconcile()
+            assertEquals(Status.RUNNING, store.job(id)!!.status)
+            assertNull(store.job(id)!!.error)
+            assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner) }
+            allocation = "provider-replacement-$index"
+            useReplacement(id, allocation, "provider-node-$index")
+        }
+        val claim = backend().claim(session.id, token, allocation)!!
+        val detail = "declared input checksum mismatch: model.cnf (declared ${ExecutionStore.digest("declared")}, " +
+            "local ${ExecutionStore.digest("local")}, 5 bytes)"
+        application { workerApi(store, backend(), artifacts) { true } }
+        repeat(2) { // A lost acknowledgement must not create a replacement or fail a second time.
+            val response = client.post("/worker/v1/sessions/${session.id}/build-failed") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                header("X-Lab-Allocation", allocation); header("X-Lab-Identity", jwt(allocation))
+                setBody(Json.encodeToString(WorkerBuildError(claim.owner, detail)))
+            }
+            assertEquals(HttpStatusCode.NoContent, response.status)
+        }
+        repeat(3) { backend(Store(file)).reconcile() }
+        val failed = Store(file).job(id)!!
+        assertEquals(Status.FAILED, failed.status)
+        assertEquals("source-build: $detail", failed.error)
+        assertTrue(failed.commands.isEmpty())
+        assertEquals(5, store.execution.sessions(id).size)
+        assertTrue(store.execution.sessions(id).all { it.desired == Desired.STOP })
+        assertEquals(4, store.execution.reports(id).count { it.resources?.retirement == "provider-interruption" })
+        assertFalse(store.execution.events(id).any { it.detail.startsWith("preparation-worker-exit:") })
+        assertEquals(1, store.execution.events(id).count { it.detail == "source-build-failed" })
+    }
+
     @Test fun `preparation loss keeps controller termination evidence without counting OOM as software poison`() {
         val id = setup(preparation = true); register()
         val claim = backend().claim(session.id, token, "allocation")!!

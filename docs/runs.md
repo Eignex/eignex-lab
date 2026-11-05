@@ -263,6 +263,11 @@ unknown. Authenticated checkpoints may arrive briefly after fencing; they cannot
 Nomad-assigned pending preparations reserve their node's compiler slots before image pull and registration,
 allowing other preparations and replacements to be placed without granting an early worker claim.
 
+A declared input checksum mismatch is a permanent preparation failure: the job stops with the path,
+declared SHA-256, local SHA-256 and local byte size. Correct the consuming repository's corpus declaration
+or materialized bytes before submitting again. Worker replacement cannot repair this binding, and the lab
+never substitutes different bytes for a declared hash.
+
 The **Nodes** tab shows the local machine, cloud pools, active nodes, and their allocations. To start a specific
 kind of cloud node, select its configured pool by CPU, memory, architecture/SIMD tags, and Spot or on-demand market.
 Choose the minimum total nodes to keep in that pool and a duration of 15–60 minutes. Existing nodes count toward
