@@ -36,6 +36,40 @@
     }
     metricSelect.addEventListener('change', render);
   }
+  const benchmarkGroups = new Map();
+  all.forEach(function (r) {
+    const workloads = r.benchmark?.workloads || [];
+    workloads.forEach(function (w) {
+      if (!w.theme) return;
+      const metrics = (r.benchmark?.metrics || []).filter(function (m) { return m.caseId === w.caseId; });
+      // A theme with only failures still needs a chart on which to flag them.
+      if (!benchmarkGroups.has(w.theme)) benchmarkGroups.set(w.theme, new Map());
+      metrics.forEach(function (m) {
+        benchmarkGroups.get(w.theme).set(JSON.stringify([m.name, m.unit, m.direction]), m);
+      });
+    });
+  });
+  const groupWorkloads = function (r, theme) {
+    return (r.benchmark?.workloads || []).filter(function (w) { return w.theme === theme; });
+  };
+  function groupValue(r, theme, metric) {
+    const workloads = groupWorkloads(r, theme);
+    if (!metric || !workloads.length || workloads.some(function (w) { return w.status !== 'success'; })) return null;
+    const values = [];
+    for (const id of new Set(workloads.map(function (w) { return w.caseId; }))) {
+      const samples = (r.benchmark?.metrics || []).filter(function (m) {
+        return m.caseId === id && m.name === metric.name && m.unit === metric.unit && m.direction === metric.direction;
+      });
+      if (!samples.length) return null;
+      values.push(samples.reduce(function (sum, m) { return sum + m.value; }, 0) / samples.length);
+    }
+    return values.reduce(function (sum, value) { return sum + value; }, 0) / values.length;
+  }
+  function failures(r, theme, caseId) {
+    return (r.benchmark?.workloads || []).filter(function (w) {
+      return w.status === 'failed' && (!theme || w.theme === theme) && (!caseId || w.caseId === caseId);
+    });
+  }
   function lineKey(r) { return r.spec + (r.benchmark ? JSON.stringify(r.comparisonSeries) : ''); }
 
   function el(name, attrs, parent) {
@@ -62,7 +96,8 @@
     host.innerHTML = '';
     const W = Math.max(host.clientWidth, 240), H = opts.height;
     const endLabels = opts.endLabels && W >= 420;
-    const m = {l: 46, r: endLabels ? 92 : 24, t: 10, b: 28};
+    const labelWidth = Math.max(46, ...y.ticks.map(function (tick) { return y.fmt(tick).length * 6.5 + 10; }));
+    const m = {l: labelWidth, r: endLabels ? 92 : 24, t: 10, b: 28};
     const pw = W - m.l - m.r, ph = H - m.t - m.b;
     const svg = el('svg', {width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': opts.title}, host);
     const times = runs.map(function (r) { return r.at; });
@@ -144,6 +179,17 @@
         el('text', {x: last[0] + 10, y: last[1] + 4, class: 'endlabel'}, svg).textContent = s.name + ' ' + y.fmt(s.value(last[2]));
       }
     }
+    if (opts.failures) {
+      for (const i of order) {
+        const failed = opts.failures(runs[i]);
+        if (!failed.length) continue;
+        const value = series[0]?.value(runs[i]);
+        const ring = el('circle', {cx: x(i), cy: yy(value == null ? 0 : value), r: 8, fill: 'none',
+          stroke: 'var(--bad)', 'stroke-width': 2, class: 'benchmark-failure'}, svg);
+        el('title', {}, ring).textContent = failed.length + ' failed: ' + failed.map(function (w) { return w.caseId; }).join(', ') +
+          (value == null ? ' · timing unavailable' : '');
+      }
+    }
     const cross = el('line', {y1: m.t, y2: m.t + ph, class: 'cross', visibility: 'hidden'}, svg);
     const hit = el('rect', {x: m.l - 8, y: 0, width: pw + 16, height: H, fill: 'transparent'}, svg);
     function nearest(evt) {
@@ -156,7 +202,7 @@
     hit.addEventListener('pointermove', function (evt) {
       const i = nearest(evt);
       cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
-      show(runs[i], evt, opts.suite);
+      show(runs[i], evt, opts);
     });
     hit.addEventListener('pointerleave', function () { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
     hit.addEventListener('click', function (evt) { location.href = '/jobs/' + runs[nearest(evt)].job; });
@@ -168,7 +214,8 @@
     return String(series).split(':').map(function (part) { return /^[0-9a-f]{64}$/.test(part) ? part.slice(0, 8) : part; }).join(':');
   }
 
-  function show(r, evt, suite) {
+  function show(r, evt, opts) {
+    const suite = opts.suite;
     const metric = (r.benchmark?.metrics || []).find(function (m) { return metricKey(m) === metricSelect?.value; });
     const rows = r.benchmark ? [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at)], ['job', '#' + r.job],
@@ -191,6 +238,16 @@
       ['confirmed objective', r.confirmedObjectiveLost == null ? '–' : '−' + r.confirmedObjectiveLost + ' +' + r.confirmedObjectiveGained],
       ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];
+    if (r.benchmark) {
+      const failed = opts.failures ? opts.failures(r) : [];
+      if (opts.benchmarkTheme) {
+        const value = groupValue(r, opts.benchmarkTheme, opts.benchmarkMetric);
+        rows.push(['theme', opts.benchmarkTheme], ['workloads', groupWorkloads(r, opts.benchmarkTheme).length],
+          ['mean timing', value == null ? 'unavailable' : Number(value.toPrecision(5)) + ' ' + opts.benchmarkMetric.unit]);
+        rows.splice(rows.findIndex(function (row) { return row[0] === 'selected metric'; }), 1);
+      }
+      if (failed.length) rows.push(['failed workloads', failed.map(function (w) { return w.caseId; }).join(', ')]);
+    }
     const group = suite && (r.themes || {})[suite];
     if (group) {
       if (group.proven != null) rows.unshift([suite + ' proven', Math.round(group.proven * group.problems) + ' of ' + group.problems + ' (' + pct(group.proven) + ')']);
@@ -214,22 +271,46 @@
 
   function render() {
     if (benchmarkMode) {
-      const most = Math.max(1, ...runs.map(function (r) { return r.cases; }));
-      draw(document.getElementById('chart-benchmark-status'), [
-        {name: 'successful', color: 'var(--series-1)', value: function (r) { return r.benchmark?.succeeded; }},
-        {name: 'failed', color: 'var(--bad)', value: function (r) { return r.benchmark?.failed; }},
-      ], {max: most, ticks: [0, Math.round(most / 2), most], fmt: function (v) { return String(v); }},
-      {height: 260, endLabels: true, title: 'Successful and failed benchmark cases per run'});
       const selected = metricSelect.value;
       const metricOf = function (r) { return (r.benchmark?.metrics || []).find(function (m) { return metricKey(m) === selected; }); };
       const metrics = runs.map(metricOf).filter(Boolean);
       const host = document.getElementById('chart-benchmark-metric');
-      if (!metrics.length) { host.textContent = 'No successful measurements yet.'; return; }
-      const top = niceMax(Math.max(...metrics.map(function (m) { return m.value; })));
-      const unit = metrics[0].unit;
-      draw(host, [{name: metrics[0].name, color: 'var(--series-1)', value: function (r) { return metricOf(r)?.value; }}],
-        {max: top, ticks: [0, top / 2, top], fmt: function (v) { return Number(v.toPrecision(4)) + ' ' + unit; }},
-        {height: 260, endLabels: false, title: metrics[0].caseId + ' ' + metrics[0].name + ' in ' + unit});
+      if (metrics.length) {
+        const top = niceMax(Math.max(...metrics.map(function (m) { return m.value; })));
+        const unit = metrics[0].unit;
+        draw(host, [{name: metrics[0].name, color: 'var(--series-1)', value: function (r) { return metricOf(r)?.value; }}],
+          {max: top, ticks: [0, top / 2, top], fmt: function (v) { return Number(v.toPrecision(4)) + ' ' + unit; }},
+          {height: 260, endLabels: false, title: metrics[0].caseId + ' ' + metrics[0].name + ' in ' + unit,
+            failures: function (r) { return failures(r, null, metrics[0].caseId); }});
+      } else {
+        // Runs with no successful metrics must still expose their failures.
+        draw(host, [], {max: 1, ticks: [], fmt: String},
+          {height: 260, endLabels: false, title: 'No successful measurements yet', failures: function (r) { return failures(r); }});
+      }
+      const grid = document.getElementById('benchmark-themes');
+      if (grid) {
+        grid.replaceChildren();
+        const cards = [];
+        for (const [theme, metricsByType] of [...benchmarkGroups].sort(function (a, b) { return a[0].localeCompare(b[0]); })) {
+          const types = metricsByType.size ? [...metricsByType.values()] : [null];
+          for (const metric of types) {
+            const card = document.createElement('div'), title = document.createElement('div'), plot = document.createElement('div');
+            card.className = 'multiple'; title.className = 'mtitle';
+            title.textContent = theme + (types.length > 1 ? ' · ' + metric.name + ' (' + metric.unit + ')' : '');
+            card.append(title, plot); grid.appendChild(card); cards.push({theme, metric, plot});
+          }
+        }
+        // Measure only once all cards are present: auto-fit columns resize as cards are added.
+        for (const {theme, metric, plot} of cards) {
+          const value = function (r) { return groupValue(r, theme, metric); };
+          const values = runs.map(value).filter(function (v) { return v != null; });
+          const top = niceMax(Math.max(0, ...values)), unit = metric?.unit || '';
+          draw(plot, [{name: 'mean', color: 'var(--series-1)', value}],
+            {max: top, ticks: values.length ? [0, top / 2, top] : [], fmt: function (v) { return Number(v.toPrecision(3)) + ' ' + unit; }},
+            {height: 160, endLabels: false, title: theme + ' mean timing' + (unit ? ' in ' + unit : ' unavailable'),
+              benchmarkTheme: theme, benchmarkMetric: metric, failures: function (r) { return failures(r, theme); }});
+        }
+      }
       return;
     }
     if (!runs.length) {

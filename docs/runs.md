@@ -521,8 +521,14 @@ Opt-in `metric-v1` benchmark sweeps have benchmark trends: successful, failed,
 skipped and pending cases, and a selectable metric for each workload in its own unit.
 They do not use solver solved/proven rates or PAR-2. The run table includes benchmark
 failures, recoveries, metric changes and their paired confirmations. Timings are never
-averaged across unlike workloads; chart lines break across case-set or benchmark-control
-changes. `lab trend <schedule-name>` reads the plotted points as JSON. Renaming a schedule
+combined across different units. Koblas also has six timing subcharts: dense and sparse
+BLAS Levels 1, 2 and 3. Each shows the mean of its workload timings, weighting workloads equally,
+only when every case in that theme succeeded and reported the metric. Historical rows are grouped
+by routine; other adapters may declare a `theme` case attribute. Failures are circled on the
+selected workload and affected theme charts; a circle on the baseline means timing is unavailable,
+not zero. Skipped and pending cases remain in the run table without being marked incorrect.
+Chart lines break across case-set or benchmark-control changes. `lab trend <schedule-name>` reads
+the plotted points as JSON. Renaming a schedule
 preserves the job history, and older cached empty benchmark points are recomputed.
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,

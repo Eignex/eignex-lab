@@ -296,7 +296,7 @@ object Trend {
         val label = arms.firstOrNull()?.arm?.label ?: return null
         val raw = cases.filter { it.arm == label }
         if (BenchTransitions.enabled(raw)) {
-            val benchmark = BenchmarkTrends.summarize(raw)
+            val benchmark = BenchmarkTrends.summarize(raw, job.experiment.repository)
             val zero = Estimate(0.0, 0.0, 0.0)
             return TrendRun(job.id, job.sha ?: job.ref,
                 Experiments.trendFingerprint(job.experiment, raw.map { it.problem }.distinct()),
@@ -483,8 +483,8 @@ class TrendCache(
                 (confirmation?.let { "/" + confirmationPart(it) + if (confirmationRevision == 0L) "" else "/confirmed-checks-$confirmationRevision" } ?: "")
 
         private const val CONFIRMATION = "confirmation-"
-        /** What a stored point holds; a point stored in an earlier format is recomputed (here: proven per theme). */
-        private const val POINT_FORMAT = "format-3"
+        /** What a stored point holds; a point stored in an earlier format is recomputed (here: benchmark workload themes and outcomes). */
+        private const val POINT_FORMAT = "format-4"
         private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L
