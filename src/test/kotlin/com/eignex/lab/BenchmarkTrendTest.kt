@@ -20,7 +20,7 @@ class BenchmarkTrendTest {
     private fun run(store: Store, sha: String, value: Double = 100.0, failed: Boolean = false, finish: Boolean = true): Long {
         val experiment = spec.copy(name = "${spec.name}@$sha", base = mapOf("ref" to sha))
         val id = store.create(experiment.name, sha, emptyList(), experiment = experiment)
-        val problems = listOf("dot-64", "dot-4096").map { name -> BenchRuns.problem(BenchCase(name,
+        val problems = listOf("dot-64", "dot-4096").map { name -> BenchRuns.problem(BenchCase(name, parameters = mapOf("row" to name.replace('-', '+') + "+uniform"),
             attributes = mapOf("regressionPolicy" to "metric-v1", "regressionMetric" to "median_ns",
                 "regressionThreshold" to "0.15", "labInputDigest" to "a".repeat(64)))) }
         store.plan(id, Experiments.arms(experiment).map { PlannedArm(it, sha) }, problems,
@@ -54,13 +54,17 @@ class BenchmarkTrendTest {
             assertEquals(listOf(first, second), runs.map { it.job })
             assertEquals(listOf(100.0, 200.0), runs.first().benchmark!!.metrics.map { it.value })
             assertEquals(BenchmarkChanges(1, 0, 1, 0), runs.last().benchmark!!.changes)
+            assertEquals(listOf(BenchmarkWorkload("dot-64", "Dense Level 1", "success"),
+                BenchmarkWorkload("dot-4096", "Dense Level 1", "failed")), runs.last().benchmark!!.workloads)
         }
         TrendCache(TrendPoints.of(store)).use { cache ->
             val view = trendView(store, cache, "koblas-sweep", false)
             assertEquals(listOf(first, second), view.shown.map { it.job })
             assertEquals(0, view.computing)
             val html = trendPage(view.name, view.shown, "https://github.com/Eignex/koblas").toString()
-            assertTrue("Workload timing" in html && "Correctness" in html)
+            assertTrue("Workload timing" in html && "Timing by theme" in html)
+            assertFalse("chart-benchmark-status" in html || "<h2>Correctness</h2>" in html)
+            assertTrue("Dense Level 1" in html && "benchmark-themes" in html)
             assertTrue("1 failures, 0 recoveries; 1 metric regressions" in html)
             assertTrue("/jobs/$second" in html && "dot-4096" in html && "ns/op" in html)
             assertFalse("Solved and proven" in html || "PAR-2 time" in html || "No run of this schedule" in html)
@@ -82,6 +86,41 @@ class BenchmarkTrendTest {
         assertEquals(failed, last.job)
         assertEquals(1, last.benchmark!!.failed)
         assertEquals(listOf("dot-64"), last.benchmark.metrics.map { it.caseId })
+    }
+
+    @Test fun `historical Koblas workloads cover six themes including cases without measurements`() {
+        val groups = mapOf(
+            "Dense Level 1" to "dot axpy scal nrm2 asum iamax rot swap copy sum",
+            "Dense Level 2" to "gemv symv ger syr syr2 trsv trmv ger-window-shrinking",
+            "Dense Level 3" to "gemm gemmt symm syrk syr2k trsm trmm",
+            "Sparse Level 1" to "spdot-raw spdot-sparse spdot-column spaxpy-raw spscatter-raw spgather spgather-zero",
+            "Sparse Level 2" to "spgemv spsymv sptrsv sptrmv",
+            "Sparse Level 3" to "spsymm spmm spsyrk-dense sptrsm sptrmm")
+        val cases = groups.flatMap { (theme, operations) -> operations.split(' ').map { operation ->
+            val plan = BenchCase("comparison/owned-mac-arm64/$operation/$operation+64+uniform")
+            val case = CaseResult(0, Status.FAILED, BenchRuns.problem(plan), "base", null, null)
+            case to theme
+        } }
+
+        val summary = BenchmarkTrends.summarize(cases.map { it.first }, "Eignex/koblas")
+
+        assertEquals(41, summary.failed)
+        assertTrue(summary.metrics.isEmpty())
+        assertEquals(cases.map { it.second }, summary.workloads.map { it.theme })
+        assertTrue(summary.workloads.all { it.status == "failed" })
+        assertTrue(BenchmarkTrends.summarize(cases.map { it.first }, "Eignex/other").workloads.all { it.theme == null })
+    }
+
+    @Test fun `benchmark themes retain pending and skipped cases and honor declared groups`() {
+        val plan = BenchCase("custom", attributes = mapOf("theme" to "Custom theme"))
+        val pending = CaseResult(0, Status.RUNNING, BenchRuns.problem(plan), "base", null, null)
+        val skipped = pending.copy(status = Status.DONE, record = BenchProtocol.json.encodeToJsonElement(
+            BenchResult.serializer(), BenchResult(plan.id, BenchStatus.SKIPPED, message = "unsupported fixture")))
+
+        assertEquals(listOf(BenchmarkWorkload("custom", "Custom theme", "pending")),
+            BenchmarkTrends.summarize(listOf(pending), "Eignex/other").workloads)
+        assertEquals(listOf(BenchmarkWorkload("custom", "Custom theme", "skipped")),
+            BenchmarkTrends.summarize(listOf(skipped), "Eignex/other").workloads)
     }
 
     @Test fun `old empty benchmark points are invalidated after deploying benchmark trends`() {
