@@ -109,6 +109,18 @@ jobs:
               cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/inventory-test-results/
             fi
           done
+      - name: Verify cold Gradle distribution bootstrap
+        run: ./gradlew :verifyGradleDistributionSeed
+        env:
+          LAB_GRADLE_SEED_ROOT: ${{ runner.temp }}/gradle-seed
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gradle-distribution-seed
+          path: |
+            ${{ runner.temp }}/gradle-seed/gradle-seed-receipt.json
+            ${{ runner.temp }}/gradle-seed/wrapper-version.txt
+          if-no-files-found: ignore
       - name: Verify representative warm preparation work
         run: ./gradlew :verifyPreparationPerformance
         env:

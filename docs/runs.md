@@ -372,6 +372,16 @@ and claims do not wait for that deletion. macOS deletion threads use background 
 restoring the caller policy afterward. Worker startup resumes interrupted tombstones. Pinned inputs
 and pending garbage can temporarily exceed the cache target; free-disk admission checks still apply.
 
+Cold JVM builds can stage checksum-pinned official Gradle distributions from the public
+Gradle release-asset API into the private dependency home. The configured URL, version,
+checksum and standard wrapper installer stay authoritative. Unpinned and custom URLs
+keep their wrapper download path; unsupported releases also fall back to it. Downloads
+check the preparation's remaining budget, publish only verified bytes by atomic rename,
+and retain their size, digest and cache reuse in the build output. This needs no worker
+shell downloader or credentials. Ordinary tests use fake transfers; the explicit
+`verifyGradleDistributionSeed` CI check also exercises a cold official download and
+standard wrapper installation with child network access disabled.
+
 Cold preparation placement respects the node's configured compiler-slot count as well as CPU and memory.
 The coordinator places one pending preparation per cloud class at a time and excludes nodes whose preparation
 slots are occupied. Other jobs wait before source publication and before starting a charged worker attempt;

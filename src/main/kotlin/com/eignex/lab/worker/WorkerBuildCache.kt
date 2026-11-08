@@ -85,6 +85,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, buildToolchain(bundle.toolchain), bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
                 val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                     "LAB_SOURCE_COMMIT" to bundle.commit)
+                var distributionSeed: GradleDistributionSeed.Receipt? = null
                 fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env, kind: String = "checkout") {
                     val child = PreparationBuildDiagnostic(kind = kind, stage = trace.snapshot().stage, sourceCommit = bundle.commit)
                     observeBuild(log, errors, child)
@@ -93,7 +94,13 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                         supervisor.run(argv, directory, runEnvironment, log, errors, build.timeoutSec,
                             graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(),
                             observeTermination = { termination = it }, remainingLeaseMs = ::remaining)
-                    } finally { observeBuild(log, errors, child.copy(exitCode = termination?.exitCode,
+                    } finally {
+                        if (kind == "compilation") distributionSeed?.let { receipt ->
+                            Files.writeString(log, "\nGradle distribution seed: sha256=" + receipt.sha256 +
+                                " bytes=" + receipt.bytes + " downloaded=" + receipt.downloaded + "\n",
+                                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
+                        }
+                        observeBuild(log, errors, child.copy(exitCode = termination?.exitCode,
                         signal = termination?.signal, runTimedOut = termination?.runTimedOut)) }
                     if (exit != 0) {
                         fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
@@ -137,6 +144,11 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                             pinned.directory.let { dependencyHome ->
                                 Files.createDirectories(dependencyHome)
                                 trace.step("compilation") {
+                                    distributionSeed = try {
+                                        GradleDistributionSeed().stage(tree, dependencyHome) { checkRun(); remaining() }
+                                    } catch (failure: IllegalArgumentException) {
+                                        throw WorkerBuildFailure("Gradle distribution seed: " + failure.message)
+                                    }
                                     // Task outputs are reused from earlier preparations on any node; the init script binds the cache.
                                     val cache = remoteCache()
                                     run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",

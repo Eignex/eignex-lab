@@ -122,3 +122,15 @@ tasks.register<Test>("verifyPreparationPerformance") {
     testLogging { showStandardStreams = true }
 }
 
+// Explicit dependency integration check; ordinary tests use in-memory transfers only.
+val gradleSeedRoot = providers.environmentVariable("LAB_GRADLE_SEED_ROOT")
+tasks.register<JavaExec>("verifyGradleDistributionSeed") {
+    onlyIf("LAB_GRADLE_SEED_ROOT must name a fresh scratch directory") { gradleSeedRoot.isPresent }
+    group = "verification"
+    description = "Verify a checksum-pinned Gradle asset and standard offline wrapper installation."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("com.eignex.lab.worker.GradleDistributionSeedVerificationKt")
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) })
+    workingDir(layout.projectDirectory)
+}
