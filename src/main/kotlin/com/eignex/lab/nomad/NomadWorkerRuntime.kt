@@ -20,7 +20,7 @@ internal class NomadWorkerRuntime(private val settings: NomadQueueSettings) {
             val next = settings.targets.single { it.template.nodeClass == old.template.nodeClass }
             require(old.os == next.os && old.arch == next.arch)
             old.copy(template = old.template.copy(command = next.template.command, image = next.template.image,
-                environment = old.template.environment + next.template.environment.filterKeys { it in setOf("LAB_WORKER_LAUNCHER", "LAB_WORKER_API", "LAB_NATIVE_PREPARED_ROOT") }))
+                environment = old.template.environment + next.template.environment.filterKeys { it in setOf("LAB_WORKER_LAUNCHER", "LAB_WORKER_API", "LAB_NATIVE_PREPARED_ROOT", "LAB_JOBS_ARCHIVE") }))
         })
     }
 
@@ -42,6 +42,7 @@ internal class NomadWorkerRuntime(private val settings: NomadQueueSettings) {
                 target.template.environment["LAB_WORKER_LAUNCHER"]?.let { env["LAB_WORKER_LAUNCHER"] = JsonPrimitive(it) }
                 target.template.environment["LAB_WORKER_API"]?.let { env["LAB_WORKER_API"] = JsonPrimitive(it) }
                 target.template.environment["LAB_NATIVE_PREPARED_ROOT"]?.let { env["LAB_NATIVE_PREPARED_ROOT"] = JsonPrimitive(it) }
+                target.template.environment["LAB_JOBS_ARCHIVE"]?.let { env["LAB_JOBS_ARCHIVE"] = JsonPrimitive(it) }
                 JsonObject(t + mapOf("Config" to JsonObject(config), "Env" to JsonObject(env)))
             })))
         }

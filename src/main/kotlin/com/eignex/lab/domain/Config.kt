@@ -260,11 +260,7 @@ data class DataPaths(
     /** The lab's mirrors of the repositories it builds, one bare repository each ([Repositories.mirror]). */
     val repositories: Path get() = dataDir.resolve("repos")
     /** Job [id]'s directory: under [jobsDir] unless it was archived ([jobsArchive]) and has no directory there. */
-    fun jobDir(id: Long): Path {
-        val hot = jobsDir.resolve(id.toString())
-        val archived = jobsArchive?.resolve(id.toString()) ?: return hot
-        return if (!Files.isDirectory(hot) && Files.isDirectory(archived)) archived else hot
-    }
+    fun jobDir(id: Long): Path = jobDirectory(jobsDir, jobsArchive, id)
     fun worktree(id: Long): Path = dataDir.resolve("work").resolve(id.toString())
 
     /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
@@ -275,6 +271,13 @@ data class DataPaths(
         jobsArchive?.takeIf { directory.startsWith(it) }?.let { Volumes.ensure(Volumes.JOB_FILES, it, volumesRoot, volumeAccess) }
         return Files.createDirectories(directory)
     }
+}
+
+/** Native snapshots and ordinary job files follow the same archived directory authority. */
+internal fun jobDirectory(jobsDir: Path, jobsArchive: Path?, id: Long): Path {
+    val hot = jobsDir.resolve(id.toString())
+    val archived = jobsArchive?.resolve(id.toString()) ?: return hot
+    return if (!Files.isDirectory(hot) && Files.isDirectory(archived)) archived else hot
 }
 
 /**

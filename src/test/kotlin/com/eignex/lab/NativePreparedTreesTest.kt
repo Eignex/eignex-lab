@@ -19,6 +19,7 @@ class NativePreparedTreesTest {
         Files.writeString(source.resolve("bin/run"), "echo original\n")
         source.resolve("bin/run").toFile().setExecutable(true, true)
         Files.writeString(source.resolve("model.txt"), "source")
+        Files.writeString(source.resolve("consumer.lock"), "accepted input")
         val proof = source.resolveSibling("${source.fileName}.verified.json")
         val files = TreeVerification().capture(source, proof)
         val identity = WorkerBundle("0".repeat(64), files, Repositories.DEFAULT, "a".repeat(40), "mac", "arm64", "jdk25")
@@ -147,5 +148,41 @@ class NativePreparedTreesTest {
         assertFailsWith<java.io.IOException> { store.publish(1, source, proof, identity, {}, force = { throw java.io.IOException("flush failed") }) }
         assertTrue(Files.exists(source))
         assertEquals(0L, Files.list(jobs.resolve("1/nomad/prepared-trees")).use { it.filter { path -> Files.isDirectory(path) }.count() })
+    }
+
+    @Test fun `an archived native snapshot remains replayable and exportable`() {
+        val (_, bundle) = publish()
+        val archive = Files.createDirectories(root.resolve("archive"))
+        val snapshots = NativePreparedTrees(jobs, archive)
+        JobDirArchiver(jobs, archive, { listOf(1L to 0L) }, graceMs = 0, flush = {}, clock = { 1L }).pass()
+        assertFalse(Files.exists(jobs.resolve("1")))
+
+        assertTrue(snapshots.valid(bundle, {}))
+        val copied = VerifiedCache(root.resolve("archived-input"), materialize = snapshots::materialize)
+            .stage(bundle) { error("an archived native snapshot needs no download") }
+        assertEquals("source", Files.readString(copied.resolve("model.txt")))
+        assertEquals("accepted input", Files.readString(copied.resolve("consumer.lock")))
+        assertTrue(Files.isDirectory(copied.resolve("empty")))
+        assertTrue(Files.isExecutable(copied.resolve("bin/run")))
+        assertTrue(Files.isRegularFile(snapshots.archive(bundle)))
+        val replay = snapshots.retain(bundle, 2)
+
+        deleteTree(archive.resolve("1"))
+        assertEquals(bundle.sha256, replay.sha256)
+        assertTrue(snapshots.valid(replay, {}))
+        snapshots.use(replay, {}) { tree, _ -> assertEquals("source", Files.readString(tree.resolve("model.txt"))) }
+    }
+
+    @Test fun `a hot job directory never falls back to a stale archived snapshot`() {
+        val (_, bundle) = publish()
+        val archive = Files.createDirectories(root.resolve("archive"))
+        JobDirArchiver(jobs, archive, { listOf(1L to 0L) }, graceMs = 0, flush = {}, clock = { 1L }).pass()
+        Files.createDirectories(jobs.resolve("1"))
+        val snapshots = NativePreparedTrees(jobs, archive)
+
+        assertFalse(snapshots.valid(bundle, {}))
+        assertFailsWith<IllegalArgumentException> {
+            snapshots.materialize(bundle, bundle.files, root.resolve("invalid-copy"), root.resolve("invalid.json"), {})
+        }
     }
 }

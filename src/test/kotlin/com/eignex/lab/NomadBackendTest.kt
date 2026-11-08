@@ -723,7 +723,7 @@ class NomadBackendTest {
         val frozen = manifest
         val before = store.execution.submission(session.id)
         val template = NomadBatchJob("template", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(4000, 4), frozen.budget,
-            listOf("worker"), "registry/patched@sha256:" + "e".repeat(64))
+            listOf("worker"), "registry/patched@sha256:" + "e".repeat(64), environment = mapOf("LAB_JOBS_ARCHIVE" to "/archive"))
         val settings = NomadQueueSettings("patched", "http://localhost:8091", listOf(NomadQueueTarget(template, setOf("arch:x86_64"))), workerReplaces = setOf("release"))
         store.execution.loseSession(session.id, "infrastructure:worker-bug")
         val patched = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, workerRuntime = NomadWorkerRuntime(settings)::replace)
@@ -735,6 +735,9 @@ class NomadBackendTest {
         val task = payload.getValue("TaskGroups").jsonArray.single().jsonObject.getValue("Tasks").jsonArray.single().jsonObject
         assertEquals(template.image, task.getValue("Config").jsonObject.getValue("image").jsonPrimitive.content)
         assertEquals("patched", task.getValue("Env").jsonObject.getValue("LAB_WORKER_RELEASE").jsonPrimitive.content)
+        assertEquals("/archive", task.getValue("Env").jsonObject.getValue("LAB_JOBS_ARCHIVE").jsonPrimitive.content)
+        assertEquals("/archive", NomadWorkerRuntime(settings).queue(settings.copy(release = "release")).targets.single()
+            .template.environment["LAB_JOBS_ARCHIVE"])
         assertEquals(1, store.execution.failureCount(id), "the existing infrastructure-loss event is preserved")
         assertEquals(frozen.experiment, store.execution.manifest(next.id).experiment)
         assertEquals(frozen.bundles, store.execution.manifest(next.id).bundles)
