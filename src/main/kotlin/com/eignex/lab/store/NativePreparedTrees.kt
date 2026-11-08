@@ -13,8 +13,8 @@ import java.nio.file.StandardOpenOption.WRITE
 
 /** Native preparation hands its sealed workspace to job retention by rename. No ZIP, loopback transfer or second
  * input-cache copy. Consumers still receive private filesystem clones; a missing cache never loses the snapshot. */
-internal class NativePreparedTrees(private val jobs: Path) {
-    private fun directory(bundle: WorkerBundle): Path = jobs.resolve(requireNotNull(bundle.tree).job.toString())
+internal class NativePreparedTrees(private val jobs: Path, private val archive: Path? = null) {
+    private fun directory(bundle: WorkerBundle): Path = jobDirectory(jobs, archive, requireNotNull(bundle.tree).job)
         .resolve("${JobFileNames.PREPARED_TREES}/${bundle.sha256}")
 
     fun publish(job: Long, source: Path, receipt: Path, identity: WorkerBundle, check: () -> Unit,
@@ -157,7 +157,11 @@ internal class NativePreparedTrees(private val jobs: Path) {
         fun environment(): NativePreparedTrees? {
             if (!System.getProperty("os.name").lowercase().contains("mac")) return null
             return (System.getenv("LAB_NATIVE_PREPARED_ROOT") ?: System.getenv("LAB_JOBS"))?.takeIf { it.isNotBlank() }
-                ?.let { Path.of(it).also { path -> require(path.isAbsolute) } }?.let(::NativePreparedTrees)
+                ?.let { Path.of(it).also { path -> require(path.isAbsolute) } }?.let { jobs ->
+                    val archive = System.getenv("LAB_JOBS_ARCHIVE")?.takeIf { it.isNotBlank() }
+                        ?.let { Path.of(it).also { path -> require(path.isAbsolute) } }
+                    NativePreparedTrees(jobs, archive)
+                }
         }
     }
 }

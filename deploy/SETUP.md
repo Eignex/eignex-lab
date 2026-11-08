@@ -114,6 +114,10 @@ verify existing artifact reads before deleting the original copy. Keep all histo
 does not remove them. The results volume must pass the same mount, disk access and free-space checks as `LAB_JOBS`.
 Admission holds pause new work; existing worker lease and progress updates remain available.
 
+When `LAB_JOBS_ARCHIVE` moves ended job directories to another volume, set it in the coordinator environment
+and native worker templates too. Native snapshots follow the same archived job location as logs and results,
+including when a confirmation reuses an ended job or an archived job is retried.
+
 The checker input cache at `$LAB_DATA/nomad/check-inputs` can also live on the results volume, with a symlink
 at its original path. Saved jobs may refer to that path through `nomad/prepared-corpus`; preserve it when moving
 the cache. Copy and verify the files while the coordinator runs, then stop only the coordinator for the final

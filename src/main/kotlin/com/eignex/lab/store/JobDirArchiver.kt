@@ -1,5 +1,6 @@
 package com.eignex.lab.store
 
+import com.eignex.lab.domain.JobFileNames
 import com.eignex.lab.util.*
 
 import java.nio.file.Files
@@ -62,15 +63,22 @@ class JobDirArchiver(
         log("job $job archived to $target")
     }
 
-    /** Copies regular files absent from [target] (or of a different size), keeping the tree's layout; links and lock
-     *  files are not carried (locks are recreated on demand). Returns how many files were copied. */
+    /** Copies regular files absent from [target] (or of a different size), retaining empty directories. Links and lab
+     * locks are omitted; sealed snapshot files, including consumer lock files, are retained. Returns changed entries. */
     private fun copyMissing(source: Path, target: Path): Int {
         var copied = 0
-        val files = Files.walk(source).use { paths -> paths.filter { Files.isRegularFile(it, NOFOLLOW_LINKS) }.sorted().toList() }
+        val files = Files.walk(source).use { paths -> paths.sorted().toList() }
         for (entry in files) {
+            val relative = source.relativize(entry)
+            val destination = target.resolve(relative.toString())
+            if (Files.isDirectory(entry, NOFOLLOW_LINKS)) {
+                if (!Files.isDirectory(destination, NOFOLLOW_LINKS)) { Files.createDirectories(destination); copied++ }
+                continue
+            }
+            if (!Files.isRegularFile(entry, NOFOLLOW_LINKS)) continue
             val name = entry.fileName.toString()
-            if (name.endsWith(".lock")) continue
-            val destination = target.resolve(source.relativize(entry).toString())
+            val snapshot = relative.startsWith(JobFileNames.PREPARED_TREES) && relative.nameCount > 4 && relative.getName(3).toString() == "tree"
+            if (name.endsWith(".lock") && !snapshot) continue
             if (Files.isRegularFile(destination, NOFOLLOW_LINKS) && Files.size(destination) == Files.size(entry)) continue
             Files.createDirectories(destination.parent)
             val temporary = destination.resolveSibling(".archiving-$name")
