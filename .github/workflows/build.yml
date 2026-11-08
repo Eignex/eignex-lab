@@ -47,6 +47,15 @@ jobs:
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
+      - name: Preserve initial Gradle bootstrap and build-bound receipts
+        if: always()
+        run: |
+          mkdir -p build/gradle-seed-test-results
+          for receipt in GradleDistributionSeedTest ColdBuildVerificationTest WorkerBuildStagingTest WorkerBuildAccountingTest BuildDiskBudgetTest WorkerCacheCleanupTest PreparationAdmissionTest CompilerAdmissionTest PreparationTraceTest; do
+            if [ -f "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" ]; then
+              cp "build/test-results/test/TEST-com.eignex.lab.$receipt.xml" build/gradle-seed-test-results/
+            fi
+          done
       - name: Preserve initial artifact verification test receipt
         if: always()
         run: |
@@ -174,6 +183,7 @@ jobs:
             build/artifact-verification-test-results/
             build/capacity-startup-test-results/
             build/staging-io-test-results/
+            build/gradle-seed-test-results/
             build/reports/tests/
             lab-bench/build/test-results/
             lab-bench/build/reports/tests/
