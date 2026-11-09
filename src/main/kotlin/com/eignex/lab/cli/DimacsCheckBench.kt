@@ -1,5 +1,6 @@
-package com.eignex.lab.analysis
+package com.eignex.lab.cli
 
+import com.eignex.lab.analysis.*
 import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*

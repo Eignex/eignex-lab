@@ -33,15 +33,22 @@ class ArchitectureTest {
     private val root = Path.of("src/main/kotlin/com/eignex/lab")
     private val baseline = Path.of("src/test/resources/architecture-violations.txt")
     private val import = Regex("""^import com\.eignex\.lab\.(\w+)\.(\*|\w+)""")
+    /** A name written out in full in code, which an import check alone would miss. */
+    private val qualified = Regex("""\bcom\.eignex\.lab\.(\w+)\.([A-Za-z_]\w*)""")
 
     private fun violations(): List<String> = Files.walk(root).use { paths ->
         paths.filter { it.extension == "kt" && it.parent != root }.toList()
     }.flatMap { file ->
         val layer = file.parent.name
-        file.readLines().mapNotNull { line ->
-            val (to, name) = import.find(line)?.destructured ?: return@mapNotNull null
-            if (to !in rank || allowed(layer, to)) null else "$layer/${file.name} -> $to.$name"
-        }
+        file.readLines().flatMap { line ->
+            val code = line.substringBefore("//").trim()
+            val found = import.find(code)?.let { listOf(it) }
+                ?: if (code.startsWith("package ") || code.startsWith("*") || code.startsWith("/*")) emptyList() else qualified.findAll(code).toList()
+            found.mapNotNull { match ->
+                val (to, name) = match.destructured
+                if (to !in rank || allowed(layer, to)) null else "$layer/${file.name} -> $to.$name"
+            }
+        }.distinct()
     }.sorted()
 
     @Test

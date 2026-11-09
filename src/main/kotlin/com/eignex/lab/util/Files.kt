@@ -46,3 +46,7 @@ internal fun hashFile(path: Path, checkActive: () -> Unit = {}): String = Files.
     val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(64 * 1024)
     while (true) { checkActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }; digest.digest().hex()
 }
+
+/** A JVM-local monitor for [path], so threads of one process serialize before taking its file lock. */
+internal fun fileLockFor(path: Path): Any = localFileLocks[Math.floorMod(path.toAbsolutePath().normalize().toString().hashCode(), localFileLocks.size)]
+private val localFileLocks = Array(256) { Any() }

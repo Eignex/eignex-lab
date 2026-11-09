@@ -14,8 +14,6 @@ import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
-import com.eignex.lab.worker.LeaseLost
-import com.eignex.lab.worker.RunDeadlineExceeded
 
 /**
  * Waits for a non-blocking [channel] to become readable or writable, rather than trying it on a timer: the waiting
