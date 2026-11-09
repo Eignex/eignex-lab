@@ -1007,52 +1007,6 @@ class ExecutionStore internal constructor(private val store: Store) {
         private const val PART_REF = "PartRef"
         /** [result] as a committed attempt keeps it: without its case records, which `cases` keeps. */
         internal fun slim(result: IterationResult) = result.copy(cases = result.cases.map { it.copy(record = null) })
-        /** API and coordinator may initialize the same database concurrently. A column snapshot is only a
-         * hint: another autocommit connection can publish the ALTER before ours. Recheck the schema after a
-         * failed ALTER, accepting only the now-present column rather than hiding unrelated SQL failures. */
-        private fun addColumn(db: Connection, table: String, column: String, definition: String, known: Set<String>) {
-            if (column in known) return
-            try {
-                db.createStatement().use { it.execute("ALTER TABLE $table ADD COLUMN $column $definition") }
-            } catch (failure: SQLException) {
-                val present = try {
-                    db.createStatement().use { statement ->
-                        statement.executeQuery("PRAGMA table_info($table)").use { rows ->
-                            var found = false
-                            while (rows.next()) if (rows.getString("name") == column) found = true
-                            found
-                        }
-                    }
-                } catch (recheck: SQLException) {
-                    failure.addSuppressed(recheck)
-                    throw failure
-                }
-                if (!present) throw failure
-            }
-        }
-        internal fun migrate(db: Connection) {
-            db.createStatement().use { s ->
-                s.execute("""CREATE TABLE IF NOT EXISTS execution_sessions (id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, generation INTEGER NOT NULL, execution_class TEXT NOT NULL, release TEXT NOT NULL, budget TEXT NOT NULL, nomad_job_id TEXT NOT NULL UNIQUE, desired TEXT NOT NULL, token_hash TEXT NOT NULL, allocation_id TEXT, node_id TEXT, created_at INTEGER NOT NULL, observed_at INTEGER, observation TEXT)""")
-                s.execute("""CREATE TABLE IF NOT EXISTS iteration_attempts (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, generation INTEGER NOT NULL, session_id TEXT NOT NULL, allocation_id TEXT NOT NULL, token_hash TEXT NOT NULL, lease_until INTEGER NOT NULL, state TEXT NOT NULL, indices TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, result TEXT, PRIMARY KEY (job_id, iteration_id, generation))""")
-                val attemptColumns = s.executeQuery("PRAGMA table_info(iteration_attempts)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
-                addColumn(db, "iteration_attempts", "preparation_progress", "TEXT", attemptColumns)
-                addColumn(db, "iteration_attempts", "preparation_caches", "TEXT", attemptColumns)
-                addColumn(db, "iteration_attempts", "preparation_updated_at", "INTEGER", attemptColumns)
-                addColumn(db, "iteration_attempts", "parallel_limit", "INTEGER NOT NULL DEFAULT 1", attemptColumns)
-                s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_iteration ON iteration_attempts (job_id, iteration_id) WHERE state IN $ACTIVE_ATTEMPTS")
-                s.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_session_iteration ON iteration_attempts (session_id) WHERE state IN $ACTIVE_ATTEMPTS")
-                s.execute("CREATE TABLE IF NOT EXISTS execution_outbox (id TEXT PRIMARY KEY, job_id INTEGER NOT NULL, session_id TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0)")
-                s.execute("CREATE TABLE IF NOT EXISTS execution_selections (job_id INTEGER NOT NULL, generation INTEGER NOT NULL, request_hash TEXT NOT NULL, selected TEXT NOT NULL, PRIMARY KEY (job_id, generation))")
-                s.execute("CREATE TABLE IF NOT EXISTS execution_queue_recipes (job_id INTEGER PRIMARY KEY, settings TEXT NOT NULL)")
-                s.execute("CREATE TABLE IF NOT EXISTS execution_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, session_id TEXT, detail TEXT NOT NULL, at INTEGER NOT NULL)")
-                val columns = s.executeQuery("PRAGMA table_info(execution_sessions)").use { r -> buildSet { while (r.next()) add(r.getString("name")) } }
-                addColumn(db, "execution_sessions", "manifest", "TEXT", columns)
-                s.execute("CREATE TABLE IF NOT EXISTS capacity_leases (id TEXT PRIMARY KEY, pool TEXT NOT NULL, nodes INTEGER NOT NULL, expires_at INTEGER NOT NULL)")
-                s.execute("CREATE TABLE IF NOT EXISTS execution_ingestion (job_id INTEGER NOT NULL, iteration_id TEXT NOT NULL, PRIMARY KEY (job_id, iteration_id))")
-                s.execute("CREATE TABLE IF NOT EXISTS execution_checks (job_id INTEGER NOT NULL, idx INTEGER NOT NULL, detail TEXT NOT NULL, PRIMARY KEY (job_id, idx))")
-                s.execute("CREATE INDEX IF NOT EXISTS session_experiment ON execution_sessions (job_id)")
-            }
-        }
     }
 }
 
