@@ -75,7 +75,7 @@ class CompilationReportsTest {
     }
 
     private fun manifest(dir: Path, compilation: String?, exit: Int = 0) =
-        CliMeasurements.writeManifest(dir, 3, 1, "m-1", "lab", "solve-one", exit, "-Xmx1g", null, macOs = false, compilation = compilation)
+        CliMeasurementFixtures.writeManifest(dir, 3, 1, "m-1", "lab", "solve-one", exit, "-Xmx1g", null, macOs = false, compilation = compilation)
 
     @Test
     fun `an in-process recording with no compilation threshold reads back every recorded compilation and the JVM`() {

@@ -61,7 +61,7 @@ class CaptureArchivesTest {
         val tree = temp.resolve("publication").createDirectories()
         val case = tree.resolve(profile).createDirectories()
         case.resolve(CliMeasurements.COMPILATION_LOG).writeText(sample)
-        CliMeasurements.writeManifest(case, 0, 1, "m-1", "lab", "solve-one", 0, "-Xmx1g", null, macOs = false, compilation = "jfr+log")
+        CliMeasurementFixtures.writeManifest(case, 0, 1, "m-1", "lab", "solve-one", 0, "-Xmx1g", null, macOs = false, compilation = "jfr+log")
         CompilationReports.analyzeAndWrite(case, source, WorkerProvenance(analyzer = "eignex-lab compilation analyser, report schema 1"))
         tree.resolve("evidence/returned-files/job.log").writeText("job 6971\n")
         val catalog = JsonObject(mapOf(
