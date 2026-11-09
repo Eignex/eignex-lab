@@ -32,7 +32,7 @@ class ProviderResponse(val status: Int, val headers: Map<String, List<String>>, 
  * as the providers' SDKs do by default, one more attempt after a connection failure or a transient answer.
  */
 open class ProviderHttp(private val timeout: Duration = Duration.ofSeconds(5), private val attempts: Int = 2) {
-    private val client: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
+    private val client: HttpClient = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(3))
         .followRedirects(HttpClient.Redirect.NEVER).build()
 
     /**
