@@ -37,39 +37,22 @@ class ReferenceRepository internal constructor(db: Database, lock: Any) : Reposi
         transaction {
             val at = now()
             var changed = 0
-            val select = connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND solver = ?")
-            val upsert = connection.prepareStatement(
-                "INSERT OR REPLACE INTO reference_rows (collection, problem, solver, maximize, objective, feasible, proven, " +
-                    "elapsed_ms, budget_ms, source, updated_at, version, validation, dual_bound, stale, source_identity) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            select.use {
-                upsert.use {
+            connection.sqlPrepared("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND solver = ?") { select ->
+                connection.sqlPrepared(
+                    "INSERT OR REPLACE INTO reference_rows (collection, problem, solver, maximize, objective, feasible, proven, " +
+                        "elapsed_ms, budget_ms, source, updated_at, version, validation, dual_bound, stale, source_identity) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ) { upsert ->
                     for ((key, captured) in rows) {
                         val row = captured.copy(stale = captured.stale ||
                             References.stale(captured.solver, captured.version, key.collection))
-                        select.setString(1, key.collection)
-                        select.setString(2, key.problem)
-                        select.setString(3, row.solver)
-                        val old = select.executeQuery().use { r -> if (r.next()) reference(r) else null }
+                        val old = select.rows(key.collection, key.problem, row.solver) { reference(it) }.firstOrNull()
                         if (old != null && !References.replaces(row, old)) continue
-                        upsert.setString(1, key.collection)
-                        upsert.setString(2, key.problem)
-                        upsert.setString(3, row.solver)
-                        upsert.setInt(4, if (row.maximize) 1 else 0)
-                        upsert.setObject(5, row.objective)
-                        upsert.setObject(6, row.feasible?.let { if (it) 1 else 0 })
-                        upsert.setInt(7, if (row.proven) 1 else 0)
-                        upsert.setLong(8, row.elapsedMs)
-                        upsert.setLong(9, row.budgetMs)
-                        upsert.setString(10, source)
-                        upsert.setLong(11, at)
-                        upsert.setString(12, row.version)
-                        upsert.setString(13, row.validation)
-                        upsert.setObject(14, row.dualBound)
-                        upsert.setInt(15, if (row.stale) 1 else 0)
-                        upsert.setString(16, row.sourceIdentity)
-                        upsert.executeUpdate()
+                        upsert.update(
+                            key.collection, key.problem, row.solver, if (row.maximize) 1 else 0, row.objective,
+                            row.feasible?.let { if (it) 1 else 0 }, if (row.proven) 1 else 0, row.elapsedMs, row.budgetMs,
+                            source, at, row.version, row.validation, row.dualBound, if (row.stale) 1 else 0, row.sourceIdentity,
+                        )
                         changed++
                     }
                 }
@@ -92,13 +75,9 @@ class ReferenceRepository internal constructor(db: Database, lock: Any) : Reposi
     }
 
     /** Every reference solver's row on one problem, strongest first. */
-    fun rows(collection: String, problem: String): List<Reference> =
-synchronized(lock) {
-                connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ?").use { statement ->
-                statement.setString(1, collection)
-                statement.setString(2, problem)
-                statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
-            }.sortedWith { a, b -> if (References.stronger(a, b)) -1 else if (References.stronger(b, a)) 1 else 0 }
+    fun rows(collection: String, problem: String): List<Reference> = synchronized(lock) {
+        rows("SELECT * FROM reference_rows WHERE collection = ? AND problem = ?", collection, problem) { reference(it) }
+            .sortedWith { a, b -> if (References.stronger(a, b)) -1 else if (References.stronger(b, a)) 1 else 0 }
     }
 
     /**
@@ -114,26 +93,20 @@ synchronized(lock) {
         keys: Collection<ProblemKey>,
         solver: String? = null,
         sources: Map<ProblemKey, String?>? = null,
-    ): Map<ProblemKey, Reference> =
-synchronized(lock) {
-                connection.prepareStatement(
-                "SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND (? IS NULL OR solver = ?)",
-            ).use { statement ->
-                keys.distinct().mapNotNull { key ->
-                    statement.setString(1, key.collection)
-                    statement.setString(2, key.problem)
-                    statement.setString(3, solver)
-                    statement.setString(4, solver)
-                    val current = statement.executeQuery().use { r ->
-                        generateSequence { if (r.next()) reference(r) to r.getLong("updated_at") else null }.toList()
-                    }.filter { !it.first.stale }
-                    val source = if (sources != null) sources[key]
-                    else current.filter { it.first.sourceIdentity != null }.maxByOrNull { it.second }?.first?.sourceIdentity
-                    val rows = References.applicable(current.map { it.first }, source)
-                        .let { if (solver == null) References.trusted(it) else it }
-                    rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
-                }.toMap()
-            }
+    ): Map<ProblemKey, Reference> = synchronized(lock) {
+        connection.sqlPrepared(
+            "SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND (? IS NULL OR solver = ?)",
+        ) { select ->
+            keys.distinct().mapNotNull { key ->
+                val current = select.rows(key.collection, key.problem, solver, solver) { r -> reference(r) to r.getLong("updated_at") }
+                    .filter { !it.first.stale }
+                val source = if (sources != null) sources[key]
+                else current.filter { it.first.sourceIdentity != null }.maxByOrNull { it.second }?.first?.sourceIdentity
+                val rows = References.applicable(current.map { it.first }, source)
+                    .let { if (solver == null) References.trusted(it) else it }
+                rows.reduceOrNull { a, b -> if (References.stronger(b, a)) b else a }?.let { key to it }
+            }.toMap()
+        }
     }
 
     /**
@@ -143,11 +116,8 @@ synchronized(lock) {
      */
     fun bindLabSources(scoringCases: (Long) -> List<CaseResult>): Int {
         val jobs = synchronized(lock) {
-            connection.prepareStatement(
-                "SELECT DISTINCT source FROM reference_rows WHERE source_identity IS NULL AND source LIKE 'lab:%'",
-            ).use { statement ->
-                statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getString(1) else null }.toList() }
-            }.mapNotNull { it.removePrefix("lab:").toLongOrNull() }
+            rows("SELECT DISTINCT source FROM reference_rows WHERE source_identity IS NULL AND source LIKE 'lab:%'") { it.getString(1) }
+                .mapNotNull { it.removePrefix("lab:").toLongOrNull() }
         }
         var bound = 0
         for (job in jobs) {
@@ -155,15 +125,11 @@ synchronized(lock) {
             if (identities.isEmpty()) continue
             synchronized(lock) {
                 transaction {
-                    connection.prepareStatement(
+                    connection.sqlPrepared(
                         "UPDATE reference_rows SET source_identity = ? WHERE collection = ? AND problem = ? AND source = ? AND source_identity IS NULL",
-                    ).use { update ->
+                    ) { update ->
                         for ((key, identity) in identities) {
-                            update.setString(1, identity)
-                            update.setString(2, key.collection)
-                            update.setString(3, key.problem)
-                            update.setString(4, "lab:$job")
-                            bound += update.executeUpdate()
+                            bound += update.update(identity, key.collection, key.problem, "lab:$job")
                         }
                     }
                 }
@@ -174,70 +140,53 @@ synchronized(lock) {
 
     /** Every problem two reference solvers' current rows contradict each other on, with why ([References.conflicts]). */
     fun conflicts(): List<Disagreement> = synchronized(lock) {
-        connection.prepareStatement(
+        rows(
             "SELECT * FROM reference_rows WHERE stale = 0 AND (collection, problem) IN " +
                 "(SELECT collection, problem FROM reference_rows WHERE stale = 0 GROUP BY collection, problem HAVING COUNT(*) > 1)",
-        ).use { statement ->
-            statement.executeQuery().use { r ->
-                generateSequence { if (r.next()) ProblemKey(r.getString("collection"), r.getString("problem")) to reference(r) else null }.toList()
+        ) { r -> ProblemKey(r.getString("collection"), r.getString("problem")) to reference(r) }
+            .groupBy({ it.first }, { it.second }).flatMap { (key, rows) ->
+                References.conflicts(rows).map { Disagreement(Problem("", key.problem, collection = key.collection), it) }
             }
-        }.groupBy({ it.first }, { it.second }).flatMap { (key, rows) ->
-            References.conflicts(rows).map { Disagreement(Problem("", key.problem, collection = key.collection), it) }
-        }
     }
 
     /** Keep the classifier's [features] of each problem, keyed by (collection, problem); a later classification wins. */
     fun putFeatures(features: List<ProblemFeatures>) = synchronized(lock) {
         transaction {
-            connection.prepareStatement(
+            connection.sqlPrepared(
                 "INSERT OR REPLACE INTO problem_features (collection, problem, themes, structure, logic) VALUES (?, ?, ?, ?, ?)",
-            ).use { upsert ->
+            ) { upsert ->
                 for (f in features) {
-                    upsert.setString(1, f.collection)
-                    upsert.setString(2, f.problem)
-                    upsert.setString(3, Json.encodeToString(f.themes))
-                    upsert.setString(4, f.structure)
-                    upsert.setString(5, f.logic)
-                    upsert.executeUpdate()
+                    upsert.update(f.collection, f.problem, Json.encodeToString(f.themes), f.structure, f.logic)
                 }
             }
         }
     }
 
     /** The classifier's features of each of [keys] that has them, keyed by (collection, problem). */
-    fun features(keys: Collection<ProblemKey>): Map<ProblemKey, ProblemFeatures> =
-synchronized(lock) {
-                connection.prepareStatement("SELECT * FROM problem_features WHERE collection = ? AND problem = ?").use { statement ->
-                keys.distinct().mapNotNull { key ->
-                    statement.setString(1, key.collection)
-                    statement.setString(2, key.problem)
-                    statement.executeQuery().use { r ->
-                        if (!r.next()) return@use null
-                        key to ProblemFeatures(key.collection, key.problem, Json.decodeFromString(r.getString("themes")),
-                            r.getString("structure"), r.getString("logic"))
-                    }
-                }.toMap()
-            }
+    fun features(keys: Collection<ProblemKey>): Map<ProblemKey, ProblemFeatures> = synchronized(lock) {
+        connection.sqlPrepared("SELECT * FROM problem_features WHERE collection = ? AND problem = ?") { select ->
+            keys.distinct().mapNotNull { key ->
+                select.rows(key.collection, key.problem) { r ->
+                    key to ProblemFeatures(key.collection, key.problem, Json.decodeFromString(r.getString("themes")),
+                        r.getString("structure"), r.getString("logic"))
+                }.firstOrNull()
+            }.toMap()
+        }
     }
 
     /** Every current (not stale) reference row of each of [keys], by solver, keyed by (collection, problem). */
-    fun current(keys: Collection<ProblemKey>): Map<ProblemKey, List<Reference>> =
-synchronized(lock) {
-                connection.prepareStatement("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND stale = 0").use { statement ->
-                keys.distinct().mapNotNull { key ->
-                    statement.setString(1, key.collection)
-                    statement.setString(2, key.problem)
-                    val rows = statement.executeQuery().use { r -> generateSequence { if (r.next()) reference(r) else null }.toList() }
-                    rows.takeIf { it.isNotEmpty() }?.let { key to it }
-                }.toMap()
-            }
+    fun current(keys: Collection<ProblemKey>): Map<ProblemKey, List<Reference>> = synchronized(lock) {
+        connection.sqlPrepared("SELECT * FROM reference_rows WHERE collection = ? AND problem = ? AND stale = 0") { select ->
+            keys.distinct().mapNotNull { key ->
+                val rows = select.rows(key.collection, key.problem) { reference(it) }
+                rows.takeIf { it.isNotEmpty() }?.let { key to it }
+            }.toMap()
+        }
     }
 
     /** When any reference row last changed: what tells a cached comparison against the references that it is stale. */
     fun stamp(): Long? = synchronized(lock) {
-        connection.prepareStatement("SELECT MAX(updated_at) FROM reference_rows").use { statement ->
-            statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
-        }
+        rows("SELECT MAX(updated_at) FROM reference_rows") { r -> r.getLong(1).takeUnless { r.wasNull() } }.firstOrNull()
     }
 
     /**
@@ -245,28 +194,18 @@ synchronized(lock) {
      * tells a cached point which of its problems' comparisons moved. Read by the `updated_at` index.
      */
     fun changedSince(stamp: Long): Map<ProblemKey, Long> = synchronized(lock) {
-        connection.prepareStatement(
+        rows(
             "SELECT collection, problem, MAX(updated_at) FROM reference_rows WHERE updated_at > ? GROUP BY collection, problem",
-        ).use { statement ->
-            statement.setLong(1, stamp)
-            statement.executeQuery().use { r ->
-                generateSequence { if (r.next()) ProblemKey(r.getString(1), r.getString(2)) to r.getLong(3) else null }.toMap()
-            }
-        }
+            stamp,
+        ) { r -> ProblemKey(r.getString(1), r.getString(2)) to r.getLong(3) }.toMap()
     }
 
     /** Per collection and solver, current rows only: rows, decided, proven, infeasible, and when last updated. */
     fun coverage(): List<ReferenceCoverage> = synchronized(lock) {
-        connection.prepareStatement(
+        rows(
             "SELECT collection, solver, COUNT(*), SUM(feasible IS NOT NULL), SUM(proven), SUM(feasible = 0), MAX(updated_at) " +
                 "FROM reference_rows WHERE stale = 0 GROUP BY collection, solver ORDER BY collection, solver",
-        ).use { statement ->
-            statement.executeQuery().use { r ->
-                generateSequence {
-                    if (!r.next()) null else ReferenceCoverage(r.getString(1), r.getString(2), r.getInt(3), r.getInt(4), r.getInt(5), r.getInt(6), r.getLong(7))
-                }.toList()
-            }
-        }
+        ) { r -> ReferenceCoverage(r.getString(1), r.getString(2), r.getInt(3), r.getInt(4), r.getInt(5), r.getInt(6), r.getLong(7)) }
     }
 
     /** Up to [limit] reference rows that pass [filter], with their keys, and how many pass in all. */
@@ -283,19 +222,11 @@ synchronized(lock) {
         filter.collection?.let { conditions += "collection = ?"; values += it }
         filter.verdict?.let { conditions += "(${it.sql})" }
         val where = if (conditions.isEmpty()) "" else "WHERE " + conditions.joinToString(" AND ")
-        fun bind(statement: java.sql.PreparedStatement) = values.forEachIndexed { i, v -> statement.setObject(i + 1, v) }
-        val total = connection.prepareStatement("SELECT COUNT(*) FROM reference_rows $where").use { statement ->
-            bind(statement)
-            statement.executeQuery().use { r -> r.next(); r.getInt(1) }
+        val total = rows("SELECT COUNT(*) FROM reference_rows $where", *values.toTypedArray()) { it.getInt(1) }.first()
+        val found = rows("SELECT * FROM reference_rows $where ORDER BY collection, problem, solver LIMIT ?", *values.toTypedArray(), limit) { r ->
+            ProblemKey(r.getString("collection"), r.getString("problem")) to reference(r)
         }
-        val rows = connection.prepareStatement("SELECT * FROM reference_rows $where ORDER BY collection, problem, solver LIMIT ?").use { statement ->
-            bind(statement)
-            statement.setInt(values.size + 1, limit)
-            statement.executeQuery().use { r ->
-                generateSequence { if (r.next()) ProblemKey(r.getString("collection"), r.getString("problem")) to reference(r) else null }.toList()
-            }
-        }
-        return rows to total
+        return found to total
     }
 
     private fun reference(r: ResultSet) = Reference(

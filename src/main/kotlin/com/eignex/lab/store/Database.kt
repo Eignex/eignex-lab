@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Statement
 import java.util.Properties
@@ -149,27 +150,61 @@ class Tx internal constructor(private val connection: Connection) {
     fun <T> sqlRows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = connection.sqlRows(sql, *values, map = map)
 
     /** Run the INSERT [sql] with [values] bound in order; the row id it generated. */
-    fun sqlInsert(sql: String, vararg values: Any?): Long = timed(sql) {
-        connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS).use { s ->
-            values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
-            s.executeUpdate()
-            s.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
-        }
+    fun sqlInsert(sql: String, vararg values: Any?): Long = connection.sqlInsert(sql, *values)
+}
+
+/** Run the INSERT [sql] with [values] bound in order; the row id it generated. */
+internal fun Connection.sqlInsert(sql: String, vararg values: Any?): Long = timed(sql) {
+    prepareStatement(sql, Statement.RETURN_GENERATED_KEYS).use { s ->
+        s.bind(values)
+        s.executeUpdate()
+        s.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
     }
 }
 
 /** Run [sql] with [values] bound in order; how many rows it changed. */
 internal fun Connection.sqlUpdate(sql: String, vararg values: Any?): Int = timed(sql) {
-    prepareStatement(sql).use { s -> values.forEachIndexed { i, value -> s.setObject(i + 1, value) }; s.executeUpdate() }
+    prepareStatement(sql).use { s -> s.bind(values); s.executeUpdate() }
 }
 
 /** The rows [sql] with [values] bound in order returns, each read by [map]. */
 internal fun <T> Connection.sqlRows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = timed(sql) {
-    prepareStatement(sql).use { s ->
-        values.forEachIndexed { i, value -> s.setObject(i + 1, value) }
-        s.executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
+    prepareStatement(sql).use { s -> s.bind(values); s.rows(map) }
+}
+
+/** Run [sql] once for each of [rows], its values bound in order, as one batch of one prepared statement. */
+internal fun Connection.sqlBatch(sql: String, rows: Iterable<List<Any?>>) {
+    timed(sql) {
+        prepareStatement(sql).use { s ->
+            for (row in rows) {
+                row.forEachIndexed { i, value -> s.setObject(i + 1, value) }
+                s.addBatch()
+            }
+            s.executeBatch()
+        }
     }
 }
+
+/**
+ * Run [block] with [sql] prepared once, for a loop that runs it for many keys without preparing it again for each;
+ * each run is timed on its own ([Prepared]).
+ */
+internal fun <R> Connection.sqlPrepared(sql: String, block: (Prepared) -> R): R =
+    prepareStatement(sql).use { block(Prepared(sql, it)) }
+
+/** One statement [sqlPrepared] prepared, run as often as needed, each run reported as [timed] reports one. */
+internal class Prepared(private val sql: String, private val statement: PreparedStatement) {
+    /** The rows the statement with [values] bound in order returns, each read by [map]. */
+    fun <T> rows(vararg values: Any?, map: (ResultSet) -> T): List<T> = timed(sql) { statement.bind(values); statement.rows(map) }
+
+    /** Run the statement with [values] bound in order; how many rows it changed. */
+    fun update(vararg values: Any?): Int = timed(sql) { statement.bind(values); statement.executeUpdate() }
+}
+
+private fun PreparedStatement.bind(values: Array<out Any?>) = values.forEachIndexed { i, value -> setObject(i + 1, value) }
+
+private fun <T> PreparedStatement.rows(map: (ResultSet) -> T): List<T> =
+    executeQuery().use { r -> buildList { while (r.next()) add(map(r)) } }
 
 /** Longest a statement, rows read included, may take before it is reported; at the lab's scale none should come close. */
 internal const val SLOW_QUERY_MS = 100L

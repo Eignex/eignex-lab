@@ -20,70 +20,41 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
                 jobId, index, planned.arm.label, Json.encodeToString(planned.arm), planned.sha,
             )
         }
-        connection.prepareStatement("INSERT INTO problems (job_id, idx, problem) VALUES (?, ?, ?)").use { statement ->
-            problems.forEachIndexed { index, problem ->
-                statement.setLong(1, jobId)
-                statement.setInt(2, index)
-                statement.setString(3, Json.encodeToString(problem))
-                statement.addBatch()
-            }
-            statement.executeBatch()
-        }
-        connection.prepareStatement(
+        connection.sqlBatch(
+            "INSERT INTO problems (job_id, idx, problem) VALUES (?, ?, ?)",
+            problems.mapIndexed { index, problem -> listOf(jobId, index, Json.encodeToString(problem)) },
+        )
+        connection.sqlBatch(
             "INSERT INTO cases (job_id, idx, problem_idx, arm_idx, seed, repeat) VALUES (?, ?, ?, ?, ?, ?)",
-        ).use { statement ->
-            cases.forEachIndexed { index, case ->
-                statement.setLong(1, jobId)
-                statement.setInt(2, index)
-                statement.setInt(3, case.problem)
-                statement.setInt(4, case.arm)
-                statement.setObject(5, case.seed)
-                statement.setInt(6, case.repeat)
-                statement.addBatch()
-            }
-            statement.executeBatch()
-        }
+            cases.mapIndexed { index, case -> listOf(jobId, index, case.problem, case.arm, case.seed, case.repeat) },
+        )
         insertCommands(jobId, commands)
     }
 
     fun arms(jobId: Long): List<PlannedArm> = reading {
-        connection.prepareStatement(
-            "SELECT arm, sha FROM arms WHERE job_id = ? ORDER BY idx",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.executeQuery().use { rows ->
-                generateSequence { if (rows.next()) PlannedArm(Json.decodeFromString(rows.getString(1)), rows.getString(2)) else null }
-                    .toList()
-            }
+        rows("SELECT arm, sha FROM arms WHERE job_id = ? ORDER BY idx", jobId) { r ->
+            PlannedArm(Json.decodeFromString(r.getString(1)), r.getString(2))
         }
     }
 
     /** The problem and arm of case [index] of [jobId]. */
     fun caseOf(jobId: Long, index: Int): Pair<Problem, Arm>? = reading {
-        connection.prepareStatement(
+        rows(
             """SELECT p.problem, a.arm FROM cases c
                JOIN problems p ON p.job_id = c.job_id AND p.idx = c.problem_idx
                JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
                WHERE c.job_id = ? AND c.idx = ?""",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.setInt(2, index)
-            statement.executeQuery().use { r ->
-                if (r.next()) Json.decodeFromString<Problem>(r.getString(1)) to Json.decodeFromString<Arm>(r.getString(2)) else null
-            }
-        }
+            jobId, index,
+        ) { r -> Json.decodeFromString<Problem>(r.getString(1)) to Json.decodeFromString<Arm>(r.getString(2)) }.firstOrNull()
     }
 
     /** The solver commit case [index] of [jobId] ran: the one its arm was planned at. */
     fun caseSha(jobId: Long, index: Int): String? = reading {
-        connection.prepareStatement(
+        rows(
             """SELECT a.sha FROM cases c JOIN arms a ON a.job_id = c.job_id AND a.idx = c.arm_idx
                WHERE c.job_id = ? AND c.idx = ?""",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.setInt(2, index)
-            statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
-        }
+            jobId, index,
+        ) { it.getString(1) }.firstOrNull()
     }
 
     /** [record] as it is stored ([StoredRecords.compact]), its provenance kept once in `provenances`. In a transaction. */
@@ -94,26 +65,18 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
     }
 
     /** Case [index]'s whole record, final witness and provenance and all: what a source check reads. */
-    fun caseRecordText(jobId: Long, index: Int): String? =
-synchronized(lock) {
-                connection.prepareStatement("SELECT record FROM cases WHERE job_id = ? AND idx = ?").use { statement ->
-                statement.setLong(1, jobId)
-                statement.setInt(2, index)
-                statement.executeQuery().use { r -> if (r.next()) r.getString(1) else null }
-            }?.let { text ->
-                if (StoredRecords.PROVENANCE_REF !in text) text
-                else StoredRecords.inflate(recordOf(text), ::provenance)?.toString() ?: text
-            }
+    fun caseRecordText(jobId: Long, index: Int): String? = synchronized(lock) {
+        rows("SELECT record FROM cases WHERE job_id = ? AND idx = ?", jobId, index) { it.getString(1) }.firstOrNull()?.let { text ->
+            if (StoredRecords.PROVENANCE_REF !in text) text
+            else StoredRecords.inflate(recordOf(text), ::provenance)?.toString() ?: text
+        }
     }
 
     /** The build provenance kept under [sha], parsed, its shared parts back in place; the most recently read are kept
      *  ([PROVENANCES]). */
-    private fun provenance(sha: String): JsonElement? = provenances[sha] ?: connection.prepareStatement(
-        "SELECT provenance FROM provenances WHERE sha = ?",
-    ).use { statement ->
-        statement.setString(1, sha)
-        statement.executeQuery().use { r -> if (r.next()) recordOf(r.getString(1)) else null }
-    }?.let(::joinParts)?.also { provenances[sha] = it }
+    private fun provenance(sha: String): JsonElement? = provenances[sha]
+        ?: rows("SELECT provenance FROM provenances WHERE sha = ?", sha) { recordOf(it.getString(1)) }.firstOrNull()
+            ?.let(::joinParts)?.also { provenances[sha] = it }
 
     /** [provenance] with each `<key>PartRef` replaced by the part it names, in its place; a missing part stays a reference. */
     private fun joinParts(provenance: JsonElement): JsonElement {
@@ -126,10 +89,9 @@ synchronized(lock) {
         return JsonObject(joined)
     }
 
-    private fun part(sha: String): JsonElement? = parts[sha] ?: connection.prepareStatement("SELECT part FROM provenance_parts WHERE sha = ?").use { s ->
-        s.setString(1, sha)
-        s.executeQuery().use { r -> if (r.next()) recordOf(r.getString(1)) else null }
-    }?.also { parts[sha] = it }
+    private fun part(sha: String): JsonElement? = parts[sha]
+        ?: rows("SELECT part FROM provenance_parts WHERE sha = ?", sha) { recordOf(it.getString(1)) }.firstOrNull()
+            ?.also { parts[sha] = it }
 
     private val parts = object : LinkedHashMap<String, JsonElement>(PROVENANCES, LOAD_FACTOR, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JsonElement>) = size > PROVENANCES
@@ -161,15 +123,14 @@ synchronized(lock) {
      */
     fun splitProvenances(after: Long, batch: Int = 50): Long? = synchronized(lock) {
         transaction {
-            val rows = connection.prepareStatement("SELECT rowid, provenance FROM provenances WHERE rowid > ? ORDER BY rowid LIMIT ?").use { s ->
-                s.setLong(1, after); s.setInt(2, batch)
-                s.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) to r.getString(2) else null }.toList() }
+            val stored = rows("SELECT rowid, provenance FROM provenances WHERE rowid > ? ORDER BY rowid LIMIT ?", after, batch) { r ->
+                r.getLong(1) to r.getString(2)
             }
-            for ((rowid, text) in rows) {
+            for ((rowid, text) in stored) {
                 val split = splitParts(text)
                 if (split != text) update("UPDATE provenances SET provenance = ? WHERE rowid = ?", split, rowid)
             }
-            rows.lastOrNull()?.first
+            stored.lastOrNull()?.first
         }
     }
 
@@ -194,10 +155,7 @@ synchronized(lock) {
     internal fun checkRevision(): Long = checkRevision(0)
 
     private fun checkRevision(jobId: Long): Long = reading {
-        connection.prepareStatement("SELECT revision FROM check_revisions WHERE job_id = ?").use { statement ->
-            statement.setLong(1, jobId)
-            statement.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else 0 }
-        }
+        rows("SELECT revision FROM check_revisions WHERE job_id = ?", jobId) { it.getLong(1) }.firstOrNull() ?: 0
     }
 
     /** [cases] without their records: what rendering a case's command for the host that runs it reads ([CasePlan]). */
@@ -240,17 +198,15 @@ synchronized(lock) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Triple<Long?, Long, List<CaseResult>>>) = size > SCORING_JOBS
     }
 
-    private fun jobState(jobId: Long): Pair<Status, Long?>? =
-synchronized(lock) {
-                connection.prepareStatement("SELECT status, finished_at FROM jobs WHERE id = ?").use { statement ->
-                statement.setLong(1, jobId)
-                statement.executeQuery().use { r -> if (r.next()) Status.valueOf(r.getString(1)) to r.longOrNull("finished_at") else null }
-            }
+    private fun jobState(jobId: Long): Pair<Status, Long?>? = synchronized(lock) {
+        rows("SELECT status, finished_at FROM jobs WHERE id = ?", jobId) { r ->
+            Status.valueOf(r.getString(1)) to r.longOrNull("finished_at")
+        }.firstOrNull()
     }
 
     /** The cases of [jobId] with [record] as each one's record; a [whole] one gets its provenance back ([StoredRecords.inflate]). */
     private fun casesWith(record: String, jobId: Long, from: Int = 0, limit: Int = -1, whole: Boolean = false): List<CaseResult> = synchronized(lock) {
-        connection.prepareStatement(
+        rows(
             """WITH accepted AS (
                  SELECT i.value AS idx, json_array(t.session_id, t.allocation_id, t.iteration_id, t.generation) AS attempt,
                         row_number() OVER (PARTITION BY i.value ORDER BY t.generation DESC) AS rn
@@ -264,25 +220,17 @@ synchronized(lock) {
                JOIN jobs j ON j.id = c.job_id
                LEFT JOIN accepted ON accepted.idx = c.idx AND accepted.rn = 1
                WHERE c.job_id = ? AND c.idx >= ? ORDER BY c.idx LIMIT ?""",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.setLong(2, jobId)
-            statement.setInt(3, from)
-            statement.setInt(4, limit)
-            statement.executeQuery().use { rows ->
-                generateSequence {
-                    if (!rows.next()) return@generateSequence null
-                    CaseResult(
-                        rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
-                        rows.getString(4), rows.longOrNull("seed"),
-                        withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
-                            rows.getString(9)),
-                        rows.getInt(7), rows.getInt(8) != 0, rows.getString(10)?.let(RecordedHost::of), rows.getObject(11)?.let { rows.getInt(11) != 0 },
-                        rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
-                        if (record == "NULL") null else CaseOrigin(jobId, rows.getString(13)),
-                    )
-                }.toList()
-            }
+            jobId, jobId, from, limit,
+        ) { rows ->
+            CaseResult(
+                rows.getInt(1), Status.valueOf(rows.getString(2)), Json.decodeFromString(rows.getString(3)),
+                rows.getString(4), rows.longOrNull("seed"),
+                withLabCheck(rows.getString(6)?.let(::recordOf)?.let { if (whole) StoredRecords.inflate(it, ::provenance) else it },
+                    rows.getString(9)),
+                rows.getInt(7), rows.getInt(8) != 0, rows.getString(10)?.let(RecordedHost::of), rows.getObject(11)?.let { rows.getInt(11) != 0 },
+                rows.getString(12)?.let { Json.decodeFromString(ListSerializer(CaseFile.serializer()), it) }.orEmpty(),
+                if (record == "NULL") null else CaseOrigin(jobId, rows.getString(13)),
+            )
         }
     }
 
@@ -290,20 +238,10 @@ synchronized(lock) {
     internal fun keepProvenance(sha: String, json: String) =
         update("INSERT OR IGNORE INTO provenances (sha, provenance) VALUES (?, ?)", sha, splitParts(json))
 
-    internal fun insertCommands(jobId: Long, commands: List<CaseCommand>) = connection.prepareStatement(
+    internal fun insertCommands(jobId: Long, commands: List<CaseCommand>) = connection.sqlBatch(
         "INSERT INTO commands (job_id, idx, cmd, timeout_sec, status, cores) VALUES (?, ?, ?, ?, ?, ?)",
-    ).use { statement ->
-        commands.forEachIndexed { index, command ->
-            statement.setLong(1, jobId)
-            statement.setInt(2, index)
-            statement.setString(3, command.cmd)
-            statement.setLong(4, command.timeoutSec)
-            statement.setString(5, Status.QUEUED.name)
-            statement.setInt(6, command.cores)
-            statement.addBatch()
-        }
-        statement.executeBatch()
-    }
+        commands.mapIndexed { index, command -> listOf(jobId, index, command.cmd, command.timeoutSec, Status.QUEUED.name, command.cores) },
+    )
 }
 
 /** Provenance keys whose values repeat across thousands of provenances, kept once each ([PlanRepository.keepProvenance]). */

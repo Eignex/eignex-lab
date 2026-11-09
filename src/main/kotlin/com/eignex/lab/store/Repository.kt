@@ -29,6 +29,8 @@ abstract class Repository internal constructor(private val db: Database, protect
 
     protected fun update(sql: String, vararg values: Any?): Int = connection.sqlUpdate(sql, *values)
 
+    protected fun <T> rows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = connection.sqlRows(sql, *values, map = map)
+
     protected fun ResultSet.longOrNull(column: String): Long? = getLong(column).takeUnless { wasNull() }
     protected fun ResultSet.intOrNull(column: String): Int? = getInt(column).takeUnless { wasNull() }
 }

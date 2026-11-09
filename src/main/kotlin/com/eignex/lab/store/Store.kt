@@ -63,29 +63,13 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         experiment: ExperimentSpec,
         origin: JobOrigin = JobOrigin.of(name),
     ): Long = transaction {
-        val id = connection.prepareStatement(
+        val columns = JobColumns.of(experiment)
+        val id = connection.sqlInsert(
             "INSERT INTO jobs (name, ref, status, created_at, parallel, priority, experiment, backend, host, analysis, bench, measurement, " +
                 "origin, series) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            java.sql.Statement.RETURN_GENERATED_KEYS,
-        ).use {
-            it.setString(1, name)
-            it.setString(2, ref)
-            it.setString(3, Status.QUEUED.name)
-            it.setLong(4, now())
-            it.setInt(5, vcpus)
-            it.setInt(6, priority)
-            it.setString(7, experiment.let { spec -> Json.encodeToString(spec) })
-            it.setString(8, "nomad")
-            val columns = JobColumns.of(experiment)
-            it.setString(9, columns.host)
-            it.setBoolean(10, columns.analysis)
-            it.setBoolean(11, columns.bench)
-            it.setString(12, columns.measurement)
-            it.setString(13, origin.kind)
-            it.setString(14, origin.series)
-            it.executeUpdate()
-            it.generatedKeys.use { keys -> keys.next(); keys.getLong(1) }
-        }
+            name, ref, Status.QUEUED.name, now(), vcpus, priority, Json.encodeToString(experiment), "nomad",
+            columns.host, if (columns.analysis) 1 else 0, if (columns.bench) 1 else 0, columns.measurement, origin.kind, origin.series,
+        )
         plans.insertCommands(id, commands.map { (cmd, timeout) -> CaseCommand(cmd, timeout) })
         id
     }
@@ -104,29 +88,21 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** Cases of [jobId] queued that no host has claimed: the work another host could join it for. */
     fun unclaimed(jobId: Long): Int = reading {
-        connection.prepareStatement(
-            "SELECT COUNT(*) FROM commands WHERE job_id = ? AND status = 'QUEUED' AND host IS NULL",
-        ).use { statement ->
-            statement.setLong(1, jobId)
-            statement.executeQuery().use { r -> if (r.next()) r.getInt(1) else 0 }
-        }
+        rows("SELECT COUNT(*) FROM commands WHERE job_id = ? AND status = 'QUEUED' AND host IS NULL", jobId) { it.getInt(1) }
+            .firstOrNull() ?: 0
     }
 
     /** Each host's part of the jobs [ids] ([HostProgress]), the local machine first, then the nodes by name; a case that
      *  ran before cases recorded their host is left out. */
     fun hostProgress(ids: Collection<Long>): Map<Long, List<HostProgress>> = reading {
         if (ids.isEmpty()) emptyMap() else
-            connection.prepareStatement(
+            rows(
                 "SELECT job_id, host, SUM(status IN ('DONE', 'FAILED')), SUM(status = 'RUNNING'), SUM(status = 'QUEUED') FROM commands " +
                     "WHERE job_id IN (${ids.joinToString(",") { "?" }}) AND host IS NOT NULL GROUP BY job_id, host " +
                     "ORDER BY job_id, host != '${RecordedHost.LOCAL}', host",
-            ).use { statement ->
-                ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
-                statement.executeQuery().use { r ->
-                    generateSequence { if (r.next()) r.getLong(1) to HostProgress(RecordedHost.of(r.getString(2)), r.getInt(3), r.getInt(4), r.getInt(5)) else null }
-                        .groupBy({ it.first }, { it.second })
-                }
-            }
+                *ids.toTypedArray(),
+            ) { r -> r.getLong(1) to HostProgress(RecordedHost.of(r.getString(2)), r.getInt(3), r.getInt(4), r.getInt(5)) }
+                .groupBy({ it.first }, { it.second })
     }
 
     /** The newest jobs first, older than [before] when given. A [name] keeps the jobs of that series ([JobOrigin.series]):
@@ -141,12 +117,10 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** Every job that ended (done, failed or cancelled): its id and when it ended. */
     fun ended(): List<Pair<Long, Long>> = reading {
-        connection.prepareStatement(
+        rows(
             "SELECT id, finished_at FROM jobs WHERE status IN (?, ?, ?) AND finished_at IS NOT NULL",
-        ).use { statement ->
-            listOf(Status.DONE, Status.FAILED, Status.CANCELLED).forEachIndexed { i, s -> statement.setString(i + 1, s.name) }
-            statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) to r.getLong(2) else null }.toList() }
-        }
+            Status.DONE.name, Status.FAILED.name, Status.CANCELLED.name,
+        ) { r -> r.getLong(1) to r.getLong(2) }
     }
 
     /** Every queued or running job, oldest first; without [withCommands], with their [Job.counts] instead. */
@@ -156,63 +130,43 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** Activity guards read ids alone, without recipes or per-command progress. */
     fun activeJobIds(): Set<Long> = reading {
-        connection.prepareStatement("SELECT id FROM jobs WHERE status IN ('QUEUED', 'RUNNING')").use { statement ->
-            statement.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toSet() }
-        }
+        rows("SELECT id FROM jobs WHERE status IN ('QUEUED', 'RUNNING')") { it.getLong(1) }.toSet()
     }
 
     /** Conservatively protect preparation and execution whenever unpaused work is queued or running. */
     fun hasActiveWork(): Boolean = reading {
-        connection.prepareStatement(
-            "SELECT 1 FROM jobs WHERE status IN ('QUEUED', 'RUNNING') AND paused = 0 AND cancel_requested = 0 LIMIT 1",
-        ).use { statement -> statement.executeQuery().use { it.next() } }
+        rows("SELECT 1 FROM jobs WHERE status IN ('QUEUED', 'RUNNING') AND paused = 0 AND cancel_requested = 0 LIMIT 1") { true }
+            .isNotEmpty()
     }
 
     private fun jobsWhere(where: String, vararg values: Any?, withCommands: Boolean = true): List<Job> =
-        connection.prepareStatement("SELECT * FROM jobs WHERE $where").use { statement ->
-            values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
-            statement.executeQuery().use { rows -> generateSequence { if (rows.next()) job(rows) else null }.toList() }
-        }.let { jobs ->
+        rows("SELECT * FROM jobs WHERE $where", *values) { job(it) }.let { jobs ->
             if (withCommands) return@let jobs.map { it.copy(commands = commands(it.id)) }
             val counts = commandCounts(jobs.map { it.id })
             jobs.map { it.copy(counts = counts[it.id] ?: CommandCounts(0, 0, 0, 0)) }
         }
 
     private fun commandCounts(ids: List<Long>): Map<Long, CommandCounts> = if (ids.isEmpty()) emptyMap() else
-        connection.prepareStatement(
+        rows(
             "SELECT job_id, COUNT(*), SUM(status IN ('DONE', 'FAILED')), SUM(status = 'FAILED'), SUM(status = 'RUNNING'), " +
                 "SUM($TIMED), SUM(CASE WHEN $TIMED THEN finished_at - started_at ELSE 0 END) " +
                 "FROM commands WHERE job_id IN (${ids.joinToString(",") { "?" }}) GROUP BY job_id",
-        ).use { statement ->
-            ids.forEachIndexed { i, id -> statement.setLong(i + 1, id) }
-            statement.executeQuery().use { r ->
-                generateSequence {
-                    if (r.next()) r.getLong(1) to CommandCounts(r.getInt(2), r.getInt(3), r.getInt(4), r.getInt(5), r.getInt(6), r.getLong(7)) else null
-                }.toMap()
-            }
-        }
+            *ids.toTypedArray(),
+        ) { r -> r.getLong(1) to CommandCounts(r.getInt(2), r.getInt(3), r.getInt(4), r.getInt(5), r.getInt(6), r.getLong(7)) }.toMap()
 
     /** The newest [limit] experiments that ended done, their ids only, newest first: the runs [EstimateHistory] reads. */
     fun doneExperimentIds(limit: Int): List<Long> = reading {
-        connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND experiment IS NOT NULL ORDER BY id DESC LIMIT ?",
-        ).use { statement ->
-            statement.setString(1, Status.DONE.name)
-            statement.setInt(2, limit)
-            statement.executeQuery().use { r -> generateSequence { if (r.next()) r.getLong(1) else null }.toList() }
+        rows("SELECT id FROM jobs WHERE status = ? AND experiment IS NOT NULL ORDER BY id DESC LIMIT ?", Status.DONE.name, limit) {
+            it.getLong(1)
         }
     }
 
     /** The newest run of schedule [series] ([JobOrigin.Scheduled]) that ended done, null when none did. */
     fun lastDoneOfSeries(series: String): Long? = reading {
-        connection.prepareStatement(
+        rows(
             "SELECT id FROM jobs WHERE status = ? AND origin = ? AND series = ? ORDER BY id DESC LIMIT 1",
-        ).use { statement ->
-            statement.setString(1, Status.DONE.name)
-            statement.setString(2, JobOrigin.SCHEDULED)
-            statement.setString(3, series)
-            statement.executeQuery().use { r -> if (r.next()) r.getLong(1) else null }
-        }
+            Status.DONE.name, JobOrigin.SCHEDULED, series,
+        ) { it.getLong(1) }.firstOrNull()
     }
 
     /** The jobs [ids], without their commands, with their [Job.counts]. */
@@ -222,57 +176,38 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** Existence alone, without decoding an experiment or loading its potentially large command list. */
     fun jobExists(id: Long): Boolean = reading {
-        connection.prepareStatement("SELECT 1 FROM jobs WHERE id = ?").use { statement ->
-            statement.setLong(1, id)
-            statement.executeQuery().use { it.next() }
-        }
+        rows("SELECT 1 FROM jobs WHERE id = ?", id) { true }.isNotEmpty()
     }
 
     /** A waiter's state check reads no recipe or command rows. Missing jobs have no status. */
     fun jobStatus(id: Long): Status? = reading {
-        connection.prepareStatement("SELECT status FROM jobs WHERE id = ?").use { statement ->
-            statement.setLong(1, id)
-            statement.executeQuery().use { rows -> if (rows.next()) Status.valueOf(rows.getString(1)) else null }
-        }
+        rows("SELECT status FROM jobs WHERE id = ?", id) { Status.valueOf(it.getString(1)) }.firstOrNull()
     }
 
     /** Job [id] with its commands, both read from one snapshot. */
     fun job(id: Long): Job? = reading {
-        connection.prepareStatement("SELECT * FROM jobs WHERE id = ?").use { statement ->
-            statement.setLong(1, id)
-            statement.executeQuery().use { rows -> if (rows.next()) job(rows) else null }
-        }?.let { it.copy(commands = commands(it.id)) }
+        rows("SELECT * FROM jobs WHERE id = ?", id) { job(it) }.firstOrNull()?.let { it.copy(commands = commands(it.id)) }
     }
 
     @Synchronized
     fun nextAnalysis(): Job? = transaction {
-        val id = connection.prepareStatement("SELECT id FROM jobs WHERE status IN ('QUEUED','RUNNING') " +
+        val id = rows("SELECT id FROM jobs WHERE status IN ('QUEUED','RUNNING') " +
             "AND cancel_requested = 0 AND paused = 0 AND analysis = 1 " +
-            "ORDER BY status = 'RUNNING' DESC, priority DESC, id LIMIT 1").use { statement ->
-                statement.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
-            } ?: return@transaction null
+            "ORDER BY status = 'RUNNING' DESC, priority DESC, id LIMIT 1") { it.getLong(1) }.firstOrNull()
+            ?: return@transaction null
         if (job(id)?.status == Status.QUEUED) markRunning(id, now())
         update("UPDATE jobs SET local = 1 WHERE id = ?", id)
         id
     }?.let(::job)
 
-    private fun markRunning(id: Long, at: Long, interruptedRun: Long = 0) = connection.prepareStatement(
+    private fun markRunning(id: Long, at: Long, interruptedRun: Long = 0) = update(
         "UPDATE jobs SET status = ?, started_at = COALESCE(started_at, ?), running_since = ?, run_ms = run_ms + ? WHERE id = ?",
-    ).use {
-        it.setString(1, Status.RUNNING.name)
-        it.setLong(2, at)
-        it.setLong(3, at)
-        it.setLong(4, interruptedRun)
-        it.setLong(5, id)
-        it.executeUpdate()
-    }
+        Status.RUNNING.name, at, at, interruptedRun, id,
+    )
 
     /** Whether the local machine is running a job. */
     fun localBusy(): Boolean = reading {
-        connection.prepareStatement("SELECT 1 FROM jobs WHERE status = ? AND local = 1 LIMIT 1").use {
-            it.setString(1, Status.RUNNING.name)
-            it.executeQuery().use { rows -> rows.next() }
-        }
+        rows("SELECT 1 FROM jobs WHERE status = ? AND local = 1 LIMIT 1", Status.RUNNING.name) { true }.isNotEmpty()
     }
 
     /** End [jobId] as [status]; 0 when it had already ended, so a cancel that landed first is never overwritten. */
@@ -289,19 +224,16 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
 
     /** How many cases of any experiment ran one problem. */
     fun problemRunCount(collection: String, problem: String): Int = reading {
-        connection.prepareStatement(
+        rows(
             """SELECT count(*) FROM problems p JOIN cases c ON c.job_id = p.job_id AND c.problem_idx = p.idx
                WHERE json_extract(p.problem, '$.collection') = ? AND COALESCE(json_extract(p.problem, '$.benchCase.attributes.problem'), json_extract(p.problem, '$.problem')) = ?""",
-        ).use { statement ->
-            statement.setString(1, collection)
-            statement.setString(2, problem)
-            statement.executeQuery().use { r -> if (r.next()) r.getInt(1) else 0 }
-        }
+            collection, problem,
+        ) { it.getInt(1) }.firstOrNull() ?: 0
     }
 
     /** The cases of one problem across every job, newest job first; with [limit], only that many. */
     @Synchronized
-    fun problemRuns(collection: String, problem: String, limit: Int? = null, withWitness: Boolean = false): List<ProblemRun> = connection.prepareStatement(
+    fun problemRuns(collection: String, problem: String, limit: Int? = null, withWitness: Boolean = false): List<ProblemRun> = rows(
         // The record as scoring reads it: the page shows each run's outcome and time, not its witness or provenance,
         // which can make one problem's runs tens of megabytes.
         """SELECT j.id, j.name, j.created_at, a.label, a.sha, c.idx, c.seed, c.repeat, m.status, ${if (withWitness) OPTIMUM_EVIDENCE_RECORD else SCORING_RECORD}, c.lab_check
@@ -313,27 +245,18 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
            WHERE json_extract(p.problem, '$.collection') = ? AND COALESCE(json_extract(p.problem, '$.benchCase.attributes.problem'), json_extract(p.problem, '$.problem')) = ?
            ORDER BY j.id DESC, a.idx, c.seed, c.repeat
            LIMIT ?""",
-    ).use { statement ->
-        statement.setString(1, collection)
-        statement.setString(2, problem)
-        statement.setInt(3, limit ?: -1)
-        statement.executeQuery().use { r ->
-            generateSequence {
-                if (!r.next()) return@generateSequence null
-                ProblemRun(
-                    job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
-                    sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
-                    status = Status.valueOf(r.getString(9)), record = withLabCheck(r.getString(10)?.let(::recordOf), r.getString(11)),
-                )
-            }.toList()
-        }
+        collection, problem, limit ?: -1,
+    ) { r ->
+        ProblemRun(
+            job = r.getLong(1), jobName = r.getString(2), createdAt = r.getLong(3), arm = r.getString(4),
+            sha = r.getString(5), case = r.getInt(6), seed = r.getLong(7).takeUnless { r.wasNull() }, repeat = r.getInt(8),
+            status = Status.valueOf(r.getString(9)), record = withLabCheck(r.getString(10)?.let(::recordOf), r.getString(11)),
+        )
     }
 
     /** When a job last finished: what tells a cached view of finished runs that a newer one may belong in it. */
     fun lastFinished(): Long? = reading {
-        connection.prepareStatement("SELECT MAX(finished_at) FROM jobs").use { statement ->
-            statement.executeQuery().use { r -> if (r.next()) r.getLong(1).takeUnless { r.wasNull() } else null }
-        }
+        rows("SELECT MAX(finished_at) FROM jobs") { r -> r.getLong(1).takeUnless { r.wasNull() } }.firstOrNull()
     }
 
     @Synchronized
@@ -348,12 +271,8 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     ) == 1
 
     fun queue(): List<Long> = reading {
-        connection.prepareStatement(
-            "SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " +
-                QUEUE_ORDER,
-        ).use {
-            it.setString(1, Status.QUEUED.name)
-            it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getLong(1) else null }.toList() }
+        rows("SELECT id FROM jobs WHERE status = ? AND cancel_requested = 0 AND paused = 0 " + QUEUE_ORDER, Status.QUEUED.name) {
+            it.getLong(1)
         }
     }
 
@@ -396,12 +315,7 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     }
 
     fun cancelRequested(jobId: Long): Boolean = reading {
-        connection.prepareStatement(
-            "SELECT cancel_requested FROM jobs WHERE id = ?",
-        ).use {
-            it.setLong(1, jobId)
-            it.executeQuery().use { rows -> rows.next() && rows.getInt(1) == 1 }
-        }
+        rows("SELECT cancel_requested FROM jobs WHERE id = ?", jobId) { it.getInt(1) == 1 }.firstOrNull() ?: false
     }
 
     @Synchronized
@@ -410,24 +324,13 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
         Status.CANCELLED.name, jobId, Status.QUEUED.name, Status.RUNNING.name,
     )
 
-    private fun commands(jobId: Long): List<Command> = connection.prepareStatement(
-        "SELECT * FROM commands WHERE job_id = ? ORDER BY idx",
-    ).use { statement ->
-        statement.setLong(1, jobId)
-        statement.executeQuery().use { rows ->
-            generateSequence {
-                if (!rows.next()) {
-                    null
-                } else {
-                    Command(
-                        rows.getInt("idx"), rows.getString("cmd"), rows.getLong("timeout_sec"),
-                        Status.valueOf(rows.getString("status")), rows.intOrNull("exit_code"),
-                        rows.longOrNull("started_at"), rows.longOrNull("finished_at"), rows.getInt("cores"),
-                        host = rows.getString("host")?.let(RecordedHost::of),
-                    )
-                }
-            }.toList()
-        }
+    private fun commands(jobId: Long): List<Command> = rows("SELECT * FROM commands WHERE job_id = ? ORDER BY idx", jobId) { rows ->
+        Command(
+            rows.getInt("idx"), rows.getString("cmd"), rows.getLong("timeout_sec"),
+            Status.valueOf(rows.getString("status")), rows.intOrNull("exit_code"),
+            rows.longOrNull("started_at"), rows.longOrNull("finished_at"), rows.getInt("cores"),
+            host = rows.getString("host")?.let(RecordedHost::of),
+        )
     }
 
     private fun job(rows: ResultSet) = Job(
@@ -452,10 +355,9 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     /** The execution tables' reads: one committed snapshot ([Database.read]). */
     internal fun <T> executionRead(block: (Tx) -> T): T = db.read { block(Tx(it)) }
 
-    private fun update(sql: String, vararg values: Any?) = connection.prepareStatement(sql).use { statement ->
-        values.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
-        statement.executeUpdate()
-    }
+    private fun update(sql: String, vararg values: Any?): Int = connection.sqlUpdate(sql, *values)
+
+    private fun <T> rows(sql: String, vararg values: Any?, map: (ResultSet) -> T): List<T> = connection.sqlRows(sql, *values, map = map)
 
     /** One IMMEDIATE transaction; one begun inside another joins it ([Database.write]). */
     private fun <T> transaction(block: () -> T): T = db.write { block() }
