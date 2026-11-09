@@ -118,9 +118,15 @@ set the shared collector's overall `maxVcpus` and pool limits consistently with 
    forwards it; mutual TLS and ACLs guard it, and the server advertises the home address), the worker API at
    `https://lab.eignex.com/worker/v1`, artifact/registry access, DNS, Secrets Manager and time synchronization.
    Nothing in AWS runs between jobs, and no inbound SSH execution or public worker address is required. Run `tofu init`, `tofu plan`, review, then `tofu apply` in `aws/`.
-5. Copy `aws/adapter.example.json` into the lab's private configuration. Configure its AWS profile to assume
-   `adapter_role_arn` with normal short-lived SDK credentials. Run the adapter as a supervised independent Mac
-   service every ten seconds. Point the coordinator capacity settings at the resulting inventory file.
+5. Copy `aws/adapter.example.json` (or `adapter-fleet.example.json`) into the lab's private configuration. Configure
+   its AWS `profile` to assume `adapter_role_arn`: a `role_arn` with a `source_profile` is assumed through STS, and an
+   SSO or `aws login` profile is resolved by `aws configure export-credentials` (the AWS CLI on the service's PATH).
+   Run `eignex-lab capacity-adapter aws CONFIG` as a supervised independent Mac service: give `nomad/native-services.sh`
+   a `capacityAdapter` of `{"launcher": "…/releases/RELEASE/bin/eignex-lab", "provider": "aws", "config": "…"}`. It
+   runs `com.eignex.lab.capacity-adapter` from that immutable release with a small JVM and no lab configuration, and
+   `--install` restarts it only when its launcher or configuration path changes. `capacity-adapter aws CONFIG
+   --once` publishes and renews once and exits 1 on failure. Point the coordinator capacity settings at the resulting
+   inventory file.
 6. Use `bash deploy/nomad/autoscaler.sh SETTINGS CAPACITY_SETTINGS PRIVATE_OUTPUT --install-runtime` to render private
    policies and install checksum-pinned Autoscaler 0.6.0. Run `nomad-autoscaler-0.6.0 agent -config=PRIVATE_OUTPUT/agent.json`
    as a separate supervised Mac service with `AWS_PROFILE=lab-nomad-scaler`, assuming `scaler_role_arn`. The profile
@@ -190,8 +196,8 @@ them. Configure the expiry error alarm's SNS topic and verify notification deliv
 
 `./gradlew :lab-capacity:check` tests grant freshness, ownership, startup recovery, expiry ordering and the provider
 wire (SigV4 test-suite signatures, query/JSON/REST shapes and errors) and checks the function packages hold their
-Java 21 handlers. `python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py'` tests the AWS inventory adapter's
-boot accounting. `bash deploy/infra/tests/test_host_scripts.sh` tests host bootstrap rejection, the rendered Nomad
+Java 21 handlers. `CapacityAdapterTest` and `AwsCapacityAdapterTest` test the inventory adapters' boot accounting,
+launch times, publication and independent renewals. `bash deploy/infra/tests/test_host_scripts.sh` tests host bootstrap rejection, the rendered Nomad
 client, secret handling and interruption draining against stubs. `bash deploy/infra/validate.sh` installs a checksum-pinned OpenTofu on
 Linux amd64 and checks formatting/schema without account credentials or applying changes. Provider schemas and
 lock files are pinned. These checks cannot establish actual IAM authorization, Spot availability or time-to-delete.

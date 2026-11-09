@@ -41,12 +41,12 @@ object CapacityAdapter {
     fun main(args: List<String>): Int {
         val once = "--once" in args
         val rest = args.filter { it != "--once" }
-        if (rest.size != 2 || rest[0] !in setOf("gcp")) {
-            System.err.println("usage: eignex-lab capacity-adapter gcp CONFIG [--once]")
+        if (rest.size != 2 || rest[0] !in setOf("aws", "gcp")) {
+            System.err.println("usage: eignex-lab capacity-adapter aws|gcp CONFIG [--once]")
             return 2
         }
         val config = Json.parseToJsonElement(Files.readString(Path.of(rest[1]))) as JsonObject
-        return GcpCapacityAdapter.run(config, once)
+        return if (rest[0] == "aws") AwsCapacityAdapter.run(config, once) else GcpCapacityAdapter.run(config, once)
     }
 
     /**

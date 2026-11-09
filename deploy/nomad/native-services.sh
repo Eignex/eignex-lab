@@ -18,6 +18,8 @@ fail() { printf 'native-services: %s\n' "$*" >&2; exit 1; }
 
 # The process supervisor JVM's options; worker-entrypoint.sh gives the cloud workers' supervisor the same.
 supervisor_jvm="-Xms4m -Xmx48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1"
+# The capacity adapter's small JVM: it only polls provider APIs every ten seconds.
+adapter_jvm="-Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1"
 
 # absolute <variable> <path>: set <variable> to <path> normalised as Python's pathlib writes it; fails unless absolute.
 absolute() {
@@ -61,6 +63,7 @@ render() {
   output="$1"
   local launcher worker binary supervisor socket local_lock home java environment agent_environment
   local server_path client_path coordinator_config reason file user role signer_config
+  local adapter_launcher adapter_provider adapter_config
   local -a roles
   absolute data "$(setting dataDir)"
   # shellcheck disable=SC2154 # absolute sets it
@@ -111,6 +114,18 @@ render() {
     absolute signer_config "$(jq -er '.inputSigner.config' <<< "$settings" || fail "inputSigner lacks config")"
     roles+=(input-signer)
   fi
+  if jq -e "$truthy"'.capacityAdapter | truthy' <<< "$settings" > /dev/null; then
+    # Cloud capacity renewal must not change with ordinary updates: it runs from an immutable release, and changes
+    # only when its launcher or configuration does.
+    jq -e '.capacityAdapter | type == "object" and (has("python") or has("script")) | not' <<< "$settings" > /dev/null ||
+      fail "capacityAdapter runs the lab launcher (eignex-lab capacity-adapter): remove its python and script settings"
+    absolute adapter_launcher "$(jq -er '.capacityAdapter.launcher' <<< "$settings" || fail "capacityAdapter lacks launcher")"
+    [[ "$adapter_launcher/" != */current/* ]] || fail "capacity adapter launcher must pin an immutable release"
+    adapter_provider="$(jq -er '.capacityAdapter.provider' <<< "$settings" || fail "capacityAdapter lacks provider")"
+    [[ "$adapter_provider" == aws || "$adapter_provider" == gcp ]] || fail "capacityAdapter provider must be aws or gcp"
+    absolute adapter_config "$(jq -er '.capacityAdapter.config' <<< "$settings" || fail "capacityAdapter lacks config")"
+    roles+=(capacity-adapter)
+  fi
   user="$(jq -r 'if has("user") then .user else empty end' <<< "$settings")"
   [[ -n "$user" ]] || user="$(id -un)"
   [[ "$user" != root ]] || fail "native execution must run as the lab user, never root"
@@ -129,11 +144,13 @@ render() {
     process-supervisor) set -- "$@" "$supervisor" process-supervisor --socket "$socket" --local-lock "$local_lock" ;;
     nomad-coordinator) set -- "$@" "$launcher" nomad-coordinator "$coordinator_config" ;;
     input-signer) set -- "$@" "$launcher" input-signer --config "$signer_config" ;;
+    capacity-adapter) set -- "$@" "$adapter_launcher" capacity-adapter "$adapter_provider" "$adapter_config" ;;
     esac
     case "$role" in
     nomad-coordinator) printf '%s\n' "$environment" ;;
     # A small heap: the supervisor only relays processes, and every MiB it holds is one the measured work lacks.
     process-supervisor) printf '%s\nEIGNEX_LAB_OPTS=%s\n' "$agent_environment" "$supervisor_jvm" ;;
+    capacity-adapter) printf '%s\nEIGNEX_LAB_OPTS=%s\n' "$agent_environment" "$adapter_jvm" ;;
     *) printf '%s\n' "$agent_environment" ;;
     esac |
       launchd_plist "com.eignex.lab.$role" "$user" "$data" "$data/logs/$role.log" true "" "$@" \
@@ -147,7 +164,8 @@ install_services() {
   for label in "${labels[@]}"; do
     launchctl print "system/$label" >/dev/null 2>&1 && running+=" $label "
     agent=""
-    [[ "$label" == *nomad-coordinator || "$label" == *input-signer || -n "$restart_agents" ]] || agent=1
+    [[ "$label" == *nomad-coordinator || "$label" == *input-signer || "$label" == *capacity-adapter || -n "$restart_agents" ]] ||
+      agent=1
     if [[ -n "$agent" && "$running" == *" $label "* ]] &&
       ! cmp -s "/Library/LaunchDaemons/$label.plist" "$output/$label.plist"; then
       fail "agent/supervisor changes require explicit --restart-agents maintenance"
@@ -155,8 +173,9 @@ install_services() {
   done
   [[ -d "$data/logs" ]] || mkdir "$data/logs" || fail "cannot create $data/logs"
   for label in "${labels[@]}"; do
-    # The signer holds no state: a changed one restarts here, an unchanged one keeps running.
-    if [[ "$label" == *input-signer && -z "$restart_agents" && "$running" == *" $label "* ]]; then
+    # The signer and the capacity adapter hold no state: a changed one restarts here, an unchanged one keeps running.
+    if [[ ( "$label" == *input-signer || "$label" == *capacity-adapter ) && -z "$restart_agents" &&
+      "$running" == *" $label "* ]]; then
       ! cmp -s "/Library/LaunchDaemons/$label.plist" "$output/$label.plist" || continue
     else
       [[ "$label" == *nomad-coordinator || -n "$restart_agents" || "$running" != *" $label "* ]] || continue
