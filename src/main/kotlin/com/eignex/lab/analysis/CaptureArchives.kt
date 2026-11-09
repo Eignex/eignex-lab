@@ -28,7 +28,7 @@ import kotlinx.serialization.json.longOrNull
  * within the archive a report's captures were in.
  */
 @Serializable
-data class ArchiveProvenance(
+internal data class ArchiveProvenance(
     val url: String,
     val sha256: String,
     val bytes: Long,
@@ -48,7 +48,7 @@ data class ArchiveProvenance(
  * anything is extracted; then only the profile directories' captures are, into the analysis job's own directory, every
  * path checked to stay inside it.
  */
-object CaptureArchives {
+internal object CaptureArchives {
     /** Where an analysis job extracts an archive's captures, within its own directory, at their paths in the archive. */
     const val ROOT = "archive"
     /** The verified manifest, kept in the analysis job's directory. */
