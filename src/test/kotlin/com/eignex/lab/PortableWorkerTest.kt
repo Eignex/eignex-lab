@@ -1043,19 +1043,14 @@ class PortableWorkerTest {
 
     @Test fun `dependency cache writers exclude other processes across build identities`(): Unit = service { socket ->
         val script = """set -eu
-            python3 - <<'PY'
-import fcntl, os
-from pathlib import Path
-home = Path(os.environ['GRADLE_USER_HOME'])
-with (home.parent.parent / ('dependencies-' + home.name + '.lock')).open('rb') as lock:
-    try:
-        fcntl.lockf(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        pass
-    else:
-        raise AssertionError('another process can enter the Gradle user home while a build writes it')
-(home / 'dependency').write_text('warm')
-PY
+            home="${'$'}GRADLE_USER_HOME"
+            status=0
+            ${LockFixture.shell("probe-shared")} "${'$'}(dirname "${'$'}(dirname "${'$'}home")")/dependencies-${'$'}(basename "${'$'}home").lock" || status=${'$'}?
+            if [ "${'$'}status" != ${LockFixture.HELD} ]; then
+                echo "another process can enter the Gradle user home while a build writes it (probe status ${'$'}status)" >&2
+                exit 1
+            fi
+            printf warm > "${'$'}home/dependency"
             mkdir -p build
             cp "${'$'}GRADLE_USER_HOME/dependency" build/result
         """.trimIndent()
@@ -1189,7 +1184,7 @@ PY
 
     @Test fun `native profile deadline bounds preparation and the committed profile process`(): Unit = service { socket ->
         val started = root.resolve("profile-started")
-        val script = "#!/usr/bin/env python3\nfrom pathlib import Path\nimport time\nPath('$started').write_text('started')\ntime.sleep(30)\n"
+        val script = "#!/bin/sh\nprintf started > '$started'\nexec sleep 30\n"
         val build = """#!/usr/bin/env bash
             set -eu
             git init -q

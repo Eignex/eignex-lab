@@ -151,7 +151,7 @@ class ConnectedNomadTest {
         Files.setPosixFilePermissions(repository.resolve("profile"), PosixFilePermissions.fromString("rwxr-xr-x"))
         Files.writeString(repository.resolve("gradlew"), """#!/usr/bin/env bash
             set -eu
-            python3 -c 'import time; end=time.monotonic()+0.25; x=1; exec("while time.monotonic()<end: x=(x+1)%1234567")'
+            perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'my ${'$'}end = clock_gettime(CLOCK_MONOTONIC) + 0.25; my ${'$'}x = 1; ${'$'}x = (${'$'}x + 1) % 1234567 while clock_gettime(CLOCK_MONOTONIC) < ${'$'}end'
         """.trimIndent())
         git(repository, "init", "--initial-branch=main"); git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
         git(repository, "add", "."); git(repository, "commit", "-m", "test: fixture")

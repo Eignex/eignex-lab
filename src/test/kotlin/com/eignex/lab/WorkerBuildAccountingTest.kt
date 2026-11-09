@@ -124,15 +124,8 @@ class WorkerBuildAccountingTest {
         cache.maintain()
         val record = root.resolve("dependency-sizes/$key.json")
         assertTrue(Files.exists(record))
-        val process = ProcessBuilder("python3", "-c", """
-            import fcntl, pathlib, sys
-            with open(sys.argv[1], 'a') as pin:
-                fcntl.lockf(pin, fcntl.LOCK_EX)
-                pathlib.Path(sys.argv[3]).write_text('larger than the byte budget')
-                print('ready', flush=True)
-                sys.stdin.readline()
-        """.trimIndent(), root.resolve("dependencies-$key.lock").toString(),
-            root.resolve("dependency-sizes/$key.json").toString(), home.resolve("nested/new").toString()).start()
+        val process = LockFixture.start("hold", root.resolve("dependencies-$key.lock").toString(),
+            home.resolve("nested/new").toString(), "larger than the byte budget")
         try {
             assertEquals("ready", process.inputStream.bufferedReader().readLine())
             assertEquals(homeModified, Files.getLastModifiedTime(home), "nested growth leaves the root stamp unchanged")

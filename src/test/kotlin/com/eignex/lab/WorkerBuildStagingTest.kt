@@ -24,13 +24,7 @@ class WorkerBuildStagingTest {
         val old = Files.createDirectory(root.resolve(".build-100"))
         val recent = Files.createDirectory(root.resolve(".build-101"))
         val foreign = Files.createDirectory(root.resolve(".build-102"))
-        val process = ProcessBuilder("python3", "-c", """
-            import fcntl,sys
-            with open(sys.argv[1], 'a') as pin:
-                fcntl.lockf(pin, fcntl.LOCK_EX)
-                print('ready', flush=True)
-                sys.stdin.readline()
-        """.trimIndent(), foreign.resolve("owner.lock").toString()).start()
+        val process = LockFixture.start("hold", foreign.resolve("owner.lock").toString())
         try {
             assertEquals("ready", process.inputStream.bufferedReader().readLine())
             val at = now() + 10L*60*1000
@@ -43,13 +37,8 @@ class WorkerBuildStagingTest {
             assertTrue(Files.exists(crashed.directory.resolve("orphaned.at"))); assertFalse(Files.exists(old))
             assertTrue(Files.exists(live.directory)); assertTrue(Files.exists(recent)); assertTrue(Files.exists(foreign))
             // A same-process probe must not release the OS lock held by this active build.
-            val probe = ProcessBuilder("python3", "-c", """
-                import fcntl,sys
-                with open(sys.argv[1], 'r+') as pin:
-                    try: fcntl.lockf(pin, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError: sys.exit(73)
-            """.trimIndent(), live.directory.resolve("owner.lock").toString()).start()
-            assertEquals(73, probe.waitFor())
+            val probe = LockFixture.start("probe", live.directory.resolve("owner.lock").toString())
+            assertEquals(LockFixture.HELD, probe.waitFor())
             process.outputStream.write(10); process.outputStream.flush(); assertEquals(0, process.waitFor())
             cache.maintain(at + 61_000)
             assertTrue(Files.exists(foreign)); assertTrue(Files.exists(crashed.directory))

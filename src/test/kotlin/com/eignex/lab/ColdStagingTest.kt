@@ -22,14 +22,9 @@ class ColdStagingTest {
     private fun assertProcessPin(path: java.nio.file.Path, held: Boolean = true) {
         // A second FileChannel in this JVM would only consult its overlapping-lock table. Probe from
         // another process so a descriptor close that silently dropped the OS lock cannot pass.
-        val process = ProcessBuilder("python3", "-c", """
-            import fcntl, sys
-            with open(sys.argv[1], 'r+') as pin:
-                try: fcntl.lockf(pin, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError: sys.exit(73)
-        """.trimIndent(), path.toString()).redirectErrorStream(true).start()
+        val process = ProcessBuilder(LockFixture.command("probe", path.toString())).redirectErrorStream(true).start()
         assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS), "lock probe timed out")
-        assertEquals(if (held) 73 else 0, process.exitValue(), process.inputStream.bufferedReader().readText())
+        assertEquals(if (held) LockFixture.HELD else 0, process.exitValue(), process.inputStream.bufferedReader().readText())
     }
 
     @Test fun `local probes including path aliases preserve the actual process lock`() {
