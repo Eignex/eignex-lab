@@ -232,4 +232,4 @@ UNIT
   loginctl enable-linger "$(id -un)"   # start at boot without a login session
   ;;
 esac
-echo "api on http://$(hostname):${LAB_PORT:-8420}/"
+echo "api on http://$(hostname):$(lab_port)/"

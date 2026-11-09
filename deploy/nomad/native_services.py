@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import subprocess
+import time
 import urllib.request
 import zipfile
 import io
@@ -169,6 +170,12 @@ def main():
             continue
         if running[label]:
             subprocess.run(["sudo", "launchctl", "bootout", "system/" + label], check=True)
+            # bootout returns before the job is gone, and bootstrapping the label while it is
+            # still loaded fails with "Input/output error" (as in deploy/install.sh).
+            for _ in range(60):
+                if subprocess.run(["sudo", "launchctl", "print", "system/" + label], capture_output=True).returncode != 0:
+                    break
+                time.sleep(1)
         target = Path("/Library/LaunchDaemons") / (label + ".plist")
         subprocess.run(["sudo", "install", "-m", "644", "-o", "root", "-g", "wheel", str(output / target.name), str(target)], check=True)
         subprocess.run(["sudo", "launchctl", "bootstrap", "system", str(target)], check=True)
