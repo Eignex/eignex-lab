@@ -104,6 +104,8 @@ object NomadCoordinatorCli {
             "LAB_NOMAD_CAPACITY_SETTINGS (${config.nomadCapacitySettings}) is not the coordinator's capacity settings file ($capacityFile)"
         }
         val cluster = ClusterSettings(queueSettings, capacityFile?.let(CapacitySettings::read))
+        // Not fatal: such a target still runs every job, only with part of each node idle.
+        cluster.memoryLimited.forEach { println("nomad queue settings: $it") }
         val capacitySettings = cluster.capacity
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
             changed = { admissionSignal.wake(); reconcileSignal.wake() }, solveAllowed = artifacts::allowsNewSolve,

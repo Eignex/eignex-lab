@@ -31,6 +31,25 @@ class ClusterSettings(val queue: NomadQueueSettings, val capacity: CapacitySetti
         }
     }
 
+    /**
+     * Cloud targets whose memory holds fewer one-CPU cases at [NomadQueueSettings.caseMemoryMiB] than a session as wide
+     * as the target runs ([Experiments.caseConcurrency]), each saying how many fit and what its pool could hold. Such a
+     * session reserves only the CPUs of the cases that fit ([NomadQueueSettings.solveBudget]), so the rest of the node
+     * idles: raise the target's memory to the pool's, or choose a pool with more memory per vCPU.
+     */
+    val memoryLimited: List<String> = queue.targets.filter { it.template.platform == NomadPlatform.LINUX }.mapNotNull { target ->
+        val budget = target.template.budget
+        val byCpu = Experiments.caseConcurrency(budget.cpuMillis / 1000, 1)
+        fun fit(memory: Int) = ((memory - queue.sessionMemoryMiB) / queue.caseMemoryMiB).coerceAtLeast(0)
+        val byMemory = fit(budget.memoryMiB)
+        if (byMemory >= byCpu) return@mapNotNull null
+        val pool = poolOf(target.template)
+        val needed = queue.sessionMemoryMiB + byCpu * queue.caseMemoryMiB
+        "queue target ${target.template.nodeClass} holds $byMemory of the $byCpu cases a full-width session runs at " +
+            "${queue.caseMemoryMiB} MiB each: its ${budget.memoryMiB} MiB is short of $needed MiB" +
+            (pool?.let { ", and pool ${it.id} has ${it.availableMemoryMiB} MiB, room for ${fit(it.availableMemoryMiB)}" } ?: "")
+    }
+
     /** The capacity pool a cloud worker of [template] runs in: the one of its node class. */
     fun poolOf(template: NomadBatchJob): CapacityPool? = capacity?.pools?.singleOrNull { it.nodeClass == template.nodeClass }
 

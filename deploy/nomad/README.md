@@ -540,18 +540,24 @@ Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations)
 immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
 state is considered disposable; historical job results and provenance are never runtime-pruning candidates.
 
-Job `vcpus` (formerly `parallel`) determines its total solve CPU request across the cluster. Each worker session
-reserves the job's vCPUs, or the most its target offers, and runs `max(1, vcpus - 1)` cases at once divided by the
-largest case's CPUs, claiming whole paired rows to fill them; a target template's `parallel` no longer limits that.
-The native worker runs at most `LAB_MAX_PARALLEL` cases a session. Preparation reserves the job's vCPUs too, at least
-`preparationBudget`, with memory scaled from it, within the target's budget and the local cores. Sessions from the
-same experiment share a node whenever those resources fit. Operator queue settings
-`maxVcpusPerJob` (default 16) and `maxSessionsPerJob` bound job expansion;
-`perHostParallel` optionally caps same-job cases on each node and is unset by
+Job `vcpus` (formerly `parallel`) is the width of each of its solve sessions. Each worker session reserves the job's
+vCPUs, or the most its target offers, and runs `max(1, vcpus - 1)` cases at once divided by the largest case's CPUs,
+claiming whole paired rows to fill them; a target template's `parallel` no longer limits that. While rows wait, the
+queue adds sessions of that width until all of the job's solve sessions together reach the operator's `maxVcpusPerJob`
+(default 16), so a job spreads over several nodes; `maxSessionsPerJob` and the pending rows bound the count too. On the
+native worker, one machine, a job's sessions together hold at most its vCPUs, and each runs at most `LAB_MAX_PARALLEL`
+cases. Preparation reserves the job's vCPUs too, at most `maxVcpusPerJob`, at least `preparationBudget`, with memory
+scaled from it, within the target's budget and the local cores. Sessions from the same experiment share a node
+whenever those resources fit. `perHostParallel` optionally caps same-job cases on each node and is unset by
 default. These live limits apply independently of frozen experiment sources and
 prepared inputs. A worker larger than the job ceiling is admitted once so existing
 large requests remain runnable. Existing workers affected by a sharing-policy
 change finish their current iteration before retiring.
+
+A session holds only as many cases as its target's memory fits at `caseMemoryMiB` each, and reserves only their CPUs
+and the worker's one. The coordinator logs at startup each cloud target whose memory holds fewer cases than a session
+as wide as the target runs, with what its pool could hold: give such a target its pool's memory, or a pool with at
+least `caseMemoryMiB` per vCPU, or the rest of each of its nodes idles.
 
 Cold compilation uses the worker's CPU/memory reservation, Gradle worker and JVM
 processor limits, and at most `maxConcurrentBuildsPerNode` compilers per node

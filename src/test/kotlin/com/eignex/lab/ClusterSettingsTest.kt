@@ -50,4 +50,18 @@ class ClusterSettingsTest {
     fun `a queue without capacity settings is not checked against pools`() {
         ClusterSettings(queue(target("linux-other-spot", 16, 30720)), null)
     }
+
+    @Test
+    fun `a target whose memory holds fewer cases than its CPUs run is named with what its pool could hold`() {
+        // 16 vCPUs run 15 one-CPU cases, 512 + 15 * 4096 MiB: a 32 GiB pool's 30 GiB hold 7 of them.
+        val narrow = ClusterSettings(queue(target("linux-avx2-spot", 16, 30720)), CapacitySettings(listOf(pool), 64))
+        val warning = narrow.memoryLimited.single()
+        assertTrue("holds 7 of the 15 cases" in warning, warning)
+        assertTrue("pool avx2 has 30720 MiB, room for 7" in warning, warning)
+        val roomy = pool.copy(memoryMiB = 65536)
+        assertEquals(emptyList(), ClusterSettings(queue(target("linux-avx2-spot", 16, 62464)), CapacitySettings(listOf(roomy), 64)).memoryLimited)
+        // A target sized below its pool says so: there the target's budget, not the instance, is what to change.
+        val held = ClusterSettings(queue(target("linux-avx2-spot", 16, 30720)), CapacitySettings(listOf(roomy), 64)).memoryLimited.single()
+        assertTrue("room for 15" in held, held)
+    }
 }

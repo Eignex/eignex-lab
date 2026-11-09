@@ -30,8 +30,10 @@ data class NomadQueueSettings(
     val release: String, val workerApi: String, val targets: List<NomadQueueTarget>,
     val preparationBudget: ResourceBudget = ResourceBudget(2000, 4096), val preparationTimeoutSec: Long = 3600,
     val caseMemoryMiB: Int = 4096, val sessionMemoryMiB: Int = 512, val maxSessionsPerJob: Int = 64,
-    /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. [preparationBudget] is
-     *  the least a preparation gets; one grows with its job's vCPUs ([preparationBudget]). */
+    /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. [maxVcpusPerJob] caps
+     *  the vCPUs of all of a job's solve sessions together, while the job's own vCPUs are the width of each one
+     *  ([solveBudget]); a job's preparation, one session, gets no more than it. [preparationBudget] is the least a
+     *  preparation gets; one grows with its job's vCPUs ([preparationBudget]). */
     val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
     /** Explicitly approved infrastructure releases this worker can replace, preserving consumer inputs. */
     val workerReplaces: Set<String> = emptySet(),
