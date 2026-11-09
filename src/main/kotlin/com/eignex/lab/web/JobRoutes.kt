@@ -100,12 +100,6 @@ internal fun Route.jobRoutes(services: ApiServices) {
         require(body.keys == setOf("tags")) { "provide only tags: an array of strings; [] restores auto placement" }
         call.respondAction(jobs.retag(id, body["tags"]))
     }
-    post("/jobs/{id}/host") {
-        throw ApiError.Gone("host overrides are retired; use /jobs/{id}/tags with {\"tags\": []} for auto placement")
-    }
-    post("/jobs/{id}/machines") {
-        throw ApiError.Gone("machine overrides are retired; use tags for capabilities; the cloud pool scales automatically")
-    }
     post("/jobs/{id}/description") {
         val id = call.longParam()
         val spec = call.receive<DescriptionSpec>()
