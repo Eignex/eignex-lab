@@ -60,7 +60,7 @@ internal fun jobPage(
     append(Html("<dt>created</dt><dd>") + ago(job.createdAt) + Html("</dd>"))
     if (job.startedAt != null) append(Html("<dt>started</dt><dd>") + ago(job.startedAt) + Html("</dd>"))
     if (job.finishedAt != null) append(Html("<dt>finished</dt><dd>") + ago(job.finishedAt) + Html("</dd>"))
-    append(Html("<dt>where</dt><dd>") + hostCell(job, hosts, nodes, files.instances) + Html("</dd>"))
+    append(Html("<dt>where</dt><dd>") + hostCell(job, hosts, nodes) + Html("</dd>"))
     job.experiment.nodeTags?.let { selector ->
         append(Html("<dt>node tags</dt><dd>"))
         if (selector.require.isNotEmpty()) append(Html("require ") + (esc(selector.require.sorted().joinToString())))

@@ -115,7 +115,7 @@ internal object Schema {
             // The job a runner from before the column ran on the local machine.
             it.execute("UPDATE jobs SET local = 1 WHERE status = 'RUNNING' AND COALESCE(json_extract(experiment, '$.host'), 'lab') = 'lab'")
         }
-        if ("backend" !in jobColumns) it.execute("ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'legacy'")
+        if ("backend" !in jobColumns) it.execute("ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'nomad'")
         ExecutionStore.migrate(db)
         // A queued job whose cancel was requested, which a runner from before requeues left: it is cancelled.
         it.executeUpdate("UPDATE commands SET status = 'CANCELLED' WHERE status IN ('QUEUED', 'RUNNING') AND job_id IN " +

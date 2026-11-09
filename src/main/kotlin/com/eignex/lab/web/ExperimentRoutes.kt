@@ -35,7 +35,6 @@ internal fun Route.experimentRoutes(services: ApiServices) {
             is Submission.SplitConflict -> throw ApiError.Conflict(submission.message)
         }
     }
-    get("/experiments/{id}/arms") { call.respond(io { store.plans.arms(call.longParam()) }) }
     get("/experiments/{id}/reference") {
         val id = call.longParam()
         call.respond(io {
@@ -81,18 +80,6 @@ internal fun Route.experimentRoutes(services: ApiServices) {
                 from = page.last().index + 1
             }
         }
-    }
-    get("/experiments/{id}/stats") {
-        val id = call.longParam()
-        call.respond(io { Stats.of(store.plans.arms(id).map { it.arm.label }, OptimumClaims.qualify(store, store.plans.cases(id))) })
-    }
-    get("/experiments/{id}/optimum-claims") {
-        val id = call.longParam()
-        call.respond(io {
-            OptimumClaims.qualify(store, store.plans.cases(id)).mapNotNull { case ->
-                OptimumClaims.assessment(case.record)?.let { case.index.toString() to it }
-            }.toMap()
-        })
     }
     get("/experiments/{id}/cases.csv") {
         call.respondText(io { Results.casesCsv(OptimumClaims.qualify(store, store.plans.cases(call.longParam()))) }, ContentType.Text.CSV)

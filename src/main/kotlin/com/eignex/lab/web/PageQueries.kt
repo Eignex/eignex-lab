@@ -27,8 +27,6 @@ internal class IndexView(
     val queue: List<Long>,
     val hosts: Map<Long, List<HostProgress>>,
     val nodes: Map<Long, List<JobNode>>,
-    /** The cloud instances each shown job ran on, read only while the jobs volume answers. */
-    val instances: Map<Long, List<String>>,
     val free: Long?,
     val held: String?,
 )
@@ -56,16 +54,11 @@ internal class PageQueries(private val services: ApiServices) {
         val active = store.active(withCommands = false)
         val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
         val storage = services.pageStorage.latest
-        // Nomad placement is in the database; its jobs never write the legacy aws-instances file.
-        // In particular, do not touch every historical job directory on each queue refresh.
-        val instances = if (storage.held != null) emptyMap() else (active + history)
-            .filter { it.backend != Backend.NOMAD && (it.experiment.host == Experiments.AWS_HOST || it.experiment.host == Experiments.AUTO_HOST) }
-            .associate { it.id to JobDirView.instances(config.paths, it) }.filterValues { it.isNotEmpty() }
         return IndexView(
             active, store.schedules.all(), history, before, name, store.queue(),
             store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
             jobNodes(config.status, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }, services.capacitySettings.get()),
-            instances, storage.free, storage.held,
+            storage.free, storage.held,
         )
     }
 

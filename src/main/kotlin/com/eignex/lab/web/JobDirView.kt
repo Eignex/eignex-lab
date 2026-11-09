@@ -30,8 +30,6 @@ internal class JobDirView(
     val produced: List<String> = emptyList(),
     val recheck: RecheckResult? = null,
     val analysis: AnalysisResult? = null,
-    /** The cloud instances it ran on (`aws-instances`), a line each. */
-    val instances: List<String> = emptyList(),
 ) {
     companion object {
         /** A directory the pages cannot read: its volume is missing or does not answer. */
@@ -55,12 +53,7 @@ internal class JobDirView(
                     ?.let { runCatching { lenient.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() },
                 analysis = dir.resolve(CompilationReports.ANALYSIS).takeIf { it.isFile }
                     ?.let { runCatching { lenient.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() },
-                instances = instances(paths, job),
             )
         }
-
-        /** Only the cloud instances [job] ran on: what the queue page shows of each job's directory. */
-        fun instances(paths: DataPaths, job: Job): List<String> =
-            paths.jobDir(job.id).resolve("aws-instances").toFile().takeIf { it.isFile }?.readLines()?.filter { it.isNotBlank() }.orEmpty()
     }
 }
