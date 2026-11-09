@@ -41,45 +41,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE)
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
     private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
-    private fun request(path: String, method: String = "GET", body: HttpRequest.BodyPublisher = HttpRequest.BodyPublishers.noBody(), owner: AttemptOwner? = null, range: Long = 0): HttpResponse<ByteArray> {
-        val started = System.nanoTime()
-        val timeout = if (path == "resource-checkpoint") 3_000L else if (path == "run-timeout") 30_000L else if (path == "preparation-diagnostics") {
-            // Evidence only: do not extend work, retry, or accept writes after the owning lease expires.
-            val lease = leaseRemainingMs()
-            if (lease <= 0) throw ExecutionFenced("worker lease expired")
-            minOf(5_000, lease)
-        } else {
-            checkRun(); val lease = leaseRemainingMs()
-            if (lease <= 0) throw ExecutionFenced("worker lease expired")
-            minOf(30_000, runRemainingMs() ?: 30_000, lease).coerceAtLeast(1)
-        }
-        val builder = HttpRequest.newBuilder(URI.create(api.toString().trimEnd('/') + "/worker/v1/sessions/${NomadClient.encode(id)}/$path"))
-            .timeout(Duration.ofMillis(timeout)).header("Authorization", "Bearer $token").header("X-Lab-Allocation", allocation)
-            .header("X-Lab-Identity", Files.readString(identityFile).trim())
-            .header("Content-Type", if (path.startsWith("commit-packed") || path == "uploads-packed") "application/octet-stream" else "application/json")
-        if (owner != null) builder.header("X-Lab-Attempt", Json.encodeToString(owner))
-        if (range > 0) builder.header("Range", "bytes=$range-")
-        val upload = Regex("uploads/([0-9a-f]{64})(?:\\?(.*))?").matchEntire(path)
-        fun record(status: Int?, responseOffset: Long? = null, failure: String? = null) {
-            if (upload == null) return
-            val offset = Regex("(?:^|&)offset=([0-9]+)(?:&|$)").find(upload.groupValues[2])?.groupValues?.get(1)?.toLongOrNull()
-            preparationRecorder?.upload(PreparationUploadDiagnostic(upload.groupValues[1], method, status, offset,
-                responseOffset, body.contentLength().coerceAtLeast(0), (System.nanoTime() - started) / 1_000_000, failure))
-        }
-        val response = try { client.send(builder.method(method, body).build(), HttpResponse.BodyHandlers.ofByteArray()) }
-        catch (failure: java.io.IOException) {
-            record(null, failure = if (failure is java.net.http.HttpTimeoutException) "timeout" else "io"); throw failure
-        } catch (failure: InterruptedException) { record(null, failure = "interrupted"); throw failure }
-        record(response.statusCode(), if (upload == null) null else runCatching { Json.decodeFromString<UploadReply>(String(response.body())).offset }.getOrNull())
-        val elapsed = (System.nanoTime()-started)/1_000_000
-        if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
-        if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
-        if (path in setOf("commit-inline", "commit-packed", "commit-packed-large", "uploads-packed") && response.statusCode() in setOf(404, 405)) return response
-        if (response.statusCode() in setOf(408, 429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
-        check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }
-        return response
-    }
-    private fun json(path: String, body: String, owner: AttemptOwner? = null) = request(path, "POST", HttpRequest.BodyPublishers.ofString(body), owner)
+    private val coordinator = CoordinatorClient(api, id, token, allocation, identityFile, client, ::leaseRemainingMs, ::runRemainingMs, ::checkRun) { preparationRecorder }
     private fun <T> retry(ignoreRunDeadline: Boolean = false, operation: () -> T): T = retries.run({
         minOf(leaseRemainingMs(),
             if (ignoreRunDeadline) Long.MAX_VALUE else runRemainingMs() ?: Long.MAX_VALUE)
@@ -100,7 +62,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     input.seek(upload.offset); ByteArray(count).also { input.readFully(it) }
                 }
                 if (bytes.isEmpty()) break
-                val response = request("worker-log?offset=${upload.offset}", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes))
+                val response = coordinator.request("worker-log?offset=${upload.offset}", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes))
                 val accepted = Json.decodeFromString<UploadReply>(String(response.body())).offset
                 require(accepted in upload.offset..upload.offset + bytes.size)
                 if (accepted == upload.offset) break
@@ -140,12 +102,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     }
 
     private fun runSession() {
-        val manifest = retry { Json.decodeFromString<WorkManifest>(String(json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
+        val manifest = retry { Json.decodeFromString<WorkManifest>(String(coordinator.json("register", Json.encodeToString(WorkerRegistration(release))).body())) }
         require(manifest.session == id && manifest.release == release)
         val observation = ResourceObservation.read(manifest.budget)
         val cacheRoot = System.getenv("LAB_WORKER_CACHE_ROOT")?.let(Path::of) ?: root
         val gradleCache = GradleCacheProxy({ method, key, body ->
-            val response = request("gradle-cache/$key", method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
+            val response = coordinator.request("gradle-cache/$key", method, body?.let(HttpRequest.BodyPublishers::ofByteArray) ?: HttpRequest.BodyPublishers.noBody())
             response.statusCode() to response.body()
         })
         // A host whose cache shares a small disk with other data (the lab Mac's SSD) sets smaller caps than a cloud node's.
@@ -170,7 +132,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 val sample = ResourceCheckpoint((System.nanoTime() - resourcesStarted) / 1_000_000,
                     observation.budget, observation.enforcement, observation.cpuMax, observation.memoryMax,
                     ResourceObservation.counters(), "worker-cumulative-lower-bound", retirement)
-                json("resource-checkpoint", Json.encodeToString(WorkerResourceCheckpoint(owner, sample)))
+                coordinator.json("resource-checkpoint", Json.encodeToString(WorkerResourceCheckpoint(owner, sample)))
             } // Evidence has a short single-request timeout; it must never block work recovery.
         }
         val resourceReporter = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-resources").apply { isDaemon = true } }
@@ -181,7 +143,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         var heldSince: Long? = null
         while (true) {
             if (interruption.requested()) return
-            val response = retry { json("claim", """{"wait":true}""") }
+            val response = retry { coordinator.json("claim", """{"wait":true}""") }
             if (response.statusCode() == 204) return
             if (response.statusCode() == 202) {
                 // Journal pressure: keep this session and its warm workspaces, but not indefinitely.
@@ -196,7 +158,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val deadline = AtomicLong(0)
             fun renew() {
                 val start = System.nanoTime()
-                val lease = Json.decodeFromString<LeaseReply>(String(json("renew", Json.encodeToString(claim.owner)).body()))
+                val lease = Json.decodeFromString<LeaseReply>(String(coordinator.json("renew", Json.encodeToString(claim.owner)).body()))
                 require(lease.leaseMs in 10_001..ExecutionStore.LEASE_MS)
                 require((lease.runRemainingMs != null) == (Experiments.runTimeoutSec(manifest.experiment) != null)) { "run deadline missing from lease" }
                 lease.runRemainingMs?.let { allowance ->
@@ -215,7 +177,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 try { renew() } catch (_: ExecutionFenced) { deadline.set(0) } catch (_: Exception) { /* Existing monotonic deadline remains authoritative. */ }
             }, 10, 10, TimeUnit.SECONDS)
             fun remaining() = minOf(interruption.remainingMs(), (deadline.get() - System.nanoTime()) / 1_000_000)
-            fun phase(value: String) { if (remaining() <= 0) throw LeaseLost("attempt lease ended"); retry { json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
+            fun phase(value: String) { if (remaining() <= 0) throw LeaseLost("attempt lease ended"); retry { coordinator.json("phase", Json.encodeToString(WorkerPhase(claim.owner, value))) } }
             val directory = root.resolve("attempts/${claim.owner.iteration.replace(':', '-')}-${claim.owner.generation}")
             val logs = streamLogs(claim, directory)
             try {
@@ -228,12 +190,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     preparationRecorder = recorder
                     val nextDiagnostic = AtomicLong(0)
                     fun reportDiagnostics() { runCatching {
-                        json("preparation-diagnostics", Json.encodeToString(WorkerPreparationDiagnostics(claim.owner,
+                        coordinator.json("preparation-diagnostics", Json.encodeToString(WorkerPreparationDiagnostics(claim.owner,
                             recorder.snapshot(leaseRemainingMs(), runRemainingMs()))))
                     } }
                     val reporter = Executors.newSingleThreadScheduledExecutor { Thread(it, "preparation-progress").apply { isDaemon = true } }
                     fun reportPreparation() {
-                        runCatching { json("preparation-progress", Json.encodeToString(WorkerPreparationProgress(claim.owner, trace.snapshot()))) }
+                        runCatching { coordinator.json("preparation-progress", Json.encodeToString(WorkerPreparationProgress(claim.owner, trace.snapshot()))) }
                         val at = System.nanoTime()
                         val next = nextDiagnostic.get()
                         if (at >= next && nextDiagnostic.compareAndSet(next, at + 5_000_000_000)) reportDiagnostics()
@@ -242,7 +204,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     try {
                         fun signature(input: InputSignature): SignedInput = retry {
                             val payload = Json.encodeToString(InputSignature.serializer(), input)
-                            Json.decodeFromString<SignedInput>(String(request("input-signature", "POST", HttpRequest.BodyPublishers.ofString(payload), owner = claim.owner).body()))
+                            Json.decodeFromString<SignedInput>(String(coordinator.request("input-signature", "POST", HttpRequest.BodyPublishers.ofString(payload), owner = claim.owner).body()))
                         }
                         val preparation = InputSigningRelay(::signature).use { relay ->
                             PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
@@ -250,9 +212,9 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                                 SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")),
                                 nativeTrees = NativePreparedTrees.environment(), nativeJob = System.getenv("LAB_WORKER_EXPERIMENT")?.toLong())
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
-                                    retry { Json.decodeFromString<List<List<Problem>>>(String(json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
+                                    retry { Json.decodeFromString<List<List<Problem>>>(String(coordinator.json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                                 }, cachedSelections = { keys ->
-                                    retry { Json.decodeFromString<List<BenchSelectionEntry>>(String(json("bench-selections", Json.encodeToString(WorkerBenchSelections(claim.owner, keys))).body())) }
+                                    retry { Json.decodeFromString<List<BenchSelectionEntry>>(String(coordinator.json("bench-selections", Json.encodeToString(WorkerBenchSelections(claim.owner, keys))).body())) }
                                 }) { file ->
                                     val regional = if (file.fileName.toString().endsWith(".zip")) BuildArchives.worker(publishSignature = ::signature) else null
                                     // A store that refuses the archive (not yet granted, say) leaves it to the coordinator.
@@ -271,7 +233,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         reportDiagnostics()
                         preparationRecorder = null
                     }
-                } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing"); executionStarted = System.nanoTime() }, { case -> retry { json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
+                } else executor.run(manifest.copy(budget = manifest.budget.copy(parallel = claim.parallel)), claim.indices, directory, allocation, claim.owner.generation, { phase("executing"); executionStarted = System.nanoTime() }, { case -> retry { coordinator.json("progress", Json.encodeToString(WorkerProgress(claim.owner, case.index))) } }, ::runRemainingMs, ::remaining)
                 val outputStarted = System.nanoTime()
                 phase("uploading")
                 val outputs = linkedMapOf<String, Path>()
@@ -296,11 +258,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 deleteTree(directory)
                 if (result.runTimedOut) return
             } catch (_: RunDeadlineExceeded) {
-                retry(ignoreRunDeadline = true) { json("run-timeout", Json.encodeToString(claim.owner)) }
+                retry(ignoreRunDeadline = true) { coordinator.json("run-timeout", Json.encodeToString(claim.owner)) }
                 return
             } catch (failure: WorkerBuildFailure) {
                 if (interruption.requested()) return
-                retry { json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
+                retry { coordinator.json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
                 return
             } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow(); retryLeaseDeadline.set(Long.MAX_VALUE) }
         }
@@ -330,7 +292,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                         input.seek(offset); ByteArray(count).also { input.readFully(it) }
                     }
                     if (bytes.isNotEmpty()) {
-                        val response = request("logs/$index/$stream?offset=$offset", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), claim.owner)
+                        val response = coordinator.request("logs/$index/$stream?offset=$offset", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), claim.owner)
                         val accepted = Json.decodeFromString<UploadReply>(String(response.body())).offset
                         require(accepted in offset..minOf(offset + bytes.size, WorkerLogs.MAX_BYTES)); offsets[name] = accepted
                     }
@@ -380,7 +342,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             if (length == 0) return 0
             if (chunk.available() == 0) {
                 if (total == offset) return -1
-                fun transfer() = retry { request("inputs/${bundle.sha256}", range = offset) }
+                fun transfer() = retry { coordinator.request("inputs/${bundle.sha256}", range = offset) }
                 val response = trace?.step("download", ::transfer) ?: transfer()
                 val range = requireNotNull(response.headers().firstValue("Content-Range").orElse(null))
                 val match = requireNotNull(Regex("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matchEntire(range))
@@ -409,7 +371,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val body = Json.encodeToString(WorkerInlineCommit(owner, result.copy(artifacts = outputs), blobs))
             // File bytes alone do not bound the request: full assignment records can exceed them by megabytes.
             if (body.toByteArray().size <= PACKED_HEADER_BYTES) {
-                val reply = publicationRetry { json("commit-inline", body) }
+                val reply = publicationRetry { coordinator.json("commit-inline", body) }
                 if (reply.statusCode() in 200..299) return "inline"
             }
         }
@@ -419,7 +381,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             val header = Json.encodeToString(manifest).toByteArray()
             require(header.size <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
             val path = if (header.size <= PACKED_HEADER_BYTES) "commit-packed" else "commit-packed-large"
-            val reply = publicationRetry { request(path, "POST", packedBody(header, sources)) }
+            val reply = publicationRetry { coordinator.request(path, "POST", packedBody(header, sources)) }
             if (reply.statusCode() in 200..299) return "packed"
         }
         var mode = "resumable"
@@ -431,7 +393,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 val header = Json.encodeToString(WorkerPackedArtifacts(owner,
                     batch.map { ResultBlob(it.key, Files.size(it.value)) })).toByteArray()
                 require(header.size <= PACKED_HEADER_BYTES)
-                val reply = publicationRetry { request("uploads-packed", "POST", packedBody(header, batch)) }
+                val reply = publicationRetry { coordinator.request("uploads-packed", "POST", packedBody(header, batch)) }
                 if (reply.statusCode() !in 200..299) return false // Older coordinators retain ordinary uploads.
                 batch.keys.forEach { remaining.remove(it) }; batch.clear(); batchBytes = 0; mode = "packed-batches"
                 return true
@@ -453,7 +415,7 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         val bytes = body.toByteArray().size
         require(bytes <= LARGE_RESULT_BYTES) { "result manifest exceeds the 64 MiB transport limit" }
         val path = if (result.preparation == null && bytes > PACKED_HEADER_BYTES) "commit-large" else "commit"
-        if (result.preparation == null) publicationRetry { json(path, body) } else retry { json(path, body) }
+        if (result.preparation == null) publicationRetry { coordinator.json(path, body) } else retry { coordinator.json(path, body) }
         return mode
     }
 
@@ -494,14 +456,14 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 try {
                     // Query progress only initially or after an ambiguous response; successful PUTs carry the next offset.
                     val queriedOffset = offset == null
-                    val from = offset ?: Json.decodeFromString<UploadReply>(String(request("uploads/$sha" + if (reusable) "?reuse=true" else "", owner = owner).body())).offset
+                    val from = offset ?: Json.decodeFromString<UploadReply>(String(coordinator.request("uploads/$sha" + if (reusable) "?reuse=true" else "", owner = owner).body())).offset
                     require(from in 0..size)
                     if (from == size && size > 0) return@transfer true
                     if (queriedOffset && from > 0) resumed = true
                     val count = minOf(size - from, 8L * 1024 * 1024).toInt()
                     val bytes = Files.newInputStream(file).use { input -> input.skipNBytes(from); input.readNBytes(count) }
                     sent = true
-                    val reply = request("uploads/$sha?${reuse}bytes=$size&offset=$from", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), owner)
+                    val reply = coordinator.request("uploads/$sha?${reuse}bytes=$size&offset=$from", "PUT", HttpRequest.BodyPublishers.ofByteArray(bytes), owner)
                     val next = Json.decodeFromString<UploadReply>(String(reply.body())).offset
                     require(next in from..size && (next > from || size == 0L))
                     offset = next
