@@ -54,11 +54,20 @@ open class ProviderHttp(private val timeout: Duration = Duration.ofSeconds(5), p
                     .let { ProviderResponse(it.statusCode(), it.headers().map(), it.body() ?: ByteArray(0)) }
             } catch (error: IOException) {
                 if (attempt >= attempts) throw error
+                backoff(attempt)
                 continue
             }
-            if (attempt < attempts && transient(response)) continue
+            if (attempt < attempts && transient(response)) {
+                backoff(attempt)
+                continue
+            }
             return response
         }
+    }
+
+    /** Before retry [attempt] + 1, a full-jitter exponential pause as the SDKs' standard retries take: up to 1 s, 2 s, … */
+    protected open fun backoff(attempt: Int) {
+        Thread.sleep((Math.random() * 1000L * (1L shl (attempt - 1).coerceAtMost(4))).toLong())
     }
 
     companion object {

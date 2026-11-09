@@ -242,6 +242,22 @@ class AwsApiTest {
             profile("self")()
             assertEquals(AwsCredentials("AKIDSELF", "self-secret"), asked.last().first)
             assertFailsWith<IllegalStateException> { profile("mfa")() }
+            // Credentials shorter-lived than the refresh margin, such as an `aws login` session's, are reused until halfway.
+            var now = Instant.parse("2026-11-09T12:00:00Z")
+            val clock = object : Clock() {
+                override fun getZone() = ZoneOffset.UTC
+                override fun withZone(zone: java.time.ZoneId?) = this
+                override fun instant() = now
+            }
+            var fetched = 0
+            val short = AwsProfileCredentials("adapter", mapOf("HOME" to home.toString()), clock, "eu-north-1") { _, _ ->
+                fetched++; AwsCredentials("ASIASHORT", "s", "t", now.plusSeconds(900))
+            }
+            short(); short()
+            now = now.plusSeconds(449); short()
+            assertEquals(1, fetched)
+            now = now.plusSeconds(2); short()
+            assertEquals(2, fetched)
         } finally {
             home.toFile().deleteRecursively()
         }
