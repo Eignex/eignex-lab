@@ -6,7 +6,6 @@ import com.eignex.lab.domain.*
 import java.io.File
 import java.io.Writer
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /** Shared container limits and lifecycle for reference solvers; adapters own arguments and verdicts. */
@@ -54,21 +53,11 @@ class DockerReference(private val image: String, private val label: String, priv
         val stderr = File.createTempFile("$label-", ".err")
         try {
             val started = System.nanoTime()
-            val process = ProcessBuilder(command).redirectError(stderr).start()
-            // Solvers can print while reading large inputs; feed stdin concurrently to avoid pipe deadlocks.
-            val writer = Thread {
-                runCatching { process.outputStream.bufferedWriter().use { input?.invoke(it) } }
-            }.apply { isDaemon = true; start() }
-            val timedOut = AtomicBoolean()
-            val watchdog = Thread {
-                runCatching {
-                    if (!process.waitFor(timeoutMillis * 2 + GRACE_MS, TimeUnit.MILLISECONDS)) {
-                        timedOut.set(true)
-                        // Killing only the Docker client would leave the container running.
-                        try { kill(listOf(name)) } finally { process.destroyForcibly() }
-                    }
-                }
-            }.apply { isDaemon = true; start() }
+            // Killing only the Docker client would leave the container running.
+            val watched = WatchedProcess.start(ProcessBuilder(command).redirectError(stderr), timeoutMillis, input) {
+                kill(listOf(name))
+            }
+            val process = watched.process
             try {
                 val stdout = process.inputStream.bufferedReader().use { it.readText() }
                 process.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS)
@@ -77,7 +66,7 @@ class DockerReference(private val image: String, private val label: String, priv
                 val error = stderr.readText().takeLast(ERROR_TAIL_CHARS)
                 // Docker launch failures must be retried rather than cached as undecided solver results.
                 check(exit !in DOCKER_RUN_FAILED) { "$solver: docker run exited $exit: $error" }
-                return Run(stdout, error, exit, elapsedMs, timedOut.get())
+                return Run(stdout, error, exit, elapsedMs, watched.timedOut)
             } catch (failure: Exception) {
                 if (process.isAlive) {
                     runCatching { kill(listOf(name)) }
@@ -85,8 +74,7 @@ class DockerReference(private val image: String, private val label: String, priv
                 }
                 throw failure
             } finally {
-                watchdog.interrupt()
-                writer.interrupt()
+                watched.close()
             }
         } finally {
             stderr.delete()
@@ -106,7 +94,6 @@ class DockerReference(private val image: String, private val label: String, priv
     private companion object {
         const val MEMORY_LIMIT = "6g"
         const val EXIT_WAIT_MS = 5_000L
-        const val GRACE_MS = 20_000L
         const val ERROR_TAIL_CHARS = 200
 
         // Docker itself failed or could not start the container.

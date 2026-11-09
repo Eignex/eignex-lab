@@ -4,7 +4,6 @@ import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
 
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * A MiniZinc model solved by a registered `minizinc --solver` (cp-sat by default, also chuffed and the rest). The model
@@ -63,21 +62,10 @@ object MiniZincReference {
         check(remaining > 0) { "MiniZinc identity exhausted the reference case budget" }
         val cmd = command(instance, solver, Budget(remaining), processors, free)
             .let { listOf(identity.binary.path) + it.drop(1) }
-        val process = ProcessBuilder(cmd).start()
-        process.outputStream.close()
         // A solve that ignores its time limit must not hang the case; the lab's own case timeout is the backstop.
-        val killed = AtomicBoolean(false)
-        Thread {
-            runCatching {
-                if (!process.waitFor(budget.timeoutMillis * 2 + 20_000, TimeUnit.MILLISECONDS)) {
-                    killed.set(true)
-                    process.destroyForcibly()
-                }
-            }
-        }.apply {
-            isDaemon = true
-            start()
-        }
+        val watched = WatchedProcess.start(ProcessBuilder(cmd), budget.timeoutMillis)
+        val process = watched.process
+        var killed = false
         val stderr = StringBuilder()
         val drain = Thread { process.errorStream.bufferedReader().forEachLine { stderr.appendLine(it) } }.apply {
             isDaemon = true
@@ -85,7 +73,7 @@ object MiniZincReference {
         }
         val parsed = parse(process.inputStream.bufferedReader().lineSequence(), startNanos)
         if (!process.waitFor(GRACE_MS, TimeUnit.MILLISECONDS)) {
-            killed.set(true)
+            killed = true
             process.destroyForcibly()
             process.waitFor()
         }
@@ -93,7 +81,7 @@ object MiniZincReference {
         val exit = process.exitValue()
         val stats = LinkedHashMap(parsed.stats + identity.stats)
         if (exit != 0 && parsed.feasible == null) {
-            check(killed.get()) { "minizinc failed (exit $exit): ${stderr.toString().take(STDERR_CAP)}" }
+            check(killed || watched.timedOut) { "minizinc failed (exit $exit): ${stderr.toString().take(STDERR_CAP)}" }
             stats["killed"] = "hard-timeout"
         }
         stats["exit"] = exit.toString()
