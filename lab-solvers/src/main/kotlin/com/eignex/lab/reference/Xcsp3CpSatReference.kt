@@ -9,12 +9,12 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
- * XCSP3 reference adapter for CPMpy and OR-Tools cp-sat in the [IMAGE] container.
+ * XCSP3 reference adapter for OR-Tools cp-sat in the [IMAGE] container, a JVM importer built on XCSP3-Java-Tools.
  * Returns a [ReferenceResult] scored like any other reference.
  */
 object Xcsp3CpSatReference {
-    const val IMAGE = "eignex-lab-xcsp3-cpsat:source-preserving-v2"
-    const val VERSION = "xcsp3-source-preserving-v2"
+    const val IMAGE = "eignex-lab-xcsp3-cpsat:source-preserving-v3"
+    const val VERSION = "xcsp3-source-preserving-v3"
 
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
     const val CONTAINER_LABEL = "eignex-lab-xcsp3-ref"
@@ -25,7 +25,7 @@ object Xcsp3CpSatReference {
 
     private val docker = DockerReference(IMAGE, CONTAINER_LABEL, "xcsp3 cp-sat")
 
-    /** The container's one-line JSON verdict (`images/xcsp3-cpsat/solve.py` in eignex-lab). */
+    /** The container's one-line JSON verdict, as the `images/xcsp3-cpsat` solver in eignex-lab prints it. */
     @Serializable
     private data class Verdict(
         val exit: String,

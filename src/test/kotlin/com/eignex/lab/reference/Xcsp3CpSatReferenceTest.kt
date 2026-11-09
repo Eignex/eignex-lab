@@ -18,6 +18,15 @@ import kotlin.test.assertNull
 
 class Xcsp3CpSatReferenceTest {
     @Test
+    fun `the image solver reports the importer version the adapter accepts`() {
+        val main = java.io.File("images/xcsp3-cpsat/src/main/java/com/eignex/lab/xcsp3cpsat/Main.java").readText()
+        val reported = Regex("""String VERSION = "([^"]+)";""").find(main)?.groupValues?.get(1)
+
+        assertEquals(Xcsp3CpSatReference.VERSION, reported)
+        assertEquals(Xcsp3CpSatReference.VERSION, "xcsp3-" + Xcsp3CpSatReference.IMAGE.substringAfter(':'))
+    }
+
+    @Test
     fun `reference records should retain their importer identity`() {
         val output = "v <instantiation><list>x</list><values>5</values></instantiation>\n" +
             """{"exit":"OPTIMAL","version":"${Xcsp3CpSatReference.VERSION}","objective":5,"exactObjective":"5","maximize":true,"cpModelPresolve":true}"""

@@ -29,7 +29,7 @@ class DockerCleanupTest {
     /** The lab Mac's images as `docker images` listed them. */
     private val listing = listOf(
         "eignex-lab-scip\tlatest\t1a",
-        "eignex-lab-xcsp3-cpsat\tsource-preserving-v2\t2a",
+        "eignex-lab-xcsp3-cpsat\tsource-preserving-v3\t2a",
         "eignex-lab-xcsp3-cpsat\tsource-model-v2\t2b",
         "eignex-lab-xcsp3-cpsat\tlatest\t2c",
         "eignex-lab-clasp\tlatest\t3a",
@@ -153,7 +153,7 @@ class DockerCleanupTest {
 
     @Test
     fun `a running container or a silent docker skips the cleanup`() {
-        val busy = FakeDocker(ps = "eignex-lab-xcsp3-cpsat:source-preserving-v2\n", images = listing)
+        val busy = FakeDocker(ps = "eignex-lab-xcsp3-cpsat:source-preserving-v3\n", images = listing)
         assertNull(cleanup(busy).run("test"))
         assertEquals(1, busy.calls.size)
 
