@@ -38,9 +38,7 @@ sealed interface Action {
  * pause. Each is one store transaction ([JobControl]); the files a cancel or delete leaves behind are removed after it,
  * off the request's thread.
  */
-class JobService internal constructor(private val services: ApiServices) {
-    private val config get() = services.config
-    private val store get() = services.store
+class JobService internal constructor(private val config: Config, private val store: Store, private val placement: PlacementPolicy) {
 
     suspend fun cancel(id: Long): Action = when (withContext(Dispatchers.IO) { store.requestCancel(id) }) {
         // A queued job may have been set up before it yielded; the runner will not take it again to clean up.
@@ -60,7 +58,7 @@ class JobService internal constructor(private val services: ApiServices) {
      */
     suspend fun retry(id: Long): Action = withContext(Dispatchers.IO) {
         if (!store.retry(id)) return@withContext Action.Refused("only a failed or cancelled Nomad job can be retried; resubmit historical experiments")
-        store.job(id)?.takeIf { !it.planned }?.let { job -> store.place(id, services.placement.resolve(job.experiment, job.origin, checked = false)) }
+        store.job(id)?.takeIf { !it.planned }?.let { job -> store.place(id, placement.resolve(job.experiment, job.origin, checked = false)) }
         Action.Done("queued again")
     }
 
@@ -76,7 +74,7 @@ class JobService internal constructor(private val services: ApiServices) {
         val selector = inputTags(tags)
         val job = store.job(id) ?: return@withContext Action.Missing("no such experiment")
         val experiment = job.experiment.copy(nodeTags = selector.takeIf { NodeTags.labels(it).isNotEmpty() })
-        val host = services.placement.resolve(experiment, job.origin)
+        val host = placement.resolve(experiment, job.origin)
         if (store.place(id, host, experiment)) Action.Done("tags updated: ${PlacementPolicy.note(host)}")
         else Action.Refused("only a queued job that has not been planned or admitted can change tags")
     }
@@ -85,7 +83,7 @@ class JobService internal constructor(private val services: ApiServices) {
      *  that is cloud-only. */
     fun setVcpus(id: Long, vcpus: Int): Action {
         val job = store.job(id) ?: return Action.Missing("no such job")
-        val limit = if (job.experiment.host == Experiments.AWS_HOST) services.placement.coreLimit(job.experiment) else config.cores
+        val limit = if (job.experiment.host == Experiments.AWS_HOST) placement.coreLimit(job.experiment) else config.cores
         require(vcpus in 1..limit) { "vcpus must be between 1 and $limit" }
         return if (store.setVcpus(id, vcpus)) Action.Done("vcpus $vcpus") else Action.Missing("no such job")
     }

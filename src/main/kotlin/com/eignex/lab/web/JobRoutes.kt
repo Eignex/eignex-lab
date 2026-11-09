@@ -51,7 +51,7 @@ internal fun Route.jobRoutes(services: ApiServices) {
                     preparation = if (job.backend == Backend.NOMAD) store.execution.reports(job.id).filter { it.session.executionClass == ExecutionClass.PREPARE }.takeLast(1) else emptyList(),
                     references = store.references.matching(cases.map { it.problem.referenceKey }, sources = References.sources(cases)),
                     showCommands = "commands" in call.parameters || "failed" in call.parameters,
-                    previous = if (job.origin is JobOrigin.Scheduled) PageQueries(services).previousRun(job) else null,
+                    previous = if (job.origin is JobOrigin.Scheduled) services.pageQueries.previousRun(job) else null,
                     holds = store.holds.active().filter { it.job == job.id },
                     hosts = store.hostProgress(listOf(job.id))[job.id].orEmpty(),
                     nodes = if (job.backend == Backend.NOMAD && job.status.isActive)

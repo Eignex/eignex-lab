@@ -39,7 +39,7 @@ class PageStorageTest {
                     services.pageStorage.start()
                     assertTrue(entered.await(5, TimeUnit.SECONDS))
                     val query = executor.submit<Boolean> {
-                        val view = PageQueries(services).index(null, null)
+                        val view = services.pageQueries.index(null, null)
                         assertTrue(view.active.isEmpty())
                         assertEquals("storage status is being checked", view.held)
                         true

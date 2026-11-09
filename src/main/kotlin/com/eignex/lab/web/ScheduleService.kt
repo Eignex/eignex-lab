@@ -15,9 +15,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 
 /** Creating and changing schedules: the checks a scheduled experiment passes before the lab reruns it on every commit. */
-class ScheduleService internal constructor(private val services: ApiServices) {
-    private val config get() = services.config
-    private val store get() = services.store
+class ScheduleService internal constructor(
+    private val config: Config,
+    private val store: Store,
+    private val placement: PlacementPolicy,
+    private val trust: (String) -> Trust,
+    private val experiments: ExperimentService,
+) {
 
     /** Create the schedule [input] describes; its id. A malformed one is refused as an [IllegalArgumentException]. */
     suspend fun create(input: JsonObject): Long {
@@ -26,7 +30,7 @@ class ScheduleService internal constructor(private val services: ApiServices) {
         Experiments.requirePlainName(spec.name)
         require(spec.intervalSec >= MIN_SCHEDULE_SEC) { "intervalSec must be at least $MIN_SCHEDULE_SEC" }
         validate(spec.experiment)
-        services.experiments.requireRef(spec.ref, Repositories.source(spec.experiment.repository), services.trust(spec.experiment.repository))
+        experiments.requireRef(spec.ref, Repositories.source(spec.experiment.repository), trust(spec.experiment.repository))
         return store.schedules.create(spec.name, spec.ref, spec.experiment, spec.intervalSec)
     }
 
@@ -57,7 +61,7 @@ class ScheduleService internal constructor(private val services: ApiServices) {
         require(if (pinned) local else Placement.cloudCoreLimit(experiment, config.workers, cloudSchedule = true) >= Experiments.arms(experiment).maxOf { it.cores }) {
             "the schedule's tags match no allowed worker; omit tags for auto placement or select configured capabilities"
         }
-        val coreLimit = services.placement.coreLimit(experiment)
+        val coreLimit = placement.coreLimit(experiment)
         Experiments.validate(experiment, if (local) config.cores else coreLimit, coreLimit)
         require(Experiments.arms(experiment).none { "ref" in it.values }) {
             "a scheduled experiment runs every arm at the schedule's ref; drop ref from its configs"

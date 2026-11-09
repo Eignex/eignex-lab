@@ -34,7 +34,7 @@ internal fun Route.statusRoutes(services: ApiServices) {
         call.respondHtml(page)
     }
     get("/disk") {
-        val view = io { PageQueries(services).disk() }
+        val view = io { services.pageQueries.disk() }
         if (call.wantsHtml()) call.respondHtml(diskPage(view.disk, view.holds, view.database, view.volumes, view.held))
         else call.respond((view.disk ?: DiskReport(0, view.freeBytes, emptyList()))
             .copy(holds = view.holds, database = view.database, volumes = view.volumes, held = view.held))

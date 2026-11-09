@@ -38,7 +38,7 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
 
     internal val queuePage = QueuePageCache(
         read = { key ->
-            val view = PageQueries(this).index(key.before, key.name)
+            val view = pageQueries.index(key.before, key.name)
             val histories = view.active.associate { it.id to estimates.lookup(it) }
             indexPage(config.status, host, view.active, view.schedules, view.history, PAGE_SIZE, view.before, view.name,
                 view.queue, { histories[it.id] }, emptyMap(), view.hosts, view.nodes, view.instances, view.free, view.held)
@@ -63,9 +63,10 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
 
     val placement = PlacementPolicy(config.workers) { store.schedules.all() }
     val signals = RunnerSignals(config.paths, config.docker)
-    val experiments = ExperimentService(this)
-    val jobs = JobService(this)
-    val schedules = ScheduleService(this)
+    val experiments = ExperimentService(config, store, placement, ::trust)
+    val jobs = JobService(config, store, placement)
+    val schedules = ScheduleService(config, store, placement, ::trust, experiments)
+    internal val pageQueries by lazy { PageQueries(config, store, pageStorage, disk, capacitySettings) }
 
     private val localFileArtifacts by lazy {
         archiveArtifacts ?: LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"),
