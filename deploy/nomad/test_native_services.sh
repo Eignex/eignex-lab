@@ -89,14 +89,37 @@ test_rejects_unversioned_worker_and_conflicting_lock() {
 
 test_input_signer_is_separate_and_never_inherits_lab_configuration() {
   setup
-  edit "$root/settings.json" '.inputSigner = {python: "/cache/venv/bin/python", script: "/cache/input_signer.py",
-    config: "/cache/signer.json"} | .labEnvironment.LAB_SHARED_INPUT_SIGNER = "http://127.0.0.1:8093/"'
+  edit "$root/settings.json" '.inputSigner = {config: "/cache/signer.json"}
+    | .labEnvironment.LAB_SHARED_INPUT_SIGNER = "http://127.0.0.1:8093/"'
   check "renders" render
   local signer="$root/out/com.eignex.lab.input-signer.plist"
-  equal $'/bin/sh\n-c\nexec "$0" "$@"\n/cache/venv/bin/python\n/cache/input_signer.py\n--config\n/cache/signer.json' \
-    "$(plist_strings "$signer" ProgramArguments)" "signer command"
-  check "signer lacks the signer address" test -z "$(plist_strings "$signer" EnvironmentVariables | grep -x LAB_SHARED_INPUT_SIGNER)"
-  check "coordinator has it" grep -q "LAB_SHARED_INPUT_SIGNER" "$root/out/com.eignex.lab.nomad-coordinator.plist"
+  equal $'/bin/sh\n-c\nexec "$0" "$@"\n/lab/releases/current/bin/eignex-lab\ninput-signer\n--config\n/cache/signer.json' \
+    "$(plist_strings "$signer" ProgramArguments)" "signer runs the lab launcher"
+  equal "HOME JAVA_HOME PATH" "$(plist_strings "$signer" EnvironmentVariables | sed -n 'p;n' | xargs)" \
+    "signer inherits no lab configuration"
+  check "coordinator has the signer address" grep -q "LAB_SHARED_INPUT_SIGNER" "$root/out/com.eignex.lab.nomad-coordinator.plist"
+  edit "$root/settings.json" '.inputSigner += {python: "/cache/venv/bin/python", script: "/cache/input_signer.py"}'
+  render && { echo "  failed: accepted the retired Python signer" >&2; exit 1; }
+  check "explains" grep -q "remove its python and script settings" "$root/rendered"
+}
+
+test_installation_restarts_a_changed_signer_alone() {
+  setup
+  stub_darwin
+  edit "$root/settings.json" '.inputSigner = {config: "/cache/signer.json"}'
+  check "first installation" install_services
+  equal 5 "$(grep -c '^launchctl bootstrap' "$root/sudo.log")" "all five registered"
+  : > "$root/sudo.log"
+  check "unchanged signer stays up" install_services
+  equal "launchctl bootout system/com.eignex.lab.nomad-coordinator" "$(grep bootout "$root/sudo.log")" \
+    "only the coordinator restarts"
+  : > "$root/sudo.log"
+  edit "$root/settings.json" '.inputSigner.config = "/cache/other.json"'
+  check "changed signer installs without --restart-agents" install_services
+  equal $'launchctl bootout system/com.eignex.lab.nomad-coordinator\nlaunchctl bootout system/com.eignex.lab.input-signer' \
+    "$(grep bootout "$root/sudo.log")" "the coordinator and the signer restart"
+  check "installed" cmp -s "$root/daemons/com.eignex.lab.input-signer.plist" \
+    "$root/nomad/service-files/com.eignex.lab.input-signer.plist"
 }
 
 test_rejects_development_or_unprotected_agent() {
