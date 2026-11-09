@@ -36,7 +36,7 @@
         "cpuCapacity": {"usableMHz": 24000, "logicalCpus": 8},
         "budget": {"cpuMillis": 6000, "memoryMiB": 28672, "parallel": 1},
         "command": ["worker"],
-        "image": "ghcr.io/eignex/eignex-lab-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "image": "public.ecr.aws/i7d5w3s6/eignex-lab-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "datacenter": "lab",
         "statusHostVolume": "lab-status",
         "cacheHostVolume": "lab-cache",
