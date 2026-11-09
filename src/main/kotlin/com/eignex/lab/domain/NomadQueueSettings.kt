@@ -3,9 +3,8 @@ package com.eignex.lab.domain
 import com.eignex.lab.util.*
 
 import kotlinx.serialization.Serializable
-import com.eignex.lab.execution.BenchRuns
-import com.eignex.lab.nomad.NomadBatchJob
-import com.eignex.lab.nomad.NomadPlatform
+import com.eignex.lab.domain.NomadBatchJob
+import com.eignex.lab.domain.NomadPlatform
 
 @Serializable
 data class NomadQueueTarget(val template: NomadBatchJob, val tags: Set<String>, val market: CapacityMarket = CapacityMarket.SPOT) {
@@ -79,7 +78,7 @@ data class NomadQueueSettings(
      */
     fun solveBudget(target: NomadQueueTarget, job: Job, plan: com.eignex.lab.bench.BenchPlan? = null, maxCases: Int = Int.MAX_VALUE,
                     cpuCeiling: Int = Int.MAX_VALUE, memoryCeiling: Int = Int.MAX_VALUE): ResourceBudget? {
-        val resources = plan?.let(BenchRuns::resources)
+        val resources = plan?.let(BenchCases::resources)
         val largest = resources?.cpus ?: Experiments.arms(checkNotNull(job.experiment)).maxOf { it.cores }
         val memory = resources?.memoryMiB?.let(Math::toIntExact) ?: caseMemoryMiB
         if (resources != null && !NodeTags.matches(NodeSelector(require = resources.requiredTags), target.capabilities)) return null

@@ -52,7 +52,7 @@ class AcceptedArtifactFilesTest {
             val owner = store.execution.claim("preparation", token, "allocation", 1002)!!.owner
             store.execution.phase(owner, "uploading", 1003)
             store.execution.commit(owner, IterationResult(emptyList(), artifacts,
-                preparation = com.eignex.lab.worker.PreparationResult(emptyList(), emptyList(), artifacts = artifacts)), 1004)
+                preparation = com.eignex.lab.domain.PreparationResult(emptyList(), emptyList(), artifacts = artifacts)), 1004)
         }
     }
 

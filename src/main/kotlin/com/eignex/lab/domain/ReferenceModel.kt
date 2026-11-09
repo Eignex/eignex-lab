@@ -4,7 +4,6 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
-import com.eignex.lab.analysis.ReferenceVerdict
 
 /** A reference solver's verdict on one problem, as a reference arm's case records it ([References.of]). */
 @Serializable
@@ -117,3 +116,15 @@ data class ProblemFeatures(
     val structure: String? = null,
     val logic: String? = null,
 )
+
+/** The `backend=` that runs each problem's reference solver, whose cases become reference results. */
+const val REFERENCE_BACKEND = "reference"
+
+/** What a reference verdict can be filtered to. */
+enum class ReferenceVerdict(val label: String) {
+    OPTIMUM("proven optimum"),
+    UNPROVEN("solved, not proven"),
+    SATISFIED("satisfied"),
+    INFEASIBLE("proven infeasible"),
+    UNKNOWN("unknown"),
+}

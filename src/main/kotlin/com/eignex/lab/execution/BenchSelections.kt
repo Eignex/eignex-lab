@@ -17,18 +17,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 
-/**
- * One repository arm's accepted planner output, kept by the coordinator under [key] ([BenchSelections.key]) so a later
- * preparation with the same selection inputs reuses it instead of running `describe` and `plan` and hashing the corpus
- * again. [plan] is the pinned plan before arm alignment and coordinator selection, so a reuse selects afresh.
- * [sharedInputs] carry every corpus byte the plan names, by checksum; [sourceDigest] binds its source-root inputs,
- * which a reuse recomputes against its own tree.
- */
-@Serializable
-data class BenchSelectionEntry(val key: String, val arm: String, val descriptor: BenchDescriptor, val plan: BenchPlan,
-                               val sourceDigest: String, val sharedInputs: List<SharedInput> = emptyList()) {
-    init { require(key.matches(SHA256) && sourceDigest.matches(SHA256) && arm.isNotBlank()) }
-}
 
 /**
  * Selection cache keys and the checks that make a cached plan safe to reuse.

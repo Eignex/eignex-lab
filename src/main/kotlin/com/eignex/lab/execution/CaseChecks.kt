@@ -17,9 +17,8 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
-import com.eignex.lab.analysis.REFERENCE_BACKEND
+import com.eignex.lab.domain.REFERENCE_BACKEND
 import com.eignex.lab.analysis.SourceValidation
-import com.eignex.lab.execution.Repositories
 import com.eignex.lab.execution.SharedCheckInputUnavailable
 import com.eignex.lab.execution.SharedInputs
 import com.eignex.lab.store.Store
@@ -101,7 +100,7 @@ class CaseChecks(
     fun afterCase(jobId: Long, index: Int) {
         runCatching {
             val (problem, arm) = store.plans.caseOf(jobId, index) ?: return
-            if (arm.values["backend"] == REFERENCE_BACKEND || !SourceValidation.requested(store.job(jobId)?.experiment, arm.values)) return
+            if (arm.values["backend"] == REFERENCE_BACKEND || !ValidationRequest.requested(store.job(jobId)?.experiment, arm.values)) return
             if (!checker.covers(problem.format)) return
             val future = pool.submit {
                 runCatching { check(jobId, index, problem) }.onFailure { log(jobId, "case $index: source check failed: ${it.message}") }

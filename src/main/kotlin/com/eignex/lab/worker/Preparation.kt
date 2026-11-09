@@ -19,17 +19,6 @@ import java.nio.file.Path
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-@Serializable
-data class PreparationResult(
-    val selections: List<List<Problem>>, val bundles: List<WorkerBundle>, val corpus: WorkerBundle? = null,
-    val features: List<ProblemFeatures> = emptyList(), val artifacts: Map<String, String> = emptyMap(),
-    val sharedInputs: List<SharedInput> = emptyList(),
-    val benchPlan: com.eignex.lab.bench.BenchPlan? = null,
-    val benchDescriptor: com.eignex.lab.bench.BenchDescriptor? = null,
-    val armPlans: Map<String, com.eignex.lab.bench.BenchPlan> = emptyMap(),
-    /** Planner outputs offered for reuse; the coordinator moves them to its selection cache on acceptance. */
-    val selectionCache: List<BenchSelectionEntry> = emptyList(),
-)
 
 internal fun workerEnvironment(mac: Boolean, environment: Map<String, String> = System.getenv()): Map<String, String> {
     val cache = environment["XDG_CACHE_HOME"] ?: if (mac) null else environment["LAB_WORKER_CACHE_ROOT"]?.let { "$it/consumer" }
@@ -178,7 +167,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             } }.orEmpty()
             // Corpus bytes of a reused plan come from its shared inputs, checked on fetch; source bytes are checked here.
             fun reusable(entry: BenchSelectionEntry, tree: Path): Boolean = try {
-                BenchRuns.resources(entry.plan)
+                BenchCases.resources(entry.plan)
                 val corpusPaths = BenchSelections.corpusPaths(entry.plan)
                 (corpusPaths.isEmpty() || sharing != null && BenchSelections.covering(entry.sharedInputs, corpusPaths) != null) &&
                     BenchSelections.sourceDigest(entry.plan, tree, inputDigests) == entry.sourceDigest
@@ -202,7 +191,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                     run(tree, prefix + BenchRuns.invocation(tree, bench, "plan", request.toString()), directory.resolve("bench-materialized-plan.jsonl"))
                 }
                 val plan = com.eignex.lab.bench.BenchProtocol.json.decodeFromString<com.eignex.lab.bench.BenchPlan>(Files.readString(planFile))
-                BenchRuns.resources(plan)
+                BenchCases.resources(plan)
                 val runtime = BenchRuns.runtime(tree, bench)
                 val pinned = plan.copy(cases = plan.cases.map { BenchRuns.pinned(it, tree, corpus, runtime, inputDigests, trustDeclared = sharing != null) })
                 armPlans[arm.arm.label] = pinned
@@ -227,7 +216,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 val first = armPlans.values.firstOrNull() ?: error("a bench experiment needs at least one repository arm")
                 val canonical = bench.frozenCases.ifEmpty { first.cases }
                 for ((label, plan) in armPlans.toMap()) {
-                    if (bench.frozenCases.isEmpty()) require(plan.cases.map(BenchRuns::key).toSet() == canonical.map(BenchRuns::key).toSet()) { "bench arms selected different workloads" }
+                    if (bench.frozenCases.isEmpty()) require(plan.cases.map(BenchCases::key).toSet() == canonical.map(BenchCases::key).toSet()) { "bench arms selected different workloads" }
                     armPlans[label] = BenchRuns.align(canonical, plan)
                 }
             }
@@ -249,10 +238,10 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
             else listOf(listOf(Experiments.profileProblem(spec)))
         val selections = trace.step("selection") { selectProblems(raw) }
         if (benchPlan != null) {
-            val keys = selections.single().map { BenchRuns.key(requireNotNull(it.benchCase)) }.toSet()
+            val keys = selections.single().map { BenchCases.key(requireNotNull(it.benchCase)) }.toSet()
             require(keys.isNotEmpty()) { "reference filter kept no workloads" }
-            for ((label, plan) in armPlans.toMap()) armPlans[label] = plan.copy(cases = plan.cases.filter { BenchRuns.key(it) in keys })
-            benchPlan = benchPlan.copy(cases = benchPlan.cases.filter { BenchRuns.key(it) in keys })
+            for ((label, plan) in armPlans.toMap()) armPlans[label] = plan.copy(cases = plan.cases.filter { BenchCases.key(it) in keys })
+            benchPlan = benchPlan.copy(cases = benchPlan.cases.filter { BenchCases.key(it) in keys })
         } else require(selections == raw)
 
         println("worker selection verification: hashedFiles=${inputDigests.hashedFiles} reusedFiles=${inputDigests.reusedFiles} hashedBytes=${inputDigests.hashedBytes} reusedPlans=${reusedSelections.size}")

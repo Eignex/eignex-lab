@@ -81,7 +81,7 @@ class BenchAdapterIntegrationTest {
         val checks = CaseChecks(store, { Checkers.of(config.paths) }) { id, line -> println("check $id: $line") }
         val backend = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, checkCase = { id, index ->
             val (problem, arm) = requireNotNull(store.plans.caseOf(id, index))
-            if (SourceValidation.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"
+            if (ValidationRequest.requested(store.job(id)?.experiment, arm.values)) checks.check(id, index, problem)?.json() ?: "no-checker"
             else "not-required"
         })
         var spec = ExperimentSpec("$name-adapter", repository = scenario.repository, bench = BenchSpec(scenario.manifest, BenchRequest(scenario.parameters), sourceValidation = scenario.sourceValidation), configs = scenario.configs, base = scenario.base, repeats = scenario.repeats, confirm = true, host = HostPlacement.AUTO)
@@ -150,7 +150,7 @@ class BenchAdapterIntegrationTest {
             val record = execution(case)
             CaseCommand("adapter ${record.id}", record.resources.timeoutSeconds, record.resources.cpus)
         })
-        val resources = preparation.armPlans.values.map(BenchRuns::resources)
+        val resources = preparation.armPlans.values.map(BenchCases::resources)
         val work = cases.mapIndexed { index, case -> WorkCase(index, case.arm, problems[case.problem],
             problems[case.problem].benchCase!!.attributes["seed"]?.toLongOrNull(), case.repeat,
             execution(case).resources.timeoutSeconds, execution(case)) }

@@ -10,8 +10,6 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonTransformingSerializer
-import com.eignex.lab.execution.BenchSpec
-import com.eignex.lab.execution.Repositories
 
 /** A repository-owned benchmark or explicit committed profile, expanded into paired configuration arms. */
 @Serializable
@@ -234,7 +232,7 @@ sealed interface ProfileEntry {
     data class Script(val script: String, val outputArgument: String?) : ProfileEntry
 }
 
-/** [this] as what it runs, once [ProfileRuns.validate] has accepted it. */
+/** [this] as what it runs, once [ProfileRules.validate] has accepted it. */
 val ProfileMain.entry: ProfileEntry get() = script?.let { ProfileEntry.Script(it, outputArgument) } ?: ProfileEntry.JvmMain(main, classpath, jvmArgs)
 
 /** Whether [this] is an analysis job, which runs the lab's analyser over another job's captures. */

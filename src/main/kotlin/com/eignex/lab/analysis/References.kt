@@ -27,15 +27,6 @@ data class ProblemReport(
     val totalRuns: Int = runs.size,
 )
 
-/** What a reference verdict can be filtered to, with the condition on a `reference_rows` row that selects it. */
-enum class ReferenceVerdict(val label: String, internal val sql: String) {
-    OPTIMUM("proven optimum", "proven = 1 AND feasible = 1 AND objective IS NOT NULL"),
-    UNPROVEN("solved, not proven", "feasible = 1 AND proven = 0"),
-    SATISFIED("satisfied", "feasible = 1 AND objective IS NULL"),
-    INFEASIBLE("proven infeasible", "feasible = 0"),
-    UNKNOWN("unknown", "feasible IS NULL"),
-}
-
 /** One arm against the reference, over the problems both have a verdict on. */
 @Serializable
 data class ReferenceSummary(
@@ -75,9 +66,6 @@ data class ReferenceComparison(
     /** Every worse incumbent, the largest gap first. */
     val shortfalls: List<Shortfall> = emptyList(),
 )
-
-/** The `backend=` that runs each problem's reference solver, whose cases become reference results. */
-const val REFERENCE_BACKEND = "reference"
 
 /** How reference results merge and how an experiment measures up to them. */
 object References {

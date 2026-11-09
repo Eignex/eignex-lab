@@ -53,8 +53,8 @@ data class Flips(
  * regression or an improvement only when the repeats agree with it.
  */
 object Confirm {
-    /** Appended to a schedule's name for its confirmation jobs, which keeps them out of the schedule's trend. */
-    const val SUFFIX = "~confirm"
+    /** Appended to a schedule's name for its confirmation jobs ([JobOrigin.CONFIRM_SUFFIX]). */
+    const val SUFFIX = JobOrigin.CONFIRM_SUFFIX
     const val REPEATS = 3
     /** The maximum number of distinct problems one confirmation reruns. Unselected problems stay unconfirmed. */
     const val MAX_PROBLEMS = 40
@@ -193,7 +193,7 @@ object Confirm {
     fun name(series: String, after: String, job: Long) = "$series$SUFFIX@${after.take(SHA_LENGTH)}-$job"
 
     /** The confirmation of [flips] in run [job] of [spec] at [after], against the earlier run at [before]. Both
-     *  commits ask for source validation, as every scheduled run does ([SourceValidation.scheduled]). */
+     *  commits ask for source validation, as every scheduled run does ([ValidationRequest.scheduled]). */
     fun spec(series: String, spec: ExperimentSpec, before: String, after: String, flips: Flips, job: Long, beforeJob: Long? = null,
              sourceCases: List<CaseResult> = emptyList()): ExperimentSpec {
         val config = Experiments.arms(spec).first().values - "ref" - "label"
@@ -205,7 +205,7 @@ object Confirm {
                 listOf(it.attributes["suite"], it.attributes["problem"], it.parameters["engine"], it.parameters["seed"], it.attributes["propagationControl"]) }
             .ifEmpty { selected.mapNotNull { it.benchCase } }
         require(!spec.isBench || selected.isEmpty() || frozen.isNotEmpty()) { "Confirmation lost its frozen workloads" }
-        return SourceValidation.scheduled(ExperimentSpec(
+        return ValidationRequest.scheduled(ExperimentSpec(
             name = name(series, after, job),
             description = "Confirms run $job against reference job $beforeJob at ${before.take(SHA_LENGTH)}: " +
                 "${flips.lost.size} feasibility lost and ${flips.gained.size} gained; " +

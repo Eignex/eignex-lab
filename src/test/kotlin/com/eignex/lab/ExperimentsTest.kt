@@ -319,7 +319,7 @@ class ExperimentsTest {
                 setExecutable(true)
             }
             val args = listOf("plain", "with space", "\$(touch pwned)", "it's")
-            val command = Experiments.profileCommand(worktree.path, ProfileMain("com.eignex.tools.Tool", args, classpath = listOf("tools/lib/*")), 0, "/corpus")
+            val command = ProfileRuns.command(worktree.path, Repositories.DEFAULT, ProfileMain("com.eignex.tools.Tool", args, classpath = listOf("tools/lib/*")), 0, "/corpus", true)
             val builder = ProcessBuilder("bash", "-c", command).directory(root).redirectErrorStream(true)
             builder.environment()["JOB_DIR"] = jobDir.path
             builder.environment()["JAVA_HOME"] = javaHome.path

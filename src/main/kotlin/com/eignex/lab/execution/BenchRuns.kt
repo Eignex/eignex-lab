@@ -19,34 +19,13 @@ import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** A repository-owned suite. The committed manifest owns its build and launch recipe. */
-@Serializable
-data class BenchSpec(
-    val manifest: String,
-    val request: BenchRequest = BenchRequest(),
-    val runTimeoutSec: Long? = null,
-    val sourceValidation: Boolean = false,
-    /** Exact workloads retained by a confirmation; runtime parameters still come from each approved revision. */
-    val frozenCases: List<BenchCase> = emptyList(),
-    val referenceFilter: ReferenceFilterMode = ReferenceFilterMode.ANY,
-    val referenceFilters: Map<String, ReferenceFilterMode> = emptyMap(),
-    val replayJobs: Map<String, Long> = emptyMap(),
-    /** External Linux timing of the adapter's `run` invocation and its waited child processes. */
-    val adapterResources: Boolean = false,
-) {
-    init {
-        safeRelative(manifest)
-        require(runTimeoutSec == null || runTimeoutSec in 1..7200) { "bench runTimeoutSec must be between 1 and 7200" }
-    }
-}
-
 /** Translation at the coordinator/worker boundary; no repository-specific executable names. */
 internal object BenchRuns {
     fun entry(tree: Path, spec: BenchSpec): BenchEntryPoint {
         val file = tree.resolve(safeRelative(spec.manifest))
         require(file.toRealPath().startsWith(tree.toRealPath())) { "bench manifest escapes source" }
         val entry = BenchProtocol.json.decodeFromString<BenchEntryPoint>(Files.readString(file))
-        ProfileRuns.validate("Eignex/bench", ProfileMain(entry.main, buildTasks = entry.buildTasks,
+        ProfileRules.validate("Eignex/bench", ProfileMain(entry.main, buildTasks = entry.buildTasks,
             classpath = entry.classpath, jvmArgs = entry.jvmArgs))
         runtime(tree, spec).validate()
         preparation(tree, spec)
@@ -105,15 +84,13 @@ internal object BenchRuns {
         arm.values.filterKeys { it.startsWith("param.") }.mapKeys { it.key.removePrefix("param.") })
 
     /** Suites may declare a stable comparison identity when runtime settings change their case id. */
-    fun key(case: BenchCase): String = case.attributes["comparisonKey"] ?: case.id
-
     fun align(canonical: List<BenchCase>, planned: BenchPlan): BenchPlan {
-        val byKey = planned.cases.groupBy(::key)
+        val byKey = planned.cases.groupBy(BenchCases::key)
         require(byKey.values.all { it.size == 1 }) { "ambiguous bench comparison identities" }
         return BenchPlan(canonical.map { frozen ->
-            val candidate = requireNotNull(byKey[key(frozen)]?.singleOrNull()) { "bench revision omitted workload ${key(frozen)}" }
+            val candidate = requireNotNull(byKey[BenchCases.key(frozen)]?.singleOrNull()) { "bench revision omitted workload ${BenchCases.key(frozen)}" }
             require(candidate.inputs == frozen.inputs && candidate.attributes["labInputDigest"] == frozen.attributes["labInputDigest"]) {
-                "bench arms resolved different input bytes for ${key(frozen)}"
+                "bench arms resolved different input bytes for ${BenchCases.key(frozen)}"
             }
             candidate
         })
@@ -179,7 +156,7 @@ internal object BenchRuns {
 
     fun problem(case: BenchCase): Problem {
         fun input(role: String) = case.inputs.firstOrNull { it.role == role }?.let(::portableInput)
-        return Problem(case.attributes["suite"] ?: "bench", key(case),
+        return Problem(case.attributes["suite"] ?: "bench", BenchCases.key(case),
             collection = case.attributes["collection"].orEmpty(), family = case.attributes["family"].orEmpty(),
             format = case.attributes["format"].orEmpty(), category = case.attributes["category"].orEmpty(),
             model = input("model"), data = input("data"),
@@ -239,13 +216,4 @@ internal object BenchRuns {
         } }
     }
 
-    fun resources(plan: BenchPlan): BenchResources {
-        plan.cases.forEach {
-            require(it.resources.cpus in 1..1024 && it.resources.memoryMiB <= Int.MAX_VALUE && it.resources.timeoutSeconds <= 604800)
-            NodeTags.validate(NodeSelector(require = it.resources.requiredTags))
-        }
-        require(plan.cases.isNotEmpty()) { "bench selection matched no cases" }
-        return BenchResources(plan.cases.maxOf { it.resources.cpus }, plan.cases.maxOf { it.resources.memoryMiB },
-            plan.cases.maxOf { it.resources.timeoutSeconds }, plan.cases.flatMap { it.resources.requiredTags }.toSet())
-    }
 }

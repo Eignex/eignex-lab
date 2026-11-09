@@ -93,21 +93,21 @@ class ValidationTest {
     @Test
     fun `a scheduled run asks for validation over a config or grid that turned it off, and other jobs are left alone`() {
         val spec = ExperimentSpec("s", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "10000"),
-            configs = listOf(mapOf(SourceValidation.PARAM to "false")), grid = mapOf(SourceValidation.GZIP_PARAM to listOf("false")))
+            configs = listOf(mapOf(ValidationRequest.PARAM to "false")), grid = mapOf(ValidationRequest.GZIP_PARAM to listOf("false")))
         val reference = ExperimentSpec("r", listOf(mapOf("suite" to "s")), base = mapOf("backend" to REFERENCE_BACKEND))
         val profile = ExperimentSpec("p", profile = ProfileMain("com.eignex.tools.profile.Tool", classpath = listOf("tools/lib/*")))
 
-        val arm = Experiments.arms(SourceValidation.scheduled(spec)).single()
+        val arm = Experiments.arms(ValidationRequest.scheduled(spec)).single()
 
-        assertEquals(listOf("true", "true"), listOf(arm.values[SourceValidation.PARAM], arm.values[SourceValidation.GZIP_PARAM]))
-        assertEquals(reference, SourceValidation.scheduled(reference))
-        assertEquals(profile, SourceValidation.scheduled(profile))
+        assertEquals(listOf("true", "true"), listOf(arm.values[ValidationRequest.PARAM], arm.values[ValidationRequest.GZIP_PARAM]))
+        assertEquals(reference, ValidationRequest.scheduled(reference))
+        assertEquals(profile, ValidationRequest.scheduled(profile))
     }
 
     @Test
     fun `a checked run stays on its schedule's trend line, but is never confirmed against an unchecked one`() {
         val unchecked = ExperimentSpec("s", listOf(mapOf("suite" to "s")), base = mapOf("timeout" to "10000"))
-        val checked = SourceValidation.scheduled(unchecked)
+        val checked = ValidationRequest.scheduled(unchecked)
 
         assertEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(checked))
         assertNotEquals(Experiments.fingerprint(unchecked), Experiments.fingerprint(checked))
@@ -123,14 +123,14 @@ class ValidationTest {
         val arms = Experiments.arms(Confirm.spec("status-sweep", run, "aaa111111111", "bbb222222222", flips, job = 7))
 
         assertEquals(listOf(Confirm.BEFORE, Confirm.AFTER), arms.map { it.label })
-        assertTrue(arms.all { SourceValidation.requested(it.values) })
+        assertTrue(arms.all { ValidationRequest.requested(it.values) })
     }
 
     @Test
     fun `saving the committed spec over a schedule that already runs it queues no extra run`() {
         val store = Store(Files.createTempDirectory("lab").resolve("lab.db"))
         val spec = committed("status-sweep.json")
-        val id = store.schedules.create("status-sweep", "main", spec.copy(base = spec.base - SourceValidation.SCHEDULED.keys), 120)
+        val id = store.schedules.create("status-sweep", "main", spec.copy(base = spec.base - ValidationRequest.SCHEDULED.keys), 120)
         store.schedules.ran(id, "abc", 1)
 
         store.schedules.update(id, spec, intervalSec = null)
@@ -209,7 +209,7 @@ class ValidationTest {
         )!!
 
         assertTrue(run(spec).sourceChecked)
-        assertFalse(run(SourceValidation.scheduled(saved)).sourceChecked)
+        assertFalse(run(ValidationRequest.scheduled(saved)).sourceChecked)
         assertFalse(run(saved).sourceChecked)
         assertContains(trendPage("status-sweep", listOf(run(saved), run(spec).copy(job = 2)), "https://github.com/x/y"),
             "runs marked unchecked report the solver's own claims")
