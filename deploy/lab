@@ -34,6 +34,8 @@
 #                                                            lab checks), each verdict replacing the case's earlier one; no solver runs
 #   lab cases <id>                                          an experiment's cases: status, arm, problem, result, host
 #   lab journal                                             pending result bytes, age, capacity and drain errors
+#   lab kpi [days]                                          throughput of jobs ended per UTC day (default 7): done, failed by
+#                                                            cause, cases, queue wait, preparation time and attempts, cache hits
 #   lab cases <id> --json                                   every case whole as JSON Lines, one per line: index, arm, seed,
 #                                                            repeat, problem, status, host (local, or the cloud node's
 #                                                            instance), labDebug (its historical debug setting, from the
@@ -158,6 +160,7 @@ cmd="${1:-ls}"; shift || true
 case "$cmd" in
 trend) curl -fsS -G "$url/trend" --data-urlencode "name=${1:-}" | jq . ;;
 journal) curl -fsS "$url/journal" | jq . ;;
+kpi) curl -fsS -G "$url/kpi" --data-urlencode "days=${1:-7}" | jq . ;;
 run)
   while [[ $# -gt 0 ]]; do
     if submission_option "$@"; then shift 2; continue; fi
