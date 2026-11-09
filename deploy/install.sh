@@ -166,6 +166,13 @@ Darwin)
     reload_daemon "$label" "$stage/$label.plist"
   done
   rm -f "$LAB_DATA/maintenance/gradle_maintenance.py"  # the Python maintenance host-maintenance.sh replaced
+  # The runner's self-update replaced autodeploy (c385275f); a host installed before keeps its job, which would go on
+  # deploying CI builds beside the self-update, until it is removed here.
+  if [[ -f /Library/LaunchDaemons/com.eignex.lab.autodeploy.plist ]]; then
+    sudo launchctl bootout system/com.eignex.lab.autodeploy 2>/dev/null || true
+    sudo rm -f /Library/LaunchDaemons/com.eignex.lab.autodeploy.plist
+    echo "removed the retired autodeploy job"
+  fi
   rm -rf "$stage"
   sudo pmset -a sleep 0 disksleep 0
   ;;
