@@ -19,7 +19,8 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py' -v
-      - run: python3 -m unittest discover -s deploy/nomad -p 'test_*.py'
+      - run: command -v sqlite3 || { sudo apt-get update -q && sudo apt-get install -y -q sqlite3; }
+      - run: bash deploy/nomad/test_sandbox.sh && bash deploy/nomad/test_autoscaler.sh && bash deploy/nomad/test_prune_runtime.sh
       - run: bash deploy/nomad/test_native_services.sh
       - run: bash deploy/infra/tests/test_host_scripts.sh
       - run: bash deploy/infra/validate.sh

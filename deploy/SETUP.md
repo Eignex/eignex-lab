@@ -118,7 +118,7 @@ historical provenance, and those historical jobs remain readable without enablin
 macOS installation defaults to no Docker VM and never starts Colima. Grant disk access to the configured Java,
 Python and Nomad executables; Xcode-bundled Python may require the enclosing Xcode app's permission too.
 
-Review `python3 deploy/nomad/prune_runtime.py --data "$LAB_DATA"`, then add `--apply` to remove unused release
+Review `bash deploy/nomad/prune-runtime.sh --data "$LAB_DATA"` (needs jq and sqlite3), then add `--apply` to remove unused release
 directories and named deployment leftovers. The pruner preserves releases referenced by running processes, installed
 services, pending session intents, active jobs and retryable frozen recipes. It never deletes the database, results,
 corpus, artifacts or Nomad allocation state; small retired-release provenance stays in `deployments/retired-runtime`.

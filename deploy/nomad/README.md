@@ -27,7 +27,7 @@ for one pool from being placed on a node with a different quota denominator.
 
 ## Linux verification
 
-Requires Docker, Python 3, and JDK 25. The sandbox downloads checksum-pinned Nomad into the ignored build directory.
+Requires Docker, curl, jq, unzip and JDK 25. The sandbox downloads checksum-pinned Nomad into the ignored build directory.
 It runs a normal persistent single-server agent with mutual TLS and ACLs, bound to loopback ports 14646–14648.
 The Linux client runs in a privileged Docker container with the local Docker socket and host cgroups mounted;
 this is a local/CI prototype, not the cloud bootstrap configuration. It uses its own node class and data directory.
@@ -35,10 +35,10 @@ this is a local/CI prototype, not the cloud bootstrap configuration. It uses its
 ```sh
 ./gradlew :test --tests com.eignex.lab.NomadBatchJobTest installDist
 export JAVA_HOME="$(./gradlew -q printJavaHome)"
-python3 deploy/nomad/sandbox.py install
-python3 deploy/nomad/sandbox.py start
-python3 deploy/nomad/sandbox.py verify
-python3 deploy/nomad/sandbox.py stop
+bash deploy/nomad/sandbox.sh install
+bash deploy/nomad/sandbox.sh start
+bash deploy/nomad/sandbox.sh verify
+bash deploy/nomad/sandbox.sh stop
 ```
 
 `verify` submits two 0.5-vCPU sessions and a 0.25-vCPU build stand-in to the same node. Each starts three CPU-bound
@@ -52,7 +52,7 @@ The autoscaler is not installed or started by this slice. The agent image adds o
 node fingerprinting. Node CPU and memory are otherwise detected normally; the prototype reserves 500 MHz and 256 MiB
 for its host. It does not request whole-node exclusivity.
 
-Use `sandbox.py cli node status` or `sandbox.py cli job status <id>` to inspect the isolated cluster. The script
+Use `sandbox.sh cli node status` or `sandbox.sh cli job status <id>` to inspect the isolated cluster. The script
 passes its own TLS configuration and ACL token rather than inheriting a production `NOMAD_*` environment. Tokens
 and private keys remain under the private, ignored state directory; upload only verification reports to CI.
 `stop` retains state for restart. Choose another `--state` directory and nonoverlapping `--port` range for another
@@ -63,12 +63,12 @@ prototype; pass these options before the action. Existing state cannot be transf
 On the Mac, use the same build/install/start steps, then:
 
 ```sh
-python3 deploy/nomad/sandbox.py native-probe
-python3 deploy/nomad/sandbox.py stop
+bash deploy/nomad/sandbox.sh native-probe
+bash deploy/nomad/sandbox.sh stop
 ```
 
 The Mac starts the native Nomad agent as the current user, with the same loopback TLS/ACL configuration and no Linux
-VM. The probe runs native Python processes and saves `native-verification.json`. Its CPU/memory settings are
+VM. The probe runs native bash processes and saves `native-verification.json`. Its CPU/memory settings are
 scheduling budgets, not hard quotas. Native execution still needs the host's usual tooling and permissions.
 
 Synthetic probes complement real native solver/JFR runs and live Spot acceptance. They exercise isolated service
@@ -85,14 +85,14 @@ Save an operator-owned JSON input with the target pool's actual fingerprinted us
   "nodeClass": "lab-prototype-linux",
   "cpuCapacity": {"usableMHz": 43900, "logicalCpus": 20},
   "budget": {"cpuMillis": 500, "memoryMiB": 256, "parallel": 1},
-  "image": "python@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962",
-  "command": ["python3", "-c", "print('bounded session')"]
+  "image": "ubuntu@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+  "command": ["bash", "-c", "echo bounded session"]
 }
 ```
 
 ```sh
 build/install/eignex-lab/bin/eignex-lab nomad-spec session.json > job.json
-python3 deploy/nomad/sandbox.py cli job run -json job.json
+bash deploy/nomad/sandbox.sh cli job run -json job.json
 ```
 
 For `platform: "mac"`, omit `image`, use `nodeClass: "lab-prototype-mac"`, and provide a native executable and args.
@@ -249,7 +249,7 @@ them; replacements may grow only within that quota. Provider launch failures rem
 Unused startup requests are withdrawn when their work disappears, unless an unexpired manual capacity request keeps
 them. Already ready, empty nodes retain the configured idle grace period.
 
-`python3 deploy/nomad/connected_probe.py` builds the worker, uses a temporary loopback OCI registry to obtain a real
+`bash deploy/nomad/connected-probe.sh` builds the worker, uses a temporary loopback OCI registry to obtain a real
 image digest, and runs the end-to-end acceptance test against a separate TLS/ACL Nomad sandbox. It exercises a paired
 iteration, an API/coordinator restart, forced allocation loss, generation replacement, checksum ingestion and completion.
 It stops its own agent and registry and retains private diagnostic state under `build/nomad-connected`. Never upload

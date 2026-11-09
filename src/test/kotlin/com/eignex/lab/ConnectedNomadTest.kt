@@ -22,7 +22,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 import kotlin.test.*
 
-/** Enabled only by connected_probe.py against its isolated TLS/ACL sandbox and local pinned registry. */
+/** Enabled only by deploy/nomad/connected-probe.sh against its isolated TLS/ACL sandbox and local pinned registry. */
 class ConnectedNomadTest {
     @Test fun `automatic queue builds selects stages corpus and solves after coordinator restart`() {
         assumeTrue(System.getenv("LAB_NOMAD_INTEGRATION") == "1")
