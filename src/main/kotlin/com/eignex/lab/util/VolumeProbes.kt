@@ -154,7 +154,7 @@ class VolumeAccess(
 
     /** What a probe that did not end within [timeoutMs] means, and how to fix it. */
     private fun blocked(label: String, dir: Path): String =
-        "cannot access $label directory $dir within ${duration(timeoutMs)}: ${hint()}"
+        "cannot access $label directory $dir within ${msText(timeoutMs)}: ${hint()}"
 
     /** What a probe that failed means: a refusal is macOS's privacy protection as often as the directory's permissions. */
     private fun described(label: String, dir: Path, e: Throwable): String {
@@ -181,7 +181,5 @@ class VolumeAccess(
                 ?: Path.of(System.getProperty("java.home"), "bin", "java").toString()
             return runCatching { Path.of(command).toRealPath().toString() }.getOrDefault(command)
         }
-
-        private fun duration(ms: Long) = if (ms % 1000 == 0L) "${ms / 1000} s" else "$ms ms"
     }
 }

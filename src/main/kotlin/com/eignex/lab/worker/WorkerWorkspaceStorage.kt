@@ -51,13 +51,7 @@ internal class WorkerWorkspaceStorage(private val root: Path) : AutoCloseable {
         }
         for (path in garbage) try { deleteTree(path) } catch (_: java.nio.file.NoSuchFileException) { /* Another reaper finished. */ }
     }
-    private fun <T> guarded(action: () -> T): T {
-        val path = root.resolve("maintenance.lock")
-        while (true) {
-            ProcessFilePin.tryLock(path)?.use { return action() }
-            Thread.sleep(10)
-        }
-    }
+    private fun <T> guarded(action: () -> T): T = ProcessFilePin.withLock(root.resolve("maintenance.lock"), action = action)
     override fun close() {
         try {
             // Remove the session from discovery before unlinking its owner lock. Otherwise a reaper could

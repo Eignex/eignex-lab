@@ -48,7 +48,6 @@ internal object CompilationReports {
 
     private val json = Json { encodeDefaults = true; prettyPrint = false }
     private val lines = Json { encodeDefaults = true; explicitNulls = false }
-    private val lenient = Json { ignoreUnknownKeys = true }
 
     /** The profile directories (`cases/<i>/profile-<uuid>`) under job directory [jobDir], of case [index] alone when given. */
     fun profileDirs(jobDir: Path, index: Int? = null): List<Path> {
@@ -132,12 +131,12 @@ internal object CompilationReports {
     /** The task records of [file], a [TASKS] file, in order. */
     fun readTasks(file: Path): List<CompileTask> = Files.newInputStream(file).use { raw ->
         java.util.zip.GZIPInputStream(raw, 1 shl 16).bufferedReader(Charsets.UTF_8).lineSequence().filter { it.isNotBlank() }
-            .map { lenient.decodeFromString(CompileTask.serializer(), it) }.toList()
+            .map { lenientJson.decodeFromString(CompileTask.serializer(), it) }.toList()
     }
 
     /** A report as either schema wrote it, null when [path] holds none. */
     fun read(path: Path): CompilationReport? =
-        runCatching { lenient.decodeFromString(CompilationReport.serializer(), Files.readString(path)) }.getOrNull()
+        runCatching { lenientJson.decodeFromString(CompilationReport.serializer(), Files.readString(path)) }.getOrNull()
 
     /** This lab's identity as a report's worker: its release (the `releases/<id>` its jars run from), host and the time. */
     fun worker(analyzeJob: Long? = null): WorkerProvenance {
@@ -179,7 +178,7 @@ internal object CompilationReports {
         companion object {
             fun read(dir: Path) = CaptureDirectory(
                 dir.resolve(CliMeasurements.MANIFEST).takeIf { Files.isRegularFile(it) }
-                    ?.let { runCatching { lenient.decodeFromString(CliMeasurementManifest.serializer(), Files.readString(it)) }.getOrNull() },
+                    ?.let { runCatching { lenientJson.decodeFromString(CliMeasurementManifest.serializer(), Files.readString(it)) }.getOrNull() },
                 dir.resolve(CliMeasurements.RESOURCES).takeIf { Files.isRegularFile(it) }?.let { file ->
                     Files.readAllLines(file).mapNotNull { line -> line.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }.toMap()
                 },

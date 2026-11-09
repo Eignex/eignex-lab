@@ -42,11 +42,7 @@ internal class WorkerBuildStaging(private val root: Path) {
     }
     private fun <T> guarded(check: () -> Unit = {}, action: () -> T): T {
         Files.createDirectories(root)
-        while (true) {
-            check()
-            ProcessFilePin.tryLock(root.resolve("maintenance.lock"))?.use { return action() }
-            Thread.sleep(10)
-        }
+        return ProcessFilePin.withLock(root.resolve("maintenance.lock"), check, action = action)
     }
     fun create(check: () -> Unit): Lease = guarded(check) {
         val directory = Files.createTempDirectory(root, ".build-")

@@ -18,9 +18,7 @@ internal object Termination {
      * process group and SIGKILL to what is left [graceMs] later, so its shutdown hooks (JFR's dump on exit) can run.
      */
     fun deadline(graceMs: Long) = "deadline: the job's whole-run limit ran out, so the lab sent the case SIGTERM, " +
-        "and SIGKILL to what is left after ${span(graceMs)}"
-
-    private fun span(ms: Long) = if (ms % MS_PER_SEC == 0L) "${ms / MS_PER_SEC} s" else "$ms ms"
+        "and SIGKILL to what is left after ${msText(graceMs)}"
 
     fun file(dir: Path, index: Int): Path = dir.resolve("$index.termination")
 

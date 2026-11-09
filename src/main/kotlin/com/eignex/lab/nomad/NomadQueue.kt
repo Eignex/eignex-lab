@@ -14,7 +14,7 @@ import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
-import java.util.concurrent.TimeUnit
+import java.time.Duration
 
 /** Admission is repeatable from accepted preparation and persisted sessions, without a second queue database. */
 class NomadQueue(
@@ -343,13 +343,11 @@ internal class TrustedQueueSources(private val config: Config, private val artif
         val spec = checkNotNull(job.experiment); val mirror = Repositories.mirror(config.paths, spec.repository)
         val directory = config.createJobDir(job.id).resolve("nomad/source"); Files.createDirectories(directory)
         fun git(at: Path, vararg args: String): Pair<Int, String> {
-            val log = directory.resolve("git-output.log")
-            val process = ProcessBuilder(Background.prefix + listOf("git", "-C", at.toString()) + args)
-                .redirectErrorStream(true).redirectOutput(log.toFile()).start()
-            try {
-                check(process.waitFor(120, TimeUnit.SECONDS)) { "source operation timed out" }
-                return process.exitValue() to Files.readString(log).take(1024 * 1024).trim()
-            } finally { if (process.isAlive) { process.descendants().forEach { it.destroyForcibly() }; process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS) } }
+            val log = directory.resolve("git-output.log"); Files.deleteIfExists(log)
+            val (code, _) = runProcess(Background.prefix + listOf("git", "-C", at.toString()) + args, timeout = Duration.ofSeconds(120),
+                env = mapOf("GIT_TERMINAL_PROMPT" to "0"), log = log.toFile())
+            check(code != TIMED_OUT_EXIT) { "source operation timed out" }
+            return code to Files.readString(log).take(1024 * 1024).trim()
         }
         fun checked(at: Path, vararg args: String): String = git(at, *args).let { (code, output) -> check(code == 0) { "source operation failed" }; output }
         val url = Repositories.source(spec.repository)

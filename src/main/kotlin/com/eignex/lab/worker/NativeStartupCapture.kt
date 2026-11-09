@@ -2,6 +2,7 @@ package com.eignex.lab.worker
 
 import com.eignex.lab.util.ProcessSupervisor
 import com.eignex.lab.util.ProcessTermination
+import com.eignex.lab.util.defaultsJson
 import com.eignex.lab.util.deleteTree
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -185,7 +186,7 @@ internal class NativeStartupCapture(
 
     private fun publish(receipt: Receipt) = synchronized(lock) { if (!closed) write(receipt) }
     private fun write(receipt: Receipt) {
-        Files.writeString(output.resolve(if (receipt.target == null) "status.json" else "capture-$captures.json"), receiptsJson.encodeToString(receipt))
+        Files.writeString(output.resolve(if (receipt.target == null) "status.json" else "capture-$captures.json"), defaultsJson.encodeToString(receipt))
     }
 
     override fun close() {
@@ -212,7 +213,6 @@ internal class NativeStartupCapture(
         private const val MAX_CAPTURES = 2
         private const val MAX_DESCENDANTS = 128L
         private const val MAX_BYTES = 1024L * 1024
-        private val receiptsJson = Json { encodeDefaults = true }
         private const val WRAPPER = "printf '%s\\n' \"\$\$\" > \"\$1\"; shift; \"\$@\" & child=\$!; wait \"\$child\"; exit \$?"
 
         internal fun wrap(command: List<String>, marker: Path): List<String> =
