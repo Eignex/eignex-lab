@@ -616,7 +616,7 @@ class NomadQueueTest {
             it.copy(template = it.template.copy(cpuCapacity = NomadCpuCapacity(16000, 16), budget = ResourceBudget(16000, 64512)))
         }
         val small = large.copy(template = large.template.copy(nodeClass = "small", cpuCapacity = NomadCpuCapacity(2000, 2), budget = ResourceBudget(2000, 5120)))
-        val policy = settings.copy(targets = listOf(small, large), caseMemoryMiB = 4096, sessionMemoryMiB = 512, maxSessionsPerJob = 6)
+        val policy = settings.copy(targets = listOf(small, large), caseMemoryMiB = 4096, sessionMemoryMiB = 512, maxSessionsPerJob = 6, maxVcpusPerJob = 6)
         val id = job(ExperimentSpec("large-solves", problems = listOf(mapOf("suite" to "s")), vcpus = 6, host = Experiments.AWS_HOST))
         queue(policy = policy).reconcile(); prepare(id, 6); backend.reconcile()
         repeat(1) {
@@ -743,7 +743,8 @@ class NomadQueueTest {
     }, preparationBudget = ResourceBudget(cpuMillis, 512))
     private val settings = NomadQueueSettings("release", "http://127.0.0.1:8091",
         listOf(target(NomadPlatform.MAC, "native"), target(NomadPlatform.LINUX, "portable-spot")),
-        ResourceBudget(1000, 512), caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 4)
+        // The total cap matches the largest fixture job's vCPUs, eight, so a job of eight spreads only where one worker is too small.
+        ResourceBudget(1000, 512), caseMemoryMiB = 512, sessionMemoryMiB = 256, maxSessionsPerJob = 4, maxVcpusPerJob = 8)
     private val file = root.resolve("queue.json").also { Files.writeString(it, Json.encodeToString(settings)) }
     private val config = Config(dataDir = root, jobsDir = root.resolve("jobs"), minFreeBytes = 0, solveJavaOpts = "-Xmx256m", cores = 8,
         cpuCapabilities = CpuCapabilities("arm64", setOf("neon"), "fixture", true), nomadQueueSettings = file)
@@ -924,7 +925,7 @@ class NomadQueueTest {
         val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE }
         assertTrue(solves.size > 1, "unplaced sessions no longer wait for each other's node")
         assertTrue(solves.all { it.node == null })
-        assertTrue(solves.sumOf { it.budget.cpuMillis } <= 8000, "the job's vCPUs still bound its sessions")
+        assertTrue(solves.sumOf { it.budget.cpuMillis } <= settings.maxVcpusPerJob * 1000, "the live total cap still bounds its sessions")
     }
 
     @Test fun `explicit cloud per host cap is independent of worker CPU requests`() {
@@ -976,14 +977,43 @@ class NomadQueueTest {
         assertEquals(setOf("same-node"), sessions.map { it.node }.toSet())
     }
 
-    @Test fun `parallel one requests one worker across the cluster without reserving a node`() {
+    @Test fun `one vCPU is the width of each session, not the job's total, and no session reserves a node`() {
         val id = job(ExperimentSpec("one-vcpu", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.AWS_HOST))
         queue().reconcile(); prepare(id, 8); backend.reconcile()
         repeat(3) { queue().reconcile() }
         val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
-        assertEquals(1, solves.size)
-        assertEquals(1000, solves.single().budget.cpuMillis)
-        assertFalse(store.execution.submission(solves.single().id).contains("node.unique.id"))
+        assertEquals(settings.maxSessionsPerJob, solves.size, "eight waiting rows spread over the most sessions a job may have")
+        assertTrue(solves.all { it.budget == ResourceBudget(1000, 768, 1) })
+        assertTrue(solves.none { store.execution.submission(it.id).contains("node.unique.id") })
+        val single = job(ExperimentSpec("one-vcpu-capped", problems = listOf(mapOf("suite" to "s")), vcpus = 1, host = Experiments.AWS_HOST))
+        val capped = settings.copy(maxVcpusPerJob = 1)
+        queue(policy = capped).reconcile(); prepare(single, 8); backend.reconcile()
+        repeat(3) { queue(policy = capped).reconcile() }
+        assertEquals(1, store.execution.sessions(single).count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP },
+            "the live total cap still holds a job to one worker")
+    }
+
+    @ParameterizedTest @ValueSource(ints = [8, 16])
+    fun `a job spreads sessions as wide as its vCPUs over several workers up to the live total cap`(total: Int) {
+        val id = job(ExperimentSpec("spread", problems = listOf(mapOf("suite" to "s")), vcpus = 4, host = Experiments.AWS_HOST))
+        val policy = settings.copy(maxVcpusPerJob = total)
+        queue(policy = policy).reconcile(); prepare(id, 8); backend.reconcile()
+        repeat(3) { queue(policy = policy).reconcile() }
+        val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(total / 4, solves.size)
+        assertTrue(solves.all { it.budget.cpuMillis == 4000 && it.budget.parallel == 3 }, "each session is as wide as the job's vCPUs")
+        assertEquals(total * 1000, solves.sumOf { it.budget.cpuMillis })
+        assertTrue(solves.none { store.execution.placement(it.id).native })
+    }
+
+    @Test fun `on the native machine a job's sessions together hold no more than its vCPUs`() {
+        val id = job(ExperimentSpec("native-width", problems = listOf(mapOf("suite" to "s")), vcpus = 2, host = Experiments.LAB_HOST))
+        queue().reconcile(); prepare(id, 8); backend.reconcile()
+        repeat(3) { queue().reconcile() }
+        val solves = store.execution.sessions(id).filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP }
+        assertEquals(1, solves.size, "eight cores and a total cap of eight do not widen a job on one machine")
+        assertEquals(2000, solves.single().budget.cpuMillis)
+        assertTrue(store.execution.placement(solves.single().id).native)
     }
 
     @Test fun `domain completion is acknowledged once across coordinator instances`() {

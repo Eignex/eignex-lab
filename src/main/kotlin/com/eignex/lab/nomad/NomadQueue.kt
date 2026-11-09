@@ -142,9 +142,12 @@ class NomadQueue(
                 val pending = store.plans.casePlan(job.id).filter { it.status.isActive }
                     .map { Triple(it.problem, it.seed, it.repeat) }.distinct().size
                 val minimumCpu = Math.multiplyExact(cases.maxOf { it.executionCase?.resources?.cpus ?: recipe.arms[it.arm].arm.cores }, 1000)
-                // The job's vCPUs bound the aggregate reservation, at least enough for its largest single case.
-                val requestedCpu = Math.multiplyExact(current.vcpus, 1000)
-                val cpuLimit = maxOf(minOf(this.settings.maxVcpusPerJob * 1000, requestedCpu), minimumCpu)
+                // The job's vCPUs are the width of each of its sessions ([NomadQueueSettings.solveBudget]); the live
+                // maxVcpusPerJob caps all of them together, so a job wider than one worker spreads over several nodes.
+                // Both hold at least its largest single case.
+                val cpuLimit = maxOf(Math.multiplyExact(this.settings.maxVcpusPerJob, 1000), minimumCpu)
+                // The native worker is one node: there the job's sessions together hold at most its vCPUs.
+                val nativeLimit = maxOf(Math.multiplyExact(current.vcpus, 1000), minimumCpu)
                 // Existing sessions may have shrunk to fit prior capacity. Admit by actual remaining resources below,
                 // not an assumed ideal session width; every useful session still needs a whole pending paired row.
                 val limit = minOf(this.settings.maxSessionsPerJob, pending)
@@ -155,15 +158,17 @@ class NomadQueue(
                     val budget = checkNotNull(solveBudget(native, current))
                     val held = store.execution.nativeReservation()
                     var cpu = held.first; var memory = held.second
-                    var nativeWorkers = sessions.count { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP &&
+                    val nativeSolves = sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired != Desired.STOP &&
                         store.execution.placement(it.id).native }
+                    var nativeWorkers = nativeSolves.size
+                    var jobNativeCpu = nativeSolves.sumOf { it.budget.cpuMillis.toLong() }
                     val maximum = this.settings.perHostParallel?.let { (it + budget.parallel - 1) / budget.parallel } ?: Int.MAX_VALUE
                     for (waiting in sessions.filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN && it.allocation == null &&
                         !store.execution.placement(it.id).native }) {
                         if (nativeWorkers >= maximum || cpu + budget.cpuMillis > config.cores * 1000L ||
-                            memory + budget.memoryMiB > native.template.budget.memoryMiB) break
+                            memory + budget.memoryMiB > native.template.budget.memoryMiB || jobNativeCpu + budget.cpuMillis > nativeLimit) break
                         if (store.execution.loseUnallocatedSession(waiting.id, "placement-native-capacity")) {
-                            cpu += budget.cpuMillis; memory += budget.memoryMiB; nativeWorkers++
+                            cpu += budget.cpuMillis; memory += budget.memoryMiB; nativeWorkers++; jobNativeCpu += budget.cpuMillis
                         }
                     }
                     sessions = store.execution.sessions(job.id)
@@ -196,7 +201,8 @@ class NomadQueue(
                         settings.solveBudget(target, current, preparedBench, cpuCeiling = remainingCpu)
                     else
                         settings.solveBudget(target, current, preparedBench, minOf(config.maxParallel, nativeCases),
-                            cpuCeiling = minOf(remainingCpu.toLong(), config.cores * 1000L - reserved.first).coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+                            cpuCeiling = minOf(remainingCpu.toLong(), config.cores * 1000L - reserved.first,
+                                nativeLimit - nativeSessions.sumOf { it.budget.cpuMillis.toLong() }).coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
                             memoryCeiling = (target.template.budget.memoryMiB - reserved.second).coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
                     val available = ordered.mapNotNull { target -> fitting(target)?.takeIf { it.cpuMillis <= remainingCpu }?.let { target to it } }
                         .filter { (target, _) ->

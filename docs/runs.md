@@ -115,10 +115,12 @@ may place other rows on different compatible machines; preparation can also run 
 from solving. A job's node changing between rows is normal and does not invalidate its paired comparison.
 Keep ordinary A/B placement automatic rather than pinning the entire job to a machine.
 
-`vcpus` is the number of vCPUs dedicated to the job. Each worker session of the job reserves that many and runs
+`vcpus` is the width of each of the job's worker sessions. Each session reserves that many and runs
 `max(1, vcpus - 1)` cases at once, divided by a case's CPUs when it needs more than one (at least one case), leaving
 one vCPU for the worker JVM and its helpers. A session claims whole rows until they fill those case slots.
-A session larger than a worker can hold is split into sessions that fit; the queue's `maxVcpusPerJob` caps the total.
+While rows wait, the lab adds sessions of that width, on other nodes when one is full, until the job's sessions
+together reach the queue's `maxVcpusPerJob`; a session wider than a worker can hold is narrowed to fit. On the local
+machine a job's sessions together hold at most its `vcpus`.
 The job's preparation gets the same vCPUs, at least the queue's `preparationBudget`, with memory scaled in proportion,
 both within what the chosen worker offers, so a larger `vcpus` also builds faster. Jobs the local machine may run
 have `vcpus` capped at its cores. Without `vcpus` the lab's default (4) applies; recording modes default to 1.
