@@ -13,7 +13,16 @@ internal object Schema {
     /** The version the squashed baseline stands for. A database older than it predates the squash and is refused. */
     private const val BASELINE = 21
 
-    private val steps: List<(Connection) -> Unit> = listOf()
+    private val steps: List<(Connection) -> Unit> = listOf(
+        // 22: a solve session may hold several active attempts, one per claim its worker named, so it refills a case
+        // slot as soon as one row ends. An attempt without a claim name, from a worker that claims one at a time, stays
+        // the only active one of its session.
+        { db -> db.createStatement().use { s ->
+            s.execute("ALTER TABLE iteration_attempts ADD COLUMN claim_id TEXT")
+            s.execute("DROP INDEX active_session_iteration")
+            s.execute("CREATE UNIQUE INDEX active_session_claim ON iteration_attempts (session_id, COALESCE(claim_id, '')) WHERE state IN ('claimed', 'preparing', 'executing', 'uploading')")
+        } },
+    )
 
     /** The number of steps: the `user_version` of a database [migrate] has brought up to date. */
     val version: Int get() = BASELINE + steps.size

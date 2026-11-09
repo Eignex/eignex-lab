@@ -132,6 +132,10 @@ It does not combine arm A from one machine or attempt with arm B from another. A
 accepted. Retain failed-attempt and preparation costs, and investigate repeated losses as an operational
 issue separately from the validity of completed same-machine pairs.
 
+A worker keeps its case slots full: each row runs as its own attempt, all arms together, and as soon as one
+row ends the worker claims the next row whose arms all fit the slots it has free, while its other rows keep
+running. A lost worker gives back every row it was running, each whole.
+
 Reference comparisons on a captured source require the same source identity and a recorded reference version.
 Historical rows without either stay visible as history but cannot establish coverage, disagreement or objective
 quality on known bytes.

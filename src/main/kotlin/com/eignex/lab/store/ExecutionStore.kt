@@ -95,7 +95,8 @@ class ExecutionStore internal constructor(private val store: Store) {
             prior.cpuUsec?.let { before -> checkpoint.cpuUsec?.let { it < before } ?: true } == true)
         if (checkpoint.retirement != null && session.desired != Desired.STOP) {
             val active = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", session.id, map = ::attemptRow)
-            require(active.all { it.iteration == owner.iteration && it.generation == owner.generation }) { "retirement attempt superseded" }
+            // A worker running several attempts retires all of them under any one it still runs.
+            require(active.isEmpty() || active.any { it.iteration == owner.iteration && it.generation == owner.generation }) { "retirement attempt superseded" }
             val reason = "interrupted:${checkpoint.retirement}"
             db.sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = ? WHERE id = ?", reason, session.id)
             active.forEach { db.invalidate(it, "lost", at) }
@@ -184,10 +185,19 @@ class ExecutionStore internal constructor(private val store: Store) {
         db.session(id)!!
     }
 
-    /** [waitWhenHeld]: the worker understands [SolveAdmissionHeld] and keeps its session and warm workspaces through
-     * journal pressure. Older workers, which exit on any declined claim, retain the drain below. */
+    /**
+     * [waitWhenHeld]: the worker understands [SolveAdmissionHeld] and keeps its session and warm workspaces through
+     * journal pressure. Older workers, which exit on any declined claim, retain the drain below.
+     *
+     * A worker that names its claim ([claimId]) runs several attempts at once: each new name takes the session's next
+     * whole row when its free case slots hold all of that row's arms (any row when nothing else runs), so a slot that
+     * one row frees is refilled without waiting for the others; a repeated name returns the attempt it took. Without a
+     * name the session runs one attempt at a time, of whole rows that fill its slots, as older workers expect.
+     * [newRows] false only replays existing attempts.
+     */
     fun claim(id: String, token: String, allocation: String, at: Long = now(), leaseMs: Long = LEASE_MS, allowNewSolve: () -> Boolean = { true },
-              waitWhenHeld: Boolean = false): IterationClaim? {
+              waitWhenHeld: Boolean = false, claimId: String? = null, newRows: Boolean = true): IterationClaim? {
+        require(claimId == null || CLAIM_ID.matches(claimId)) { "invalid claim name" }
         expire(at)
         return store.executionTransaction { db ->
             require(leaseMs in 1..LEASE_MS)
@@ -197,13 +207,15 @@ class ExecutionStore internal constructor(private val store: Store) {
                 return@executionTransaction null
             }
             if (store.job(session.jobId)!!.paused || session.desired != Desired.RUN) return@executionTransaction null
-            // An HTTP retry of a claim returns the existing ownership, never a second concurrent iteration.
-            val active = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS ORDER BY generation DESC", id) { attemptRow(it) }.singleOrNull()
-            if (active != null) {
+            // An HTTP retry of a claim returns the existing ownership, never a second attempt for the same request.
+            val running = db.sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS ORDER BY generation DESC, started_at DESC", id) { attemptRow(it) }
+            val replay = if (claimId == null) running.firstOrNull() else running.firstOrNull { it.claim == claimId }
+            if (replay != null) {
                 // Claim tokens are derived from the scoped session secret; only their digest is persisted.
-                val claimToken = claimToken(token, active.iteration, active.generation)
-                return@executionTransaction IterationClaim(AttemptOwner(id, allocation, active.iteration, active.generation, claimToken), active.indices, active.leaseUntil, active.parallel)
+                val claimToken = claimToken(token, replay.iteration, replay.generation)
+                return@executionTransaction IterationClaim(AttemptOwner(id, allocation, replay.iteration, replay.generation, claimToken), replay.indices, replay.leaseUntil, replay.parallel, claimId)
             }
+            if (!newRows) return@executionTransaction null
             // Replay above keeps ownership valid even if pressure arrived after the claim response was lost.
             // The decision and idle retirement share the claim transaction: no concurrent request can own a row
             // between an external hasActiveAttempt check and a drain. The callback must read a cached hint only,
@@ -216,6 +228,7 @@ class ExecutionStore internal constructor(private val store: Store) {
                 return@executionTransaction null
             }
             if (session.executionClass == ExecutionClass.PREPARE) {
+                if (running.isNotEmpty()) return@executionTransaction null
                 if (store.job(session.jobId)!!.setupDone || db.sqlRows("SELECT 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = 'preparation' AND state = 'committed'", session.jobId) { it.getInt(1) }.isNotEmpty()) return@executionTransaction null
                 val iteration = "preparation"
                 val generation = db.sqlRows("SELECT COALESCE(MAX(generation), 0) + 1 FROM iteration_attempts WHERE job_id = ? AND iteration_id = ?", session.jobId, iteration) { it.getInt(1) }.single()
@@ -225,17 +238,21 @@ class ExecutionStore internal constructor(private val store: Store) {
                 db.event(session.jobId, id, "claimed:$iteration:$generation", at)
                 return@executionTransaction IterationClaim(AttemptOwner(id, allocation, iteration, generation, claimToken), emptyList(), at + leaseMs)
             }
-            val free = db.iterations(session.jobId).entries.filter { (_, rows) -> rows.all { it.status == "QUEUED" && it.host == null } }
-            if (free.isEmpty()) return@executionTransaction null
+            val rowsFree = db.iterations(session.jobId).entries.filter { (_, rows) -> rows.all { it.status == "QUEUED" && it.host == null } }
+            if (rowsFree.isEmpty()) return@executionTransaction null
             val placement = Json.parseToJsonElement(db.sqlRows("SELECT payload FROM execution_outbox WHERE id = ?", "$id:submit") { it.getString(1) }.single()).jsonObject
             val perHost = placement["Meta"]?.jsonObject?.get("lab_per_host_parallel")?.jsonPrimitive?.intOrNull
             val heldParallel = if (perHost == null) 0 else db.sqlRows("SELECT COALESCE(SUM(a.parallel_limit), 0) FROM iteration_attempts a JOIN execution_sessions s ON s.id = a.session_id WHERE a.job_id = ? AND s.node_id = ? AND a.state IN $ACTIVE_ATTEMPTS", session.jobId, session.node) { it.getInt(1) }.single()
-            val slots = minOf(session.budget.parallel, perHost?.let { (it - heldParallel).coerceAtLeast(0) } ?: session.budget.parallel)
-            if (slots == 0) return@executionTransaction null
-            // Whole rows until they fill the session's case slots: every arm of a row runs here, in this one attempt, and
-            // a lost attempt gives all its rows back. One row keeps its own key, so single-row attempts read as before.
-            val rows = mutableListOf(free.first())
-            for (row in free.drop(1)) { if (rows.sumOf { it.value.size } >= slots) break; rows += row }
+            val free = session.budget.parallel - running.sumOf { it.parallel }
+            val slots = minOf(free, perHost?.let { (it - heldParallel).coerceAtLeast(0) } ?: free)
+            if (slots <= 0) return@executionTransaction null
+            // Whole rows only: every arm of a row runs here, in this one attempt, and a lost attempt gives all its rows
+            // back. A named claim takes the next row alone, once the free slots hold all its arms or nothing else runs;
+            // an unnamed one takes rows until they fill the slots. One row keeps its own key.
+            val rows = mutableListOf(rowsFree.first())
+            if (claimId != null) {
+                if (running.isNotEmpty() && rows.single().value.size > slots) return@executionTransaction null
+            } else for (row in rowsFree.drop(1)) { if (rows.sumOf { it.value.size } >= slots) break; rows += row }
             val iteration = rows.singleOrNull()?.key ?: rows.map { it.key }.let { keys ->
                 "${keys.first()}+${keys.size - 1}~${digest(keys.joinToString(",")).take(12)}"
             }
@@ -243,11 +260,11 @@ class ExecutionStore internal constructor(private val store: Store) {
             val claimToken = claimToken(token, iteration, generation)
             val indices = rows.flatMap { row -> row.value.map { it.index } }
             val parallel = minOf(slots, indices.size)
-            db.sqlUpdate("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at, parallel_limit) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?)",
-                session.jobId, iteration, generation, id, allocation, digest(claimToken), at + leaseMs, Json.encodeToString(indices), at, parallel)
+            db.sqlUpdate("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at, parallel_limit, claim_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?)",
+                session.jobId, iteration, generation, id, allocation, digest(claimToken), at + leaseMs, Json.encodeToString(indices), at, parallel, claimId)
             for (index in indices) db.sqlUpdate("UPDATE commands SET host = ? WHERE job_id = ? AND idx = ?", session.node, session.jobId, index)
             db.event(session.jobId, id, "claimed:$iteration:$generation", at)
-            IterationClaim(AttemptOwner(id, allocation, iteration, generation, claimToken), indices, at + leaseMs, parallel)
+            IterationClaim(AttemptOwner(id, allocation, iteration, generation, claimToken), indices, at + leaseMs, parallel, claimId)
         }
     }
 
@@ -717,13 +734,16 @@ class ExecutionStore internal constructor(private val store: Store) {
         return a
     }
     private fun Tx.expire(jobId: Long, at: Long) {
-        sqlRows("SELECT * FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS AND lease_until <= ?", jobId, at, map = ::attemptRow)
-            .forEach { a ->
-                invalidate(a, "lost", at)
+        sqlRows("SELECT DISTINCT session_id FROM iteration_attempts WHERE job_id = ? AND state IN $ACTIVE_ATTEMPTS AND lease_until <= ?", jobId, at) { it.getString(1) }
+            .forEach { id ->
+                // The worker that let one lease lapse is lost: every row it still holds goes back whole, whether or not
+                // that attempt's own lease has run out yet.
+                sqlRows("SELECT * FROM iteration_attempts WHERE session_id = ? AND state IN $ACTIVE_ATTEMPTS", id, map = ::attemptRow)
+                    .forEach { invalidate(it, "lost", at) }
                 // Expired credentials cannot bind again and fetch a fresh iteration.
-                val s = session(a.session)!!
-                sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = 'lease-expired' WHERE id = ?", a.session)
-                event(jobId, a.session, "lost:infrastructure:lease-expired", at)
+                val s = session(id)!!
+                sqlUpdate("UPDATE execution_sessions SET desired = 'stop', observation = 'lease-expired' WHERE id = ?", id)
+                event(jobId, id, "lost:infrastructure:lease-expired", at)
                 stopIntent(s)
             }
     }
@@ -749,6 +769,8 @@ class ExecutionStore internal constructor(private val store: Store) {
         /** The iteration id of a job's preparation: the one accepted result that carries a [PreparationResult]. */
         const val PREPARATION = "preparation"
         private val ACTIVE_ATTEMPTS = AttemptState.ACTIVE_SQL
+        /** What a worker may name a claim ([claim]): a random hex string of its choosing. */
+        internal val CLAIM_ID = Regex("[0-9a-f]{16,64}")
         private val random = SecureRandom()
         fun token(): String = ByteArray(32).also(random::nextBytes).hex()
         internal fun digest(value: String) = sha256Hex(value)
@@ -760,14 +782,14 @@ class ExecutionStore internal constructor(private val store: Store) {
         /** What [sessionRow] reads. Sessions are scanned on every coordinator pass; `SELECT *` would also read each manifest. */
         private const val SESSION_COLUMNS = "id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, allocation_id, node_id"
         private fun sessionRow(r: ResultSet) = ExecutionSession(r.getString("id"), r.getLong("job_id"), r.getInt("generation"), ExecutionClass.of(r.getString("execution_class")), r.getString("release"), Json.decodeFromString(r.getString("budget")), r.getString("nomad_job_id"), Desired.of(r.getString("desired")), r.getString("allocation_id"), r.getString("node_id"))
-        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: AttemptState, val leaseUntil: Long, val tokenHash: String, val result: String?, val parallel: Int, val resultSha256: String? = null) {
+        private data class Attempt(val jobId: Long, val iteration: String, val generation: Int, val session: String, val indices: List<Int>, val state: AttemptState, val leaseUntil: Long, val tokenHash: String, val result: String?, val parallel: Int, val resultSha256: String? = null, val claim: String? = null) {
             /** Whether [offered] is the result this attempt committed: by the digest of the whole result once it was kept
              *  slim, by the result itself before. */
             fun accepts(offered: IterationResult): Boolean = Json.encodeToString(offered).let { whole ->
                 if (resultSha256 != null) digest(whole) == resultSha256 else result == whole
             }
         }
-        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"), r.getString("result_sha256"))
+        private fun attemptRow(r: ResultSet) = Attempt(r.getLong("job_id"), r.getString("iteration_id"), r.getInt("generation"), r.getString("session_id"), Json.decodeFromString<List<Int>>(r.getString("indices")), AttemptState.of(r.getString("state")), r.getLong("lease_until"), r.getString("token_hash"), r.getString("result"), r.getInt("parallel_limit"), r.getString("result_sha256"), r.getString("claim_id"))
         /** Manifest keys every session of a job repeats, kept once each ([splitManifest]). */
         /** Preparation result keys its job's session manifests repeat, kept once in the same table ([splitResult]). */
         /** [result] as a committed attempt keeps it: without its case records, which `cases` keeps. */

@@ -547,6 +547,17 @@ across coordinator restarts and configuration changes. Lost workers are replenis
 infrastructure retry limit. Pending solve sessions do not request capacity once all work is claimed. Source checks run
 on a bounded background queue so slow checker installation/execution does not stall capacity health or reconciliation.
 
+A solve worker runs several attempts at once, one whole paired row each, and refills a freed case slot with the next
+row whose arms all fit, rather than waiting for every row of a multi-row attempt to finish. Each claim carries a name
+the worker chose, so a retried request returns the same attempt; the session's free slots are its budget's
+`parallel` less the slots of its running attempts. A lapsed lease, a lost allocation or a provider retirement ends
+the session and returns every row it was running, whole. A worker whose coordinator does not echo the claim name, and
+an older worker that names none, keep one attempt at a time. Schema step 22 adds `claim_id` and relaxes the
+one-active-attempt-per-session index to unnamed claims. A controller that predates it refuses the upgraded database:
+to roll back past it, stop every solve session, then with the controller down run
+`DROP INDEX active_session_claim; CREATE UNIQUE INDEX active_session_iteration ON iteration_attempts (session_id) WHERE state IN ('claimed', 'preparing', 'executing', 'uploading'); PRAGMA user_version = 21;`
+(the extra column is harmless to it).
+
 Runtime pruning is documented in [setup](../SETUP.md#retiring-old-installations). Keep active worker releases
 immutable and retain frozen retry recipes. Reconciliation delivers cancellation and stop intents before allocation
 state is considered disposable; historical job results and provenance are never runtime-pruning candidates.

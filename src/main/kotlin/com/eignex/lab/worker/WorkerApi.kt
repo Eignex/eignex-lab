@@ -28,8 +28,12 @@ import io.ktor.util.AttributeKey
 import java.net.URI
 
 @Serializable data class WorkerRegistration(val release: String)
-/** A worker that sets [wait] keeps its session through journal pressure, asking again after [SolveWait.retryMs]. */
-@Serializable data class ClaimRequest(val wait: Boolean = false)
+/**
+ * A worker that sets [wait] keeps its session through journal pressure, asking again after [SolveWait.retryMs]. One that
+ * names its [claim] runs several attempts at once: each new name asks for the next whole row that fits the session's free
+ * case slots, and asking again under the same name returns the same attempt ([ExecutionStore.claim]).
+ */
+@Serializable data class ClaimRequest(val wait: Boolean = false, val claim: String? = null)
 @Serializable data class SolveWait(val retryMs: Long)
 @Serializable data class WorkerSelection(val owner: AttemptOwner, val selections: List<List<Problem>>)
 @Serializable data class WorkerBenchSelections(val owner: AttemptOwner, val keys: List<String>)
@@ -108,7 +112,7 @@ fun Application.workerApi(
                 check(workAllowed()); call.session
                 val c = call.credentials()
                 val request = lenientJson.decodeFromString<ClaimRequest>(call.bodyText(CLAIM_BYTES).ifBlank { "{}" })
-                val claim = try { backend.claim(c.session, c.token, c.allocation, waitWhenHeld = request.wait) }
+                val claim = try { backend.claim(c.session, c.token, c.allocation, waitWhenHeld = request.wait, claimId = request.claim) }
                     catch (_: SolveAdmissionHeld) { call.respond(HttpStatusCode.Accepted, SolveWait(SOLVE_WAIT_MS)); return@post }
                 if (claim == null) call.respond(HttpStatusCode.NoContent) else call.respond(claim)
             }

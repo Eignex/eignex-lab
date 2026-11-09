@@ -81,8 +81,9 @@ enum class IntentOp(val stored: String) {
 @Serializable
 data class AttemptOwner(val session: String, val allocation: String, val iteration: String, val generation: Int, val token: String)
 
+/** [claim] repeats the name the worker gave its request; a coordinator that runs one attempt per session at a time leaves it out. */
 @Serializable
-data class IterationClaim(val owner: AttemptOwner, val indices: List<Int>, val leaseUntil: Long, val parallel: Int = 1)
+data class IterationClaim(val owner: AttemptOwner, val indices: List<Int>, val leaseUntil: Long, val parallel: Int = 1, val claim: String? = null)
 
 @Serializable
 data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt: Long, val finishedAt: Long, val record: String? = null, val command: String? = null) {
