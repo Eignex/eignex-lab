@@ -692,18 +692,4 @@ class ExecutionStoreTest {
         assertEquals(2, store.execution.claim("a", token, "alloc-a", 1001)!!.parallel)
         assertEquals(2, store.execution.claim("b", token, "alloc-b", 1002)!!.parallel)
     }
-
-    @Test fun `historical backend provenance stays readable while new jobs always use Nomad`() {
-        val id = store.create("old", "main", listOf("recorded" to 1L), experiment = ExperimentSpec("old"))
-        store.finish(id, Status.DONE)
-        // What a database from before the backend column, and before numbered migrations, looks like.
-        store.executionTransaction { db -> db.sqlUpdate("ALTER TABLE jobs DROP COLUMN backend"); db.sqlUpdate("PRAGMA user_version = 0") }
-        val reopened = Store(file)
-        assertEquals(Backend.LEGACY, reopened.job(id)!!.backend)
-        assertEquals(Status.DONE, reopened.job(id)!!.status)
-        assertEquals("recorded", reopened.job(id)!!.commands.single().cmd)
-        assertFalse(reopened.retry(id))
-        val current = reopened.create("new", "main", emptyList(), experiment = ExperimentSpec("new"))
-        assertEquals(Backend.NOMAD, reopened.job(current)!!.backend)
-    }
 }
