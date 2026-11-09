@@ -52,7 +52,7 @@ class NodesPageTest {
     @Test fun `nodes tab shows hardware allocations and expiring requests with a fresh report`() = testApplication {
         val config = config()
         val store = Store(config.database)
-        val lease = store.execution.requestCapacity(pool.id, 1, 60000)
+        val lease = store.capacityLeases.request(pool.id, 1, 60000)
         val reservation = CapacityReservation("allocation<script>", 42, ResourceBudget(2000, 4096))
         val report = CapacitySnapshot(now(), 0, CapacityDecision(mapOf(pool.id to 1), emptyList(), emptyList(), emptyMap()),
             listOf(CapacityNode("avx512:instance", pool.id, CapacityNodeState.READY, listOf(reservation))), emptyMap(), settings.pools)
@@ -92,7 +92,7 @@ class NodesPageTest {
             setBody("""{"pool":"arm","nodes":2,"ttlSec":900}""")
         }
         assertEquals(HttpStatusCode.Accepted, response.status)
-        val lease = store.execution.capacityLeases().single()
+        val lease = store.capacityLeases.active().single()
         assertEquals(arm.id, lease.pool)
         assertEquals(2, lease.nodes)
         assertTrue(lease.expiresAt in now() + 890000..now() + 900000)
@@ -104,11 +104,11 @@ class NodesPageTest {
         )) assertEquals(status, client.post("/capacity/leases") {
             contentType(ContentType.Application.Json); setBody(body)
         }.status, body)
-        assertEquals(listOf(lease), store.execution.capacityLeases())
+        assertEquals(listOf(lease), store.capacityLeases.active())
         assertEquals(HttpStatusCode.Forbidden, client.delete("/capacity/leases/${lease.id}") { header("Sec-Fetch-Site", "cross-site") }.status)
-        assertEquals(listOf(lease), store.execution.capacityLeases())
+        assertEquals(listOf(lease), store.capacityLeases.active())
         assertEquals(HttpStatusCode.NoContent, client.delete("/capacity/leases/${lease.id}").status)
-        assertTrue(store.execution.capacityLeases().isEmpty())
+        assertTrue(store.capacityLeases.active().isEmpty())
         assertContains(client.get("/nodes").bodyAsText(), "No active requests.")
     }
 
@@ -122,7 +122,7 @@ class NodesPageTest {
         assertEquals(HttpStatusCode.Unauthorized, client.post("/capacity/leases") {
             contentType(ContentType.Application.Json); setBody("""{"pool":"arm","nodes":1}""")
         }.status)
-        assertTrue(store.execution.capacityLeases().isEmpty())
+        assertTrue(store.capacityLeases.active().isEmpty())
         val response = client.get("/nodes") { basicAuth("lab", "fixture-password") }
         assertEquals(HttpStatusCode.OK, response.status)
     }
