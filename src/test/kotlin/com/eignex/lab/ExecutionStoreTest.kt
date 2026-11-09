@@ -209,6 +209,95 @@ class ExecutionStoreTest {
         assertTrue(store.execution.commit(retry.owner, result(retry), 1005))
     }
 
+    private fun wide(id: Long, name: String = "wide", slots: Int = 5) {
+        store.execution.createSession(name, id, ExecutionClass.SOLVE, "release-1", ResourceBudget(6000, 4096, slots), token, "{}", 1000)
+        store.execution.bind(name, token, "alloc-$name", "node-$name", "release-1", 1000)
+    }
+    private fun name(n: Int) = n.toString(16).padStart(32, '0')
+    private fun rowOf(id: Long, claim: IterationClaim): Set<Pair<Problem, Long?>> =
+        store.plans.casePlan(id).filter { it.index in claim.indices }.map { it.problem to it.seed }.toSet()
+    private fun assertWholeRows(id: Long, claim: IterationClaim) {
+        val plan = store.plans.casePlan(id)
+        val rows = rowOf(id, claim)
+        assertEquals(plan.filter { (it.problem to it.seed) in rows }.map { it.index }.toSet(), claim.indices.toSet(), "every arm of a row, nothing else")
+    }
+
+    @Test fun `named claims run whole rows side by side and refill a freed slot before the others finish`() {
+        val id = job(problems = 4); wide(id)
+        val first = store.execution.claim("wide", token, "alloc-wide", 1001, claimId = name(1))!!
+        assertEquals(name(1), first.claim); assertEquals(2, first.indices.size); assertEquals(2, first.parallel)
+        assertWholeRows(id, first)
+        assertEquals(first, store.execution.claim("wide", token, "alloc-wide", 1002, claimId = name(1)), "a retried name replays its attempt")
+        val second = store.execution.claim("wide", token, "alloc-wide", 1003, claimId = name(2))!!
+        assertWholeRows(id, second)
+        assertTrue(first.indices.intersect(second.indices.toSet()).isEmpty())
+        // One slot is left and a row has two arms: no row is split, and nothing else is taken.
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1004, claimId = name(3)))
+        assertEquals(4, store.job(id)!!.commands.count { it.host == null })
+        commit(first, 1005)
+        assertTrue(store.job(id)!!.commands.filter { it.index in second.indices }.all { it.status == Status.QUEUED && it.host?.text == "node-wide" })
+        val third = store.execution.claim("wide", token, "alloc-wide", 1020, claimId = name(3))!!
+        assertWholeRows(id, third)
+        assertTrue(third.indices.intersect(second.indices.toSet() + first.indices).isEmpty())
+        store.execution.phase(second.owner, "executing", 1021)
+        store.execution.renew(second.owner, 1022)
+        commit(third, 1023); commit(second, 1030)
+        val fourth = store.execution.claim("wide", token, "alloc-wide", 1040, claimId = name(4))!!
+        commit(fourth, 1041)
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1050, claimId = name(5)))
+        assertEquals(4, store.execution.accepted(id).size)
+        assertTrue(store.execution.accepted(id).all { (_, result) -> result.cases.size == 2 })
+        assertTrue(store.job(id)!!.commands.all { it.status == Status.DONE && it.host?.text == "node-wide" })
+    }
+
+    @Test fun `an idle session takes a row wider than its slots while a busy one waits for room`() {
+        val id = job(problems = 2); wide(id, slots = 1)
+        val first = store.execution.claim("wide", token, "alloc-wide", 1001, claimId = name(1))!!
+        assertEquals(2, first.indices.size); assertEquals(1, first.parallel)
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1002, claimId = name(2)))
+        commit(first, 1003)
+        assertNotNull(store.execution.claim("wide", token, "alloc-wide", 1020, claimId = name(2)))
+    }
+
+    @Test fun `an unnamed claim keeps one attempt a session and names are checked`() {
+        val id = job(problems = 4); wide(id)
+        val named = store.execution.claim("wide", token, "alloc-wide", 1001, claimId = name(1))!!
+        assertEquals(named.copy(claim = null), store.execution.claim("wide", token, "alloc-wide", 1002), "an older worker replays what the session runs, in its reply shape")
+        assertFailsWith<IllegalArgumentException> { store.execution.claim("wide", token, "alloc-wide", 1003, claimId = "not a name") }
+        assertNull(store.execution.claim("wide", token, "alloc-wide", 1004, claimId = name(2), newRows = false))
+        assertEquals(named, store.execution.claim("wide", token, "alloc-wide", 1005, claimId = name(1), newRows = false))
+    }
+
+    @ParameterizedTest @CsvSource("lost", "expired", "retired")
+    fun `losing a worker gives every row it runs back whole and a replacement claims them complete`(how: String) {
+        val id = job(problems = 4); wide(id)
+        val done = store.execution.claim("wide", token, "alloc-wide", 1001, claimId = name(1))!!
+        commit(done, 1002)
+        val a = store.execution.claim("wide", token, "alloc-wide", 1010, claimId = name(2))!!
+        val b = store.execution.claim("wide", token, "alloc-wide", 1011, claimId = name(3))!!
+        store.execution.phase(a.owner, "executing", 1012)
+        store.execution.caseStarted(a.owner, a.indices.first(), 1013)
+        // Attempt b renews; a stops renewing, as a worker whose one lease lapses.
+        when (how) {
+            "lost" -> store.execution.loseSession("wide", "infrastructure:node-lost", 1020)
+            "expired" -> { store.execution.renew(b.owner, 1050); store.execution.expire(a.leaseUntil) }
+            else -> store.execution.resourceCheckpoint(b.owner, checkpoint(30, 100, "provider-interruption").copy(budget = ResourceBudget(6000, 4096, 5)), 1020)
+        }
+        assertEquals(Desired.STOP, store.execution.session("wide")!!.desired)
+        for (claim in listOf(a, b)) {
+            assertTrue(store.job(id)!!.commands.filter { it.index in claim.indices }.all { it.status == Status.QUEUED && it.host == null })
+            assertFailsWith<ExecutionFenced> { store.execution.renew(claim.owner, 1060) }
+            assertFailsWith<ExecutionFenced> { store.execution.commit(claim.owner, result(claim), 1060) }
+        }
+        assertTrue(store.job(id)!!.commands.filter { it.index in done.indices }.all { it.status == Status.DONE }, "an accepted row stays accepted")
+        wide(id, "replacement")
+        val retried = listOf(name(4), name(5), name(6)).mapNotNull { store.execution.claim("replacement", token, "alloc-replacement", a.leaseUntil + 1, claimId = it) }
+        assertEquals(setOf(a.indices.toSet(), b.indices.toSet()), retried.map { it.indices.toSet() }.toSet(), "the same complete rows, never arms mixed across attempts")
+        retried.forEach { commit(it, a.leaseUntil + 2) }
+        assertEquals(3, store.execution.accepted(id).size)
+        assertTrue(store.execution.accepted(id).all { (_, result) -> result.cases.size == 2 })
+    }
+
     @Test fun `compiler admission limit survives restart without changing strict placement JSON`() {
         val spec = ExperimentSpec("compiler-admission")
         val id = store.create(spec.name, "main", emptyList(), experiment = spec)

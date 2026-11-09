@@ -40,6 +40,44 @@ class SchemaTest {
         assertEquals(Schema.version, version(file))
     }
 
+    /** A database as a release at the squashed baseline left it: `schema-21.sql` and version 21. */
+    private fun baseline21(file: java.nio.file.Path) {
+        val text = requireNotNull(Schema::class.java.getResourceAsStream("schema-21.sql")).bufferedReader().use { it.readText() }
+        val statements = text.lines().filterNot { it.startsWith("--") }.joinToString("\n")
+            .split(Regex("\n(?=CREATE |INSERT )")).map { it.trim() }.filter { it.isNotEmpty() }
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c -> c.createStatement().use { s ->
+            statements.forEach(s::execute); s.execute("PRAGMA user_version = 21")
+        } }
+    }
+
+    private fun activeAttempt(file: java.nio.file.Path, iteration: String, claim: String?) =
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.prepareStatement("INSERT INTO iteration_attempts (job_id, iteration_id, generation, session_id, allocation_id, token_hash, lease_until, state, indices, started_at" +
+                (if (claim == null) "" else ", claim_id") + ") VALUES (1, ?, 1, 's', 'a', 'h', 9, 'executing', '[]', 0" + (if (claim == null) "" else ", ?") + ")").use { p ->
+                p.setString(1, iteration); if (claim != null) p.setString(2, claim); p.executeUpdate()
+            }
+        }
+
+    @Test
+    fun `step 22 keeps a session's running attempt and lets named claims run side by side`() {
+        val file = file()
+        baseline21(file)
+        activeAttempt(file, "0:none:0", null)
+        assertFailsWith<SQLException> { activeAttempt(file, "1:none:0", null) }
+        Store(file)
+        assertEquals(22, version(file))
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c -> c.createStatement().use { s ->
+            s.executeQuery("SELECT iteration_id, state, claim_id FROM iteration_attempts").use { r ->
+                assertTrue(r.next()); assertEquals("0:none:0", r.getString(1)); assertEquals("executing", r.getString(2)); assertEquals(null, r.getString(3))
+            }
+        } }
+        // An unnamed attempt is still its session's only one; named ones are one per name.
+        assertFailsWith<SQLException> { activeAttempt(file, "1:none:0", null) }
+        activeAttempt(file, "1:none:0", "a".repeat(32))
+        activeAttempt(file, "2:none:0", "b".repeat(32))
+        assertFailsWith<SQLException> { activeAttempt(file, "3:none:0", "b".repeat(32)) }
+    }
+
     @Test
     fun `a database older than the squashed baseline is refused, not half upgraded`() {
         val file = file()

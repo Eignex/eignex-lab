@@ -33,11 +33,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                     drainFile: Path? = System.getenv("LAB_WORKER_DRAIN_FILE")?.let(Path::of)) {
     init { require(api.scheme == "https" || (api.scheme == "http" && (privateTransport || api.host in setOf("127.0.0.1", "localhost", "::1")))); require(api.userInfo == null && api.rawQuery == null) }
     private val runDeadline = AtomicLong(Long.MAX_VALUE)
-    private val retryLeaseDeadline = AtomicLong(Long.MAX_VALUE)
+    /** Each running attempt's local lease deadline: retries last no longer than the latest of them. */
+    private val retryLeaseDeadlines = java.util.concurrent.ConcurrentHashMap<AttemptOwner, Long>()
     private val retries = WorkerRetry()
     private val interruption = WorkerInterruption(drainFile)
     @Volatile internal var preparationRecorder: PreparationRecorder? = null
-    private fun leaseRemainingMs(): Long = minOf(interruption.remainingMs(), retryLeaseDeadline.get().takeIf { it != Long.MAX_VALUE }
+    private fun leaseRemainingMs(): Long = minOf(interruption.remainingMs(), retryLeaseDeadlines.values.maxOrNull()
         ?.let { (it - System.nanoTime()) / 1_000_000 } ?: Long.MAX_VALUE)
     private fun runRemainingMs(): Long? = runDeadline.get().takeIf { it != Long.MAX_VALUE }?.let { (it - System.nanoTime()) / 1_000_000 }
     private fun checkRun() { if (runRemainingMs()?.let { it <= 0 } == true) throw RunDeadlineExceeded() }
@@ -125,9 +126,11 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             builds, inputCache, workspaceStorage.workspaces)
         val nativeOwnership = if (CliMeasurements.localMacOs) ProcessSupervisor(supervisorSocket).reserve(requireNotNull(System.getenv("LAB_WORKER_EXPERIMENT"))) else null
         val resourcesStarted = System.nanoTime()
-        val resourceOwner = AtomicReference<AttemptOwner?>()
+        // Resource evidence goes under an attempt still running when there is one, else under the last that ran.
+        val resourceOwners = java.util.concurrent.ConcurrentLinkedDeque<AttemptOwner>()
+        val lastOwner = AtomicReference<AttemptOwner?>()
         fun checkpoint(retirement: String? = null) {
-            val owner = resourceOwner.get() ?: return
+            val owner = resourceOwners.peekLast() ?: lastOwner.get() ?: return
             runCatching {
                 val sample = ResourceCheckpoint((System.nanoTime() - resourcesStarted) / 1_000_000,
                     observation.budget, observation.enforcement, observation.cpuMax, observation.memoryMax,
@@ -140,21 +143,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         resourceReporter.scheduleWithFixedDelay({ checkpoint() }, 0, 5, TimeUnit.SECONDS)
         try {
-        var heldSince: Long? = null
-        while (true) {
-            if (interruption.requested()) return
-            val response = retry { coordinator.json("claim", """{"wait":true}""") }
-            if (response.statusCode() == 204) return
-            if (response.statusCode() == 202) {
-                // Journal pressure: keep this session and its warm workspaces, but not indefinitely.
-                val started = heldSince ?: System.nanoTime().also { heldSince = it }
-                if (System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) return
-                val retryMs = runCatching { Json.decodeFromString<SolveWait>(String(response.body())).retryMs }.getOrDefault(5_000L)
-                Thread.sleep(retryMs.coerceIn(1_000L, 30_000L))
-                continue
-            }
-            heldSince = null
-            val claim = Json.decodeFromString<IterationClaim>(String(response.body()))
+        /** Runs [claim] to its accepted commit; false when the session must end after it. */
+        fun attempt(claim: IterationClaim): Boolean {
             val deadline = AtomicLong(0)
             fun renew() {
                 val start = System.nanoTime()
@@ -167,10 +157,15 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 }
                 // The lease starts no earlier than request dispatch. Network latency consumes our local allowance.
                 deadline.set(start + (lease.leaseMs - 10_000) * 1_000_000)
-                retryLeaseDeadline.set(deadline.get())
+                // Only while the attempt runs: a renewal finishing after it ended must not bound later retries.
+                retryLeaseDeadlines.computeIfPresent(claim.owner) { _, _ -> deadline.get() }
             }
-            retry { renew() }
-            resourceOwner.set(claim.owner)
+            retryLeaseDeadlines[claim.owner] = Long.MAX_VALUE
+            resourceOwners.add(claim.owner)
+            try { retry { renew() } } catch (failure: Throwable) {
+                retryLeaseDeadlines.remove(claim.owner); resourceOwners.remove(claim.owner); throw failure
+            }
+            lastOwner.set(claim.owner)
             checkpoint()
             val heartbeat = Executors.newSingleThreadScheduledExecutor { Thread(it, "worker-lease").apply { isDaemon = true } }
             heartbeat.scheduleWithFixedDelay({
@@ -256,16 +251,36 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                 // Only the durable acceptance acknowledgement permits removing the private worktree and captures.
                 logs.close()
                 deleteTree(directory)
-                if (result.runTimedOut) return
+                return !result.runTimedOut
             } catch (_: RunDeadlineExceeded) {
                 retry(ignoreRunDeadline = true) { coordinator.json("run-timeout", Json.encodeToString(claim.owner)) }
-                return
+                return false
             } catch (failure: WorkerBuildFailure) {
-                if (interruption.requested()) return
+                if (interruption.requested()) return false
                 retry { coordinator.json("build-failed", Json.encodeToString(WorkerBuildError(claim.owner, failure.detail))) }
-                return
-            } finally { logs.close(); deadline.set(0); heartbeat.shutdownNow(); retryLeaseDeadline.set(Long.MAX_VALUE) }
+                return false
+            } finally {
+                logs.close(); deadline.set(0); heartbeat.shutdownNow()
+                retryLeaseDeadlines.remove(claim.owner); resourceOwners.remove(claim.owner)
+            }
         }
+        if (manifest.preparationTimeoutSec != null) {
+            var heldSince: Long? = null
+            while (true) {
+                if (interruption.requested()) return
+                val response = retry { coordinator.json("claim", """{"wait":true}""") }
+                if (response.statusCode() == 204) return
+                if (response.statusCode() == 202) {
+                    // Journal pressure: keep this session and its warm workspaces, but not indefinitely.
+                    val started = heldSince ?: System.nanoTime().also { heldSince = it }
+                    if (System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) return
+                    Thread.sleep(solveWaitMs(response))
+                    continue
+                }
+                heldSince = null
+                if (!attempt(Json.decodeFromString<IterationClaim>(String(response.body())))) return
+            }
+        } else refill(manifest.budget.parallel, ::attempt)
         } catch (failure: Exception) {
             // A known provider withdrawal is routine replacement, never a deterministic build poison pill.
             if (!interruption.requested()) throw failure
@@ -276,6 +291,76 @@ class WorkerSession(private val api: URI, private val id: String, private val to
             try { nativeOwnership?.close() } finally { try { workspaceStorage.close() } finally { gradleCache.close() } }
         }
     }
+
+    private fun solveWaitMs(response: HttpResponse<ByteArray>): Long =
+        runCatching { Json.decodeFromString<SolveWait>(String(response.body())).retryMs }.getOrDefault(5_000L).coerceIn(1_000L, 30_000L)
+
+    /**
+     * A solve session's attempts side by side, [slots] cases at once: whenever one ends, the session asks again under a
+     * fresh claim name for the next whole row its free slots hold, instead of waiting for every row it holds to finish.
+     * Each attempt still runs all arms of its row here and commits them together. A coordinator that leaves the name out
+     * of its reply claims one attempt at a time, and so does this session then. After a failure or an attempt that ends
+     * the session, it claims no more, lets the others finish and commit, and then ends as that attempt said.
+     */
+    internal fun refill(slots: Int, attempt: (IterationClaim) -> Boolean) {
+        val finished = java.util.concurrent.LinkedBlockingQueue<Pair<AttemptOwner, Result<Boolean>>>()
+        val running = linkedMapOf<AttemptOwner, Int>()
+        val threads = Executors.newCachedThreadPool { Thread(it, "worker-attempt").apply { isDaemon = true } }
+        var name = claimName()
+        var oneAtATime = false
+        var stopping = false
+        var failure: Throwable? = null
+        var nextClaim = System.nanoTime()
+        var heldSince: Long? = null
+        try {
+            while (true) {
+                if (interruption.requested()) stopping = true
+                val mayClaim = !stopping && failure == null && running.values.sum() < slots && !(oneAtATime && running.isNotEmpty())
+                if (mayClaim && System.nanoTime() - nextClaim >= 0) try {
+                    val response = retry { coordinator.json("claim", Json.encodeToString(ClaimRequest(wait = true, claim = name))) }
+                    when (response.statusCode()) {
+                        // Nothing fits now: ask again when a row ends, or after a while for rows other sessions give back.
+                        204 -> if (running.isEmpty()) break else nextClaim = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(REFILL_POLL_MS)
+                        202 -> {
+                            // Journal pressure: keep this session and its warm workspaces, but not idle indefinitely.
+                            val started = heldSince ?: System.nanoTime().also { heldSince = it }
+                            if (running.isEmpty() && System.nanoTime() - started > TimeUnit.MILLISECONDS.toNanos(MAX_SOLVE_WAIT_MS)) break
+                            nextClaim = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(solveWaitMs(response))
+                        }
+                        else -> {
+                            heldSince = null
+                            val claim = Json.decodeFromString<IterationClaim>(String(response.body()))
+                            if (claim.claim != name) oneAtATime = true
+                            name = claimName()
+                            if (claim.owner in running) nextClaim = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(REFILL_POLL_MS)
+                            else {
+                                running[claim.owner] = claim.parallel
+                                threads.execute { finished.put(claim.owner to runCatching { attempt(claim) }) }
+                            }
+                            continue
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (error is InterruptedException) throw error
+                    failure = error; stopping = true
+                }
+                if (running.isEmpty()) {
+                    if (!mayClaim) break
+                    Thread.sleep(((nextClaim - System.nanoTime()) / 1_000_000).coerceIn(0, REFILL_POLL_MS))
+                    continue
+                }
+                val waitMs = if (mayClaim) ((nextClaim - System.nanoTime()) / 1_000_000).coerceIn(1, REFILL_POLL_MS) else REFILL_POLL_MS
+                val (owner, outcome) = finished.poll(waitMs, TimeUnit.MILLISECONDS) ?: continue
+                running.remove(owner)
+                nextClaim = System.nanoTime()
+                outcome.onSuccess { if (!it) stopping = true }
+                    .onFailure { error -> failure?.addSuppressed(error) ?: run { failure = error } }
+            }
+        } finally { threads.shutdown() }
+        failure?.let { throw it }
+    }
+
+    private fun claimName(): String = ExecutionStore.token().take(32)
 
     private fun streamLogs(claim: IterationClaim, directory: Path): AutoCloseable {
         val offsets = mutableMapOf<String, Long>()
@@ -481,6 +566,8 @@ class WorkerSession(private val api: URI, private val id: String, private val to
     companion object {
         /** Longest continuous journal-pressure wait before an idle worker releases its node. */
         internal const val MAX_SOLVE_WAIT_MS = 15 * 60_000L
+        /** How long a session with free slots waits before asking again for a row other sessions may have given back. */
+        internal const val REFILL_POLL_MS = 15_000L
         /** Provisional output only: each upload is a coordinator write per stream, and accepted output transfers in full. */
         internal const val LIVE_LOG_INTERVAL_SEC = 5L
         /** How often the worker's console is appended to its job's files: one small coordinator write per session. */

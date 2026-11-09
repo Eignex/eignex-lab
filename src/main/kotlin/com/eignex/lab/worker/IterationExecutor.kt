@@ -53,6 +53,7 @@ internal class IterationExecutor(
                 .acquire(manifest.sharedInputs, ::checkRun, required = iterationInputPaths(selected))
         } else null
         var slotStaging: WorkerSlotStaging? = null
+        var heldSlots: Map<String, List<WorkerSlotStaging.Slot>> = emptyMap()
         try {
         val corpus = inputs?.directory ?: directory.resolve("corpus")
         if (manifest.inputCorpus != null) {
@@ -62,15 +63,17 @@ internal class IterationExecutor(
         val concurrent = minOf(manifest.budget.parallel, selected.size)
         // Cases running at once each get their own copy of their commit's tree: a consumer's case may build in it (a
         // koblas vendor comparison runs Gradle there), and builds sharing one tree corrupt each other. Slot 0 keeps the
-        // tree's existing key, so a serial session is unchanged.
+        // tree's existing key, so a serial session is unchanged. Attempts running at once in one session take distinct
+        // slot numbers ([slotNumbers]), so they never share a tree either.
         val groups = selected.groupingBy { manifest.arms[it.arm].sha }.eachCount().mapValues { (sha, count) ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             val base = ExecutionStore.digest(kotlinx.serialization.json.Json.encodeToString(WorkerBundle.serializer(), bundle))
-            List(minOf(count, concurrent)) { slot ->
+            slotNumbers.acquire(sha, minOf(count, concurrent)).map { slot ->
                 val key = if (slot == 0) base else ExecutionStore.digest("$base\nslot=$slot")
                 WorkerSlotStaging.Slot(sha, key, slot)
             }
         }
+        heldSlots = groups
         val slots = groups.values.flatten()
         val staging = WorkerSlotStaging(manifest.budget, slots.size, ::checkRun).also { slotStaging = it }
         val staged = staging.stage(slots,
@@ -178,7 +181,23 @@ internal class IterationExecutor(
             }
             return IterationResult(results, runTimedOut = timedOut.get())
         } finally { threads.shutdownNow() }
-        } finally { try { inputs?.close() } finally { slotStaging?.close() } }
+        } finally { try { inputs?.close() } finally { try { slotStaging?.close() } finally {
+            heldSlots.forEach { (sha, slots) -> slotNumbers.release(sha, slots.map { it.number }) }
+        } } }
+    }
+
+    private val slotNumbers = SlotNumbers()
+
+    /** The private workspace slots each commit's cases use in this session now: an attempt takes the lowest free ones. */
+    internal class SlotNumbers {
+        private val used = mutableMapOf<String, MutableSet<Int>>()
+        fun acquire(sha: String, count: Int): List<Int> = synchronized(used) {
+            val taken = used.getOrPut(sha) { mutableSetOf() }
+            generateSequence(0) { it + 1 }.filter { it !in taken }.take(count).toList().also { taken.addAll(it) }
+        }
+        fun release(sha: String, numbers: List<Int>) = synchronized(used) {
+            used[sha]?.let { taken -> taken.removeAll(numbers.toSet()); if (taken.isEmpty()) used.remove(sha) }
+        }
     }
 
     /** Large literal arguments stay intact in the invocation and artifact; bounded result metadata uses the planned command. */

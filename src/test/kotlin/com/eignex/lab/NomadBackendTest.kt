@@ -494,6 +494,27 @@ class NomadBackendTest {
         nativePreemption("sweep@abc", "other-sweep@abc")
     }
 
+    @Test fun `a yielding native worker that names its claims takes no new row and drains once its rows end`() {
+        val spec = ExperimentSpec("ordinary", problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")),
+            seeds = listOf(1), host = Experiments.AUTO_HOST)
+        val id = setup(problems = 3, spec = spec, platform = NomadPlatform.MAC)
+        store.setup(id, "a".repeat(40))
+        register()
+        val first = "1".repeat(32); val second = "2".repeat(32)
+        val claim = backend().claim(session.id, token, "allocation", claimId = first)!!
+        assertEquals(first, claim.claim)
+        val waiting = store.create("urgent", "main", emptyList(), priority = -1, experiment = spec.copy(name = "urgent"))
+        store.setPriority(waiting, 10)
+        assertEquals(claim, backend().claim(session.id, token, "allocation", claimId = first), "a retried name keeps its row")
+        assertNull(backend().claim(session.id, token, "allocation", claimId = second))
+        assertEquals(Desired.RUN, store.execution.session(session.id)!!.desired, "its running row still owns the session")
+        store.execution.phase(claim.owner, "uploading")
+        assertTrue(backend().commit(claim.owner, IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
+        assertNull(backend().claim(session.id, token, "allocation", claimId = second))
+        assertEquals(Desired.DRAIN, store.execution.session(session.id)!!.desired)
+        assertEquals(0, store.execution.failureCount(id))
+    }
+
     private fun nativePreemption(name: String, waitingName: String) {
         val spec = ExperimentSpec(name, problems = listOf(mapOf("suite" to "s")), grid = mapOf("x" to listOf("a", "b")),
             seeds = listOf(1), host = if ('@' in name) Experiments.LAB_HOST else Experiments.AUTO_HOST)
@@ -1744,6 +1765,32 @@ class NomadBackendTest {
         assertEquals(HttpStatusCode.ServiceUnavailable, client.post("/worker/v1/sessions/session/claim") { credentials() }.status)
         store.requestCancel(session.jobId)
         assertEquals(HttpStatusCode.Conflict, client.post("/worker/v1/sessions/session/renew") { credentials(); setBody(Json.encodeToString(claim.owner)) }.status)
+    }
+
+    @Test fun `named claims over the worker API run rows side by side while unnamed replies keep their old shape`() = testApplication {
+        setup(3, ExperimentSpec("single-arm", problems = listOf(mapOf("suite" to "s")), seeds = listOf(1), host = HostPlacement.AUTO))
+        application { workerApi(store, backend(), artifacts) { true } }
+        fun HttpRequestBuilder.credentials() { header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt()) }
+        client.post("/worker/v1/sessions/session/register") { credentials(); setBody(Json.encodeToString(WorkerRegistration("release"))) }
+        suspend fun claim(name: String?) = client.post("/worker/v1/sessions/session/claim") {
+            credentials(); setBody(Json.encodeToString(ClaimRequest(wait = true, claim = name)))
+        }
+        val a = Json.decodeFromString<IterationClaim>(claim("a".repeat(32)).bodyAsText())
+        val b = Json.decodeFromString<IterationClaim>(claim("b".repeat(32)).bodyAsText())
+        assertEquals("a".repeat(32), a.claim); assertEquals("b".repeat(32), b.claim)
+        assertNotEquals(a.owner, b.owner)
+        assertTrue(a.indices.intersect(b.indices.toSet()).isEmpty())
+        assertEquals(HttpStatusCode.NoContent, claim("c".repeat(32)).status, "two slots, both running")
+        assertEquals(a, Json.decodeFromString<IterationClaim>(claim("a".repeat(32)).bodyAsText()))
+        assertEquals(HttpStatusCode.BadRequest, claim("not a name").status)
+        val unnamed = claim(null).bodyAsText()
+        assertFalse(Json.parseToJsonElement(unnamed).jsonObject.containsKey("claim"), "an older worker reads the reply strictly")
+        for (owned in listOf(a, b)) {
+            store.execution.phase(owned.owner, "uploading")
+            assertTrue(backend().commit(owned.owner, IterationResult(owned.indices.map { ExecutionCaseResult(it, 0, 1, 2) })))
+        }
+        val c = Json.decodeFromString<IterationClaim>(claim("c".repeat(32)).bodyAsText())
+        assertTrue(c.indices.none { it in a.indices || it in b.indices })
     }
 
     @Test fun `worker API has no operator routes and scopes mutation and uploads to its signed allocation`() = testApplication {
