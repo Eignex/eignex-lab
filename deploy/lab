@@ -95,9 +95,7 @@
 #                                                            writes lab-fetch-missing.json naming each one, and exits 1
 # The lab asks for its password on every call: LAB_PASSWORD, or ~/.config/eignex-lab/password.
 set -euo pipefail
-host="${LAB_HOST:-}"
 url="${LAB_URL:-https://lab.eignex.com}"
-if [[ -n "$host" && -z "${LAB_URL:-}" ]]; then url="http://$host:8420"; fi
 # Every call carries the lab's password (HTTP Basic, no user name): LAB_PASSWORD, else the file LAB_PASSWORD_FILE,
 # ~/.config/eignex-lab/password by default. It reaches curl through a private config file, never its command line.
 password="${LAB_PASSWORD:-$(cat "${LAB_PASSWORD_FILE:-$HOME/.config/eignex-lab/password}" 2>/dev/null || true)}"
@@ -132,11 +130,6 @@ files_json() {
     sleep 2
   done
 }
-data="${LAB_REMOTE_DATA:-eignex-lab-data}"
-# The server's LAB_JOBS and LAB_CORPUS, relative to its home unless absolute, for lab corpus.
-remote_jobs="${LAB_REMOTE_JOBS:-$data/jobs}"
-remote_corpus="${LAB_REMOTE_CORPUS:-.cache/eignex-lab/corpus}"
-corpus="${LAB_CORPUS:-$HOME/.cache/eignex-lab/corpus}"
 node_tags='[]'
 timeout='' measurement=''
 # Shared submission options, kept separate from arguments passed to a committed main.
@@ -496,7 +489,6 @@ fetch)
     exit 1
   fi
   rm -f "$receipt" ;;
-corpus) rsync -az --info=progress2 "$corpus/" "${host:?set LAB_HOST to the corpus server SSH destination}:$remote_corpus/" ;;
 corpus-index)
   [[ $# -eq 1 && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#1} -le 200 ]] ||
     { echo 'usage: lab corpus-index <collection>' >&2; exit 2; }

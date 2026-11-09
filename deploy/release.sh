@@ -1,5 +1,5 @@
-# Sourced by install.sh and update.sh. The services run releases/current, a copy of a build that nothing
-# rewrites: a rebuild changes the jars a running JVM still loads classes from, and breaks it until it restarts.
+# Sourced by install.sh, update.sh and proxy/install-proxy.sh. The services run releases/current, a copy of a build
+# that nothing rewrites: a rebuild changes the jars a running JVM still loads classes from, and breaks it until it restarts.
 
 # release <repo dir> <data dir>: copy the repo's built distribution into a new release, point current at it, keep
 # the three newest, and print the path of its start script.
@@ -41,4 +41,9 @@ restart_services() {
     fi
     ;;
   esac
+}
+
+# lab_port: the API port, LAB_PORT as lab.env sets it, else the lab's default (Defaults.PORT in Config.kt).
+lab_port() {
+  echo "${LAB_PORT:-8420}"
 }

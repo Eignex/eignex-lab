@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run with sudo on the lab Mac: serve https://<domain> from the Mac itself with Caddy, which gets and renews its own
-# Let's Encrypt certificate and forwards to the lab's 127.0.0.1:8420, and cloud workers' /worker/v1 calls to the
+# Let's Encrypt certificate and forwards to the lab's 127.0.0.1:$LAB_PORT (8420), and cloud workers' /worker/v1 calls to the
 # coordinator's worker API on 127.0.0.1:8091. The home router forwards TCP 80 and 443 to the
 # Mac and the domain's A record points at the home address; the lab's own password gate guards everything behind it.
 #   sudo deploy/proxy/install-proxy.sh [domain] [user]     default lab.eignex.com; user defaults to the one running sudo
@@ -13,6 +13,10 @@ caddy="$(command -v caddy || echo /opt/homebrew/bin/caddy)"
 label=com.eignex.lab.proxy
 daemon="/Library/LaunchDaemons/$label.plist"
 dir="$home/eignex-lab-data/proxy"
+# The API port: LAB_PORT from the user's lab.env, read as data rather than sourced as root.
+. "$(dirname "$0")/../release.sh"
+LAB_PORT="$(sed -n 's/^LAB_PORT=["'\'']\{0,1\}\([0-9]*\).*/\1/p' "$home/.config/eignex-lab/lab.env" 2>/dev/null | tail -n 1 || true)"
+port="$(lab_port)"
 sudo -u "$user" mkdir -p "$dir" "$home/eignex-lab-data/logs"
 sudo -u "$user" tee "$dir/Caddyfile" >/dev/null <<CADDY
 $domain {
@@ -21,7 +25,7 @@ $domain {
 		reverse_proxy 127.0.0.1:8091
 	}
 	handle {
-		reverse_proxy 127.0.0.1:8420
+		reverse_proxy 127.0.0.1:$port
 	}
 }
 CADDY
