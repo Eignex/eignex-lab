@@ -51,7 +51,7 @@ internal fun indexPage(
         }.toMap()
         append(Html("<section id=\"active-section\" aria-labelledby=\"active-heading\"><h2 id=\"active-heading\">Active jobs</h2><div id=\"work\" data-live>") + (if (loading) Html("Loading…") else workSummary(status, active, estimates)) + Html("</div>"))
         append(Html("<div id=\"active\" data-live>") + (if (loading) Html("Loading…") else activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes, instances)) + Html("</div></section>"))
-        append(Html("<section id=\"schedules-section\" aria-labelledby=\"schedules-heading\"><details class=\"schedule-panel\"><summary><h2 id=\"schedules-heading\">Schedules</h2> <span id=\"schedule-count\" data-live class=\"muted small\">") +
+        append(Html("<section id=\"schedules-section\" aria-labelledby=\"schedules-heading\"><details class=\"schedule-panel\" data-open-on-hash=\"schedules-section\"><summary><h2 id=\"schedules-heading\">Schedules</h2> <span id=\"schedule-count\" data-live class=\"muted small\">") +
             (if (loading) "Loading…" else "${schedules.size} recurring schedules") + Html("</span></summary><div id=\"schedules\" data-live>") +
             (if (loading) Html("Loading…") else if (schedules.isEmpty()) Html("<p>No schedules.</p>") else schedulesTable(schedules)) +
             Html("</div></details></section>"))

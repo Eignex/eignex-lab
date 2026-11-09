@@ -38,6 +38,19 @@ document.addEventListener('click', function (e) {
   applyResultFilters();
 });
 applyResultFilters();
+// A link to a <details data-open-on-hash="id"> opens it; opening is an explicit choice and survives live updates.
+// The click covers a link to the hash already in the URL, which fires no hashchange.
+function openOnHash(hash) {
+  document.querySelectorAll('details[data-open-on-hash]').forEach(function (details) {
+    if (hash === '#' + details.dataset.openOnHash) details.open = true;
+  });
+}
+document.addEventListener('click', function (e) {
+  const link = e.target.closest('a[href^="#"]');
+  if (link) openOnHash(link.getAttribute('href'));
+});
+window.addEventListener('hashchange', function () { openOnHash(location.hash); });
+openOnHash(location.hash);
 async function act(path, body, ask) {
   if (ask && !confirm(ask)) return;
   const response = await fetch(path, body
