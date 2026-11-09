@@ -54,6 +54,15 @@ class PagesTest {
         assertContains(page, "Capped: a timeout of 10 h was asked, capped at 2 h.")
         assertContains(page, "stopped at its time limit")
         assertContains(page, "/jobs/$id/files/cases/0/out/profile.jfr")
+        assertContains(page, "<a href=\"/jobs/$id/files\">Files &amp; logs</a>")
+    }
+
+    @Test
+    fun `sizes are written in decimal units, as disks count them`() {
+        assertEquals("999 B", size(999))
+        assertEquals("1.5 KB", size(1_500))
+        assertEquals("12.0 MB", size(12 * BYTES_PER_MB))
+        assertEquals("80.0 GB", size(80 * BYTES_PER_GB))
     }
 
     @Test

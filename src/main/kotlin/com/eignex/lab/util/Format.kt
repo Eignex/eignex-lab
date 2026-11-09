@@ -17,9 +17,10 @@ internal fun wallText(hours: Double): String {
     }
 }
 
+/** A size in decimal units, as disks and [BYTES_PER_GB] count them: `512 B`, `1.5 KB`, `12.0 MB`, `3.4 GB`. */
 internal fun size(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
-    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024)
-    else -> "%.1f GB".format(bytes / 1024.0 / 1024 / 1024)
+    bytes < 1_000 -> "$bytes B"
+    bytes < BYTES_PER_MB -> "%.1f KB".format(Locale.ROOT, bytes / 1_000.0)
+    bytes < BYTES_PER_GB -> "%.1f MB".format(Locale.ROOT, bytes.toDouble() / BYTES_PER_MB)
+    else -> "%.1f GB".format(Locale.ROOT, bytes.toDouble() / BYTES_PER_GB)
 }

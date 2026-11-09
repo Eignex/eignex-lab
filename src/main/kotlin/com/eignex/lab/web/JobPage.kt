@@ -51,7 +51,7 @@ internal fun jobPage(
     if (job.experiment.work == Work.Recipe || cases.any { it.problem.benchCase?.attributes?.get("recordSchema") == "solver-v1" })
         append(Html("<a href=\"#problems\">Problems</a>"))
     if (job.experiment.work is Work.Bench) append(Html("<a href=\"#bench-results\">Case metrics</a>"))
-    append(Html("<a href=\"/jobs/\"") + job.id + Html("/files\">Files &amp; logs</a></nav>"))
+    append(Html("<a href=\"/jobs/") + job.id + Html("/files\">Files &amp; logs</a></nav>"))
     append(Html("<details id=\"job-details\" class=\"panel job-details\"><summary>Execution details <span class=\"muted\">· preparation, placement and configuration</span></summary><dl class=\"meta\">"))
     if (job.backend == Backend.NOMAD) append(Html("<dt>execution</dt><dd>Nomad · <a href=\"/jobs/") + job.id + Html("/execution\">sessions and generations</a> · <a href=\"/nodes\">nodes</a></dd>"))
     for (report in preparation.filter { it.preparation != null }) {
