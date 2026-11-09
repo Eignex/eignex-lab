@@ -120,3 +120,14 @@ tasks.register<Test>("verifyPreparationPerformance") {
     outputs.upToDateWhen { false }
     testLogging { showStandardStreams = true }
 }
+// deploy/nomad/connected_probe.py runs this against its Nomad sandbox. A task of its own writes its results to
+// build/test-results/verifyConnectedNomad and leaves the check run's build/test-results/test in place.
+tasks.register<Test>("verifyConnectedNomad") {
+    group = "verification"
+    description = "Run ConnectedNomadTest against the sandbox deploy/nomad/connected_probe.py starts."
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform()
+    filter { includeTestsMatching("com.eignex.lab.ConnectedNomadTest") }
+    outputs.upToDateWhen { false }
+}
