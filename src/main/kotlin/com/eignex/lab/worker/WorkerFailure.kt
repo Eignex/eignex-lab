@@ -30,10 +30,25 @@ internal fun workerProcessExit(failure: Throwable): Int = when (failure) {
 internal class WorkerInfrastructureFailure(detail: String) : IllegalStateException(detail)
 
 internal fun checkPreparationExit(exit: Int, detail: () -> String) {
-    when (exit) {
-        0 -> Unit
-        WORKER_TEMPORARY_EXIT -> throw WorkerInfrastructureFailure(detail())
-        else -> throw WorkerBuildFailure(detail())
-    }
+    if (exit == 0) return
+    val text = detail()
+    if (exit == WORKER_TEMPORARY_EXIT || upstreamUnavailable(text)) throw WorkerInfrastructureFailure(text)
+    throw WorkerBuildFailure(text)
 }
+
+/**
+ * A download host's own outage (gateway errors, overload, rate limits, dropped connections) says nothing about the
+ * code: the same build passes once the host recovers, so it must replace the attempt instead of failing the job.
+ * Client errors such as 404 or 401 stay build failures, since retrying cannot change them.
+ */
+private val UPSTREAM_UNAVAILABLE = listOf(
+    // Gradle dependency resolution: "Could not GET '...'. Received status code 504 from server: Gateway Time-out"
+    Regex("""Received status code (5\d\d|408|429) from server"""),
+    // Gradle wrapper: "java.io.IOException: Server returned HTTP response code: 504 for URL: https://..."
+    Regex("""Server returned HTTP response code: (5\d\d|408|429) for URL"""),
+    Regex("""Could not (GET|HEAD) '[^']+'\.\s*(Connect to [^ ]+ failed|Read timed out|Connection reset|The target server failed to respond)"""),
+    Regex("""java\.net\.(SocketTimeoutException|ConnectException|UnknownHostException)\b[^\n]*\n\s*at org\.gradle\.wrapper\."""),
+)
+
+internal fun upstreamUnavailable(output: String): Boolean = UPSTREAM_UNAVAILABLE.any { it.containsMatchIn(output) }
 
