@@ -75,8 +75,15 @@ class NomadQueue(
                 fun solveBudget(target: NomadQueueTarget, of: Job) = if (target.native)
                     settings.solveBudget(target, of, preparedBench, config.maxParallel, config.cores * 1000)
                 else settings.solveBudget(target, of, preparedBench)
-                fun preparationBudget(target: NomadQueueTarget) =
-                    settings.preparationBudget(target, job, if (target.native) config.cores * 1000 else Int.MAX_VALUE)
+                // A cloud preparation also takes what a running node of its target leaves idle, so a small job compiles
+                // with more than its own vCPUs on a node that would otherwise wait for it ([idlePreparationBudget]).
+                val idle = mutableMapOf<String, List<Pair<Long, Long>>>()
+                fun preparationBudget(target: NomadQueueTarget): ResourceBudget {
+                    val floor = settings.preparationBudget(target, job, if (target.native) config.cores * 1000 else Int.MAX_VALUE)
+                    if (target.native) return floor
+                    return settings.idlePreparationBudget(target, floor, idle.getOrPut(target.template.nodeClass) { idleCapacity(target) },
+                        this.settings.maxConcurrentBuildsPerNode)
+                }
                 fun preparationAvailable(target: NomadQueueTarget): Boolean {
                     val budget = preparationBudget(target)
                     return cloudMayRun(target, job, budget) && backend.canPrepare(target.template, this.settings.maxConcurrentBuildsPerNode) &&
@@ -319,6 +326,23 @@ class NomadQueue(
         if (target.native || backend.hasCapacity(target.template, budget)) return true
         val pool = capacitySettings?.pools?.singleOrNull { it.nodeClass == target.template.nodeClass } ?: return capacitySettings == null
         return job.priority >= pool.minPriority || !Placement.localEligible(job.experiment, config.localNodeTags)
+    }
+
+    /**
+     * What each running node of cloud [target] has free for a new preparation: its sampled free CPU and memory less all
+     * that live sessions of its class whose worker has not registered ask for, as if they would all land on it. Solves
+     * already placed keep their reservations, and work waiting to be placed is never outgrown by a preparation. One
+     * placed since the last sample counts twice for a few seconds, which only keeps a preparation smaller.
+     */
+    private fun idleCapacity(target: NomadQueueTarget): List<Pair<Long, Long>> {
+        val nodes = backend.idle(target.template)
+        if (nodes.isEmpty()) return nodes
+        val waiting = store.execution.liveSessions().filter { it.allocation == null }
+            .map { it to store.execution.placement(it.id) }
+            .filter { (_, placement) -> !placement.native && placement.nodeClass == target.template.nodeClass }
+        val cpu = waiting.sumOf { (session, _) -> session.budget.cpuMillis.toLong() }
+        val memory = waiting.sumOf { (session, _) -> session.budget.memoryMiB.toLong() }
+        return nodes.map { (free, freeMemory) -> (free - cpu).coerceAtLeast(0) to (freeMemory - memory).coerceAtLeast(0) }
     }
 
     private fun nativeCapacity(target: NomadQueueTarget): ResourceBudget? =

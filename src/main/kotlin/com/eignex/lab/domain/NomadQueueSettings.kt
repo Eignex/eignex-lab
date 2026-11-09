@@ -33,7 +33,8 @@ data class NomadQueueSettings(
     /** Infrastructure policy, independent of frozen experiment inputs and per-worker parallelism. [maxVcpusPerJob] caps
      *  the vCPUs of all of a job's solve sessions together, while the job's own vCPUs are the width of each one
      *  ([solveBudget]); a job's preparation, one session, gets no more than it. [preparationBudget] is the least a
-     *  preparation gets; one grows with its job's vCPUs ([preparationBudget]). */
+     *  preparation gets; one grows with its job's vCPUs ([preparationBudget]) and, in the cloud, into what a running
+     *  node leaves idle ([idlePreparationBudget]). */
     val maxVcpusPerJob: Int = 16, val perHostParallel: Int? = null, val maxConcurrentBuildsPerNode: Int = 2,
     /** Explicitly approved infrastructure releases this worker can replace, preserving consumer inputs. */
     val workerReplaces: Set<String> = emptySet(),
@@ -117,5 +118,28 @@ data class NomadQueueSettings(
         val cpu = minOf(maxOf(base.cpuMillis, asked), maximum.cpuMillis, cpuCeiling)
         val memory = (base.memoryMiB.toLong() * cpu / base.cpuMillis).coerceIn(1, maximum.memoryMiB.toLong()).toInt()
         return ResourceBudget(cpu, memory)
+    }
+
+    /**
+     * [floor], a job's [preparationBudget] on cloud [target], grown into what one running node of it leaves idle. [idle]
+     * is each such node's free thousandths of a vCPU and MiB, after work already placed there and work still waiting to
+     * be. The grown preparation takes at most that node's share per compiler slot ([slots], the live
+     * [maxConcurrentBuildsPerNode]), so another preparation still fits beside it, the target's ceilings and
+     * [maxVcpusPerJob], in whole vCPUs with memory in [preparationBudget]'s proportion. The build then compiles with that
+     * many workers on a node that would otherwise sit idle ([com.eignex.lab.worker.WorkerBuildCache]); [floor] itself
+     * when no running node has more to give.
+     */
+    fun idlePreparationBudget(target: NomadQueueTarget, floor: ResourceBudget, idle: List<Pair<Long, Long>>,
+                              slots: Int = maxConcurrentBuildsPerNode): ResourceBudget {
+        val base = preparationBudget
+        val maximum = target.template.budget
+        val share = target.template.cpuCapacity.logicalCpus.toLong() * 1000 / slots
+        val ceiling = minOf(share, maximum.cpuMillis.toLong(), maxVcpusPerJob * 1000L)
+        val cpu = idle.maxOfOrNull { (cpu, memory) ->
+            val byMemory = minOf(memory, maximum.memoryMiB.toLong()) * base.cpuMillis / base.memoryMiB
+            minOf(cpu, ceiling, byMemory) / 1000 * 1000
+        } ?: return floor
+        if (cpu <= floor.cpuMillis) return floor
+        return ResourceBudget(cpu.toInt(), (base.memoryMiB.toLong() * cpu / base.cpuMillis).toInt())
     }
 }

@@ -122,7 +122,9 @@ While rows wait, the lab adds sessions of that width, on other nodes when one is
 together reach the queue's `maxVcpusPerJob`; a session wider than a worker can hold is narrowed to fit. On the local
 machine a job's sessions together hold at most its `vcpus`.
 The job's preparation gets the same vCPUs, at least the queue's `preparationBudget`, with memory scaled in proportion,
-both within what the chosen worker offers, so a larger `vcpus` also builds faster. Jobs the local machine may run
+both within what the chosen worker offers, so a larger `vcpus` also builds faster. A cloud preparation also takes
+what a running node leaves idle, up to that node's share per compiler slot, so a small job's build need not crawl on
+two vCPUs of an otherwise idle node; solves placed there, and work still waiting for a node, keep theirs. Jobs the local machine may run
 have `vcpus` capped at its cores. Without `vcpus` the lab's default (4) applies; recording modes default to 1.
 `parallel` is its retired name and still means the same; a spec that gives both must give them equal.
 `lab vcpus <id> <n>` changes it for a running job.
