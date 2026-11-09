@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
-# Run on an otherwise prepared image builder with Docker, Python+boto3 and the desired private network tooling.
+# Run on an otherwise prepared image builder with Docker, Python+boto3, curl, unzip and the desired private network
+# tooling.
 set -euo pipefail
 : "${LAB_WORKER_IMAGE:?immutable OCI image digest required}"
 [[ "$LAB_WORKER_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]
 root=$(cd "$(dirname "$0")/../../.." && pwd)
-python3 - "$root" <<'PY'
-import hashlib, io, json, platform, sys, urllib.request, zipfile
-from pathlib import Path
-pin = json.loads((Path(sys.argv[1]) / 'deploy/nomad/versions.json').read_text())['nomad']
-arch = {'x86_64': 'amd64', 'aarch64': 'arm64'}[platform.machine()]
-with urllib.request.urlopen(f"https://releases.hashicorp.com/nomad/{pin['version']}/nomad_{pin['version']}_linux_{arch}.zip", timeout=60) as response:
-    archive = response.read()
-if hashlib.sha256(archive).hexdigest() != pin['sha256']['linux_' + arch]:
-    raise ValueError('Nomad image checksum mismatch')
-binary = Path('/usr/local/bin/nomad'); binary.write_bytes(zipfile.ZipFile(io.BytesIO(archive)).read('nomad')); binary.chmod(0o755)
-PY
+. "$root/deploy/nomad/hashicorp.sh"
+nomad="$(mktemp)"
+hashicorp_fetch nomad "$(hashicorp_platform)" "$nomad"
+install -m 755 "$nomad" /usr/local/bin/nomad
+rm -f "$nomad"
 install -d -m 755 /opt/eignex-lab
 python3 -m venv /opt/eignex-lab/host-venv
 /opt/eignex-lab/host-venv/bin/python3 -m pip install -r "$root/deploy/infra/aws/requirements.txt"

@@ -18,7 +18,7 @@ class InstallTest(unittest.TestCase):
             project = root / "checkout"
             deploy = project / "deploy"
             deploy.mkdir(parents=True)
-            for name in ("install.sh", "release.sh", "lab.env.example", "gradle_maintenance.py"):
+            for name in ("install.sh", "release.sh", "launchd.sh", "lab.env.example", "gradle_maintenance.py"):
                 shutil.copy2(ROOT / "deploy" / name, deploy / name)
             home = root / "home"
             config = home / ".config/eignex-lab"
