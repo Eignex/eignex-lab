@@ -377,6 +377,20 @@ checks up to eight distinct content hashes concurrently. Presence checks and con
 transport failures at most three times per request, checking ownership before each retry; signing and object-store
 failures carry separate diagnostics. Metadata requests have a 15-second timeout. Local hashing and uploads keep their checksum checks;
 ownership cancellation interrupts pending checks before publication continues.
+
+Cloud bench preparations also reuse accepted builds across jobs and nodes when `reuseAcceptedBuilds` is enabled in
+queue settings. The coordinator remembers each accepted cloud preparation's build archive that is held in the regional
+store, by build recipe: repository, commit, platform, toolchain, build options and tasks, bench manifest and source
+inputs. A later preparation of the same recipe is offered the most recent such archive accepted within the last week.
+The worker uses it only when its own build identity (the recipe plus its JDK, platform and Gradle init script) is
+equal and the archive is in the regional store, stages it with every byte checked against the accepted bundle, and
+reports it as its prepared archive without compiling, archiving or uploading. Its cache report shows a `Build` hit
+with reason `reused-accepted`. Plans on a reused workspace are keyed by the plan source the accepting preparation
+computed on its complete build, so excluded `planInputs` keep their identity. Any other outcome is an ordinary build.
+When an identical build is being prepared for another job on the same platform, a preparation waits for its archive
+up to ten minutes before building itself. Enable this setting only after every pinned cloud worker image supports
+protocol 9; its default is false and frozen queue recipes keep theirs. Native preparations are unaffected.
+
 Build staging is pinned before background cleanup begins, and cleanup filters unrelated cache entries by
 name before reading their metadata. Input/archive quota eviction renames unused entries to tombstones;
 background workers delete those trees under one process-owned garbage lock per cache root. Publication

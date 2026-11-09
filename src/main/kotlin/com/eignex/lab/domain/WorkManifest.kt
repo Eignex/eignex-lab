@@ -61,6 +61,23 @@ internal fun preparedTreeManifest(files: List<InputFile>, directories: List<Stri
 internal fun preparedTreeDigest(files: List<InputFile>, directories: List<String>): String =
     sha256Hex(preparedTreeManifest(files, directories))
 
+/**
+ * An accepted preparation's archive of a build with the same recipe (the worker build identity without its worker
+ * properties), offered to a later preparation in place of compiling. The worker uses it only when its own build [identity] (recipe, worker
+ * platform, JDK and init script) is equal, and only after the archive's bytes verify against [bundle]; any other
+ * outcome is an ordinary build. [planSource] is the plan source identity the accepted preparation computed on its
+ * complete build, since the archive may hold only the declared workspace.
+ */
+@Serializable
+data class ReusableBuild(val identity: String, val bundle: WorkerBundle, val planSource: String? = null) {
+    init { require(identity.matches(SHA256) && bundle.build == null && bundle.tree == null) }
+}
+
+/** A plan source identity: `declared:` and an inventory digest, or `commit:` and a commit. */
+internal fun validPlanSource(source: String): Boolean =
+    source.startsWith("declared:") && SHA256.matches(source.removePrefix("declared:")) ||
+        source.startsWith("commit:") && CommitSha.isValid(source.removePrefix("commit:"))
+
 internal fun preparationArtifact(bundle: WorkerBundle): String = "preparation/${bundle.commit}." + if (bundle.tree == null) "zip" else "tree.json"
 
 @Serializable
@@ -76,7 +93,13 @@ data class WorkManifest(
     val session: String, val release: String, val experiment: ExperimentSpec, val arms: List<PlannedArm>,
     val cases: List<WorkCase>, val bundles: List<WorkerBundle>, val budget: ResourceBudget,
     val solveJavaOptions: String = "",
+    /**
+     * Accepted builds a preparation may reuse ([ReusableBuild]), at most one per commit. Null when the coordinator offers
+     * none; then the worker also reports no [PreparationResult.builds], which an older coordinator could not read.
+     */
+    val reusableBuilds: List<ReusableBuild>? = null,
     @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
+        experiment.isBench && reusableBuilds != null -> 9
         experiment.measurement == Measurement.NATIVE_STARTUP -> 8
         !experiment.isBench -> 1
         bundles.any { it.build?.gitBundle == PackedGitSource.MARKER } -> 7
@@ -94,7 +117,14 @@ data class WorkManifest(
         bundles.firstOrNull()?.build?.preparation?.selector(experiment.nodeTags) ?: experiment.nodeTags
 
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..8) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..9) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        reusableBuilds?.let { offered ->
+            require(schemaVersion >= 9 && preparationTimeoutSec != null && benchReplay == null) { "accepted build reuse requires worker protocol 9" }
+            require(offered.map { it.bundle.commit }.distinct().size == offered.size && offered.all { hint ->
+                hint.bundle.repository == experiment.repository && arms.any { it.sha == hint.bundle.commit } &&
+                    hint.planSource?.let(::validPlanSource) != false
+            }) { "invalid reusable builds" }
+        }
         require(experiment.measurement != Measurement.NATIVE_STARTUP || schemaVersion >= 8) { "native startup capture requires worker protocol 8" }
         require(bundles.none { it.build?.gitBundle == PackedGitSource.MARKER } || schemaVersion >= 7) { "packed source requires worker protocol 7" }
         require(bundles.none { it.build?.preparation != null } || schemaVersion >= 6) { "separate preparation platforms require worker protocol 6" }

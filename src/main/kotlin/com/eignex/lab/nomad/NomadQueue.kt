@@ -16,6 +16,12 @@ import java.nio.file.Path
 import java.util.UUID
 import java.time.Duration
 
+/**
+ * The longest a preparation waits for an identical build that another job is preparing: about one cold build of a
+ * small cloud preparation, so that waiting is never much slower than building, and usually much cheaper.
+ */
+internal const val BUILD_WAIT_MS = 10 * 60_000L
+
 /** Admission is repeatable from accepted preparation and persisted sessions, without a second queue database. */
 class NomadQueue(
     private val config: Config, private val store: Store, private val backend: NomadBackend,
@@ -27,8 +33,13 @@ class NomadQueue(
         TrustedQueueSources(config, artifacts, store)::publish,
     private val preparationPlan: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
     private val capacitySettings: CapacitySettings? = config.cluster?.capacity,
+    private val clock: Clock = Clock.SYSTEM,
 ) {
     private val publishedSources = QueueSourcePublications()
+    private val acceptedBuilds = AcceptedBuilds(config.dataDir.resolve("nomad/accepted-builds"))
+    /** Jobs whose accepted builds are recorded, and when each job waiting for an identical build began to wait. */
+    private val recordedBuilds = mutableSetOf<Long>()
+    private val waitingForBuild = mutableMapOf<Long, Long>()
 
     fun reconcile() {
         if (!allowed()) return
@@ -40,6 +51,7 @@ class NomadQueue(
         val schedules = store.schedules.all()
         val active = store.active()
         publishedSources.retain(active)
+        active.map { it.id }.toSet().let { ids -> recordedBuilds.retainAll(ids); waitingForBuild.keys.retainAll(ids) }
         for (listed in active.filter { it.runsOnNomad && !it.paused && !it.cancelRequested }
             .sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.id })) {
             var job = listed
@@ -107,16 +119,26 @@ class NomadQueue(
                         arms.all { arm -> bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch } } }
                     require(compatible.isNotEmpty()) { "no preparation worker satisfies the committed runtime requirements" }
                     val target = ordered(compatible, ::preparationBudget).firstOrNull(::preparationAvailable) ?: continue
+                    val replay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) }
+                    val reusable = if (settings.reuseAcceptedBuilds && spec.isBench && !target.native && replay == null)
+                        reusableBuilds(job, active, arms, bundles, target) ?: continue else null
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         preparationBudget(target), solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
-                        benchReplay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) })
+                        benchReplay = replay, reusableBuilds = reusable)
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     publishedSources.forget(job.id)
+                    waitingForBuild.remove(job.id)
                     continue
                 }
                 publishedSources.forget(job.id)
                 val preparation = store.execution.acceptedPreparation(job.id) ?: continue
                 val recipe = store.execution.manifest(sessions.first { it.executionClass == ExecutionClass.PREPARE }.id)
+                if (preparation.builds.isNotEmpty() && recordedBuilds.add(job.id)) try {
+                    acceptedBuilds.remember(job.id, recipe, preparation, { artifacts.regional(job.id, it) }, clock.now())
+                } catch (failure: Exception) {
+                    // Only a hint for later jobs: this job's admission does not depend on it.
+                    System.err.println("nomad accepted builds of job ${job.id} not recorded: ${describeFailure(failure)}")
+                }
                 if (recipe.bundles.any { it.build?.preparation != null }) {
                     targets = targets.filter { target -> recipe.arms.all { arm ->
                         preparation.bundles.any { it.commit == arm.sha && it.os == target.os && it.arch == target.arch }
@@ -235,6 +257,40 @@ class NomadQueue(
             }
         }
     }
+
+    /**
+     * The accepted builds [job]'s preparation on [target] may reuse ([AcceptedBuilds]), one per commit that has one. Null
+     * defers the preparation: a build of a commit without one is being prepared by another job, on [target]'s platform,
+     * and its archive will be offered here once accepted. A job waits so at most [BUILD_WAIT_MS], then builds itself.
+     */
+    private fun reusableBuilds(job: Job, active: List<Job>, arms: List<PlannedArm>, bundles: List<WorkerBundle>, target: NomadQueueTarget,
+                               at: Long = clock.now()): List<ReusableBuild>? {
+        val sources = arms.map { it.sha }.distinct().mapNotNull { sha ->
+            bundles.firstOrNull { it.commit == sha && it.os == target.os && it.arch == target.arch && it.build != null }
+        }
+        val keys = sources.associateWith(::buildRecipeKey)
+        val found = keys.mapNotNull { (_, key) -> acceptedBuilds.find(key, at) }
+        val missing = keys.filterKeys { source -> found.none { it.bundle.commit == source.commit } }.values.toSet()
+        if (missing.isEmpty() || at - waitingForBuild.getOrPut(job.id) { at } >= BUILD_WAIT_MS) return found
+        if (!buildInFlight(job, active, missing, target)) return found
+        if (waitingForBuild[job.id] == at) println("nomad queue job ${job.id}: waiting for an identical build another job is preparing")
+        return null
+    }
+
+    /** Whether another active job's cloud preparation, which reports its builds, is building one of [keys] for [target]'s platform. */
+    private fun buildInFlight(job: Job, active: List<Job>, keys: Set<String>, target: NomadQueueTarget): Boolean =
+        active.asSequence().filter { it.id != job.id && !it.setupDone && it.experiment?.repository == job.experiment?.repository }.take(32).any { other ->
+            store.execution.sessions(other.id).any { session ->
+                if (session.executionClass != ExecutionClass.PREPARE || session.desired != Desired.RUN) return@any false
+                val placement = store.execution.placement(session.id)
+                val platform = settings.targets.firstOrNull { it.template.nodeClass == placement.nodeClass }
+                if (placement.native || platform != null && (platform.os != target.os || platform.arch != target.arch)) return@any false
+                val manifest = runCatching { store.execution.manifest(session.id) }.getOrNull() ?: return@any false
+                manifest.reusableBuilds != null && manifest.bundles.any {
+                    it.build != null && it.os == target.os && it.arch == target.arch && buildRecipeKey(it) in keys
+                }
+            }
+        }
 
     /** Match the pool's growth eligibility; lower-priority local work may still reuse compatible warm nodes. */
     private fun cloudMayRun(target: NomadQueueTarget, job: Job, budget: ResourceBudget): Boolean {
