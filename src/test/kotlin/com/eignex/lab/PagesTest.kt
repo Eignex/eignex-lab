@@ -209,7 +209,7 @@ class PagesTest {
             store.commandFinished(id, index, 0)
             val dir = Files.createDirectories(config.jobDir(id).resolve("cases/$index/profile-$index"))
             Files.writeString(dir.resolve(CliMeasurements.COMPILATION_LOG), if (index == 0) sample else sample.replace("stamp='0.956'", "stamp='0.953'"))
-            CliMeasurements.writeManifest(dir, index, 1, "m$index", "lab", "solve", 0, "", null, macOs = false, compilation = "jfr+log")
+            CliMeasurementFixtures.writeManifest(dir, index, 1, "m$index", "lab", "solve", 0, "", null, macOs = false, compilation = "jfr+log")
             CompilationReports.analyzeAndWrite(dir, SourceProvenance(id, index), WorkerProvenance())
         }
         store.finish(id, Status.DONE)
