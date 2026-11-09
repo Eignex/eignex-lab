@@ -24,4 +24,5 @@ jobs:
       - run: bash deploy/nomad/test_native_services.sh
       - run: bash deploy/infra/tests/test_host_scripts.sh
       - run: bash deploy/infra/tests/test_input_store.sh
+      - run: bash deploy/infra/tests/test_audit_inputs.sh
       - run: bash deploy/infra/validate.sh
