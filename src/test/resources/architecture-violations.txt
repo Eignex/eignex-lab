@@ -9,8 +9,6 @@ capacity/CapacityApi.kt -> web.ApiError
 capacity/CapacityApi.kt -> web.ErrorBody
 domain/ClusterSettings.kt -> nomad.NomadBatchJob
 domain/ClusterSettings.kt -> nomad.NomadPlatform
-domain/Config.kt -> execution.VolumeAccess
-domain/Config.kt -> execution.Volumes
 domain/ExecutionReports.kt -> store.ExecutionSession
 domain/ExperimentModel.kt -> execution.BenchSpec
 domain/ExperimentModel.kt -> execution.Repositories
