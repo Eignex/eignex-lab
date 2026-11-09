@@ -6,8 +6,6 @@ import com.eignex.lab.util.*
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.atomic.AtomicLong
 
 /** A bounded, disposable index into existing job artifacts. It retains no additional artifact data:
@@ -28,11 +26,7 @@ internal class ArtifactReuseIndex(private val artifacts: Path, private val maxEn
     fun remember(job: Long, sha: String) {
         require(job > 0 && SHA256.matches(sha))
         Files.createDirectories(root)
-        val temp = Files.createTempFile(root, ".hint-", ".tmp")
-        try {
-            Files.writeString(temp, job.toString())
-            Files.move(temp, root.resolve(sha), ATOMIC_MOVE, REPLACE_EXISTING)
-        } finally { Files.deleteIfExists(temp) }
+        root.resolve(sha).writeAtomically(job.toString(), durable = false)
         val at = now(); val last = maintained.get()
         if (at - last >= 60_000 && maintained.compareAndSet(last, at)) maintain(at)
     }
@@ -41,7 +35,7 @@ internal class ArtifactReuseIndex(private val artifacts: Path, private val maxEn
             val hints = Files.list(root).use { paths -> paths.filter { SHA256.matches(it.fileName.toString()) && Files.isRegularFile(it, NOFOLLOW_LINKS) }
                 .map { it to Files.getLastModifiedTime(it).toMillis() }.toList().sortedByDescending { it.second } }
             for ((i, hint) in hints.withIndex()) if (i >= maxEntries || at - hint.second > ttlMs) Files.deleteIfExists(hint.first)
-            Files.list(root).use { paths -> paths.filter { it.fileName.toString().startsWith(".hint-") && at - Files.getLastModifiedTime(it).toMillis() > ttlMs }
+            Files.list(root).use { paths -> paths.filter { it.fileName.toString().let { name -> name.startsWith(".") && name.endsWith(".tmp") } && at - Files.getLastModifiedTime(it).toMillis() > ttlMs }
                 .forEach { Files.deleteIfExists(it) } }
         }
     }

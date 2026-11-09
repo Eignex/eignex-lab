@@ -8,7 +8,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.*
 
 @Serializable data class ResultJournalReport(val generatedAt: Long, val status: ResultJournal.Status, val ageMs: Long = 0) {
     val stale: Boolean get() = ageMs > 15_000
@@ -23,11 +22,7 @@ internal fun readResultJournalReport(dataDir: Path, at: Long = now()): ResultJou
 
 /** Disposable status, written atomically on the internal volume; acknowledged results have separate durable packs. */
 internal fun writeResultJournalReport(path: Path, journal: ResultJournal) {
-    val temp = Files.createTempFile(path.parent, ".journal-status-", ".tmp")
-    try {
-        Files.writeString(temp, Json.encodeToString(ResultJournalReport(now(), journal.status())))
-        Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)
-    } finally { Files.deleteIfExists(temp) }
+    path.writeAtomically(Json.encodeToString(ResultJournalReport(now(), journal.status())), durable = false)
 }
 
 internal fun ResultJournal.Status.metrics(): String = """

@@ -108,8 +108,7 @@ class PlanRepository internal constructor(db: Database, lock: Any) : Repository(
         for ((key, value) in parsed) {
             if (key in SHARED_PARTS && (value is JsonObject || value is JsonArray)) {
                 val text = Json.encodeToString(JsonElement.serializer(), value)
-                val sha = java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
-                    .joinToString("") { "%02x".format(it) }
+                val sha = sha256Hex(text)
                 update("INSERT OR IGNORE INTO provenance_parts (sha, part) VALUES (?, ?)", sha, text)
                 stored[key + PART_REF] = JsonPrimitive(sha)
             } else stored[key] = value

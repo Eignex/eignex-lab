@@ -126,11 +126,11 @@ internal object CaptureArchives {
         val archive = source.path
         val bytes = Files.size(archive)
         if (bytes > limits.maxBytes) throw ArchiveException("the archive is $bytes bytes, over the lab's ${limits.maxBytes} (LAB_ARCHIVE_MAX_MB)")
-        val sha = CompilationReports.sha256(archive)
+        val sha = hashFile(archive)
         if (sha != pinned) throw ArchiveException("the archive's SHA-256 is $sha, not the pinned $pinned")
         val manifest = manifestSource.path
         if (Files.size(manifest) > MAX_MANIFEST_BYTES) throw ArchiveException("the manifest is over $MAX_MANIFEST_BYTES bytes")
-        val manifestSha = CompilationReports.sha256(manifest)
+        val manifestSha = hashFile(manifest)
         spec.manifestSha256?.let { if (it != manifestSha) throw ArchiveException("the manifest's SHA-256 is $manifestSha, not the pinned $it") }
         val document = runCatching { Json.parseToJsonElement(Files.readString(manifest)) as JsonObject }
             .getOrElse { throw ArchiveException("the manifest is not a JSON object") }
@@ -199,7 +199,7 @@ internal object CaptureArchives {
         val source = archived.provenance.source ?: return SourceProvenance(case = case)
         val same = archived.provenance.captures.isNotEmpty() && archived.provenance.captures.all { capture ->
             val file = profile.resolve(capture.name)
-            Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && Files.size(file) == capture.bytes && CompilationReports.sha256(file) == capture.sha256
+            Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && Files.size(file) == capture.bytes && hashFile(file) == capture.sha256
         }
         if (!same || source.case != case) return SourceProvenance(case = case)
         return source.copy(from = "the archived ${CompilationReports.REPORT} (schema ${archived.schemaVersion}) beside the same captures")

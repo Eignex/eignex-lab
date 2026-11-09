@@ -69,8 +69,8 @@ internal object AdapterResources {
             else -> null
         }
         val receipt = Receipt(state = if (reason == null) "complete" else "unavailable", reason = reason,
-            timerSha256 = timerSha256, commandSha256 = digest(command), processExit = exit,
-            interrupted = interrupted, rawSha256 = text?.let(::digest), resources = resources)
+            timerSha256 = timerSha256, commandSha256 = sha256Hex(command), processExit = exit,
+            interrupted = interrupted, rawSha256 = text?.let { sha256Hex(it) }, resources = resources)
         Files.writeString(root.resolve(RECEIPT), json.encodeToString(receipt))
     }
 
@@ -81,9 +81,9 @@ internal object AdapterResources {
         if (!requested) return JsonObject(clean).toString()
         val receipt = metadata?.takeIf { it.length <= LIMIT * 2 }?.let { runCatching { json.decodeFromString<Receipt>(it) }.getOrNull() }
         val verified = receipt?.takeIf {
-            it.policy == POLICY && it.scope == SCOPE && receiptSha256?.matches(sha) == true && digest(metadata!!) == receiptSha256 &&
-                it.timerSha256?.matches(sha) == true && command != null && it.commandSha256 == digest(command) &&
-                raw != null && rawSha256?.matches(sha) == true && digest(raw) == rawSha256 && it.rawSha256 == rawSha256 &&
+            it.policy == POLICY && it.scope == SCOPE && receiptSha256?.matches(sha) == true && sha256Hex(metadata!!) == receiptSha256 &&
+                it.timerSha256?.matches(sha) == true && command != null && it.commandSha256 == sha256Hex(command) &&
+                raw != null && rawSha256?.matches(sha) == true && sha256Hex(raw) == rawSha256 && it.rawSha256 == rawSha256 &&
                 runCatching { values(raw) == it.resources }.getOrDefault(false) &&
                 it.resources?.exit == it.processExit && !it.interrupted && it.state == "complete" && it.reason == null
         }
@@ -96,7 +96,4 @@ internal object AdapterResources {
         }
         return JsonObject(clean + ("labAdapterResources" to details)).toString()
     }
-
-    private fun digest(text: String): String = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 }

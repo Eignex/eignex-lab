@@ -2,7 +2,6 @@ package com.eignex.lab.domain
 
 import com.eignex.lab.util.*
 
-import java.security.MessageDigest
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import com.eignex.lab.analysis.Confirm
@@ -116,7 +115,7 @@ object Experiments {
     )
 
     private fun hash(text: String): String =
-        MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).take(FINGERPRINT_BYTES).joinToString("") { "%02x".format(it) }
+        sha256Hex(text).take(2 * FINGERPRINT_BYTES)
 
     /** The arms of [spec], in order: each config over the base, crossed with the grid's combinations. Unlabelled
      *  arms are named by the values that set them apart from the other arms. */

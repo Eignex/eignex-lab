@@ -62,11 +62,7 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
             Files.createDirectories(sizes)
             val size = sizes.resolve(key)
             if (!Files.exists(size)) {
-                val temporary = Files.createTempFile(sizes, ".size-", ".tmp")
-                try {
-                    Files.writeString(temporary, bundle.files.filter { !runtimeOnly || WorkerTrees.runtimePath(Path.of(it.path)) }.sumOf { it.bytes }.toString())
-                    Files.move(temporary, size, ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                } finally { Files.deleteIfExists(temporary) }
+                size.writeAtomically(bundle.files.filter { !runtimeOnly || WorkerTrees.runtimePath(Path.of(it.path)) }.sumOf { it.bytes }.toString(), durable = false)
             }
             Files.setLastModifiedTime(size, FileTime.fromMillis(now()))
             // Account cold entries synchronously; deletion of unrelated trees must not delay publication.

@@ -9,7 +9,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import java.security.MessageDigest
 
 /**
  * How a case record is kept in the database, as against how every reader sees it. A record's build provenance, tens of
@@ -50,7 +49,7 @@ internal object StoredRecords {
             when {
                 key == PROVENANCE && value is JsonObject -> {
                     val json = Json.encodeToString(JsonElement.serializer(), value)
-                    val sha = sha256(json)
+                    val sha = sha256Hex(json)
                     provenance = sha to json
                     stored[PROVENANCE_REF] = JsonPrimitive(sha)
                     changed = true
@@ -92,7 +91,7 @@ internal object StoredRecords {
         for ((key, value) in details) {
             val same = when {
                 key == PROVENANCE && value is JsonObject && reference != null ->
-                    sha256(Json.encodeToString(JsonElement.serializer(), value)) == reference
+                    sha256Hex(Json.encodeToString(JsonElement.serializer(), value)) == reference
                 key == "stats" && value is JsonObject -> stored[key] == trimProducer(value)
                 else -> stored[key] == value
             }
@@ -121,9 +120,6 @@ internal object StoredRecords {
         for ((key, value) in bench) if (key == DETAILS_OMITTED) restored[DETAILS] = details else restored[key] = value
         return JsonObject(withProvenance + (BENCH to JsonObject(restored)))
     }
-
-    private fun sha256(text: String): String =
-        MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 }
 
 /**

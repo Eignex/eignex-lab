@@ -105,7 +105,7 @@ internal object CampaignEvidence {
             throw EvidenceException("unsupported manifest version")
         val identity = data["archive"] as? JsonObject ?: throw EvidenceException("manifest has no archive")
         if (archive.name != safeName(string(identity["name"]))) throw EvidenceException("archive name differs from manifest")
-        if (Files.size(archive) != number(identity["size"]) || fileDigest(archive) != string(identity["sha256"]))
+        if (Files.size(archive) != number(identity["size"]) || hashFile(archive) != string(identity["sha256"]))
             throw EvidenceException("archive hash or size differs from manifest")
         val expected = (data["files"] as? JsonObject ?: throw EvidenceException("manifest has no files"))
             .mapValues { (_, file) -> file as? JsonObject ?: throw EvidenceException("manifest file entries must be objects") }
@@ -127,7 +127,7 @@ internal object CampaignEvidence {
                 val keep = if (name == "catalog.json") ByteArrayOutputStream() else null
                 bundle.content { block, length -> digest.update(block, 0, length); keep?.write(block, 0, length) }
                 keep?.let { catalogBytes = it.toByteArray() }
-                if (hex(digest.digest()) != string(file["sha256"]))
+                if (digest.digest().hex() != string(file["sha256"]))
                     throw EvidenceException("file hash or size differs: $name")
             }
         }
@@ -159,7 +159,7 @@ internal object CampaignEvidence {
         }
         val catalog = parse((paths["catalog.json"] ?: throw EvidenceException("missing catalog.json")).readText())
         catalogCheck(catalog, paths.keys)
-        val files = paths.mapValues { (_, path) -> path.fileSize() to fileDigest(path) }
+        val files = paths.mapValues { (_, path) -> path.fileSize() to hashFile(path) }
         Files.createDirectories(out)
         val staging = Files.createTempDirectory(out, "tmp")
         try {
@@ -171,7 +171,7 @@ internal object CampaignEvidence {
                     bundle.finish()
                 }
             }
-            val sha = fileDigest(temp)
+            val sha = hashFile(temp)
             val stem = "${string((catalog as JsonObject)["campaign"])}-$sha"
             val archive = Files.move(temp, staging.resolve("$stem.tar.gz"))
             val manifest = staging.resolve("$stem.manifest.json")
@@ -258,19 +258,6 @@ internal object CampaignEvidence {
 
     private fun number(value: JsonElement?): Long =
         (value as? JsonPrimitive)?.takeUnless { it.isString }?.content?.toLongOrNull() ?: throw EvidenceException("expected a number, got $value")
-
-    private fun fileDigest(path: Path): String = Files.newInputStream(path).use { stream ->
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(BUFFER)
-        while (true) {
-            val read = stream.read(buffer)
-            if (read < 0) break
-            digest.update(buffer, 0, read)
-        }
-        hex(digest.digest())
-    }
-
-    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     /** [path] absolute, with the symbolic links of the part that exists resolved, as Python's `Path.resolve()`. */
     private fun resolve(path: Path): Path {

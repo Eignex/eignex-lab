@@ -126,7 +126,7 @@ internal object CompilationReports {
         } finally {
             Files.deleteIfExists(temporary)
         }
-        return TasksFile(TASKS, records = tasks.size, bytes = counted.count, sha256 = hex(digest.digest()))
+        return TasksFile(TASKS, records = tasks.size, bytes = counted.count, sha256 = digest.digest().hex())
     }
 
     /** The task records of [file], a [TASKS] file, in order. */
@@ -186,7 +186,7 @@ internal object CompilationReports {
                 listOf(CliMeasurements.JFR, CliMeasurements.COMPILATION_LOG, CliMeasurements.COMPILATION_LOG_GZ,
                     CliMeasurements.RESOURCES, CliMeasurements.MANIFEST, "solve-record.json")
                     .map(dir::resolve).filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
-                    .map { Capture(it.name, Files.size(it), sha256(it)) },
+                    .map { Capture(it.name, Files.size(it), hashFile(it)) },
             )
         }
     }
@@ -544,21 +544,6 @@ internal object CompilationReports {
     internal fun zeroDuration(setting: String): Boolean = setting.trim().takeWhile { it.isDigit() || it == '.' }.toDoubleOrNull() == 0.0
 
     internal fun round(value: Double): Double = Math.round(value * 1000.0) / 1000.0
-
-    internal fun sha256(path: Path): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        Files.newInputStream(path).use { input ->
-            val buffer = ByteArray(1 shl 16)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        return hex(digest.digest())
-    }
-
-    internal fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     private class CountingStream(private val out: OutputStream) : OutputStream() {
         var count = 0L

@@ -13,7 +13,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.*
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption.READ
 import java.util.concurrent.atomic.AtomicReference
@@ -247,9 +246,7 @@ class CapacityCollector(
             stalePools.associateWith { "inventory stale: holding ${held[it]} nodes" } + startupFailures
         val snapshot = CapacitySnapshot(at - inventoryAge, inventoryAge, decision, observations, failures, settings.pools)
         val report = stateFile.resolveSibling("capacity-report.json")
-        val pendingReport = Files.createTempFile(report.parent, ".report-", ".tmp")
-        try { Files.writeString(pendingReport, Json.encodeToString(snapshot)); Files.move(pendingReport, report, ATOMIC_MOVE, REPLACE_EXISTING) }
-        finally { Files.deleteIfExists(pendingReport) }
+        report.writeAtomically(Json.encodeToString(snapshot), durable = false)
         latest.set(Sample(snapshot, started - inventoryAge * 1_000_000))
     }
 
@@ -266,9 +263,7 @@ class CapacityCollector(
 
     private fun saveState() {
         Files.createDirectories(stateFile.parent)
-        val temporary = Files.createTempFile(stateFile.parent, ".capacity-", ".tmp")
-        try { Files.writeString(temporary, Json.encodeToString(state)); Files.move(temporary, stateFile, ATOMIC_MOVE, REPLACE_EXISTING) }
-        finally { Files.deleteIfExists(temporary) }
+        stateFile.writeAtomically(Json.encodeToString(state), durable = false)
     }
 
     /** The Nomad nodes of [classes], read whole only when they changed since the last read. */
@@ -323,7 +318,7 @@ class CapacityCollector(
         mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
         mac.update(CapacityWire.GRANT_DOMAIN.toByteArray(Charsets.UTF_8))
         return CapacityGrant(java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(payload),
-            mac.doFinal(payload).joinToString("") { "%02x".format(it.toInt() and 255) })
+            mac.doFinal(payload).hex())
     }
     fun metrics(): String = snapshot().let { sample -> settings.pools.joinToString("\n", postfix = "\n") { p ->
         "${CapacityWire.DESIRED_METRIC}{pool=\"${p.id}\"} ${sample.decision.desired.getValue(p.id)}\nlab_capacity_sample_timestamp_seconds{pool=\"${p.id}\"} ${sample.generatedAt / 1000.0}"

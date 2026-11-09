@@ -21,17 +21,17 @@ internal fun deleteTree(root: Path) {
 }
 
 /**
- * Write via a temp file beside this one and an atomic rename, so a reader never sees a half-written file. The bytes
- * reach the disk before the rename, so a crash leaves the old file or the new one, never an empty one; each writer
- * has its own temp file, so two writing at once cannot interleave.
+ * Write via a temp file beside this one and an atomic rename, so a reader never sees a half-written file. When
+ * [durable], the bytes reach the disk before the rename, so a crash leaves the old file or the new one, never an empty
+ * one; disposable files skip that flush. Each writer has its own temp file, so two writing at once cannot interleave.
  */
-internal fun Path.writeAtomically(text: String) {
+internal fun Path.writeAtomically(text: String, durable: Boolean = true) {
     val temp = resolveSibling(".$fileName.${UUID.randomUUID()}.tmp")
     try {
         FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
             val bytes = ByteBuffer.wrap(text.toByteArray())
             while (bytes.hasRemaining()) channel.write(bytes)
-            channel.force(true)
+            if (durable) channel.force(true)
         }
         Files.move(temp, this, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
     } finally {

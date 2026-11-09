@@ -95,11 +95,11 @@ class CaptureArchivesTest {
             else tar.entry(name, 0, type, link)
             tar.finish()
         }
-        val sha = CompilationReports.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()))
+        val sha = sha256Hex(bytes.toByteArray())
         val archive = dir.resolve("crafted-$sha.tar.gz")
         Files.write(archive, bytes.toByteArray())
         fun entry(data: ByteArray) = JsonObject(mapOf("size" to JsonPrimitive(data.size),
-            "sha256" to JsonPrimitive(CompilationReports.hex(java.security.MessageDigest.getInstance("SHA-256").digest(data)))))
+            "sha256" to JsonPrimitive(sha256Hex(data))))
         val manifest = JsonObject(mapOf(
             "version" to JsonPrimitive(1),
             "catalog" to Json.parseToJsonElement(String(catalog)),
@@ -132,7 +132,7 @@ class CaptureArchivesTest {
         val provenance = checkNotNull(result.archive)
         assertEquals(archive.name to shaOf(archive), provenance.url to provenance.sha256)
         assertEquals("compilation-test", provenance.campaign)
-        assertEquals(CompilationReports.sha256(dir.resolve(CaptureArchives.MANIFEST)), provenance.manifestSha256)
+        assertEquals(hashFile(dir.resolve(CaptureArchives.MANIFEST)), provenance.manifestSha256)
         val entry = result.reports.single()
         assertEquals("${CaptureArchives.ROOT}/$profile/${CompilationReports.REPORT}", entry.report)
         assertEquals("${CaptureArchives.ROOT}/$profile/${CompilationReports.TASKS}", entry.tasks)
@@ -159,7 +159,7 @@ class CaptureArchivesTest {
         val named = "compilation-test/${archive.name}"
         val manifestNamed = "compilation-test/${manifest.name}"
         val job = analysisJob(AnalyzeSpec(archive = named, sha256 = shaOf(archive), manifest = manifestNamed,
-            manifestSha256 = CompilationReports.sha256(manifest)))
+            manifestSha256 = hashFile(manifest)))
 
         Runner(config, store).analyze(job)
 

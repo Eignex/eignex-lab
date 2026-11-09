@@ -9,7 +9,6 @@ import kotlinx.serialization.json.JsonElement
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.security.MessageDigest
 
 /* The lab's job model: jobs, their commands and cases, schedules and holds, as the store records and returns them. */
 
@@ -175,24 +174,8 @@ data class CaseFile(val path: String, val bytes: Long, val sha256: String) {
             if (!Files.isDirectory(case, LinkOption.NOFOLLOW_LINKS)) return emptyList()
             return Files.list(case).use { files ->
                 files.filter { it.fileName.toString().endsWith(".out") && Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.toList()
-            }.sortedBy { it.fileName.toString() }.map { CaseFile(dir.relativize(it).joinToString("/"), Files.size(it), sha256(it)) }
+            }.sortedBy { it.fileName.toString() }.map { CaseFile(dir.relativize(it).joinToString("/"), Files.size(it), hashFile(it)) }
         }
-
-        /** The SHA-256 of [file], as lowercase hex, read in a stream. */
-        fun sha256(file: Path): String {
-            val digest = MessageDigest.getInstance("SHA-256")
-            Files.newInputStream(file).use { input ->
-                val buffer = ByteArray(BUFFER_BYTES)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    digest.update(buffer, 0, read)
-                }
-            }
-            return digest.digest().joinToString("") { "%02x".format(it) }
-        }
-
-        private const val BUFFER_BYTES = 1 shl 16
     }
 }
 
