@@ -13,7 +13,6 @@ import java.util.concurrent.TimeUnit
  */
 internal object NativeReference {
     private const val EXIT_WAIT_MS = 5_000L
-    private const val GRACE_MS = 20_000L
 
     /** Whether [binary] runs at all ([versionArg] exits 0). */
     fun available(binary: String, versionArg: String = "--version"): Boolean = runCatching {
@@ -26,33 +25,11 @@ internal object NativeReference {
 
     fun exec(cmd: List<String>, timeoutMillis: Long, input: ((Writer) -> Unit)? = null): Pair<String, Long> {
         val startNanos = System.nanoTime()
-        val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
-        // Stdin on its own thread: a solver can print while it reads, and a full stdout pipe would block both.
-        val writer = Thread {
-            runCatching { proc.outputStream.bufferedWriter().use { out -> input?.invoke(out) } }
-        }.apply {
-            isDaemon = true
-            start()
+        WatchedProcess.start(ProcessBuilder(cmd).redirectErrorStream(true), timeoutMillis, input).use { watched ->
+            val stdout = watched.process.inputStream.bufferedReader().readText()
+            watched.process.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS)
+            return stdout to (System.nanoTime() - startNanos) / NANOS_PER_MS
         }
-        val watchdog = Thread {
-            runCatching {
-                if (!proc.waitFor(
-                        timeoutMillis * 2 + GRACE_MS,
-                        TimeUnit.MILLISECONDS,
-                    )
-                ) {
-                    proc.destroyForcibly()
-                }
-            }
-        }.apply {
-            isDaemon = true
-            start()
-        }
-        val stdout = proc.inputStream.bufferedReader().readText()
-        proc.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS)
-        watchdog.interrupt()
-        writer.interrupt()
-        return stdout to (System.nanoTime() - startNanos) / NANOS_PER_MS
     }
 
     private const val NANOS_PER_MS = 1_000_000L
