@@ -25,7 +25,7 @@ attempt leases, allocation identity checks, checksummed/resumable artifacts, por
 supervision, and automatic queue preparation/admission. Approved Git inputs are built and selected in budgeted
 allocations. Reference filters and caps are approved durably before resolving files or packaging the corpus, then
 accepted preparation publishes its case plan atomically. API submissions, schedules and confirmations can select
-Nomad through [queue settings](nomad/queue.example.json). Admission uses native
+Nomad through [queue settings](../nomad/queue.example.json). Admission uses native
 capacity first, shares fitting reservations, and spills into provider-neutral Spot pools; on-demand requires an
 explicit selector. Releases, source inputs and admission templates remain pinned across restarts.
 
@@ -38,7 +38,7 @@ source checking runs independently of reconciliation so it cannot stall fresh ca
 Native solver/JFR and live Spot canaries have passed, and production uses the explicit Nomad backend setting.
 Interruption recovery, source checks for supported formats and a stable rollout still gate final legacy code
 removal. The setup is documented in the
-[Nomad runbook](nomad/README.md) and [provider modules](infra/README.md).
+[Nomad runbook](../nomad/README.md) and [provider modules](../infra/README.md).
 
 ## Outcome and decisions
 

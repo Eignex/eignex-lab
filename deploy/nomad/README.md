@@ -1,7 +1,7 @@
 # Nomad execution
 
 Production uses Nomad for ordinary submissions, schedules and confirmations, with native Mac execution and Linux
-Spot workers. See [the migration status](../NOMAD-MIGRATION.md) for verified canaries and outstanding removal gates.
+Spot workers. See [the migration status](../history/NOMAD-MIGRATION.md) for verified canaries and outstanding removal gates.
 The sandbox commands below create an isolated cluster; managed services and automatic admission are documented
 later in this runbook.
 

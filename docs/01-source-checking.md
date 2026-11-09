@@ -119,7 +119,7 @@ Source lookup remains the existing hash-bound `SourceLocator` contract. A resour
 feasibility. Receipts record limits, operation count, arithmetic policy and elapsed time without inventing child
 process resource receipts for this in-process evaluator.
 
-`bench/mps-replay.json` is the repository-owned remote replay manifest (`lab/mps-check.json` is its compatible alias). It accepts a bounded list of original records,
+`bench/mps-replay.json` is the repository-owned remote replay manifest. It accepts a bounded list of original records,
 source paths/digests and expected exact verdicts, plus optional configured expectations and supplemental semantics origins. It freezes those inputs, runs the production router and `SourceChecker`,
 and retains original record, source copy, effective control record and full `LabCheck`. A replay validates only those
 retained artifacts; it cannot validate an absent historical capture. Campaign manifests and narratives belong outside
@@ -136,7 +136,7 @@ existing Linux 4 GiB address-space envelope. Source/witness, policy/version, JAR
 request/input artifacts and existing process receipts bind each check. Incomplete execution stays unchecked.
 The [weighted replay contract and source specifications](runs.md) define supported layouts, additional input limits
 and the distinction between SDK capture success and an actual checking verdict. `checker/weighted.json` owns that
-route; `lab/mps-check.json` owns exact MPS replay.
+route; `bench/mps-replay.json` owns exact MPS replay.
 
 ## Original DIMACS SAT points
 

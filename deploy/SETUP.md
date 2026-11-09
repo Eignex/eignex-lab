@@ -51,15 +51,25 @@ the file it does nothing.
 ## Storage and updates
 
 Data defaults to `~/eignex-lab-data`; logs are under `logs/`, artifacts under `jobs/` (`LAB_JOBS`).
-Corpora use `~/.cache/eignex-lab/corpus` (`LAB_CORPUS`). On macOS, external volumes must mount at boot, and the
-programs launchd starts need Full Disk Access to read them: grant it to `/bin/sh` and `/usr/bin/caffeinate`. Every
-service starts through one of them (the launcher is a shell script; native services run via `/bin/sh -c`), so these
-two grants cover releases, corpora and job files on an external volume. The configuration example includes the mount
-setting. A launchd plist edited by hand takes effect only after `launchctl bootout` and `bootstrap`, not `kickstart`.
+Corpora use `~/.cache/eignex-lab/corpus` (`LAB_CORPUS`). Keep `LAB_DATA`, `LAB_JOBS`, the corpus and
+`$LAB_DATA/nomad/artifacts` on the internal SSD: they are hot data that running jobs write and read file by file. A
+spinning external volume is an archive of ended jobs' data only, reached through `LAB_JOBS_ARCHIVE` (ended job
+directories) and `LAB_ARTIFACT_ARCHIVE` (ended jobs' artifact bundles); never put a path running jobs write on it.
+On macOS, an archive volume must mount at boot, and the programs launchd starts need Full Disk Access to read it:
+grant it to `/bin/sh` and `/usr/bin/caffeinate`. Every service starts through one of them (the launcher is a shell
+script; native services run via `/bin/sh -c`), so these two grants cover archived job files on an external volume.
+The configuration example includes the mount setting. A launchd plist edited by hand takes effect only after
+`launchctl bootout` and `bootstrap`, not `kickstart`.
 Fetch raw artifacts promptly: ended jobs trim after seven days or sooner on low disk. Results remain stored.
 Set `LAB_JOB_RETENTION_DAYS` to also forget ended jobs' records and directories that many days after they end.
 
-Use `deploy/lab update` for code updates between cases. Check `logs/update.log` if an update fails.
+The runner keeps the lab on the newest commit of the checkout it was installed from (`SelfUpdater`); this is the
+only update channel. Every `LAB_UPDATE_CHECK_SEC` seconds (default 300; 0 turns the periodic check off) it fetches
+that checkout and, when its upstream is ahead, runs `deploy/update.sh` between cases, never during one: native workers
+yield after their current iteration first. The update pulls, builds a new release, checks the host and restarts the
+lab services (API, runner, coordinator) onto it; Nomad agents and accepted remote work keep running. `deploy/lab update`
+asks for the same update at once. Check `logs/update.log` if an update fails. Worker images and native launchers are
+not part of it: they stay pinned in `$LAB_DATA/nomad/queue.json` until an operator switches them.
 
 On macOS, installation registers Gradle maintenance every five minutes for `$LAB_DATA/gradle` and `~/.gradle`.
 Each local build cache has a 2 GiB target; eviction waits for Gradle's cache lock and removes older outputs first.
@@ -107,24 +117,22 @@ directories and named deployment leftovers. The pruner preserves releases refere
 services, pending session intents, active jobs and retryable frozen recipes. It never deletes the database, results,
 corpus, artifacts or Nomad allocation state; small retired-release provenance stays in `deployments/retired-runtime`.
 
-The coordinator stores immutable, job-scoped bundles under `$LAB_DATA/nomad/artifacts`. On a small internal disk,
-place that directory on the mounted results volume and retain a symlink at the original path. Copy while the
-coordinator runs, stop only the coordinator for a final synchronization and directory switch, then restart it and
-verify existing artifact reads before deleting the original copy. Keep all historical bundles; the runtime pruner
-does not remove them. The results volume must pass the same mount, disk access and free-space checks as `LAB_JOBS`.
-Admission holds pause new work; existing worker lease and progress updates remain available.
+The coordinator stores immutable, job-scoped bundles under `$LAB_DATA/nomad/artifacts`, on the internal SSD. Do not
+move that directory to the archive volume behind a symlink: running jobs write it file by file. Set
+`LAB_ARTIFACT_ARCHIVE` instead: `ArtifactArchiver` moves each ended job's bundle directory there
+`LAB_ARTIFACT_ARCHIVE_GRACE_MIN` minutes after the job ends and leaves a symlink in its place. Keep all historical
+bundles; the runtime pruner does not remove them. The archive volume must pass the same mount, disk access and
+free-space checks as `LAB_JOBS`. Admission holds pause new work; existing worker lease and progress updates remain
+available.
 
-When `LAB_JOBS_ARCHIVE` moves ended job directories to another volume, set it in the coordinator environment
+When `LAB_JOBS_ARCHIVE` moves ended job directories to the archive volume, set it in the coordinator environment
 and native worker templates too. Native snapshots follow the same archived job location as logs and results,
 including when a confirmation reuses an ended job or an archived job is retried.
 
-The checker input cache at `$LAB_DATA/nomad/check-inputs` can also live on the results volume, with a symlink
-at its original path. Saved jobs may refer to that path through `nomad/prepared-corpus`; preserve it when moving
-the cache. Copy and verify the files while the coordinator runs, then stop only the coordinator for the final
-consistency check and directory switch. Restart it promptly to preserve worker leases, verify existing input
-reads and checking progress, and only then remove the internal copy.
+The checker input cache at `$LAB_DATA/nomad/check-inputs` is hot data too; keep it on the internal SSD. Saved jobs
+may refer to that path through `nomad/prepared-corpus`; preserve it.
 
-Use the same canonical external corpus directory for `LAB_CORPUS` and `LAB_SHARED_INPUT_ROOT`, including the
+Use the same canonical corpus directory, on the internal SSD, for `LAB_CORPUS` and `LAB_SHARED_INPUT_ROOT`, including the
 coordinator service environment, native queue target and native-service configuration. The runner's `lab.env` needs
 `LAB_SHARED_INPUT_ROOT`, `LAB_SHARED_INPUT_URL` and `LAB_SHARED_INPUT_SIGNER` as well: it runs rechecks, which read
 the inputs a job's cases were prepared with. Updating `LAB_CORPUS`
