@@ -21,19 +21,13 @@ import kotlin.test.*
 /** A cloud preparation reuses another job's accepted archive of the same build, and builds whenever it cannot. */
 class AcceptedBuildReuseTest {
     private val root = Files.createTempDirectory("accepted-build-reuse").toAbsolutePath()
-    private val supervisorScript = root.resolve("supervisor.py").also { file ->
-        javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, file) }
-    }
 
     @AfterTest fun cleanup() = deleteTree(root)
 
     private fun <T> service(block: (Path) -> T): T {
         val socket = root.resolve("supervisor.sock")
-        val process = ProcessBuilder("python3", supervisorScript.toString(), "--socket", socket.toString())
-            .redirectError(root.resolve("service.err").toFile()).start()
+        val process = SupervisorProcess.start(socket, root.resolve("service.err"))
         try {
-            val deadline = System.nanoTime() + 5_000_000_000
-            while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline) { root.resolve("service.err").toFile().readText() }; Thread.sleep(20) }
             return block(socket)
         } finally { process.destroy(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); process.destroyForcibly() }
     }

@@ -330,9 +330,6 @@ class PortableWorkerTest {
     }
 
     private val root = Files.createTempDirectory("portable-worker").toAbsolutePath()
-    private val supervisorScript = root.resolve("supervisor.py").also { file ->
-        javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, file) }
-    }
     private fun bundle(files: Map<String, String>): Pair<WorkerBundle, ByteArray> {
         val bytes = ByteArrayOutputStream().also { output -> ZipOutputStream(output).use { zip ->
             files.forEach { (name, text) -> zip.putNextEntry(ZipEntry(name)); zip.write(text.toByteArray()); zip.closeEntry() }
@@ -344,11 +341,8 @@ class PortableWorkerTest {
     }
     private fun <T> service(localLock: Boolean = false, block: (Path) -> T): T {
         val socket = root.resolve("supervisor.sock")
-        val command = listOf("python3", supervisorScript.toString(), "--socket", socket.toString()) + if (localLock) listOf("--local-lock", root.resolve("native.lock").toString()) else emptyList()
-        val process = ProcessBuilder(command).redirectError(root.resolve("service.err").toFile()).start()
+        val process = SupervisorProcess.start(socket, root.resolve("service.err"), if (localLock) root.resolve("native.lock") else null)
         try {
-            val deadline = System.nanoTime() + 5_000_000_000
-            while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline) { root.resolve("service.err").toFile().readText() }; Thread.sleep(20) }
             return block(socket)
         } finally { process.destroy(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); process.destroyForcibly() }
     }
@@ -1231,16 +1225,25 @@ PY
         assertTrue(System.nanoTime() < deadline + 2_000_000_000)
     }
 
-    @Test fun `zz repeat`() { repeat(500) { println("ITER $it"); Files.deleteIfExists(root.resolve("escaped.pid")); Files.deleteIfExists(root.resolve("supervisor.sock")); `independent supervisor kills detached children after client connection closes`() } }
-    @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { socket ->
+    // 500 detached-child cases, 25 in each of 20 fresh supervisors: the kill after a lost connection repeats as often
+    // as with one supervisor per case, and an immediate connection still races each start, without 500 JVM starts.
+    @Test fun `zz repeat`() {
+        repeat(20) { start ->
+            Files.deleteIfExists(root.resolve("supervisor.sock"))
+            service { socket -> repeat(25) { println("ITER ${start * 25 + it}"); Files.deleteIfExists(root.resolve("escaped.pid")); detachedChildDies(socket) } }
+        }
+    }
+    @Test fun `independent supervisor kills detached children after client connection closes`(): Unit = service { detachedChildDies(it) }
+    private fun detachedChildDies(socket: Path) {
         val pid = root.resolve("escaped.pid")
-        val code = "import subprocess,time; p=subprocess.Popen(['sleep','60'],start_new_session=True); open('${pid}','w').write(str(p.pid)); time.sleep(60)"
+        // A child in a session of its own, as a detaching solver starts one; the pid file is written once it exists.
+        val code = "my \$p = fork(); if (!\$p) { POSIX::setsid(); exec(\"sleep\", \"60\") or die } open(my \$f, \">\", \$ARGV[0]) or die; print \$f \$p; close \$f; sleep 60"
         val supervisor = ProcessSupervisor(socket)
         val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
-        val future = executor.submit<Int> { supervisor.run(listOf("python3", "-c", code), root, System.getenv(), root.resolve("out"), root.resolve("err"), 60) { 10000 } }
+        val future = executor.submit<Int> { supervisor.run(listOf("perl", "-MPOSIX", "-e", code, pid.toString()), root, System.getenv(), root.resolve("out"), root.resolve("err"), 60) { 10000 } }
         try {
             val until = System.nanoTime() + 5_000_000_000
-            // Python creates the file before its buffered write lands, so wait for a complete pid.
+            // The file exists before its write lands, so wait for a complete pid.
             var child: Long? = null
             while (child == null) { check(System.nanoTime() < until) { "done=${future.isDone} " + runCatching { future.get() }.exceptionOrNull() + " err=" + runCatching { Files.readString(root.resolve("err")) + Files.readString(root.resolve("service.err")) }.getOrNull() }; child = runCatching { Files.readString(pid).toLongOrNull() }.getOrNull(); if (child == null) Thread.sleep(20) }
             future.cancel(true) // Socket closes exactly as it does on a killed worker; service survives.
@@ -1283,11 +1286,11 @@ PY
     @Test fun `supervisor distinguishes a child signal from an ordinary exit with the same numeric code`(): Unit = service { socket ->
         val supervisor = ProcessSupervisor(socket)
         var observed: ProcessTermination? = null
-        fun run(code: String) = supervisor.run(listOf("python3", "-c", code), root, System.getenv(), root.resolve("signal.out"), root.resolve("signal.err"),
+        fun run(code: String) = supervisor.run(listOf("bash", "-c", code), root, System.getenv(), root.resolve("signal.out"), root.resolve("signal.err"),
             5, observeTermination = { observed = it }) { 10000 }
-        assertEquals(137, run("import os, signal; os.kill(os.getpid(), signal.SIGKILL)"))
+        assertEquals(137, run("kill -KILL \$\$"))
         assertEquals(ProcessTermination(137, 9, false), observed)
-        assertEquals(137, run("raise SystemExit(137)"))
+        assertEquals(137, run("exit 137"))
         assertEquals(ProcessTermination(137, 0, false), observed)
     }
 

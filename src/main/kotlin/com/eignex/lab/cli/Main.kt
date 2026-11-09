@@ -35,6 +35,7 @@ fun main(args: Array<String>) {
         "reference" -> exitProcess(ReferenceCli.main(args.drop(1)))
         "nomad-coordinator" -> exitProcess(NomadCoordinatorCli.main(args.drop(1)))
         "worker" -> exitProcess(WorkerSession.main(args.drop(1)))
+        "process-supervisor" -> exitProcess(ProcessSupervisorService.main(args.drop(1)))
         "worker-local" -> exitProcess(WorkerCli.main(args.drop(1)))
         "nomad-spec" -> exitProcess(NomadSpecCli.main(args.drop(1)))
         "capacity-export" -> exitProcess(CapacityContract.main(args.drop(1)))
@@ -48,7 +49,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator|capacity-export|input-signer")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator|capacity-export|input-signer|process-supervisor")
         exitProcess(2)
     }
     // The CPU is probed once, here, and handed to everything that needs it.

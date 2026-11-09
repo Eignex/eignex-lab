@@ -20,8 +20,8 @@ RUN test -n "$WORKER_RELEASE"
 ENV LAB_WORKER_RELEASE=$WORKER_RELEASE LAB_SUPERVISOR_SOCKET=/local/process.sock LAB_WORKER_LAUNCHER=/opt/lab/bin/eignex-lab
 LABEL org.opencontainers.image.revision=$WORKER_RELEASE
 COPY build/install/eignex-lab/ /opt/lab/
-COPY src/main/resources/nomad/process_supervisor.py /opt/lab/process_supervisor.py
 COPY deploy/nomad/worker-entrypoint.sh /opt/lab/worker-entrypoint.sh
-RUN chmod 0755 /opt/lab/worker-entrypoint.sh /opt/lab/process_supervisor.py /opt/lab/bin/eignex-lab \
-    && test -x /opt/lab/worker-entrypoint.sh && test -x /opt/lab/process_supervisor.py && test -x /opt/lab/bin/eignex-lab
+# The process supervisor runs from the launcher and starts every supervised command under /usr/bin/perl.
+RUN chmod 0755 /opt/lab/worker-entrypoint.sh /opt/lab/bin/eignex-lab \
+    && test -x /opt/lab/worker-entrypoint.sh && test -x /opt/lab/bin/eignex-lab && test -x /usr/bin/perl
 ENTRYPOINT ["/opt/lab/worker-entrypoint.sh"]

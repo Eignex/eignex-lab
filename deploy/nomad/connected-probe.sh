@@ -69,11 +69,10 @@ main() {
   context="$(mktemp -d "$state/image-context-XXXXXX")" || fail "cannot create an image context"
   { mkdir -p "$context/build/install" && cp -R "$root/build/install/eignex-lab" "$context/build/install/"; } ||
     fail "cannot copy the installed distribution"
-  for name in deploy/nomad/worker.Dockerfile deploy/nomad/worker-entrypoint.sh src/main/resources/nomad/process_supervisor.py; do
+  for name in deploy/nomad/worker.Dockerfile deploy/nomad/worker-entrypoint.sh; do
     { mkdir -p "$(dirname "$context/$name")" && cp "$root/$name" "$context/$name"; } || fail "cannot copy $name"
   done
-  chmod 644 "$context/build/install/eignex-lab/bin/eignex-lab" "$context/deploy/nomad/worker-entrypoint.sh" \
-    "$context/src/main/resources/nomad/process_supervisor.py"
+  chmod 644 "$context/build/install/eignex-lab/bin/eignex-lab" "$context/deploy/nomad/worker-entrypoint.sh"
   docker build -f "$context/deploy/nomad/worker.Dockerfile" --build-arg WORKER_RELEASE=connected-probe -t "$image" \
     "$context" || fail "cannot build the worker image"
   rm -rf "$context"
