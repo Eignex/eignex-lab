@@ -47,6 +47,11 @@ internal fun Route.statusRoutes(services: ApiServices) {
                 runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(), Volumes.report(config.paths), readResultJournalReport(config.dataDir), RunningRelease.current)
         })
     }
+    // Throughput of the jobs that ended in the last `days` UTC days (default 7), read from what the lab records anyway.
+    get("/kpi") {
+        val days = call.parameters["days"]?.let { it.toIntOrNull()?.takeIf { n -> n in 1..90 } ?: throw ApiError.Invalid("days must be 1 to 90") } ?: 7
+        call.respond(io { store.kpis.report(days) })
+    }
     // Where each active job may run and why a queued one waits ([Waiting]), by the rules the runner and the cloud
     // worker follow; read-only.
     get("/placement") {

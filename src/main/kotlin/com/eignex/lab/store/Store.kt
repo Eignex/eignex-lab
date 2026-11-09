@@ -30,6 +30,9 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     val holds = HoldRepository(db, this)
     val trendPoints = TrendPointRepository(db, this)
 
+    /** Throughput of ended jobs by day, for `/kpi`. */
+    val kpis = KpiRepository(db, this)
+
     /** Experiments' plans: arms, problems, cases and their records. */
     val plans = PlanRepository(db, this)
 
