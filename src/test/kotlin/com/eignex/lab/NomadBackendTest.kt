@@ -463,6 +463,116 @@ class NomadBackendTest {
         assertEquals(Status.DONE, store.job(id)!!.status)
     }
 
+    private class RegionalBlobs : BuildArchives {
+        val objects = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+        val gets = java.util.concurrent.CopyOnWriteArrayList<String>()
+        override fun size(sha: String) = objects[sha]?.size?.toLong()
+        override fun put(source: java.nio.file.Path, sha: String) { objects[sha] = Files.readAllBytes(source) }
+        override fun get(sha: String, destination: java.nio.file.Path) { gets += sha; Files.write(destination, objects.getValue(sha)) }
+    }
+
+    @Test fun `regional outputs are accepted only at their declared size and fetched when the projection first reads them`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val results = RegionalBlobs()
+        val journal = ResultJournal(root.resolve("regional-journal"), RegionalArtifactStore(artifacts, RegionalBlobs(), root.resolve("fetches"), results), start = false)
+        val regionalBackend = NomadBackend(store, control, journal, { root.resolve("jobs/$it") })
+        application { workerApi(store, regionalBackend, journal) { true } }
+        val capture = ByteArray(64 * 1024) { (it % 13).toByte() }; val sha = java.security.MessageDigest.getInstance("SHA-256").digest(capture).hex()
+        val small = "small".toByteArray(); val smallSha = java.security.MessageDigest.getInstance("SHA-256").digest(small).hex()
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) },
+            mapOf("cases/0/profile-x/cli.jfr" to sha, "0.out" to smallSha), regionalBlobs = mapOf(sha to capture.size.toLong()))
+        val body = WorkerInlineCommit(claim.owner, result, mapOf(smallSha to Base64.getEncoder().encodeToString(small)))
+        suspend fun send(value: WorkerInlineCommit = body) = client.post("/worker/v1/sessions/${session.id}/commit-inline") {
+            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(value))
+        }
+        try {
+            // Missing, or a different size than declared: refused as regional, never accepted on a hint.
+            assertEquals(HttpStatusCode.UnprocessableEntity, send().status)
+            results.objects[sha] = capture.copyOf(100)
+            assertEquals(HttpStatusCode.UnprocessableEntity, send().status)
+            assertTrue(store.execution.accepted(id).isEmpty())
+            // A regional output must be one the result names.
+            val foreign = "f".repeat(64)
+            results.objects[foreign] = capture
+            assertEquals(HttpStatusCode.BadRequest, send(body.copy(result = result.copy(regionalBlobs = result.regionalBlobs + (foreign to capture.size.toLong())))).status)
+            results.objects[sha] = capture
+            repeat(2) { assertEquals(HttpStatusCode.NoContent, send().status) }
+            assertEquals(ExecutionStore.slim(result), store.execution.accepted(id).single().second)
+            assertEquals(mapOf(sha to capture.size.toLong()), store.execution.acceptedRegionalBlobs(id))
+            assertEquals(emptyList(), results.gets, "acceptance checks the store without reading the bytes")
+            regionalBackend.reconcile()
+            assertContentEquals(capture, Files.readAllBytes(root.resolve("jobs/$id/cases/0/profile-x/cli.jfr")))
+            assertEquals(listOf(sha), results.gets)
+            assertEquals(Status.DONE, store.job(id)!!.status)
+        } finally { journal.close() }
+    }
+
+    @Test fun `a regional output expired before its projection leaves the job complete and the output unavailable`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val results = RegionalBlobs()
+        val regional = RegionalArtifactStore(artifacts, RegionalBlobs(), root.resolve("fetches"), results)
+        val regionalBackend = NomadBackend(store, control, regional, { root.resolve("jobs/$it") })
+        application { workerApi(store, regionalBackend, regional) { true } }
+        val capture = "an expiring capture".toByteArray(); val sha = java.security.MessageDigest.getInstance("SHA-256").digest(capture).hex()
+        results.objects[sha] = capture
+        val result = IterationResult(claim.indices.map { ExecutionCaseResult(it, 0, 1, 2) }, mapOf("0.err" to sha), regionalBlobs = mapOf(sha to capture.size.toLong()))
+        val response = client.post("/worker/v1/sessions/${session.id}/commit") {
+            header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+            setBody(Json.encodeToString(WorkerCommit(claim.owner, result)))
+        }
+        assertEquals(HttpStatusCode.NoContent, response.status)
+        results.objects.clear()
+        regionalBackend.reconcile()
+        assertFalse(Files.exists(root.resolve("jobs/$id/0.err")))
+        assertTrue(store.execution.events(id).any { it.detail == "regional-result-unavailable:0.err:$sha" })
+        assertEquals(Status.DONE, store.job(id)!!.status)
+    }
+
+    @Test fun `solves sign only their own result uploads and a refusing signer is not an outage`() = testApplication {
+        val id = setup(1); register()
+        val claim = store.execution.claim(session.id, token, "allocation")!!
+        store.execution.phase(claim.owner, "uploading")
+        val signed = java.util.concurrent.CopyOnWriteArrayList<String>()
+        var refuse = false
+        val signer = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        signer.createContext("/") { exchange ->
+            val text = String(exchange.requestBody.readAllBytes()); signed += text
+            if (refuse) { exchange.sendResponseHeaders(400, -1); exchange.close(); return@createContext }
+            val key = Json.parseToJsonElement(text).jsonObject.getValue("key").jsonPrimitive.content
+            val reply = """{"url":"https://bucket.example/$key","headers":{"If-None-Match":"*"}}""".toByteArray()
+            exchange.sendResponseHeaders(200, reply.size.toLong()); exchange.responseBody.write(reply); exchange.close()
+        }
+        signer.start()
+        try {
+            application { workerApi(store, backend(), artifacts, inputSigner = URI("http://127.0.0.1:${signer.address.port}/")) { true } }
+            val sha = "a".repeat(64)
+            suspend fun sign(signature: InputSignature, owner: AttemptOwner = claim.owner) = client.post("/worker/v1/sessions/${session.id}/input-signature") {
+                header(HttpHeaders.Authorization, "Bearer $token"); header("X-Lab-Allocation", "allocation"); header("X-Lab-Identity", jwt())
+                header("X-Lab-Attempt", Json.encodeToString(owner))
+                setBody(Json.encodeToString(InputSignature.serializer(), signature))
+            }
+            for (refused in listOf(InputSignature("PUT", "input-blobs/$sha", sha, 10), InputSignature("PUT", "build-blobs/$sha", sha, 10),
+                InputSignature("PUT", ResultBlobs.key(sha), sha), InputSignature("PUT", ResultBlobs.key(sha), sha, ResultBlobs.MAX_BYTES + 1),
+                InputSignature("PUT", ResultBlobs.key(sha), "b".repeat(64), 10), InputSignature("GET", ResultBlobs.key(sha), sha, 10))) {
+                assertEquals(HttpStatusCode.BadRequest, sign(refused).status, refused.toString())
+            }
+            assertTrue(signed.isEmpty())
+            val ok = sign(InputSignature("PUT", ResultBlobs.key(sha), sha, 10))
+            assertEquals(HttpStatusCode.OK, ok.status)
+            assertEquals("https://bucket.example/result-blobs/$sha", Json.decodeFromString<SignedInput>(ok.bodyAsText()).url)
+            assertFalse("bytes" in signed.single(), "the store's signer sees only the operation it signs")
+            assertEquals(HttpStatusCode.Conflict, sign(InputSignature("PUT", ResultBlobs.key(sha), sha, 10), claim.owner.copy(generation = 9)).status)
+            refuse = true
+            assertEquals(HttpStatusCode.UnprocessableEntity, sign(InputSignature("PUT", ResultBlobs.key(sha), sha, 10)).status)
+        } finally { signer.stop(0) }
+        assertTrue(store.execution.accepted(id).isEmpty())
+    }
+
     @Test fun `inline outputs reject corrupt bytes and cancelled ownership before acceptance`() = testApplication {
         val id = setup(1); register()
         val claim = store.execution.claim(session.id, token, "allocation")!!

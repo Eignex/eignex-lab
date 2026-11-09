@@ -260,7 +260,8 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
     }
 }
 
-@Serializable internal data class InputSignature(val method: String, val key: String, val sha256: String? = null)
+/** [bytes] is the size a solve declares for a result upload ([ResultBlobs]); the store's signer never sees it. */
+@Serializable internal data class InputSignature(val method: String, val key: String, val sha256: String? = null, val bytes: Long? = null)
 @Serializable internal data class SignedInput(val url: String, val headers: Map<String, String> = emptyMap())
 
 private val inputSigningClient: HttpClient by lazy {
@@ -361,8 +362,9 @@ internal interface BuildArchives {
     }
 }
 
-internal class RegionalBuildArchives(private val transport: HttpInputTransport) : BuildArchives {
-    private fun key(sha: String): String { require(sha.matches(SHA256)); return "${BuildArchives.PREFIX}/$sha" }
+/** Content-addressed blobs under [prefix] of the regional store: build archives, or solve results ([ResultBlobs]). */
+internal class RegionalBuildArchives(private val transport: HttpInputTransport, private val prefix: String = BuildArchives.PREFIX) : BuildArchives {
+    private fun key(sha: String): String { require(sha.matches(SHA256)); return "$prefix/$sha" }
     override fun size(sha: String): Long? = transport.stored(key(sha), sha)
     override fun put(source: Path, sha: String) = transport.put(key(sha), source, sha)
     override fun get(sha: String, destination: Path) = transport.get(key(sha), destination)

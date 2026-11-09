@@ -31,7 +31,7 @@ internal class WorkerRetry(private val clock: () -> Long = { System.nanoTime() /
             try { return operation() }
             catch (failure: Exception) {
                 if (failure is ExecutionFenced || failure is RunDeadlineExceeded || failure is InterruptedException ||
-                    failure is java.util.concurrent.CancellationException) throw failure
+                    failure is RegionalResultRefused || failure is java.util.concurrent.CancellationException) throw failure
                 attempts++
                 val transient = failure is IOException
                 val left = minOf(deadline?.let { it - clock() } ?: Long.MAX_VALUE, remaining())

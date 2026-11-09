@@ -215,6 +215,17 @@ The authenticated private `/capacity/journal` endpoint and `/capacity/metrics` r
 touching the external volume. Reserved bytes include incoming streams and file/metadata overhead, even before a pack
 is published. Error counters cover the current coordinator process; a retained failed batch keeps its error visible.
 
+Cloud solve workers (a regional `LAB_SHARED_INPUT_URL` and no loopback signer) keep each distinct output of at least
+`LAB_RESULT_BLOB_MIN_BYTES` (default 8 MiB, `off` disables; at most 5 GiB, one PUT) in the regional store under
+`result-blobs/<sha256>` instead: the session signs one checksum-bound conditional PUT while the attempt holds its lease,
+and the commit carries only the hash and size (`regionalBlobs`). Acceptance asks the store for each object's checksum
+metadata and size and never trusts the declaration; an unreachable store is retryable, a missing or different object
+(or a coordinator without the route) answers 422 and the worker sends every output to the coordinator instead. The
+coordinator copies such an output only when it first reads it, normally the result projection, verifying its SHA-256
+into the artifact store. File listings show regional outputs with their declared size without asking the store; one the
+store's lifecycle has expired is noted in the job's events at projection and reads as unavailable. Native workers
+are unchanged.
+
 Workers retry connection failures and transient 429/500/502/503/504 responses for up to sixty seconds, bounded by their
 remaining monotonic claim lease and whole-run allowance. Fencing, cancellation and run expiry stop immediately. This
 allows a short coordinator restart without discarding completed work. Private workspace sealing hashes each file once

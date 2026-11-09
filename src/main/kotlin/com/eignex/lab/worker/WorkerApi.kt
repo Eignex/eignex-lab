@@ -60,6 +60,9 @@ fun Application.workerApi(
     install(ContentNegotiation) { json(Json { encodeDefaults = false }) }
     install(StatusPages) {
         exception<ExecutionFenced> { call, _ -> call.respond(HttpStatusCode.Conflict, "execution fenced") }
+        exception<RegionalResultRefused> { call, cause ->
+            call.application.log.warn("regional result refused: ${cause.message}")
+            call.respond(HttpStatusCode.UnprocessableEntity, "regional result refused") }
         exception<IllegalArgumentException> { call, cause ->
             call.application.log.warn("worker request rejected: ${cause.javaClass.simpleName} at ${cause.stackTrace.firstOrNull { it.className.startsWith("com.eignex.lab.") }}")
             call.respond(HttpStatusCode.BadRequest, "invalid worker request") }
@@ -194,11 +197,21 @@ fun Application.workerApi(
             post("/input-signature") {
                 withContext(CoordinatorIo.artifacts) {
                     check(workAllowed()); val session = call.session
-                    require(session.executionClass == ExecutionClass.PREPARE)
+                    require(session.executionClass == ExecutionClass.PREPARE || session.executionClass == ExecutionClass.SOLVE)
                     val owner = Json.decodeFromString<AttemptOwner>(call.request.headers["X-Lab-Attempt"] ?: throw ExecutionFenced("attempt required"))
                     require(owner.session == session.id && owner.allocation == session.allocation); store.execution.authorize(owner)
                     val signature = Json.decodeFromString<InputSignature>(call.bodyText(8192))
                     require(signature.method == "PUT" && signature.sha256?.matches(SHA256) == true)
+                    if (session.executionClass == ExecutionClass.SOLVE) {
+                        // A solve may only store its own outputs: by content hash, within one PUT, while its attempt is leased.
+                        require(signature.key == ResultBlobs.key(signature.sha256.orEmpty()) && signature.bytes != null && signature.bytes in 0..ResultBlobs.MAX_BYTES)
+                        val signer = inputSigner ?: throw RegionalResultRefused("no shared input signer is configured")
+                        // A signer that refuses the prefix (not yet granted) is a refusal, not an outage: the worker sends the bytes here.
+                        val signed = try { signInput(signer, signature.copy(bytes = null)) }
+                            catch (failure: IllegalStateException) { throw RegionalResultRefused("result signing refused: ${failure.message}") }
+                        call.respond(signed)
+                        return@withContext
+                    }
                     require(signature.key == "input-blobs/${signature.sha256}" || signature.key == "${BuildArchives.PREFIX}/${signature.sha256}" ||
                         signature.key.matches(Regex("corpus-packs/[A-Za-z0-9][A-Za-z0-9._-]*\\.tar")))
                     val signer = inputSigner ?: throw IllegalStateException("no shared input signer is configured")

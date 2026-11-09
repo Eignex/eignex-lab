@@ -357,12 +357,59 @@ class WorkerSession(private val api: URI, private val id: String, private val to
         }
         override fun close() { closed = true; chunk = java.io.ByteArrayInputStream(byteArrayOf()) }
     }
+    /** A cloud worker's uploads of large solve outputs to the regional store; null keeps every output going to the coordinator. */
+    internal var resultBlobs: ResultBlobs.Uploader? = ResultBlobs.worker()
+    /** Set once this session's coordinator refused regional outputs it was sent, so later results skip the wasted uploads. */
+    @Volatile private var regionalResultsRefused = false
+
     internal fun commitResult(owner: AttemptOwner, result: IterationResult, files: Map<String, Path>): String {
+        val hashes = mutableMapOf<Path, String>()
+        val regional = if (result.preparation == null) publishResultBlobs(owner, files, hashes) else emptyMap()
+        if (regional.isNotEmpty()) try {
+            return commitOutputs(owner, result.copy(regionalBlobs = regional), files, hashes) + "+regional"
+        } catch (failure: RegionalResultRefused) {
+            println("regional outputs refused, sending them to the coordinator: ${failure.message}")
+            regionalResultsRefused = true
+        }
+        return commitOutputs(owner, result, files, hashes)
+    }
+
+    /**
+     * Store this solve's outputs of at least the uploader's threshold in the regional store, each with a PUT the session
+     * signs, and return them by hash to size. The first failure stops the rest: those outputs go to the coordinator.
+     */
+    private fun publishResultBlobs(owner: AttemptOwner, files: Map<String, Path>, hashes: MutableMap<Path, String>): Map<String, Long> {
+        val uploader = resultBlobs?.takeUnless { regionalResultsRefused } ?: return emptyMap()
+        val published = linkedMapOf<String, Long>()
+        for (file in files.values.distinct()) {
+            val size = Files.size(file)
+            if (size < uploader.minBytes || size > ResultBlobs.MAX_BYTES) continue
+            val sha = hashes.getOrPut(file) { hashFile(file) }
+            if (sha in published) continue
+            try {
+                retry { uploader.put(file, sha, size) { signature -> resultSignature(owner, signature) } }
+                published[sha] = size
+            } catch (failure: Exception) {
+                if (failure is ExecutionFenced || failure is RunDeadlineExceeded || failure is InterruptedException) throw failure
+                println("regional output upload refused, sending it to the coordinator: ${failure.javaClass.simpleName}: ${failure.message}")
+                break
+            }
+        }
+        return published
+    }
+
+    /** One signing request: a refusal ([RegionalResultRefused]) is answered by sending the output to the coordinator instead. */
+    private fun resultSignature(owner: AttemptOwner, signature: InputSignature): SignedInput {
+        val payload = Json.encodeToString(InputSignature.serializer(), signature)
+        return Json.decodeFromString<SignedInput>(String(coordinator.request("input-signature", "POST", HttpRequest.BodyPublishers.ofString(payload), owner = owner).body()))
+    }
+
+    private fun commitOutputs(owner: AttemptOwner, result: IterationResult, files: Map<String, Path>, hashes: MutableMap<Path, String>): String {
         val outputs = result.artifacts.toMutableMap()
         val sources = linkedMapOf<String, Path>()
-        val hashes = mutableMapOf<Path, String>()
         if (result.preparation == null) for ((name, file) in files) {
-            val sha = hashes.getOrPut(file) { hashFile(file) }; outputs[name] = sha; sources.putIfAbsent(sha, file)
+            val sha = hashes.getOrPut(file) { hashFile(file) }; outputs[name] = sha
+            if (sha !in result.regionalBlobs) sources.putIfAbsent(sha, file)
         }
         val uniqueBytes = sources.values.sumOf(Files::size)
         // Transport limits count distinct blobs, not all the artifact names that may refer to the same bytes.

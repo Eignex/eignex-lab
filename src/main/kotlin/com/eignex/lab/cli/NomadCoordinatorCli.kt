@@ -64,11 +64,12 @@ object NomadCoordinatorCli {
         Files.createDirectories(journalRoot.parent)
         java.nio.channels.FileChannel.open(config.dataDir, java.nio.file.StandardOpenOption.READ).use { it.force(true) }
         val localArtifacts = LocalArtifactStore(config.dataDir.resolve("nomad/artifacts"), writable = { Volumes.hold(config.paths, config.minFreeBytes) == null })
-        // Cloud preparations leave their build archives in the regional store; this machine fetches one only to read it.
+        // Cloud preparations leave their build archives in the regional store, and cloud solves their large outputs; this
+        // machine fetches one only to read it.
         val admissionSignal = CoordinatorSignal()
         val reconcileSignal = CoordinatorSignal()
         val artifacts = ResultJournal(journalRoot,
-            BuildArchives.coordinator()?.let { RegionalArtifactStore(localArtifacts, it, config.dataDir.resolve("nomad/build-fetches")) } ?: localArtifacts,
+            BuildArchives.coordinator()?.let { RegionalArtifactStore(localArtifacts, it, config.dataDir.resolve("nomad/build-fetches"), ResultBlobs.coordinator()) } ?: localArtifacts,
             maxBytes = config.resultJournalBytes,
             writable = { Files.getFileStore(journalRoot).usableSpace >= config.minFreeBytes },
             solveAdmissionChanged = { admissionSignal.wake(); reconcileSignal.wake() })
