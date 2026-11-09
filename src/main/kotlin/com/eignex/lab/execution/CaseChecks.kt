@@ -24,7 +24,6 @@ import com.eignex.lab.execution.SharedCheckInputUnavailable
 import com.eignex.lab.execution.SharedInputs
 import com.eignex.lab.store.Store
 import com.eignex.lab.util.size
-import com.eignex.lab.worker.portablePath
 
 /** The lab's checkers as this machine provisions them: one adapter per format, the sources from its own corpus. */
 object Checkers {

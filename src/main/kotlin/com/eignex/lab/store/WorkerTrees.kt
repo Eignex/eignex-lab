@@ -1,12 +1,6 @@
-package com.eignex.lab.worker
+package com.eignex.lab.store
 
-import com.eignex.lab.analysis.*
-import com.eignex.lab.capacity.*
-import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
-import com.eignex.lab.execution.*
-import com.eignex.lab.nomad.*
-import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 

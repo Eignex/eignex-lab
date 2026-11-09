@@ -1,6 +1,7 @@
-package com.eignex.lab.capacity
+package com.eignex.lab.web
 
 import com.eignex.lab.analysis.*
+import com.eignex.lab.capacity.*
 import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
 import com.eignex.lab.execution.*
@@ -15,8 +16,6 @@ import io.ktor.server.request.*
 import kotlinx.serialization.json.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.withContext
-import com.eignex.lab.web.ApiError
-import com.eignex.lab.web.ErrorBody
 
 /**
  * Private capacity endpoints use their own secret; a worker credential grants no capacity access. They answer their

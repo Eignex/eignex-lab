@@ -15,7 +15,6 @@ import java.sql.SQLException
 import com.eignex.lab.capacity.RunningNode
 import com.eignex.lab.capacity.runningNode
 import com.eignex.lab.worker.PreparationResult
-import com.eignex.lab.worker.RunDeadlineExceeded
 
 @Serializable
 data class ExecutionSession(
