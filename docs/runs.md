@@ -378,9 +378,9 @@ checksum and standard wrapper installer stay authoritative. Unpinned and custom 
 keep their wrapper download path; unsupported releases also fall back to it. Downloads
 check the preparation's remaining budget, publish only verified bytes by atomic rename,
 and retain their size, digest and cache reuse in the build output. This needs no worker
-shell downloader or credentials. Ordinary tests use fake transfers; the explicit
-`verifyGradleDistributionSeed` CI check also exercises a cold official download and
-standard wrapper installation with child network access disabled.
+shell downloader or credentials. Malformed or unavailable release metadata also falls
+back to the wrapper path; a digest or byte mismatch fails the build. Tests use fake
+transfers only, so CI makes no Gradle release requests.
 
 Cold preparation placement respects the node's configured compiler-slot count as well as CPU and memory.
 The coordinator places one pending preparation per cloud class at a time and excludes nodes whose preparation

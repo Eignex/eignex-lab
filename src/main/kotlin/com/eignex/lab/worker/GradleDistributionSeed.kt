@@ -56,11 +56,14 @@ internal class GradleDistributionSeed(
             val release = URI("https://api.github.com/repos/gradle/gradle-distributions/releases/tags/v$version")
             if (!download(release, "application/vnd.github+json", metadata, 2L * 1024 * 1024, remainingMs)) return null
             active()
-            val assets = Json.parseToJsonElement(Files.readString(metadata)).jsonObject["assets"]?.jsonArray ?: return null
-            val asset = assets.map { it.jsonObject }.singleOrNull { it["name"]?.jsonPrimitive?.content == name } ?: return null
-            val id = asset["id"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0 } ?: return null
-            val bytes = asset["size"]?.jsonPrimitive?.longOrNull?.takeIf { it in 1..512L * 1024 * 1024 } ?: return null
-            val published = asset["digest"]?.jsonPrimitive?.contentOrNull ?: return null
+            // Malformed metadata falls back to the wrapper path instead of failing the build.
+            val (id, bytes, published) = try {
+                val assets = Json.parseToJsonElement(Files.readString(metadata)).jsonObject["assets"]?.jsonArray ?: return null
+                val asset = assets.map { it.jsonObject }.singleOrNull { it["name"]?.jsonPrimitive?.content == name } ?: return null
+                Triple(asset["id"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0 } ?: return null,
+                    asset["size"]?.jsonPrimitive?.longOrNull?.takeIf { it in 1..512L * 1024 * 1024 } ?: return null,
+                    asset["digest"]?.jsonPrimitive?.contentOrNull ?: return null)
+            } catch (_: IllegalArgumentException) { return null }
             require(published == "sha256:$sha") { "Gradle release digest differs from the pinned wrapper checksum" }
             val uri = URI("https://api.github.com/repos/gradle/gradle-distributions/releases/assets/$id")
             if (!download(uri, "application/octet-stream", pending, bytes, remainingMs)) return null
@@ -89,11 +92,10 @@ private fun downloadGradleAsset(uri: URI, accept: String, target: Path, maximum:
         while (true) {
             val remaining = remainingMs()
             if (remaining <= 0L) throw LeaseLost("Gradle distribution staging deadline expired")
-            require(Files.size(target) <= maximum) { "Gradle release response exceeds its declared bound" }
+            if (Files.size(target) > maximum) return false
             try {
                 val response = future.get(minOf(100L, remaining), TimeUnit.MILLISECONDS)
-                require(Files.size(target) <= maximum) { "Gradle release response exceeds its declared bound" }
-                return response.statusCode() == 200
+                return response.statusCode() == 200 && Files.size(target) <= maximum
             } catch (_: TimeoutException) {
             } catch (failure: ExecutionException) {
                 if (failure.cause is java.io.IOException) return false

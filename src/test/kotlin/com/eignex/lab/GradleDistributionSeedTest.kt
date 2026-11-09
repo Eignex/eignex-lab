@@ -107,4 +107,15 @@ class GradleDistributionSeedTest {
             assertEquals(0, Files.list(target(root).parent).use { it.count().toInt() })
         } finally { deleteTree(root) }
     }
+
+    @Test fun `malformed release metadata leaves the original wrapper path usable`() {
+        val root = Files.createTempDirectory("gradle-seed-malformed")
+        try {
+            wrapper(root)
+            for (bad in listOf("not json", "[]", """{"assets":[{"name":"$name","id":{}}]}""")) {
+                assertNull(source(metadata = bad).stage(root, root.resolve("home")) { 10_000L })
+            }
+            assertFalse(Files.exists(target(root)))
+        } finally { deleteTree(root) }
+    }
 }
