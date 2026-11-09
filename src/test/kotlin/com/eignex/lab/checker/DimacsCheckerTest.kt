@@ -12,7 +12,7 @@ import com.eignex.lab.web.*
 import com.eignex.lab.cli.*
 
 import com.eignex.lab.execution.Checkers
-import com.eignex.lab.analysis.DimacsCheckBench
+import com.eignex.lab.cli.DimacsCheckBench
 
 import com.eignex.lab.domain.Config
 import com.eignex.lab.domain.Problem
