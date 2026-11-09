@@ -45,6 +45,9 @@ data class NomadQueueSettings(
      * protocol 9.
      */
     val reuseAcceptedBuilds: Boolean = false,
+    /** Enable only after every pinned target supports worker protocol 10: prepare manifests then carry bench selection
+     *  source identities read from the commit at admission ([com.eignex.lab.domain.WorkManifest.selectionSources]). */
+    val committedSelectionKeys: Boolean = false,
 ) {
     init {
         require(release.isNotBlank() && targets.isNotEmpty() && targets.map { it.template.nodeClass }.distinct().size == targets.size)

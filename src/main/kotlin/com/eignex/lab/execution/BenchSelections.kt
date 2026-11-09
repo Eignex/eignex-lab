@@ -28,6 +28,9 @@ import java.nio.file.Path
  * - when the bench manifest declares top-level `planInputs` (portable relative paths), instead the content of the
  *   manifest file and every file under those paths in the prepared tree. The repository then asserts that its plan
  *   is a function of those files, its request and its corpus; this is what lets different commits share a plan.
+ * - when the manifest also declares `"planIdentity": "committed"` and the coordinator read it at admission
+ *   ([committedSource], [com.eignex.lab.domain.WorkManifest.selectionSources]), the Git object ids of those paths at
+ *   the commit instead, leaving out what the build generates below them.
  * The coordinator's selection filters and frozen cases are not part of the key: they apply after the cached plan.
  */
 internal object BenchSelections {
@@ -57,11 +60,44 @@ internal object BenchSelections {
         return planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive, digests, bulkMetadata) } ?: "commit:$commit"
     }
 
+    /**
+     * The key for a known source identity: a build's [source], or the coordinator's [committedSource] read at admission.
+     * A committed source is never a build's plan source ([com.eignex.lab.domain.ReusableBuild.planSource]), which
+     * older workers read and validate.
+     */
     fun key(release: String, repository: String, spec: BenchSpec, request: BenchRequest, corpus: String, source: String): String {
-        require(validPlanSource(source)) { "invalid plan source identity" }
+        require(validPlanSource(source) || source.matches(SOURCE)) { "invalid plan source identity" }
         val canonical = BenchProtocol.json.encodeToString(BenchRequest.serializer(), request.copy(parameters = request.parameters.toSortedMap()))
         return ExecutionStore.digest(listOf(VERSION, "release=$release", "repository=$repository", "manifest=${spec.manifest}",
             "request=$canonical", "corpus=$corpus", "source=$source").joinToString("\n"))
+    }
+
+    /** What [committedSource] names, and what a worker accepts from its manifest in place of reading its tree. */
+    val SOURCE = Regex("committed:[a-f0-9]{64}")
+    const val COMMITTED = "committed"
+
+    /**
+     * The source identity of a bench whose manifest [text] declares `planInputs` and `"planIdentity": "committed"`:
+     * the Git modes and object ids, at the commit, of the manifest and each plan input, or `absent`. [list] runs
+     * `git ls-tree --full-tree <commit> -- <paths>` in the coordinator's mirror and returns its output; that is a local
+     * read of a fetched commit, so the key is known at admission without a build. Unlike the default `declared:`
+     * identity it leaves out files the build generates below a plan input, so commits that change neither the plan
+     * inputs nor the manifest share one plan whatever else they change. Null when the manifest does not opt in, or
+     * names a plan input the commit does not hold (a generated path, which only the built tree identifies).
+     */
+    fun committedSource(manifest: String, text: String, list: (List<String>) -> String): String? {
+        val parsed = BenchProtocol.json.parseToJsonElement(text).jsonObject
+        if ((parsed["planIdentity"] as? kotlinx.serialization.json.JsonPrimitive)?.content != COMMITTED) return null
+        val declared = parsed["planInputs"]?.let { BenchProtocol.json.decodeFromJsonElement(ListSerializer(String.serializer()), it) } ?: return null
+        if (declared.isEmpty()) return null
+        val paths = (listOf(manifest) + declared).onEach { safeRelative(it) }.distinct().sorted()
+        val entries = list(paths).lines().filter { it.isNotBlank() }.associate { line ->
+            val (meta, path) = line.split('\t', limit = 2).also { require(it.size == 2) { "unexpected tree listing" } }
+            val (mode, type, oid) = meta.split(' ').also { require(it.size == 3 && it[2].matches(Regex("[a-f0-9]{40}|[a-f0-9]{64}"))) { "unexpected tree listing" } }
+            path to "$mode $type $oid"
+        }
+        if (paths.any { it !in entries }) return null
+        return "$COMMITTED:" + ExecutionStore.digest(paths.joinToString("\n") { "$it ${entries.getValue(it)}" })
     }
 
     /** Path and checksum of every file under [paths]; a missing path is part of the identity, a link is refused. */

@@ -4,6 +4,7 @@ import com.eignex.lab.util.*
 import com.eignex.lab.domain.*
 import com.eignex.lab.store.*
 import com.eignex.lab.execution.*
+import com.eignex.lab.nomad.*
 
 import com.eignex.lab.bench.*
 import java.nio.file.Files
@@ -87,6 +88,38 @@ class BenchSelectionsTest {
         assertEquals(key(base, ordered), key(base, BenchRequest(linkedMapOf("b" to "2", "a" to "1"))))
         // Frozen cases and coordinator filters apply after the cached plan.
         assertEquals(first, key(base, bench = spec.copy(frozenCases = listOf(BenchCase("p")), referenceFilter = ReferenceFilterMode.PROVEN)))
+    }
+
+    @Test fun `committed plan identity is read from the commit and ignores generated and unrelated files`() {
+        val repo = Files.createDirectories(root.resolve("committed-repo"))
+        fun git(vararg args: String): String = runGit(repo.toFile(), listOf("-c", "user.name=lab", "-c", "user.email=lab@invalid") + args)
+            .let { (code, output) -> check(code == 0) { output }; output.trim() }
+        val manifest = """{"main":"a.B","planInputs":["bench/sets","bench/src","settings.gradle.kts"],"planIdentity":"committed"}"""
+        fun commit(files: Map<String, String>): String {
+            files.forEach { (path, text) -> Files.createDirectories(repo.resolve(path).parent); Files.writeString(repo.resolve(path), text) }
+            git("add", "-A"); git("commit", "-q", "--allow-empty", "-m", "change"); return git("rev-parse", "HEAD")
+        }
+        git("init", "-q")
+        val first = commit(mapOf("bench/lab/bench.json" to manifest, "bench/sets/sweep.txt" to "p1", "bench/src/Plan.kt" to "plan",
+            "settings.gradle.kts" to "x", "core/Solver.kt" to "v1"))
+        fun source(sha: String) = committedSelectionSources(repo, ExperimentSpec("committed", bench = spec),
+            listOf(PlannedArm(Arm("base", emptyMap()), sha)))[sha]
+        val identity = assertNotNull(source(first))
+        assertTrue(identity.matches(BenchSelections.SOURCE))
+        // A build writes below a plan input; only committed content identifies the plan.
+        Files.createDirectories(repo.resolve("bench/src/build")); Files.writeString(repo.resolve("bench/src/build/out.class"), "generated")
+        assertEquals(identity, source(first))
+        Files.delete(repo.resolve("bench/src/build/out.class")); Files.delete(repo.resolve("bench/src/build"))
+        assertEquals(identity, source(commit(mapOf("core/Solver.kt" to "v2"))), "a commit that changes no plan input shares the plan")
+        val changed = commit(mapOf("bench/sets/sweep.txt" to "p2"))
+        assertNotEquals(identity, source(changed))
+        val key = BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), "local", identity)
+        assertNotEquals(key, BenchSelections.key("release", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), "local", source(changed)!!))
+        assertNotEquals(key, BenchSelections.key("next", Repositories.DEFAULT, spec, BenchRequest(mapOf("set" to "sweep")), "local", identity))
+        // Without the opt-in, or naming a path the commit lacks (a generated one), the worker keys its built tree.
+        assertNull(source(commit(mapOf("bench/lab/bench.json" to manifest.replace(",\"planIdentity\":\"committed\"", ""))) ))
+        assertNull(source(commit(mapOf("bench/lab/bench.json" to manifest.replace("settings.gradle.kts", "bench/build/install")))))
+        assertTrue(committedSelectionSources(repo, ExperimentSpec("committed", bench = spec), listOf(PlannedArm(Arm("base", emptyMap()), "f".repeat(40)))).isEmpty())
     }
 
     @Test fun `declared plan inputs key on manifest and declared file contents across commits`() {

@@ -98,7 +98,10 @@ data class WorkManifest(
      * none; then the worker also reports no [PreparationResult.builds], which an older coordinator could not read.
      */
     val reusableBuilds: List<ReusableBuild>? = null,
+    /** Per commit, the bench selection source identity the coordinator read from it at admission ([com.eignex.lab.execution.BenchSelections.committedSource]). */
+    val selectionSources: Map<String, String> = emptyMap(),
     @kotlinx.serialization.EncodeDefault val schemaVersion: Int = when {
+        experiment.isBench && selectionSources.isNotEmpty() -> 10
         experiment.isBench && reusableBuilds != null -> 9
         experiment.measurement == Measurement.NATIVE_STARTUP -> 8
         !experiment.isBench -> 1
@@ -117,7 +120,7 @@ data class WorkManifest(
         bundles.firstOrNull()?.build?.preparation?.selector(experiment.nodeTags) ?: experiment.nodeTags
 
     init {
-        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..9) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
+        require(schemaVersion in (if (!experiment.isBench) 1..1 else 2..10) && session.matches(Regex("[a-z0-9-]{1,64}")) && release.isNotBlank())
         reusableBuilds?.let { offered ->
             require(schemaVersion >= 9 && preparationTimeoutSec != null && benchReplay == null) { "accepted build reuse requires worker protocol 9" }
             require(offered.map { it.bundle.commit }.distinct().size == offered.size && offered.all { hint ->
@@ -126,6 +129,8 @@ data class WorkManifest(
             }) { "invalid reusable builds" }
         }
         require(experiment.measurement != Measurement.NATIVE_STARTUP || schemaVersion >= 8) { "native startup capture requires worker protocol 8" }
+        require(selectionSources.isEmpty() || schemaVersion >= 10 && preparationTimeoutSec != null && benchReplay == null) { "committed selection keys require worker protocol 10" }
+        require(selectionSources.all { (commit, source) -> arms.any { it.sha == commit } && source.matches(Regex("committed:[a-f0-9]{64}")) })
         require(bundles.none { it.build?.gitBundle == PackedGitSource.MARKER } || schemaVersion >= 7) { "packed source requires worker protocol 7" }
         require(bundles.none { it.build?.preparation != null } || schemaVersion >= 6) { "separate preparation platforms require worker protocol 6" }
         require(bundles.map { it.build?.preparation }.distinct().size <= 1) { "preparation contracts differ between source bundles" }

@@ -76,9 +76,9 @@ class AcceptedBuildReuseTest {
     private class Prepared(val result: PreparationResult, val trace: PreparationProgress, val uploaded: List<String>)
 
     private fun prepare(socket: Path, name: String, offered: List<ReusableBuild>?, store: AcceptedBuildStore?,
-                        cached: (List<String>) -> List<BenchSelectionEntry> = { emptyList() }): Prepared {
+                        sources: Map<String, String> = emptyMap(), cached: (List<String>) -> List<BenchSelectionEntry> = { emptyList() }): Prepared {
         val manifest = WorkManifest(name, "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
-            emptyList(), listOf(source), ResourceBudget(1000, 2048), reusableBuilds = offered, preparationTimeoutSec = 120)
+            emptyList(), listOf(source), ResourceBudget(1000, 2048), reusableBuilds = offered, selectionSources = sources, preparationTimeoutSec = 120)
         val trace = PreparationTrace()
         val uploaded = mutableListOf<String>()
         // Each preparation runs as if on a fresh node: no build, input or archive cache is shared with another.
@@ -126,6 +126,22 @@ class AcceptedBuildReuseTest {
 
         // Without an offer the worker reports nothing that an older coordinator could not read.
         assertTrue(prepare(socket, "unoffered", null, regional).result.builds.isEmpty())
+
+        // A committed source from admission keys the plans of a reused build too, and the build keeps its own plan
+        // source for later preparations that have none; a committed source is never reported as a build's.
+        val sources = mapOf(source.commit to "committed:" + "c".repeat(64))
+        val bench = requireNotNull(spec.work.bench)
+        val committedKey = BenchSelections.key("release", spec.repository, bench, BenchRuns.request(bench, Experiments.arms(spec).single()),
+            "local", sources.getValue(source.commit))
+        var committedAsked = emptyList<String>()
+        val committed = prepare(socket, "committed", listOf(hint(first.result)), regional, sources) { keys -> committedAsked = keys; emptyList() }
+        assertFalse("compilation" in committed.trace.timings)
+        assertEquals(listOf(committedKey), committedAsked)
+        assertEquals(committedKey, committed.result.selectionCache.single().key)
+        assertEquals(first.result.builds, committed.result.builds)
+        val fresh = prepare(socket, "committed-fresh", emptyList(), null, sources)
+        assertEquals(committedKey, fresh.result.selectionCache.single().key)
+        assertNull(fresh.result.builds.single().planSource)
     }
 
     @Test fun `a foreign missing or corrupt accepted archive falls back to an ordinary build`(): Unit = service { socket ->

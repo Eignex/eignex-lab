@@ -475,6 +475,13 @@ class ExecutionStore internal constructor(private val store: Store) {
         }
     }
 
+    /** The case count of each accepted planner output under [keys] that exists; JSON is measured in place, not decoded. */
+    fun acceptedSelectionCases(keys: List<String>): Map<String, Int> = store.executionRead { db ->
+        keys.flatMap { key ->
+            db.sqlRows("SELECT json_array_length(entry, '$.plan.cases') FROM bench_selections WHERE selection_key = ?", key) { key to it.getInt(1) }
+        }.toMap()
+    }
+
     /** Retire this credential before allowing a replacement session. Completed attempts remain accepted. */
     fun loseSession(id: String, reason: String, at: Long = now()) = store.executionTransaction { db ->
         db.session(id)?.let { s ->
