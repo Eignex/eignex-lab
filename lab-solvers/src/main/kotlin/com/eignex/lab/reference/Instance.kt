@@ -47,23 +47,16 @@ data class ReferenceResult(
 )
 
 /**
- * Corpus files, plain or zstd-compressed (`.zst`). Decompression goes through the system `zstd`, as it does in the
- * bench that fetched them, so a compressed and a plain copy read and hash alike.
+ * Corpus files, plain or zstd-compressed (`.zst`), decoded in process through [CorpusStreams], so a compressed and a
+ * plain copy read and hash alike.
  */
 object CorpusFiles {
     private const val SUFFIX = ".zst"
     private const val BUFFER_BYTES = 1 shl 16
 
-    fun isCompressed(file: File): Boolean = file.name.endsWith(SUFFIX)
+    fun isCompressed(file: File): Boolean = CorpusStreams.isCompressed(file)
 
-    fun open(file: File): InputStream = if (isCompressed(file)) {
-        val process = ProcessBuilder("zstd", "-dcq", file.absolutePath)
-            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
-        process.outputStream.close()
-        process.inputStream
-    } else {
-        file.inputStream()
-    }
+    fun open(file: File): InputStream = CorpusStreams.open(file)
 
     fun readText(file: File): String = open(file).bufferedReader().use { it.readText() }
 

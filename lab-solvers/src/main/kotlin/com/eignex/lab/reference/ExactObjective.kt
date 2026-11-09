@@ -30,7 +30,7 @@ internal class ExactObjective private constructor(
 
     val integral: Boolean get() = denominator == BigInteger.ONE
 
-    private fun normalized(n: BigInteger, d: BigInteger): ExactObjective = requireNotNull(parse("$n/$d"))
+    private fun normalized(n: BigInteger, d: BigInteger): ExactObjective = requireNotNull(reduced(n, d)) { "objective outside the exact bounds" }
 
     fun approximate(): Double? = BigDecimal(numerator).divide(BigDecimal(denominator), MathContext.DECIMAL128)
         .toDouble().takeIf(Double::isFinite)
@@ -39,12 +39,19 @@ internal class ExactObjective private constructor(
         fun value(exact: String?, legacy: Double?): ExactObjective? =
             if (exact != null) parse(exact) else legacy?.takeIf(Double::isFinite)?.let { parse(it.toString()) }
 
+        /** Bounds that keep a hostile or corrupt value from costing more than a parse: as the exact MPS checker's. */
+        private const val MAX_CHARS = 4095
+        private const val MAX_SCALE = 4095
+        private const val MAX_BITS = 16_384
+
         fun parse(text: String): ExactObjective? = runCatching {
+            require(text.length <= MAX_CHARS)
             val parts = text.trim().split('/')
             val numerator: BigInteger
             val denominator: BigInteger
             if (parts.size == 1) {
                 val decimal = BigDecimal(parts.single())
+                require(decimal.scale() in -MAX_SCALE..MAX_SCALE)
                 numerator = decimal.unscaledValue() * BigInteger.TEN.pow((-decimal.scale()).coerceAtLeast(0))
                 denominator = BigInteger.TEN.pow(decimal.scale().coerceAtLeast(0))
             } else {
@@ -52,10 +59,14 @@ internal class ExactObjective private constructor(
                 numerator = BigInteger(parts[0])
                 denominator = BigInteger(parts[1])
             }
-            require(denominator != BigInteger.ZERO)
+            reduced(numerator, denominator)
+        }.getOrNull()
+
+        private fun reduced(numerator: BigInteger, denominator: BigInteger): ExactObjective? {
+            if (denominator.signum() == 0 || numerator.bitLength() > MAX_BITS || denominator.bitLength() > MAX_BITS) return null
             val divisor = numerator.gcd(denominator)
             val sign = BigInteger.valueOf(denominator.signum().toLong())
-            ExactObjective(numerator / divisor * sign, denominator / divisor * sign)
-        }.getOrNull()
+            return ExactObjective(numerator / divisor * sign, denominator / divisor * sign)
+        }
     }
 }

@@ -4,7 +4,6 @@ import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 
 import com.eignex.lab.reference.MiniZincIdentity
-import com.github.luben.zstd.ZstdInputStreamNoFinalizer
 import java.io.File
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -125,13 +124,10 @@ class MiniZincChecker : FormatChecker {
     companion object {
         private const val TIMEOUT_MS = 15_000L
 
-        fun source(file: File): String = file.inputStream().use { raw ->
-            val input = if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(raw) else raw
-            input.use {
-                val bytes = it.readNBytes(8 * 1024 * 1024 + 1)
-                require(bytes.size <= 8 * 1024 * 1024) { "MiniZinc source exceeds the 8 MiB capture limit" }
-                bytes.decodeToString(throwOnInvalidSequence = true)
-            }
+        fun source(file: File): String = CorpusStreams.open(file).use {
+            val bytes = it.readNBytes(8 * 1024 * 1024 + 1)
+            require(bytes.size <= 8 * 1024 * 1024) { "MiniZinc source exceeds the 8 MiB capture limit" }
+            bytes.decodeToString(throwOnInvalidSequence = true)
         }
     }
 }
