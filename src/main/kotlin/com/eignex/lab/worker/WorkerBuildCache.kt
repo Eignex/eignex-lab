@@ -20,6 +20,14 @@ import java.nio.file.StandardCopyOption.*
 
 class WorkerBuildFailure(val detail: String) : IllegalStateException("trusted source build failed: $detail")
 
+/**
+ * Gradle retries repository requests that fail with 5xx, 408, 429 or a dropped connection, by default 3 attempts 1 s
+ * apart. Six attempts from 2 s (~1 minute of backoff per request) ride out short download-host outages inside one
+ * build; longer ones end the attempt as an infrastructure loss ([upstreamUnavailable]) and the job is retried.
+ */
+internal val GRADLE_NETWORK_RETRY = listOf("-Dorg.gradle.internal.network.retry.max.attempts=6",
+    "-Dorg.gradle.internal.network.retry.initial.backOff=2000")
+
 /** Builds are bounded helpers of their session, not another reservation or a whole-node exclusivity rule. */
 class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSupervisor,
                        private val maxBytes: Long = 32L * 1024 * 1024 * 1024,
@@ -220,6 +228,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                             val cache = remoteCache()
                             run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
                                 "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain") +
+                                GRADLE_NETWORK_RETRY +
                                 listOfNotNull(cache?.let { "--build-cache" }), tree,
                                 env + ("GRADLE_USER_HOME" to dependencyHome.toString()) + listOfNotNull(cache?.let { "LAB_GRADLE_CACHE_URL" to it }), kind = "compilation")
                         }
