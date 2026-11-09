@@ -23,7 +23,7 @@ class GradleBuildCache(private val root: Path, private val maxBytes: Long, priva
     init { require(maxBytes > 0) }
 
     fun partition(repository: String, os: String, arch: String, toolchain: String): String =
-        java.security.MessageDigest.getInstance("SHA-256").digest("$repository\n$os\n$arch\n$toolchain".toByteArray()).hex().take(32)
+        sha256Hex("$repository\n$os\n$arch\n$toolchain").take(32)
 
     fun get(partition: String, key: String): Path? {
         val path = path(partition, key)

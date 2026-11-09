@@ -10,8 +10,6 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
-import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -257,11 +255,7 @@ internal class TreeVerification(private val readAheadFiles: Int = 512, private v
 
     private fun writeReceipt(receipt: Path, result: Receipt) {
         if (memoryReceipt != null) { memoryReceipt.value = result; return }
-        val temporary = Files.createTempFile(receipt.parent, ".verification-", ".tmp")
-        try {
-            Files.writeString(temporary, Json.encodeToString(result))
-            Files.move(temporary, receipt, ATOMIC_MOVE, REPLACE_EXISTING)
-        } finally { Files.deleteIfExists(temporary) }
+        receipt.writeAtomically(Json.encodeToString(result), durable = false)
     }
 
     private fun rootKey(tree: Path) = Files.readAttributes(tree, BasicFileAttributes::class.java, NOFOLLOW_LINKS).fileKey()?.toString()

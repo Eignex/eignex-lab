@@ -60,7 +60,7 @@ internal fun preparedTreeManifest(files: List<InputFile>, directories: List<Stri
         PreparedTreeInventory("prepared-tree-v1", files.sortedBy { it.path }, directories.sorted()))
 
 internal fun preparedTreeDigest(files: List<InputFile>, directories: List<String>): String =
-    java.security.MessageDigest.getInstance("SHA-256").digest(preparedTreeManifest(files, directories).toByteArray(Charsets.UTF_8)).hex()
+    sha256Hex(preparedTreeManifest(files, directories))
 
 internal fun preparationArtifact(bundle: WorkerBundle): String = "preparation/${bundle.commit}." + if (bundle.tree == null) "zip" else "tree.json"
 

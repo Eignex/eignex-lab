@@ -14,7 +14,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
-import java.security.MessageDigest
 
 /** A problem as its inspection page shows it: every reference row and every lab run. */
 @Serializable
@@ -133,7 +132,7 @@ object References {
         if (hashes.isEmpty()) return null
         val canonical = hashes.entries.sortedBy { it.key }
             .joinToString("\n") { (name, hash) -> "$name=${(hash as? JsonPrimitive)?.content ?: hash}" }
-        return MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
+        return sha256Hex(canonical)
     }
 
     /** What [sources] gives a problem whose cases ran on different source files: no reference row matches it. */

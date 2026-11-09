@@ -1,7 +1,6 @@
 package com.eignex.lab.domain
 
-import com.eignex.lab.util.hex
-import java.security.MessageDigest
+import com.eignex.lab.util.sha256Hex
 
 /** A shallow Git object store, materialized once by a protocol-7 worker. */
 internal object PackedGitSource {
@@ -12,6 +11,6 @@ internal object PackedGitSource {
         val marker = bundle.files.singleOrNull { it.path == MARKER } ?: return false
         val bytes = receipt(bundle.commit).toByteArray(Charsets.UTF_8)
         return bundle.build?.gitBundle == MARKER && !marker.executable && marker.bytes == bytes.size.toLong() &&
-            marker.sha256 == MessageDigest.getInstance("SHA-256").digest(bytes).hex()
+            marker.sha256 == sha256Hex(bytes)
     }
 }

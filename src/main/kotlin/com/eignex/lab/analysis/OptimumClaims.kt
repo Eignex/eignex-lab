@@ -3,10 +3,10 @@ package com.eignex.lab.analysis
 import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
 import com.eignex.lab.store.*
+import com.eignex.lab.util.sha256Hex
 
 import java.math.BigDecimal
 import java.math.BigInteger
-import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 
@@ -168,7 +168,7 @@ object OptimumClaims {
             text(record["comparisonControls"] as? JsonObject, "exact") != "true" ||
             record.containsKey("objectiveMapping") || record.containsKey("optimalityScope")) return null
         val maximize = text(record, "maximize")?.toBooleanStrictOrNull() ?: return null
-        return Scope(sources, digest("xcsp3-integer-source-v1"), maximize, "original-source", "source-objective", JsonArray(emptyList()))
+        return Scope(sources, sha256Hex("xcsp3-integer-source-v1"), maximize, "original-source", "source-objective", JsonArray(emptyList()))
     }
 
     private fun point(case: CaseResult): Point? {
@@ -180,7 +180,7 @@ object OptimumClaims {
         if (text(check, "state") != LabCheck.VALID || check["sourceSha256"] != scope.sources) return null
         val witness = text(check, "witnessSha256")?.takeIf { HASH.matches(it) } ?: return null
         val retainedWitness = text(record, "finalWitness") ?: return null
-        if (digest(retainedWitness) != witness) return null
+        if (sha256Hex(retainedWitness) != witness) return null
         val policy = text(check, "policy")?.takeIf { it.isNotBlank() } ?: return null
         if (text(check, "checkerSha256")?.matches(HASH) != true) return null
         val value = objective(record)?.let { mapping(record)?.apply(it) } ?: return null
@@ -224,7 +224,6 @@ object OptimumClaims {
     }
 
     private fun text(value: JsonObject?, key: String) = (value?.get(key) as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
-    private fun digest(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
     private val HASH = Regex("[0-9a-f]{64}")
 
     internal data class Q private constructor(val n: BigInteger, val d: BigInteger) : Comparable<Q> {
