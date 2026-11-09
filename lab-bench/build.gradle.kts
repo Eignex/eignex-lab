@@ -67,18 +67,26 @@ tasks.register("releaseAssets") {
     dependsOn("githubReleaseAssets")
 }
 
-tasks.register<Exec>("verifyRelease") {
+// The release check is a program of its own, outside the published SDK and its dependencies.
+val releaseVerification: SourceSet = sourceSets.create("releaseVerification")
+
+dependencies {
+    "releaseVerificationImplementation"("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+}
+
+tasks.register<JavaExec>("verifyRelease") {
     group = "verification"
     description = "Resolve the release assets in an independent Gradle build without credentials or caches."
     dependsOn("releaseAssets")
-    commandLine(
-        "python3", layout.projectDirectory.file("scripts/verify-release.py").asFile,
+    val jdk = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) }
+    javaLauncher.set(jdk)
+    classpath = releaseVerification.runtimeClasspath
+    mainClass.set("com.eignex.lab.bench.release.VerifyReleaseKt")
+    args(
         layout.buildDirectory.dir("release-assets").get().asFile,
         version.toString(), gradle.gradleHomeDir!!.resolve("bin/gradle"),
     )
-    environment("JAVA_HOME", javaToolchains.launcherFor {
-        languageVersion.set(JavaLanguageVersion.of(25))
-    }.get().metadata.installationPath.asFile.absolutePath)
+    environment("JAVA_HOME", jdk.get().metadata.installationPath.asFile.absolutePath)
 }
 
 // Mirrors the public release layout so consumer adapters can be tested before a tag exists.
