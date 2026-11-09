@@ -31,6 +31,8 @@ class NomadQueue(
     private val nativeAllowed: (Long) -> Boolean = { job -> !store.localBusy() && !Files.exists(config.nativeYield) },
     private val source: (Job, List<NomadQueueTarget>, NomadQueueSettings) -> Pair<List<PlannedArm>, List<WorkerBundle>>? =
         TrustedQueueSources(config, artifacts, store)::publish,
+    private val selectionSources: (ExperimentSpec, List<PlannedArm>) -> Map<String, String> = { spec, arms ->
+        committedSelectionSources(Repositories.mirror(config.paths, spec.repository), spec, arms) },
     private val preparationPlan: (Long, () -> Unit) -> Boolean = { _, work -> work(); true },
     private val capacitySettings: CapacitySettings? = config.cluster?.capacity,
     private val clock: Clock = Clock.SYSTEM,
@@ -122,9 +124,11 @@ class NomadQueue(
                     val replay = spec.work.bench?.let { benchReplay(replaySources(store, spec, arms), it) }
                     val reusable = if (settings.reuseAcceptedBuilds && spec.isBench && !target.native && replay == null)
                         reusableBuilds(job, active, arms, bundles, target) ?: continue else null
+                    val committed = if (settings.committedSelectionKeys && replay == null) selectionSources(spec, arms) else emptyMap()
+                    if (committed.isNotEmpty()) admissionSelection(job.id, spec, arms, settings.release, committed)
                     val manifest = WorkManifest(UUID.randomUUID().toString(), settings.release, spec, arms, emptyList(), bundles,
                         preparationBudget(target), solveJavaOptions = settings.solveOptions(config.solveJavaOpts), preparationTimeoutSec = settings.preparationTimeoutSec,
-                        benchReplay = replay, reusableBuilds = reusable)
+                        benchReplay = replay, reusableBuilds = reusable, selectionSources = committed)
                     backend.enqueue(job.id, manifest, target.template.copy(budget = manifest.budget, nativeCapacity = nativeCapacity(target), environment = target.template.environment + ("LAB_WORKER_MAX_CONCURRENT_BUILDS" to this.settings.maxConcurrentBuildsPerNode.toString())), settings.workerApi)
                     publishedSources.forget(job.id)
                     waitingForBuild.remove(job.id)
@@ -291,6 +295,24 @@ class NomadQueue(
                 }
             }
         }
+
+    /**
+     * Whether [job]'s plan is already known at admission: an accepted selection under each repository arm's key, as a
+     * worker on this machine's shared input store would compute it from [sources]. Only reported: preparation still
+     * looks the plan up and verifies it, and a worker on another store simply misses. One primary-key read per arm.
+     */
+    private fun admissionSelection(job: Long, spec: ExperimentSpec, arms: List<PlannedArm>, release: String, sources: Map<String, String>) {
+        try {
+            val bench = spec.work.bench ?: return
+            val corpus = SharedInputs.environment()?.let { "shared:${it.identity}" } ?: "local"
+            val repositoryArms = arms.filter { it.arm.values["backend"] != REFERENCE_BACKEND }.ifEmpty { listOf(arms.first()) }
+            val keys = repositoryArms.mapNotNull { arm -> sources[arm.sha]?.let {
+                BenchSelections.key(release, spec.repository, bench, BenchRuns.request(bench, arm.arm), corpus, it) } }
+            val cases = store.execution.acceptedSelectionCases(keys.distinct())
+            println("nomad selection at admission: job=$job known=${keys.count { it in cases }}/${repositoryArms.size}" +
+                (cases.values.maxOrNull()?.let { " cases=$it" } ?: ""))
+        } catch (failure: Exception) { println("nomad selection at admission: job=$job not read: ${failure.message?.take(200)}") }
+    }
 
     /** Match the pool's growth eligibility; lower-priority local work may still reuse compatible warm nodes. */
     private fun cloudMayRun(target: NomadQueueTarget, job: Job, budget: ResourceBudget): Boolean {
@@ -553,3 +575,23 @@ internal class AdmissionRejected(message: String, cause: Throwable? = null) : Il
  */
 internal val IllegalArgumentException.rejectsAdmission: Boolean
     get() = this !is kotlinx.serialization.SerializationException && this !is NumberFormatException
+
+/**
+ * Per commit of [arms], the bench selection source identity of [spec]'s manifest read from the Git [mirror] the
+ * coordinator just fetched ([BenchSelections.committedSource]): local reads only, so admission stays fast and offline.
+ * Commits whose manifest does not opt in, and any read failure, are left out; their workers key the built tree.
+ */
+internal fun committedSelectionSources(mirror: Path, spec: ExperimentSpec, arms: List<PlannedArm>): Map<String, String> {
+    val bench = spec.work.bench?.takeIf { it.replayJobs.isEmpty() } ?: return emptyMap()
+    fun git(vararg args: String): String = runGit(mirror.toFile(), args.toList(), Duration.ofSeconds(30))
+        .let { (code, output) -> check(code == 0) { "source read failed" }; output }
+    return arms.map { it.sha }.distinct().mapNotNull { sha ->
+        try {
+            BenchSelections.committedSource(bench.manifest, git("show", "$sha:${bench.manifest}")) { paths ->
+                git("ls-tree", "--full-tree", sha, "--", *paths.toTypedArray())
+            }?.let { sha to it }
+        } catch (failure: Exception) {
+            println("nomad selection source: commit=${sha.take(9)} not read: ${failure.message?.take(200)}"); null
+        }
+    }.toMap()
+}

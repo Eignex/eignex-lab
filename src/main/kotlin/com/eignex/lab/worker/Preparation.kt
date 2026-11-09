@@ -119,6 +119,12 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         } ?: original.copy(build = null)
         val reusedBundles = mutableMapOf<String, WorkerBundle>()
         val preparedBuilds = mutableListOf<PreparedBuild>()
+        val corpusIdentity = sharing?.let { "shared:${it.identity}" } ?: "local"
+        // A source identity the coordinator read from the commit at admission needs no tree: the key is known before the build.
+        fun committedKey(arm: PlannedArm): String? = manifest.selectionSources[arm.sha]?.let { source ->
+            val bench = requireNotNull(manifest.experiment.work.bench)
+            BenchSelections.key(manifest.release, manifest.experiment.repository, bench, BenchRuns.request(bench, arm.arm), corpusIdentity, source)
+        }
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
             var planSource: String? = null
@@ -131,13 +137,16 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                     val proof = if (Files.isRegularFile(built.parent.resolve("manifest.json"))) built.parent.resolve("verified.json")
                         else built.resolveSibling("${built.fileName}.verified.json")
                     inputDigests.receipt(built, proof)
-                    // A reused archive holds only the workspace: its build's plan source came with it.
-                    planSource = if (reused != null) reused.planSource else try {
+                    // A reused archive holds only the workspace: its build's plan source came with it. A committed source
+                    // from admission keys the plans without inventorying the build; a reused build keeps its own plan
+                    // source for a later reuse that has no committed one.
+                    val committed = manifest.selectionSources[sha]
+                    planSource = if (reused != null) reused.planSource else if (committed != null) null else try {
                         BenchSelections.source(requireNotNull(bench), sha, built, ::checkActive, inputDigests)
                     } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null }
-                    for (arm in manifest.arms.filter { it.sha == sha }) builtSelectionKeys[arm.arm.label] = planSource?.let { source -> try {
+                    for (arm in manifest.arms.filter { it.sha == sha }) builtSelectionKeys[arm.arm.label] = (committed ?: planSource)?.let { source -> try {
                         BenchSelections.key(manifest.release, manifest.experiment.repository, requireNotNull(bench),
-                            BenchRuns.request(bench, arm.arm), sharing?.let { "shared:${it.identity}" } ?: "local", source)
+                            BenchRuns.request(bench, arm.arm), corpusIdentity, source)
                     } catch (_: IllegalArgumentException) { null } }
                 }
                 privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, false, paths)?.let { return@step it }
@@ -213,9 +222,10 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         } else if (bench != null) {
             val repositoryArms = manifest.arms.filter { it.arm.values["backend"] != REFERENCE_BACKEND }.ifEmpty { listOf(manifest.arms.first()) }
             val keys = trace.step("selection") { repositoryArms.associate { arm -> arm.arm.label to try {
-                if (arm.arm.label in builtSelectionKeys) builtSelectionKeys[arm.arm.label]
+                if (arm.sha in manifest.selectionSources) committedKey(arm)
+                else if (arm.arm.label in builtSelectionKeys) builtSelectionKeys[arm.arm.label]
                 else BenchSelections.key(manifest.release, spec.repository, bench, BenchRuns.request(bench, arm.arm), arm.sha,
-                    prepared.getValue(arm.sha), sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive, inputDigests)
+                    prepared.getValue(arm.sha), corpusIdentity, ::checkActive, inputDigests)
             } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null } } }
             val found = keys.values.filterNotNull().distinct().takeIf { it.isNotEmpty() }?.let { wanted -> trace.step("selection") {
                 try { cachedSelections(wanted).filter { it.key in wanted }.associateBy { it.key } }

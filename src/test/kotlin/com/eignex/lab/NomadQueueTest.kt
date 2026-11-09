@@ -35,6 +35,27 @@ class NomadQueueTest {
         assertTrue(Json.decodeFromString<NomadQueueSettings>(Json.encodeToString(enabled)).packedSourceSnapshots)
     }
 
+    @Test fun `committed selection sources reach the prepare manifest only once enabled`() {
+        val source = "committed:" + "c".repeat(64)
+        var reads = 0
+        fun admit(policy: NomadQueueSettings): WorkManifest {
+            val id = job()
+            NomadQueue(config, store, backend, artifacts, policy, { true }, nativeAllowed = { true }, source = { job, targets, _ ->
+                Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
+            }, selectionSources = { _, arms -> reads++; arms.associate { it.sha to source } }).reconcile()
+            return store.execution.manifest(store.execution.sessions(id).single { it.executionClass == ExecutionClass.PREPARE }.id)
+        }
+        val older = admit(settings)
+        assertEquals(0, reads); assertTrue(older.selectionSources.isEmpty()); assertTrue(older.schemaVersion < 10)
+        assertFalse(Json.encodeToString(settings).contains("committedSelectionKeys"))
+        val enabled = admit(settings.copy(committedSelectionKeys = true))
+        assertEquals(1, reads)
+        assertEquals(mapOf("a".repeat(40) to source), enabled.selectionSources)
+        assertEquals(10, Json.decodeFromString<WorkManifest>(Json.encodeToString(enabled)).schemaVersion)
+        assertFailsWith<IllegalArgumentException> { enabled.copy(selectionSources = mapOf("b".repeat(40) to source)) }
+        assertFailsWith<IllegalArgumentException> { enabled.copy(selectionSources = mapOf("a".repeat(40) to "commit:x")) }
+    }
+
     @Test fun `journal pressure permits preparation and planning then holds only new solves without source churn`() {
         solveAdmissionAllowed = false
         val id = job(wide); val admission = queue()

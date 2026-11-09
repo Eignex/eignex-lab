@@ -533,11 +533,11 @@ class PortableWorkerTest {
                 default: throw new Exception("unexpected " + args[0]);
             }"""
         val single = ExperimentSpec("cached", bench = BenchSpec("bench.json"))
-        fun prepare(name: String, source: Pair<WorkerBundle, ByteArray>, spec: ExperimentSpec = single,
+        fun prepare(name: String, source: Pair<WorkerBundle, ByteArray>, spec: ExperimentSpec = single, sources: Map<String, String> = emptyMap(),
                     cached: (List<String>) -> List<BenchSelectionEntry>): Pair<PreparationResult, Path> {
             val (bundle, bytes) = source
             val manifest = WorkManifest(name, "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) },
-                emptyList(), listOf(bundle), ResourceBudget(1000, 2048), preparationTimeoutSec = 120)
+                emptyList(), listOf(bundle), ResourceBudget(1000, 2048), selectionSources = sources, preparationTimeoutSec = 120)
             val directory = root.resolve(name)
             val result = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
                 WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) },
@@ -586,6 +586,20 @@ class PortableWorkerTest {
             recovered.armPlans.values.map { it.cases.single().attributes["labInputDigest"] }.toSet())
         assertEquals(listOf(1, 2, 0), outcome(fourth).let { listOf(it.hits, it.misses, it.bypasses) })
         assertEquals(pairKeys.toSet(), recovered.selectionCache.map { it.key }.toSet())
+
+        // A source identity the coordinator read from the commit is the key; the build is not inventoried for it.
+        val commit = source(planner, "model").first.commit
+        val sources = mapOf(commit to "committed:" + "c".repeat(64))
+        val bench = requireNotNull(single.work.bench)
+        val committedKey = BenchSelections.key("release", single.repository, bench,
+            BenchRuns.request(bench, Experiments.arms(single).single()), "local", sources.getValue(commit))
+        var committedAsked = emptyList<String>()
+        val (keyed, fifth) = prepare("committed", source(planner, "model"), sources = sources) { keys -> committedAsked = keys; emptyList() }
+        assertEquals(listOf(committedKey), committedAsked)
+        assertEquals("absent", outcome(fifth).reason)
+        assertEquals(committedKey, keyed.selectionCache.single().key)
+        val (_, sixth) = prepare("committed-hit", refusing, sources = sources) { listOf(keyed.selectionCache.single()) }
+        assertEquals("hit" to "accepted-selection", outcome(sixth).let { it.outcome to it.reason })
     }
 
     @Test fun `multi megabyte bench cases launch through files instead of shell arguments`(): Unit = service { socket ->

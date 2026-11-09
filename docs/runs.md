@@ -371,6 +371,15 @@ identity is the arm's commit unless the manifest declares top-level `planInputs`
 content of the manifest and of every file under those paths, and different commits with the same plan inputs share a
 plan. Declaring `planInputs` asserts that the plan is a function of those files, the request and the corpus; include
 the planner's own sources. Coordinator selection filters and `bench.frozenCases` apply afterwards and are not keyed.
+That content includes files the build generates below a plan input, so a fresh build of an unchanged planner
+usually misses. A manifest that also declares `"planIdentity": "committed"` asserts that the plan is a function of
+the *committed* content of its `planInputs` (which must then name every source the planner is built from, and no
+generated path): the coordinator reads the Git modes and object ids of the manifest and each plan input from its
+mirror at admission (a local `git ls-tree`, no build and no network) and sends that identity in the prepare manifest,
+so the key is known at submission and every commit that leaves those paths unchanged shares the plan. A plan input the
+commit lacks falls back to the built-tree identity. The queue setting `committedSelectionKeys` enables this once every
+pinned worker supports protocol 10; the coordinator then logs `nomad selection at admission`, saying whether the
+accepted plan is already known and how many cases it holds.
 A hit skips `describe`, `plan` and input pinning for that arm. It is used only when its source-root input bytes
 still match and its corpus inputs are held by the same shared input store, whose checksums solve workers verify.
 When every arm hits, the accepted shared inputs replace corpus publication; otherwise the planning arm's fresh
