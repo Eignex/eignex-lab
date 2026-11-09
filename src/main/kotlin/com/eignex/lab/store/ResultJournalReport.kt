@@ -18,7 +18,7 @@ import java.nio.file.StandardCopyOption.*
 internal fun readResultJournalReport(dataDir: Path, at: Long = now()): ResultJournalReport? = runCatching {
     val path = dataDir.resolve("nomad/result-journal-status.json")
     require(Files.size(path) <= 8192)
-    Json { ignoreUnknownKeys = true }.decodeFromString<ResultJournalReport>(Files.readString(path)).let { it.copy(ageMs = (at - it.generatedAt).coerceAtLeast(0)) }
+    lenientJson.decodeFromString<ResultJournalReport>(Files.readString(path)).let { it.copy(ageMs = (at - it.generatedAt).coerceAtLeast(0)) }
 }.getOrNull()
 
 /** Disposable status, written atomically on the internal volume; acknowledged results have separate durable packs. */

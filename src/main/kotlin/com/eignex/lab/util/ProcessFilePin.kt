@@ -36,5 +36,22 @@ internal class ProcessFilePin private constructor(private val path: Path, privat
                 throw failure
             }
         }
+
+        /** Wait for [path]'s pin, calling [checkActive] before each try and sleeping [pollMs] between them, and
+         * return it held; [onWaited] gets the milliseconds spent sleeping. */
+        inline fun await(path: Path, checkActive: () -> Unit = {}, pollMs: Long = 10, onWaited: (Long) -> Unit = {}): ProcessFilePin {
+            var waitingNanos = 0L
+            while (true) {
+                checkActive()
+                tryLock(path)?.let { onWaited(waitingNanos / 1_000_000); return it }
+                val waitingAt = System.nanoTime(); Thread.sleep(pollMs); waitingNanos += System.nanoTime() - waitingAt
+            }
+        }
+
+        /** Run [action] holding [path]'s pin, waiting for it as [await] does; [onWaited] runs under the pin first. */
+        inline fun <T> withLock(path: Path, checkActive: () -> Unit = {}, pollMs: Long = 10, onWaited: (Long) -> Unit = {}, action: () -> T): T {
+            var waited = 0L
+            return await(path, checkActive, pollMs) { waited = it }.use { onWaited(waited); action() }
+        }
     }
 }

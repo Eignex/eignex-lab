@@ -64,7 +64,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
                 return@locked destination.resolve("tree")
             }
-            if (Files.exists(destination, NOFOLLOW_LINKS)) delete(destination)
+            if (Files.exists(destination, NOFOLLOW_LINKS)) deleteTree(destination)
             val storage = WorkerBuildStaging(root)
             val lease = trace.step("cache-cleanup") { storage.create(::checkRun) }
             // Create and pin staging before our background sweep can take its discovery lock.
@@ -165,7 +165,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 // limit; stop the temporary staging scan before it competes with checksum capture.
                 disk.close()
                 // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
-                tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::delete)
+                tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let { deleteTree(it) }
                 val (files, workspaceManifest) = trace.step("build-verification") {
                     val manifest = build.benchManifest?.takeIf { declaredWorkspace }?.takeIf { manifest ->
                         val spec = BenchSpec(manifest)
@@ -343,16 +343,11 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     }
 
     private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, waited: (Long) -> Unit = {}, use: () -> T): T {
-        var waitingNanos = 0L
-        while (true) {
+        return ProcessFilePin.withLock(path, {
             if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
             if (lease() <= 0) throw LeaseLost("build lease expired while waiting for cache")
             if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
-            ProcessFilePin.tryLock(path)?.use { waited(waitingNanos / 1_000_000); return use() }
-            val waitingAt = System.nanoTime()
-            Thread.sleep(50)
-            waitingNanos += System.nanoTime() - waitingAt
-        }
+        }, pollMs = 50, onWaited = waited, action = use)
     }
 
     /** Foreground preparation never performs an unbounded legacy inventory scan. */
@@ -547,9 +542,6 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                 require(Files.isRegularFile(path, NOFOLLOW_LINKS)); Files.copy(path, target, COPY_ATTRIBUTES)
             }
         } }
-    }
-    private fun delete(path: Path) {
-        Files.walk(path).use { it.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
     }
 }
 

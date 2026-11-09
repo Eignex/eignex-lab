@@ -114,11 +114,6 @@ class WorkerInputCache(private val root: Path, private val maxBytes: Long = 8L *
 
     private fun <T> guarded(checkActive: () -> Unit, action: () -> T): T {
         Files.createDirectories(root)
-        val path = root.resolve("maintenance.lock")
-        while (true) {
-            checkActive()
-            ProcessFilePin.tryLock(path)?.use { return action() }
-            Thread.sleep(10)
-        }
+        return ProcessFilePin.withLock(root.resolve("maintenance.lock"), checkActive, action = action)
     }
 }

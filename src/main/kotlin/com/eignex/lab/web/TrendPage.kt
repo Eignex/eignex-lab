@@ -14,7 +14,6 @@ import com.eignex.lab.worker.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-private val trendJson = Json { encodeDefaults = true }
 
 /**
  * How a schedule's runs moved over its commits: solved and proven shares with the solved interval, PAR-2 time, and
@@ -72,7 +71,7 @@ internal fun trendPage(
     if (runs.any { it.benchmark != null }) {
         append(benchmarkTrendContent(runs, repoUrl))
         append(Html("<script type=\"application/json\" id=\"trend-data\">") +
-            Html(trendJson.encodeToString(runs).replace("</", "<\\/")) + Html("</script>"))
+            Html(defaultsJson.encodeToString(runs).replace("</", "<\\/")) + Html("</script>"))
         append(trendPoll(runs.size, computing))
         return@page
     }
@@ -114,7 +113,7 @@ internal fun trendPage(
     append(Html("</tbody></table></div></section><div id=\"tip\" class=\"tip\" hidden></div>"))
     append(Html("<script type=\"application/json\" id=\"trend-data\">"))
     // Every field, defaults included: the script reads each run's fields without guarding for absent ones.
-    append(Html(trendJson.encodeToString(runs).replace("</", "<\\/")))
+    append(Html(defaultsJson.encodeToString(runs).replace("</", "<\\/")))
     append(Html("</script>"))
     append(trendPoll(runs.size, computing))
 }

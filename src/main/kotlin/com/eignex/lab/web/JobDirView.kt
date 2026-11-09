@@ -37,7 +37,6 @@ internal class JobDirView(
         /** A directory the pages cannot read: its volume is missing or does not answer. */
         val NONE = JobDirView()
 
-        private val lenient = Json { ignoreUnknownKeys = true }
 
         /** [job]'s directory as the pages show it; [NONE] while the jobs volume does not answer ([Volumes.jobFiles]). */
         fun read(paths: DataPaths, job: Job): JobDirView {
@@ -52,9 +51,9 @@ internal class JobDirView(
                     .mapNotNull { name -> dir.resolve(name).takeIf { it.isFile }?.let { name to it.length() } }.toMap(),
                 produced = dir.resolve("cases/0/out").walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList(),
                 recheck = dir.resolve(CaseChecks.RESULT).takeIf { it.isFile }
-                    ?.let { runCatching { lenient.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() },
+                    ?.let { runCatching { lenientJson.decodeFromString(RecheckResult.serializer(), it.readText()) }.getOrNull() },
                 analysis = dir.resolve(CompilationReports.ANALYSIS).takeIf { it.isFile }
-                    ?.let { runCatching { lenient.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() },
+                    ?.let { runCatching { lenientJson.decodeFromString(AnalysisResult.serializer(), it.readText()) }.getOrNull() },
                 instances = instances(paths, job),
             )
         }
