@@ -19,6 +19,7 @@ LEFTOVERS = (
     "release-*.zip", "queue-before-*.json", "native-services-before-*.json",
     "lab.env.before-*", "before-queue-efficiency-*", "before-gradle-cache-*",
     "before-git-archive-*", "activate_cutover_release.py",
+    "artifacts.hdd-link", "artifacts.ssd-rolled-back", ".hdd-*",
 )
 
 
