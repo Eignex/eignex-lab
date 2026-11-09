@@ -11,7 +11,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import com.eignex.lab.nomad.NomadPlatform
+import com.eignex.lab.domain.NomadPlatform
 
 /**
  * How a worker's CPU is held to its budget, by where it runs ([NomadBatchJob.platform]): a cloud container under a hard

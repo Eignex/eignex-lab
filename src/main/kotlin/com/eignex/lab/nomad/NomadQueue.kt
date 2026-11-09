@@ -132,9 +132,9 @@ class NomadQueue(
                 val cases by lazy {
                     val arms = recipe.arms.withIndex().associate { (index, arm) -> arm.arm.label to index }
                     val timeouts = current.commands.associate { it.index to it.timeoutSec }
-                    val executions = preparation.armPlans.mapValues { (_, plan) -> plan.cases.groupBy { BenchRuns.key(it) } }
+                    val executions = preparation.armPlans.mapValues { (_, plan) -> plan.cases.groupBy { BenchCases.key(it) } }
                     store.plans.casePlan(job.id).map { row ->
-                        val execution = executions[row.arm]?.getValue(BenchRuns.key(requireNotNull(row.problem.benchCase)))?.single()
+                        val execution = executions[row.arm]?.getValue(BenchCases.key(requireNotNull(row.problem.benchCase)))?.single()
                         WorkCase(row.index, arms[row.arm] ?: -1, row.problem, row.problem.benchCase?.attributes?.get("seed")?.toLongOrNull() ?: row.seed, row.repeat,
                             requireNotNull(timeouts[row.index]) { "case ${row.index} has no command" }, execution)
                     }
@@ -298,7 +298,7 @@ class NomadQueue(
             val command = if (arm.values["backend"] == REFERENCE_BACKEND) Experiments.referenceCommand(config.launcher, problem, arm, case.seed, index)
                 else when (val work = spec.work) {
                     is Work.Bench -> "bench ${spec.repository}: ${requireNotNull(execution).id}"
-                    is Work.Profile -> Experiments.profileCommand("lab-source", work.main, index, "lab-corpus", arm.debug, spec.repository)
+                    is Work.Profile -> ProfileRuns.command("lab-source", spec.repository, work.main, index, "lab-corpus", arm.debug)
                     is Work.Analysis, is Work.Script, Work.Recipe -> error("execution requires a bench manifest or explicit profile")
                 }
             CaseCommand(command, execution?.resources?.timeoutSeconds ?: Experiments.profileTimeoutSec(arm), execution?.resources?.cpus ?: arm.cores)

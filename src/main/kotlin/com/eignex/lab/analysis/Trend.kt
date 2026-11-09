@@ -31,7 +31,7 @@ data class TrendRun(
     /** The run's spec alone ([Experiments.trendFingerprint]), which the schedule's current spec is matched by. */
     val experiment: String = "",
     /**
-     * Whether the run asked for source-witness validation ([SourceValidation.requested]). The request is part of its
+     * Whether the run asked for source-witness validation ([ValidationRequest.requested]). The request is part of its
      * [experiment], so checked and unchecked runs never share a line; this says which side of that change a run is on.
      */
     val sourceChecked: Boolean = false,
@@ -336,7 +336,7 @@ object Trend {
             // Runtime/harness receipts describe the point; they do not redraw the requested problem set.
             spec = job.experiment.let { Experiments.trendFingerprint(it, raw.map { case -> case.problem }.distinct()) },
             experiment = job.experiment.let(Experiments::trendFingerprint).orEmpty(),
-            sourceChecked = job.experiment.let { SourceValidation.requested(it) } == true,
+            sourceChecked = job.experiment.let { ValidationRequest.requested(it) } == true,
             at = job.finishedAt ?: job.createdAt,
             finished = job.status.isTerminal,
             cases = own.size,

@@ -83,7 +83,7 @@ class ProfileRunsTest {
             ProfileMain("com.eignex.demo.Main", classpath = listOf("../lib/*")),
             ProfileMain("com.eignex.demo.Main"),
             ProfileMain(script = "profile.sh", args = listOf("--output", "/tmp/lost"), outputArgument = "--output"),
-        )) assertFailsWith<IllegalArgumentException> { ProfileRuns.validate("Eignex/koblas", profile) }
+        )) assertFailsWith<IllegalArgumentException> { ProfileRules.validate("Eignex/koblas", profile) }
     }
 
     @Test

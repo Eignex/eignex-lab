@@ -12,101 +12,6 @@ import java.security.SecureRandom
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.SQLException
-import com.eignex.lab.capacity.RunningNode
-import com.eignex.lab.capacity.runningNode
-import com.eignex.lab.worker.PreparationResult
-
-@Serializable
-data class ExecutionSession(
-    val id: String, val jobId: Long, val generation: Int, val executionClass: ExecutionClass, val release: String,
-    val budget: ResourceBudget, val nomadJobId: String, val desired: Desired, val allocation: String?, val node: String?,
-)
-
-/** What a session's worker does: prepare a job's sources and selection once, or solve its cases. Stored as [stored]. */
-@Serializable
-enum class ExecutionClass(val stored: String) {
-    @SerialName("prepare") PREPARE("prepare"),
-    @SerialName("solve") SOLVE("solve"),
-    @SerialName("build") BUILD("build");
-
-    override fun toString() = stored
-
-    companion object {
-        fun of(stored: String): ExecutionClass = entries.firstOrNull { it.stored == stored } ?: error("unknown execution class $stored")
-    }
-}
-
-/** What the lab wants of a session: keep running, finish its current iteration and leave, or stop now. */
-@Serializable
-enum class Desired(val stored: String) {
-    @SerialName("run") RUN("run"),
-    @SerialName("drain") DRAIN("drain"),
-    @SerialName("stop") STOP("stop");
-
-    override fun toString() = stored
-
-    companion object {
-        fun of(stored: String): Desired = entries.firstOrNull { it.stored == stored } ?: error("unknown session state $stored")
-    }
-}
-
-/**
- * Where an iteration attempt is. The active states advance in declaration order and never go back; an attempt ends
- * [COMMITTED], or invalidated with its reason stored as its state ([ENDED] here, whatever the reason).
- */
-enum class AttemptState(val stored: String) {
-    CLAIMED("claimed"), PREPARING("preparing"), EXECUTING("executing"), UPLOADING("uploading"), COMMITTED("committed"), ENDED("");
-
-    val isActive: Boolean get() = this in ACTIVE
-
-    override fun toString() = stored
-
-    companion object {
-        val ACTIVE = setOf(CLAIMED, PREPARING, EXECUTING, UPLOADING)
-
-        /** The active states as an SQL list, for `state IN …`. */
-        val ACTIVE_SQL = ACTIVE.joinToString(", ", "(", ")") { "'${it.stored}'" }
-
-        fun of(stored: String): AttemptState = entries.firstOrNull { it.stored == stored && it != ENDED } ?: ENDED
-    }
-}
-
-/** What an outbox intent asks of Nomad. */
-@Serializable
-enum class IntentOp(val stored: String) {
-    @SerialName("submit") SUBMIT("submit"),
-    @SerialName("stop") STOP("stop");
-
-    override fun toString() = stored
-
-    companion object {
-        fun of(stored: String): IntentOp = entries.firstOrNull { it.stored == stored } ?: error("unknown execution intent $stored")
-    }
-}
-
-@Serializable
-data class AttemptOwner(val session: String, val allocation: String, val iteration: String, val generation: Int, val token: String)
-
-@Serializable
-data class IterationClaim(val owner: AttemptOwner, val indices: List<Int>, val leaseUntil: Long, val parallel: Int = 1)
-
-@Serializable
-data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt: Long, val finishedAt: Long, val record: String? = null, val command: String? = null) {
-    init { require(index >= 0 && finishedAt >= startedAt); require(command == null || command.length <= 65536 && '\u0000' !in command) }
-}
-
-@Serializable
-data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false, val preparation: PreparationResult? = null)
-
-@Serializable
-data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: IntentOp, val payload: String, val acknowledged: Boolean)
-
-@Serializable data class LiveLog(val session: String, val iteration: String, val generation: Int)
-@Serializable data class ExecutionEvent(val id: Long, val session: String?, val detail: String, val at: Long)
-
-class ExecutionFenced(message: String) : IllegalStateException(message)
-/** A held solve claim for a worker that waits: answered as HTTP 202 with [SolveWait], never as a drain. */
-class SolveAdmissionHeld : IllegalStateException("solve admission held for result journal drain")
 
 internal data class PreparationExitFailure(val count: Int, val stage: String, val release: String)
 
@@ -516,7 +421,7 @@ class ExecutionStore internal constructor(private val store: Store) {
     /** Artifacts must have been checksum-verified before this transaction. A lost acknowledgement is idempotent. */
     internal fun commit(owner: AttemptOwner, result: IterationResult, at: Long = now(),
                         projectRecord: (ExecutionCaseResult) -> String? = { it.record },
-                        benchSelections: List<com.eignex.lab.execution.BenchSelectionEntry> = emptyList()): Boolean = store.executionTransaction { db ->
+                        benchSelections: List<BenchSelectionEntry> = emptyList()): Boolean = store.executionTransaction { db ->
         val a = db.findAttempt(owner) ?: throw ExecutionFenced("unknown attempt")
         if (a.state == AttemptState.COMMITTED) {
             if (!a.accepts(result)) throw ExecutionFenced("result differs from accepted manifest")
@@ -553,12 +458,12 @@ class ExecutionStore internal constructor(private val store: Store) {
      * Accepted planner outputs under [keys], for the preparing attempt [owner]. Primary key lookups only. A key is a
      * digest of the repository and plan inputs ([com.eignex.lab.execution.BenchSelections]), so it names one plan.
      */
-    fun benchSelections(owner: AttemptOwner, keys: List<String>, at: Long = now()): List<com.eignex.lab.execution.BenchSelectionEntry> = store.executionRead { db ->
+    fun benchSelections(owner: AttemptOwner, keys: List<String>, at: Long = now()): List<BenchSelectionEntry> = store.executionRead { db ->
         val attempt = db.attempt(owner, at)
         require(attempt.iteration == PREPARATION && attempt.state == AttemptState.PREPARING)
         keys.flatMap { key ->
             db.sqlRows("SELECT entry FROM bench_selections WHERE selection_key = ?", key) {
-                Json.decodeFromString<com.eignex.lab.execution.BenchSelectionEntry>(it.getString(1))
+                Json.decodeFromString<BenchSelectionEntry>(it.getString(1))
             }
         }
     }

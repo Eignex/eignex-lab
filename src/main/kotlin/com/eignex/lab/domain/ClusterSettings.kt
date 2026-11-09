@@ -3,8 +3,8 @@ package com.eignex.lab.domain
 import com.eignex.lab.util.*
 
 import java.nio.file.Path
-import com.eignex.lab.nomad.NomadBatchJob
-import com.eignex.lab.nomad.NomadPlatform
+import com.eignex.lab.domain.NomadBatchJob
+import com.eignex.lab.domain.NomadPlatform
 
 /**
  * The Nomad queue's worker targets and the capacity pools the cloud ones run on, loaded and checked together once.

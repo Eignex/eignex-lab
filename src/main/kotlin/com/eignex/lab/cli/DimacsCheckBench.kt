@@ -11,7 +11,6 @@ import com.eignex.lab.util.*
 import com.eignex.lab.bench.*
 import java.io.File
 import kotlinx.serialization.json.*
-import com.eignex.lab.execution.BenchSpec
 import com.eignex.lab.execution.CaseChecks
 import com.eignex.lab.execution.Checkers
 import com.eignex.lab.execution.RecheckResult

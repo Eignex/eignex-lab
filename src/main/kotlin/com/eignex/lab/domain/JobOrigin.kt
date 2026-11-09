@@ -4,7 +4,6 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import com.eignex.lab.analysis.Confirm
 
 /**
  * Why a job exists: someone submitted it, a schedule queued it, or the lab queued it to confirm a schedule's flip.
@@ -28,7 +27,7 @@ sealed interface JobOrigin {
     @Serializable
     @SerialName("confirmation")
     data class Confirmation(val schedule: String) : JobOrigin {
-        override val series: String get() = schedule + Confirm.SUFFIX
+        override val series: String get() = schedule + JobOrigin.CONFIRM_SUFFIX
     }
 
     /** The word the store keeps for the kind of origin. */
@@ -42,11 +41,13 @@ sealed interface JobOrigin {
         const val SUBMITTED = "submitted"
         const val SCHEDULED = "scheduled"
         const val CONFIRMATION = "confirmation"
+        /** Appended to a schedule's name for its confirmation jobs, which keeps them out of the schedule's trend. */
+        const val CONFIRM_SUFFIX = "~confirm"
 
         /** The origin as the store keeps it: its [kind] and [series]. */
         fun stored(kind: String, series: String): JobOrigin = when (kind) {
             SCHEDULED -> Scheduled(series)
-            CONFIRMATION -> Confirmation(series.removeSuffix(Confirm.SUFFIX))
+            CONFIRMATION -> Confirmation(series.removeSuffix(JobOrigin.CONFIRM_SUFFIX))
             SUBMITTED -> Submitted(series)
             else -> error("unknown job origin $kind")
         }
@@ -57,7 +58,7 @@ sealed interface JobOrigin {
          * submitted names cannot contain either mark ([Experiments.requirePlainName]).
          */
         fun of(name: String): JobOrigin = when {
-            Confirm.SUFFIX in name -> Confirmation(name.substringBefore(Confirm.SUFFIX))
+            JobOrigin.CONFIRM_SUFFIX in name -> Confirmation(name.substringBefore(JobOrigin.CONFIRM_SUFFIX))
             '@' in name -> Scheduled(name.substringBefore('@'))
             else -> Submitted(name)
         }

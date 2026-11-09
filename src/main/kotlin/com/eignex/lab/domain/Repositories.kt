@@ -1,11 +1,5 @@
-package com.eignex.lab.execution
+package com.eignex.lab.domain
 
-import com.eignex.lab.analysis.*
-import com.eignex.lab.capacity.*
-import com.eignex.lab.checker.*
-import com.eignex.lab.domain.*
-import com.eignex.lab.reference.*
-import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
 import java.nio.file.Path

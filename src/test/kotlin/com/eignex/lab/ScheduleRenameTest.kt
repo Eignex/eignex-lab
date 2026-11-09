@@ -1,7 +1,6 @@
 package com.eignex.lab
 
 import com.eignex.lab.domain.*
-import com.eignex.lab.execution.BenchSpec
 import com.eignex.lab.store.*
 import com.eignex.lab.web.api
 import io.ktor.client.request.*

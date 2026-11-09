@@ -199,11 +199,11 @@ class NomadBackend(
                 require(preparation.armPlans.isEmpty() && manifest.arms.size == 1 || preparation.armPlans.keys == manifest.arms.map { it.arm.label }.toSet())
                 for (armPlan in preparation.armPlans.values) {
                     target?.let { output -> armPlan.cases.forEach { output.validateRequirements(it.resources.requiredTags) } }
-                    BenchRuns.resources(armPlan)
+                    BenchCases.resources(armPlan)
                     require(BenchRuns.align(plan.cases, armPlan) == armPlan) { "arm plans changed the frozen workloads" }
                 }
                 target?.let { output -> plan.cases.forEach { output.validateRequirements(it.resources.requiredTags) } }
-                BenchRuns.resources(plan)
+                BenchCases.resources(plan)
                 require(preparation.selections == listOf(plan.cases.map(BenchRuns::problem)))
             }
             val selected = store.execution.acceptedPreparationSelection(owner)
@@ -222,7 +222,7 @@ class NomadBackend(
                 require(manifest.arms.any { it.arm.label == entry.arm && it.arm.values["backend"] != REFERENCE_BACKEND })
                 val armPlan = requireNotNull(preparation.armPlans[entry.arm]) { "selection cache names an unplanned arm" }
                 require(entry.descriptor.id == preparation.benchDescriptor?.id)
-                BenchRuns.resources(entry.plan)
+                BenchCases.resources(entry.plan)
                 require(BenchRuns.align(armPlan.cases, entry.plan) == armPlan) { "selection cache differs from the accepted plan" }
                 require(retained.containsAll(entry.sharedInputs))
                 require(BenchSelections.covering(entry.sharedInputs, BenchSelections.corpusPaths(entry.plan)) != null)

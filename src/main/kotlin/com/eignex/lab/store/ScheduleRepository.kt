@@ -5,7 +5,6 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import com.eignex.lab.analysis.SourceValidation
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
@@ -88,10 +87,10 @@ class ScheduleRepository internal constructor(db: Database, lock: Any) : Reposit
             val old = all().firstOrNull { it.id == id }?.experiment
             val found = update("UPDATE schedules SET interval_sec = COALESCE(?, interval_sec) WHERE id = ?", intervalSec, id) == 1
             if (found && experiment != null) {
-                // Compared as the schedule runs them ([SourceValidation.scheduled]), so saving the validation request a
+                // Compared as the schedule runs them ([ValidationRequest.scheduled]), so saving the validation request a
                 // schedule already gets queues no extra run.
                 val changed = old == null ||
-                    Experiments.fingerprint(SourceValidation.scheduled(old)) != Experiments.fingerprint(SourceValidation.scheduled(experiment))
+                    Experiments.fingerprint(ValidationRequest.scheduled(old)) != Experiments.fingerprint(ValidationRequest.scheduled(experiment))
                 update(
                     "UPDATE schedules SET experiment = ?, parallel = ?, priority = ?" + (if (changed) ", last_sha = NULL" else "") + " WHERE id = ?",
                     Json.encodeToString(experiment), experiment.vcpus ?: 0, experiment.priority, id,

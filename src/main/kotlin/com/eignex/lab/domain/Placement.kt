@@ -1,9 +1,8 @@
 package com.eignex.lab.domain
 
 import com.eignex.lab.util.*
-import com.eignex.lab.analysis.REFERENCE_BACKEND
-import com.eignex.lab.nomad.NomadBatchJob
-import com.eignex.lab.nomad.NomadPlatform
+import com.eignex.lab.domain.NomadBatchJob
+import com.eignex.lab.domain.NomadPlatform
 
 /**
  * Where a job may run, decided by the lab: ordinary jobs go to the local machine first, then a cloud node
