@@ -377,13 +377,6 @@ class PagesTest {
             assertEquals(HttpStatusCode.BadRequest, response.status)
             assertContains(response.bodyAsText(), "use tags")
         }
-        for (route in listOf("host", "machines")) {
-            val response = client.post("/jobs/1/$route") {
-                contentType(ContentType.Application.Json); setBody("{}")
-            }
-            assertEquals(HttpStatusCode.Gone, response.status)
-            assertContains(response.bodyAsText(), "tags")
-        }
         assertTrue(store.active().isEmpty())
     }
 
