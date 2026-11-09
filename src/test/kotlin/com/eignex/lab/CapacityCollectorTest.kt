@@ -83,7 +83,7 @@ class CapacityCollectorTest {
     @Test fun `overdue unregistered boot is replaced without increasing target and intent survives restart`() {
         at = 4_000_000
         val instance = CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
-        store.execution.requestCapacity(pool.id, 1, 60_000, at)
+        store.capacityLeases.request(pool.id, 1, 60_000, at)
         sample(listOf(instance))
         val c = collector(); c.collect()
         assertEquals(1, c.snapshot().decision.desired[pool.id])
@@ -116,7 +116,7 @@ class CapacityCollectorTest {
     @Test fun `ready first join remains usable after a lost retirement grant without refunding its budget`() {
         at = 4_000_000
         val instance = CapacityInstance("i-overdue", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
-        store.execution.requestCapacity(pool.id, 1, 60_000, at)
+        store.capacityLeases.request(pool.id, 1, 60_000, at)
         sample(listOf(instance))
         val c = collector(); c.collect(); c.grant(pool.id) // Its response never reaches the provider.
         control.full = buildJsonObject {
@@ -152,7 +152,7 @@ class CapacityCollectorTest {
         at = 4_000_000
         val original = CapacityInstance("i-original", pool.id, launchedAt = at - CapacityStartup.GRACE_MS)
         val neighbor = original.copy(id = "i-neighbor")
-        store.execution.requestCapacity(pool.id, 2, 60_000, at)
+        store.capacityLeases.request(pool.id, 2, 60_000, at)
         sample(listOf(original)); val c = collector(); c.collect(); c.grant(pool.id)
         control.full = buildJsonObject {
             put("ID", "joined-node"); put("NodeClass", pool.nodeClass); put("Status", "ready"); put("ModifyIndex", 1)
@@ -241,7 +241,7 @@ class CapacityCollectorTest {
         assertFailsWith<IllegalStateException> { c.grant(pool.id) }
     }
     @Test fun `booting capacity is preserved and unknown allocations consume a conservative node budget`() {
-        store.execution.requestCapacity(pool.id, 1, 60000, at)
+        store.capacityLeases.request(pool.id, 1, 60000, at)
         sample(listOf(CapacityInstance("vm", pool.id)))
         val c = collector(); c.collect()
         assertEquals(CapacityNodeState.BOOTING, c.snapshot().nodes.single().state)
@@ -253,12 +253,12 @@ class CapacityCollectorTest {
         assertEquals(pool.availableMemoryMiB, c.snapshot().nodes.single().reservations.single().budget.memoryMiB)
     }
     @Test fun `manual capacity survives a coordinator restart and expires without changing pool purchasing`() {
-        sample(); val lease = store.execution.requestCapacity(pool.id, 2, 60000, at)
+        sample(); val lease = store.capacityLeases.request(pool.id, 2, 60000, at)
         collector().collect()
         assertEquals(2, collector().also { it.collect() }.snapshot().decision.desired[pool.id])
-        assertEquals(lease, Store(root.resolve("lab.db")).execution.capacityLeases(at).single())
+        assertEquals(lease, Store(root.resolve("lab.db")).capacityLeases.active(at).single())
         at += 60000; sample(); val c = collector(); c.collect()
-        assertEquals(0, c.snapshot().decision.desired[pool.id]); assertTrue(store.execution.capacityLeases(at).isEmpty())
+        assertEquals(0, c.snapshot().decision.desired[pool.id]); assertTrue(store.capacityLeases.active(at).isEmpty())
     }
     @Test fun `registered down draining and ineligible clients are never reported as booting capacity`() {
         sample(listOf(CapacityInstance("vm", pool.id)))
@@ -309,12 +309,12 @@ class CapacityCollectorTest {
         val c = CapacityCollector(CapacitySettings(listOf(pool, other), 64), listOf(inventory, armInventory), tokenFile, state, store, control,
             { writable }, setOf("local"), { at }, { nanos })
         sample(); armSample(listOf(CapacityInstance("a1", other.id), CapacityInstance("a2", other.id)))
-        val lease = store.execution.requestCapacity(other.id, 2, 3_600_000, at)
+        val lease = store.capacityLeases.request(other.id, 2, 3_600_000, at)
         c.collect()
         assertEquals(2, c.snapshot().decision.desired.getValue(other.id))
         // The arm provider stops reporting and nothing asks for its nodes any more: a fresh decision would drop them,
         // but its pool keeps its two nodes while the general pool is still decided.
-        store.execution.releaseCapacity(lease.id)
+        store.capacityLeases.release(lease.id)
         at += 60_000; nanos += 60_000_000_000
         sample()
         c.collect()

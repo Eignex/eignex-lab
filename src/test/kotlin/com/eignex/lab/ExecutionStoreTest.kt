@@ -299,11 +299,11 @@ class ExecutionStoreTest {
             }
         }
         var cursor: Long? = 0L
-        while (cursor != null) cursor = store.execution.splitManifests(cursor)
+        while (cursor != null) cursor = store.executionMaintenance.splitManifests(cursor)
         assertEquals(manifest("first"), store.execution.manifest("first"))
-        assertEquals(0, store.execution.dropUnusedManifestParts(), "every part is still named")
+        assertEquals(0, store.executionMaintenance.dropUnusedManifestParts(), "every part is still named")
         java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().execute("DELETE FROM execution_manifests") }
-        assertEquals(2, store.execution.dropUnusedManifestParts(), "parts go with the last manifest naming them")
+        assertEquals(2, store.executionMaintenance.dropUnusedManifestParts(), "parts go with the last manifest naming them")
     }
 
     @Test fun `done jobs lose their stopped sessions' manifests while failed jobs keep theirs for a retry`() {
@@ -313,9 +313,9 @@ class ExecutionStoreTest {
         store.execution.loseSession("done", "test"); store.execution.loseSession("failed", "test")
         store.finish(done, Status.DONE); store.finish(failed, Status.FAILED, "boom")
 
-        assertEquals(0, store.execution.dropDoneManifests(doneBefore = 0))
-        assertEquals(1, store.execution.dropDoneManifests(doneBefore = Long.MAX_VALUE))
-        assertEquals(0, store.execution.dropDoneManifests(doneBefore = Long.MAX_VALUE))
+        assertEquals(0, store.executionMaintenance.dropDoneManifests(doneBefore = 0))
+        assertEquals(1, store.executionMaintenance.dropDoneManifests(doneBefore = Long.MAX_VALUE))
+        assertEquals(0, store.executionMaintenance.dropDoneManifests(doneBefore = Long.MAX_VALUE))
         assertFailsWith<IllegalArgumentException> { store.execution.manifest("done") }
     }
 
@@ -355,13 +355,13 @@ class ExecutionStoreTest {
         assertEquals(result, store.execution.accepted(id).single().second)
 
         var cursor: Long? = 0L; var batches = 0
-        while (cursor != null) { cursor = store.execution.slimAcceptedResults(cursor, batch = 1); if (cursor != null) batches++ }
+        while (cursor != null) { cursor = store.executionMaintenance.slimAcceptedResults(cursor, batch = 1); if (cursor != null) batches++ }
 
         assertEquals(1, batches)
         assertEquals(ExecutionStore.slim(result), store.execution.accepted(id).single().second)
         assertTrue(store.execution.commit(claim.owner, result, 1031), "the original result still matches by digest")
         assertFailsWith<ExecutionFenced> { store.execution.commit(claim.owner, ExecutionStore.slim(result), 1032) }
-        assertNull(store.execution.slimAcceptedResults(0L), "nothing is left to slim")
+        assertNull(store.executionMaintenance.slimAcceptedResults(0L), "nothing is left to slim")
     }
 
     @Test fun `coordinator record metadata preserves the accepted manifest for acknowledgement retries`() {
