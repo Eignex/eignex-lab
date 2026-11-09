@@ -35,6 +35,15 @@
       metricSelect.appendChild(option);
     }
     metricSelect.addEventListener('change', render);
+    document.querySelectorAll('[data-benchmark-case]').forEach(function (link) {
+      link.addEventListener('click', function () {
+        const option = [...metricSelect.options].find(function (option) {
+          const key = JSON.parse(option.value);
+          return key[0] === link.dataset.benchmarkCase && (!link.dataset.benchmarkMetric || key[1] === link.dataset.benchmarkMetric);
+        });
+        if (option) { metricSelect.value = option.value; render(); }
+      });
+    });
   }
   const benchmarkGroups = new Map();
   all.forEach(function (r) {

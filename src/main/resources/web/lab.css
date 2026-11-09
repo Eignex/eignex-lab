@@ -1638,3 +1638,16 @@ summary { cursor: pointer; }
 
 .result-diagnostics { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 24px 0; }
 .result-diagnostics .scroll { max-height: 400px; overflow: auto; }
+
+
+.benchmark-overview { margin-bottom: 20px; }
+#benchmark-detail .legend span { white-space: normal; }
+.benchmark-counts { display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 16px 0; }
+.benchmark-counts b { display: block; font-size: 24px; }
+.benchmark-counts span { color: var(--muted); font-size: 12px; }
+.benchmark-counts b { color: var(--fg); }
+.benchmark-changes { min-width: 760px; }
+.benchmark-changes td:first-child { min-width: 230px; max-width: 540px; overflow-wrap: anywhere; }
+.benchmark-changes td:first-child small { display: block; color: var(--muted); margin-top: 4px; }
+.benchmark-changes td.num { white-space: nowrap; }
+.benchmark-overview details { margin-top: 14px; }

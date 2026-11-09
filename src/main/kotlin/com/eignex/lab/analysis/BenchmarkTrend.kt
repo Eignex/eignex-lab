@@ -12,6 +12,10 @@ data class TrendMetric(val caseId: String, val name: String, val unit: String, v
 @Serializable
 data class BenchmarkWorkload(val caseId: String, val theme: String?, val status: String)
 
+/** A qualified change keeps its workload visible without selecting an individual chart. */
+@Serializable
+data class BenchmarkChange(val caseId: String, val kind: String, val metric: String?, val confirmation: String)
+
 @Serializable
 data class BenchmarkChanges(val failed: Int, val recovered: Int, val regressed: Int, val improved: Int) {
     companion object {
@@ -30,9 +34,31 @@ data class BenchmarkTrend(
     val changes: BenchmarkChanges? = null,
     val confirmed: BenchmarkChanges? = null,
     val workloads: List<BenchmarkWorkload> = emptyList(),
+    val baselineJob: Long? = null,
+    val transitions: List<BenchmarkChange> = emptyList(),
 )
 
 internal object BenchmarkTrends {
+    fun transitions(flips: Flips, confirmed: Flips?, confirmationStatus: Status?, confirmationCases: List<CaseResult>): List<BenchmarkChange> {
+        fun events(changes: Flips) = listOf("failed" to changes.benchmarkFailed, "regressed" to changes.metricLost,
+            "recovered" to changes.benchmarkRecovered, "improved" to changes.metricGained)
+            .flatMap { (kind, problems) -> problems.map { kind to it } }
+        val agreed = confirmed?.let(::events).orEmpty().map { (kind, problem) -> kind to problem.benchCase?.id }.toSet()
+        val selected = confirmationCases.mapNotNull { it.problem.benchCase?.id }.toSet()
+        return events(flips).mapNotNull { (kind, problem) ->
+            val plan = problem.benchCase ?: return@mapNotNull null
+            val confirmation = when {
+                kind to plan.id in agreed -> "confirmed"
+                confirmationStatus == null -> "unconfirmed"
+                !confirmationStatus.isTerminal -> "pending"
+                plan.id !in selected -> "not selected"
+                confirmationStatus != Status.DONE -> "inconclusive"
+                else -> "not confirmed"
+            }
+            BenchmarkChange(plan.id, kind, plan.attributes["regressionMetric"], confirmation)
+        }
+    }
+
     fun summarize(cases: List<CaseResult>, repository: String): BenchmarkTrend {
         var succeeded = 0; var failed = 0; var skipped = 0; var pending = 0
         val metrics = mutableListOf<TrendMetric>()
