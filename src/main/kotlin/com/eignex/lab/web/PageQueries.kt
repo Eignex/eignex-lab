@@ -48,14 +48,18 @@ internal class DiskView(
  * and the files of the jobs volume, but only while it answers ([Volumes.jobFiles]). A page's renderer only formats
  * what it is given.
  */
-internal class PageQueries(private val services: ApiServices) {
-    private val config get() = services.config
-    private val store get() = services.store
+internal class PageQueries(
+    private val config: Config,
+    private val store: Store,
+    private val pageStorage: PageStorage,
+    private val disk: DiskUsage,
+    private val capacitySettings: FileCache<CapacitySettings>,
+) {
 
     fun index(before: Long?, name: String?): IndexView {
         val active = store.active(withCommands = false)
         val history = store.jobs(PAGE_SIZE, before, name, withCommands = false)
-        val storage = services.pageStorage.latest
+        val storage = pageStorage.latest
         // Nomad placement is in the database; its jobs never write the legacy aws-instances file.
         // In particular, do not touch every historical job directory on each queue refresh.
         val instances = if (storage.held != null) emptyMap() else (active + history)
@@ -64,13 +68,13 @@ internal class PageQueries(private val services: ApiServices) {
         return IndexView(
             active, store.schedules.all(), history, before, name, store.queue(),
             store.hostProgress(active.filter { it.status == Status.RUNNING }.map { it.id }),
-            jobNodes(config.status, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }, services.capacitySettings.get()),
+            jobNodes(config.status, store, active.filter { it.backend == Backend.NOMAD }.map { it.id }, capacitySettings.get()),
             instances, storage.free, storage.held,
         )
     }
 
     fun disk() = DiskView(
-        services.disk.latest, freeBytes(config.dataDir), store.holds.active(),
+        disk.latest, freeBytes(config.dataDir), store.holds.active(),
         runCatching { store.maintenance.database() }.getOrNull(), Volumes.report(config.paths), runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(),
     )
 
