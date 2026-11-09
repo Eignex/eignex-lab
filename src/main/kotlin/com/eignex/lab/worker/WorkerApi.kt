@@ -104,7 +104,7 @@ fun Application.workerApi(
             post("/claim") {
                 check(workAllowed()); call.session
                 val c = call.credentials()
-                val request = claimJson.decodeFromString<ClaimRequest>(call.bodyText(CLAIM_BYTES).ifBlank { "{}" })
+                val request = lenientJson.decodeFromString<ClaimRequest>(call.bodyText(CLAIM_BYTES).ifBlank { "{}" })
                 val claim = try { backend.claim(c.session, c.token, c.allocation, waitWhenHeld = request.wait) }
                     catch (_: SolveAdmissionHeld) { call.respond(HttpStatusCode.Accepted, SolveWait(SOLVE_WAIT_MS)); return@post }
                 if (claim == null) call.respond(HttpStatusCode.NoContent) else call.respond(claim)
@@ -319,7 +319,6 @@ fun Application.workerApi(
 private const val REGISTRATION_BYTES = 8 * 1024
 private const val CLAIM_BYTES = 1024
 internal const val SOLVE_WAIT_MS = 5_000L
-private val claimJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
 private val SESSION = AttributeKey<ExecutionSession>("WorkerSession")
 

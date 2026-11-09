@@ -57,11 +57,7 @@ internal class CompilerAdmission(private val root: Path) {
 
     private fun <T> locked(checkActive: () -> Unit, action: () -> T): T {
         Files.createDirectories(waiting)
-        while (true) {
-            checkActive()
-            ProcessFilePin.tryLock(root.resolve("compile-admission.lock"))?.use { return action() }
-            Thread.sleep(10)
-        }
+        return ProcessFilePin.withLock(root.resolve("compile-admission.lock"), checkActive, action = action)
     }
 
     companion object {

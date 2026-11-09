@@ -25,11 +25,13 @@ data class Backoff(val attempts: Int, val baseMs: Long, val maxMs: Long) {
 interface NotRetryable
 
 /**
- * Run [step], retrying it by [backoff]. [onRetry] hears of each failure that will be retried and the wait before the
- * next try; [sleep] waits, and may throw to give up early (a cancelled job, a runner shutting down).
+ * Run [step], retrying it by [backoff]. Only failures [retryOn] accepts are retried. [onRetry] hears of each failure that
+ * will be retried and the wait before the next try; [sleep] waits, and may throw to give up early (a cancelled job, a
+ * runner shutting down).
  */
 fun <T> retrying(
     backoff: Backoff,
+    retryOn: (Exception) -> Boolean = { true },
     onRetry: (attempt: Int, waitMs: Long, failure: Throwable) -> Unit = { _, _, _ -> },
     sleep: (Long) -> Unit = Thread::sleep,
     step: () -> T,
@@ -39,7 +41,7 @@ fun <T> retrying(
         try {
             return step()
         } catch (e: Exception) {
-            if (attempt >= backoff.attempts || e is NotRetryable || e is CancellationException) throw e
+            if (attempt >= backoff.attempts || e is NotRetryable || e is CancellationException || !retryOn(e)) throw e
             val wait = backoff.delayAfter(attempt)
             onRetry(attempt, wait, e)
             sleep(wait)

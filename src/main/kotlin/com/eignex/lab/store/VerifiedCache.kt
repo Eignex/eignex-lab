@@ -51,18 +51,10 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
         val key = if (select == null) inputCacheKey(bundle, runtimeOnly) else selectedCacheKey(included)
         val destination = root.resolve(key)
         val receipt = root.resolve("$key.verified.json")
-        var waitingNanos = 0L
+        var waitingMs = 0L
         // ProcessFilePin keeps a same-process waiter from opening and then closing another descriptor
         // for a held POSIX lock (which would release the owner's cross-process lock).
-        while (true) {
-            checkActive()
-            val owner = ProcessFilePin.tryLock(root.resolve("$key.lock"))
-            if (owner == null) {
-                val waitingAt = System.nanoTime(); Thread.sleep(10)
-                waitingNanos += System.nanoTime() - waitingAt; continue
-            }
-            owner.use {
-            val waitingMs = waitingNanos / 1_000_000
+        return ProcessFilePin.withLock(root.resolve("$key.lock"), checkActive, onWaited = { waitingMs = it }) {
             val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
             checkActive()
             val validation = TreeVerification()
@@ -81,7 +73,7 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 return destination
             }
             Files.deleteIfExists(receipt)
-            if (Files.exists(destination, NOFOLLOW_LINKS)) remove(destination)
+            if (Files.exists(destination, NOFOLLOW_LINKS)) deleteTree(destination)
             val staging = Files.createTempDirectory(root, "$key-")
             val tree = staging.resolve("tree")
             try {
@@ -157,12 +149,9 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
                 Files.move(tree, destination, ATOMIC_MOVE)
                 observed("miss", if (present) "verification-failed" else "absent")
                 return destination
-            } finally { remove(staging) }
+            } finally { deleteTree(staging) }
         }
-        }
-    }
-    private fun remove(path: Path) { Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
-}
+    }}
 
 private val localFileLocks = Array(256) { Any() }
 internal fun fileLockFor(path: Path): Any = localFileLocks[Math.floorMod(path.toAbsolutePath().normalize().toString().hashCode(), localFileLocks.size)]

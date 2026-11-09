@@ -107,7 +107,7 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
             files.resolve("solve-record.json").toFile().writeText(snapshot)
             MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
         }
-        files.resolve(MANIFEST).toFile().writeText(Json { encodeDefaults = true }.encodeToString(
+        files.resolve(MANIFEST).toFile().writeText(defaultsJson.encodeToString(
             CliMeasurementManifest.serializer(),
             CliMeasurementManifest(
                 index, attempt, measurementId, instance, command, exit, javaOptions, recordHash, memory = memory(macOs),

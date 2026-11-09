@@ -175,7 +175,7 @@ class DockerCleanup(
         /** The last cleanup written to [stateFile]; null before the first or when it cannot be read. */
         fun last(stateFile: Path): DockerCleanupRun? = runCatching {
             if (!stateFile.exists()) null
-            else Json { ignoreUnknownKeys = true }.decodeFromString(DockerCleanupRun.serializer(), stateFile.readText())
+            else lenientJson.decodeFromString(DockerCleanupRun.serializer(), stateFile.readText())
         }.getOrNull()
 
         /** The repository of an image reference, `latest` when it names no tag; a registry's port is no tag. */

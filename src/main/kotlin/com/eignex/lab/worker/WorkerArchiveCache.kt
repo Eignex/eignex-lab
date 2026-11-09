@@ -134,11 +134,5 @@ internal class WorkerArchiveCache(private val root: Path, private val maxBytes: 
         Files.createDirectories(root)
         return locked(root.resolve("maintenance.lock"), check, action)
     }
-    private fun <T> locked(path: Path, check: () -> Unit, action: () -> T): T {
-        while (true) {
-            check()
-            ProcessFilePin.tryLock(path)?.use { return action() }
-            Thread.sleep(10)
-        }
-    }
+    private fun <T> locked(path: Path, check: () -> Unit, action: () -> T): T = ProcessFilePin.withLock(path, check, action = action)
 }

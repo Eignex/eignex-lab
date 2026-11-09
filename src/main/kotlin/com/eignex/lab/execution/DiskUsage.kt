@@ -177,7 +177,7 @@ class DiskUsage internal constructor(
         if (loaded) return
         loaded = true
         val state = runCatching {
-            if (stateFile.exists()) JSON.decodeFromString(DiskUsageState.serializer(), stateFile.readText()) else null
+            if (stateFile.exists()) lenientJson.decodeFromString(DiskUsageState.serializer(), stateFile.readText()) else null
         }.getOrNull() ?: return
         jobs = state.jobs.toMutableMap()
         state.report?.places?.forEach { placesAt[it.label] = it }
@@ -186,7 +186,7 @@ class DiskUsage internal constructor(
 
     private fun save() {
         runCatching {
-            stateFile.writeAtomically(JSON.encodeToString(DiskUsageState.serializer(), DiskUsageState(latest, jobs)))
+            stateFile.writeAtomically(lenientJson.encodeToString(DiskUsageState.serializer(), DiskUsageState(latest, jobs)))
         }.onFailure { println("disk usage: could not save ${stateFile.fileName}: ${it.message}") }
     }
 
@@ -321,7 +321,6 @@ class DiskUsage internal constructor(
         private const val TOP_JOBS = 30
         private const val JOB_CHUNK = 50
         private const val KIB = 1024L
-        private val JSON = Json { ignoreUnknownKeys = true }
 
         /** `du -sk`'s lines: each path and its bytes. */
         fun parse(lines: List<String>): Map<String, Long> = lines.mapNotNull { line ->

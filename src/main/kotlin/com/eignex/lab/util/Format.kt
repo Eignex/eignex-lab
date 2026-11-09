@@ -17,6 +17,9 @@ internal fun wallText(hours: Double): String {
     }
 }
 
+/** A span of [ms] milliseconds: whole seconds as `10 s`, anything else as `1500 ms`. */
+internal fun msText(ms: Long): String = if (ms % MS_PER_SEC == 0L) "${ms / MS_PER_SEC} s" else "$ms ms"
+
 /** A size in decimal units, as disks and [BYTES_PER_GB] count them: `512 B`, `1.5 KB`, `12.0 MB`, `3.4 GB`. */
 internal fun size(bytes: Long): String = when {
     bytes < 1_000 -> "$bytes B"
