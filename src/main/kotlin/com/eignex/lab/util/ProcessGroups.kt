@@ -8,7 +8,6 @@ import java.nio.file.StandardOpenOption
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
-import com.eignex.lab.store.fileLockFor
 
 /**
  * [command] wrapped so that it leads a new session, and so its own process group. perl is the portable way to

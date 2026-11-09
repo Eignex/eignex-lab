@@ -2,7 +2,7 @@ package com.eignex.lab
 
 import com.eignex.lab.util.ProcessFilePin
 import com.eignex.lab.worker.CompilerAdmission
-import com.eignex.lab.worker.RunDeadlineExceeded
+import com.eignex.lab.util.RunDeadlineExceeded
 import java.nio.file.Files
 import kotlin.test.*
 
