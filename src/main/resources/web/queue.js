@@ -33,15 +33,4 @@ document.getElementById('clear-history')?.addEventListener('click', function () 
   document.querySelector('[data-chip="all"]')?.click();
   q?.focus();
 });
-// Opening schedules is an explicit choice and survives live updates.
-function revealSchedules() {
-  if (location.hash === '#schedules-section') openSchedules();
-}
-document.querySelector('a[href="#schedules-section"]')?.addEventListener('click', openSchedules);
-function openSchedules() {
-  const panel = document.querySelector('.schedule-panel');
-  if (panel) panel.open = true;
-}
-window.addEventListener('hashchange', revealSchedules);
-revealSchedules();
 applyFilter();

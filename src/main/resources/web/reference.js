@@ -8,17 +8,3 @@ document.querySelectorAll('.coverage-toggle').forEach(function (button) {
     });
   });
 });
-function revealReferenceConflicts() {
-  if (location.hash === '#reference-conflicts') {
-    const details = document.querySelector('.reference-conflicts');
-    if (details) details.open = true;
-  }
-}
-document.querySelectorAll('a[href="#reference-conflicts"]').forEach(function (link) {
-  link.addEventListener('click', function () {
-    const details = document.querySelector('.reference-conflicts');
-    if (details) details.open = true;
-  });
-});
-window.addEventListener('hashchange', revealReferenceConflicts);
-revealReferenceConflicts();

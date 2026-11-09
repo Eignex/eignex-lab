@@ -65,7 +65,7 @@ internal fun referencesPage(
     }
     append(Html("</section>"))
     if (conflicts.isNotEmpty()) {
-        append(Html("<section id=\"reference-conflicts\"><details class=\"reference-conflicts\"><summary><b>Conflicting reference verdicts</b> · ") + conflicts.size + Html(" problems</summary><p class=\"muted small\">These solvers report contradictory results. Open a problem to inspect the evidence.</p><ul class=\"error\">"))
+        append(Html("<section id=\"reference-conflicts\"><details class=\"reference-conflicts\" data-open-on-hash=\"reference-conflicts\"><summary><b>Conflicting reference verdicts</b> · ") + conflicts.size + Html(" problems</summary><p class=\"muted small\">These solvers report contradictory results. Open a problem to inspect the evidence.</p><ul class=\"error\">"))
         for (d in conflicts) {
             append(Html("<li><a class=\"plain\" href=\"") + problemLink(d.problem.collection, d.problem.problem) + Html("\">"))
             append(Html("<code>") + esc(d.problem.collection) + Html("/") + esc(d.problem.problem) + Html("</code></a>: ") + esc(d.reason) + Html("</li>"))
