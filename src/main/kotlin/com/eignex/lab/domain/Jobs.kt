@@ -259,11 +259,10 @@ object RecordedHostSerializer : kotlinx.serialization.KSerializer<RecordedHost> 
     override fun deserialize(decoder: kotlinx.serialization.encoding.Decoder): RecordedHost = RecordedHost.of(decoder.decodeString())
 }
 
-/** Which execution path owns a job: Nomad for every job since the lab moved to it, `legacy` for jobs run before. */
+/** Which execution path owns a job: Nomad, for every job the lab keeps. */
 @Serializable
 enum class Backend(val stored: String) {
-    @SerialName("nomad") NOMAD("nomad"),
-    @SerialName("legacy") LEGACY("legacy");
+    @SerialName("nomad") NOMAD("nomad");
 
     companion object {
         fun of(stored: String): Backend = entries.firstOrNull { it.stored == stored } ?: error("unknown job backend $stored")
