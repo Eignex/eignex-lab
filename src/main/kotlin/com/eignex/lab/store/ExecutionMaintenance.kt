@@ -43,7 +43,7 @@ class ExecutionMaintenance internal constructor(private val store: Store) {
         db.sqlUpdate("""DELETE FROM manifest_parts WHERE sha NOT IN (SELECT value FROM execution_manifests m, json_each(m.manifest)
             WHERE json_valid(m.manifest) AND key LIKE '%$MANIFEST_PART_REF')
             AND sha NOT IN (SELECT value FROM iteration_attempts a, json_each(a.result, '$.preparation')
-            WHERE a.iteration_id = '$ExecutionStore.PREPARATION' AND a.state = 'committed' AND json_valid(a.result) AND key LIKE '%$MANIFEST_PART_REF')""")
+            WHERE a.iteration_id = '${ExecutionStore.PREPARATION}' AND a.state = 'committed' AND json_valid(a.result) AND key LIKE '%$MANIFEST_PART_REF')""")
     }
 
     /**
