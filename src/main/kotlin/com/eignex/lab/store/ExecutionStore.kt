@@ -70,6 +70,22 @@ class ExecutionStore internal constructor(private val store: Store) {
                 row.getString("resource_checkpoint")?.let { Json.decodeFromString<ResourceCheckpoint>(it) })
         }
     }
+    /**
+     * The jobs with cloud (hard-quota) work not yet stopped: those preparing there, and those with a solve worker bound
+     * there. One read through the partial index on live sessions.
+     */
+    internal fun cloudWork(): Pair<Set<Long>, Set<Long>> = store.executionRead { db ->
+        val preparing = HashSet<Long>(); val solving = HashSet<Long>()
+        db.sqlRows("SELECT job_id, execution_class, allocation_id FROM execution_sessions INDEXED BY session_live WHERE desired != 'stop' AND cpu_enforcement = ?",
+            CpuEnforcement.HARD_QUOTA.stored) { row ->
+            when (row.getString(2)) {
+                ExecutionClass.SOLVE.stored -> if (row.getString(3) != null) solving += row.getLong(1)
+                else -> preparing += row.getLong(1)
+            }
+        }
+        preparing to solving
+    }
+
     internal fun activePreparations(): List<ExecutionSession> = store.executionRead { db ->
         db.sqlRows("SELECT $SESSION_COLUMNS FROM execution_sessions WHERE desired != 'stop' AND execution_class IN ('prepare', 'build')", map = ::sessionRow)
     }
