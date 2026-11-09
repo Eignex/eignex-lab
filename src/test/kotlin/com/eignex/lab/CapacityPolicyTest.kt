@@ -101,7 +101,66 @@ class CapacityPolicyTest {
         assertEquals(3, next.desired[p.id]); assertTrue(next.waiting.isEmpty())
         val booting = nodes + CapacityNode("booting", p.id, CapacityNodeState.BOOTING)
         val covered = CapacityPolicy.evaluate(configuration, booting, listOf(asked), previous = next.history, at = 32000)
-        assertEquals(3, covered.desired[p.id]); assertNull(covered.history[p.id]?.pressureSince)
+        // Covered by a node still booting, the demand still waits: the pool keeps its pressure until it is placed.
+        assertEquals(3, covered.desired[p.id]); assertEquals(1000, covered.history[p.id]?.pressureSince)
+        val placed = booting.map { if (it.id == "booting") it.copy(state = CapacityNodeState.READY, reservations = listOf(CapacityReservation("small", 9, asked.budget))) else it }
+        assertNull(CapacityPolicy.evaluate(configuration, placed, emptyList(), previous = covered.history, at = 33000).history[p.id]?.pressureSince)
+    }
+
+    @Test fun `one decision adds every node its backlog needs and the cooldown runs from the previous decision`() {
+        val p = pool.copy(cooldownMs = 60_000)
+        val configuration = settings.copy(pools = listOf(p))
+        val asks = (1..3).map { demand("wide-$it", 15000, 16384) } + demand("narrow", 1000, 1024)
+        val plan = CapacityPolicy.evaluate(configuration, emptyList(), asks, at = 1000)
+        // Three nearly whole-node sessions take three new nodes, and the narrow one shares one of them.
+        assertEquals(3, plan.desired[p.id]); assertTrue(plan.waiting.isEmpty())
+        assertEquals(3, plan.placements.map { it.node }.distinct().size)
+        assertEquals(1000, plan.history[p.id]?.lastIncrease)
+        // Within the cooldown of that decision's growth, a later one waits rather than growing again.
+        val nodes = (0..2).map { CapacityNode("booting-$it", p.id, CapacityNodeState.BOOTING) }
+        val later = CapacityPolicy.evaluate(configuration, nodes, asks + demand("wide-4", 15000, 16384), previous = plan.history, at = 30_000)
+        assertEquals(3, later.desired[p.id]); assertEquals("sustained pressure or cooldown", later.waiting.single().reason)
+        // The quota and the pool's size still bound one decision.
+        assertEquals(2, CapacityPolicy.evaluate(configuration.copy(maxVcpus = 32), emptyList(), asks, at = 1000).desired[p.id])
+        assertEquals(2, CapacityPolicy.evaluate(settings.copy(pools = listOf(p.copy(maxNodes = 2))), emptyList(), asks, at = 1000).desired[p.id])
+    }
+
+    @Test fun `a decision keeps its growth until the provider lists the new nodes`() {
+        val p = pool.copy(cooldownMs = 60_000)
+        val configuration = settings.copy(pools = listOf(p))
+        val asks = listOf(demand("a", 15000, 16384), demand("b", 15000, 16384))
+        val grown = CapacityPolicy.evaluate(configuration, emptyList(), asks, at = 1000)
+        assertEquals(2, grown.desired[p.id])
+        // Five seconds on, neither the autoscaler nor the inventory has seen the new size: the pool keeps it, and the
+        // demand waits on the nodes it asked for rather than on a cooldown.
+        val held = CapacityPolicy.evaluate(configuration, emptyList(), asks, previous = grown.history, at = 6000, launched = grown.desired)
+        assertEquals(2, held.desired[p.id]); assertTrue(held.waiting.isEmpty())
+        assertEquals(2, held.placements.map { it.node }.distinct().size)
+        // Once the provider lists one of them, only the other is still held.
+        val listed = listOf(CapacityNode("booting-1", p.id, CapacityNodeState.BOOTING))
+        assertEquals(2, CapacityPolicy.evaluate(configuration, listed, asks, previous = held.history, at = 11_000, launched = held.desired).desired[p.id])
+        // Demand that went away withdraws the launches it no longer needs.
+        assertEquals(1, CapacityPolicy.evaluate(configuration, emptyList(), asks.take(1), previous = held.history, at = 11_000, launched = held.desired).desired[p.id])
+        assertEquals(0, CapacityPolicy.evaluate(configuration, emptyList(), emptyList(), previous = held.history, at = 11_000, launched = held.desired).desired[p.id])
+        // After the cooldown, still unlisted nodes are asked for again by the demand itself, not held for it.
+        assertEquals(2, CapacityPolicy.evaluate(configuration, emptyList(), asks, previous = held.history, at = 61_000, launched = held.desired).desired[p.id])
+        assertEquals(0, CapacityPolicy.evaluate(configuration, emptyList(), emptyList(), previous = held.history, at = 61_000, launched = held.desired).desired[p.id])
+    }
+
+    @Test fun `work arriving while a node boots grows the pool without a second sustained wait`() {
+        val p = pool.copy(sustainedMs = 30_000, cooldownMs = 10_000)
+        val configuration = settings.copy(pools = listOf(p))
+        val first = demand("first", 16000, 16384)
+        val waited = CapacityPolicy.evaluate(configuration, emptyList(), listOf(first), at = 1000)
+        val grown = CapacityPolicy.evaluate(configuration, emptyList(), listOf(first), previous = waited.history, at = 31_000)
+        assertEquals(1, grown.desired[p.id])
+        // The first session waits on its booting node; a second arrives that the node cannot hold.
+        val booting = listOf(CapacityNode("booting", p.id, CapacityNodeState.BOOTING))
+        val covered = CapacityPolicy.evaluate(configuration, booting, listOf(first), previous = grown.history, at = 35_000)
+        assertEquals(1, covered.desired[p.id]); assertEquals(1000, covered.history[p.id]?.pressureSince)
+        val second = demand("second", 16000, 16384)
+        val next = CapacityPolicy.evaluate(configuration, booting, listOf(first, second), previous = covered.history, at = 45_000)
+        assertEquals(2, next.desired[p.id]); assertTrue(next.waiting.isEmpty())
     }
 
     @Test fun `retired settings an older file still has are ignored on read`() {

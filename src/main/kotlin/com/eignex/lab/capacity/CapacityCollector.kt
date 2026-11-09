@@ -231,7 +231,8 @@ class CapacityCollector(
         val inventoryAge = fresh.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }
         val blocked = startup.failed.filterValues { it.size >= CapacityStartup.MAX_REPLACEMENTS }.keys
-        val evaluated = CapacityPolicy.evaluate(settings, observations, demands, store.capacityLeases.active(at), state.history, at, growthBlocked = blocked)
+        val evaluated = CapacityPolicy.evaluate(settings, observations, demands, store.capacityLeases.active(at), state.history, at,
+            growthBlocked = blocked, launched = state.desired)
         // A stale pool keeps what it last had: neither grown on demand it cannot see nor shrunk to nothing.
         val held = stale.flatMap { inventory -> inventory.pools.map { pool ->
             pool to (state.desired[pool] ?: inventory.instances.count { it.pool == pool && it.countedInTarget })
