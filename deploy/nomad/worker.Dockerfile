@@ -1,6 +1,6 @@
 # Build the distribution first with ./gradlew installDist. Publish to any OCI registry and use its resulting digest.
 FROM eclipse-temurin@sha256:ba0f0e1a33864105e1d454e88105c617ab40f71062db1f306bf58be32a3f8e5e
-RUN apt-get update && apt-get install -y --no-install-recommends python3 git time perl util-linux zstd xz-utils bzip2 libopenblas0-pthread libopenblas-dev libgomp1 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git time perl util-linux zstd xz-utils bzip2 libopenblas0-pthread libopenblas-dev libgomp1 ca-certificates && rm -rf /var/lib/apt/lists/*
 # oneMKL for BLAS comparisons, x86_64 only: Intel's redistributable runtime, registered with ld.so (/opt/intel/oneapi/redist/lib).
 RUN if [ "$(dpkg --print-architecture)" = amd64 ]; then \
       apt-get update && apt-get install -y --no-install-recommends curl gpg \
