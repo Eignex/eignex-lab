@@ -157,15 +157,6 @@ class PortableWorkerTest {
 
     @Test fun `packed Git inputs require protocol seven and materialize the original shallow source once`(): Unit = service { socket ->
         val repository = Files.createDirectory(root.resolve("pack-repository"))
-        fun command(directory: Path, vararg args: String): Pair<Int, String> {
-            val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + args).redirectErrorStream(true).start()
-            val text = process.inputStream.bufferedReader().readText().trim()
-            assertTrue(process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS))
-            return process.exitValue() to text
-        }
-        fun git(directory: Path, vararg args: String): String {
-            val (exit, text) = command(directory, *args); assertEquals(0, exit, text); return text
-        }
         git(repository, "init", "--template=", "--initial-branch=main")
         git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
         Files.writeString(repository.resolve("removed.txt"), "old source")
@@ -203,7 +194,7 @@ class PortableWorkerTest {
         assertTrue(Files.isExecutable(tree.resolve("tool")))
         assertEquals(outside.toString(), Files.readString(tree.resolve("outside.link"))); assertFalse(Files.isSymbolicLink(tree.resolve("outside.link")))
         assertEquals(commit, git(tree, "rev-parse", "HEAD")); assertEquals("1", git(tree, "rev-list", "--count", "HEAD"))
-        assertEquals("true", git(tree, "rev-parse", "--is-shallow-repository")); assertNotEquals(0, command(tree, "cat-file", "-e", parent).first)
+        assertEquals("true", git(tree, "rev-parse", "--is-shallow-repository")); assertNotEquals(0, gitCommand(tree, "cat-file", "-e", parent).first)
         assertFalse(Files.exists(tree.resolve("removed.txt"))); assertFalse(Files.exists(source.resolve("café.txt")))
     }
 
@@ -689,20 +680,15 @@ class PortableWorkerTest {
 
     @Test fun `approved Git source export excludes credentials and requires source trust`(): Unit = service { socket ->
         val repository = Files.createDirectory(root.resolve("repo"))
-        fun git(vararg args: String): String {
-            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText(); assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); assertEquals(0, process.exitValue(), output)
-            return output.trim()
-        }
-        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
+        git(repository, "init", "--initial-branch=main"); git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
         Files.writeString(repository.resolve("gradlew"), "mkdir -p build; git rev-parse HEAD > build/commit")
         Files.writeString(repository.resolve(".rules"), "committed documentation")
         Files.createSymbolicLink(repository.resolve("AGENTS.md"), Path.of(".rules"))
         val outside = root.resolve("host-secret"); Files.writeString(outside, "must never be read by checkout")
         Files.createSymbolicLink(repository.resolve("outside.link"), outside)
-        git("add", "."); git("commit", "-m", "fixture")
-        val commit = git("rev-parse", "HEAD")
-        git("remote", "add", "origin", "https://private-token@example.com/secret.git")
+        git(repository, "add", "."); git(repository, "commit", "-m", "fixture")
+        val commit = git(repository, "rev-parse", "HEAD")
+        git(repository, "remote", "add", "origin", "https://private-token@example.com/secret.git")
         var trusted = false
         val inputs = SourceInputs(requireTrusted = { repo, sha -> assertEquals(Repositories.DEFAULT, repo); assertEquals(commit, sha); check(trusted) })
         val output = root.resolve("source.zip")
@@ -720,7 +706,7 @@ class PortableWorkerTest {
         val status = ProcessBuilder("git", "-C", tree.toString(), "status", "--porcelain", "--", "AGENTS.md", "outside.link").start()
         assertEquals("", status.inputStream.bufferedReader().readText()); assertEquals(0, status.waitFor())
         assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
-        assertFalse(git("for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
+        assertFalse(git(repository, "for-each-ref", "--format=%(refname)", "refs/lab-source").isNotBlank())
 
         val repacked = manifest.copy(sha256 = "0".repeat(64), files = manifest.files.map { it.copy(sha256 = "1".repeat(64)) })
         val reused = WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket))
@@ -744,20 +730,11 @@ class PortableWorkerTest {
 
     @Test fun `source snapshot transports preserve current Git authority without ancestors or credentials`(): Unit = service { socket ->
         val repository = Files.createDirectory(root.resolve("snapshot-repo"))
-        fun command(directory: Path, vararg args: String): Pair<Int, String> {
-            val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + args).redirectErrorStream(true).start()
-            val text = process.inputStream.bufferedReader().readText()
-            assertTrue(process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS))
-            return process.exitValue() to text.trim()
-        }
-        fun git(vararg args: String): String {
-            val (exit, text) = command(repository, *args); assertEquals(0, exit, text); return text
-        }
-        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
+        git(repository, "init", "--initial-branch=main"); git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
         Files.write(repository.resolve("removed.bin"), kotlin.random.Random(42).nextBytes(1024 * 1024))
-        git("add", "."); git("commit", "-m", "old source")
-        val parent = git("rev-parse", "HEAD"); val oldBlob = git("rev-parse", "HEAD:removed.bin")
-        git("tag", "old-tag"); Files.delete(repository.resolve("removed.bin"))
+        git(repository, "add", "."); git(repository, "commit", "-m", "old source")
+        val parent = git(repository, "rev-parse", "HEAD"); val oldBlob = git(repository, "rev-parse", "HEAD:removed.bin")
+        git(repository, "tag", "old-tag"); Files.delete(repository.resolve("removed.bin"))
         Files.writeString(repository.resolve("gradlew"), "mkdir -p build; git rev-parse HEAD > build/commit; git rev-list --count HEAD > build/history; git show HEAD:café.txt > build/from-git")
         Files.writeString(repository.resolve("café.txt"), "current source")
         Files.writeString(repository.resolve(".gitattributes"), "café.txt export-ignore\nbinary.bin -text\n")
@@ -768,9 +745,9 @@ class PortableWorkerTest {
         Files.writeString(repository.resolve("tool"), "executable source"); repository.resolve("tool").toFile().setExecutable(true)
         val outside = root.resolve("snapshot-host-secret"); Files.writeString(outside, "do not read")
         Files.createSymbolicLink(repository.resolve("outside.link"), outside)
-        git("add", "-A"); git("commit", "-m", "selected source")
-        val commit = git("rev-parse", "HEAD")
-        git("remote", "add", "origin", "https://private-token@example.com/secret.git")
+        git(repository, "add", "-A"); git(repository, "commit", "-m", "selected source")
+        val commit = git(repository, "rev-parse", "HEAD")
+        git(repository, "remote", "add", "origin", "https://private-token@example.com/secret.git")
         Files.writeString(repository.resolve("untracked-secret"), "do not export")
         val inputs = SourceInputs({ repo, sha -> assertEquals(Repositories.DEFAULT, repo); assertEquals(commit, sha) })
         val os = if (CliMeasurements.localMacOs) "mac" else "linux"
@@ -796,7 +773,7 @@ class PortableWorkerTest {
             assertFalse(Files.exists(limited), "a failed streaming budget check must not publish partial source")
 
             // A mirror repack and a new export directory must not invalidate the worker's existing ZIP-keyed cache.
-            git("repack", "-adF", "--window=0")
+            git(repository, "repack", "-adF", "--window=0")
             val repeated = root.resolve("$mode-source-repeated.zip")
             val second = inputs.publish(repository, Repositories.DEFAULT, commit, os, workerArch(), "fixture", build, repeated, includeHistory = false)
             assertEquals(manifest, second)
@@ -818,15 +795,15 @@ class PortableWorkerTest {
             assertEquals("1", Files.readString(tree.resolve("build/history")).trim())
             assertEquals("current source", Files.readString(tree.resolve("build/from-git")))
             assertEquals(outside.toString(), Files.readString(tree.resolve("outside.link"))); assertFalse(Files.isSymbolicLink(tree.resolve("outside.link")))
-            assertEquals(0 to "", command(tree, "status", "--porcelain", "--untracked-files=no"))
-            assertEquals(0 to "current source", command(tree, "show", "HEAD:café.txt"))
-            assertEquals(0 to "true", command(tree, "rev-parse", "--is-shallow-repository"))
-            assertNotEquals(0, command(tree, "cat-file", "-e", parent).first)
-            assertNotEquals(0, command(tree, "cat-file", "-e", oldBlob).first)
-            assertEquals(0 to "", command(tree, "tag", "--list"))
+            assertEquals(0 to "", gitCommand(tree, "status", "--porcelain", "--untracked-files=no"))
+            assertEquals(0 to "current source", gitCommand(tree, "show", "HEAD:café.txt"))
+            assertEquals(0 to "true", gitCommand(tree, "rev-parse", "--is-shallow-repository"))
+            assertNotEquals(0, gitCommand(tree, "cat-file", "-e", parent).first)
+            assertNotEquals(0, gitCommand(tree, "cat-file", "-e", oldBlob).first)
+            assertEquals(0 to "", gitCommand(tree, "tag", "--list"))
             assertTrue(Files.isDirectory(tree.resolve(".git/refs/heads")))
             assertFalse(Files.readString(tree.resolve(".git/config")).contains("private-token"))
-            assertEquals("", git("for-each-ref", "--format=%(refname)", "refs/lab-source"))
+            assertEquals("", git(repository, "for-each-ref", "--format=%(refname)", "refs/lab-source"))
         }
     }
 

@@ -163,13 +163,8 @@ class SourcePairTest {
     private val work = Files.createTempDirectory("work").toFile()
     private val collection = "klause-bench/smoke-corpus/exact-globals"
 
-    private fun git(dir: File, vararg args: String): String {
-        val process = ProcessBuilder(listOf("git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false") + args)
-            .directory(dir).redirectErrorStream(true).start()
-        val out = process.inputStream.bufferedReader().readText()
-        check(process.waitFor() == 0) { "git ${args.joinToString(" ")}: $out" }
-        return out.trim()
-    }
+    private fun git(dir: File, vararg args: String): String =
+        com.eignex.lab.git(dir.toPath(), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args)
 
     /** A pinned commit with two models and two data files in the collection, and a later one that changes the data. */
     private fun repository(): Pair<String, String> {

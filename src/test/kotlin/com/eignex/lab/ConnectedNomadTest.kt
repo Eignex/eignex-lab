@@ -60,13 +60,9 @@ class ConnectedNomadTest {
             mkdir -p build/classes
             javac -d build/classes Bench.java
         """.trimIndent())
-        fun git(vararg args: String): String {
-            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText(); check(process.waitFor() == 0) { output }; return output.trim()
-        }
-        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
-        git("add", "."); git("commit", "-m", "test: fixture")
-        val sha = git("rev-parse", "HEAD")
+        git(repository, "init", "--initial-branch=main"); git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
+        git(repository, "add", "."); git(repository, "commit", "-m", "test: fixture")
+        val sha = git(repository, "rev-parse", "HEAD")
         val spec = ExperimentSpec("automatic-http", bench = BenchSpec("bench.json"), grid = mapOf("param.x" to listOf("a", "b")),
             repeats = 2, host = Experiments.AWS_HOST)
         val job = store.create(spec.name, "main", emptyList(), vcpus = 2, experiment = spec)
@@ -157,13 +153,9 @@ class ConnectedNomadTest {
             set -eu
             python3 -c 'import time; end=time.monotonic()+0.25; x=1; exec("while time.monotonic()<end: x=(x+1)%1234567")'
         """.trimIndent())
-        fun git(vararg args: String): String {
-            val process = ProcessBuilder(listOf("git", "-C", repository.toString()) + args).redirectErrorStream(true).start()
-            val output = process.inputStream.bufferedReader().readText(); check(process.waitFor() == 0) { output }; return output.trim()
-        }
-        git("init", "--initial-branch=main"); git("config", "user.name", "fixture"); git("config", "user.email", "fixture@example.com")
-        git("add", "."); git("commit", "-m", "test: fixture")
-        val sha = git("rev-parse", "HEAD"); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
+        git(repository, "init", "--initial-branch=main"); git(repository, "config", "user.name", "fixture"); git(repository, "config", "user.email", "fixture@example.com")
+        git(repository, "add", "."); git(repository, "commit", "-m", "test: fixture")
+        val sha = git(repository, "rev-parse", "HEAD"); val arms = Experiments.arms(spec).map { PlannedArm(it, sha) }
         val problems = listOf(Problem("s", "p")); val cases = Experiments.cases(1, arms.size, emptyList())
         val job = store.create(spec.name, "main", emptyList(), experiment = spec)
         store.plan(job, arms, problems, cases, cases.map { "fixture" to 5L })
