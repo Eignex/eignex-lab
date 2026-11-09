@@ -129,6 +129,55 @@ test_installation_restarts_a_changed_signer_alone() {
     "$root/nomad/service-files/com.eignex.lab.input-signer.plist"
 }
 
+test_capacity_adapter_runs_a_pinned_release_without_lab_configuration() {
+  setup
+  edit "$root/settings.json" '.capacityAdapter = {launcher: "/lab/releases/adapter/bin/eignex-lab", provider: "aws",
+    config: "/private/aws-adapter.json"}'
+  check "renders" render
+  local adapter="$root/out/com.eignex.lab.capacity-adapter.plist"
+  equal $'/bin/sh\n-c\nexec "$0" "$@"\n/lab/releases/adapter/bin/eignex-lab\ncapacity-adapter\naws\n/private/aws-adapter.json' \
+    "$(plist_strings "$adapter" ProgramArguments)" "the adapter runs its pinned release"
+  equal "EIGNEX_LAB_OPTS HOME JAVA_HOME PATH" "$(plist_strings "$adapter" EnvironmentVariables | sed -n 'p;n' | xargs)" \
+    "the adapter inherits no lab configuration"
+  equal "-Xms16m -Xmx128m -XX:+UseSerialGC -XX:TieredStopAtLevel=1" \
+    "$(plist_strings "$adapter" EnvironmentVariables | sed -n '/^EIGNEX_LAB_OPTS$/{n;p;}')" "the adapter's small JVM"
+  equal "$root/logs/capacity-adapter.log" "$(plist_strings "$adapter" StandardOutPath)" "its own log"
+  edit "$root/settings.json" '.capacityAdapter.launcher = .labLauncher'
+  render && { echo "  failed: accepted an adapter on releases/current" >&2; exit 1; }
+  check "explains" grep -q "capacity adapter launcher must pin an immutable release" "$root/rendered"
+  edit "$root/settings.json" '.capacityAdapter.launcher = "/lab/releases/adapter/bin/eignex-lab" | .capacityAdapter.provider = "azure"'
+  render && { echo "  failed: accepted an unknown provider" >&2; exit 1; }
+  check "explains" grep -q "provider must be aws or gcp" "$root/rendered"
+  edit "$root/settings.json" '.capacityAdapter = {launcher: "/lab/releases/adapter/bin/eignex-lab", provider: "aws",
+    config: "/private/aws-adapter.json", python: "/venv/bin/python", script: "/lab/adapter.py"}'
+  render && { echo "  failed: accepted the retired Python adapter" >&2; exit 1; }
+  check "explains" grep -q "remove its python and script settings" "$root/rendered"
+}
+
+test_installation_replaces_the_python_adapter_and_restarts_a_changed_one_alone() {
+  setup
+  stub_darwin
+  edit "$root/settings.json" '.capacityAdapter = {launcher: "/lab/releases/one/bin/eignex-lab", provider: "aws",
+    config: "/private/aws-adapter.json"}'
+  # A hand-installed Python adapter already runs under the same label.
+  echo com.eignex.lab.capacity-adapter > "$root/running"
+  echo '<plist>python adapter</plist>' > "$root/daemons/com.eignex.lab.capacity-adapter.plist"
+  check "first installation replaces it without --restart-agents" install_services
+  check "booted out" grep -qx "launchctl bootout system/com.eignex.lab.capacity-adapter" "$root/sudo.log"
+  equal 5 "$(grep -c '^launchctl bootstrap' "$root/sudo.log")" "all five registered"
+  check "installed" cmp -s "$root/daemons/com.eignex.lab.capacity-adapter.plist" \
+    "$root/nomad/service-files/com.eignex.lab.capacity-adapter.plist"
+  : > "$root/sudo.log"
+  check "unchanged adapter stays up" install_services
+  equal "launchctl bootout system/com.eignex.lab.nomad-coordinator" "$(grep bootout "$root/sudo.log")" \
+    "only the coordinator restarts"
+  : > "$root/sudo.log"
+  edit "$root/settings.json" '.capacityAdapter.launcher = "/lab/releases/two/bin/eignex-lab"'
+  check "a new adapter release installs without --restart-agents" install_services
+  equal $'launchctl bootout system/com.eignex.lab.nomad-coordinator\nlaunchctl bootout system/com.eignex.lab.capacity-adapter' \
+    "$(grep bootout "$root/sudo.log")" "the coordinator and the adapter restart"
+}
+
 test_rejects_development_or_unprotected_agent() {
   setup
   edit "$root/client.json" '.tls.verify_https_client = false'
