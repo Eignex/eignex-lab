@@ -10,7 +10,12 @@ trap 'kill -TERM "$supervisor" 2>/dev/null || true' EXIT
 # The JVM listens within about a second; allow 30 s for a cold, small cloud node.
 for _ in {1..600}; do
   [[ -S "$LAB_SUPERVISOR_SOCKET" ]] && break
-  kill -0 "$supervisor"
+  # A supervisor that ended first passes on its status: 126 for a launcher that lost its exec bit, as a worker would.
+  if ! kill -0 "$supervisor" 2>/dev/null; then
+    status=0
+    wait "$supervisor" || status=$?
+    exit $((status ? status : 1))
+  fi
   sleep .05
 done
 [[ -S "$LAB_SUPERVISOR_SOCKET" ]]
