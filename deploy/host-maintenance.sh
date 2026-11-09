@@ -295,7 +295,7 @@ parse() {
 # The run itself, while holding the maintenance lock.
 maintain() {
   parse "$@"
-  local directory="$data/maintenance" errors="" homes_report="" logs_report="" address_report="" report
+  local directory="$data/maintenance" errors="" homes_report="" logs_report="" address_report="" rollout_report="" report
   local active now home seen=$'\n' out temporary
   reason="$(mktemp "${TMPDIR:-/tmp}/host-maintenance.XXXXXX")" || exit 1
   trap 'rm -f "$reason"' EXIT
@@ -324,9 +324,20 @@ maintain() {
       errors+=",{\"publicAddress\":$(json_string "$(failure "$reason")")}"
     fi
   fi
+  # On a Nomad lab, roll the workers onto the controller's release once its images are published (worker-rollout.sh).
+  local queue_settings="${LAB_NOMAD_QUEUE_SETTINGS:-$data/nomad/queue.json}"
+  if [[ -f "$queue_settings" && -f "$(dirname "$self")/worker-rollout.sh" ]]; then
+    if out="$("$BASH" "$(dirname "$self")/worker-rollout.sh" --data "$data" --queue "$queue_settings" \
+      ${LAB_NOMAD_NATIVE_CONFIG:+--native "$LAB_NOMAD_NATIVE_CONFIG"} 2> "$reason")"; then
+      rollout_report="$out"
+    else
+      errors+=",{\"workerRollout\":$(json_string "$(failure "$reason")")}"
+    fi
+  fi
   report="{\"at\":$now,\"homes\":[${homes_report#,}],\"errors\":[${errors#,}]"
   [[ -z "$logs_report" ]] || report+=",\"logs\":$logs_report"
   [[ -z "$address_report" ]] || report+=",\"publicAddress\":$address_report"
+  [[ -z "$rollout_report" ]] || report+=",\"workerRollout\":$rollout_report"
   report+="}"
   temporary="$(mktemp "$directory/tmpXXXXXXXX")" || fail "cannot write the report in $directory"
   json_format indent <<< "$report" > "$temporary" || { rm -f "$temporary"; fail "cannot write the report"; }

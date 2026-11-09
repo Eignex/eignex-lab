@@ -129,7 +129,7 @@ Darwin)
   maintenance="$here/deploy/host-maintenance.sh"
   if [[ -z "$dry" ]]; then
     mkdir -p "$LAB_DATA/maintenance"
-    for script in host-maintenance.sh public-address.sh; do
+    for script in host-maintenance.sh public-address.sh worker-rollout.sh; do
       cp "$here/deploy/$script" "$LAB_DATA/maintenance/$script.new"
       chmod 700 "$LAB_DATA/maintenance/$script.new"
       mv "$LAB_DATA/maintenance/$script.new" "$LAB_DATA/maintenance/$script"
