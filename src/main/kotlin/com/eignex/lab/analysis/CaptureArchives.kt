@@ -43,7 +43,7 @@ data class ArchiveProvenance(
 /**
  * Saved-capture archives an analysis job analyses ([AnalyzeSpec.archive]): a `campaign-evidence` archive and its
  * manifest ([CampaignEvidence]), pinned by the archive's SHA-256. An archive is a regular file under the lab's archive
- * directory ([Config.archiveDir]), put there by whoever runs the lab; nothing is downloaded. Its size is capped
+ * directory ([DataPaths.archives]), put there by whoever runs the lab; nothing is downloaded. Its size is capped
  * ([Config.archiveMaxBytes]), it is checked against the pin, and verified member by member against the manifest before
  * anything is extracted; then only the profile directories' captures are, into the analysis job's own directory, every
  * path checked to stay inside it.

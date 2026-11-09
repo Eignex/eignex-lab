@@ -68,9 +68,6 @@ class Database(file: Path, private val busyTimeoutMs: Long = BUSY_TIMEOUT_MS, pr
         }
     }
 
-    /** Run [block] on the writer outside a transaction, each statement its own, under [lock]. */
-    fun <T> autocommit(block: (Connection) -> T): T = synchronized(lock) { block(writer) }
-
     /**
      * Run [block] against one committed snapshot from the read-only connection, without waiting for writes; on a
      * thread that holds [lock], against the writer instead.

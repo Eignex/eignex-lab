@@ -107,13 +107,6 @@ object SourceValidation {
     fun requested(spec: ExperimentSpec?, values: Map<String, String>): Boolean = spec?.work?.bench?.sourceValidation ?: requested(values)
 
     /**
-     * An arm's [values] as a case passes them to the bench: without the validation request, which the lab consumes
-     * itself. The bench then reports the solver's claim as it is (`reported-result-v1`), with the final witness the
-     * lab checks.
-     */
-    fun forBench(values: Map<String, String>): Map<String, String> = values - PARAM - GZIP_PARAM
-
-    /**
      * The one check verdict that changes how a solver result counts: a definite rejection of its witness. Every other
      * outcome of a check, accepted, undecided (`unknown`), not run (`not-run`, a checker that threw included),
      * `unsupported`, or none at all, leaves the solver's reported claim standing as it is: feasibility, proof,

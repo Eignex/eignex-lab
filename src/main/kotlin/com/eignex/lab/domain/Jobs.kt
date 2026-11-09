@@ -90,9 +90,6 @@ data class Job(
 ) {
     init { require(counts == null || commands.isEmpty()) { "a job carries its commands or their counts, not both" } }
 
-    /** Whether this is a list's summary of the job ([Store.jobs], [Store.active]): its [counts], not its [commands]. */
-    val isSummary: Boolean get() = counts != null
-
     /** Whether the job has been planned: it has commands, loaded or counted. Never mistakes a summary for unplanned. */
     val planned: Boolean get() = total > 0
 

@@ -31,7 +31,6 @@ domain/ReferenceModel.kt -> analysis.ReferenceVerdict
 domain/SessionPlacement.kt -> nomad.NomadPlatform
 domain/WorkManifest.kt -> execution.Repositories
 execution/BenchReplay.kt -> worker.PreparationResult
-execution/CaseChecks.kt -> web.job
 execution/CaseChecks.kt -> worker.portablePath
 store/ExecutionStore.kt -> capacity.RunningNode
 store/ExecutionStore.kt -> capacity.runningNode
