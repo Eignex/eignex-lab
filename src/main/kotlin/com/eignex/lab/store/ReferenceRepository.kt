@@ -313,3 +313,12 @@ synchronized(lock) {
         sourceIdentity = r.getString("source_identity"),
     )
 }
+
+/** The condition on a `reference_rows` row that selects [this] verdict. */
+internal val ReferenceVerdict.sql: String get() = when (this) {
+    ReferenceVerdict.OPTIMUM -> "proven = 1 AND feasible = 1 AND objective IS NOT NULL"
+    ReferenceVerdict.UNPROVEN -> "feasible = 1 AND proven = 0"
+    ReferenceVerdict.SATISFIED -> "feasible = 1 AND objective IS NULL"
+    ReferenceVerdict.INFEASIBLE -> "feasible = 0"
+    ReferenceVerdict.UNKNOWN -> "feasible IS NULL"
+}

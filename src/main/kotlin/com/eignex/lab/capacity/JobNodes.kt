@@ -8,8 +8,6 @@ import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
-/** Public placement facts only; a submission's worker credentials never reach a page. */
-internal data class RunningNode(val id: String, val allocation: String?, val nodeClass: String?, val local: Boolean)
 internal data class JobNode(val id: String, val name: String, val profile: String?, val local: Boolean, val anchor: String?)
 
 /** Durable RUNNING means the experiment has started; it need not currently have a worker. */
@@ -46,7 +44,3 @@ internal fun jobNodes(
         }.distinctBy { it.id }.sortedWith(compareBy<JobNode> { !it.local }.thenBy { it.name })
     }
 }
-
-/** A running session's node, where its [placement] put it: a node class, or the local machine's native worker. */
-internal fun runningNode(id: String, allocation: String?, placement: SessionPlacement): RunningNode =
-    RunningNode(id, allocation, placement.nodeClass, placement.native)

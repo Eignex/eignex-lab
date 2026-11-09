@@ -13,40 +13,13 @@ object ProfileRuns {
     /** The options every profiled JVM starts with, as the lab's own JVMs do; a profile's jvmArgs follow and may add to them. */
     val DEFAULT_JVM_ARGS = listOf("--enable-native-access=ALL-UNNAMED", "--add-modules=jdk.incubator.vector")
 
-    private val MAIN = Regex("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
-    private val TASK = Regex(":?[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)*")
-    private val OPTION = Regex("--?[A-Za-z][A-Za-z0-9-]*")
-    private val PATH = Regex("[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
-
-    private fun relative(path: String): Boolean = PATH.matches(path) && path.split('/').none { it == "." || it == ".." }
-
-    fun validate(repository: String, profile: ProfileMain) {
-        Repositories.requireAllowed(repository)
-        require((profile.main.isNotEmpty()) != (profile.script != null)) { "profile must name exactly one of main or script" }
-        require(profile.main.isEmpty() || MAIN.matches(profile.main)) { "profile.main must be a fully qualified JVM class" }
-        profile.script?.let { require(relative(it)) { "profile.script must be a repository-relative committed executable" } }
-        require(profile.buildTasks.all { TASK.matches(it) }) { "profile.buildTasks must contain Gradle task paths, not options or commands" }
-        require(profile.classpath.all { relative(it.removeSuffix("/*")) }) { "profile.classpath must contain repository-relative paths or jar directories" }
-        require(profile.script != null || profile.classpath.isNotEmpty()) {
-            "profile.classpath is required for every JVM main"
-        }
-        require(profile.jvmArgs.all { it.startsWith('-') && it.none(Char::isISOControl) }) { "profile.jvmArgs must contain JVM options" }
-        require(profile.script == null || profile.classpath.isEmpty() && profile.jvmArgs.isEmpty()) { "a script controls its own classpath and JVM options" }
-        require(profile.outputArgument == null || profile.script != null && OPTION.matches(profile.outputArgument)) {
-            "profile.outputArgument must be a script option such as --output"
-        }
-        profile.outputArgument?.let { option ->
-            require(profile.args.none { it == option || it.startsWith("$option=") }) { "$option is supplied by the lab to retain the report" }
-        }
-    }
-
     fun buildTasks(repository: String, profile: ProfileMain): List<String> {
-        validate(repository, profile)
+        ProfileRules.validate(repository, profile)
         return profile.buildTasks
     }
 
     fun command(worktree: String, repository: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean): String {
-        validate(repository, profile)
+        ProfileRules.validate(repository, profile)
         val prefix = "cd ${quote(worktree)} && export OUT=\"\$JOB_DIR/cases/$index/out\" LAB_REPOSITORY=${quote(repository)} LAB_WORKTREE=${quote(worktree)} LAB_CORPUS=${quote(corpus)} && mkdir -p \"\$OUT\" && "
         return prefix + when (val entry = profile.entry) {
             // A tracked symlink must not turn a repository entry point into an executable elsewhere on the host.

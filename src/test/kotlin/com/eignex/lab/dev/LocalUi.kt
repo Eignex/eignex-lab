@@ -2,8 +2,9 @@ package com.eignex.lab.dev
 
 import com.eignex.lab.capacity.CapacityCollector
 import com.eignex.lab.domain.*
-import com.eignex.lab.nomad.NomadBatchJob
-import com.eignex.lab.nomad.NomadPlatform
+import com.eignex.lab.nomad.render
+import com.eignex.lab.domain.NomadBatchJob
+import com.eignex.lab.domain.NomadPlatform
 import com.eignex.lab.store.*
 import com.eignex.lab.util.now
 import com.eignex.lab.util.writeAtomically

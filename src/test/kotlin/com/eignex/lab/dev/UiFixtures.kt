@@ -1,13 +1,12 @@
 package com.eignex.lab.dev
 
+import com.eignex.lab.execution.BenchRuns
 import com.eignex.lab.analysis.Trend
 import com.eignex.lab.analysis.TrendCache
 import com.eignex.lab.analysis.TrendData
 import com.eignex.lab.analysis.TrendPoints
 import com.eignex.lab.domain.*
 import com.eignex.lab.bench.*
-import com.eignex.lab.execution.BenchSpec
-import com.eignex.lab.execution.BenchRuns
 import com.eignex.lab.store.*
 import com.eignex.lab.util.now
 import kotlinx.serialization.json.*
