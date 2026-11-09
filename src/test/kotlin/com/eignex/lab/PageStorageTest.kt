@@ -3,7 +3,7 @@ package com.eignex.lab
 import com.eignex.lab.domain.Auth
 import com.eignex.lab.domain.Config
 import com.eignex.lab.domain.HostReport
-import com.eignex.lab.execution.VolumeAccess
+import com.eignex.lab.util.VolumeAccess
 import com.eignex.lab.store.Store
 import com.eignex.lab.web.ApiServices
 import com.eignex.lab.web.PageQueries
