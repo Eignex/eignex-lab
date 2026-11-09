@@ -18,7 +18,7 @@ class InstallTest(unittest.TestCase):
             project = root / "checkout"
             deploy = project / "deploy"
             deploy.mkdir(parents=True)
-            for name in ("install.sh", "release.sh", "lab.env.example", "gradle_maintenance.py"):
+            for name in ("install.sh", "release.sh", "lab.env.example", "host-maintenance.sh", "public-address.sh"):
                 shutil.copy2(ROOT / "deploy" / name, deploy / name)
             home = root / "home"
             config = home / ".config/eignex-lab"
@@ -62,7 +62,7 @@ class InstallTest(unittest.TestCase):
                     self.assertFalse(service["KeepAlive"])
                     self.assertTrue(service["RunAtLoad"])
                     self.assertTrue(Path(service["ProgramArguments"][1]).is_file())
-                    self.assertEqual(["/usr/bin/python3", str(deploy / "gradle_maintenance.py"),
+                    self.assertEqual(["/bin/bash", str(deploy / "host-maintenance.sh"),
                                       "--data", str(expected), "--quiet", "--cache-gib", "2", "--log-mib", "20"],
                                      service["ProgramArguments"])
             finally:

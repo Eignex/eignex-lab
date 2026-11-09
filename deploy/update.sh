@@ -21,10 +21,15 @@ JAVA_HOME="${JAVA_HOME:-$(cd "$here" && ./gradlew -q printJavaHome)}"
 export JAVA_HOME
 bin="$(release "$here" "$LAB_DATA")"
 "$bin" check
-# The periodic maintenance runs a copy outside the checkout; keep it on this checkout's version.
-if [[ -f "$LAB_DATA/maintenance/gradle_maintenance.py" ]]; then
-  install -m 700 "$here/deploy/gradle_maintenance.py" "$LAB_DATA/maintenance/gradle_maintenance.py.new"
-  mv "$LAB_DATA/maintenance/gradle_maintenance.py.new" "$LAB_DATA/maintenance/gradle_maintenance.py"
+# The periodic maintenance runs copies outside the checkout; keep them on this checkout's version. A job install.sh
+# registered before the bash scripts runs its own frozen gradle_maintenance.py until install.sh registers it again.
+if [[ -f "$LAB_DATA/maintenance/host-maintenance.sh" ]]; then
+  for script in host-maintenance.sh public-address.sh; do
+    install -m 700 "$here/deploy/$script" "$LAB_DATA/maintenance/$script.new"
+    mv "$LAB_DATA/maintenance/$script.new" "$LAB_DATA/maintenance/$script"
+  done
+elif [[ -f "$LAB_DATA/maintenance/gradle_maintenance.py" ]]; then
+  echo "note: maintenance still runs the retired gradle_maintenance.py; rerun deploy/install.sh to register host-maintenance.sh"
 fi
 # Nomad agents and its supervisor stay on their pinned binaries; accepted remote work survives this restart.
 restart_services

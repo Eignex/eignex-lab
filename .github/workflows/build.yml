@@ -42,8 +42,8 @@ jobs:
           cache-read-only: false
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
-      # rather than skipping when a tool cannot be had).
-      - run: sudo apt-get update -q && sudo apt-get install -y -q zstd
+      # rather than skipping when a tool cannot be had), and zsh, which holds Gradle's cache lock in host maintenance.
+      - run: sudo apt-get update -q && sudo apt-get install -y -q zstd zsh
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"
@@ -61,6 +61,8 @@ jobs:
         run: ./gradlew :lab-bench:verifyRelease
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
+      - name: Verify host maintenance
+        run: bash deploy/tests/test_host_maintenance.sh
       - name: Build experimental Nomad session renderer
         run: ./gradlew installDist
       - name: Verify DIMACS ordinary runner and recheck controls
@@ -119,6 +121,8 @@ jobs:
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
+      - name: Verify host maintenance
+        run: bash deploy/tests/test_host_maintenance.sh
       - name: Verify native metadata interface and receipt compatibility
         run: ./gradlew :test --tests com.eignex.lab.CorpusIndexesTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
       - name: Verify cold build scope and cache compatibility
