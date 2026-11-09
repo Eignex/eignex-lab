@@ -5,8 +5,6 @@ import com.eignex.lab.util.*
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.Path
-import com.eignex.lab.execution.VolumeAccess
-import com.eignex.lab.execution.Volumes
 
 /**
  * Server settings. A service reads them from the environment once, at startup, through [fromEnv], so that launchd
@@ -261,9 +259,9 @@ data class DataPaths(
     /** Job [id]'s directory, made when missing; fails at once, making nothing, while the job files' volume is missing or
      *  does not answer ([Volumes]). */
     fun createJobDir(id: Long): Path {
-        Volumes.ensure(Volumes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
+        VolumeProbes.ensure(VolumeProbes.JOB_FILES, jobsDir, volumesRoot, volumeAccess)
         val directory = jobDir(id)
-        jobsArchive?.takeIf { directory.startsWith(it) }?.let { Volumes.ensure(Volumes.JOB_FILES, it, volumesRoot, volumeAccess) }
+        jobsArchive?.takeIf { directory.startsWith(it) }?.let { VolumeProbes.ensure(VolumeProbes.JOB_FILES, it, volumesRoot, volumeAccess) }
         return Files.createDirectories(directory)
     }
 }

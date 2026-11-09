@@ -60,10 +60,10 @@ class VolumesTest {
     fun `a path under the volumes root needs the volume it names`() {
         val root = Path("/Volumes")
 
-        assertEquals(Path("/Volumes/Ros"), Volumes.mountPointOf(Path("/Volumes/Ros/eignex-lab/jobs"), root))
-        assertEquals(Path("/Volumes/Ros"), Volumes.mountPointOf(Path("/Volumes/Ros"), root))
-        assertNull(Volumes.mountPointOf(Path("/Volumes"), root))
-        assertNull(Volumes.mountPointOf(Path("/Users/lab/eignex-lab-data/jobs"), root))
+        assertEquals(Path("/Volumes/Ros"), VolumeProbes.mountPointOf(Path("/Volumes/Ros/eignex-lab/jobs"), root))
+        assertEquals(Path("/Volumes/Ros"), VolumeProbes.mountPointOf(Path("/Volumes/Ros"), root))
+        assertNull(VolumeProbes.mountPointOf(Path("/Volumes"), root))
+        assertNull(VolumeProbes.mountPointOf(Path("/Users/lab/eignex-lab-data/jobs"), root))
     }
 
     @Test
@@ -156,7 +156,7 @@ class VolumesTest {
         Files.createDirectories(root.resolve("Ros"))
         val config = external(root).copy(corpusDir = root.resolve("Other/corpus"))
 
-        val dir = Volumes.ensure(Volumes.JOB_FILES, config.jobsDir, root, config.volumeAccess) { true }
+        val dir = VolumeProbes.ensure(Volumes.JOB_FILES, config.jobsDir, root, config.volumeAccess) { true }
 
         assertTrue(Files.isDirectory(dir))
         assertEquals("corpus volume ${root.resolve("Other")} is not mounted", Volumes.missing(config.paths) { it.endsWith("Ros") })
@@ -168,9 +168,9 @@ class VolumesTest {
         val dir = Files.createTempDirectory("jobs")
         val file = Files.createTempFile("jobs", ".txt")
 
-        assertNull(Volumes.problem(Volumes.JOB_FILES, dir, Path("/Volumes"), VolumeAccess()))
-        assertNull(Volumes.problem(Volumes.JOB_FILES, dir.resolve("not-yet"), Path("/Volumes"), VolumeAccess()))
-        assertEquals("job files directory $file is not writable", Volumes.problem(Volumes.JOB_FILES, file, Path("/Volumes"), VolumeAccess()))
+        assertNull(VolumeProbes.problem(Volumes.JOB_FILES, dir, Path("/Volumes"), VolumeAccess()))
+        assertNull(VolumeProbes.problem(Volumes.JOB_FILES, dir.resolve("not-yet"), Path("/Volumes"), VolumeAccess()))
+        assertEquals("job files directory $file is not writable", VolumeProbes.problem(Volumes.JOB_FILES, file, Path("/Volumes"), VolumeAccess()))
     }
 
     @Test
@@ -195,7 +195,7 @@ class VolumesTest {
         val access = VolumeAccess(TIMEOUT_MS, freshMs, JAVA) { label, dir ->
             if (dir == jobs) gate.await()
             if (dir == corpus && corpusRefused) throw AccessDeniedException(dir.toString(), null, "Operation not permitted")
-            Volumes.probe(label, dir)
+            VolumeProbes.probe(label, dir)
         }
         val config = Config(dataDir = base.resolve("data"), jobsDir = jobs, corpusDir = corpus, auth = Auth.Disabled, minFreeBytes = 0,
             dockerCleanupDays = 0, volumeAccess = access)

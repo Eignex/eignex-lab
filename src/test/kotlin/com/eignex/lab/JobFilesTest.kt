@@ -197,7 +197,7 @@ class JobFilesTest {
         // so every request asks again and finds the stuck probe still in flight.
         val access = VolumeAccess(timeoutMs = 300, freshMs = 0, java = java) { label, dir ->
             if (dir == jobs) gate.await()
-            Volumes.probe(label, dir)
+            VolumeProbes.probe(label, dir)
         }
         val config = Config(dataDir = data, corpusDir = data.resolve("corpus"), auth = Auth.Disabled, volumeAccess = access)
         val store = Store(config.database)
