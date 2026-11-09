@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# Sourced by nomad/native-services.sh and infra/common/bake.sh: download HashiCorp binaries pinned in
-# deploy/nomad/versions.json and verify them before use. Needs curl, unzip, and sha256sum or shasum. Written for
-# macOS's bash 3.2. (nomad/sandbox.py and nomad/autoscaler.py still fetch their own in Python.)
+# Sourced by nomad/native-services.sh, nomad/sandbox.sh, nomad/autoscaler.sh and infra/common/bake.sh: download
+# HashiCorp binaries pinned in deploy/nomad/versions.json and verify them before use. Needs curl, unzip, and
+# sha256sum or shasum. Written for macOS's bash 3.2.
 
 hashicorp_versions="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/versions.json"
 

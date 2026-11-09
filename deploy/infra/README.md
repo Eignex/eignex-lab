@@ -96,7 +96,7 @@ set the shared collector's overall `maxVcpus` and pool limits consistently with 
 5. Copy `aws/adapter.example.json` into the lab's private configuration. Configure its AWS profile to assume
    `adapter_role_arn` with normal short-lived SDK credentials. Run the adapter as a supervised independent Mac
    service every ten seconds. Point the coordinator capacity settings at the resulting inventory file.
-6. Use `deploy/nomad/autoscaler.py SETTINGS CAPACITY_SETTINGS PRIVATE_OUTPUT --install-runtime` to render private
+6. Use `bash deploy/nomad/autoscaler.sh SETTINGS CAPACITY_SETTINGS PRIVATE_OUTPUT --install-runtime` to render private
    policies and install checksum-pinned Autoscaler 0.6.0. Run `nomad-autoscaler-0.6.0 agent -config=PRIVATE_OUTPUT/agent.json`
    as a separate supervised Mac service with `AWS_PROFILE=lab-nomad-scaler`, assuming `scaler_role_arn`. The profile
    uses the SDK's standard credential chain; no long-lived keys belong in generated policy or worker environment.

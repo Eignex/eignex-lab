@@ -30,8 +30,6 @@ class WireTest(unittest.TestCase):
         self.assertEqual(self.wire['startupGraceMs'], capacity_grants.STARTUP_GRACE_MS)
         self.assertEqual(self.wire['grantFreshMs'], capacity_grants.FRESH_MS)
         self.assertEqual(self.wire['grantClockSkewMs'], capacity_grants.CLOCK_SKEW_MS)
-        autoscaler = module('autoscaler', ROOT / 'deploy/nomad/autoscaler.py')
-        self.assertEqual(self.wire['desiredMetric'], autoscaler.DESIRED_METRIC)
 
 
 class ContractTest(unittest.TestCase):

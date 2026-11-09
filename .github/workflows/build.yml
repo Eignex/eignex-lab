@@ -68,17 +68,17 @@ jobs:
       - name: Verify DIMACS ordinary runner and recheck controls
         run: bash checker/verify-dimacs.sh
       - name: Install pinned Nomad prototype
-        run: python3 deploy/nomad/sandbox.py install
+        run: bash deploy/nomad/sandbox.sh install
       - name: Start isolated Nomad prototype
-        run: python3 deploy/nomad/sandbox.py start
+        run: bash deploy/nomad/sandbox.sh start
       - name: Verify shared sessions and hard resource limits
         # Disk usage decides when a Nomad client collects finished allocations; shown for diagnosing log reads.
-        run: df -h / && python3 deploy/nomad/sandbox.py verify
+        run: df -h / && bash deploy/nomad/sandbox.sh verify
       - name: Stop Nomad prototype
         if: always()
-        run: python3 deploy/nomad/sandbox.py stop
+        run: bash deploy/nomad/sandbox.sh stop
       - name: Verify connected worker, coordinator restart and allocation loss
-        run: python3 deploy/nomad/connected_probe.py
+        run: bash deploy/nomad/connected-probe.sh
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -126,6 +126,8 @@ jobs:
       # Also on Linux in nomad-infrastructure; here for macOS's own awk, sort and shasum.
       - name: Verify native service plists
         run: bash deploy/nomad/test_native_services.sh
+      - name: Verify Nomad sandbox, autoscaler and runtime pruning scripts
+        run: bash deploy/nomad/test_sandbox.sh && bash deploy/nomad/test_autoscaler.sh && bash deploy/nomad/test_prune_runtime.sh
       - name: Verify native metadata interface and receipt compatibility
         run: ./gradlew :test --tests com.eignex.lab.CorpusIndexesTest --tests com.eignex.lab.MacDirectoryEntriesTest --tests com.eignex.lab.TreeBytesTest --tests com.eignex.lab.TreeVerificationTest --tests com.eignex.lab.BenchSelectionsTest --tests com.eignex.lab.BenchInputDigestsTest
       - name: Verify cold build scope and cache compatibility
