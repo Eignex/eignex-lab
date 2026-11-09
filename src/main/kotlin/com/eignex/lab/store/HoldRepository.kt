@@ -49,4 +49,4 @@ class HoldRepository internal constructor(db: Database, lock: Any) : Repository(
 
 private val holdIds = java.security.SecureRandom()
 
-private fun newHoldId(): String = ByteArray(16).also(holdIds::nextBytes).joinToString("") { "%02x".format(it) }
+private fun newHoldId(): String = ByteArray(16).also(holdIds::nextBytes).hex()

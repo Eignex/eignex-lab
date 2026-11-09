@@ -982,12 +982,12 @@ class ExecutionStore internal constructor(private val store: Store) {
         const val PREPARATION = "preparation"
         private val ACTIVE_ATTEMPTS = AttemptState.ACTIVE_SQL
         private val random = SecureRandom()
-        fun token(): String = ByteArray(32).also(random::nextBytes).joinToString("") { "%02x".format(it) }
-        internal fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+        fun token(): String = ByteArray(32).also(random::nextBytes).hex()
+        internal fun digest(value: String) = sha256Hex(value)
         private fun claimToken(secret: String, iteration: String, generation: Int): String {
             val mac = javax.crypto.Mac.getInstance("HmacSHA256")
             mac.init(javax.crypto.spec.SecretKeySpec(secret.toByteArray(), "HmacSHA256"))
-            return mac.doFinal("$iteration:$generation".toByteArray()).joinToString("") { "%02x".format(it) }
+            return mac.doFinal("$iteration:$generation".toByteArray()).hex()
         }
         /** What [sessionRow] reads. Sessions are scanned on every coordinator pass; `SELECT *` would also read each manifest. */
         private const val SESSION_COLUMNS = "id, job_id, generation, execution_class, release, budget, nomad_job_id, desired, allocation_id, node_id"

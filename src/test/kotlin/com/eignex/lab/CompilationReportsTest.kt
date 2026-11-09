@@ -392,7 +392,7 @@ class CompilationReportsTest {
         val tasks = checkNotNull(report.tasks)
         assertEquals(CompilationReports.TASKS, tasks.file)
         assertEquals(Files.size(file), tasks.bytes)
-        assertEquals(CompilationReports.sha256(file), tasks.sha256)
+        assertEquals(hashFile(file), tasks.sha256)
         val records = CompilationReports.readTasks(file)
         assertEquals(tasks.records, records.size)
         assertEquals((10..17).toList() + 19, records.map { it.compileId })

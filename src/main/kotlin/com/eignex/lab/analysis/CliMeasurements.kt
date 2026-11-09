@@ -7,7 +7,6 @@ import com.eignex.lab.store.*
 import com.eignex.lab.util.*
 
 import java.nio.file.Path
-import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -105,7 +104,7 @@ ${if (macOs) macMeasure(time) else linuxMeasure(time)}
         require(recordsJfr || compilation == null) { "compilation recording requires CLI profiling" }
         val recordHash = record?.takeIf { it.isNotEmpty() }?.let { snapshot ->
             files.resolve("solve-record.json").toFile().writeText(snapshot)
-            MessageDigest.getInstance("SHA-256").digest(snapshot.toByteArray()).joinToString("") { "%02x".format(it) }
+            sha256Hex(snapshot)
         }
         files.resolve(MANIFEST).toFile().writeText(Json { encodeDefaults = true }.encodeToString(
             CliMeasurementManifest.serializer(),

@@ -503,9 +503,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
     }.getOrNull()
     private fun recordDependencyUsage(path: Path, usage: DependencyUsage) {
         val target = usageFile(path); Files.createDirectories(target.parent)
-        val temporary = Files.createTempFile(target.parent, ".size-", ".tmp")
-        try { Files.writeString(temporary, Json.encodeToString(usage)); Files.move(temporary, target, ATOMIC_MOVE, REPLACE_EXISTING) }
-        finally { Files.deleteIfExists(temporary) }
+        target.writeAtomically(Json.encodeToString(usage), durable = false)
     }
 
     private fun valid(path: Path, identity: String, checkActive: () -> Unit, verification: TreeVerification, workspaceManifest: String? = null): Boolean {

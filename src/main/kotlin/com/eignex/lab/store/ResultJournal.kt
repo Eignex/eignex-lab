@@ -211,7 +211,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     override fun putAll(job: Long, blobs: Map<String, ByteArray>) {
         require(job > 0 && blobs.size <= INLINE_FILES && blobs.values.sumOf { it.size.toLong() } <= INLINE_BYTES)
         for ((sha, bytes) in blobs) {
-            check(job, sha); require(MessageDigest.getInstance("SHA-256").digest(bytes).hex() == sha) { "artifact checksum mismatch" }
+            check(job, sha); require(sha256Hex(bytes) == sha) { "artifact checksum mismatch" }
         }
         synchronized(monitor) {
             check(!closed); check(writable()) { "result journal storage unavailable" }
@@ -685,7 +685,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
     private fun read(zip: ZipFile, blob: ResultBlob): ByteArray {
         val entry = requireNotNull(zip.getEntry(blob.sha)); require(entry.size == blob.bytes)
         val bytes = zip.getInputStream(entry).use { it.readNBytes(PACKED_BYTES + 1) }
-        check(bytes.size.toLong() == blob.bytes && MessageDigest.getInstance("SHA-256").digest(bytes).hex() == blob.sha) { "result journal checksum mismatch" }
+        check(bytes.size.toLong() == blob.bytes && sha256Hex(bytes) == blob.sha) { "result journal checksum mismatch" }
         return bytes
     }
     private fun manifest(path: Path): Manifest = ZipFile(path.toFile()).use { zip ->
