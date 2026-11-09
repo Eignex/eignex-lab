@@ -3,7 +3,6 @@ package com.eignex.lab.checker
 import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 
-import com.github.luben.zstd.ZstdInputStreamNoFinalizer
 import java.io.File
 import java.io.InputStream
 import kotlinx.serialization.json.Json
@@ -84,9 +83,7 @@ object WeightedSourceCheckMain {
         fun field(key: String) = (request[key] as? JsonPrimitive)?.content
         val result = try {
             val file = File(args[0])
-            val bytes = file.inputStream().let { input ->
-                (if (file.name.endsWith(".zst")) ZstdInputStreamNoFinalizer(input).setLongMax(26) else input).use { WeightedSourceChecker.bounded(it) }
-            }
+            val bytes = CorpusStreams.open(file, windowLog = 26).use { WeightedSourceChecker.bounded(it) }
             if (sha256(bytes) != field("sourceSha256")) WeightedEvaluation(LabCheck.NOT_RUN, "original source snapshot differs from recorded SHA-256")
             else if (field("format") == "DIMACS") DimacsSourceEvaluation.check(bytes.decodeToString(throwOnInvalidSequence = true), requireNotNull(field("witness")))
             else WeightedSourceEvaluation.check(requireNotNull(field("format")), bytes.decodeToString(throwOnInvalidSequence = true),

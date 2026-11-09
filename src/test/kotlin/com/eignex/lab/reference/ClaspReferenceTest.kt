@@ -31,6 +31,26 @@ class ClaspReferenceTest {
     }
 
     @Test
+    fun `an objective beyond the exact bounds is ignored rather than expanded`() {
+        for (value in listOf("1e999999999", "1e-999999999", "1".repeat(5_000))) {
+            val started = System.nanoTime()
+            val result = ClaspReference.parse("o 9\no $value\ns SATISFIABLE\n", elapsedMs = 10, cmd = cmd)
+            assertEquals("9", result.exactObjective, value.take(20))
+            assertTrue(System.nanoTime() - started < 2_000_000_000L, "parsing $value took too long")
+        }
+    }
+
+    @Test
+    fun `corpus files decode zstd in process and fail loudly on a corrupt frame`() {
+        val dir = java.nio.file.Files.createTempDirectory("corpus").toFile()
+        val plain = java.io.File(dir, "m.opb").apply { writeText("* #variable= 1 #constraint= 0\n") }
+        val packed = java.io.File(dir, "m.opb.zst").apply { writeBytes(com.github.luben.zstd.Zstd.compress(plain.readBytes())) }
+        assertEquals(CorpusFiles.sha256(plain), CorpusFiles.sha256(packed))
+        val corrupt = java.io.File(dir, "bad.opb.zst").apply { writeBytes(byteArrayOf(0x28, 0xb5.toByte(), 0x2f, 0xfd.toByte(), 1, 2, 3)) }
+        kotlin.test.assertFails { CorpusFiles.readText(corrupt) }
+    }
+
+    @Test
     fun `optimum found should be a proven optimum with the last o cost`() {
         val r = ClaspReference.parse("o 9\no 4\ns OPTIMUM FOUND\n", elapsedMs = 1_200, cmd = cmd)
         assertEquals(true, r.feasible)
