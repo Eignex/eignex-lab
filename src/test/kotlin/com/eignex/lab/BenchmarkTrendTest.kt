@@ -17,7 +17,7 @@ class BenchmarkTrendTest {
     private val spec = ExperimentSpec("koblas-status-sweep", priority = 98, repository = "Eignex/koblas",
         bench = BenchSpec("bench.json", runTimeoutSec = 600))
 
-    private fun run(store: Store, sha: String, value: Double = 100.0, failed: Boolean = false, finish: Boolean = true): Long {
+    private fun run(store: Store, sha: String, value: Double = 100.0, failed: Boolean = false, finish: Boolean = true, cpu: String = "fixture"): Long {
         val experiment = spec.copy(name = "${spec.name}@$sha", base = mapOf("ref" to sha))
         val id = store.create(experiment.name, sha, emptyList(), experiment = experiment)
         val problems = listOf("dot-64", "dot-4096").map { name -> BenchRuns.problem(BenchCase(name, parameters = mapOf("row" to name.replace('-', '+') + "+uniform"),
@@ -31,7 +31,7 @@ class BenchmarkTrendTest {
                 val status = if (failed && index == 1) BenchStatus.FAILED else BenchStatus.SUCCESS
                 val result = BenchResult(problem.problem, status, metrics = if (status == BenchStatus.SUCCESS)
                     listOf(BenchMetric("median_ns", value * (index + 1), "ns/op", MetricDirection.LOWER)) else emptyList(),
-                    details = buildJsonObject { put("benchmarkControls", buildJsonObject { put("java", "25"); put("cpu", "fixture") }) },
+                    details = buildJsonObject { put("benchmarkControls", buildJsonObject { put("java", "25"); put("cpu", cpu) }) },
                     message = if (status == BenchStatus.FAILED) "wrong numerical result" else null)
                 store.caseRecord(id, index, BenchProtocol.json.encodeToString(BenchResult.serializer(), result))
                 store.commandFinished(id, index, if (status == BenchStatus.FAILED) 1 else 0)
@@ -54,6 +54,9 @@ class BenchmarkTrendTest {
             assertEquals(listOf(first, second), runs.map { it.job })
             assertEquals(listOf(100.0, 200.0), runs.first().benchmark!!.metrics.map { it.value })
             assertEquals(BenchmarkChanges(1, 0, 1, 0), runs.last().benchmark!!.changes)
+            assertEquals(first, runs.last().benchmark!!.baselineJob)
+            assertEquals(listOf(BenchmarkChange("dot-4096", "failed", "median_ns", "unconfirmed"),
+                BenchmarkChange("dot-64", "regressed", "median_ns", "unconfirmed")), runs.last().benchmark!!.transitions)
             assertEquals(listOf(BenchmarkWorkload("dot-64", "Dense Level 1", "success"),
                 BenchmarkWorkload("dot-4096", "Dense Level 1", "failed")), runs.last().benchmark!!.workloads)
         }
@@ -71,6 +74,18 @@ class BenchmarkTrendTest {
         }
         assertTrue(store.schedules.launchNow(schedule))
         assertTrue(store.schedules.all().single().launchRequested)
+    }
+
+    @Test fun `changed benchmark controls do not produce an overview comparison`() {
+        val store = Store(Files.createTempDirectory("benchmark-overview-controls").resolve("lab.db"))
+        run(store, "a".repeat(40))
+        run(store, "b".repeat(40), value = 200.0, cpu = "another cpu")
+
+        val last = Trend.runs(TrendData.of(store), spec.name).last().benchmark!!
+
+        assertNull(last.baselineJob)
+        assertNull(last.changes)
+        assertTrue(last.transitions.isEmpty())
     }
 
     @Test fun `unfinished cases remain pending and failed cases do not fabricate timings`() {
@@ -121,6 +136,21 @@ class BenchmarkTrendTest {
             BenchmarkTrends.summarize(listOf(pending), "Eignex/other").workloads)
         assertEquals(listOf(BenchmarkWorkload("custom", "Custom theme", "skipped")),
             BenchmarkTrends.summarize(listOf(skipped), "Eignex/other").workloads)
+    }
+
+    @Test fun `overview migration refreshes benchmark points without invalidating solver points`() {
+        val store = Store(Files.createTempDirectory("benchmark-overview-upgrade").resolve("lab.db"))
+        val benchmark = store.job(run(store, "a".repeat(40)))!!
+        val solver = store.job(store.create("solver", "main", emptyList(), experiment = ExperimentSpec("solver")))!!
+        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-5", "format-4"),
+            null, System.currentTimeMillis(), null, emptySet())
+        val solverPoint = TrendPoints.Point(TrendCache.version(solver), null, System.currentTimeMillis(), null, emptySet())
+
+        TrendCache().use { cache ->
+            assertTrue(cache.expired(benchmark, oldBenchmark, null))
+            assertFalse(cache.expired(solver, solverPoint, null))
+        }
+        assertTrue("format-4" in solverPoint.version)
     }
 
     @Test fun `old empty benchmark points are invalidated after deploying benchmark trends`() {

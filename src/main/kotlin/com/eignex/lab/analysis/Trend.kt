@@ -188,9 +188,11 @@ object Trend {
                     cache?.put(job.id, version, stamp, null, emptySet())
                     return@mapNotNull null
                 }
-                val flips = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE || trend.benchmark != null && job.status == Status.FAILED }
-                    ?.let { Confirm.flips(own(it), own(job.id)) }
-                val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(data.scoringCases(it.id)) }
+                val baselineJob = previous[comparisonKey(trend)]?.takeIf { job.status == Status.DONE || trend.benchmark != null && job.status == Status.FAILED }
+                val flips = baselineJob?.let { Confirm.flips(own(it), own(job.id)) }
+                val confirmationCases = confirmation?.takeIf { it.status == Status.DONE || trend.benchmark != null }
+                    ?.let { data.scoringCases(it.id) }.orEmpty()
+                val confirmed = confirmation?.takeIf { it.status == Status.DONE }?.let { Confirm.confirmed(confirmationCases) }
                 trend.copy(lost = flips?.lost?.size, gained = flips?.gained?.size, flipP = flips?.pValue,
                     proofLost = flips?.proofLost?.size, proofGained = flips?.proofGained?.size,
                     objectiveLost = flips?.objectiveLost?.size, objectiveGained = flips?.objectiveGained?.size,
@@ -202,7 +204,8 @@ object Trend {
                     confirmedObjectiveLost = confirmed?.objectiveLost?.size,
                     confirmedObjectiveGained = confirmed?.objectiveGained?.size,
                     benchmark = trend.benchmark?.copy(changes = flips?.let(BenchmarkChanges::of),
-                        confirmed = confirmed?.let(BenchmarkChanges::of)))
+                        confirmed = confirmed?.let(BenchmarkChanges::of), baselineJob = baselineJob,
+                        transitions = flips?.let { BenchmarkTrends.transitions(it, confirmed, confirmation?.status, confirmationCases) }.orEmpty()))
                     .also { cache?.put(job.id, version, stamp, it, keys.toSet()) }
             }
             if (job.status == Status.DONE || point.benchmark != null && job.status == Status.FAILED) previous[comparisonKey(point)] = job.id
@@ -448,7 +451,7 @@ class TrendCache(
     fun expired(job: Job, point: TrendPoints.Point, confirmation: Job?): Boolean {
         val parts = point.version.split('/')
         val age = clock() - point.at
-        return parts.getOrNull(0) != job.status.toString() || parts.getOrNull(1) != job.finishedAt.toString() || POINT_FORMAT !in parts ||
+        return parts.getOrNull(0) != job.status.toString() || parts.getOrNull(1) != job.finishedAt.toString() || pointFormat(job) !in parts ||
             parts.filter { it.startsWith(CONFIRMATION) } != listOfNotNull(confirmation?.let(::confirmationPart)) ||
             age > if (job.status.isTerminal) maxAgeMs else LIVE_MS
     }
@@ -479,12 +482,12 @@ class TrendCache(
         /** A retry changes the job's finish state; a source recheck changes its case revision. A run's confirmation is
          *  part of its point, so its finish state and case revision are part of the version too. */
         fun version(job: Job, revision: Long = 0, confirmation: Job? = null, confirmationRevision: Long = 0): String =
-            "${job.status}/${job.finishedAt}/$POINT_FORMAT" + (if (revision == 0L) "" else "/checks-$revision") +
+            "${job.status}/${job.finishedAt}/${pointFormat(job)}" + (if (revision == 0L) "" else "/checks-$revision") +
                 (confirmation?.let { "/" + confirmationPart(it) + if (confirmationRevision == 0L) "" else "/confirmed-checks-$confirmationRevision" } ?: "")
 
         private const val CONFIRMATION = "confirmation-"
-        /** What a stored point holds; a point stored in an earlier format is recomputed (here: benchmark workload themes and outcomes). */
-        private const val POINT_FORMAT = "format-4"
+        /** Benchmark points include workload transitions; solver points retain their existing format. */
+        private fun pointFormat(job: Job): String = if (job.experiment.isBench) "format-5" else "format-4"
         private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L

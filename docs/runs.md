@@ -572,7 +572,12 @@ another refresh; a new successful request still returns the complete ordinary in
 
 Opt-in `metric-v1` benchmark sweeps have benchmark trends: successful, failed,
 skipped and pending cases, and a selectable metric for each workload in its own unit.
-They do not use solver solved/proven rates or PAR-2. The run table includes benchmark
+They do not use solver solved/proven rates or PAR-2. The latest completed run opens with a
+regression overview: every failed workload and qualified metric regression, with the worst
+regressions first, before/after values, percentage changes and per-workload confirmation status.
+Improvements and recoveries expand together below it. Workload links select the corresponding
+history chart; inspecting the full dropdown is unnecessary. A changed case set or measurement
+controls shows a new baseline rather than an apparent recovery. The run table includes benchmark
 failures, recoveries, metric changes and their paired confirmations. Timings are never
 combined across different units. Koblas also has six timing subcharts: dense and sparse
 BLAS Levels 1, 2 and 3. Each shows the mean of its workload timings, weighting workloads equally,
