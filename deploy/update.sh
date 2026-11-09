@@ -2,6 +2,10 @@
 # Pull this repository, build it into a new release, and restart the services on it. Needs no sudo: the service
 # files stay as install.sh wrote them, and they already point at releases/current. Rerun install.sh instead when
 # lab.env or the service setup itself changed.
+# Braces: bash reads the whole script before running any of it, so the pull below cannot change the rest of this
+# run (it used to continue at its old byte offset in the pulled file). After the pull it starts again on the pulled
+# version, whose steps belong to the release it builds.
+{
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 . "$here/deploy/release.sh"
@@ -11,7 +15,10 @@ if [[ -f "$envfile" ]]; then set -a; . "$envfile"; set +a; fi
 LAB_DATA="${LAB_DATA:-$HOME/eignex-lab-data}"
 [[ -L "$LAB_DATA/releases/current" ]] || { echo "no release yet: run deploy/install.sh first"; exit 1; }
 
-git -C "$here" pull --ff-only
+if [[ -z "${LAB_UPDATE_PULLED:-}" ]]; then
+  git -C "$here" pull --ff-only
+  LAB_UPDATE_PULLED=1 exec bash "$here/deploy/update.sh" "$@"
+fi
 # In the background (on macOS, confined to the efficiency cores) and without a daemon, which an earlier build may have
 # started outside it, so a build run by hand while solves run takes as little from them as it can; `lab update`
 # avoids the overlap altogether.
@@ -34,3 +41,5 @@ fi
 # Nomad agents and its supervisor stay on their pinned binaries; accepted remote work survives this restart.
 restart_services
 echo "running $(readlink "$LAB_DATA/releases/current")"
+exit
+}
