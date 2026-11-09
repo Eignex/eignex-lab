@@ -60,7 +60,7 @@ jobs:
       - name: Verify bench SDK release assets
         run: ./gradlew :lab-bench:verifyRelease
       - name: Validate service installation
-        run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
+        run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh
       - name: Verify host maintenance
         run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
       - name: Build experimental Nomad session renderer
@@ -120,7 +120,7 @@ jobs:
           cache-read-only: false
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       - name: Validate service installation
-        run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
+        run: bash deploy/tests/test_install.sh && bash deploy/tests/test_lab_corpus_index.sh && bash deploy/tests/test_lab_fetch.sh
       - name: Verify host maintenance
         run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
       # Also on Linux in nomad-infrastructure; here for macOS's own awk, sort and shasum.
