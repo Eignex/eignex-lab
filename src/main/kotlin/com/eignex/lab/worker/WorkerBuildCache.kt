@@ -29,10 +29,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
                        /** The shared Gradle remote build cache's loopback address ([GradleCacheProxy]), when there is one. */
                        private val remoteCache: () -> String? = { null }) {
     private val dependencyScope = ThreadLocal<DependencyPins?>()
-    private val maintenanceRunning = java.util.concurrent.atomic.AtomicBoolean()
-    private val discardedBuilds = java.util.concurrent.ConcurrentLinkedQueue<Path>()
-    @Serializable private data class DependencyUsage(val key: String, val modified: String, val bytes: Long)
-    @Serializable private data class Entry(val identity: String, val files: List<InputFile>, val workspaceManifest: String? = null)
+    private val maintenance = WorkerBuildCacheMaintenance(root, maxBytes, dependencyBytes, startMaintenance)
+    @Serializable internal data class Entry(val identity: String, val files: List<InputFile>, val workspaceManifest: String? = null)
 
     fun prepare(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
                 remainingRunMs: () -> Long? = { null }, trace: PreparationTrace = PreparationTrace(), remainingLeaseMs: () -> Long): Path =
@@ -48,153 +46,194 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         Files.createDirectories(root)
         val destination = root.resolve(identity)
         var waitingMs = 0L
-        return locked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
+        return buildCacheLocked(root.resolve("$identity.lock"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
             require(remainingLeaseMs() > 0) { "build lease expired" }
             checkRun()
-            val verification = TreeVerification()
-            val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
-            val verificationAt = System.nanoTime()
-            val hit = trace.step("build-cache") { valid(destination, identity, ::checkRun, verification,
-                build.benchManifest.takeIf { declaredWorkspace }) }
-            trace.cache("build", if (hit) "hit" else "miss", if (hit) (if (verification.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
-                verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs + pinWaitingMs, checkedFiles = verification.stats.checkedFiles,
-                hashedFiles = verification.stats.hashedFiles, hashedBytes = verification.stats.hashedBytes)
-            if (hit) {
-                requestMaintenance()
-                Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
-                return@locked destination.resolve("tree")
+            cachedTree(destination, identity, build, trace, ::checkRun, waitingMs + pinWaitingMs, declaredWorkspace)
+                ?: buildCold(bundle, build, identity, destination, source, budget, environment, remainingRunMs, remainingLeaseMs,
+                    trace, ::checkRun, declaredWorkspace)
+        }
+    }
+
+    /** Under the build lock: a verified published tree is a hit and refreshes its eviction age; null is a miss. */
+    private fun cachedTree(destination: Path, identity: String, build: WorkerBuild, trace: PreparationTrace, checkRun: () -> Unit,
+                           waitingMs: Long, declaredWorkspace: Boolean): Path? {
+        val verification = TreeVerification()
+        val present = Files.isDirectory(destination, NOFOLLOW_LINKS)
+        val verificationAt = System.nanoTime()
+        val hit = trace.step("build-cache") { valid(destination, identity, checkRun, verification,
+            build.benchManifest.takeIf { declaredWorkspace }) }
+        trace.cache("build", if (hit) "hit" else "miss", if (hit) (if (verification.stats.hashedFiles > 0) "receipt-rebuilt" else "verified") else if (present) "verification-failed" else "absent",
+            verificationMs = (System.nanoTime() - verificationAt) / 1_000_000, waitingMs = waitingMs, checkedFiles = verification.stats.checkedFiles,
+            hashedFiles = verification.stats.hashedFiles, hashedBytes = verification.stats.hashedBytes)
+        if (hit) {
+            maintenance.requestMaintenance()
+            Files.setLastModifiedTime(destination.resolve("manifest.json"), java.nio.file.attribute.FileTime.fromMillis(now()))
+            return destination.resolve("tree")
+        }
+        return null
+    }
+
+    /** Under the build lock: check out, compile and seal a fresh tree in pinned staging, then publish it. */
+    private fun buildCold(bundle: WorkerBundle, build: WorkerBuild, identity: String, destination: Path, source: ((Path) -> Unit) -> Unit,
+                          budget: ResourceBudget, environment: Map<String, String>, remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long,
+                          trace: PreparationTrace, checkRun: () -> Unit, declaredWorkspace: Boolean): Path {
+        if (Files.exists(destination, NOFOLLOW_LINKS)) deleteTree(destination)
+        val storage = WorkerBuildStaging(root)
+        val lease = trace.step("cache-cleanup") { storage.create(checkRun) }
+        // Create and pin staging before our background sweep can take its discovery lock.
+        val staging = lease.directory
+        val disk = BuildDiskBudget(root, staging, maxBytes)
+        var dependency: DependencyHome? = null
+        return try {
+            maintenance.requestMaintenance()
+            val cold = ColdBuild(bundle, build, staging, disk, budget, environment, remainingRunMs, remainingLeaseMs, trace, checkRun)
+            source { source -> trace.step("checkout") { cold.checkout(source) } }
+            val tasks = build.benchManifest?.let { BenchRuns.entry(cold.tree, BenchSpec(it)).buildTasks } ?: build.tasks
+            if (tasks.isNotEmpty()) cold.compile(tasks) { dependency = it }
+            // Compilation has finished. The sealed output inventory below enforces its final byte
+            // limit; stop the temporary staging scan before it competes with checksum capture.
+            disk.close()
+            // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
+            cold.tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let { deleteTree(it) }
+            seal(cold.tree, staging, storage, lease, identity, destination, build, trace, checkRun, declaredWorkspace)
+            destination.resolve("tree")
+        } finally {
+            disk.close()
+            try { storage.close(lease) } finally { dependency?.let { home ->
+                val scope = dependencyScope.get()
+                if (scope == null) home.close() else if (home !in scope.homes) scope.homes.add(home)
+            } }
+            if (maintenance.discardedBuilds.isNotEmpty()) maintenance.requestMaintenance()
+        }
+    }
+
+    /** Captures the staged tree's verified inventory, retaining only a declared workspace when asked, and publishes it. */
+    private fun seal(tree: Path, staging: Path, storage: WorkerBuildStaging, lease: WorkerBuildStaging.Lease, identity: String,
+                     destination: Path, build: WorkerBuild, trace: PreparationTrace, checkRun: () -> Unit, declaredWorkspace: Boolean) {
+        val (files, workspaceManifest) = trace.step("build-verification") {
+            val manifest = build.benchManifest?.takeIf { declaredWorkspace }?.takeIf { manifest ->
+                val spec = BenchSpec(manifest)
+                val workspace = BenchRuns.workspaceInputs(tree, spec) ?: return@takeIf false
+                // Keep planner identity inputs as well as everything copied to solve workspaces.
+                // Profiles and benches without declarations retain their complete checkout.
+                maintenance.discardedBuilds.add(storage.retain(lease, workspace + BenchSelections.planInputs(tree, spec).orEmpty(), checkRun))
+                true
             }
-            if (Files.exists(destination, NOFOLLOW_LINKS)) deleteTree(destination)
-            val storage = WorkerBuildStaging(root)
-            val lease = trace.step("cache-cleanup") { storage.create(::checkRun) }
-            // Create and pin staging before our background sweep can take its discovery lock.
-            val staging = lease.directory
-            val disk = BuildDiskBudget(root, staging, maxBytes)
-            var dependency: DependencyHome? = null
-            try {
-                requestMaintenance()
-                val tree = staging.resolve("tree")
-                val log = staging.resolve("build.out"); val errors = staging.resolve("build.err")
-                var deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
-                fun remaining(): Long {
-                    disk.check()
-                    val at = System.nanoTime()
-                    return minOf(remainingLeaseMs(), (deadline - at) / 1_000_000)
-                }
-                val heap = buildHeapMiB(budget.memoryMiB)
-                val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, buildToolchain(bundle.toolchain), bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
-                val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                    "LAB_SOURCE_COMMIT" to bundle.commit)
-                var distributionSeed: GradleDistributionSeed.Receipt? = null
-                fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env, kind: String = "checkout") {
-                    val child = PreparationBuildDiagnostic(kind = kind, stage = trace.snapshot().stage, sourceCommit = bundle.commit)
-                    observeBuild(log, errors, child)
-                    var termination: ProcessTermination? = null
-                    val exit = try {
-                        supervisor.run(argv, directory, runEnvironment, log, errors, build.timeoutSec,
-                            graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(),
-                            observeTermination = { termination = it }, remainingLeaseMs = ::remaining)
-                    } finally {
-                        if (kind == "compilation") distributionSeed?.let { receipt ->
-                            Files.writeString(log, "\nGradle distribution seed: sha256=" + receipt.sha256 +
-                                " bytes=" + receipt.bytes + " downloaded=" + receipt.downloaded + "\n",
-                                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
-                        }
-                        observeBuild(log, errors, child.copy(exitCode = termination?.exitCode,
-                        signal = termination?.signal, runTimedOut = termination?.runTimedOut)) }
-                    if (exit != 0) {
-                        fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
-                            input.seek((input.length() - 8192).coerceAtLeast(0)); String(ByteArray((input.length() - input.filePointer).toInt()).also { input.readFully(it) })
-                        }
-                        checkPreparationExit(exit) { "exit $exit\n" + tail(errors) + "\n" + tail(log) }
-                    }
-                }
-                source { source -> trace.step("checkout") {
-                    if (build.gitBundle == PackedGitSource.MARKER) {
-                        require(PackedGitSource.usable(bundle)) { "invalid packed source receipt" }
-                        copy(source, tree, ::checkRun)
-                        run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", bundle.commit), tree,
-                            env.filterKeys { !it.startsWith("GIT_") } + mapOf("GIT_CONFIG_NOSYSTEM" to "1", "GIT_CONFIG_GLOBAL" to "/dev/null", "GIT_NO_REPLACE_OBJECTS" to "1"))
-                        verifyCheckoutTree(tree, ::checkRun)
-                    } else if (build.gitBundle != null) {
-                        Files.createDirectory(tree)
-                        run(listOf("git", "-c", "core.hooksPath=/dev/null", "init"), tree)
-                        // Portable checkouts retain symlink blobs as plain files and never follow host paths.
-                        run(listOf("git", "config", "--local", "core.symlinks", "false"), tree)
-                        run(listOf("git", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", source.resolve(safeRelative(build.gitBundle)).toString(), "refs/lab-source/${bundle.commit}"), tree)
-                        run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", bundle.commit), tree)
-                        verifyCheckoutTree(tree, ::checkRun)
-                        for (file in bundle.files.filter { it.path != build.gitBundle }) {
-                            require(safeRelative(file.path).first().toString() == "lab-inputs") { "additional input cannot overwrite committed code" }
-                            val target = tree.resolve(safeRelative(file.path)); Files.createDirectories(target.parent)
-                            Files.copy(source.resolve(file.path), target, COPY_ATTRIBUTES, REPLACE_EXISTING)
-                        }
-                    } else copy(source, tree, ::checkRun)
-                } }
-                val tasks = build.benchManifest?.let { BenchRuns.entry(tree, BenchSpec(it)).buildTasks } ?: build.tasks
-                if (tasks.isNotEmpty()) {
-                    require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
-                    val init = staging.resolve("jvm.init.gradle")
-                    Files.writeString(init, requireNotNull(javaClass.getResource("/worker-jvm.init.gradle")).readText())
-                    trace.step("compiler-wait") {
-                        compilationSlot(remainingRunMs, remainingLeaseMs) {
-                            deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
-                            val pinned = acquireDependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs)
-                            dependency = pinned
-                            pinned.directory.let { dependencyHome ->
-                                Files.createDirectories(dependencyHome)
-                                trace.step("compilation") {
-                                    distributionSeed = try {
-                                        GradleDistributionSeed().stage(tree, dependencyHome) { checkRun(); remaining() }
-                                    } catch (failure: IllegalArgumentException) {
-                                        throw WorkerBuildFailure("Gradle distribution seed: " + failure.message)
-                                    }
-                                    // Task outputs are reused from earlier preparations on any node; the init script binds the cache.
-                                    val cache = remoteCache()
-                                    run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
-                                        "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain") +
-                                        listOfNotNull(cache?.let { "--build-cache" }), tree,
-                                        env + ("GRADLE_USER_HOME" to dependencyHome.toString()) + listOfNotNull(cache?.let { "LAB_GRADLE_CACHE_URL" to it }), kind = "compilation")
-                                }
-                                Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
-                            }
-                        }
-                    }
-                }
-                // Compilation has finished. The sealed output inventory below enforces its final byte
-                // limit; stop the temporary staging scan before it competes with checksum capture.
-                disk.close()
-                // Keep commit objects for committed profile tools that inspect Git; transport was only a local bundle.
-                tree.resolve(".gradle").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let { deleteTree(it) }
-                val (files, workspaceManifest) = trace.step("build-verification") {
-                    val manifest = build.benchManifest?.takeIf { declaredWorkspace }?.takeIf { manifest ->
-                        val spec = BenchSpec(manifest)
-                        val workspace = BenchRuns.workspaceInputs(tree, spec) ?: return@takeIf false
-                        // Keep planner identity inputs as well as everything copied to solve workspaces.
-                        // Profiles and benches without declarations retain their complete checkout.
-                        discardedBuilds.add(storage.retain(lease, workspace + BenchSelections.planInputs(tree, spec).orEmpty(), ::checkRun))
-                        true
-                    }
-                    val verifier = TreeVerification()
-                    val files = verifier.capture(tree, staging.resolve("verified.json"), ::checkRun)
-                    println("worker build verification: files=${files.size} hashedFiles=${verifier.stats.hashedFiles} hashedBytes=${verifier.stats.hashedBytes} declaredWorkspace=${manifest != null}")
-                    files to manifest
-                }
-                require(files.sumOf { it.bytes } <= maxBytes) { "build exceeds cache disk budget" }
-                checkRun()
-                Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files, workspaceManifest)))
-                storage.publish(lease, destination, ::checkRun)
-                destination.resolve("tree")
+            val verifier = TreeVerification()
+            val files = verifier.capture(tree, staging.resolve("verified.json"), checkRun)
+            println("worker build verification: files=${files.size} hashedFiles=${verifier.stats.hashedFiles} hashedBytes=${verifier.stats.hashedBytes} declaredWorkspace=${manifest != null}")
+            files to manifest
+        }
+        require(files.sumOf { it.bytes } <= maxBytes) { "build exceeds cache disk budget" }
+        checkRun()
+        Files.writeString(staging.resolve("manifest.json"), Json.encodeToString(Entry(identity, files, workspaceManifest)))
+        storage.publish(lease, destination, checkRun)
+    }
+
+    /** One cold build's processes: checkout and compilation share its logs, environment and build deadline. */
+    private inner class ColdBuild(private val bundle: WorkerBundle, private val build: WorkerBuild, private val staging: Path,
+                                  private val disk: BuildDiskBudget, private val budget: ResourceBudget, environment: Map<String, String>,
+                                  private val remainingRunMs: () -> Long?, private val remainingLeaseMs: () -> Long,
+                                  private val trace: PreparationTrace, private val checkRun: () -> Unit) {
+        val tree: Path = staging.resolve("tree")
+        private val log = staging.resolve("build.out"); private val errors = staging.resolve("build.err")
+        private var deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
+        private val heap = buildHeapMiB(budget.memoryMiB)
+        private val dependencyKey = ExecutionStore.digest(listOf(bundle.repository, buildToolchain(bundle.toolchain), bundle.os, bundle.arch, System.getProperty("java.version")).joinToString("\n"))
+        private val env = environment + mapOf("JAVA_TOOL_OPTIONS" to "-Xmx${heap}m -XX:ActiveProcessorCount=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
+            "LAB_SOURCE_COMMIT" to bundle.commit)
+        private var distributionSeed: GradleDistributionSeed.Receipt? = null
+
+        private fun remaining(): Long {
+            disk.check()
+            val at = System.nanoTime()
+            return minOf(remainingLeaseMs(), (deadline - at) / 1_000_000)
+        }
+
+        private fun run(argv: List<String>, directory: Path, runEnvironment: Map<String, String> = env, kind: String = "checkout") {
+            val child = PreparationBuildDiagnostic(kind = kind, stage = trace.snapshot().stage, sourceCommit = bundle.commit)
+            observeBuild(log, errors, child)
+            var termination: ProcessTermination? = null
+            val exit = try {
+                supervisor.run(argv, directory, runEnvironment, log, errors, build.timeoutSec,
+                    graceMs = Experiments.STOP_GRACE_SEC * 1000, runRemainingMs = remainingRunMs(),
+                    observeTermination = { termination = it }, remainingLeaseMs = ::remaining)
             } finally {
-                disk.close()
-                try { storage.close(lease) } finally { dependency?.let { home ->
-                    val scope = dependencyScope.get()
-                    if (scope == null) home.close() else if (home !in scope.homes) scope.homes.add(home)
-                } }
-                if (discardedBuilds.isNotEmpty()) requestMaintenance()
+                if (kind == "compilation") distributionSeed?.let { receipt ->
+                    Files.writeString(log, "\nGradle distribution seed: sha256=" + receipt.sha256 +
+                        " bytes=" + receipt.bytes + " downloaded=" + receipt.downloaded + "\n",
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
+                }
+                observeBuild(log, errors, child.copy(exitCode = termination?.exitCode,
+                signal = termination?.signal, runTimedOut = termination?.runTimedOut)) }
+            if (exit != 0) {
+                fun tail(path: Path): String = java.io.RandomAccessFile(path.toFile(), "r").use { input ->
+                    input.seek((input.length() - 8192).coerceAtLeast(0)); String(ByteArray((input.length() - input.filePointer).toInt()).also { input.readFully(it) })
+                }
+                checkPreparationExit(exit) { "exit $exit\n" + tail(errors) + "\n" + tail(log) }
+            }
+        }
+
+        fun checkout(source: Path) {
+            if (build.gitBundle == PackedGitSource.MARKER) {
+                require(PackedGitSource.usable(bundle)) { "invalid packed source receipt" }
+                copy(source, tree, checkRun)
+                run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", bundle.commit), tree,
+                    env.filterKeys { !it.startsWith("GIT_") } + mapOf("GIT_CONFIG_NOSYSTEM" to "1", "GIT_CONFIG_GLOBAL" to "/dev/null", "GIT_NO_REPLACE_OBJECTS" to "1"))
+                verifyCheckoutTree(tree, checkRun)
+            } else if (build.gitBundle != null) {
+                Files.createDirectory(tree)
+                run(listOf("git", "-c", "core.hooksPath=/dev/null", "init"), tree)
+                // Portable checkouts retain symlink blobs as plain files and never follow host paths.
+                run(listOf("git", "config", "--local", "core.symlinks", "false"), tree)
+                run(listOf("git", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", source.resolve(safeRelative(build.gitBundle)).toString(), "refs/lab-source/${bundle.commit}"), tree)
+                run(listOf("git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", bundle.commit), tree)
+                verifyCheckoutTree(tree, checkRun)
+                for (file in bundle.files.filter { it.path != build.gitBundle }) {
+                    require(safeRelative(file.path).first().toString() == "lab-inputs") { "additional input cannot overwrite committed code" }
+                    val target = tree.resolve(safeRelative(file.path)); Files.createDirectories(target.parent)
+                    Files.copy(source.resolve(file.path), target, COPY_ATTRIBUTES, REPLACE_EXISTING)
+                }
+            } else copy(source, tree, checkRun)
+        }
+
+        /** [onPinned] receives the dependency home as soon as it is acquired, so the caller releases it on failure too. */
+        fun compile(tasks: List<String>, onPinned: (DependencyHome) -> Unit) {
+            require(Files.isRegularFile(tree.resolve("gradlew"), NOFOLLOW_LINKS)) { "source archive has no Gradle wrapper" }
+            val init = staging.resolve("jvm.init.gradle")
+            Files.writeString(init, requireNotNull(this@WorkerBuildCache.javaClass.getResource("/worker-jvm.init.gradle")).readText())
+            trace.step("compiler-wait") {
+                compilationSlot(remainingRunMs, remainingLeaseMs) {
+                    deadline = System.nanoTime() + build.timeoutSec * 1_000_000_000
+                    val pinned = acquireDependencyHome(dependencyKey, remainingRunMs, remainingLeaseMs)
+                    onPinned(pinned)
+                    pinned.directory.let { dependencyHome ->
+                        Files.createDirectories(dependencyHome)
+                        trace.step("compilation") {
+                            distributionSeed = try {
+                                GradleDistributionSeed().stage(tree, dependencyHome) { checkRun(); remaining() }
+                            } catch (failure: IllegalArgumentException) {
+                                throw WorkerBuildFailure("Gradle distribution seed: " + failure.message)
+                            }
+                            // Task outputs are reused from earlier preparations on any node; the init script binds the cache.
+                            val cache = remoteCache()
+                            run(listOf("bash", "./gradlew") + tasks + listOf("--no-daemon", "--max-workers=${(budget.cpuMillis / 1000).coerceAtLeast(1)}",
+                                "--init-script", init.toString(), "-Dorg.gradle.jvmargs=-Xmx${heap}m", "-Pkotlin.compiler.execution.strategy=in-process", "--console=plain") +
+                                listOfNotNull(cache?.let { "--build-cache" }), tree,
+                                env + ("GRADLE_USER_HOME" to dependencyHome.toString()) + listOfNotNull(cache?.let { "LAB_GRADLE_CACHE_URL" to it }), kind = "compilation")
+                        }
+                        Files.setLastModifiedTime(dependencyHome, java.nio.file.attribute.FileTime.fromMillis(now()))
+                    }
+                }
             }
         }
     }
+
+    internal fun maintain(at: Long = now(), wait: Boolean = true): Unit = maintenance.maintain(at, wait)
+
+    internal fun awaitMaintenanceIdle(timeoutMs: Long = 10_000): Boolean = maintenance.awaitMaintenanceIdle(timeoutMs)
+
     fun <T> withPrepared(bundle: WorkerBundle, source: Path, budget: ResourceBudget, environment: Map<String, String>,
                          remainingRunMs: () -> Long?, remainingLeaseMs: () -> Long, trace: PreparationTrace = PreparationTrace(), use: (Path) -> T): T =
         withPreparedSource(bundle, budget, environment, remainingRunMs, remainingLeaseMs, trace, { consume -> consume(source) }, use = use)
@@ -209,7 +248,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         Files.createDirectories(root)
         return withDependenciesPinned { trace.step("build-cache") {
             var waitingMs = 0L
-            locked(root.resolve("${identity(bundle)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
+            buildCacheLocked(root.resolve("${identity(bundle)}.pin"), remainingRunMs, remainingLeaseMs, { waitingMs = it }) {
                 var acquired = false
                 val tree = prepareFrom(bundle, { consume -> acquired = true; source(consume) }, budget, environment, remainingRunMs, trace, remainingLeaseMs, waitingMs, declaredWorkspace)
                 if (!acquired) trace.cache("input", "bypass", "build-hit")
@@ -319,7 +358,7 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             try {
                 if (Files.isDirectory(directory, NOFOLLOW_LINKS))
                     Files.setLastModifiedTime(directory, java.nio.file.attribute.FileTime.fromMillis(now()))
-            } finally { owner.close(); requestMaintenance() }
+            } finally { owner.close(); maintenance.requestMaintenance() }
         }
     }
 
@@ -340,165 +379,6 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             }
             slot++
         }
-    }
-
-    private fun <T> locked(path: Path, run: () -> Long?, lease: () -> Long, waited: (Long) -> Unit = {}, use: () -> T): T {
-        return ProcessFilePin.withLock(path, {
-            if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
-            if (lease() <= 0) throw LeaseLost("build lease expired while waiting for cache")
-            if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
-        }, pollMs = 50, onWaited = waited, action = use)
-    }
-
-    /** Foreground preparation never performs an unbounded legacy inventory scan. */
-    private fun requestMaintenance() {
-        if (!maintenanceRunning.compareAndSet(false, true)) return
-        val thread = Thread({
-            try { WorkerCacheIo.background {
-                // A previous sweep may still be throttled. Detached cold-build garbage must nevertheless
-                // drain without delaying preparation, and remains discoverable after a worker crash.
-                while (true) deleteCacheGarbage(discardedBuilds.poll() ?: break)
-                maintain(wait = false)
-            } }
-            catch (_: java.io.IOException) { println("worker build cache cleanup deferred") }
-            finally {
-                synchronized(maintenanceRunning) {
-                    maintenanceRunning.set(false)
-                    if (discardedBuilds.isNotEmpty()) requestMaintenance()
-                }
-            }
-        }, "worker-build-cleanup").apply { isDaemon = true }
-        try { startMaintenance(thread) }
-        catch (failure: Throwable) { maintenanceRunning.set(false); throw failure }
-    }
-
-    /** The sweep pin serializes accounting; the staging lock covers only snapshots and atomic renames.
-     * Published manifests account immutable builds. Dependency homes are scanned once per dirty generation,
-     * under their own pin, outside the staging lock. Active/unknown homes count conservatively.
-     * Startup accounting yields disk priority to foreground staging, just like ordinary cache garbage. */
-    internal fun maintain(at: Long = now(), wait: Boolean = true): Unit = WorkerCacheIo.background {
-        // The request flag is reserved before Thread.start(), so a synchronous caller also drains
-        // requests that have not been scheduled yet, before it concludes maintenance is finished.
-        if (wait) check(awaitMaintenanceIdle(Long.MAX_VALUE))
-        Files.createDirectories(root)
-        val sweep = root.resolve("maintenance-sweep.lock")
-        if (wait) locked(sweep, { null }, { Long.MAX_VALUE }) { maintainSweep(at) }
-        else ProcessFilePin.tryLock(sweep)?.use { maintainSweep(at) }
-    }
-
-    /** After foreground users finish, wait until this instance has no pending filesystem work. */
-    internal fun awaitMaintenanceIdle(timeoutMs: Long = 10_000): Boolean {
-        require(timeoutMs >= 0)
-        val started = System.nanoTime()
-        val timeoutNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs)
-        while (synchronized(maintenanceRunning) { maintenanceRunning.get() }) {
-            checkMaintenanceActive()
-            if (System.nanoTime() - started >= timeoutNanos) return false
-            Thread.sleep(10)
-        }
-        return true
-    }
-
-    private fun <T> maintenanceLock(use: () -> T): T = locked(root.resolve("maintenance.lock"), { null }, { Long.MAX_VALUE }, use = use)
-
-    private fun maintainSweep(at: Long) {
-        data class Snapshot(val builds: List<Path>, val dependencies: List<Path>, val garbage: List<Path>)
-        val snapshot = maintenanceLock {
-            val stamp = root.resolve("maintenance.timestamp")
-            if (Files.exists(stamp) && at - Files.getLastModifiedTime(stamp).toMillis() < 60_000) return@maintenanceLock null
-            Files.writeString(stamp, ""); Files.setLastModifiedTime(stamp, java.nio.file.attribute.FileTime.fromMillis(at))
-            val garbage = WorkerBuildStaging(root).reapLocked(at).toMutableList()
-            val builds = Files.list(root).use { paths -> paths.filter { SHA256.matches(it.fileName.toString()) }.toList() }
-            val dependencies = root.resolve("dependencies").let { directory ->
-                if (!Files.isDirectory(directory, NOFOLLOW_LINKS)) emptyList() else Files.list(directory).use { it.toList() }
-            }
-            Files.list(root).use { paths -> garbage.addAll(paths.filter { it.fileName.toString().startsWith(".evict-") }.toList()) }
-            Snapshot(builds, dependencies, garbage)
-        } ?: return
-        data class Candidate(val path: Path, val lock: Path, val bytes: Long, val used: Long, val key: String?, val usage: DependencyUsage? = null, val accounted: Boolean = true)
-        val candidates = mutableListOf<Candidate>()
-        val unknown = maxBytes.coerceAtLeast(1)
-        fun attributes(path: Path) = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-        for (path in snapshot.builds) {
-            checkMaintenanceActive()
-            if (!Files.isDirectory(path, NOFOLLOW_LINKS)) continue
-            val manifest = path.resolve("manifest.json")
-            val entry = runCatching { Json.decodeFromString<Entry>(Files.readString(manifest)) }.getOrNull()
-            val bytes = runCatching {
-                require(entry != null && entry.identity == path.fileName.toString())
-                entry.files.fold(0L) { total, file -> require(file.bytes >= 0); Math.addExact(total, file.bytes) }
-            }.getOrDefault(unknown)
-            val used = runCatching { Files.getLastModifiedTime(manifest).toMillis() }.getOrDefault(0)
-            candidates += Candidate(path, root.resolve("${path.fileName}.pin"), bytes, used, attributes(path).fileKey()?.toString())
-        }
-        var accountingIncomplete = false
-        for (path in snapshot.dependencies) {
-            checkMaintenanceActive()
-            if (!Files.isDirectory(path, NOFOLLOW_LINKS)) continue
-            val lock = root.resolve("dependencies-${path.fileName}.lock")
-            var usage: DependencyUsage? = null
-            var measuredBytes: Long? = null
-            val owner = ProcessFilePin.tryLock(lock)
-            if (owner == null) {
-                // Older workers do not invalidate usage records themselves. Observing their live pin
-                // makes the old size dirty too, so their released growth must be measured again.
-                Files.deleteIfExists(usageFile(path)); accountingIncomplete = true
-            }
-            owner?.use {
-                usage = knownDependencyUsage(path) ?: run {
-                    val before = attributes(path)
-                    val bytes = dependencyBytes(path)
-                    measuredBytes = bytes
-                    checkMaintenanceActive()
-                    val after = attributes(path)
-                    require(bytes >= 0 && before.fileKey() == after.fileKey() && before.lastModifiedTime() == after.lastModifiedTime()) { "dependency cache changed during accounting" }
-                    after.fileKey()?.toString()?.let { key ->
-                        DependencyUsage(key, after.lastModifiedTime().toString(), bytes).also { recordDependencyUsage(path, it) }
-                    }
-                }
-            }
-            val attrs = attributes(path)
-            candidates += Candidate(path, lock, usage?.bytes ?: measuredBytes ?: 0, attrs.lastModifiedTime().toMillis(),
-                attrs.fileKey()?.toString(), usage, accounted = usage != null || measuredBytes != null)
-        }
-        fun saturated(a: Long, b: Long) = if (a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
-        val accounted = candidates.filter { it.accounted }
-        var bytes = accounted.fold(0L) { total, candidate -> saturated(total, candidate.bytes) }
-        val garbage = snapshot.garbage.toMutableList()
-        // Unknown active homes cannot justify eviction of warm data within the known budget.
-        // Still reclaim proven excess among accounted entries; reconcile unknown growth after release.
-        if (accountingIncomplete) maintenanceLock { Files.deleteIfExists(root.resolve("maintenance.timestamp")) }
-        for (candidate in accounted.sortedBy { it.used }) {
-            checkMaintenanceActive()
-            if (bytes <= maxBytes) break
-            ProcessFilePin.tryLock(candidate.lock)?.use {
-                maintenanceLock {
-                    if (!Files.isDirectory(candidate.path, NOFOLLOW_LINKS)) return@maintenanceLock
-                    if (attributes(candidate.path).fileKey()?.toString() != candidate.key) return@maintenanceLock
-                    if (candidate.usage != null && knownDependencyUsage(candidate.path) != candidate.usage) return@maintenanceLock
-                    val trash = root.resolve(".evict-${java.util.UUID.randomUUID()}")
-                    Files.move(candidate.path, trash, ATOMIC_MOVE)
-                    if (candidate.path.parent.fileName.toString() == "dependencies") Files.deleteIfExists(usageFile(candidate.path))
-                    garbage.add(trash); bytes = (bytes - candidate.bytes).coerceAtLeast(0)
-                }
-            }
-        }
-        for (path in garbage.distinct()) {
-            checkMaintenanceActive()
-            deleteCacheGarbage(path)
-        }
-        if (garbage.isNotEmpty()) println("worker build cache cleanup: trees=${garbage.size}")
-    }
-
-    private fun usageFile(path: Path) = root.resolve("dependency-sizes/${path.fileName}.json")
-    private fun knownDependencyUsage(path: Path): DependencyUsage? = runCatching {
-        val usage = Json.decodeFromString<DependencyUsage>(Files.readString(usageFile(path)))
-        val attrs = Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes::class.java, NOFOLLOW_LINKS)
-        usage.takeIf { it.bytes >= 0 && attrs.isDirectory && it.key == attrs.fileKey()?.toString() && it.modified == attrs.lastModifiedTime().toString() }
-    }.getOrNull()
-    private fun recordDependencyUsage(path: Path, usage: DependencyUsage) {
-        val target = usageFile(path); Files.createDirectories(target.parent)
-        target.writeAtomically(Json.encodeToString(usage), durable = false)
     }
 
     private fun valid(path: Path, identity: String, checkActive: () -> Unit, verification: TreeVerification, workspaceManifest: String? = null): Boolean {
@@ -548,11 +428,14 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
 internal fun buildToolchain(toolchain: String): String =
     if (Regex("jdk25:[a-f0-9]{40}").matches(toolchain)) "jdk25" else toolchain
 
-private fun checkMaintenanceActive() {
-    if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache cleanup cancelled")
+/** A build cache file lock, waited for while the run and lease remain; maintenance waits without either bound. */
+internal fun <T> buildCacheLocked(path: Path, run: () -> Long?, lease: () -> Long, waited: (Long) -> Unit = {}, use: () -> T): T {
+    return ProcessFilePin.withLock(path, {
+        if (run()?.let { it <= 0 } == true) throw RunDeadlineExceeded()
+        if (lease() <= 0) throw LeaseLost("build lease expired while waiting for cache")
+        if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("cache wait cancelled")
+    }, pollMs = 50, onWaited = waited, action = use)
 }
-
-private fun dependencyTreeBytes(path: Path): Long = treeBytes(path, checkActive = ::checkMaintenanceActive)
 
 /**
  * The heap each build JVM may take within a preparation's [memoryMiB]. Gradle compiles Kotlin in its own JVM, which
