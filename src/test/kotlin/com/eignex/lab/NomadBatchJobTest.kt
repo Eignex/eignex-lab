@@ -24,7 +24,7 @@ class NomadBatchJobTest {
     private val capacity = NomadCpuCapacity(usableMHz = 10_000, logicalCpus = 4)
     private val budget = ResourceBudget(cpuMillis = 500, memoryMiB = 128)
     private val spec = NomadBatchJob("lab-probe", NomadPlatform.LINUX, "lab-probe-linux", capacity, budget,
-        listOf("python3", "-c", "print('a b; $')"), image = "python@sha256:${"a".repeat(64)}")
+        listOf("sh", "-c", "echo 'a b; $'"), image = "alpine@sha256:${"a".repeat(64)}")
 
     @Test
     fun `CPU conversion respects logical CPUs and rounds down instead of exceeding the quota`() {
@@ -56,7 +56,7 @@ class NomadBatchJobTest {
         assertEquals(resources.getValue("MemoryMB"), config.getValue("memory_hard_limit"))
         assertFalse("MemoryMaxMB" in resources) // No memory oversubscription is required for the hard limit.
         assertFalse("Cores" in resources)
-        assertEquals("print('a b; $')", config.getValue("args").jsonArray.last().jsonPrimitive.content)
+        assertEquals("echo 'a b; $'", config.getValue("args").jsonArray.last().jsonPrimitive.content)
         assertEquals("0", group.getValue("RestartPolicy").jsonObject.getValue("Attempts").jsonPrimitive.content)
         assertFalse(job.toString().contains("distinct_hosts"))
         assertFalse(job.toString().contains("affinity"))
@@ -90,7 +90,7 @@ class NomadBatchJobTest {
 
     @Test
     fun `invalid or misleading session definitions fail before submission`() {
-        assertFailsWith<IllegalArgumentException> { spec.copy(image = "python:latest") }
+        assertFailsWith<IllegalArgumentException> { spec.copy(image = "alpine:latest") }
         assertFailsWith<IllegalArgumentException> { spec.copy(platform = NomadPlatform.MAC) }
         assertFailsWith<IllegalArgumentException> { spec.copy(command = emptyList()) }
         assertFailsWith<IllegalArgumentException> { spec.copy(id = "../other-job") }

@@ -73,8 +73,8 @@ class WorkerArchiveCacheTest {
         cache.use(source, identity, false, {}) { zip, _ ->
             cache.maintain(); assertTrue(Files.exists(zip))
             val pin = Files.list(cacheRoot.resolve("pins")).use { it.toList().single() }
-            val process = ProcessBuilder("python3", "-c", "import fcntl,sys; f=open(sys.argv[1],'r+'); fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)", pin.toString()).redirectErrorStream(true).start()
-            assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); assertNotEquals(0, process.exitValue())
+            val process = ProcessBuilder(LockFixture.command("probe", pin.toString())).redirectErrorStream(true).start()
+            assertTrue(process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)); assertEquals(LockFixture.HELD, process.exitValue())
         }
         cache.maintain()
         assertTrue(Files.list(cacheRoot).use { paths -> paths.noneMatch { SHA256.matches(it.fileName.toString()) } })
