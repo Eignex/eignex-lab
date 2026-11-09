@@ -172,6 +172,11 @@ class NomadBackend(
             require(preparation.artifacts == result.artifacts.filterKeys { it.startsWith("preparation/") })
             require(preparation.bundles.map { it.commit }.toSet() == manifest.arms.map { it.sha }.toSet())
             require(preparation.bundles.map { Triple(it.commit, it.os, it.arch) }.distinct().size == preparation.bundles.size)
+            // Build reports answer an offer of accepted builds, one per built source bundle.
+            require(preparation.builds.isEmpty() || manifest.reusableBuilds != null)
+            require(preparation.builds.map { it.commit }.distinct().size == preparation.builds.size && preparation.builds.all { built ->
+                manifest.bundles.any { it.commit == built.commit && it.os == built.os && it.arch == built.arch && it.build != null }
+            }) { "prepared builds differ from the source bundles" }
             val target = manifest.bundles.firstOrNull()?.build?.preparation?.target
             if (target != null) require(preparation.bundles.all(target::matches)) { "prepared output differs from the declared cross-build target" }
             for (bundle in preparation.bundles + listOfNotNull(preparation.corpus)) {

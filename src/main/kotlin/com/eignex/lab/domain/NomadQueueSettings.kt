@@ -37,6 +37,12 @@ data class NomadQueueSettings(
     val workerReplaces: Set<String> = emptySet(),
     /** Enable only after every pinned target supports worker protocol 7. Frozen older recipes keep their format. */
     val packedSourceSnapshots: Boolean = false,
+    /**
+     * Offer cloud bench preparations the accepted archive of an identical build, and let a preparation wait a bounded
+     * time for an identical build another job is preparing. Enable only after every pinned cloud target supports worker
+     * protocol 9.
+     */
+    val reuseAcceptedBuilds: Boolean = false,
 ) {
     init {
         require(release.isNotBlank() && targets.isNotEmpty() && targets.map { it.template.nodeClass }.distinct().size == targets.size)

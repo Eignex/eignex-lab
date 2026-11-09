@@ -333,15 +333,8 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
         }, use)
     }
 
-    private fun identity(bundle: WorkerBundle): String = ExecutionStore.digest((listOf(
-        // Existing recipes keep their warm trees; only manifest-driven builds need the SDK identity extension.
-        if (bundle.build?.benchManifest == null) "build-cache-v4" else "build-cache-v5",
-        bundle.repository, bundle.commit, bundle.os, bundle.arch, buildToolchain(bundle.toolchain),
-    ) + listOfNotNull(bundle.build?.benchManifest) + listOf(
-        Json.encodeToString(bundle.buildOptions), Json.encodeToString(bundle.build?.tasks.orEmpty()),
-        // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
-        if (bundle.build?.gitBundle == null) bundle.sha256 else "approved-git-commit",
-        Json.encodeToString(bundle.files.filter { it.path != bundle.build?.gitBundle }.sortedBy { it.path }),
+    /** The verified tree's identity: its [buildRecipe] and this worker's JDK, platform and Gradle init script. */
+    internal fun identity(bundle: WorkerBundle): String = ExecutionStore.digest((buildRecipe(bundle) + listOf(
         // Budgets only bound build heap and parallelism, so jobs at one commit share a tree across budgets.
         System.getProperty("java.vendor"), System.getProperty("java.version"),
         System.getProperty("os.name"), System.getProperty("os.arch"),
@@ -430,6 +423,27 @@ class WorkerBuildCache(private val root: Path, private val supervisor: ProcessSu
             }
         } }
     }
+}
+
+/** What a build tree's identity takes from its source [bundle]: everything but the building worker's own properties. */
+private fun buildRecipe(bundle: WorkerBundle): List<String> = listOf(
+    // Existing recipes keep their warm trees; only manifest-driven builds need the SDK identity extension.
+    if (bundle.build?.benchManifest == null) "build-cache-v4" else "build-cache-v5",
+    bundle.repository, bundle.commit, bundle.os, bundle.arch, buildToolchain(bundle.toolchain),
+) + listOfNotNull(bundle.build?.benchManifest) + listOf(
+    Json.encodeToString(bundle.buildOptions), Json.encodeToString(bundle.build?.tasks.orEmpty()),
+    // Git export pack bytes may vary for the same approved commit. Extra inputs still bind their checksums.
+    if (bundle.build?.gitBundle == null) bundle.sha256 else "approved-git-commit",
+    Json.encodeToString(bundle.files.filter { it.path != bundle.build?.gitBundle }.sortedBy { it.path }),
+)
+
+/**
+ * The coordinator's key for builds of [bundle]'s recipe on its platform. Builds under one key differ only by the worker
+ * properties of [WorkerBuildCache.identity], which the worker compares before it reuses one.
+ */
+internal fun buildRecipeKey(bundle: WorkerBundle): String {
+    require(bundle.build != null) { "only a source bundle has a build recipe" }
+    return ExecutionStore.digest((listOf("accepted-build-v1") + buildRecipe(bundle)).joinToString("\n"))
 }
 
 /** Historical source bundles included the worker release, which is unrelated to compiler outputs.

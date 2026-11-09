@@ -39,6 +39,14 @@ internal fun workerExecutionEnvironment(mac: Boolean, environment: Map<String, S
  */
 internal const val DECLARED_INPUTS = "LAB_DECLARED_INPUTS"
 
+/** Where a cloud preparation reads accepted build archives ([ReusableBuild]): the regional store, by content hash. */
+internal interface AcceptedBuildStore {
+    /** Whether the store holds [bundle]'s archive, so that the coordinator can accept it for this job and its solves read it. */
+    fun holds(bundle: WorkerBundle): Boolean
+    /** [bundle]'s archive bytes, verified by the reader against [bundle]; null when the store cannot provide them. */
+    fun open(bundle: WorkerBundle): java.io.InputStream?
+}
+
 /** Preparation is a worker operation under the same supervisor, cgroup and ownership lease as solves. */
 internal class PreparationExecutor(private val supervisor: ProcessSupervisor, private val cache: VerifiedCache,
                           private val builds: WorkerBuildCache, private val download: (WorkerBundle) -> java.io.InputStream,
@@ -46,7 +54,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                           private val shared: SharedInputs? = SharedInputs.environment(), private val inputSigner: String? = null,
                           private val inputCache: WorkerInputCache? = null, private val privateWorkspaces: WorkerWorkspaces? = null,
                           private val trace: PreparationTrace = PreparationTrace(), private val archives: WorkerArchiveCache? = null,
-                          private val nativeTrees: NativePreparedTrees? = null, private val nativeJob: Long? = null) {
+                          private val nativeTrees: NativePreparedTrees? = null, private val nativeJob: Long? = null,
+                          private val acceptedBuilds: AcceptedBuildStore? = null) {
     /**
      * [cachedSelections] looks accepted planner outputs up by selection key ([BenchSelections]). A verified hit skips that
      * arm's `describe`, `plan` and input pinning; a failed lookup is a miss, so the coordinator never blocks preparation.
@@ -102,9 +111,16 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         }
         val inputDigests = BenchInputDigests(::checkActive)
         val builtSelectionKeys = mutableMapOf<String, String?>()
+        // Prepared archives keep the source's identity, on the declared output platform of a separate preparation.
+        fun output(original: WorkerBundle): WorkerBundle = original.build?.preparation?.target?.let { target ->
+            original.copy(os = target.os, arch = target.arch, build = null)
+        } ?: original.copy(build = null)
+        val reusedBundles = mutableMapOf<String, WorkerBundle>()
+        val preparedBuilds = mutableListOf<PreparedBuild>()
         val prepared = manifest.arms.map { it.sha }.distinct().associateWith { sha ->
             val bundle = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            fun copy(built: Path): Path = trace.step("workspace") {
+            var planSource: String? = null
+            fun copy(built: Path, reused: ReusableBuild? = null): Path = trace.step("workspace") {
                 val bench = manifest.experiment.work.bench
                 val paths = if (replay == null) bench?.let { BenchRuns.workspaceInputs(built, it) } else null
                 if (paths != null && replay == null) trace.step("selection") {
@@ -113,10 +129,14 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                     val proof = if (Files.isRegularFile(built.parent.resolve("manifest.json"))) built.parent.resolve("verified.json")
                         else built.resolveSibling("${built.fileName}.verified.json")
                     inputDigests.receipt(built, proof)
-                    for (arm in manifest.arms.filter { it.sha == sha }) builtSelectionKeys[arm.arm.label] = try {
-                        BenchSelections.key(manifest.release, manifest.experiment.repository, requireNotNull(bench),
-                            BenchRuns.request(bench, arm.arm), sha, built, sharing?.let { "shared:${it.identity}" } ?: "local", ::checkActive, inputDigests)
+                    // A reused archive holds only the workspace: its build's plan source came with it.
+                    planSource = if (reused != null) reused.planSource else try {
+                        BenchSelections.source(requireNotNull(bench), sha, built, ::checkActive, inputDigests)
                     } catch (_: IllegalArgumentException) { null } catch (_: java.io.IOException) { null }
+                    for (arm in manifest.arms.filter { it.sha == sha }) builtSelectionKeys[arm.arm.label] = planSource?.let { source -> try {
+                        BenchSelections.key(manifest.release, manifest.experiment.repository, requireNotNull(bench),
+                            BenchRuns.request(bench, arm.arm), sharing?.let { "shared:${it.identity}" } ?: "local", source)
+                    } catch (_: IllegalArgumentException) { null } }
                 }
                 privateWorkspaces?.copy(ExecutionStore.digest(sha), built, ::checkActive, false, paths)?.let { return@step it }
                 val tree = directory.resolve("worktrees/$sha")
@@ -128,13 +148,50 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 if (inputCache != null) inputCache.use(bundle, ::checkActive, { download(bundle) }, trace, consume)
                 else consume(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
             }
-            if (bundle.tree != null && nativeTrees != null) nativeTrees.use(bundle, ::checkActive) { tree, _ -> copy(tree) }
+            /** The accepted archive of this very build, staged and verified in place of building; null builds as usual. */
+            fun reuse(hint: ReusableBuild, store: AcceptedBuildStore): Path? {
+                if (builds.identity(bundle) != hint.identity) {
+                    println("worker accepted build: identity differs, building")
+                    return null
+                }
+                val reused = output(bundle).copy(sha256 = hint.bundle.sha256, files = hint.bundle.files)
+                val started = System.nanoTime()
+                return try {
+                    // The coordinator accepts it for this job only from the store, whichever node cache supplies its bytes.
+                    if (!store.holds(reused)) throw java.io.IOException("accepted build archive is not in the regional store")
+                    val download = { store.open(reused) ?: throw java.io.IOException("accepted build archive is unavailable") }
+                    val tree = trace.step("inputs") {
+                        inputCache?.use(reused, ::checkActive, download, trace) { copy(it, hint) }
+                            ?: copy(cache.stage(reused, ::checkActive, download, trace), hint)
+                    }
+                    trace.cache("build", "hit", "reused-accepted", verificationMs = (System.nanoTime() - started) / 1_000_000,
+                        bytes = reused.files.sumOf { it.bytes }, files = reused.files.size)
+                    reusedBundles[sha] = reused
+                    tree
+                } catch (failure: Exception) {
+                    // A lost lease or deadline ends the preparation; anything else about the hint only costs a build.
+                    if (failure is ExecutionFenced || failure is RunDeadlineExceeded || failure is java.util.concurrent.CancellationException) throw failure
+                    checkActive()
+                    println("worker accepted build unusable, building: ${failure.javaClass.simpleName}: ${failure.message.orEmpty().take(200)}")
+                    directory.resolve("worktrees/$sha").takeIf { Files.exists(it, NOFOLLOW_LINKS) }?.let(::deleteTree)
+                    for (arm in manifest.arms.filter { it.sha == sha }) builtSelectionKeys.remove(arm.arm.label)
+                    planSource = null
+                    null
+                }
+            }
+            val hint = manifest.reusableBuilds?.firstOrNull { it.bundle.commit == sha }
+            val reused = if (hint != null && acceptedBuilds != null && bundle.build != null && replay == null) reuse(hint, acceptedBuilds) else null
+            val tree = reused ?: if (bundle.tree != null && nativeTrees != null) nativeTrees.use(bundle, ::checkActive) { tree, _ -> copy(tree) }
             else if (bundle.build != null) builds.withPreparedSource(bundle, manifest.budget, env, remainingRunMs, ::remaining, trace, ::acquireSource,
-                declaredWorkspace = replay == null, use = ::copy)
+                declaredWorkspace = replay == null) { copy(it) }
             else trace.step("inputs") {
-                inputCache?.use(bundle, ::checkActive, { download(bundle) }, trace, ::copy)
+                inputCache?.use(bundle, ::checkActive, { download(bundle) }, trace) { copy(it) }
                     ?: copy(cache.stage(bundle, ::checkActive, { download(bundle) }, trace))
             }
+            // Offered builds were asked for: report this one so that a later preparation of the same build can reuse it.
+            if (manifest.reusableBuilds != null && bundle.build != null && replay == null)
+                preparedBuilds += PreparedBuild(sha, bundle.os, bundle.arch, if (reused != null) hint!!.identity else builds.identity(bundle), planSource)
+            tree
         }
         val spec = manifest.experiment
         val bench = spec.work.bench
@@ -273,9 +330,7 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         }
         val bundles = prepared.map { (sha, tree) ->
             val original = manifest.bundles.single { it.commit == sha && it.os == os && it.arch == arch }
-            val output = original.build?.preparation?.target?.let { target ->
-                original.copy(os = target.os, arch = target.arch, build = null)
-            } ?: original.copy(build = null)
+            val output = output(original)
             fun publish(zip: Path, built: WorkerBundle): WorkerBundle {
                 // Seed the solve input cache without a coordinator round trip.
                 trace.step("cache-publication") { if (inputCache != null && built.os == os && built.arch == arch) {
@@ -284,7 +339,12 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
                 artifacts["preparation/$sha.zip"] = transfer(zip)
                 return built
             }
-            if (replay != null) {
+            val reused = reusedBundles[sha]
+            if (reused != null) {
+                // The accepted archive stays in the regional store under its hash: nothing to archive or upload.
+                artifacts[preparationArtifact(reused)] = reused.sha256
+                reused
+            } else if (replay != null) {
                 // TrustedQueueSources already copied this accepted input blob into the new job namespace.
                 // Preserve its exact archive identity across changes to compression or archive inventory code.
                 artifacts[preparationArtifact(original)] = original.sha256
@@ -321,7 +381,8 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         trace.ready()
         val timings = trace.snapshot().timings
         println("worker preparation timing: " + timings.entries.joinToString(" ") { "${it.key}Ms=${it.value}" })
-        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs, benchPlan, descriptor, armPlans, selectionCache)
+        return PreparationResult(selections, bundles, corpusBundle, features, artifacts, sharedInputs, benchPlan, descriptor, armPlans, selectionCache,
+            preparedBuilds)
     }
 }
 

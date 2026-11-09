@@ -2,6 +2,7 @@ package com.eignex.lab.domain
 
 import com.eignex.lab.bench.BenchDescriptor
 import com.eignex.lab.bench.BenchPlan
+import com.eignex.lab.util.CommitSha
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -118,7 +119,21 @@ data class PreparationResult(
     val armPlans: Map<String, BenchPlan> = emptyMap(),
     /** Planner outputs offered for reuse; the coordinator moves them to its selection cache on acceptance. */
     val selectionCache: List<BenchSelectionEntry> = emptyList(),
+    /** The builds behind [bundles], reported only when the manifest offered [WorkManifest.reusableBuilds]. */
+    val builds: List<PreparedBuild> = emptyList(),
 )
+
+/**
+ * The build a preparation compiled, or reused, for [commit] from its source bundle for [os] and [arch]: the worker's
+ * build [identity] and, for a bench, its plan source identity, so a later preparation of the same build can reuse it.
+ */
+@Serializable
+data class PreparedBuild(val commit: String, val os: String, val arch: String, val identity: String, val planSource: String? = null) {
+    init {
+        require(CommitSha.isValid(commit) && os in setOf("linux", "mac") && arch in setOf("amd64", "arm64") && identity.matches(SHA256))
+        require(planSource?.let(::validPlanSource) != false)
+    }
+}
 
 /**
  * One repository arm's accepted planner output, kept by the coordinator under [key] ([BenchSelections.key]) so a later

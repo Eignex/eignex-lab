@@ -86,7 +86,8 @@ class PreparationTrace(private val nanoTime: () -> Long = System::nanoTime) {
             "build-hit" to "verified build makes source acquisition unnecessary",
             "receipt-missing" to "missing verification receipt rebuilt", "receipt-rebuilt" to "missing or stale verification receipt rebuilt",
             "regional-present" to "identical build archive already in the regional store", "regional-absent" to "build archive published to the regional store",
-            "accepted-selection" to "reused an accepted plan with the same selection inputs", "job-owned-snapshot" to "prepared files retained with the job")
+            "accepted-selection" to "reused an accepted plan with the same selection inputs", "job-owned-snapshot" to "prepared files retained with the job",
+            "reused-accepted" to "reused an accepted preparation's verified archive of the same build")
         val labels: Map<String, String> = linkedMapOf("preparing" to "Preparing", "inputs" to "Verifying inputs", "download" to "Downloading inputs",
             "build-cache" to "Checking build cache", "cache-cleanup" to "Cleaning build cache", "checkout" to "Checking out source", "compiler-wait" to "Waiting for compiler",
             "compilation" to "Compiling", "build-verification" to "Verifying build outputs", "workspace" to "Creating workspace",

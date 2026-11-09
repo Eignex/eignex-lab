@@ -43,9 +43,22 @@ internal object BenchSelections {
     }
 
     fun key(release: String, repository: String, spec: BenchSpec, request: BenchRequest, commit: String, tree: Path,
-            corpus: String, checkActive: () -> Unit = {}, digests: BenchInputDigests = BenchInputDigests(checkActive), bulkMetadata: Boolean = true): String {
+            corpus: String, checkActive: () -> Unit = {}, digests: BenchInputDigests = BenchInputDigests(checkActive), bulkMetadata: Boolean = true): String =
+        key(release, repository, spec, request, corpus, source(spec, commit, tree, checkActive, digests, bulkMetadata))
+
+    /**
+     * The source identity of [commit]'s plans in its complete prepared [tree]: the commit, or the content of the declared
+     * plan inputs. A preparation that reuses an accepted build gets only that build's runtime workspace, which may lack
+     * the plan inputs, so it keys its plans with the source identity the accepted preparation computed on the same build.
+     */
+    fun source(spec: BenchSpec, commit: String, tree: Path, checkActive: () -> Unit = {},
+               digests: BenchInputDigests = BenchInputDigests(checkActive), bulkMetadata: Boolean = true): String {
         require(CommitSha.isValid(commit))
-        val source = planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive, digests, bulkMetadata) } ?: "commit:$commit"
+        return planInputs(tree, spec)?.let { "declared:" + inventory(tree, listOf(spec.manifest) + it, checkActive, digests, bulkMetadata) } ?: "commit:$commit"
+    }
+
+    fun key(release: String, repository: String, spec: BenchSpec, request: BenchRequest, corpus: String, source: String): String {
+        require(validPlanSource(source)) { "invalid plan source identity" }
         val canonical = BenchProtocol.json.encodeToString(BenchRequest.serializer(), request.copy(parameters = request.parameters.toSortedMap()))
         return ExecutionStore.digest(listOf(VERSION, "release=$release", "repository=$repository", "manifest=${spec.manifest}",
             "request=$canonical", "corpus=$corpus", "source=$source").joinToString("\n"))

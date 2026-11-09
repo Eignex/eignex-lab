@@ -793,6 +793,93 @@ class NomadQueueTest {
         backend.commit(claim.owner, IterationResult(emptyList(), outputs, preparation = result))
     }
 
+    /** A queue that publishes buildable bench sources for cloud workers, whose accepted archives are regional. */
+    private fun reusing(clock: () -> Long = { 1_000_000L }, policy: NomadQueueSettings = settings.copy(reuseAcceptedBuilds = true, maxConcurrentBuildsPerNode = 8)) =
+        NomadQueue(config, store, backend, object : ArtifactStore by artifacts { override fun regional(job: Long, sha: String) = true }, policy, { true },
+            completed = { completions++ }, nativeAllowed = { false }, clock = clock, source = { job, targets, _ ->
+                publications++
+                Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map {
+                    input(job.id, it.os, it.arch).copy(build = WorkerBuild(benchManifest = "bench.json"))
+                }
+            })
+    private fun cloudJob(name: String) = job(ExperimentSpec(name, problems = listOf(mapOf("suite" to "s")), host = Experiments.AWS_HOST))
+    /** Accept [id]'s cloud preparation as a worker that built (or reused) its commit with build [identity]. */
+    private fun prepareBuilt(id: Long, identity: String = "f".repeat(64)) {
+        val (claim, recipe) = preparing(id)
+        val source = recipe.bundles.single()
+        val bundle = source.copy(build = null)
+        val outputs = mapOf(preparationArtifact(bundle) to bundle.sha256)
+        store.execution.phase(claim.owner, "preparing")
+        val plan = com.eignex.lab.bench.BenchPlan(List(2) { com.eignex.lab.bench.BenchCase("p$it",
+            resources = com.eignex.lab.bench.BenchResources(1, 512, 1)) })
+        val selected = backend.selectPreparation(claim.owner, listOf(plan.cases.map(BenchRuns::problem)))
+        val result = PreparationResult(selected, listOf(bundle), artifacts = outputs, benchPlan = plan,
+            benchDescriptor = com.eignex.lab.bench.BenchDescriptor("fixture", "generic queue fixture"),
+            armPlans = recipe.arms.associate { it.arm.label to plan },
+            builds = listOf(PreparedBuild(bundle.commit, source.os, source.arch, identity, "commit:${bundle.commit}")))
+        store.execution.phase(claim.owner, "uploading")
+        backend.commit(claim.owner, IterationResult(emptyList(), outputs, preparation = result))
+    }
+    private fun offered(id: Long) = store.execution.manifest(store.execution.sessions(id).single { it.executionClass == ExecutionClass.PREPARE }.id).reusableBuilds
+
+    @Test fun `a later cloud preparation of the same build is offered the accepted archive`() {
+        val queue = reusing()
+        val first = cloudJob("first-build"); queue.reconcile()
+        val recipe = store.execution.manifest(store.execution.sessions(first).single().id)
+        // Offering nothing still asks the worker for its build reports: protocol 9.
+        assertEquals(emptyList(), recipe.reusableBuilds)
+        assertEquals(9, recipe.schemaVersion)
+        prepareBuilt(first); queue.reconcile()
+        assertTrue(store.job(first)!!.setupDone)
+
+        val second = cloudJob("second-build"); queue.reconcile()
+        val accepted = store.execution.acceptedPreparation(first)!!.bundles.single()
+        assertEquals(listOf(ReusableBuild("f".repeat(64), accepted, "commit:${accepted.commit}")), offered(second))
+
+        // Without the queue setting, manifests stay at their earlier protocol and offer nothing.
+        val plain = reusing(policy = settings.copy(maxConcurrentBuildsPerNode = 8))
+        val third = cloudJob("plain-build"); plain.reconcile()
+        assertNull(offered(third))
+        assertTrue(store.execution.manifest(store.execution.sessions(third).single().id).schemaVersion < 9)
+    }
+
+    @Test fun `an archive that is not regional or a build report without an offer is never recorded`() {
+        val local = NomadQueue(config, store, backend, artifacts, settings.copy(reuseAcceptedBuilds = true, maxConcurrentBuildsPerNode = 8), { true },
+            nativeAllowed = { false }, source = { job, targets, _ ->
+                Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map {
+                    input(job.id, it.os, it.arch).copy(build = WorkerBuild(benchManifest = "bench.json"))
+                }
+            })
+        val first = cloudJob("local-archive"); local.reconcile(); prepareBuilt(first); local.reconcile()
+        val second = cloudJob("after-local-archive"); local.reconcile()
+        assertEquals(emptyList(), offered(second), "a coordinator-held archive cannot be read by cloud workers of another job")
+
+        // A worker may not report builds that the manifest did not ask about.
+        val third = cloudJob("unasked")
+        reusing(policy = settings.copy(maxConcurrentBuildsPerNode = 8)).reconcile()
+        assertFailsWith<IllegalArgumentException> { prepareBuilt(third) }
+    }
+
+    @Test fun `a preparation waits a bounded time for an identical build another job is preparing`() {
+        var at = 1_000_000L
+        val queue = reusing({ at })
+        val first = cloudJob("building"); queue.reconcile()
+        assertEquals(1, store.execution.sessions(first).size)
+
+        val second = cloudJob("waiting"); queue.reconcile()
+        assertEquals(emptyList(), store.execution.sessions(second), "an identical build is in flight")
+        at += BUILD_WAIT_MS - 1; queue.reconcile()
+        assertEquals(emptyList(), store.execution.sessions(second))
+        at += 1; queue.reconcile()
+        assertEquals(emptyList(), offered(second), "after the bound the job builds itself")
+
+        // A job that arrives while it waits receives the archive as soon as the build it waited for is accepted.
+        val third = cloudJob("reusing"); queue.reconcile()
+        assertEquals(emptyList(), store.execution.sessions(third))
+        prepareBuilt(first); queue.reconcile()
+        assertEquals("f".repeat(64), offered(third)?.single()?.identity)
+    }
+
     @Test fun `operator example decodes into pinned native and Spot worker templates`() {
         val example = Json.decodeFromString<NomadQueueSettings>(Files.readString(Path.of("deploy/nomad/queue.example.json")))
         assertEquals(setOf("mac", "linux"), example.targets.map { it.os }.toSet())

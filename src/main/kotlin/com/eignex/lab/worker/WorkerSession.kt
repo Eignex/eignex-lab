@@ -210,7 +210,12 @@ class WorkerSession(private val api: URI, private val id: String, private val to
                             PreparationExecutor(ProcessSupervisor(supervisorSocket), VerifiedCache(root.resolve("cache")),
                                 builds, { download(it, trace) }, if (CliMeasurements.localMacOs) "mac" else "linux", workerArch(),
                                 SharedInputs.environment(publishSignature = ::signature), relay.address, inputCache, workspaceStorage.workspaces, trace, archives = WorkerArchiveCache(cacheRoot.resolve("archives")),
-                                nativeTrees = NativePreparedTrees.environment(), nativeJob = System.getenv("LAB_WORKER_EXPERIMENT")?.toLong())
+                                nativeTrees = NativePreparedTrees.environment(), nativeJob = System.getenv("LAB_WORKER_EXPERIMENT")?.toLong(),
+                                acceptedBuilds = regionalBuilds?.let { regional -> object : AcceptedBuildStore {
+                                    // One request: an unreachable store makes the hint a miss, not a wait.
+                                    override fun holds(bundle: WorkerBundle) = regional.size(bundle.sha256) != null
+                                    override fun open(bundle: WorkerBundle) = regionalDownload(bundle, trace)
+                                } })
                                 .run(manifest, directory, ::runRemainingMs, ::remaining, selectProblems = { selected ->
                                     retry { Json.decodeFromString<List<List<Problem>>>(String(coordinator.json("selection", Json.encodeToString(WorkerSelection(claim.owner, selected))).body())) }
                                 }, cachedSelections = { keys ->
