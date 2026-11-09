@@ -466,25 +466,28 @@ object CompilationReports {
 
     fun write(dir: Path, report: CompilationReport): Path {
         val target = dir.resolve(REPORT)
-        val temporary = dir.resolve("$REPORT.part")
-        Files.writeString(temporary, json.encodeToString(CompilationReport.serializer(), report))
-        Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        target.writeAtomically(json.encodeToString(CompilationReport.serializer(), report))
         return target
     }
 
     /** Write [tasks] as [TASKS] in [dir], one JSON line each; what the report says of the file. */
     fun writeTasks(dir: Path, tasks: List<CompileTask>): TasksFile {
         val target = dir.resolve(TASKS)
-        val temporary = dir.resolve("$TASKS.part")
+        // A temp file of this writer's own, so two writers cannot interleave, and none left behind on a failure.
+        val temporary = Files.createTempFile(dir, ".$TASKS.", ".tmp")
         val digest = MessageDigest.getInstance("SHA-256")
         val counted = CountingStream(DigestOutputStream(Files.newOutputStream(temporary), digest))
-        GZIPOutputStream(counted, 1 shl 16).bufferedWriter(Charsets.UTF_8).use { out ->
-            for (task in tasks) {
-                out.write(lines.encodeToString(CompileTask.serializer(), task))
-                out.write("\n")
+        try {
+            GZIPOutputStream(counted, 1 shl 16).bufferedWriter(Charsets.UTF_8).use { out ->
+                for (task in tasks) {
+                    out.write(lines.encodeToString(CompileTask.serializer(), task))
+                    out.write("\n")
+                }
             }
+            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(temporary)
         }
-        Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         return TasksFile(TASKS, records = tasks.size, bytes = counted.count, sha256 = hex(digest.digest()))
     }
 
