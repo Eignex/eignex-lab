@@ -2,6 +2,7 @@ package com.eignex.lab.worker
 
 import com.eignex.lab.util.hashFile
 import com.eignex.lab.util.hex
+import com.eignex.lab.util.LeaseLost
 import kotlinx.serialization.json.*
 import java.net.URI
 import java.net.http.HttpClient

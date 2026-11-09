@@ -207,13 +207,3 @@ internal fun iterationInputPaths(cases: List<WorkCase>): List<String> = cases.fl
         (case.executionCase ?: case.problem.benchCase)?.inputs.orEmpty().filter { it.root == BenchInputRoot.CORPUS }.map { "lab-corpus/${it.path}" }
 }.filter { it == "lab-corpus" || it.startsWith("lab-corpus/") }
     .map { it.removePrefix("lab-corpus").removePrefix("/") }.distinct()
-
-/** Resolve only known portable roots; old manifests keep their worktree-relative interpretation. */
-internal fun portablePath(value: String, source: Path, corpus: Path): Path {
-    val relative = safeRelative(value)
-    return when (relative.first().toString()) {
-        "lab-source" -> if (relative.nameCount == 1) source else source.resolve(relative.subpath(1, relative.nameCount))
-        "lab-corpus" -> if (relative.nameCount == 1) corpus else corpus.resolve(relative.subpath(1, relative.nameCount))
-        else -> source.resolve(relative)
-    }
-}

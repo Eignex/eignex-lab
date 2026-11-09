@@ -13,7 +13,6 @@ import java.security.MessageDigest
 import java.security.DigestInputStream
 import java.io.FilterInputStream
 import java.util.zip.ZipInputStream
-import com.eignex.lab.worker.WorkerTrees
 import kotlin.io.path.invariantSeparatorsPathString
 
 /** Bounded, locked, checksum-verified extraction with atomic publication. No archive-supplied links or modes. */
@@ -163,9 +162,6 @@ class VerifiedCache(private val root: Path, private val maxBytes: Long = 32L * 1
     }
     private fun remove(path: Path) { Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
 }
-
-private val localFileLocks = Array(256) { Any() }
-internal fun fileLockFor(path: Path): Any = localFileLocks[Math.floorMod(path.toAbsolutePath().normalize().toString().hashCode(), localFileLocks.size)]
 
 /** A selected tree's key: the files it holds, whatever bundle or commit they came from. */
 internal fun selectedCacheKey(files: List<InputFile>): String = ExecutionStore.digest("selected-inputs-v1\n" +
