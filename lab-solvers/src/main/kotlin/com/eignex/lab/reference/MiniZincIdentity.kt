@@ -16,7 +16,7 @@ import kotlinx.serialization.json.JsonPrimitive
 data class MiniZincIdentity(val binary: File, val solver: String, val stats: Map<String, String>) {
     companion object {
         fun capture(requested: String, timeoutMs: Long): MiniZincIdentity {
-            val binary = executable(System.getenv("LAB_MINIZINC") ?: "minizinc")
+            val binary = ReferenceIdentity.executable(System.getenv("LAB_MINIZINC") ?: "minizinc")
             val work = Files.createTempDirectory("minizinc-identity").toFile()
             val started = System.nanoTime()
             val receipts = ArrayList<ToolResourceReceipt>()
@@ -54,7 +54,7 @@ data class MiniZincIdentity(val binary: File, val solver: String, val stats: Map
             val extra = configuration["extraInfo"] as? JsonObject
             val backend = (extra?.get("executable") as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
                 ?: field("executable").takeIf { it.isNotBlank() }
-            val backendHash = backend?.let { hash(executable(it)) } ?: compilerHash
+            val backendHash = backend?.let { hash(ReferenceIdentity.executable(it)) } ?: compilerHash
             val configHash = sha256(configuration.toString().toByteArray())
             return mapOf(
                 "referenceVersion" to "$version|sha256=$compilerHash|solver=$id|version=$solverVersion|sha256=$backendHash|config=$configHash|minizinc-reference-v1",
@@ -64,14 +64,6 @@ data class MiniZincIdentity(val binary: File, val solver: String, val stats: Map
                 "referenceSolverSha256" to backendHash,
                 "referenceSolverConfiguration" to configuration.toString(),
             )
-        }
-
-        private fun executable(requested: String): File {
-            val file = File(requested).takeIf { it.isAbsolute || it.parent != null }
-                ?: System.getenv("PATH").orEmpty().split(File.pathSeparator)
-                    .map { File(it, requested) }.firstOrNull { it.isFile && it.canExecute() }
-                ?: error("MiniZinc executable not found: $requested")
-            return file.canonicalFile.also { check(it.isFile && it.canExecute()) { "not executable: $it" } }
         }
     }
 }

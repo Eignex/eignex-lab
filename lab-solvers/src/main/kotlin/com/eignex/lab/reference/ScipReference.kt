@@ -4,7 +4,6 @@ import com.eignex.lab.checker.*
 import com.eignex.lab.domain.*
 
 import com.eignex.lab.checker.Mps
-import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import com.eignex.lab.checker.ObjectiveSense as ObjectiveDirection
 
@@ -38,21 +37,7 @@ object ScipReference {
     internal const val OPTIONS = "numerics/feastol=1e-06,numerics/epsilon=1e-09,limits/gap=0"
 
     /** The image a result came from, by id, so a rebuilt SCIP never replays an older build's results. */
-    private val image: String by lazy {
-        runCatching {
-            val p = ProcessBuilder(
-                "docker",
-                "image",
-                "inspect",
-                "--format",
-                "{{.Id}}",
-                IMAGE,
-            ).redirectErrorStream(true).start()
-            val id = p.inputStream.bufferedReader().readText().trim()
-            p.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS)
-            id.takeIf { p.exitValue() == 0 }
-        }.getOrNull() ?: "unknown"
-    }
+    private val image: String by lazy { ReferenceIdentity.image(IMAGE, DOCKER_INSPECT_WAIT_MS).executable }
 
     /** What a cached result depends on: the image, the options and the validation rules. */
     fun identity(build: String = image): String = "$IMAGE@$build|$OPTIONS|${MpsWitness.VERSION}"

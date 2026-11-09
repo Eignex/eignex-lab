@@ -30,15 +30,11 @@ object HighsReference {
 
     fun available(): Boolean = NativeReference.available(BINARY)
 
-    /** The build, as `highs --version` prints it. */
+    /** The build, as `highs --version` prints it; a binary that will not say refuses to solve rather than cache under a guess. */
     private val version: String by lazy {
-        runCatching {
-            NativeReference.exec(
-                listOf(BINARY, "--version"),
-                VERSION_WAIT_MS,
-            ).first.lineSequence().first().trim()
+        NativeReference.exec(listOf(BINARY, "--version"), VERSION_WAIT_MS).first.lineSequence().first().trim().also {
+            check(it.isNotBlank() && it.lowercase() !in setOf("unknown", "null", "unavailable")) { "$BINARY did not report its version" }
         }
-            .getOrDefault("").ifEmpty { "unknown" }
     }
 
     /** What a cached result depends on: the build, the options, the retry and the validation rules. */

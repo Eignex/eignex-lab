@@ -35,7 +35,7 @@ data class ReferenceIdentity(val executable: String, val stats: Map<String, Stri
             ))
         }
 
-        private fun executable(requested: String): File {
+        internal fun executable(requested: String): File {
             val binary = File(requested).takeIf { it.isAbsolute || it.parent != null }
                 ?: System.getenv("PATH").orEmpty().split(File.pathSeparator)
                     .map { File(it, requested) }.firstOrNull { it.isFile && it.canExecute() }

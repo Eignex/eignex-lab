@@ -7,7 +7,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
  * XCSP3 reference adapter for CPMpy and OR-Tools cp-sat in the [IMAGE] container.
@@ -47,15 +46,7 @@ object Xcsp3CpSatReference {
     /** Whether the converter image is built (`docker image inspect`). */
     fun imageAvailable(): Boolean = docker.imageAvailable()
 
-    private val image: String by lazy {
-        val p = ProcessBuilder("docker", "image", "inspect", "--format", "{{.Id}}", IMAGE)
-            .redirectErrorStream(true).start()
-        val id = p.inputStream.bufferedReader().readText().trim()
-        check(p.waitFor(DOCKER_INSPECT_WAIT_MS, TimeUnit.MILLISECONDS) && p.exitValue() == 0) {
-            "xcsp3 cp-sat: cannot identify $IMAGE"
-        }
-        id
-    }
+    private val image: String by lazy { ReferenceIdentity.image(IMAGE, DOCKER_INSPECT_WAIT_MS).executable }
 
     fun identity(build: String = image): String = "$IMAGE@$build|$VERSION"
 

@@ -8,23 +8,10 @@ import com.eignex.lab.checker.ToolProcess
 import com.eignex.lab.checker.ToolResourceReceipt
 import java.io.File
 import java.nio.file.Files
-import java.security.MessageDigest
-import java.util.Locale
-import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
 
 object Z3Reference {
-    private val binary by lazy {
-        val requested = System.getenv("LAB_Z3") ?: "z3"
-        val file = if (File(requested).isAbsolute || File(requested).parent != null) {
-            File(requested)
-        } else {
-            System.getenv("PATH").orEmpty().split(File.pathSeparator)
-                .map { File(it, requested) }.firstOrNull { it.isFile && it.canExecute() }
-                ?: error("z3 executable not found: $requested")
-        }
-        file.canonicalFile.also { require(it.isFile && it.canExecute()) { "not executable: $it" } }
-    }
+    private val binary by lazy { ReferenceIdentity.executable(System.getenv("LAB_Z3") ?: "z3") }
     private val memoryMb = (System.getenv("LAB_Z3_MEMORY_MB") ?: "2048").toInt().also {
         require(it > 0) { "z3 memory limit must be positive" }
     }
@@ -35,27 +22,7 @@ object Z3Reference {
 
     fun available(): Boolean = runCatching { NativeReference.available(binary.path) }.getOrDefault(false)
 
-    private val build by lazy {
-        val proc = ProcessBuilder(binary.path, "--version").redirectErrorStream(true).start()
-        try {
-            check(proc.waitFor(EXIT_WAIT_MS, TimeUnit.MILLISECONDS)) { "z3 version timed out" }
-            check(proc.exitValue() == 0) { "z3 version failed" }
-            val version = proc.inputStream.bufferedReader().readText().trim()
-            val digest = MessageDigest.getInstance("SHA-256")
-            binary.inputStream().use { input ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    digest.update(buffer, 0, count)
-                }
-            }
-            val hash = digest.digest().joinToString("") { "%02x".format(Locale.ROOT, it) }
-            "$version|sha256=$hash"
-        } finally {
-            if (proc.isAlive) proc.destroyForcibly()
-        }
-    }
+    private val build by lazy { ReferenceIdentity.native(binary.path, EXIT_WAIT_MS).stats.getValue("referenceVersion") }
 
     fun identity(): String = "$build|memoryMb=$memoryMb|${options.joinToString(",")}|$POLICY"
 
