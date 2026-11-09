@@ -87,3 +87,8 @@ variable "alarm_topic_arn" {
   type    = string
   default = null
 }
+variable "functions_package" {
+  type        = string
+  default     = null
+  description = "The renewal/expiry Lambda package ./gradlew :lab-capacity:capacityFunctions builds; by default build/capacity-functions/aws-capacity-functions.zip of this checkout."
+}

@@ -2,6 +2,8 @@ package com.eignex.lab.execution
 
 import com.eignex.lab.domain.*
 import com.eignex.lab.util.*
+import com.eignex.lab.cloud.aws.AwsCredentials
+import com.eignex.lab.cloud.aws.AwsProfileCredentials
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
@@ -20,13 +22,10 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.Clock
-import java.time.Duration
-import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Base64
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
@@ -132,7 +131,7 @@ internal object InputSigner {
             val config = Json.parseToJsonElement(Files.readString(Path.of(args[1]))).jsonObject
             fun text(name: String) = requireNotNull((config[name] as? JsonPrimitive)?.contentOrNull) { "configuration lacks $name" }
             port = config["port"]?.let { requireNotNull((it as? JsonPrimitive)?.intOrNull) { "port must be a number" } } ?: DEFAULT_PORT
-            val credentials = AwsProfileCredentials(text("profile"))
+            val credentials = AwsProfileCredentials(text("profile"), region = text("region"))
             credentials.invoke()  // an unusable profile stops here, in the service's log, rather than at each request
             presigner = S3Presigner(text("bucket"), text("region"), credentials)
         } catch (e: Exception) {
@@ -142,83 +141,6 @@ internal object InputSigner {
         serve(port) { response(it, presigner) }
         println("input-signer: listening on 127.0.0.1:$port")
         while (true) Thread.sleep(Long.MAX_VALUE)
-    }
-}
-
-/** Credentials that sign AWS requests; [expiration] is null for an access key that does not expire. */
-internal data class AwsCredentials(val accessKeyId: String, val secretAccessKey: String, val sessionToken: String? = null,
-                                   val expiration: Instant? = null) {
-    override fun toString() = "AwsCredentials($accessKeyId)"
-}
-
-/**
- * The credentials of a named profile, resolved as the AWS SDKs do for an explicit profile: an access key in the shared
- * credentials file (`AWS_SHARED_CREDENTIALS_FILE`, `~/.aws/credentials`), else the profile's `credential_process`, else
- * an access key in the config file (`AWS_CONFIG_FILE`, `~/.aws/config`). An access key is read once; a process's
- * credentials are reused until ten minutes before they expire. Roles, SSO and web identities are not supported.
- */
-internal class AwsProfileCredentials(private val profile: String, private val environment: Map<String, String> = System.getenv(),
-                                     private val clock: Clock = Clock.systemUTC()) : () -> AwsCredentials {
-    private var cached: AwsCredentials? = null
-
-    @Synchronized override fun invoke(): AwsCredentials {
-        cached?.let { current -> if (current.expiration == null || current.expiration > clock.instant().plus(REFRESH)) return current }
-        return resolve().also { cached = it }
-    }
-
-    private fun resolve(): AwsCredentials {
-        val home = environment["HOME"] ?: System.getProperty("user.home")
-        fun file(variable: String, default: String) = Path.of((environment[variable] ?: default).replaceFirst(Regex("^~(?=/|$)"), Regex.escapeReplacement(home)))
-        val credentials = ini(file("AWS_SHARED_CREDENTIALS_FILE", "$home/.aws/credentials"))[profile]
-        val config = ini(file("AWS_CONFIG_FILE", "$home/.aws/config")).let { sections ->
-            if (profile == "default") sections["default"] ?: sections["profile default"] else sections["profile $profile"]
-        }
-        check(credentials != null || config != null) { "no AWS profile $profile" }
-        staticKey(credentials)?.let { return it }
-        (credentials?.get("credential_process") ?: config?.get("credential_process"))?.let { return process(it) }
-        return staticKey(config) ?: throw IllegalStateException("AWS profile $profile has no access key or credential_process")
-    }
-
-    private fun staticKey(section: Map<String, String>?): AwsCredentials? {
-        val id = section?.get("aws_access_key_id")?.takeIf { it.isNotEmpty() } ?: return null
-        val secret = section["aws_secret_access_key"]?.takeIf { it.isNotEmpty() } ?: return null
-        return AwsCredentials(id, secret, section["aws_session_token"]?.takeIf { it.isNotEmpty() })
-    }
-
-    private fun process(command: String): AwsCredentials {
-        val process = ProcessBuilder("/bin/sh", "-c", command).redirectError(ProcessBuilder.Redirect.INHERIT).start()
-        process.outputStream.close()
-        val output = process.inputStream.readAllBytes().toString(Charsets.UTF_8)
-        check(process.waitFor(1, TimeUnit.MINUTES) && process.exitValue() == 0) { "credential_process of $profile failed" }
-        val result = Json.parseToJsonElement(output).jsonObject
-        fun field(name: String) = (result[name] as? JsonPrimitive)?.contentOrNull
-        check(field("Version") == "1") { "credential_process of $profile printed an unsupported version" }
-        return AwsCredentials(checkNotNull(field("AccessKeyId")), checkNotNull(field("SecretAccessKey")), field("SessionToken"),
-            field("Expiration")?.let { Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(it)) })
-    }
-
-    companion object {
-        private val REFRESH: Duration = Duration.ofMinutes(10)
-
-        /** The sections of an INI file as the AWS SDKs read it, option names lowercased; none when it is missing. */
-        fun ini(path: Path): Map<String, Map<String, String>> {
-            if (!Files.isRegularFile(path)) return emptyMap()
-            val sections = linkedMapOf<String, MutableMap<String, String>>()
-            var section: MutableMap<String, String>? = null
-            for (raw in Files.readAllLines(path)) {
-                val line = raw.trim()
-                if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) continue
-                if (raw[0].isWhitespace()) continue  // a continuation line, such as a nested s3 setting
-                if (line.startsWith("[") && line.endsWith("]")) {
-                    section = sections.getOrPut(line.substring(1, line.length - 1).trim()) { linkedMapOf() }
-                    continue
-                }
-                val split = line.indexOfFirst { it == '=' || it == ':' }
-                if (split <= 0) continue
-                section?.put(line.substring(0, split).trim().lowercase(), line.substring(split + 1).trim())
-            }
-            return sections
-        }
     }
 }
 

@@ -60,3 +60,8 @@ variable "minimum_features" {
   type    = list(string)
   default = ["avx2"]
 }
+variable "functions_package" {
+  type        = string
+  default     = null
+  description = "The renewal/expiry function source ./gradlew :lab-capacity:capacityFunctions builds; by default build/capacity-functions/gcp-capacity-functions.zip of this checkout."
+}

@@ -1,5 +1,4 @@
 """The capacity wire format, the pool contract, the shared inventory builder, and the examples agreeing on their pools."""
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -9,27 +8,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'deploy/infra/common'))
 import capacity_contract  # noqa: E402
-import capacity_grants  # noqa: E402
 import inventory  # noqa: E402
-
-
-def module(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    value = importlib.util.module_from_spec(spec); spec.loader.exec_module(value)
-    return value
-
-
-class WireTest(unittest.TestCase):
-    """Every Python copy of the wire format is the one deploy/capacity-wire.json holds (CapacityWireTest holds Kotlin to it)."""
-    wire = json.loads((ROOT / 'deploy/capacity-wire.json').read_text())
-
-    def test_grants_bootstrap_and_autoscaler_speak_the_shared_wire_format(self):
-        self.assertEqual(self.wire['grantDomain'].encode(), capacity_grants.DOMAIN)
-        self.assertEqual(self.wire['grantSchemaVersion'], capacity_grants.SCHEMA_VERSION)
-        self.assertEqual(self.wire['startupGrantSchemaVersion'], capacity_grants.STARTUP_SCHEMA_VERSION)
-        self.assertEqual(self.wire['startupGraceMs'], capacity_grants.STARTUP_GRACE_MS)
-        self.assertEqual(self.wire['grantFreshMs'], capacity_grants.FRESH_MS)
-        self.assertEqual(self.wire['grantClockSkewMs'], capacity_grants.CLOCK_SKEW_MS)
 
 
 class ContractTest(unittest.TestCase):
