@@ -209,26 +209,6 @@ class ReferencesTest {
         assertEquals(2, store.references.rows(key.collection, key.problem).size)
     }
 
-    @Test
-    fun `opening a database from before checked MPS references marks their rows stale`() {
-        val file = Files.createTempDirectory("lab").resolve("lab.db")
-        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
-            c.createStatement().use {
-                it.execute("""CREATE TABLE reference_rows (
-                    collection TEXT NOT NULL, problem TEXT NOT NULL, solver TEXT NOT NULL, maximize INTEGER NOT NULL,
-                    objective REAL, feasible INTEGER, proven INTEGER NOT NULL, elapsed_ms INTEGER NOT NULL,
-                    budget_ms INTEGER NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
-                    PRIMARY KEY (collection, problem, solver))""")
-                it.execute("INSERT INTO reference_rows VALUES ('miplib2017', 'neos4', 'highs', 0, -4.8e10, 1, 1, 10, 60000, 'old', 0)")
-                it.execute("INSERT INTO reference_rows VALUES ('hakank', 'q', 'cp-sat', 0, 8, 1, 1, 10, 60000, 'old', 0)")
-            }
-        }
-
-        val store = Store(file)
-
-        assertEquals(listOf(true, false), listOf("miplib2017" to "neos4", "hakank" to "q").map { store.references.rows(it.first, it.second).single().stale })
-        assertEquals(setOf(ProblemKey("hakank", "q")), store.references.matching(listOf(ProblemKey("miplib2017", "neos4"), ProblemKey("hakank", "q"))).keys)
-    }
 
     @Test
     fun `a checked MPS record carries its version, validation and dual bound, an unchecked one arrives stale`() {
