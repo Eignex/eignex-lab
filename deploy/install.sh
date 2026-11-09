@@ -152,13 +152,18 @@ PLIST
 case "$os" in
 Darwin)
   stage="$(mktemp -d)"
-  maintenance="$here/deploy/gradle_maintenance.py"
+  maintenance="$here/deploy/host-maintenance.sh"
   if [[ -z "$dry" ]]; then
     mkdir -p "$LAB_DATA/maintenance"
-    cp "$maintenance" "$LAB_DATA/maintenance/gradle_maintenance.py.new"
-    chmod 700 "$LAB_DATA/maintenance/gradle_maintenance.py.new"
-    mv "$LAB_DATA/maintenance/gradle_maintenance.py.new" "$LAB_DATA/maintenance/gradle_maintenance.py"
-    maintenance="$LAB_DATA/maintenance/gradle_maintenance.py"
+    for script in host-maintenance.sh public-address.sh; do
+      cp "$here/deploy/$script" "$LAB_DATA/maintenance/$script.new"
+      chmod 700 "$LAB_DATA/maintenance/$script.new"
+      mv "$LAB_DATA/maintenance/$script.new" "$LAB_DATA/maintenance/$script"
+    done
+    maintenance="$LAB_DATA/maintenance/host-maintenance.sh"
+  fi
+  if [[ -f "$HOME/.config/eignex-lab/dynamic-dns.json" ]] && ! PATH="$path" command -v jq >/dev/null; then
+    echo "warning: following the public address (dynamic-dns.json) needs jq on the services' PATH: $path" >&2
   fi
   roles=(api runner gradle-maintenance)
   for role in "${roles[@]}"; do
@@ -169,7 +174,7 @@ Darwin)
       /usr/bin/caffeinate -i "$bin" runner ;;
     api) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/api.log" "$bin" api ;;
     gradle-maintenance) plist "$label" '<false/>' "$LAB_DATA" "$LAB_DATA/logs/gradle-maintenance.log" \
-      /usr/bin/python3 "$maintenance" --data "$LAB_DATA" --quiet \
+      /bin/bash "$maintenance" --data "$LAB_DATA" --quiet \
       --cache-gib "${LAB_GRADLE_CACHE_GIB:-2}" --log-mib "${LAB_GRADLE_LOG_MIB:-20}" ;;
     esac > "$stage/$label.plist"
     plutil -lint -s "$stage/$label.plist"
@@ -191,6 +196,7 @@ Darwin)
     sudo install -m 644 -o root -g wheel "$stage/$label.plist" "/Library/LaunchDaemons/$label.plist"
     sudo launchctl bootstrap system "/Library/LaunchDaemons/$label.plist"
   done
+  rm -f "$LAB_DATA/maintenance/gradle_maintenance.py"  # the Python maintenance host-maintenance.sh replaced
   rm -rf "$stage"
   sudo pmset -a sleep 0 disksleep 0
   ;;

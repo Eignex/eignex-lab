@@ -42,11 +42,11 @@ and still binds it; keep it as a loopback alias with a boot service that runs `i
 
 The home address is not guaranteed to stay fixed: when it changes, the A record and the server's advertised RPC
 address both go stale, and the public API, cloud workers and this machine's own Nomad client all stop. The periodic
-maintenance job follows it when `~/.config/eignex-lab/dynamic-dns.json` (mode 600) holds
-`{"token": "...", "domain": "eignex.com", "name": "lab"}` with a DigitalOcean token limited to the domain's
-records: every five minutes it reads the address from OpenDNS's resolver, updates the A record when it differs,
-rewrites `advertise.rpc` in the Nomad server configuration, and restarts the server and client agents. Without
-the file it does nothing.
+maintenance job follows it with `deploy/public-address.sh` (which needs `jq`) when
+`~/.config/eignex-lab/dynamic-dns.json` (mode 600) holds `{"token": "...", "domain": "eignex.com", "name": "lab"}`
+with a DigitalOcean token limited to the domain's records: every five minutes it reads the address from OpenDNS's
+resolver, updates the A record when it differs, rewrites `advertise.rpc` in the Nomad server configuration, and
+restarts the server and client agents. Without the file it does nothing.
 
 ## Storage and updates
 
@@ -71,7 +71,8 @@ lab services (API, runner, coordinator) onto it; Nomad agents and accepted remot
 asks for the same update at once. Check `logs/update.log` if an update fails. Worker images and native launchers are
 not part of it: they stay pinned in `$LAB_DATA/nomad/queue.json` until an operator switches them.
 
-On macOS, installation registers Gradle maintenance every five minutes for `$LAB_DATA/gradle` and `~/.gradle`.
+On macOS, installation registers Gradle maintenance (`deploy/host-maintenance.sh`, run from a copy in
+`$LAB_DATA/maintenance` that updates refresh) every five minutes for `$LAB_DATA/gradle` and `~/.gradle`.
 Each local build cache has a 2 GiB target; eviction waits for Gradle's cache lock and removes older outputs first.
 Stopped daemons' logs rotate above 20 MiB, retaining three compressed tails and expiring logs after seven days.
 Active logs stay intact until the daemon exits. These are periodic limits; active logs and busy caches may temporarily
