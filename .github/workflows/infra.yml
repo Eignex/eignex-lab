@@ -20,4 +20,5 @@ jobs:
           persist-credentials: false
       - run: python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py' -v
       - run: python3 -m unittest discover -s deploy/nomad -p 'test_*.py'
+      - run: bash deploy/nomad/test_native_services.sh
       - run: python3 deploy/infra/validate.py

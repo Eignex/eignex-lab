@@ -247,7 +247,7 @@ Only test reports and non-secret verification summaries are CI artifacts.
 
 ## Managed native services and updates
 
-`native_services.py` manages four separate launchd daemons: the persistent Nomad server, native client, independent
+`native-services.sh` manages four separate launchd daemons: the persistent Nomad server, native client, independent
 process supervisor and lab coordinator. Copy the server/client/coordinator/native-services examples to private local
 configuration, replacing every example path and `203.0.113.10` with the home address. The server listens for RPC on
 all interfaces and advertises the home address so cloud clients reach it through the router; everything else stays on
@@ -256,7 +256,7 @@ Server and client state directories are distinct and persistent; both require TL
 private and back up the Nomad server snapshot alongside the lab database. Bootstrap its ACLs and issue the restricted
 coordinator token separately; never give the management token to a worker.
 
-On the Mac, `python3 deploy/nomad/native_services.py --init-runtime "$LAB_DATA/nomad"` installs
+On the Mac, `bash deploy/nomad/native-services.sh --init-runtime "$LAB_DATA/nomad"` (it needs jq) installs
 the checksum-pinned native binary and initializes CA/server/client/CLI certificates. Set up the coordinator's PKCS12
 stores from those CLI credentials and CA. Render without
 registering anything using `--config native-services.json --output /temporary/review-directory`; review the plists,

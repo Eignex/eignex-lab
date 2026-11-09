@@ -15,7 +15,7 @@ direct S3-to-EC2 transfer within the same region has no data-transfer charge.
 `aws/requirements.txt` environment. Its JSON configuration names `bucket`, `region`, `profile` and optional `port`
 (8093). The signer returns five-minute URLs, never corpus bytes, and only signs input reads or conditional writes
 under a SHA-256 content key or a corpus-pack key. It never distributes provider credentials. Configure native workers/coordinator with
-`LAB_SHARED_INPUT_SIGNER=http://127.0.0.1:8093/`. `native_services.py` accepts an optional `inputSigner` containing
+`LAB_SHARED_INPUT_SIGNER=http://127.0.0.1:8093/`. `nomad/native-services.sh` accepts an optional `inputSigner` containing
 absolute `python`, `script` and `config` paths, keeping the signer independent of Nomad and lab restarts.
 
 Cloud preparations obtain upload URLs through their authenticated, leased worker API session. An attempt-scoped
@@ -75,7 +75,7 @@ set the shared collector's overall `maxVcpus` and pool limits consistently with 
 
 1. Bake a Linux image with Docker, iptables, Python 3.13, host dependencies from `aws/requirements.txt`, and any
    private network client. From this checkout, run `LAB_WORKER_IMAGE=REGISTRY/WORKER@sha256:DIGEST sudo -E bash
-   deploy/infra/common/bake.sh` on the builder. Build the portable worker with `deploy/nomad/worker.Dockerfile`
+   deploy/infra/common/bake.sh` on the builder, which needs curl and unzip. Build the portable worker with `deploy/nomad/worker.Dockerfile`
    first. Record the base image ID, package lock, OCI digest, architecture, Nomad version and toolchain, then
    publish a new immutable AMI. Do not bake credentials or running lab state into it. This recipe installs
    checksum-pinned Nomad and pre-pulls the immutable OCI image; it does not create billable image builders.

@@ -7,6 +7,7 @@ set -euo pipefail
 dry="${LAB_INSTALL_DRY_RUN:-}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 . "$here/deploy/release.sh"
+. "$here/deploy/launchd.sh"
 envfile="$HOME/.config/eignex-lab/lab.env"
 if [[ ! -f "$envfile" ]]; then
   if [[ -n "$dry" ]]; then envfile="$here/deploy/lab.env.example"
@@ -103,8 +104,6 @@ settings() {
   for entry in ${service_env[@]+"${service_env[@]}"}; do echo "$entry"; done
 }
 
-xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<< "$1"; }
-
 # Nomad's server/client/supervisor have independent lifetimes. Existing agents require an explicit maintenance
 # command to change or restart; ordinary installs/updates may restart only the coordinator.
 if [[ -n "${LAB_NOMAD_NATIVE_CONFIG:-}" ]]; then
@@ -112,41 +111,16 @@ if [[ -n "${LAB_NOMAD_NATIVE_CONFIG:-}" ]]; then
   if [[ -n "$dry" ]]; then native_args+=(--output "$(mktemp -d)")
   else native_args+=(--install)
   fi
-  PATH="$path" python3 "$here/deploy/nomad/native_services.py" "${native_args[@]}"
+  PATH="$path" bash "$here/deploy/nomad/native-services.sh" "${native_args[@]}"
 fi
 
-# plist <label> <keep-alive dict> <working dir> <log> <program args...>
+# plist <label> <keep alive: true, false or on-failure> <working dir> <log> <program args...>
 plist() {
-  local label="$1" keepalive="$2" workdir="$3" log="$4"
+  local label="$1" keepalive="$2" workdir="$3" log="$4" interval=""
   shift 4
-  cat <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>$label</string>
-  <key>UserName</key><string>$(id -un)</string>
-  <key>ProgramArguments</key><array>
-PLIST
-  for arg in "$@"; do echo "    <string>$(xml "$arg")</string>"; done
-  cat <<PLIST
-  </array>
-  <key>WorkingDirectory</key><string>$workdir</string>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key>$keepalive
-  <key>ThrottleInterval</key><integer>30</integer>
-$(if [[ "$label" == com.eignex.lab.gradle-maintenance ]]; then echo '  <key>StartInterval</key><integer>300</integer>'; fi)
-  <key>StandardOutPath</key><string>$log</string>
-  <key>StandardErrorPath</key><string>$log</string>
-  <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>$path</string>
-    <key>HOME</key><string>$HOME</string>
-    <key>JAVA_HOME</key><string>$JAVA_HOME</string>
-PLIST
-  settings | while IFS='=' read -r key value; do
-    printf '    <key>%s</key><string>%s</string>\n' "$key" "$(xml "$value")"
-  done
-  echo '  </dict>'
-  echo '</dict></plist>'
+  [[ "$label" != com.eignex.lab.gradle-maintenance ]] || interval=300
+  { echo "PATH=$path"; echo "HOME=$HOME"; echo "JAVA_HOME=$JAVA_HOME"; settings; } |
+    launchd_plist "$label" "$(id -un)" "$workdir" "$log" "$keepalive" "$interval" "$@"
 }
 
 case "$os" in
@@ -170,10 +144,10 @@ Darwin)
     label="com.eignex.lab.$role"
     case "$role" in
     # caffeinate holds the machine awake for as long as the runner lives, whatever the energy settings say.
-    runner) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/runner.log" \
+    runner) plist "$label" on-failure "$LAB_DATA" "$LAB_DATA/logs/runner.log" \
       /usr/bin/caffeinate -i "$bin" runner ;;
-    api) plist "$label" '<dict><key>SuccessfulExit</key><false/></dict>' "$LAB_DATA" "$LAB_DATA/logs/api.log" "$bin" api ;;
-    gradle-maintenance) plist "$label" '<false/>' "$LAB_DATA" "$LAB_DATA/logs/gradle-maintenance.log" \
+    api) plist "$label" on-failure "$LAB_DATA" "$LAB_DATA/logs/api.log" "$bin" api ;;
+    gradle-maintenance) plist "$label" false "$LAB_DATA" "$LAB_DATA/logs/gradle-maintenance.log" \
       /bin/bash "$maintenance" --data "$LAB_DATA" --quiet \
       --cache-gib "${LAB_GRADLE_CACHE_GIB:-2}" --log-mib "${LAB_GRADLE_LOG_MIB:-20}" ;;
     esac > "$stage/$label.plist"
@@ -189,12 +163,7 @@ Darwin)
   done
   for role in "${roles[@]}"; do
     label="com.eignex.lab.$role"
-    sudo launchctl bootout "system/$label" 2>/dev/null || true
-    # bootout returns before the job is gone, and bootstrapping the label while it is
-    # still loaded fails with "Input/output error".
-    for _ in $(seq 60); do sudo launchctl print "system/$label" >/dev/null 2>&1 || break; sleep 1; done
-    sudo install -m 644 -o root -g wheel "$stage/$label.plist" "/Library/LaunchDaemons/$label.plist"
-    sudo launchctl bootstrap system "/Library/LaunchDaemons/$label.plist"
+    reload_daemon "$label" "$stage/$label.plist"
   done
   rm -f "$LAB_DATA/maintenance/gradle_maintenance.py"  # the Python maintenance host-maintenance.sh replaced
   rm -rf "$stage"
