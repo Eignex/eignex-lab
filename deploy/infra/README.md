@@ -238,19 +238,21 @@ provenance. A validated module or a generic Linux Docker smoke run does not sati
 
 ### Regional input cost audit
 
-`aws/audit_inputs.py` reads bucket region, gateway endpoint state, every observed worker's subnet routing,
+`aws/audit-inputs.sh` reads bucket region, gateway endpoint state, every observed worker's subnet routing,
 plus daily account-level S3 and Data Transfer billing. It does not read or copy object bodies, enable paid
 request metrics, or modify infrastructure. Use an operations identity with EC2/S3 describe and Cost Explorer
 read access; workers and the input signer do not need billing permissions. For example:
 
 ```sh
-python3 deploy/infra/aws/audit_inputs.py --cli-credentials \
+bash deploy/infra/aws/audit-inputs.sh \
   --bucket BUCKET --region REGION --endpoint vpce-ID \
   --start YYYY-MM-DD --end YYYY-MM-DD --output input-cost-audit.json
 ```
 
-The end date is exclusive. `--cli-credentials` uses the AWS CLI credential provider, including `aws login`,
-in memory. Billing is account-wide and delayed; empty recent days or a window with no workers cannot prove
+The end date is exclusive. It needs jq and uses the AWS CLI's own credentials (environment, profile or
+`aws login`); `--cli-credentials` is still accepted and changes nothing. It writes the full report to `--output`
+(mode 0600), prints it without billing, and exits 1 unless the endpoint is valid and every observed worker routes
+through it. Billing is account-wide and delayed; empty recent days or a window with no workers cannot prove
 steady-state cache savings. Inspect usage types and estimated-day flags before attributing costs to the lab.
 
 Small-node bootstrap checks use a separate OS-visible memory baseline (`bootstrap_memory_mib`), because baked
