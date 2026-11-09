@@ -1,0 +1,38 @@
+name: images
+
+# The reference solver images the lab builds on its hosts (ScipReference, ClaspReference, Xcsp3CpSatReference) are
+# built here on every change, so a broken Dockerfile or solver script is caught before a host rebuilds it.
+on:
+  push:
+    branches: [main]
+    paths: ['images/**', '.github/workflows/images.yml']
+  pull_request:
+    paths: ['images/**', '.github/workflows/images.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [clasp, scip, xcsp3-cpsat]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build -t "eignex-lab-${{ matrix.image }}:ci" "images/${{ matrix.image }}"
+      - name: Test the cp-sat solver script inside its image
+        if: matrix.image == 'xcsp3-cpsat'
+        run: >-
+          docker run --rm --entrypoint python -v "$PWD/images/xcsp3-cpsat:/src:ro" -w /src
+          eignex-lab-xcsp3-cpsat:ci -m unittest -v test_solve
