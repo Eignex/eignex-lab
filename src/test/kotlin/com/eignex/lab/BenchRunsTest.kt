@@ -184,11 +184,11 @@ class BenchRunsTest {
         val unchecked = ExperimentSpec("bench", bench = BenchSpec("bench.json"))
         val checked = unchecked.copy(bench = unchecked.work.bench!!.copy(sourceValidation = true))
         for (spec in listOf(unchecked, checked)) {
-            val scheduled = SourceValidation.scheduled(spec)
+            val scheduled = ValidationRequest.scheduled(spec)
             assertEquals(spec, scheduled)
             Experiments.validate(scheduled, 4)
-            assertEquals(spec.work.bench!!.sourceValidation, SourceValidation.requested(scheduled))
-            assertEquals(spec.work.bench!!.sourceValidation, SourceValidation.requested(scheduled, emptyMap()))
+            assertEquals(spec.work.bench!!.sourceValidation, ValidationRequest.requested(scheduled))
+            assertEquals(spec.work.bench!!.sourceValidation, ValidationRequest.requested(scheduled, emptyMap()))
         }
         assertNotEquals(Experiments.fingerprint(unchecked), Experiments.fingerprint(checked))
         assertEquals(Experiments.trendFingerprint(unchecked), Experiments.trendFingerprint(checked))

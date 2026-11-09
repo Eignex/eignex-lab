@@ -6,7 +6,6 @@ import kotlinx.serialization.Serializable
 import java.nio.file.Path
 import com.eignex.lab.bench.BenchDescriptor
 import com.eignex.lab.bench.BenchPlan
-import com.eignex.lab.execution.Repositories
 
 @Serializable
 data class InputFile(val path: String, val sha256: String, val bytes: Long, val executable: Boolean = false) {

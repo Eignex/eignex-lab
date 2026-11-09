@@ -4,12 +4,6 @@ import com.eignex.lab.util.*
 
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
-import com.eignex.lab.analysis.Confirm
-import com.eignex.lab.analysis.REFERENCE_BACKEND
-import com.eignex.lab.analysis.SourceValidation
-import com.eignex.lab.execution.BenchRuns
-import com.eignex.lab.execution.ProfileRuns
-import com.eignex.lab.execution.Repositories
 import com.eignex.lab.util.size
 
 /** What the lab does with an [ExperimentSpec]: validate it, expand it into arms, problems and cases, and split it. */
@@ -69,15 +63,15 @@ object Experiments {
         hash(fingerprint(spec) + "\n" + problems.map { "${it.suite}/${it.problem}" }.sorted().joinToString("\n"))
 
     /**
-     * A schedule's trend line: the [fingerprint] without the source-validation request ([SourceValidation.unrequested]).
+     * A schedule's trend line: the [fingerprint] without the source-validation request ([ValidationRequest.unrequested]).
      * The check runs after the solve and changes nothing it does, so checked and unchecked runs of one spec stay one
      * line, each marked as it was checked; confirmations still compare only runs of the same [fingerprint].
      */
-    fun trendFingerprint(spec: ExperimentSpec): String = fingerprint(SourceValidation.unrequested(spec))
+    fun trendFingerprint(spec: ExperimentSpec): String = fingerprint(ValidationRequest.unrequested(spec))
 
     /** [trendFingerprint] over the [problems] a run planned, as [fingerprint] with problems is. */
     fun trendFingerprint(spec: ExperimentSpec, problems: Collection<Problem>): String =
-        fingerprint(SourceValidation.unrequested(spec), problems)
+        fingerprint(ValidationRequest.unrequested(spec), problems)
 
     /**
      * The active job [spec] would split: one queued or running, not being cancelled, that runs the same arms, seeds,
@@ -103,7 +97,7 @@ object Experiments {
             "runtime itself (per-case timeouts, placement on the local machine or a cloud node by load), so don't split or cancel jobs to " +
             "keep them short; read partial results with `lab cases ${job.id}` while it runs"
 
-    private fun exemptFromSplitting(spec: ExperimentSpec) = !spec.work.retired || '@' in spec.name || Confirm.SUFFIX in spec.name
+    private fun exemptFromSplitting(spec: ExperimentSpec) = !spec.work.retired || '@' in spec.name || JobOrigin.CONFIRM_SUFFIX in spec.name
 
     /** What [spec] runs apart from its problems: each arm's values with their defaults filled in, labels left out. */
     private fun splitKey(spec: ExperimentSpec): List<Any> = listOf(
@@ -180,7 +174,7 @@ object Experiments {
     }
 
     /** Refuse a submitted experiment or schedule name the lab would read as a scheduled run (`@`) or a confirmation
-     *  ([Confirm.SUFFIX]): those are the names the lab gives its own jobs, and they change how a job is placed. */
+     *  ([JobOrigin.CONFIRM_SUFFIX]): those are the names the lab gives its own jobs, and they change how a job is placed. */
     fun requirePlainName(name: String) {
         require(name.isNotBlank()) { "name is required" }
         require('@' !in name && '~' !in name) { "name must not contain '@' or '~': the lab reserves them for scheduled runs and confirmations" }
@@ -221,7 +215,7 @@ object Experiments {
         require(bench.replayJobs.values.all { it > 0 })
         require(bench.replayJobs.isEmpty() || bench.frozenCases.isNotEmpty() && bench.replayJobs.keys == arms.map { it.label }.toSet())
         require(arms.size in 1..256 && arms.map { it.label }.distinct().size == arms.size) { "bench arm labels must be unique and bounded" }
-        require(bench.frozenCases.map(BenchRuns::key).distinct().size == bench.frozenCases.size)
+        require(bench.frozenCases.map(BenchCases::key).distinct().size == bench.frozenCases.size)
         for (arm in arms) {
             require(arm.ref.isNotBlank() && !arm.ref.startsWith('-') && arm.ref.none(Char::isISOControl))
             val reference = arm.values["backend"] == REFERENCE_BACKEND
@@ -268,7 +262,7 @@ object Experiments {
         profile.runTimeoutSec?.let { timeout ->
             require(timeout in 1..(Long.MAX_VALUE / 1_000_000_000)) { "profile.runTimeoutSec must be positive and fit a monotonic deadline" }
         }
-        ProfileRuns.validate(spec.repository, profile)
+        ProfileRules.validate(spec.repository, profile)
         require(profile.args.none { '\u0000' in it }) { "profile.args must not hold NUL" }
         arms(spec).single().values[DEBUG_KEY]?.let { require(it.toBooleanStrictOrNull() != null) { "debug must be true or false" } }
         val asked = arms(spec).singleOrNull()?.values?.get("timeout")
@@ -356,15 +350,6 @@ object Experiments {
 
     /** The problem a profile job's single case stands for: it runs no problem, and contributes no reference row. */
     fun profileProblem(spec: ExperimentSpec) = Problem("profile", spec.name)
-
-    /**
-     * The command of a profile job's case: [profile]'s main on the classpath of the bench built at [worktree], its
-     * arguments quoted one by one, recording JFR to `$OUT/profile.jfr`. `$OUT` (whose files come back with the job's),
-     * `$LAB_CORPUS` and `$LAB_WORKTREE` are set for it to read.
-     */
-    fun profileCommand(worktree: String, profile: ProfileMain, index: Int, corpus: String, debug: Boolean = true,
-        repository: String = Repositories.DEFAULT): String =
-        ProfileRuns.command(worktree, repository, profile, index, corpus, debug)
 
     /** Hours [cases] take, each using its full budget, run [parallel] at once within [cores]: the cost of a run where
      *  nothing solves early. The tighter of the two limits sets it. [parallel] counts cases ([caseConcurrency]). */

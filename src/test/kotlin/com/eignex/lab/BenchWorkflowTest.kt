@@ -67,7 +67,7 @@ class BenchWorkflowTest {
             Experiments.trendFingerprint(spec.copy(bench = spec.work.bench!!.copy(sourceValidation = true))))
         assertNotEquals(Experiments.trendFingerprint(spec),
             Experiments.trendFingerprint(spec.copy(base = mapOf("param.source-validation" to "different-policy"))))
-        assertEquals(spec.base, SourceValidation.unrequested(spec).base)
+        assertEquals(spec.base, ValidationRequest.unrequested(spec).base)
     }
 
     @Test fun `confirmations preserve repository request placement and exact pinned workloads`() {
@@ -89,7 +89,7 @@ class BenchWorkflowTest {
 
     @Test fun `legacy solver recipes and implicit profile classpaths are refused`() {
         assertFailsWith<IllegalArgumentException> { Experiments.validate(ExperimentSpec("old", problems = listOf(mapOf("suite" to "specific"))), 4) }
-        assertFailsWith<IllegalArgumentException> { ProfileRuns.validate("Eignex/example", ProfileMain("com.eignex.tools.Main")) }
+        assertFailsWith<IllegalArgumentException> { ProfileRules.validate("Eignex/example", ProfileMain("com.eignex.tools.Main")) }
         val profile = ProfileMain("com.eignex.tools.Main", classpath = listOf("tools/lib/*"))
         assertEquals(emptyList(), ProfileRuns.buildTasks("Eignex/example", profile))
         val command = ProfileRuns.command("/work", "Eignex/example", profile, 0, "/corpus", false)

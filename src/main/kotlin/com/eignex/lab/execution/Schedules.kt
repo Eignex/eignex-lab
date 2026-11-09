@@ -67,9 +67,9 @@ internal class Schedules(
             }.getOrNull() ?: continue
             if (sha == schedule.lastSha && !schedule.launchRequested) continue
             val name = "${schedule.name}@${sha.take(9)}"
-            // Every scheduled solver run asks for source validation ([SourceValidation.scheduled]), whatever spec the
+            // Every scheduled solver run asks for source validation ([ValidationRequest.scheduled]), whatever spec the
             // schedule was saved with.
-            val experiment = SourceValidation.scheduled(schedule.experiment)
+            val experiment = ValidationRequest.scheduled(schedule.experiment)
             val run = experiment.copy(name = name, base = experiment.base + ("ref" to sha),
                 configs = experiment.configs.map { it - "ref" }, grid = experiment.grid - "ref")
             // A schedule's runs stay on the local machine ([Placement.localOnly]) unless its spec opts in to the cloud

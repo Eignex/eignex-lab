@@ -1,7 +1,7 @@
 package com.eignex.lab
 
 import com.eignex.lab.execution.InputRequestRetry
-import com.eignex.lab.store.ExecutionFenced
+import com.eignex.lab.domain.ExecutionFenced
 import java.io.EOFException
 import kotlin.test.*
 

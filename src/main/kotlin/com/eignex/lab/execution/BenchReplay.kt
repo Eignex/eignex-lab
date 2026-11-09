@@ -7,7 +7,6 @@ import com.eignex.lab.domain.*
 import com.eignex.lab.reference.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.*
-import com.eignex.lab.worker.PreparationResult
 
 internal data class ReplaySource(val job: Long, val preparation: PreparationResult, val label: String)
 
