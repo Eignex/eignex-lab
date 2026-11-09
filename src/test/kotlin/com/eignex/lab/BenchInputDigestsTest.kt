@@ -141,6 +141,45 @@ class BenchInputDigestsTest {
         } finally { deleteTree(root) }
     }
 
+    @Test fun `a corpus directory declared by its files pins the digest of exactly those files without reading them`() {
+        val root = Files.createTempDirectory("bench-declared-trees")
+        try {
+            val texts = mapOf("p/model.mzn" to "include \"lib/g.mzn\";", "p/lib/g.mzn" to "predicate g();", "p/d1.dzn" to "n = 1;")
+            for ((path, text) in texts) { Files.createDirectories(root.resolve(path).parent); Files.writeString(root.resolve(path), text) }
+            val files = texts.map { (path, text) -> BenchInput(path, BenchInputRoot.CORPUS, if (path.endsWith("model.mzn")) "model" else "include-file", ExecutionStore.digest(text)) }
+            val tree = BenchInputTrees.declare("p", files)
+            val case = BenchCase("fixture", inputs = listOf(tree) + files)
+            assertEquals(mapOf(tree to texts.mapKeys { it.key.removePrefix("p/") }.mapValues { ExecutionStore.digest(it.value) }), BenchRuns.declaredTrees(case))
+            // The directory as a view of the published files holds exactly them, so reading it pins the same digest.
+            val read = BenchRuns.pinned(case, root, root)
+            val unread = BenchInputDigests(hash = { _, _ -> error("declared input bytes were read") })
+            deleteTree(root.resolve("p"))
+            assertEquals(read, BenchRuns.pinned(case, root, root, digests = unread, trustDeclared = true))
+            assertEquals(0, unread.hashedFiles)
+            assertFails { BenchRuns.pinned(case, root, root) }
+        } finally { deleteTree(root) }
+    }
+
+    @Test fun `a declared tree must match its files and a read directory must hold no others`() {
+        val root = Files.createTempDirectory("bench-mismatched-trees")
+        try {
+            Files.createDirectories(root.resolve("p"))
+            Files.writeString(root.resolve("p/a.mzn"), "a"); Files.writeString(root.resolve("p/b.mzn"), "b")
+            val a = BenchInput("p/a.mzn", BenchInputRoot.CORPUS, "include-file", ExecutionStore.digest("a"))
+            val b = BenchInput("p/b.mzn", BenchInputRoot.CORPUS, "include-file", ExecutionStore.digest("b"))
+            val partial = BenchCase("fixture", inputs = listOf(BenchInputTrees.declare("p", listOf(a, b)), a))
+            val mismatch = assertFailsWith<SharedInputs.DeclaredInputMismatch> { BenchRuns.declaredTrees(partial) }
+            assertTrue(mismatch.detail.startsWith("declared input tree checksum mismatch: p"), mismatch.detail)
+            // Declared by a alone, the tree pins when trusted, but a read directory also holding b is not that tree.
+            val narrow = BenchCase("fixture", inputs = listOf(BenchInputTrees.declare("p", listOf(a)), a))
+            BenchRuns.pinned(narrow, root, root, trustDeclared = true)
+            assertFailsWith<SharedInputs.DeclaredInputMismatch> { BenchRuns.pinned(narrow, root, root) }
+            // An undeclared directory and a single declared file keep their meaning.
+            assertEquals(emptyMap(), BenchRuns.declaredTrees(BenchCase("fixture", inputs = listOf(BenchInput("p", BenchInputRoot.CORPUS, "include"), a))))
+            BenchRuns.validateInputs(narrow, root, root)
+        } finally { deleteTree(root) }
+    }
+
     @Test fun `restored mtimes replacements and nested changes invalidate reused checksums`() {
         val root = Files.createTempDirectory("bench-changed-digests")
         try {
