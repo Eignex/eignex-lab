@@ -44,10 +44,19 @@ class AwsProfileCredentials(private val profile: String, private val environment
     data class AssumeRole(val roleArn: String, val sessionName: String, val externalId: String?, val durationSeconds: Int?, val region: String?)
 
     private var cached: AwsCredentials? = null
+    private var refreshAt: Instant = Instant.MIN
 
     @Synchronized override fun invoke(): AwsCredentials {
-        cached?.let { current -> if (current.expiration == null || current.expiration > clock.instant().plus(REFRESH)) return current }
-        return resolve(profile, emptySet()).also { cached = it }
+        cached?.let { current -> if (current.expiration == null || clock.instant() < refreshAt) return current }
+        val fresh = resolve(profile, emptySet())
+        // Ten minutes ahead, or halfway through credentials that live shorter, such as an `aws login` session's.
+        fresh.expiration?.let { expiration ->
+            val now = clock.instant()
+            val margin = minOf(REFRESH, Duration.between(now, expiration).dividedBy(2))
+            refreshAt = expiration.minus(margin)
+        }
+        cached = fresh
+        return fresh
     }
 
     private fun resolve(name: String, visited: Set<String>): AwsCredentials {
