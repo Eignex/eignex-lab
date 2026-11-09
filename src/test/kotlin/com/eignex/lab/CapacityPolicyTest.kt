@@ -262,6 +262,35 @@ class CapacityPolicyTest {
         assertEquals(0, CapacityPolicy.evaluate(settings, idle, emptyList(), at = 1_000_000).desired[pool.id])
         assertFailsWith<IllegalArgumentException> { pool.copy(warmNodes = pool.maxNodes + 1) }
     }
+    @Test fun `an empty node retires sooner only while no active job could use its pool`() {
+        val quick = settings.copy(pools = listOf(pool.copy(idleUnqueuedMs = 60_000)))
+        val empty = listOf(CapacityNode("empty", pool.id, CapacityNodeState.READY, emptySince = 0))
+        // Two minutes empty: kept while compatible work is queued, retired once none is.
+        assertEquals(1, CapacityPolicy.evaluate(quick, empty, emptyList(), at = 120_000).desired[pool.id])
+        assertEquals(0, CapacityPolicy.evaluate(quick, empty, emptyList(), at = 120_000, unqueued = setOf(pool.id)).desired[pool.id])
+        // Not yet a minute, or without the setting, the pool's idleMs still holds; so does its warm floor.
+        assertEquals(1, CapacityPolicy.evaluate(quick, empty, emptyList(), at = 59_000, unqueued = setOf(pool.id)).desired[pool.id])
+        assertEquals(1, CapacityPolicy.evaluate(settings, empty, emptyList(), at = 120_000, unqueued = setOf(pool.id)).desired[pool.id])
+        val warm = settings.copy(pools = listOf(pool.copy(idleUnqueuedMs = 60_000, warmNodes = 1)))
+        assertEquals(1, CapacityPolicy.evaluate(warm, empty, emptyList(), at = 120_000, unqueued = setOf(pool.id)).desired[pool.id])
+        assertFailsWith<IllegalArgumentException> { pool.copy(idleUnqueuedMs = pool.idleMs + 1) }
+    }
+
+    @Test fun `a pool is unqueued when no active job could use it`() {
+        val arm = pool.copy(id = "arm", nodeClass = "arm", tags = setOf("arch:arm64", "simd:neon"))
+        val both = settings.copy(pools = listOf(pool, arm))
+        fun job(id: Long, spec: ExperimentSpec, paused: Boolean = false) = Job(id, spec.name, "main", status = Status.QUEUED,
+            cancelRequested = false, setupDone = false, createdAt = 1, experiment = spec, paused = paused)
+        val x86 = ExperimentSpec("x86", bench = BenchSpec("bench.json"), host = Experiments.AWS_HOST,
+            nodeTags = NodeSelector(require = setOf("arch:x86_64")))
+        val auto = ExperimentSpec("auto", bench = BenchSpec("bench.json"), host = HostPlacement.AUTO)
+        val local = ExperimentSpec("local", bench = BenchSpec("bench.json"), host = Experiments.LAB_HOST)
+        val onDemand = x86.copy(nodeTags = NodeSelector(require = setOf("arch:x86_64", "on-demand")))
+        assertEquals(setOf("arm"), CapacityObservation.unqueued(both, listOf(job(1, x86)), emptyList()))
+        assertEquals(emptySet(), CapacityObservation.unqueued(both, listOf(job(1, auto)), emptyList()))
+        assertEquals(setOf("general", "arm"), CapacityObservation.unqueued(both, listOf(job(1, local), job(2, auto, paused = true), job(3, onDemand)), emptyList()))
+    }
+
     @Test fun `a terminating instance still consumes quota but cannot restore an old desired count`() {
         val node = CapacityNode("terminating", pool.id, CapacityNodeState.DRAINING, countedInTarget = false)
         val plan = CapacityPolicy.evaluate(settings.copy(maxVcpus = 16), listOf(node), listOf(demand("new")))

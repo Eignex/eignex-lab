@@ -312,7 +312,10 @@ node/vCPU limits, sustained backlog, cooldown and idle retirement. Cloud profile
 on-demand; measurements/builds do not reserve a whole node.
 Every session budget includes its helpers. The policy packs free CPU and memory on ready nodes, accounts for booting
 nodes, preserves per-experiment/per-host parallel caps, and reuses warm capacity for lower-priority eligible work.
-Only old empty nodes contribute to voluntary scale-in. Terminating machines still consume quota until gone, without
+Only old empty nodes contribute to voluntary scale-in: empty for a pool's `idleMs` (default 300000), or for its optional
+`idleUnqueuedMs` (at most `idleMs`) while no active job could use the pool at all: every one is paused, cancelled,
+local-only, or its tags or market rule the pool out. Unset, `idleMs` applies throughout. Deploy the coordinator before
+setting it: an older one refuses the unknown field. Terminating machines still consume quota until gone, without
 restoring an obsolete provider target count. CPU budgets are logical vCPUs, separately from Nomad's MHz conversion.
 
 Set the coordinator's optional `capacity` object to `{"settingsFile":"/private/capacity.json",

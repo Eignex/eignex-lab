@@ -108,6 +108,22 @@ internal object CapacityObservation {
     }
 
     /**
+     * The pools of [settings] that none of the [active] jobs could use: each is paused, cancelled or kept on the local
+     * machine, or its tags or market rule the pool out. A pool's empty nodes then wait only for a job not yet submitted
+     * ([CapacityPool.idleUnqueuedMs]).
+     */
+    fun unqueued(settings: CapacitySettings, active: List<Job>, schedules: List<Schedule>): Set<String> {
+        val candidates = active.filter { job ->
+            val spec = job.experiment
+            !job.paused && !job.cancelRequested && spec.host != Experiments.LAB_HOST &&
+                !Placement.localOnly(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
+        }
+        return settings.pools.filter { pool -> candidates.none { job ->
+            NodeTags.market(job.experiment.nodeTags) == pool.market && NodeTags.matches(job.experiment.nodeTags, pool.capabilities)
+        } }.mapTo(hashSetOf()) { it.id }
+    }
+
+    /**
      * What session [session] of [job], placed as [placement] with [budget], asks of its pool, the one of its node
      * class; null when no configured pool has it. Its experiment's market must be its pool's.
      */
@@ -231,8 +247,10 @@ class CapacityCollector(
         val inventoryAge = fresh.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }
         val blocked = startup.failed.filterValues { it.size >= CapacityStartup.MAX_REPLACEMENTS }.keys
+        val unqueued = if (settings.pools.none { it.idleUnqueuedMs != null }) emptySet()
+            else CapacityObservation.unqueued(settings, store.active(withCommands = false), store.schedules.all())
         val evaluated = CapacityPolicy.evaluate(settings, observations, demands, store.capacityLeases.active(at), state.history, at,
-            growthBlocked = blocked, launched = state.desired)
+            growthBlocked = blocked, launched = state.desired, unqueued = unqueued)
         // A stale pool keeps what it last had: neither grown on demand it cannot see nor shrunk to nothing.
         val held = stale.flatMap { inventory -> inventory.pools.map { pool ->
             pool to (state.desired[pool] ?: inventory.instances.count { it.pool == pool && it.countedInTarget })

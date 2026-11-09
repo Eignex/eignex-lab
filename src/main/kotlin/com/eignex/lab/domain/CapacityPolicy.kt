@@ -28,12 +28,15 @@ data class CapacityPool(
     val minPriority: Int = 0, val sustainedMs: Long = 30_000, val cooldownMs: Long = 60_000, val idleMs: Long = 300_000,
     /** Ready nodes kept without demand, so small jobs skip a node boot; a standing manual lease. Costs while idle. */
     val warmNodes: Int = 0,
+    /** How long an empty node is kept when no active job could use the pool at all; [idleMs] when unset. */
+    val idleUnqueuedMs: Long? = null,
 ) {
     init {
         require(id.matches(Regex("[a-z][a-z0-9-]{0,47}")) && nodeClass.isNotBlank())
         require(vcpus in 1..1024 && memoryMiB > 0 && maxNodes in 1..1000)
         require(reserveMemoryMiB in 0 until memoryMiB)
         require(sustainedMs >= 0 && cooldownMs >= 0 && idleMs >= 0)
+        require(idleUnqueuedMs == null || idleUnqueuedMs in 0..idleMs)
         require(warmNodes in 0..maxNodes)
         NodeTags.validate(NodeSelector(require = tags))
         require("hardware:unknown" !in tags && tags.count { it.startsWith("arch:") } == 1)
@@ -99,7 +102,9 @@ object CapacityPolicy {
     fun evaluate(settings: CapacitySettings, nodes: List<CapacityNode>, demands: List<CapacityDemand>,
                  manual: List<ManualCapacityLease> = emptyList(), previous: Map<String, CapacityHistory> = emptyMap(), at: Long = now(), growthBlocked: Set<String> = emptySet(),
                  /** Each pool's size as the previous decision desired it. */
-                 launched: Map<String, Int> = emptyMap()): CapacityDecision {
+                 launched: Map<String, Int> = emptyMap(),
+                 /** Pools no active job could use ([CapacityPool.idleUnqueuedMs]). */
+                 unqueued: Set<String> = emptySet()): CapacityDecision {
         require(nodes.map { it.id }.distinct().size == nodes.size && demands.map { it.id }.distinct().size == demands.size)
         val pools = settings.pools.associateBy { it.id }
         require(nodes.all { it.pool in pools } && manual.all { it.pool in pools && it.nodes <= pools.getValue(it.pool).maxNodes })
@@ -186,7 +191,9 @@ object CapacityPolicy {
         }
         for (p in settings.pools) {
             val floor = maxOf(p.warmNodes, manual.filter { it.pool == p.id && it.expiresAt > at }.maxOfOrNull { it.nodes } ?: 0)
-            val idle = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.READY && it.allocations.isEmpty() && it.node.emptySince?.let { since -> at - since >= p.idleMs } == true }
+            // With no active job that could use the pool, an empty node only waits for a job not yet submitted.
+            val keep = if (p.id in unqueued) p.idleUnqueuedMs ?: p.idleMs else p.idleMs
+            val idle = bins.count { it.node.pool == p.id && it.node.state == CapacityNodeState.READY && it.allocations.isEmpty() && it.node.emptySince?.let { since -> at - since >= keep } == true }
             // A launch request with no remaining work must not survive indefinitely when Spot is unavailable.
             val unusedLaunches = bins.count { it.node.pool == p.id && it.node.state in setOf(CapacityNodeState.BOOTING, CapacityNodeState.REPLACING) && it.allocations.isEmpty() }
             counts[p.id] = maxOf(counts.getValue(p.id) - idle - unusedLaunches, minOf(floor, counts.getValue(p.id)))
