@@ -2,21 +2,25 @@
 
 ## Regional input cache
 
-`aws/input_store.py` reconnects an existing corpus bucket to an S3 **gateway** endpoint in the workers' region and
+`aws/input-store.sh` reconnects an existing corpus bucket to an S3 **gateway** endpoint in the workers' region and
 route tables. It preserves existing bucket policy statements and data, records a rollback receipt and grants
 credential-free reads only through that endpoint. Writes use short-lived signed URLs and conditional creation
 of new input blobs and corpus packs. Run it with
-`--bucket`, `--region`, `--vpc`, repeated `--route-table`, `--native-user` and `--receipt`. Keep S3 public-access
+`--bucket`, `--region`, `--vpc`, repeated `--route-table`, `--native-user` and `--receipt`; it needs jq and the AWS
+CLI, and uses the CLI's credentials (environment, profile or `aws login`). Each run rewrites the receipt with the policy
+it replaced, so give a rerun a new receipt path to keep the first. Keep S3 public-access
 blocking enabled. Verify unsigned reads fail outside the VPC and work from a Spot worker. Do not route these reads
 through the Mac, a NAT gateway, another region or an interface endpoint. S3 storage and requests remain billable;
 direct S3-to-EC2 transfer within the same region has no data-transfer charge.
 
-`aws/input_signer.py --config FILE` is an optional loopback-only native signing service using the existing
-`aws/requirements.txt` environment. Its JSON configuration names `bucket`, `region`, `profile` and optional `port`
-(8093). The signer returns five-minute URLs, never corpus bytes, and only signs input reads or conditional writes
-under a SHA-256 content key or a corpus-pack key. It never distributes provider credentials. Configure native workers/coordinator with
+`eignex-lab input-signer --config FILE` is an optional loopback-only native signing service. Its JSON configuration
+names `bucket`, `region`, `profile` and optional `port` (8093). The profile's access key is read from
+`~/.aws/credentials` or `~/.aws/config` (or its `credential_process`); roles and SSO are not supported. The signer
+returns five-minute URLs, never corpus bytes, and only signs input reads or conditional writes under a SHA-256 content
+key or a corpus-pack key. It never distributes provider credentials. Configure native workers/coordinator with
 `LAB_SHARED_INPUT_SIGNER=http://127.0.0.1:8093/`. `nomad/native-services.sh` accepts an optional `inputSigner` containing
-absolute `python`, `script` and `config` paths, keeping the signer independent of Nomad and lab restarts.
+an absolute `config` path and runs the signer from `labLauncher`, independent of Nomad and lab restarts: an update
+leaves it on the release it started on, and `--install` restarts it only when its plist changed.
 
 Cloud preparations obtain upload URLs through their authenticated, leased worker API session. An attempt-scoped
 loopback relay lets consumer cache publishers request the same capabilities without receiving the worker token.
@@ -25,14 +29,14 @@ The coordinator signs metadata only; native and cloud uploads send bytes directl
 Cloud preparations keep their build archives there too, under `build-blobs/<sha256>`, and cloud solves read them over
 the gateway endpoint, so a build never crosses the internet. The coordinator checks such an archive by its content
 hash and fetches it only when it reads one itself; source checks stage their files from its own source archive of the
-same commit. Native preparations keep uploading to the coordinator. `input_store.py` grants the prefix and adds a
-lifecycle rule expiring it after 30 days, keeping the bucket's other rules; rerun it once to apply both.
+same commit. Native preparations keep uploading to the coordinator. `input-store.sh` grants the prefix and adds a
+lifecycle rule expiring it after 30 days, keeping the bucket's other rules.
 
 Cloud solves may keep large outputs there as well, under `result-blobs/<sha256>` (see `deploy/nomad/README.md`). The
 coordinator signs the conditional PUT, HEAD and GET of that prefix through the loopback signer, so the signer and the
-native user's policy must allow `result-blobs/`; cloud workers never read it. Until they do, the signer refuses the key
-and workers keep sending those outputs to the coordinator. A lifecycle expiry for the prefix is optional: expired
-outputs stay listed and read as unavailable.
+native user's policy allow `result-blobs/`; cloud workers never read it. `input-store.sh` grants it and expires the
+prefix after 30 days, like build archives; expired outputs stay listed and read as unavailable. A signer older than
+the prefix refuses the key, and workers then keep sending those outputs to the coordinator.
 
 AWS networking and signing are deployment adapters. Portable workers use an HTTPS store and paths/checksums;
 another provider can supply the same HTTP operations and its own regional routing/signing adapter.

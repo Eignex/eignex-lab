@@ -23,4 +23,5 @@ jobs:
       - run: bash deploy/nomad/test_sandbox.sh && bash deploy/nomad/test_autoscaler.sh && bash deploy/nomad/test_prune_runtime.sh
       - run: bash deploy/nomad/test_native_services.sh
       - run: bash deploy/infra/tests/test_host_scripts.sh
+      - run: bash deploy/infra/tests/test_input_store.sh
       - run: bash deploy/infra/validate.sh

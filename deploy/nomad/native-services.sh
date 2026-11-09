@@ -58,7 +58,7 @@ check_agent() {
 render() {
   output="$1"
   local launcher worker binary python socket local_lock home java environment agent_environment
-  local server_path client_path coordinator_config reason file user role signer_python signer_script signer_config
+  local server_path client_path coordinator_config reason file user role signer_config
   local -a roles
   absolute data "$(setting dataDir)"
   # shellcheck disable=SC2154 # absolute sets it
@@ -104,8 +104,9 @@ render() {
   absolute coordinator_config "$(setting coordinatorConfig)"
   roles=(nomad-server nomad-client process-supervisor nomad-coordinator)
   if jq -e "$truthy"'.inputSigner | truthy' <<< "$settings" > /dev/null; then
-    absolute signer_python "$(jq -er '.inputSigner.python' <<< "$settings" || fail "inputSigner lacks python")"
-    absolute signer_script "$(jq -er '.inputSigner.script' <<< "$settings" || fail "inputSigner lacks script")"
+    # The signer runs the lab launcher, whose path stays the same across releases: an update never changes its plist.
+    jq -e '.inputSigner | type == "object" and (has("python") or has("script")) | not' <<< "$settings" > /dev/null ||
+      fail "inputSigner now runs the lab launcher (eignex-lab input-signer): remove its python and script settings"
     absolute signer_config "$(jq -er '.inputSigner.config' <<< "$settings" || fail "inputSigner lacks config")"
     roles+=(input-signer)
   fi
@@ -126,7 +127,7 @@ render() {
     nomad-client) set -- "$@" "$binary" agent -config "$client_path" ;;
     process-supervisor) set -- "$@" "$python" "$pinned" --socket "$socket" --local-lock "$local_lock" ;;
     nomad-coordinator) set -- "$@" "$launcher" nomad-coordinator "$coordinator_config" ;;
-    input-signer) set -- "$@" "$signer_python" "$signer_script" --config "$signer_config" ;;
+    input-signer) set -- "$@" "$launcher" input-signer --config "$signer_config" ;;
     esac
     if [[ "$role" == nomad-coordinator ]]; then printf '%s\n' "$environment"; else printf '%s\n' "$agent_environment"; fi |
       launchd_plist "com.eignex.lab.$role" "$user" "$data" "$data/logs/$role.log" true "" "$@" \
@@ -140,7 +141,7 @@ install_services() {
   for label in "${labels[@]}"; do
     launchctl print "system/$label" >/dev/null 2>&1 && running+=" $label "
     agent=""
-    [[ "$label" == *nomad-coordinator || -n "$restart_agents" ]] || agent=1
+    [[ "$label" == *nomad-coordinator || "$label" == *input-signer || -n "$restart_agents" ]] || agent=1
     if [[ -n "$agent" && "$running" == *" $label "* ]] &&
       ! cmp -s "/Library/LaunchDaemons/$label.plist" "$output/$label.plist"; then
       fail "agent/supervisor changes require explicit --restart-agents maintenance"
@@ -155,7 +156,12 @@ install_services() {
   fi
   [[ -d "$data/logs" ]] || mkdir "$data/logs" || fail "cannot create $data/logs"
   for label in "${labels[@]}"; do
-    [[ "$label" == *nomad-coordinator || -n "$restart_agents" || "$running" != *" $label "* ]] || continue
+    # The signer holds no state: a changed one restarts here, an unchanged one keeps running.
+    if [[ "$label" == *input-signer && -z "$restart_agents" && "$running" == *" $label "* ]]; then
+      ! cmp -s "/Library/LaunchDaemons/$label.plist" "$output/$label.plist" || continue
+    else
+      [[ "$label" == *nomad-coordinator || -n "$restart_agents" || "$running" != *" $label "* ]] || continue
+    fi
     reload_daemon "$label" "$output/$label.plist" || fail "cannot register $label"
   done
   echo "Native services installed. Ordinary lab updates restart only the coordinator/API/runner."
