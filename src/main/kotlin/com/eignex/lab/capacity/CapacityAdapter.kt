@@ -164,7 +164,7 @@ object CapacityAdapter {
     /** The coordinator answering a grant request with a non-2xx [status]. */
     class CoordinatorStatus(val status: Int) : RuntimeException("HTTP $status")
 
-    private val coordinatorClient: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
+    private val coordinatorClient: HttpClient = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(10)).build()
 
     /** Pool [pool]'s fresh signed grant from [coordinator], authorized by the private capacity [key]. */
     fun grant(coordinator: String, pool: String, key: String): JsonElement {
