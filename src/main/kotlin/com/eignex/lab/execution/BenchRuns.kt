@@ -102,17 +102,27 @@ internal object BenchRuns {
      * corpus index instead of materializing the corpus. The inventory line is the one a read would produce, so the
      * digest (and every comparison keyed on it) is unchanged. Only callers whose bytes are verified against the
      * declaration later may trust it: shared-input publication checks local bytes before upload and every iteration
-     * checks fetched bytes before the case runs.
+     * checks fetched bytes before the case runs. A corpus directory declared by its files ([declaredTrees]) is likewise
+     * inventoried from those files as the directory that holds exactly them; read, it must hold exactly them.
      */
     fun pinned(case: BenchCase, source: Path, corpus: Path, runtime: Runtime = Runtime(), digests: BenchInputDigests = BenchInputDigests(),
                trustDeclared: Boolean = false): BenchCase {
         validateInputs(case, source, corpus, digests, trustDeclared)
+        val trees = declaredTrees(case)
         val inventory = case.inputs.flatMap { input ->
-            val declared = input.sha256?.takeIf { trustDeclared }
+            val members = trees[input]
+            // A source tree is local anyway: its directory is read, so files beside the declared ones are noticed.
+            if (members != null && trustDeclared && input.root == BenchInputRoot.CORPUS)
+                return@flatMap treeInventory(members).map { "${input.root}/${input.path}/$it" }
+            val declared = input.sha256?.takeIf { trustDeclared && members == null }
             if (declared != null) return@flatMap listOf("${input.root}/${input.path}/:$declared")
             val base = if (input.root == BenchInputRoot.SOURCE) source else corpus
             val root = base.resolve(input.path)
-            digests.inventory(base, root).map { "${input.root}/${input.path}/$it" }
+            digests.inventory(base, root).also { lines ->
+                if (members != null) requireTree(input, lines.filterNot { it.endsWith(":directory") }.associate {
+                    it.substringBeforeLast(':') to it.substringAfterLast(':')
+                })
+            }.map { "${input.root}/${input.path}/$it" }
         }
         return case.copy(resources = case.resources.copy(requiredTags = case.resources.requiredTags + runtime.requiredTags),
             attributes = case.attributes + ("labInputDigest" to ExecutionStore.digest(inventory.joinToString("\n"))))
@@ -168,13 +178,54 @@ internal object BenchRuns {
 
     fun validateInputs(case: BenchCase, source: Path, corpus: Path, digests: BenchInputDigests = BenchInputDigests(),
                        trustDeclared: Boolean = false) {
+        val trees = declaredTrees(case)
         for (input in case.inputs) {
             val root = if (input.root == BenchInputRoot.SOURCE) source else corpus
             val path = root.resolve(safeRelative(input.path))
             if (trustDeclared && input.sha256 != null) continue
             require(path.toRealPath().startsWith(root.toRealPath())) { "bench input escapes its root" }
+            // A declared tree's files are inputs of their own, each checked against its checksum.
+            if (input in trees) { require(Files.isDirectory(path)) { "declared input tree is not a directory: ${input.path}" }; continue }
             input.sha256?.let { require(Files.isRegularFile(path) && digests.checksum(root, path) == it) { "bench input checksum mismatch" } }
         }
+    }
+
+    /**
+     * [case]'s directories declared by their files ([BenchInputTrees]), each with those files by path relative to it.
+     * An input with a checksum is such a tree when another checksummed input of the same root lies below it; its files
+     * are the checksummed inputs below it that are not trees themselves, and their tree checksum must equal its own.
+     * A mismatch is the repository's declaration error, permanent like a declared file checksum mismatch.
+     */
+    fun declaredTrees(case: BenchCase): Map<BenchInput, Map<String, String>> {
+        val declared = case.inputs.filter { it.sha256 != null }
+        fun below(input: BenchInput, directory: BenchInput) = input.root == directory.root && input.path.startsWith(directory.path + "/")
+        val trees = declared.filter { directory -> declared.any { below(it, directory) } }.distinct()
+        if (trees.isEmpty()) return emptyMap()
+        return trees.associateWith { tree ->
+            val files = declared.filter { below(it, tree) && it !in trees }.groupBy({ it.path.removePrefix(tree.path + "/") }, { it.sha256!! })
+            for ((path, hashes) in files) if (hashes.distinct().size != 1) throw SharedInputs.DeclaredInputMismatch(
+                "declared input checksums differ: ${tree.path}/$path (${hashes.distinct().joinToString()})")
+            files.mapValues { it.value.first() }.also { requireTree(tree, it) }
+        }
+    }
+
+    private fun requireTree(tree: BenchInput, files: Map<String, String>) {
+        val actual = if (files.isEmpty()) "no files" else BenchInputTrees.sha256(files)
+        if (actual != tree.sha256) throw SharedInputs.DeclaredInputMismatch(
+            "declared input tree checksum mismatch: ${tree.path} (declared ${tree.sha256}, files $actual, ${files.size} files)")
+    }
+
+    /** The inventory lines [BenchInputDigests.inventory] reads from a directory holding exactly [files], and no empty
+     * subdirectories: as a shared input view of a declared tree does. */
+    private fun treeInventory(files: Map<String, String>): List<String> {
+        val entries = sortedMapOf<Path, String>(Path.of("") to "directory")
+        for ((relative, sha) in files) {
+            val path = safeRelative(relative)
+            var parent = path.parent
+            while (parent != null) { entries[parent] = "directory"; parent = parent.parent }
+            entries[path] = sha
+        }
+        return entries.map { (path, value) -> "$path:$value" }
     }
 
     fun result(text: String?): BenchResult? = text?.let {

@@ -92,7 +92,9 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val env = workerEnvironment(os == "mac") + (inputSigner?.let { mapOf("LAB_INPUT_SIGNER" to it) } ?: emptyMap())
         // Shared inputs are published by content hash and verified on every fetch, so the bench may plan from a corpus
         // index: it declares each input's sha256 and leaves the bytes unmaterialized (see SharedInputs.publish).
-        val planEnv = if (sharing != null) env + (DECLARED_INPUTS to "true") else env
+        // It may also declare an include directory by its files ([com.eignex.lab.bench.BenchInputTrees]), which are
+        // then published and fetched one by one, so the directory need not be materialized either.
+        val planEnv = if (sharing != null) env + (DECLARED_INPUTS to "true") + (com.eignex.lab.bench.BenchInputTrees.ENVIRONMENT to "true") else env
         val log = directory.resolve("setup.log"); val errors = directory.resolve("setup.err")
         fun run(tree: Path, command: String, output: Path = log, environment: Map<String, String> = env) {
             checkActive()
@@ -248,11 +250,17 @@ internal class PreparationExecutor(private val supervisor: ProcessSupervisor, pr
         val features = emptyList<ProblemFeatures>()
         val artifacts = mutableMapOf<String, String>()
         fun transfer(file: Path): String = trace.step("upload") { upload(file) }
+        val plannedCases = armPlans.values.flatMap { it.cases }
+        // A declared tree is published as its declared files, unless some case names that directory undeclared.
+        val trees = plannedCases.flatMap { BenchRuns.declaredTrees(it).keys }.toSet()
+        val undeclared = plannedCases.flatMap { it.inputs }.filter { it.sha256 == null }.map { it.root to it.path }.toSet()
+        val treePaths = trees.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS && (it.root to it.path) !in undeclared }.map { it.path }.toSet()
         val inputPaths = selections.flatten().flatMap { listOfNotNull(it.model, it.data) + it.includeDirs }
             .filter { it.startsWith("lab-corpus/") }.map { it.removePrefix("lab-corpus/") }.plus(
-                armPlans.values.flatMap { it.cases }.flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
-        val declared = armPlans.values.flatMap { it.cases }.flatMap { it.inputs }
-            .filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS && it.sha256 != null }.associate { it.path to it.sha256!! }
+                plannedCases.flatMap { it.inputs }.filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS }.map { it.path }).distinct()
+            .filterNot { it in treePaths }
+        val declared = plannedCases.flatMap { it.inputs }
+            .filter { it.root == com.eignex.lab.bench.BenchInputRoot.CORPUS && it.sha256 != null && it !in trees }.associate { it.path to it.sha256!! }
         // When no arm planned, the corpus was never fetched here: its accepted shared inputs stand in for publication.
         // Aligned arms resolved identical input digests, so any arm that did plan left every selected input resolvable.
         val sharedInputs = trace.step("shared-inputs") { when {

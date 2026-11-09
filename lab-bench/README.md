@@ -182,6 +182,9 @@ and `plan`, freezes the cases and inventories their inputs. Execution relocates 
 validates input hashes, and runs each case once per execution attempt. Infrastructure retries use the same frozen
 case in a fresh output directory. `BenchContext` exposes `LAB_REPOSITORY`, `LAB_WORKTREE` and `LAB_CORPUS`.
 Use `BenchInput` to name resolved source/corpus files or include directories; absolute paths never enter the plan.
+When the lab sets `LAB_DECLARED_INPUTS` a planner may declare corpus files by `sha256` without their bytes, and when
+it also sets `LAB_DECLARED_TREES` (`BenchInputTrees.ENVIRONMENT`) it may declare a directory by its files with
+`BenchInputTrees.declare(directory, files)`, listing every file below the directory as a declared input as well.
 
 Submit an experiment file with `lab run experiment.json`:
 

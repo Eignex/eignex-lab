@@ -460,6 +460,58 @@ class PortableWorkerTest {
         }
     }
 
+    @Test fun `an include directory declared by stored files plans and publishes without materializing it`(): Unit = service { socket ->
+        val texts = mapOf("p/model.mzn" to "include \"g.mzn\";", "p/g.mzn" to "predicate g();", "p/data/d1.dzn" to "n = 1;")
+        val files = texts.map { (path, text) -> com.eignex.lab.bench.BenchInput(path, com.eignex.lab.bench.BenchInputRoot.CORPUS,
+            if (path.endsWith("model.mzn")) "model" else "include-file", ExecutionStore.digest(text)) }
+        val tree = com.eignex.lab.bench.BenchInputTrees.declare("p", files)
+        fun json(input: com.eignex.lab.bench.BenchInput) =
+            com.eignex.lab.bench.BenchProtocol.json.encodeToString(com.eignex.lab.bench.BenchInput.serializer(), input).replace("\n", "").replace("\"", "\\\"")
+        val inputs = (listOf(tree) + files).joinToString(",") { json(it) }
+        val program = """package fixture;
+            import java.nio.file.*;
+            public class Bench {
+                public static void main(String[] args) throws Exception {
+                    if (args[0].equals("describe")) {
+                        System.out.print("{\"id\":\"fixture\",\"description\":\"declared tree\"}");
+                    } else if (args[0].equals("plan")) {
+                        Path corpus = Path.of(System.getenv("LAB_CORPUS"));
+                        Files.writeString(corpus.resolve("plans"), "plan\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                        if (!"true".equals(System.getenv("LAB_DECLARED_TREES"))) throw new Exception("trees were not offered");
+                        System.out.print("{\"cases\":[{\"id\":\"p\",\"inputs\":[$inputs]}]}");
+                    } else throw new Exception("unexpected invocation");
+                }
+            }
+        """.trimIndent()
+        val (input, bytes) = bundle(mapOf("Bench.java" to program,
+            "bench.json" to """{"main":"fixture.Bench","classpath":["build/classes"],"buildTasks":["installDist"]}""",
+            "gradlew" to "mkdir -p build/classes; javac -d build/classes Bench.java"))
+        val source = input.copy(build = WorkerBuild(listOf("installDist")))
+        val spec = ExperimentSpec("tree", bench = BenchSpec("bench.json"))
+        val manifest = WorkManifest("tree", "release", spec, Experiments.arms(spec).map { PlannedArm(it, source.commit) },
+            emptyList(), listOf(source), ResourceBudget(1000, 2048), preparationTimeoutSec = 60)
+        val stored = texts.values.associate { ExecutionStore.digest(it) to it.length.toLong() }
+        val transport = object : InputTransport {
+            override fun stored(key: String, sha: String): Long? = stored[sha]
+            override fun matches(key: String, file: InputFile, md5: String) = error("a declared tree must not be published from local bytes")
+            override fun put(key: String, source: Path, sha: String) = error("stored inputs must not be uploaded")
+            override fun get(key: String, destination: Path) = error("preparation must not fetch case inputs")
+        }
+        val corpus = Files.createDirectories(root.resolve("tree-corpus"))
+        val result = PreparationExecutor(ProcessSupervisor(socket), VerifiedCache(root.resolve("cache")),
+            WorkerBuildCache(root.resolve("builds"), ProcessSupervisor(socket)), { ByteArrayInputStream(bytes) },
+            source.os, source.arch, shared = SharedInputs(corpus, transport)).run(manifest, root.resolve("tree"), { null }, { 80000 }) { hashFile(it) }
+        assertEquals(1, Files.readAllLines(corpus.resolve("plans")).size, "a covered directory needs no materializing plan")
+        assertFalse(Files.exists(corpus.resolve("p")))
+        assertEquals(texts.keys.sorted(), result.sharedInputs.map { it.file.path })
+        assertEquals(listOf("lab-corpus/p"), result.selections.single().single().includeDirs)
+        // A view of the published files is the directory the plan pinned.
+        val view = Files.createDirectories(root.resolve("tree-view"))
+        for ((path, text) in texts) { Files.createDirectories(view.resolve(path).parent); Files.writeString(view.resolve(path), text) }
+        val case = result.armPlans.values.single().cases.single()
+        assertEquals(case.attributes["labInputDigest"], BenchRuns.pinned(case.copy(attributes = case.attributes - "labInputDigest"), view, view).attributes["labInputDigest"])
+    }
+
     @Test fun `an accepted selection with the same key skips describe plan and pinning`(): Unit = service { socket ->
         fun source(program: String, data: String): Pair<WorkerBundle, ByteArray> {
             val java = """package fixture;

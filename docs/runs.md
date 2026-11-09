@@ -275,6 +275,16 @@ declared SHA-256, local SHA-256 and local byte size. Correct the consuming repos
 or materialized bytes before submitting again. Worker replacement cannot repair this binding, and the lab
 never substitutes different bytes for a declared hash.
 
+With a shared input store, preparation also sets `LAB_DECLARED_TREES=true` for `describe` and `plan`. A bench may
+then declare a directory, such as a MiniZinc include directory, by its files instead of materializing it: the
+directory input carries the tree checksum of `BenchInputTrees` (SHA-256 over each file's relative path and SHA-256
+in path order) and every file below it is a declared input of the same case and root. Preparation pins such a
+corpus directory from the declarations as the directory holding exactly those files, publishes and checks the files
+one by one, and needs no local bytes when the store already holds them; solve workers fetch the directory as those
+files. A tree checksum that does not match its declared files is a permanent preparation failure like a file
+checksum mismatch, and a directory that is read (in a replay, or from the source tree) must hold exactly them.
+A directory some case names without a checksum is still published from local bytes.
+
 The **Nodes** tab shows the local machine, cloud pools, active nodes, and their allocations. To start a specific
 kind of cloud node, select its configured pool by CPU, memory, architecture/SIMD tags, and Spot or on-demand market.
 Choose the minimum total nodes to keep in that pool and a duration of 15–60 minutes. Existing nodes count toward
