@@ -80,6 +80,8 @@ tasks.withType<Test>().configureEach {
     val testHome = layout.buildDirectory.dir("test-home")
     systemProperty("user.home", testHome.get().asFile.absolutePath)
     doFirst { testHome.get().asFile.mkdirs() }
+    // Tests start this process supervisor command instead of the lab's own (SupervisorProcess); a change reruns them.
+    inputs.property("labTestSupervisor", providers.environmentVariable("LAB_TEST_SUPERVISOR").orElse(""))
 }
 
 // install.sh runs the services on the toolchain JDK, so the host needs no JDK 25 of its own.

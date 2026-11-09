@@ -9,16 +9,8 @@ class ProcessSupervisorWriteTest {
     @Test fun `lease callback work is not mistaken for a blocked socket write`() {
         val root = Files.createTempDirectory("sup-write")
         val socket = root.resolve("supervisor.sock")
-        val script = root.resolve("supervisor.py")
-        javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, script) }
-        val service = ProcessBuilder("python3", script.toString(), "--socket", socket.toString())
-            .redirectError(root.resolve("service.err").toFile()).start()
+        val service = SupervisorProcess.start(socket, root.resolve("service.err"))
         try {
-            val deadline = System.nanoTime() + 5_000_000_000
-            while (!Files.exists(socket)) {
-                check(service.isAlive && System.nanoTime() < deadline)
-                Thread.sleep(20)
-            }
             var calls = 0
             val exit = ProcessSupervisor(socket).run(listOf("sleep", "8"), root, System.getenv(),
                 root.resolve("out"), root.resolve("err"), 20) {

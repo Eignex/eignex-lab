@@ -29,14 +29,9 @@ class BenchAdapterIntegrationTest {
             requireNotNull(System.getenv("LAB_BENCH_ADAPTER_MATRIX")) { "Set LAB_BENCH_ADAPTER_MATRIX to a scenario JSON file" })))
         val root = Files.createTempDirectory("bench-adapters-")
         println("Integration outputs: $root")
-        val script = root.resolve("supervisor.py")
-        javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, script) }
         val socket = root.resolve("supervisor.sock")
-        val process = ProcessBuilder("python3", script.toString(), "--socket", socket.toString())
-            .redirectError(root.resolve("supervisor.err").toFile()).start()
+        val process = SupervisorProcess.start(socket, root.resolve("supervisor.err"))
         try {
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-            while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline); Thread.sleep(20) }
             val supervisor = ProcessSupervisor(socket)
             for (scenario in scenarios) {
                 val name = scenario.name

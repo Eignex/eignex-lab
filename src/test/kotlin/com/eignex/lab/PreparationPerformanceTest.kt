@@ -67,11 +67,7 @@ class PreparationPerformanceTest {
             val bundle = archive(source, sourceZip, identity) {}.copy(build = WorkerBuild(listOf("fixture")))
             assertEquals(4096, bundle.files.size)
             assertTrue(bundle.files.sumOf { it.bytes } > 250L * 1024 * 1024)
-            val script = root.resolve("supervisor.py")
-            javaClass.getResourceAsStream("/nomad/process_supervisor.py")!!.use { Files.copy(it, script) }
-            process = ProcessBuilder("python3", script.toString(), "--socket", socket.toString()).redirectError(serviceErrors.toFile()).start()
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-            while (!Files.exists(socket)) { check(process.isAlive && System.nanoTime() < deadline) { Files.readString(serviceErrors) }; Thread.sleep(20) }
+            process = SupervisorProcess.start(socket, serviceErrors)
             val supervisor = ProcessSupervisor(socket)
             val spec = ExperimentSpec("representative-preparation", profile = ProfileMain(script = "gradlew"))
             val manifest = WorkManifest("prepare", "release", spec, Experiments.arms(spec).map { PlannedArm(it, bundle.commit) },

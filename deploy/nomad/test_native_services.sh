@@ -39,7 +39,7 @@ setup() {
       client: {enabled: true, servers: ["10.0.0.1:4647"], reserved: {cpu: 500, memory: 512}},
       plugin: [{raw_exec: {config: [{enabled: true}]}}]}' > "$root/client.json"
   jq -n --arg root "$root" '{dataDir: $root, labLauncher: "/lab/releases/current/bin/eignex-lab",
-    workerLauncher: "/lab/releases/pinned/bin/eignex-lab", nomadBinary: "/lab/nomad-2.0.7", python: "/usr/bin/python3",
+    workerLauncher: "/lab/releases/pinned/bin/eignex-lab", nomadBinary: "/lab/nomad-2.0.7", supervisorLauncher: "/lab/releases/supervisor/bin/eignex-lab",
     supervisorSocket: ($root + "/process.sock"), localLock: ($root + "/native.lock"), home: "/Users/lab",
     path: "/usr/bin:/bin", javaHome: "/lab/jdk25", serverConfig: ($root + "/server.json"),
     clientConfig: ($root + "/client.json"), coordinatorConfig: ($root + "/coordinator.json"), user: "lab",
@@ -53,26 +53,29 @@ render() {  # render: the rendered plists in $root/out; the status is the script
   bash "$script" --config "$root/settings.json" --output "$root/out" > "$root/rendered" 2>&1
 }
 
-test_four_independent_services_and_pinned_supervisor() {
+test_four_independent_services_and_a_pinned_supervisor_release() {
   setup
   check "renders" render
   equal "com.eignex.lab.nomad-client.plist com.eignex.lab.nomad-coordinator.plist com.eignex.lab.nomad-server.plist com.eignex.lab.process-supervisor.plist" \
     "$(cd "$root/out" && echo *)" "four services"
-  local plist label pinned
-  pinned="$root/nomad/supervisor-$(hashicorp_sha256 "$nomad/../../src/main/resources/nomad/process_supervisor.py").py"
-  check "the supervisor script it pins" grep -q "def cleanup" "$nomad/../../src/main/resources/nomad/process_supervisor.py"
+  local plist label expected
   for plist in "$root/out"/*.plist; do
     label="$(basename "$plist" .plist)"
     equal "$label" "$(plist_strings "$plist" Label)" "label of $label"
     check "$label never runs a dev agent" test -z "$(plist_strings "$plist" ProgramArguments | grep -x -- -dev)"
     if [[ "$label" != *nomad-coordinator ]]; then
-      equal "HOME JAVA_HOME PATH" "$(plist_strings "$plist" EnvironmentVariables | sed -n 'p;n' | xargs)" \
+      expected="HOME JAVA_HOME PATH"
+      [[ "$label" != *process-supervisor ]] || expected="EIGNEX_LAB_OPTS HOME JAVA_HOME PATH"
+      equal "$expected" "$(plist_strings "$plist" EnvironmentVariables | sed -n 'p;n' | xargs)" \
         "$label inherits no lab configuration"
     fi
   done
-  equal "/bin/sh|-c|exec \"\$0\" \"\$@\"|/usr/bin/python3|$pinned|--socket|$root/process.sock|--local-lock|$root/native.lock" \
+  equal "/bin/sh|-c|exec \"\$0\" \"\$@\"|/lab/releases/supervisor/bin/eignex-lab|process-supervisor|--socket|$root/process.sock|--local-lock|$root/native.lock" \
     "$(plist_strings "$root/out/com.eignex.lab.process-supervisor.plist" ProgramArguments | paste -sd'|' -)" \
-    "supervisor runs the pinned script with the ownership lock"
+    "supervisor runs from its pinned release with the ownership lock"
+  equal "-Xms4m -Xmx48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1" \
+    "$(plist_strings "$root/out/com.eignex.lab.process-supervisor.plist" EnvironmentVariables | sed -n '/^EIGNEX_LAB_OPTS$/{n;p;}')" \
+    "the supervisor's small JVM"
   check "renders and registers nothing" grep -q "registered nothing" "$root/rendered"
 }
 
@@ -81,6 +84,10 @@ test_rejects_unversioned_worker_and_conflicting_lock() {
   edit "$root/settings.json" '.workerLauncher = .labLauncher'
   render && { echo "  failed: accepted a worker on releases/current" >&2; exit 1; }
   check "explains" grep -q "worker launcher must pin an immutable release" "$root/rendered"
+  setup
+  edit "$root/settings.json" '.supervisorLauncher = .labLauncher'
+  render && { echo "  failed: accepted a supervisor on releases/current" >&2; exit 1; }
+  check "explains" grep -q "supervisor launcher must pin an immutable release" "$root/rendered"
   setup
   edit "$root/settings.json" '.labEnvironment.LAB_NATIVE_EXECUTION_LOCK = "/other/lock"'
   render && { echo "  failed: accepted a conflicting lock" >&2; exit 1; }
@@ -251,8 +258,6 @@ test_installation_restarts_agents_only_when_asked() {
   stub_darwin
   check "first installation" install_services
   equal 4 "$(grep -c '^launchctl bootstrap' "$root/sudo.log")" "all four registered"
-  check "supervisor pinned" test -x "$root/nomad/$(basename "$(plist_strings \
-    "$root/nomad/service-files/com.eignex.lab.process-supervisor.plist" ProgramArguments | sed -n 5p)")"
   check "logs directory" test -d "$root/logs"
   : > "$root/sudo.log"
   check "unchanged agents stay up" install_services

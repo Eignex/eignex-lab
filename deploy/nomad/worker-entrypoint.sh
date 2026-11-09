@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p /local
-python3 /opt/lab/process_supervisor.py --socket "$LAB_SUPERVISOR_SOCKET" &
+# The process supervisor is a small JVM of its own in the same container, outside the worker's failure boundary. Its
+# heap and compiler stay small: the container's memory limit covers it, the worker and the measured processes.
+EIGNEX_LAB_OPTS="${LAB_SUPERVISOR_JVM_OPTS:--Xms4m -Xmx48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1}" \
+  /opt/lab/bin/eignex-lab process-supervisor --socket "$LAB_SUPERVISOR_SOCKET" &
 supervisor=$!
 trap 'kill -TERM "$supervisor" 2>/dev/null || true' EXIT
-for _ in {1..100}; do
+# The JVM listens within about a second; allow 30 s for a cold, small cloud node.
+for _ in {1..600}; do
   [[ -S "$LAB_SUPERVISOR_SOCKET" ]] && break
   kill -0 "$supervisor"
   sleep .05

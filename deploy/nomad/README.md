@@ -107,13 +107,16 @@ Archives are bounded, locked, verified and atomically published; each attempt re
 measurement launcher is installed. Bundle OS/architecture/toolchain identities prevent accidental cache mixing.
 Reference model/data/include paths in a manifest are relative to its bundle, never coordinator filesystem paths.
 
-Run `python3 src/main/resources/nomad/process_supervisor.py --socket /private/path/process.sock` as a separate
-same-user service on the Mac. The socket and ownership registry are private. It must live outside the Nomad client
-and worker services. Each connection owns a process tree; connection loss, lease expiry and timeout stop it.
-An inherited random marker finds children that create new sessions and are reparented; PID/start identity is
-rechecked before signals. A service restart cleans recorded owners before accepting new work. This assumes trusted
-lab programs preserve their inherited marker; it is not a sandbox for hostile executables. Linux uses the same
-supervision protocol inside its allocation, with the Docker cgroup as the final cleanup/enforcement boundary.
+Run `eignex-lab process-supervisor --socket /private/path/process.sock` as a separate same-user service on the
+Mac, from an immutable release (`supervisorLauncher` in the native-services settings). The socket and ownership
+registry are private. It must live outside the Nomad client and worker services. Each connection owns a process
+tree; connection loss, lease expiry and timeout stop it. An inherited random marker finds children that create new
+sessions and are reparented; PID/start identity is rechecked before signals. A service restart cleans recorded owners
+before accepting new work. This assumes trusted lab programs preserve their inherited marker; it is not a sandbox for
+hostile executables. Linux uses the same supervision protocol inside its allocation, with the Docker cgroup as the
+final cleanup/enforcement boundary. The supervisor is a small JVM (48 MiB heap, serial GC, C1 only); every command
+starts under a few lines of `/usr/bin/perl` that call setsid, set umask 077 and report a signal apart from an exit
+code, which Java cannot do itself.
 
 The offline acceptance command is `eignex-lab worker-local manifest.json ROOT SOCKET LAB_LAUNCHER`. Put the approved
 ZIP inputs at `ROOT/inputs/<sha256>.zip`. It runs complete paired iterations without opening SQLite or loading
@@ -126,8 +129,8 @@ Record the resulting registry digest in pool configuration. The pinned multi-arc
 providers; no cloud CLI, provider credential or database is included. The image entrypoint starts its allocation's
 supervisor before invoking the requested worker command.
 
-Image construction sets the executable modes of the entrypoint, supervisor and JVM launcher explicitly. Before
-publishing or activating a digest, run `timeout 30s docker run --rm --network none IMAGE --smoke-test` (on macOS,
+Image construction sets the executable modes of the entrypoint and the JVM launcher, which also runs the supervisor,
+explicitly. Before publishing or activating a digest, run `timeout 30s docker run --rm --network none IMAGE --smoke-test` (on macOS,
 use an equivalent 30-second process timeout). This starts the actual entrypoint and supervisor and invokes the
 packaged JVM launcher offline. Image publishing, host-image baking and the connected CI probe enforce this gate.
 The coordinator ACL needs `read-logs` to retain up to 8 KiB of startup stderr. A missing or collected log remains
@@ -274,10 +277,9 @@ registering anything using `--config native-services.json --output /temporary/re
 then run `--config native-services.json --install`. Setting `LAB_NOMAD_NATIVE_CONFIG` in `lab.env` integrates this
 with `deploy/install.sh`, including its dry run. This does not opt normal submissions in to Nomad.
 
-When job files or the shared worker cache live on an external disk, grant macOS Full Disk Access to both the lab's
-Java executable and the supervisor's Python runtime. For Xcode's bundled Python, macOS can attribute disk access to
-the enclosing Xcode app even when Python itself is enabled; inspect the `tccd` attribution before choosing the entry.
-Restart the drained supervisor after changing its runtime, and verify it can create an output file on the external
+When job files or the shared worker cache live on an external disk, grant macOS Full Disk Access to the lab's Java
+executable (`javaHome`), which runs both the coordinator and the supervisor; inspect the `tccd` attribution if access
+is still denied. Restart the drained supervisor after changing its runtime, and verify it can create an output file on the external
 disk before enabling native scheduling. An HTTP 200 health response alone is insufficient: `held` must also be null.
 
 A loopback client needs an explicit HTTP advertise address, as supplied in `client.example.json`; Nomad refuses

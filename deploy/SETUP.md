@@ -115,8 +115,8 @@ Experiment execution uses Nomad exclusively. The maintenance runner
 keeps schedules, confirmations, capture analysis and reference checking. Old job backend labels are retained as
 historical provenance, and those historical jobs remain readable without enabling an old executor.
 
-macOS installation defaults to no Docker VM and never starts Colima. Grant disk access to the configured Java,
-Python and Nomad executables; Xcode-bundled Python may require the enclosing Xcode app's permission too.
+macOS installation defaults to no Docker VM and never starts Colima. Grant disk access to the configured Java
+and Nomad executables; the process supervisor runs on the same Java.
 
 Review `bash deploy/nomad/prune-runtime.sh --data "$LAB_DATA"` (needs jq and sqlite3), then add `--apply` to remove unused release
 directories and named deployment leftovers. The pruner preserves releases referenced by running processes, installed

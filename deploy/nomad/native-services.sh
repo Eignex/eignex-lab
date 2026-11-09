@@ -11,11 +11,13 @@
 # shellcheck disable=SC1091 # launchd.sh and hashicorp.sh are checked on their own
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-root="$(cd "$here/../.." && pwd)"
 . "$here/../launchd.sh"
 . "$here/hashicorp.sh"
 
 fail() { printf 'native-services: %s\n' "$*" >&2; exit 1; }
+
+# The process supervisor JVM's options; worker-entrypoint.sh gives the cloud workers' supervisor the same.
+supervisor_jvm="-Xms4m -Xmx48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1"
 
 # absolute <variable> <path>: set <variable> to <path> normalised as Python's pathlib writes it; fails unless absolute.
 absolute() {
@@ -54,10 +56,10 @@ check_agent() {
 }
 
 # render [output dir]: validate the settings in $settings and write one plist per service into the output directory,
-# dataDir/nomad/service-files by default. Sets output, labels (in installation order), data, supervisor and pinned.
+# dataDir/nomad/service-files by default. Sets output, labels (in installation order) and data.
 render() {
   output="$1"
-  local launcher worker binary python socket local_lock home java environment agent_environment
+  local launcher worker binary supervisor socket local_lock home java environment agent_environment
   local server_path client_path coordinator_config reason file user role signer_config
   local -a roles
   absolute data "$(setting dataDir)"
@@ -68,7 +70,9 @@ render() {
   absolute worker "$(setting workerLauncher)"
   [[ "$worker/" != */current/* ]] || fail "worker launcher must pin an immutable release"
   absolute binary "$(setting nomadBinary)"
-  absolute python "$(setting python)"
+  absolute supervisor "$(setting supervisorLauncher)"
+  # The supervisor outlives ordinary updates, so it runs from an immutable release, never the moving current one.
+  [[ "$supervisor/" != */current/* ]] || fail "supervisor launcher must pin an immutable release"
   absolute socket "$(setting supervisorSocket)"
   absolute local_lock "$(setting localLock)"
   absolute home "$(setting home)"
@@ -82,9 +86,6 @@ render() {
   # Supervisor and Nomad agents never inherit the lab's provider/control configuration.
   agent_environment="$(jq -r '{PATH, HOME, JAVA_HOME} | to_entries[] | "\(.key)=\(.value)"' <<< "$environment")"
   environment="$(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<< "$environment")"
-  supervisor="$root/src/main/resources/nomad/process_supervisor.py"
-  [[ -f "$supervisor" ]] || fail "no supervisor at $supervisor"
-  pinned="$state/supervisor-$(hashicorp_sha256 "$supervisor").py"
   absolute server_path "$(setting serverConfig)"
   absolute client_path "$(setting clientConfig)"
   for file in "$server_path" "$client_path"; do
@@ -125,11 +126,16 @@ render() {
     case "$role" in
     nomad-server) set -- "$@" "$binary" agent -config "$server_path" ;;
     nomad-client) set -- "$@" "$binary" agent -config "$client_path" ;;
-    process-supervisor) set -- "$@" "$python" "$pinned" --socket "$socket" --local-lock "$local_lock" ;;
+    process-supervisor) set -- "$@" "$supervisor" process-supervisor --socket "$socket" --local-lock "$local_lock" ;;
     nomad-coordinator) set -- "$@" "$launcher" nomad-coordinator "$coordinator_config" ;;
     input-signer) set -- "$@" "$launcher" input-signer --config "$signer_config" ;;
     esac
-    if [[ "$role" == nomad-coordinator ]]; then printf '%s\n' "$environment"; else printf '%s\n' "$agent_environment"; fi |
+    case "$role" in
+    nomad-coordinator) printf '%s\n' "$environment" ;;
+    # A small heap: the supervisor only relays processes, and every MiB it holds is one the measured work lacks.
+    process-supervisor) printf '%s\nEIGNEX_LAB_OPTS=%s\n' "$agent_environment" "$supervisor_jvm" ;;
+    *) printf '%s\n' "$agent_environment" ;;
+    esac |
       launchd_plist "com.eignex.lab.$role" "$user" "$data" "$data/logs/$role.log" true "" "$@" \
         > "$output/com.eignex.lab.$role.plist" || fail "cannot write $output/com.eignex.lab.$role.plist"
   done
@@ -147,13 +153,6 @@ install_services() {
       fail "agent/supervisor changes require explicit --restart-agents maintenance"
     fi
   done
-  # shellcheck disable=SC2174 # only the state directory itself is private
-  mkdir -p -m 700 "$(dirname "$pinned")" || fail "cannot create $(dirname "$pinned")"
-  if [[ -e "$pinned" ]]; then
-    cmp -s "$pinned" "$supervisor" || fail "pinned supervisor differs"
-  else
-    { cp "$supervisor" "$pinned" && chmod 700 "$pinned"; } || fail "cannot pin the supervisor at $pinned"
-  fi
   [[ -d "$data/logs" ]] || mkdir "$data/logs" || fail "cannot create $data/logs"
   for label in "${labels[@]}"; do
     # The signer holds no state: a changed one restarts here, an unchanged one keeps running.
