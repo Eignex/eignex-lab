@@ -230,14 +230,23 @@ class NomadBackend(
             require(preparation.sharedInputs.fold(0L) { total, input -> Math.addExact(total, input.file.bytes) } in 0..32L * 1024 * 1024 * 1024)
             preparation.selections.flatten().forEach { p -> (listOfNotNull(p.model, p.data) + p.includeDirs).forEach(::safeRelative) }
         }
+        if (result.regionalBlobs.isNotEmpty()) {
+            require(session.executionClass == ExecutionClass.SOLVE && result.preparation == null)
+            val named = result.artifacts.values.toSet()
+            require(result.regionalBlobs.all { (sha, bytes) -> SHA256.matches(sha) && sha in named && bytes in 0..ResultBlobs.MAX_BYTES }) {
+                "regional outputs must be this result's own"
+            }
+        }
         for ((name, sha) in result.artifacts) {
             safeRelative(name)
             val indices = result.cases.map { it.index }
             val allowed = indices.any { index -> name in listOf("$index.out", "$index.err", "$index.exit", "$index.termination") || name.startsWith("cases/$index/") } ||
                 name == "nomad/${owner.iteration.replace(':', '-')}-${owner.generation}-resources.json"
             require(allowed || result.preparation?.artifacts?.get(name) == sha && name.startsWith("preparation/")) { "artifact does not belong to this iteration" }
-            artifacts.verify(session.jobId, sha)
+            if (sha !in result.regionalBlobs) artifacts.verify(session.jobId, sha)
         }
+        // Only once the cheap checks pass: each costs the regional store a request.
+        if (result.regionalBlobs.isNotEmpty()) verifyRegional(result.regionalBlobs)
         val projected = if (session.executionClass == ExecutionClass.SOLVE) {
             val receipt = result.artifacts["nomad/${owner.iteration.replace(':', '-')}-${owner.generation}-resources.json"]
             val observation = receipt?.let { sha -> runCatching {
@@ -321,6 +330,22 @@ class NomadBackend(
         store.execution.createSession(id, previous.jobId, previous.executionClass, manifest.release, previous.budget, token, job.toString(), manifest = Json.encodeToString(manifest))
     }
 
+    /**
+     * Accept outputs a cloud worker left in the regional result store only once that store answers for each one, by its
+     * content hash, with its declared size. An unreachable store is transient (the worker retries); a missing or
+     * different object, or no store at all, refuses them ([RegionalResultRefused]) and the worker sends them here.
+     */
+    private fun verifyRegional(blobs: Map<String, Long>) {
+        for ((sha, bytes) in blobs) {
+            val stored = try { artifacts.regionalResult(sha) }
+                catch (failure: java.io.IOException) { throw failure }
+                catch (failure: RegionalResultRefused) { throw failure }
+                catch (failure: Exception) { throw RegionalResultRefused("regional result store refused $sha: ${failure.message}") }
+            if (stored != bytes) throw RegionalResultRefused(
+                if (stored == null) "regional result $sha is missing" else "regional result $sha holds $stored bytes, not $bytes")
+        }
+    }
+
     private fun project(job: Long, result: IterationResult) {
         val directory = jobDirectory(job).toAbsolutePath().normalize(); Files.createDirectories(directory)
         for ((name, sha) in result.artifacts) {
@@ -331,6 +356,14 @@ class NomadBackend(
             var parent = target.parent
             while (parent != directory) { require(!Files.isSymbolicLink(parent)); parent = parent.parent }
             if (Files.isRegularFile(target) && !Files.isSymbolicLink(target) && hashFile(target) == sha) continue
+            // A regional output is first read here: the job directory is what analyses, checks and file reads use. One the
+            // store's lifecycle already expired stays listed but unavailable, rather than holding the job's ingestion.
+            val regional = result.regionalBlobs[sha]
+            if (regional != null && artifacts.offset(job, sha) != regional &&
+                (try { artifacts.regionalResult(sha) } catch (_: RegionalResultRefused) { null }) != regional) {
+                store.execution.note(job, null, "regional-result-unavailable:$name:$sha")
+                continue
+            }
             val staging = Files.createTempFile(target.parent, ".ingest-", ".tmp")
             try { artifacts.open(job, sha).use { Files.copy(it, staging, REPLACE_EXISTING) }; Files.move(staging, target, ATOMIC_MOVE, REPLACE_EXISTING) }
             finally { Files.deleteIfExists(staging) }

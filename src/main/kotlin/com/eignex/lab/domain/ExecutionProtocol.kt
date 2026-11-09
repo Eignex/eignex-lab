@@ -88,8 +88,13 @@ data class ExecutionCaseResult(val index: Int, val exitCode: Int, val startedAt:
     init { require(index >= 0 && finishedAt >= startedAt); require(command == null || command.length <= 65536 && '\u0000' !in command) }
 }
 
+/**
+ * [regionalBlobs] names, by sha256 to size, the outputs among [artifacts] whose bytes a cloud worker left in the regional
+ * result store (`result-blobs/<sha256>`) instead of sending them to the coordinator.
+ */
 @Serializable
-data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false, val preparation: PreparationResult? = null)
+data class IterationResult(val cases: List<ExecutionCaseResult>, val artifacts: Map<String, String> = emptyMap(), val runTimedOut: Boolean = false,
+                           val preparation: PreparationResult? = null, val regionalBlobs: Map<String, Long> = emptyMap())
 
 @Serializable
 data class ExecutionIntent(val id: String, val jobId: Long, val session: String, val operation: IntentOp, val payload: String, val acknowledged: Boolean)
@@ -98,6 +103,12 @@ data class ExecutionIntent(val id: String, val jobId: Long, val session: String,
 @Serializable data class ExecutionEvent(val id: Long, val session: String?, val detail: String, val at: Long)
 
 class ExecutionFenced(message: String) : IllegalStateException(message)
+/**
+ * The coordinator cannot accept a result whose outputs are in the regional result store: the store is not configured, or
+ * an output is missing there or differs from its declared size. Answered as HTTP 422; the worker then sends every output
+ * to the coordinator instead.
+ */
+class RegionalResultRefused(message: String) : RuntimeException(message)
 /** A held solve claim for a worker that waits: answered as HTTP 202 with [SolveWait], never as a drain. */
 class SolveAdmissionHeld : IllegalStateException("solve admission held for result journal drain")
 

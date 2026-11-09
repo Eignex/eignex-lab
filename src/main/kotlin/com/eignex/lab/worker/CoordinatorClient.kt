@@ -70,6 +70,7 @@ internal class CoordinatorClient(
         val elapsed = (System.nanoTime()-started)/1_000_000
         if (elapsed > 250) println("worker request timing: path=$path status=${response.statusCode()} elapsedMs=$elapsed bytes=${body.contentLength()}")
         if (response.statusCode() in setOf(401, 403, 409)) throw ExecutionFenced("worker allocation fenced")
+        if (response.statusCode() == 422) throw RegionalResultRefused("coordinator refused regional results on $path")
         if (path in setOf("commit-inline", "commit-packed", "commit-packed-large", "uploads-packed") && response.statusCode() in setOf(404, 405)) return response
         if (response.statusCode() in setOf(408, 429, 500, 502, 503, 504)) throw WorkerUnavailable(response.statusCode())
         check(response.statusCode() in 200..299) { "worker API HTTP ${response.statusCode()}" }

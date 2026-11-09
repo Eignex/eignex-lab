@@ -30,6 +30,11 @@ interface ArtifactStore {
     fun remember(job: Long, sha: String) { }
     /** Whether [sha] is held only by the regional build store, which readers here would have to fetch it from. */
     fun regional(job: Long, sha: String): Boolean = false
+    /**
+     * The size of result blob [sha] in the regional result store ([com.eignex.lab.execution.ResultBlobs]), null when it is
+     * not there. Throws [RegionalResultRefused] when there is no such store, and an IOException when it cannot be reached.
+     */
+    fun regionalResult(sha: String): Long? = throw RegionalResultRefused("no regional result store")
     /** Return only after all writes in [publish] are durable; providers may share one waited barrier. */
     fun publishBatch(job: Long, publish: () -> Unit) { publish() }
     /** Complete bounded sources; the default retains ordinary confirmed-offset resumable semantics.

@@ -9,9 +9,13 @@ import java.nio.file.Path
 import java.text.Normalizer
 import java.util.Locale
 
-/** Accepted names belong to the result manifest, even when their projection's filesystem folds case. */
+/**
+ * Accepted names belong to the result manifest, even when their projection's filesystem folds case. Outputs a cloud
+ * worker left in the regional result store are listed with the size their result declared, without asking that store,
+ * and read through [regional], which copies one here on its first read.
+ */
 internal class AcceptedArtifactFiles(private val config: Config, private val store: Store, private val artifacts: ArtifactStore,
-                                     private val maxNames: Int = MAX_NAMES) {
+                                     private val maxNames: Int = MAX_NAMES, private val regional: ArtifactStore? = null) {
     data class Artifact(val file: Path, val sha256: String)
     private data class Entry(val version: Int, val names: Map<String, String>, val complete: Boolean,
                              val from: String = "", val through: String? = null) {
@@ -93,9 +97,12 @@ internal class AcceptedArtifactFiles(private val config: Config, private val sto
         val hashes = wanted.values.toSet()
         val known = synchronized(sizes) { hashes.mapNotNull { sha -> sizes[job to sha]?.let { sha to it } }.toMap() }
         val missing = hashes - known.keys
-        val found = try { if (missing.isEmpty()) emptyMap() else artifacts.sizes(job, missing) }
+        val local = try { if (missing.isEmpty()) emptyMap() else artifacts.sizes(job, missing) }
             catch (failure: InterruptedException) { throw failure }
             catch (_: Exception) { emptyMap() }
+        // The declared size of a regional output, checked when its result was accepted; the store need not answer for a listing.
+        val found = if ((missing - local.keys).isEmpty()) local
+            else store.execution.acceptedRegionalBlobs(job).filterKeys { it in missing } + local
         synchronized(sizes) {
             found.forEach { (sha, bytes) -> sizes[job to sha] = bytes }
             while (sizes.size > MAX_NAMES) sizes.remove(sizes.keys.first())
@@ -119,9 +126,20 @@ internal class AcceptedArtifactFiles(private val config: Config, private val sto
             // A result may still be draining from the durable journal, or its older CAS may have been collected.
             // A projection is usable only if it contains exactly the accepted bytes, never a folded sibling's bytes.
             projected?.takeIf { runCatching { hashFile(it) == sha }.getOrDefault(false) }
+                ?: fetchRegional(job, sha)
                 ?: throw ApiError.Unavailable("accepted artifact unavailable")
         }
         return Artifact(file, sha)
+    }
+
+    /** An accepted output held only in the regional result store, copied here and checked by its hash on this first read. */
+    private fun fetchRegional(job: Long, sha: String): Path? {
+        val store = regional ?: return null
+        if (sha !in this.store.execution.acceptedRegionalBlobs(job)) return null
+        return try { store.file(job, sha) } catch (failure: Exception) {
+            System.err.println("job $job regional result $sha unavailable: ${failure.javaClass.simpleName}: ${failure.message}")
+            throw ApiError.Unavailable("accepted artifact is kept in the regional result store and could not be fetched from it; the store may have expired it")
+        }
     }
 
     companion object {

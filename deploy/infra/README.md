@@ -28,6 +28,12 @@ hash and fetches it only when it reads one itself; source checks stage their fil
 same commit. Native preparations keep uploading to the coordinator. `input_store.py` grants the prefix and adds a
 lifecycle rule expiring it after 30 days, keeping the bucket's other rules; rerun it once to apply both.
 
+Cloud solves may keep large outputs there as well, under `result-blobs/<sha256>` (see `deploy/nomad/README.md`). The
+coordinator signs the conditional PUT, HEAD and GET of that prefix through the loopback signer, so the signer and the
+native user's policy must allow `result-blobs/`; cloud workers never read it. Until they do, the signer refuses the key
+and workers keep sending those outputs to the coordinator. A lifecycle expiry for the prefix is optional: expired
+outputs stay listed and read as unavailable.
+
 AWS networking and signing are deployment adapters. Portable workers use an HTTPS store and paths/checksums;
 another provider can supply the same HTTP operations and its own regional routing/signing adapter.
 

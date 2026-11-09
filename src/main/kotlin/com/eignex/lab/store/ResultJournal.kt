@@ -354,6 +354,7 @@ class ResultJournal(private val root: Path, private val external: ArtifactStore,
         check(job, sha)
         return !synchronized(monitor) { index.containsKey(job to sha) } && external.regional(job, sha)
     }
+    override fun regionalResult(sha: String): Long? { require(SHA256.matches(sha)); return external.regionalResult(sha) }
     // Only large preparation archives opt in; the bounded result journal remains unchanged.
     override fun reuse(job: Long, sha: String): Long? { check(job, sha); return external.reuse(job, sha) }
     override fun remember(job: Long, sha: String) { check(job, sha); external.remember(job, sha) }

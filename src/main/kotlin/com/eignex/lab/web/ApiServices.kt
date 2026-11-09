@@ -74,11 +74,13 @@ class ApiServices(val config: Config, val store: Store, val host: HostReport,
     }
     private val fileArtifacts by lazy {
         if (archiveArtifacts != null) localFileArtifacts else BuildArchives.coordinator()?.let {
-            RegionalArtifactStore(localFileArtifacts, it, config.dataDir.resolve("nomad/build-fetches"))
+            RegionalArtifactStore(localFileArtifacts, it, config.dataDir.resolve("nomad/build-fetches"), ResultBlobs.coordinator())
         } ?: localFileArtifacts
     }
     internal val preparedArchives by lazy { PreparedArchiveFiles(config, store, fileArtifacts) }
-    internal val acceptedFiles by lazy { AcceptedArtifactFiles(config, store, localFileArtifacts) }
+    internal val acceptedFiles by lazy {
+        AcceptedArtifactFiles(config, store, localFileArtifacts, regional = fileArtifacts.takeIf { it !== localFileArtifacts })
+    }
     internal val fileInventory = JobFileInventory(
         validate = { id ->
             val status = store.jobStatus(id) ?: throw ApiError.NotFound("no such job $id")
