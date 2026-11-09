@@ -29,7 +29,7 @@ class ConfigTest {
         assertEquals(Defaults.MIN_FREE_GB * BYTES_PER_GB, config.trimCriticalFreeBytes)
         assertEquals(data.resolve("nomad/native.lock"), config.nativeExecutionLock)
         // The defaults a test's Config gets are the same ones; only what belongs to a process, its probes, differs.
-        assertEquals(Config(dataDir = data).copy(auth = config.auth, requireDocker = true, cores = config.cores, javaHome = config.javaHome,
+        assertEquals(Config(dataDir = data).copy(auth = config.auth, requireDocker = true, cores = config.cores,
             volumeAccess = config.volumeAccess), config)
     }
 

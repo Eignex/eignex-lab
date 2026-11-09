@@ -30,7 +30,6 @@ val ktor = "3.2.3"
 
 dependencies {
     implementation(project(":lab-bench"))
-    implementation(project(":lab-model"))
     // The source checkers and reference solvers, and the XCSP3 checker and Choco they alone need.
     implementation(project(":lab-solvers"))
     implementation("io.ktor:ktor-server-core:$ktor")

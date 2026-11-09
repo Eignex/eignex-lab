@@ -93,20 +93,6 @@ object ClaspReference {
         )
     }
 
-    /** Prepend the standard OPB problem line `* #variable= N #constraint= M` when absent (the vendored
-     *  instances omit it and clasp then rejects them). N = the highest `xK` index, M = the number of
-     *  constraint lines (each terminated by `;`), excluding comments and the `min:`/`max:` objective. */
-    fun opbWithProblemLine(text: String): String =
-        ClaspInput.of(Format.OPB) { text.reader().buffered() }.text()
-
-    /**
-     * [text] in the classic `p wcnf` form clasp reads. The MaxSAT Evaluation format since 2022 has no problem
-     * line and marks hard clauses with `h`; they become clauses at the top weight, one more than every soft
-     * weight together, so no set of soft clauses can outweigh one hard clause. A classic file passes unchanged.
-     */
-    fun wcnfWithProblemLine(text: String): String =
-        ClaspInput.of(Format.WCNF) { text.reader().buffered() }.text()
-
     /**
      * An instance as clasp reads it, written in two passes over [open]: the first works out the problem line a
      * file without one needs, the second streams the body through, so the instance is never held in memory.

@@ -42,8 +42,8 @@ jobs:
           cache-read-only: false
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       # The lab's external checkers, so their tests run against the real tools (LAB_REQUIRE_CHECKERS fails them
-      # rather than skipping when a tool cannot be had): GMP for building the MIPLIB solchecker.
-      - run: sudo apt-get update -q && sudo apt-get install -y -q libgmp-dev zlib1g-dev zstd
+      # rather than skipping when a tool cannot be had).
+      - run: sudo apt-get update -q && sudo apt-get install -y -q zstd
       - run: ./gradlew check
         env:
           LAB_REQUIRE_CHECKERS: "1"

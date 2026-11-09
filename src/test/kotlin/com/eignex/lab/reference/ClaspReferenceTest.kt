@@ -72,14 +72,14 @@ class ClaspReferenceTest {
     @Test
     fun `opb should gain the problem line when absent`() {
         val opb = "* a comment\nmin: 1 x1 +2 x2 +3 x3 ;\n+1 x1 +1 x2 >= 1 ;\n+1 x2 +1 x3 >= 1 ;\n"
-        val out = ClaspReference.opbWithProblemLine(opb)
+        val out = ClaspReference.ClaspInput.of(Format.OPB) { opb.reader().buffered() }.text()
         assertEquals("* #variable= 3 #constraint= 2", out.lineSequence().first())
     }
 
     @Test
     fun `opb with an existing problem line should be unchanged`() {
         val opb = "* #variable= 2 #constraint= 1\nmin: 1 x1 +1 x2 ;\n+1 x1 +1 x2 >= 1 ;\n"
-        assertEquals(opb, ClaspReference.opbWithProblemLine(opb))
+        assertEquals(opb, ClaspReference.ClaspInput.of(Format.OPB) { opb.reader().buffered() }.text())
     }
 
     @Test
@@ -88,7 +88,7 @@ class ClaspReferenceTest {
             "+1 x1 +1 x2 >= 1 ;\n"
         assertEquals(
             "* #variable= 2 #constraint= 1 #soft= 1 mincost= 1 maxcost= 1 sumcost= 1",
-            ClaspReference.opbWithProblemLine(opb).lineSequence().first(),
+            ClaspReference.ClaspInput.of(Format.OPB) { opb.reader().buffered() }.text().lineSequence().first(),
         )
     }
 
@@ -96,7 +96,7 @@ class ClaspReferenceTest {
     fun `a new-format wcnf should get a problem line and hard clauses at the top weight`() {
         val wcnf = "c two soft, one hard\nh 1 2 0\n3 -1 0\n4 -2 0\n"
 
-        val out = ClaspReference.wcnfWithProblemLine(wcnf)
+        val out = ClaspReference.ClaspInput.of(Format.WCNF) { wcnf.reader().buffered() }.text()
 
         assertEquals("p wcnf 2 3 8\n8 1 2 0\n3 -1 0\n4 -2 0\n", out)
     }
@@ -105,7 +105,7 @@ class ClaspReferenceTest {
     fun `a classic wcnf should pass unchanged`() {
         val wcnf = "p wcnf 2 2 9\n9 1 2 0\n3 -1 0\n"
 
-        assertEquals(wcnf, ClaspReference.wcnfWithProblemLine(wcnf))
+        assertEquals(wcnf, ClaspReference.ClaspInput.of(Format.WCNF) { wcnf.reader().buffered() }.text())
     }
 
     @Test

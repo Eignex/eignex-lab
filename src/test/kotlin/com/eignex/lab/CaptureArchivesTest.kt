@@ -57,7 +57,7 @@ class CaptureArchivesTest {
      * A campaign-evidence archive and manifest, packed by `campaign-evidence pack` into [into], of a returned job whose
      * case 0 left a HotSpot log, its measurement manifest and the report the lab wrote then; its archive and manifest.
      */
-    private fun packed(into: Path = config.archiveDir): Pair<Path, Path> {
+    private fun packed(into: Path = config.paths.archives): Pair<Path, Path> {
         val tree = temp.resolve("publication").createDirectories()
         val case = tree.resolve(profile).createDirectories()
         case.resolve(CliMeasurements.COMPILATION_LOG).writeText(sample)
@@ -80,7 +80,7 @@ class CaptureArchivesTest {
 
     /** An archive whose single member, besides its catalog, is [name] of [type], with a manifest that lists it as it is. */
     private fun crafted(name: String, type: Char = TarWriter.REGULAR, link: String = ""): Pair<Path, Path> {
-        val dir = config.archiveDir.createDirectories()
+        val dir = config.paths.archives.createDirectories()
         val catalog = JsonObject(mapOf(
             "campaign" to JsonPrimitive("crafted"), "purpose" to JsonPrimitive("p"),
             "references" to JsonArray(listOf(JsonPrimitive("r"))), "limitations" to JsonArray(listOf(JsonPrimitive("l"))),
@@ -155,7 +155,7 @@ class CaptureArchivesTest {
 
     @Test
     fun `a pinned manifest named by its own path in a subdirectory is the one verified against`() {
-        val (archive, manifest) = packed(config.archiveDir.resolve("compilation-test"))
+        val (archive, manifest) = packed(config.paths.archives.resolve("compilation-test"))
         val named = "compilation-test/${archive.name}"
         val manifestNamed = "compilation-test/${manifest.name}"
         val job = analysisJob(AnalyzeSpec(archive = named, sha256 = shaOf(archive), manifest = manifestNamed,
@@ -189,7 +189,7 @@ class CaptureArchivesTest {
         assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(pinned, config.paths, config.archives, temp.resolve("job1")) }.message.orEmpty(),
             "manifest's SHA-256")
         val (other, _) = crafted("cases/0/profile-a/cli.jfr")
-        Files.copy(manifest, config.archiveDir.resolve("mixed.manifest.json"))
+        Files.copy(manifest, config.paths.archives.resolve("mixed.manifest.json"))
         val mixed = AnalyzeSpec(archive = other.name, sha256 = shaOf(other), manifest = "mixed.manifest.json")
         assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(mixed, config.paths, config.archives, temp.resolve("job2")) }.message.orEmpty(),
             "manifest is of archive")
@@ -218,9 +218,9 @@ class CaptureArchivesTest {
     fun `an archive over the size limits is refused, by its size and by what it unpacks to`() {
         val (archive, manifest) = packed(temp.resolve("assets"))
         val spec = AnalyzeSpec(archive = archive.name, sha256 = shaOf(archive))
-        Files.createDirectories(config.archiveDir)
-        Files.copy(archive, config.archiveDir.resolve(archive.name))
-        Files.copy(manifest, config.archiveDir.resolve(manifest.name))
+        Files.createDirectories(config.paths.archives)
+        Files.copy(archive, config.paths.archives.resolve(archive.name))
+        Files.copy(manifest, config.paths.archives.resolve(manifest.name))
         val small = config.copy(archiveMaxBytes = 100)
         assertContains(assertFailsWith<ArchiveException> { CaptureArchives.fetch(spec, small.paths, small.archives, temp.resolve("j1")) }.message.orEmpty(), "over the lab's")
         val unpacked = config.copy(archiveMaxUnpackedBytes = 100)
@@ -243,7 +243,7 @@ class CaptureArchivesTest {
         assertContains(CaptureArchives.refusal(AnalyzeSpec(archive = archive.name), config.paths)!!, "must pin")
         // A link out of the archive directory is not followed, and an archive needs its manifest beside it.
         val outside = temp.resolve("outside.tar.gz").also { Files.copy(archive, it) }
-        Files.createSymbolicLink(config.archiveDir.resolve("linked.tar.gz"), outside)
+        Files.createSymbolicLink(config.paths.archives.resolve("linked.tar.gz"), outside)
         assertContains(refusal("linked.tar.gz")!!, "not a regular file inside")
         Files.delete(manifest)
         assertContains(refusal(archive.name)!!, "no manifest")

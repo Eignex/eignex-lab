@@ -33,8 +33,6 @@ data class Config(
     /** Benchmark instances, rsynced from the dev PC; the bench's own default cache location. */
     val corpusDir: Path = Path("${System.getProperty("user.home")}/.cache/eignex-lab/corpus"),
     val port: Int = Defaults.PORT,
-    /** Default JDK for committed build and launch recipes. */
-    val javaHome: String = System.getenv("JAVA_HOME") ?: "",
     /** JVM flags for lab-owned reference solver processes. */
     val solveJavaOpts: String = Defaults.SOLVE_JAVA_OPTS,
     /** The most cases one native worker session runs at once, whatever vCPUs its job has: each holds its own solve
@@ -134,8 +132,6 @@ data class Config(
     val nativeYield: Path get() = paths.nativeYield
 
     val localNodeTags: Set<String> get() = NodeTags.observed(cpuCapabilities, nodeTags)
-    val archiveDir: Path get() = paths.archives
-
     val database: Path get() = paths.database
     val githubTokenFile: Path get() = paths.githubToken
     val mirror: Path get() = paths.mirror
@@ -175,7 +171,6 @@ data class Config(
                 launcher = read.string("LAB_LAUNCHER", "$dataDir/releases/current/bin/eignex-lab"),
                 corpusDir = read.path("LAB_CORPUS", Path("${System.getProperty("user.home")}/.cache/eignex-lab/corpus")),
                 port = read.int("LAB_PORT", Defaults.PORT, 1..65535),
-                javaHome = read.string("LAB_JAVA_HOME", env["JAVA_HOME"].orEmpty()),
                 solveJavaOpts = read.string("LAB_SOLVE_JAVA_OPTS", Defaults.SOLVE_JAVA_OPTS),
                 maxParallel = maxParallel,
                 defaultParallel = read.int("LAB_DEFAULT_PARALLEL", Defaults.DEFAULT_PARALLEL.coerceAtMost(maxParallel), 1..maxParallel.coerceAtLeast(1)),

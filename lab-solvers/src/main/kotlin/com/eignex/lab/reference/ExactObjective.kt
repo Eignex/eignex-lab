@@ -28,7 +28,6 @@ internal class ExactObjective private constructor(
     operator fun div(other: ExactObjective): ExactObjective =
         normalized(numerator * other.denominator, denominator * other.numerator)
 
-    val integral: Boolean get() = denominator == BigInteger.ONE
 
     private fun normalized(n: BigInteger, d: BigInteger): ExactObjective = requireNotNull(parse("$n/$d"))
 
