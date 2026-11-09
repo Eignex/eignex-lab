@@ -24,7 +24,7 @@ bin="$(release "$here" "$LAB_DATA")"
 # The periodic maintenance runs copies outside the checkout; keep them on this checkout's version. A job install.sh
 # registered before the bash scripts runs its own frozen gradle_maintenance.py until install.sh registers it again.
 if [[ -f "$LAB_DATA/maintenance/host-maintenance.sh" ]]; then
-  for script in host-maintenance.sh public-address.sh; do
+  for script in host-maintenance.sh public-address.sh worker-rollout.sh; do
     install -m 700 "$here/deploy/$script" "$LAB_DATA/maintenance/$script.new"
     mv "$LAB_DATA/maintenance/$script.new" "$LAB_DATA/maintenance/$script"
   done

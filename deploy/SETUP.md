@@ -68,8 +68,13 @@ only update channel. Every `LAB_UPDATE_CHECK_SEC` seconds (default 300; 0 turns 
 that checkout and, when its upstream is ahead, runs `deploy/update.sh` between cases, never during one: native workers
 yield after their current iteration first. The update pulls, builds a new release, checks the host and restarts the
 lab services (API, runner, coordinator) onto it; Nomad agents and accepted remote work keep running. `deploy/lab update`
-asks for the same update at once. Check `logs/update.log` if an update fails. Worker images and native launchers are
-not part of it: they stay pinned in `$LAB_DATA/nomad/queue.json` until an operator switches them.
+asks for the same update at once. Check `logs/update.log` if an update fails. Worker images and native launchers follow
+separately: every five minutes the maintenance job runs `deploy/worker-rollout.sh`, which, once the release's commit
+has its worker images on public ECR (`<commit>-amd64`, `<commit>-arm64`, published by the `worker-image` workflow),
+pins them by digest in `$LAB_DATA/nomad/queue.json`, points the native launcher at the new release, keeps the old
+release in `workerReplaces` so its sessions finish, and restarts the coordinator. Its result is in
+`$LAB_DATA/maintenance/gradle-maintenance.json` (`workerRollout`); each rollout keeps the old settings and a receipt in
+`$LAB_DATA/operations/worker-<sha8>-<time>`.
 
 On macOS, installation registers Gradle maintenance (`deploy/host-maintenance.sh`, run from a copy in
 `$LAB_DATA/maintenance` that updates refresh) every five minutes for `$LAB_DATA/gradle` and `~/.gradle`.

@@ -62,7 +62,7 @@ jobs:
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Verify host maintenance
-        run: bash deploy/tests/test_host_maintenance.sh
+        run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
       - name: Build experimental Nomad session renderer
         run: ./gradlew installDist
       - name: Verify DIMACS ordinary runner and recheck controls
@@ -122,7 +122,7 @@ jobs:
       - name: Validate service installation
         run: python3 -m unittest discover -s deploy/tests -p 'test_*.py'
       - name: Verify host maintenance
-        run: bash deploy/tests/test_host_maintenance.sh
+        run: bash deploy/tests/test_host_maintenance.sh && bash deploy/tests/test_worker_rollout.sh
       # Also on Linux in nomad-infrastructure; here for macOS's own awk, sort and shasum.
       - name: Verify native service plists
         run: bash deploy/nomad/test_native_services.sh

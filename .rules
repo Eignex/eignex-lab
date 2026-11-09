@@ -25,7 +25,8 @@ Benchmark lab: a Kotlin coordinator on a Mac schedules Nomad worker sessions on 
 ## Deployment
 
 - Controller (API, runner, coordinator) and worker releases deploy separately. Worker images and native launchers
-  are pinned in `$LAB_DATA/nomad/queue.json`; worker-side changes take effect only after a worker rollout.
+  are pinned in `$LAB_DATA/nomad/queue.json`; worker-side changes take effect only after a worker rollout, which
+  `deploy/worker-rollout.sh` (run by the maintenance job every five minutes) does once the commit's images are published.
 - The coordinator's environment comes from `labEnvironment` in the native-services settings
   (`LAB_NOMAD_NATIVE_CONFIG`) and its installed launchd plist, not from `lab.env` alone.
 - `deploy/install.sh` refuses agent or supervisor plist changes without `--restart-agents`; do not restart Nomad
