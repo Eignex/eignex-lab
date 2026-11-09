@@ -306,6 +306,26 @@ class ExecutionStoreTest {
         assertEquals(2, store.executionMaintenance.dropUnusedManifestParts(), "parts go with the last manifest naming them")
     }
 
+    @Test fun `an accepted preparation keeps its bundle part after every manifest naming it is gone`() {
+        val id = job()
+        val spec = store.job(id)!!.experiment
+        val bundle = WorkerBundle("b".repeat(64), listOf(InputFile("fixture", "c".repeat(64), 0)), spec.repository, "d".repeat(40), "linux", "amd64", "test")
+        store.execution.createSession("prep", id, ExecutionClass.PREPARE, "release", budget, token, "{}", 1000)
+        store.execution.bind("prep", token, "allocation", "node", "release", 1000)
+        val claim = store.execution.claim("prep", token, "allocation", 1100)!!
+        store.execution.phase(claim.owner, "uploading", 1101)
+        val preparation = PreparationResult(emptyList(), listOf(bundle))
+        assertTrue(store.execution.commit(claim.owner, IterationResult(emptyList(), preparation = preparation), 1102))
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().execute("DELETE FROM execution_manifests") }
+
+        assertEquals(0, store.executionMaintenance.dropUnusedManifestParts(), "the accepted preparation still names its bundles")
+        assertEquals(listOf(bundle), Store(file).execution.acceptedPreparation(id)!!.bundles)
+
+        // As releases with the dropped keep rule left it: the part gone. The rest of the preparation stays readable.
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { it.createStatement().execute("DELETE FROM manifest_parts") }
+        assertEquals(emptyList(), Store(file).execution.acceptedPreparation(id)!!.bundles)
+    }
+
     @Test fun `done jobs lose their stopped sessions' manifests while failed jobs keep theirs for a retry`() {
         val done = job(); val failed = job()
         store.execution.createSession("done", done, ExecutionClass.SOLVE, "release-1", budget, token, "{}", 1000, manifest = "{}")
