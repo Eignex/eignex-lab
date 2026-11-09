@@ -212,13 +212,7 @@ internal class SharedInputs(val root: Path, private val transport: InputTranspor
 
     private fun Path.toRealPathOrNull(): Path? = runCatching { toRealPath() }.getOrNull()
 
-    private fun blobPin(path: Path, checkActive: () -> Unit): ProcessFilePin {
-        while (true) {
-            checkActive()
-            ProcessFilePin.tryLock(path)?.let { return it }
-            Thread.sleep(10)
-        }
-    }
+    private fun blobPin(path: Path, checkActive: () -> Unit): ProcessFilePin = ProcessFilePin.await(path, checkActive)
 
     private fun matchesPacked(path: Path, file: InputFile): Boolean = runCatching {
         ZstdInputStreamNoFinalizer(Files.newInputStream(path)).use { input ->

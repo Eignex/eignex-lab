@@ -56,10 +56,10 @@ class JobDirArchiver(
         flush(target)
         // One rename takes the hot directory away: from here on every reader and writer resolves the archive copy.
         val retired = hot.resolve(".archived-$job")
-        if (Files.exists(retired, NOFOLLOW_LINKS)) deleteTree(retired)
+        if (Files.exists(retired, NOFOLLOW_LINKS)) deleteTree(retired, ignoreMissing = true)
         Files.move(source, retired, ATOMIC_MOVE)
         if (copyMissing(retired, target) > 0) flush(target)
-        deleteTree(retired)
+        deleteTree(retired, ignoreMissing = true)
         log("job $job archived to $target")
     }
 
@@ -87,9 +87,5 @@ class JobDirArchiver(
             copied++
         }
         return copied
-    }
-
-    private fun deleteTree(path: Path) {
-        Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
     }
 }

@@ -11,13 +11,18 @@ import java.security.MessageDigest
 import java.util.UUID
 import kotlin.io.path.isSymbolicLink
 
-/** Delete [root] and everything under it without following symbolic links, which are removed as links. */
-internal fun deleteTree(root: Path) {
+/**
+ * Delete [root] and everything under it without following symbolic links, which are removed as links. With
+ * [ignoreMissing], an entry something else removed after the walk listed it is no failure.
+ */
+internal fun deleteTree(root: Path, ignoreMissing: Boolean = false) {
     if (root.isSymbolicLink() || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
         Files.deleteIfExists(root)
         return
     }
-    Files.walk(root).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+    Files.walk(root).use { paths ->
+        paths.sorted(Comparator.reverseOrder()).forEach { if (ignoreMissing) Files.deleteIfExists(it) else Files.delete(it) }
+    }
 }
 
 /**

@@ -13,7 +13,7 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.*
-import java.util.concurrent.TimeUnit
+import java.time.Duration
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -38,11 +38,9 @@ class SourceInputs(private val requireTrusted: (repository: String, commit: Stri
             FileChannel.open(mirror.resolve("lab-source.lock"), CREATE, WRITE).use { channel -> channel.lock().use {
                 val ref = "refs/lab-source/$commit"
                 fun git(vararg args: String) {
-                    val process = ProcessBuilder(listOf("git", "-C", mirror.toString()) + args)
-                        .redirectOutput(staging.resolve("git.log").toFile()).redirectErrorStream(true).start()
-                    try {
-                        check(process.waitFor(120, TimeUnit.SECONDS) && process.exitValue() == 0) { "approved source export failed" }
-                    } finally { if (process.isAlive) process.destroyForcibly() }
+                    val (code, _) = runProcess(listOf("git", "-C", mirror.toString()) + args, timeout = Duration.ofSeconds(120),
+                        env = mapOf("GIT_TERMINAL_PROMPT" to "0"), log = staging.resolve("git.log").toFile())
+                    check(code == 0) { "approved source export failed" }
                 }
                 git("update-ref", ref, commit)
                 try { git("bundle", "create", gitBundle.toString(), ref) }
@@ -65,6 +63,6 @@ class SourceInputs(private val requireTrusted: (repository: String, commit: Stri
             return WorkerBundle(hashFile(output), declared, repository, commit, os, arch, toolchain,
                 build = build.copy(gitBundle = bundleName))
         } catch (error: Throwable) { Files.deleteIfExists(output); throw error }
-        finally { Files.walk(staging).use { it.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
+        finally { deleteTree(staging) }
     }
 }

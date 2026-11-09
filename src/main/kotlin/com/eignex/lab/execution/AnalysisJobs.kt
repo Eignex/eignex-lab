@@ -83,7 +83,7 @@ internal class AnalysisJobs(private val paths: DataPaths, private val archives: 
         logJob(paths, target, "recheck job ${job.id} checks this job's solution claims again with the lab's source checkers")
         val result = checks.recheck(target) { store.cancelRequested(job.id) }
         if (store.cancelRequested(job.id)) return cancel(job.id)
-        dir.resolve(CaseChecks.RESULT).writeAtomically(Json { encodeDefaults = true }.encodeToString(RecheckResult.serializer(), result))
+        dir.resolve(CaseChecks.RESULT).writeAtomically(defaultsJson.encodeToString(RecheckResult.serializer(), result))
         val states = result.states.entries.joinToString(", ") { "${it.value} ${it.key}" }.ifEmpty { "none" }
         logJob(paths, job.id, "job finished: ${result.checked} of job $target's ${result.cases} cases in checked formats have a lab verdict: $states")
         store.finish(job.id, Status.DONE)
@@ -96,7 +96,7 @@ internal class AnalysisJobs(private val paths: DataPaths, private val archives: 
     )
 
     private fun finishAnalysis(job: Job, dir: Path, result: AnalysisResult, empty: String, of: String) {
-        dir.resolve(CompilationReports.ANALYSIS).writeAtomically(Json { encodeDefaults = true }.encodeToString(AnalysisResult.serializer(), result))
+        dir.resolve(CompilationReports.ANALYSIS).writeAtomically(defaultsJson.encodeToString(AnalysisResult.serializer(), result))
         if (result.reports.isEmpty()) {
             logJob(paths, job.id, "job failed: $empty")
             store.finish(job.id, Status.FAILED, empty)

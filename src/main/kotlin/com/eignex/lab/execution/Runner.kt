@@ -63,42 +63,20 @@ class Runner(
         DbCompaction(store, { freeBytes(config.dataDir) }, { store.active(withCommands = false).any { it.status == Status.RUNNING } }).start()
         periodic("schedules", SCHEDULE_POLL_MS) { if (!stopping) enqueueScheduled() }
         periodic("session-manifests", MS_PER_HOUR) {
-            var moved = 0
-            while (!stopping) { val batch = store.executionMaintenance.moveManifests(); if (batch == 0) break; moved += batch; Thread.sleep(200) }
+            val moved = drain(200) { store.executionMaintenance.moveManifests() }
             if (moved > 0) println("moved $moved session manifests to their own table")
             val before = System.currentTimeMillis() - MS_PER_DAY
-            var dropped = 0
-            while (!stopping) { val batch = store.executionMaintenance.dropDoneManifests(before); if (batch == 0) break; dropped += batch; Thread.sleep(200) }
+            val dropped = drain(200) { store.executionMaintenance.dropDoneManifests(before) }
             if (dropped > 0) println("dropped the manifests of $dropped sessions of jobs done over a day ago")
             // Committed attempts from before results were kept slim: their case records already live in `cases`.
-            var slimmed = 0
-            var cursor: Long? = 0L
-            while (!stopping && cursor != null) {
-                cursor = store.executionMaintenance.slimAcceptedResults(cursor)?.also { slimmed++ }
-                Thread.sleep(100)
-            }
+            val slimmed = drainCursor { store.executionMaintenance.slimAcceptedResults(it) }
             if (slimmed > 0) println("slimmed $slimmed batches of committed results to their metadata")
             // Provenances stored whole before their shared parts were kept once.
-            var split = 0
-            var provenanceCursor: Long? = 0L
-            while (!stopping && provenanceCursor != null) {
-                provenanceCursor = store.plans.splitProvenances(provenanceCursor)?.also { split++ }
-                Thread.sleep(100)
-            }
+            val split = drainCursor { store.plans.splitProvenances(it) }
             if (split > 0) println("split the shared parts out of $split batches of provenances")
-            var manifests = 0
-            var manifestCursor: Long? = 0L
-            while (!stopping && manifestCursor != null) {
-                manifestCursor = store.executionMaintenance.splitManifests(manifestCursor)?.also { manifests++ }
-                Thread.sleep(100)
-            }
+            val manifests = drainCursor { store.executionMaintenance.splitManifests(it) }
             if (manifests > 0) println("split the shared parts out of $manifests batches of session manifests")
-            var preparations = 0
-            var preparationCursor: Long? = 0L
-            while (!stopping && preparationCursor != null) {
-                preparationCursor = store.executionMaintenance.splitPreparationResults(preparationCursor)?.also { preparations++ }
-                Thread.sleep(100)
-            }
+            val preparations = drainCursor { store.executionMaintenance.splitPreparationResults(it) }
             if (preparations > 0) println("split the bundles out of $preparations batches of preparation results")
             val unused = store.executionMaintenance.dropUnusedManifestParts()
             if (unused > 0) println("dropped $unused manifest parts no kept manifest names")
@@ -154,6 +132,19 @@ class Runner(
 
     fun installShutdownHook() { Runtime.getRuntime().addShutdownHook(Thread { stop() }) }
     internal fun stop() { stopping = true }
+
+    /** Run [batch] until it does nothing or the runner stops, pausing [pauseMs] between batches: the rows it did. */
+    private inline fun drain(pauseMs: Long, batch: () -> Int): Int {
+        var done = 0
+        while (!stopping) { val rows = batch(); if (rows == 0) break; done += rows; Thread.sleep(pauseMs) }
+        return done
+    }
+
+    /** Run [batch] from cursor 0, on each cursor it returns, until it returns none or the runner stops: the batches it did. */
+    private inline fun drainCursor(batch: (Long) -> Long?): Int {
+        var cursor = 0L
+        return drain(100) { batch(cursor)?.let { next -> cursor = next; 1 } ?: 0 }
+    }
 
     private companion object {
         const val IDLE_POLL_MS = 2000L

@@ -149,9 +149,7 @@ internal class NativePreparedTrees(private val jobs: Path, private val archive: 
         return file to exported.sha256
     }
 
-    private fun <T> locked(path: Path, check: () -> Unit, action: () -> T): T {
-        while (true) { check(); val pin = ProcessFilePin.tryLock(path); if (pin != null) return pin.use { action() }; Thread.sleep(10) }
-    }
+    private fun <T> locked(path: Path, check: () -> Unit, action: () -> T): T = ProcessFilePin.withLock(path, check, action = action)
 
     companion object {
         fun environment(): NativePreparedTrees? {

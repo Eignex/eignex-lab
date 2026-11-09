@@ -61,7 +61,7 @@ class ArtifactArchiver(
         val retired = link // After the exchange this name holds the former hot directory.
         check(Files.isSymbolicLink(source) && Files.isDirectory(retired, NOFOLLOW_LINKS)) { "rename swap did not exchange paths" }
         if (copyMissing(retired, target) > 0) flush(target)
-        deleteTree(retired)
+        deleteTree(retired, ignoreMissing = true)
         log("job $job archived to $target")
     }
 
@@ -81,9 +81,5 @@ class ArtifactArchiver(
             }
         }
         return copied
-    }
-
-    private fun deleteTree(path: Path) {
-        Files.walk(path).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
     }
 }

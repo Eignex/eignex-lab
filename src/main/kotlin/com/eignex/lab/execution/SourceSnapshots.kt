@@ -4,6 +4,7 @@ import com.eignex.lab.domain.*
 import com.eignex.lab.store.*
 import com.eignex.lab.util.hex
 import com.eignex.lab.util.fileLockFor
+import com.eignex.lab.util.deleteTree
 import java.io.InputStream
 import java.nio.channels.FileChannel
 import java.nio.file.Files
@@ -13,11 +14,7 @@ import java.nio.file.StandardOpenOption.CREATE
 import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardOpenOption.WRITE
 import java.nio.file.attribute.BasicFileAttributes
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import java.util.zip.Deflater
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 /** Approved current-source exports, retaining the original commit without its history. */
 internal object SourceSnapshots {
@@ -137,29 +134,27 @@ internal object SourceSnapshots {
                 try { if (!objects.waitFor(120, TimeUnit.SECONDS)) objects.destroyForcibly() }
                 catch (_: InterruptedException) { /* Export completed or failed before the deadline. */ }
             } }
-            val inventory = mutableListOf<InputFile>(); val archiveDigest = MessageDigest.getInstance("SHA-256")
+            val inventory = mutableListOf<InputFile>(); var archiveSha = ""
             var total = 0L
             try {
                 (process?.inputStream?.buffered(64 * 1024) ?: InputStream.nullInputStream()).use { objects ->
                     (process?.outputStream?.buffered() ?: java.io.OutputStream.nullOutputStream()).use { requests ->
-                    ZipOutputStream(java.security.DigestOutputStream(Files.newOutputStream(output, CREATE_NEW).buffered(256 * 1024), archiveDigest)).use { zip ->
+                    DeterministicZip(Files.newOutputStream(output, CREATE_NEW).buffered(256 * 1024)).use { zip ->
                         val buffer = ByteArray(64 * 1024)
                         fun append(entry: Entry, stream: InputStream, bytes: Long) {
                             require(bytes >= 0 && bytes <= maxBytes - total) { "source archive exceeds disk budget" }
                             total += bytes
-                            val digest = MessageDigest.getInstance("SHA-256"); var remaining = bytes
-                            zip.setLevel(if (compressedArchivePath(entry.name)) Deflater.NO_COMPRESSION else Deflater.BEST_SPEED)
-                            zip.putNextEntry(ZipEntry(entry.name).apply { time = 0 })
-                            while (remaining > 0) {
-                                val count = stream.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
-                                check(count > 0) { "source snapshot object was truncated" }
-                                zip.write(buffer, 0, count); digest.update(buffer, 0, count); remaining -= count
+                            val sha = zip.file(entry.name) { sink ->
+                                var remaining = bytes
+                                while (remaining > 0) {
+                                    val count = stream.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                                    check(count > 0) { "source snapshot object was truncated" }
+                                    sink(buffer, 0, count); remaining -= count
+                                }
                             }
-                            zip.closeEntry(); inventory.add(InputFile(entry.name, digest.digest().hex(), bytes, entry.executable))
+                            inventory.add(InputFile(entry.name, sha, bytes, entry.executable))
                         }
-                        for (directory in directories.sorted()) {
-                            zip.putNextEntry(ZipEntry(directory).apply { time = 0 }); zip.closeEntry()
-                        }
+                        zip.directories(directories)
                         for (entry in entries.sortedBy { it.name }) {
                             if (entry.objectId != null) {
                                 requests.write((entry.objectId + "\n").toByteArray(Charsets.US_ASCII)); requests.flush()
@@ -182,15 +177,16 @@ internal object SourceSnapshots {
                                 require(before.size() == after.size() && before.lastModifiedTime() == after.lastModifiedTime() && before.fileKey() == after.fileKey()) { "source input changed" }
                             }
                         }
+                        archiveSha = zip.finish()
                     }
                 } }
                 check(total > 0 && (process == null || process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0)) { "source snapshot object export failed" }
             } finally { deadline?.interrupt(); if (process?.isAlive == true) process.destroyForcibly() }
-            val result = WorkerBundle(archiveDigest.digest().hex(), inventory, repository, commit, os, arch, toolchain,
+            val result = WorkerBundle(archiveSha, inventory, repository, commit, os, arch, toolchain,
                 build = build.copy(gitBundle = if (packed) PackedGitSource.MARKER else null))
             println("source snapshot export: files=${result.files.size} bytes=${result.files.sumOf { it.bytes }} elapsedMs=${(System.nanoTime()-started)/1_000_000}")
             return result
         } catch (failure: Throwable) { Files.deleteIfExists(output); throw failure }
-        finally { Files.walk(staging).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) } }
+        finally { deleteTree(staging) }
     }
 }
