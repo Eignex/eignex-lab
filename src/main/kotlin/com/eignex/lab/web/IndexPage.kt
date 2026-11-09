@@ -30,8 +30,6 @@ internal fun indexPage(
     /** Each running job's hosts and their parts ([Store.hostProgress]), by job. */
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
-    /** The cloud instances each job ran on ([JobDirView.instances]), by job. */
-    instances: Map<Long, List<String>> = emptyMap(),
     /** Free on the data directory's volume, and why the runner holds its queue, read before rendering ([PageQueries.index]). */
     free: Long? = runCatching { freeBytes(status.paths.dataDir) }.getOrNull(),
     held: String? = runCatching { Volumes.hold(status.paths, status.minFreeBytes) }.getOrNull(),
@@ -50,7 +48,7 @@ internal fun indexPage(
             Estimates.estimate(job, caseHistory, status.local.cores, status.local.maxParallel)?.let { job.id to it }
         }.toMap()
         append(Html("<section id=\"active-section\" aria-labelledby=\"active-heading\"><h2 id=\"active-heading\">Active jobs</h2><div id=\"work\" data-live>") + (if (loading) Html("Loading…") else workSummary(status, active, estimates)) + Html("</div>"))
-        append(Html("<div id=\"active\" data-live>") + (if (loading) Html("Loading…") else activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes, instances)) + Html("</div></section>"))
+        append(Html("<div id=\"active\" data-live>") + (if (loading) Html("Loading…") else activeTable(status, active, queueOrder, estimates, waiting, hosts, nodes)) + Html("</div></section>"))
         append(Html("<section id=\"schedules-section\" aria-labelledby=\"schedules-heading\"><details class=\"schedule-panel\" data-open-on-hash=\"schedules-section\"><summary><h2 id=\"schedules-heading\">Schedules</h2> <span id=\"schedule-count\" data-live class=\"muted small\">") +
             (if (loading) "Loading…" else "${schedules.size} recurring schedules") + Html("</span></summary><div id=\"schedules\" data-live>") +
             (if (loading) Html("Loading…") else if (schedules.isEmpty()) Html("<p>No schedules.</p>") else schedulesTable(schedules)) +
@@ -65,7 +63,7 @@ internal fun indexPage(
     }
     append(Html("</div><button type=\"button\" id=\"clear-history\" hidden>Clear filters</button></div><p id=\"history-count\" class=\"muted small\" role=\"status\"></p><p class=\"muted small\">Filters apply to the runs loaded below.</p><div id=\"history\" data-live>"))
     val shown = if (front) history.filter { it.status.isTerminal } else history
-    append(if (loading) Html("<p>Loading history…</p>") else jobTable(status, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes, instances = instances))
+    append(if (loading) Html("<p>Loading history…</p>") else jobTable(status, shown, emptyMap(), filterable = true, hosts = hosts, nodes = nodes))
     append(Html("<p id=\"history-empty\" class=\"empty-state\" hidden>No runs match these filters. Try another search or clear the filters.</p>"))
     append(Html("<p class=\"pager\">"))
     if (before != null) append(Html("<a href=\"/") + query("name" to name) + Html("\">newest</a> "))
@@ -143,7 +141,6 @@ private fun activeTable(
     status: StatusSettings, active: List<Job>, queueOrder: List<Long>, estimates: Map<Long, WorkEstimate>, waiting: Map<Long, String>,
     hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
-    instances: Map<Long, List<String>> = emptyMap(),
 ): Html {
     if (active.isEmpty()) return Html("<p class=\"muted\">Nothing running or queued.</p>")
     // One queue by priority, whatever runs each job: the local machine and the cloud nodes take from it in this order
@@ -151,15 +148,13 @@ private fun activeTable(
     val positions = queueOrder.withIndex().associate { (index, id) -> id to index + 1 }
     val ordered = active.sortedWith(compareByDescending<Job> { it.priority }.thenBy { it.status != Status.RUNNING }
         .thenBy { positions[it.id] ?: Int.MAX_VALUE }.thenBy { it.id })
-    return jobTable(status, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts, nodes = nodes,
-        instances = instances)
+    return jobTable(status, ordered, positions, filterable = false, estimates = estimates, waiting = waiting, hosts = hosts, nodes = nodes)
 }
 
 private fun jobTable(
     status: StatusSettings, jobs: List<Job>, positions: Map<Long, Int>, filterable: Boolean, estimates: Map<Long, WorkEstimate>? = null,
     waiting: Map<Long, String> = emptyMap(), hosts: Map<Long, List<HostProgress>> = emptyMap(),
     nodes: Map<Long, List<JobNode>> = emptyMap(),
-    instances: Map<Long, List<String>> = emptyMap(),
 ): Html = buildHtml {
     if (jobs.isEmpty()) return Html("<p class=\"muted\">No jobs.</p>")
     append(Html("<div class=\"scroll\" role=\"region\" aria-label=\"") + (if (filterable) "History jobs" else "Active jobs") + Html("\" tabindex=\"0\"><table class=\"jobs-table\"><thead><tr><th scope=\"col\">ID</th><th scope=\"col\">Job</th><th scope=\"col\">Ref</th><th scope=\"col\">Location</th><th scope=\"col\">Status</th><th scope=\"col\">Progress</th>"))
@@ -185,7 +180,7 @@ private fun jobTable(
             append(Html("<div class=\"desc\" title=\"") + esc(it) + Html("\">") + esc(it) + Html("</div>"))
         }
         append(Html("</td>"))
-        append(Html("<td class=\"job-ref\">") + refText(status.repoUrl, job) + Html("</td><td class=\"job-location\">") + (hostCell(job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty(), instances[job.id].orEmpty())) + Html("</td><td class=\"job-status\">") + (statusCell(job, positions[job.id], nodes[job.id].orEmpty())) + Html("</td>"))
+        append(Html("<td class=\"job-ref\">") + refText(status.repoUrl, job) + Html("</td><td class=\"job-location\">") + (hostCell(job, hosts[job.id].orEmpty(), nodes[job.id].orEmpty())) + Html("</td><td class=\"job-status\">") + (statusCell(job, positions[job.id], nodes[job.id].orEmpty())) + Html("</td>"))
         append(Html("<td>") + progress(job) + (estimates?.let { estimateText(status, job, it[job.id]) }.orEmpty()) + Html("</td>"))
         append(Html("<td class=\"job-time\">") + ago(job.createdAt) + Html("</td><td class=\"job-time\">") + elapsed(job) + Html("</td>"))
         append(Html("<td><a href=\"/jobs/") + job.id + Html("/files\">files</a></td></tr>"))
