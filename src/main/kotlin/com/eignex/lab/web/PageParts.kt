@@ -416,8 +416,6 @@ internal fun hostCell(
     job: Job,
     hosts: List<HostProgress> = emptyList(),
     nodes: List<JobNode> = emptyList(),
-    /** The cloud instances it ran on ([JobDirView.instances]), read before rendering. */
-    instances: List<String> = emptyList(),
 ): Html {
     val spec = job.experiment
     if (job.backend == Backend.NOMAD && job.status.isActive) {
@@ -442,9 +440,9 @@ internal fun hostCell(
     if (spec.host == Experiments.AUTO_HOST) {
         val where = Html("<span class=\"where\" title=\"shared by the lab: the local machine and cloud nodes each run whole iterations of it\">local or cloud</span>")
         if (job.status != Status.RUNNING) return where
-        val on = Waiting.hostsText(job.local, instances.size)
+        val on = Waiting.hostsText(job.local, 0)
         val parts = hosts.takeIf { it.size > 1 }?.joinToString(" · ") { it.text() }
-        return (Html("") + where + Html("<br><small title=\"") + (esc(instances.joinToString { it.substringBefore(' ') })) + Html("\">") + esc(on)) +
+        return (Html("") + where + Html("<br><small>") + esc(on)) +
             (parts?.let { (Html("<br>") + esc(it)) } ?: "") + Html("</small>")
     }
     if (spec.host != Experiments.AWS_HOST) {
@@ -454,17 +452,13 @@ internal fun hostCell(
         }
         return (Html("<span class=\"where\">local</span>") + note)
     }
-    // Each line: instance, type, and how it was bought (spot or on-demand).
-    val shapes = instances.map { it.split(' ') }.groupingBy { "${it.getOrNull(1) ?: "instance"} ${it.getOrNull(2) ?: ""}".trim() }.eachCount()
     val detail = when {
-        instances.isNotEmpty() -> "${instances.size} ${if (instances.size == 1) "node" else "nodes"}: " +
-            shapes.entries.joinToString(", ") { (shape, n) -> if (n == 1) shape else "${n} × ${shape}" }
         // A cancel-requested or paused job waits for nothing: no node takes it.
         job.status == Status.QUEUED && !job.cancelRequested && !job.paused -> "waiting for a node"
         else -> null
     }
     return Html("<span class=\"where aws\">cloud</span>") +
-        (detail?.let { (Html("<br><small title=\"") + (esc(instances.joinToString { it.substringBefore(' ') })) + Html("\">") + esc(it) + Html("</small>")) } ?: "")
+        (detail?.let { (Html("<br><small>") + esc(it) + Html("</small>")) } ?: "")
 }
 
 /** A job's status with its notes: cancelling, paused, its place in the queue, its priority and its error. Why a queued
@@ -496,7 +490,7 @@ internal fun refText(repoUrl: String, job: Job): Html {
     val sha = job.sha ?: job.ref.takeIf { isSha }
     val commit = sha?.let { full ->
         val spec = job.experiment
-        val repository = if (job.backend == Backend.LEGACY || !spec.isBench && !spec.isProfile) repoUrl
+        val repository = if (!spec.isBench && !spec.isProfile) repoUrl
             else Repositories.url(spec.repository)
         commitLink(repository, full)
     }

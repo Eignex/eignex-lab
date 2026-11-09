@@ -34,7 +34,7 @@ internal fun Store.importExperiment(
     val origin = JobOrigin.of(name)
     val id = db.sqlInsert(
         "INSERT INTO jobs (name, ref, sha, status, setup_done, created_at, started_at, finished_at, experiment, backend, host, analysis, bench, measurement, " +
-            "origin, series) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'legacy', ?, ?, ?, ?, ?, ?)",
+            "origin, series) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'nomad', ?, ?, ?, ?, ?, ?)",
         name, ref, sha, Status.DONE.name, at, at, at, Json.encodeToString(spec), columns.host, columns.analysis, columns.bench,
         columns.measurement, origin.kind, origin.series,
     )
