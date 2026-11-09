@@ -64,17 +64,17 @@ class Runner(
         periodic("schedules", SCHEDULE_POLL_MS) { if (!stopping) enqueueScheduled() }
         periodic("session-manifests", MS_PER_HOUR) {
             var moved = 0
-            while (!stopping) { val batch = store.execution.moveManifests(); if (batch == 0) break; moved += batch; Thread.sleep(200) }
+            while (!stopping) { val batch = store.executionMaintenance.moveManifests(); if (batch == 0) break; moved += batch; Thread.sleep(200) }
             if (moved > 0) println("moved $moved session manifests to their own table")
             val before = System.currentTimeMillis() - MS_PER_DAY
             var dropped = 0
-            while (!stopping) { val batch = store.execution.dropDoneManifests(before); if (batch == 0) break; dropped += batch; Thread.sleep(200) }
+            while (!stopping) { val batch = store.executionMaintenance.dropDoneManifests(before); if (batch == 0) break; dropped += batch; Thread.sleep(200) }
             if (dropped > 0) println("dropped the manifests of $dropped sessions of jobs done over a day ago")
             // Committed attempts from before results were kept slim: their case records already live in `cases`.
             var slimmed = 0
             var cursor: Long? = 0L
             while (!stopping && cursor != null) {
-                cursor = store.execution.slimAcceptedResults(cursor)?.also { slimmed++ }
+                cursor = store.executionMaintenance.slimAcceptedResults(cursor)?.also { slimmed++ }
                 Thread.sleep(100)
             }
             if (slimmed > 0) println("slimmed $slimmed batches of committed results to their metadata")
@@ -89,18 +89,18 @@ class Runner(
             var manifests = 0
             var manifestCursor: Long? = 0L
             while (!stopping && manifestCursor != null) {
-                manifestCursor = store.execution.splitManifests(manifestCursor)?.also { manifests++ }
+                manifestCursor = store.executionMaintenance.splitManifests(manifestCursor)?.also { manifests++ }
                 Thread.sleep(100)
             }
             if (manifests > 0) println("split the shared parts out of $manifests batches of session manifests")
             var preparations = 0
             var preparationCursor: Long? = 0L
             while (!stopping && preparationCursor != null) {
-                preparationCursor = store.execution.splitPreparationResults(preparationCursor)?.also { preparations++ }
+                preparationCursor = store.executionMaintenance.splitPreparationResults(preparationCursor)?.also { preparations++ }
                 Thread.sleep(100)
             }
             if (preparations > 0) println("split the bundles out of $preparations batches of preparation results")
-            val unused = store.execution.dropUnusedManifestParts()
+            val unused = store.executionMaintenance.dropUnusedManifestParts()
             if (unused > 0) println("dropped $unused manifest parts no kept manifest names")
         }
         while (!stopping) {

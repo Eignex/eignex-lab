@@ -445,6 +445,8 @@ class Store(file: Path, busyTimeoutMs: Long = Database.BUSY_TIMEOUT_MS) {
     )
 
     val execution = ExecutionStore(this)
+    val capacityLeases = CapacityLeases(this)
+    val executionMaintenance = ExecutionMaintenance(this)
 
     /** The execution tables' writes: one IMMEDIATE transaction, joined by one already open ([Database.write]). */
     internal fun <T> executionTransaction(block: (Tx) -> T): T = db.write { block(Tx(it)) }
