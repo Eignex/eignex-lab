@@ -321,6 +321,12 @@ Provider adapters write versioned `CapacityInventory` JSON atomically: observati
 draining/target-count state and classified capacity failures. They contain no control credentials. The collector
 joins this with live Nomad allocations; an unknown allocation conservatively consumes a whole node. It starts a growth
 timer only for demand that cannot fit warm or booting workers, and persists backlog/cooldown/idle history across restarts.
+Demand that only a booting worker covers keeps its pool's timer running until it is placed, so work arriving while that
+worker boots grows the pool without a second sustained wait. One decision adds as many nodes as its backlog needs,
+filling each before the next, within the pool's `maxNodes` and the vCPU quota; the cooldown runs from the previous
+decision's growth. Within that cooldown, nodes a decision added that the provider's inventory does not list yet are held
+as booting, so the next five-second decision does not withdraw them before the autoscaler (every ten seconds) and the
+inventory (every ten seconds) have seen the new size; launches no remaining demand needs are still withdrawn.
 A small sustained backlog can grow capacity without a core-hour estimate. CPU packing uses all logical vCPU quota;
 Nomad's MHz conversion already incorporates its host reserve. Retired `localCores`, `localPressureHours` and
 `reserveCpuMillis` fields are ignored when an older settings file still has them.

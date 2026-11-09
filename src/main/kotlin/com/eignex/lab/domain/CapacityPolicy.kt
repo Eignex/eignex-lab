@@ -97,7 +97,9 @@ data class CapacitySettings(val pools: List<CapacityPool>, val maxVcpus: Int) {
 /** Pure packing/admission policy. No provider types, credentials, SDKs, instance names or cloud commands. */
 object CapacityPolicy {
     fun evaluate(settings: CapacitySettings, nodes: List<CapacityNode>, demands: List<CapacityDemand>,
-                 manual: List<ManualCapacityLease> = emptyList(), previous: Map<String, CapacityHistory> = emptyMap(), at: Long = now(), growthBlocked: Set<String> = emptySet()): CapacityDecision {
+                 manual: List<ManualCapacityLease> = emptyList(), previous: Map<String, CapacityHistory> = emptyMap(), at: Long = now(), growthBlocked: Set<String> = emptySet(),
+                 /** Each pool's size as the previous decision desired it. */
+                 launched: Map<String, Int> = emptyMap()): CapacityDecision {
         require(nodes.map { it.id }.distinct().size == nodes.size && demands.map { it.id }.distinct().size == demands.size)
         val pools = settings.pools.associateBy { it.id }
         require(nodes.all { it.pool in pools } && manual.all { it.pool in pools && it.nodes <= pools.getValue(it.pool).maxNodes })
@@ -117,7 +119,21 @@ object CapacityPolicy {
                 (d.perHostParallel == null || b.allocations.filter { it.job == d.job }.sumOf { it.caseParallel.toLong() } + d.caseParallel <= d.perHostParallel) &&
                 (d.maxConcurrentBuildsPerNode == null || b.allocations.count { it.work == CapacityWork.BUILD } < d.maxConcurrentBuildsPerNode)
         }
+        // Nodes an earlier decision added that the provider does not list yet: the autoscaler and the provider's inventory
+        // each take a few seconds to see a new size, and a decision that dropped them meanwhile would withdraw its own
+        // growth before anything read it. Within the cooldown they are held as booting; unused ones are withdrawn below.
+        for (p in settings.pools) {
+            val increased = previous[p.id]?.lastIncrease ?: continue
+            if (p.id in growthBlocked || at - increased >= p.cooldownMs) continue
+            while (counts.getValue(p.id) < minOf(launched[p.id] ?: 0, p.maxNodes) && quota >= p.vcpus) {
+                bins += Bin(CapacityNode("launch:${p.id}:${counts.getValue(p.id)}", p.id, CapacityNodeState.BOOTING), mutableListOf())
+                counts[p.id] = counts.getValue(p.id) + 1; quota -= p.vcpus
+            }
+        }
         val ordered = demands.sortedWith(compareByDescending<CapacityDemand> { it.priority }.thenBy { it.id })
+        // Demand only booting capacity covers still waits for a node: it keeps its pool's pressure, so work arriving
+        // while that node boots grows the pool without a second sustained wait.
+        val booting = mutableListOf<CapacityDemand>()
         // Account for warm and already-booting capacity before starting the backlog timer.
         val remaining = ordered.filter { d ->
             val bin = bins.filter { fits(d, it) }.minWithOrNull(compareBy<Bin> { it.node.state != CapacityNodeState.READY }
@@ -126,11 +142,12 @@ object CapacityPolicy {
             if (bin != null) {
                 bin.allocations += CapacityReservation(d.id, d.job, d.budget, d.work)
                 placements += CapacityPlacement(d.id, bin.node.id, bin.node.pool, bin.node.state == CapacityNodeState.READY)
+                if (bin.node.state != CapacityNodeState.READY) booting += d
             }
             bin == null
         }
         for (p in settings.pools) {
-            val qualified = remaining.any { compatible(it, p) && (it.priority >= p.minPriority || !it.localEligible) }
+            val qualified = (remaining + booting).any { compatible(it, p) && (it.priority >= p.minPriority || !it.localEligible) }
             val old = previous[p.id] ?: CapacityHistory()
             history[p.id] = old.copy(pressureSince = if (qualified) old.pressureSince ?: at else null)
         }
@@ -142,10 +159,13 @@ object CapacityPolicy {
             if (bin == null) {
                 val candidates = settings.pools.filter { compatible(d, it) }
                     .sortedWith(compareByDescending<CapacityPool> { it.vcpus }.thenByDescending { it.memoryMiB }.thenBy { it.id })
+                // The cooldown runs from the previous decision's growth: one decision adds as many nodes as its
+                // backlog needs (each filled before the next), rather than one per cooldown.
                 val p = candidates.firstOrNull { p ->
                     val h = history.getValue(p.id)
+                    val increased = previous[p.id]?.lastIncrease
                     p.id !in growthBlocked && (d.priority >= p.minPriority || !d.localEligible) && h.pressureSince != null && at - h.pressureSince >= p.sustainedMs &&
-                        (h.lastIncrease == null || at - h.lastIncrease >= p.cooldownMs) && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus && (d.perHostParallel == null || d.caseParallel <= d.perHostParallel)
+                        (increased == null || at - increased >= p.cooldownMs) && counts.getValue(p.id) < p.maxNodes && quota >= p.vcpus && (d.perHostParallel == null || d.caseParallel <= d.perHostParallel)
                 }
                 if (p != null) {
                     val node = CapacityNode("new:${p.id}:${counts.getValue(p.id)}", p.id, CapacityNodeState.BOOTING)
