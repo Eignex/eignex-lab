@@ -569,7 +569,11 @@ queue adds sessions of that width until all of the job's solve sessions together
 (default 16), so a job spreads over several nodes; `maxSessionsPerJob` and the pending rows bound the count too. On the
 native worker, one machine, a job's sessions together hold at most its vCPUs, and each runs at most `LAB_MAX_PARALLEL`
 cases. Preparation reserves the job's vCPUs too, at most `maxVcpusPerJob`, at least `preparationBudget`, with memory
-scaled from it, within the target's budget and the local cores. Sessions from the same experiment share a node
+scaled from it, within the target's budget and the local cores. A cloud preparation grows further into what one
+running node of its target leaves idle (the coordinator's ten-second node sample, less every unregistered session of
+that class): at most the node's logical CPUs divided by `maxConcurrentBuildsPerNode`, the target's budget and
+`maxVcpusPerJob`, in whole vCPUs with memory in `preparationBudget`'s proportion. Workers already size Gradle workers
+and heap from the manifest budget, so this needs no worker rollout. Sessions from the same experiment share a node
 whenever those resources fit. `perHostParallel` optionally caps same-job cases on each node and is unset by
 default. These live limits apply independently of frozen experiment sources and
 prepared inputs. A worker larger than the job ceiling is admitted once so existing

@@ -49,6 +49,9 @@ class NomadBackend(
 
     internal fun hasCapacity(template: NomadBatchJob, budget: ResourceBudget): Boolean = cpuPlacement.hasCapacity(template, budget)
 
+    /** Each ready node of [template]'s class and shape: its free thousandths of a vCPU and MiB ([NomadCpuPlacement.idle]). */
+    internal fun idle(template: NomadBatchJob): List<Pair<Long, Long>> = cpuPlacement.idle(template)
+
     internal fun canPrepare(template: NomadBatchJob, limit: Int = template.environment["LAB_WORKER_MAX_CONCURRENT_BUILDS"]?.toIntOrNull() ?: 2): Boolean =
         preparationAdmission.allows(template.nodeClass, template.platform == NomadPlatform.MAC, limit)
 

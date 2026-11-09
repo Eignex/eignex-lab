@@ -733,14 +733,43 @@ class NomadQueueTest {
         assertContains(store.execution.submission(store.execution.sessions(id).single().id), "\"RTarget\":\"large\"")
     }
 
+    @Test fun `a cloud preparation grows into a running node's idle CPUs but never into placed or waiting work`() {
+        // An eight-vCPU node with a placed five-vCPU solve: three vCPUs idle. Two compiler slots give each preparation
+        // at most four of its eight vCPUs, and the target allows four.
+        control.nodeInventory["busy"] = buildJsonObject {
+            put("ID", "busy"); put("NodeClass", "portable-spot"); put("Status", "ready")
+            putJsonObject("Attributes") { put("kernel.name", "linux"); put("cpu.usablecompute", "8000"); put("cpu.numcores", "8") }
+            putJsonObject("NodeResources") { putJsonObject("Memory") { put("MemoryMB", 16384) } }
+        }
+        control.placed["busy"] = listOf(buildJsonObject {
+            put("ClientStatus", "running")
+            putJsonObject("AllocatedResources") { putJsonObject("Tasks") { putJsonObject("worker") {
+                putJsonObject("Cpu") { put("CpuShares", 5000) }; putJsonObject("Memory") { put("MemoryMB", 4096) }
+            } } }
+        })
+        fun preparation(id: Long) = store.execution.sessions(id).single { it.executionClass == ExecutionClass.PREPARE }
+        val first = cloudJob("first-idle")
+        queue().reconcile()
+        // Its two vCPUs grow to the node's three idle ones, with memory in the configured 1000:512 proportion.
+        assertEquals(ResourceBudget(3000, 1536), preparation(first).budget)
+        assertEquals(ResourceBudget(3000, 1536), store.execution.manifest(preparation(first).id).budget)
+        val second = cloudJob("second-idle")
+        queue().reconcile()
+        // The first preparation still waits for its node and holds those three: the second keeps its own two vCPUs.
+        assertEquals(ResourceBudget(2000, 1024), preparation(second).budget)
+        assertEquals(ResourceBudget(3000, 1536), preparation(first).budget)
+    }
+
     private val root = Files.createTempDirectory("nomad-queue")
     private val store = Store(root.resolve("lab.db"))
     private val artifacts = LocalArtifactStore(root.resolve("artifacts"))
     private val control = object : NomadControl {
         val jobs = mutableMapOf<String, JsonObject>()
         val nodeInventory = mutableMapOf<String, JsonObject>()
+        val placed = mutableMapOf<String, List<JsonObject>>()
         override fun nodes() = nodeInventory.values.toList()
         override fun node(id: String) = nodeInventory[id]
+        override fun nodeAllocations(id: String) = placed[id].orEmpty()
         override fun job(id: String) = jobs[id]
         override fun submit(job: JsonObject) { jobs[job.getValue("ID").jsonPrimitive.content] = job }
         override fun stop(id: String) { jobs.remove(id) }

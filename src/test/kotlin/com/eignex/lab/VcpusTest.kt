@@ -100,6 +100,27 @@ class VcpusTest {
         assertEquals(ResourceBudget(8000, 16384), floor.copy(maxVcpusPerJob = 8).preparationBudget(wide, job(16)))
     }
 
+    @Test fun `a cloud preparation grows into one running node's idle share within its target`() {
+        val floor = settings.copy(preparationBudget = ResourceBudget(2000, 4096, 1), maxVcpusPerJob = 32)
+        val one = floor.preparationBudget(wide, job(1))
+        fun grown(vararg idle: Pair<Long, Long>, target: NomadQueueTarget = wide, slots: Int = 2, of: ResourceBudget = one) =
+            floor.idlePreparationBudget(target, of, idle.toList(), slots)
+        // No running node, or none with more than the job's own budget idle: the job's budget.
+        assertEquals(one, grown())
+        assertEquals(one, grown(1500L to 65536L))
+        // An idle sixteen-vCPU node: half of it per compiler slot, with memory in the configured proportion.
+        assertEquals(ResourceBudget(8000, 16384), grown(16000L to 65536L))
+        assertEquals(ResourceBudget(4000, 8192), grown(16000L to 65536L, slots = 4))
+        // What is free on the best node, in whole vCPUs; its free memory bounds the vCPUs that memory would scale to.
+        assertEquals(ResourceBudget(5000, 10240), grown(5500L to 65536L, 3000L to 65536L))
+        assertEquals(ResourceBudget(3000, 6144), grown(16000L to 6144L))
+        // The target's ceilings and the per-job vCPU cap still hold, and a wider job keeps its larger budget.
+        assertEquals(ResourceBudget(6000, 12288), grown(16000L to 65536L, target = target(6000, 65536)))
+        assertEquals(ResourceBudget(4000, 8192), floor.copy(maxVcpusPerJob = 4).idlePreparationBudget(wide, one, listOf(16000L to 65536L)))
+        val sixteen = floor.preparationBudget(wide, job(16))
+        assertEquals(sixteen, grown(16000L to 65536L, of = sixteen))
+    }
+
     @Test fun `the operator queue example still validates with its one-case preparation budget`() {
         val example = Json.decodeFromString<NomadQueueSettings>(Files.readString(Path.of("deploy/nomad/queue.example.json")))
         assertEquals(ResourceBudget(2000, 4096, 1), example.preparationBudget)

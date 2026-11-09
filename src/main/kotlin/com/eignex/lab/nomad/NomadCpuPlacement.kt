@@ -27,6 +27,19 @@ internal class NomadCpuPlacement(private val nomad: NomadControl, private val na
             it.id !in template.excludedNodes && it.freeCpu >= budget.nomadCpuMHz(it.capacity) && it.freeMemory >= budget.memoryMiB }
     }
 
+    /**
+     * What each ready node [template] could be placed on has free, as last sampled: thousandths of a logical vCPU and
+     * MiB. Placed allocations, pending ones included, already hold theirs.
+     */
+    @Synchronized
+    fun idle(template: NomadBatchJob): List<Pair<Long, Long>> {
+        refresh()
+        return nodes.filter { it.nodeClass == template.nodeClass && it.capacity.logicalCpus == template.cpuCapacity.logicalCpus &&
+            it.id !in template.excludedNodes }.map { node ->
+            (node.freeCpu.coerceAtLeast(0) * node.capacity.logicalCpus * 1000 / node.capacity.usableMHz) to node.freeMemory.coerceAtLeast(0)
+        }
+    }
+
     private fun refresh() {
         val at = nanoTime()
         if (sampledAt == Long.MIN_VALUE || at - sampledAt >= 10_000_000_000L) {
