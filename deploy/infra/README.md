@@ -34,8 +34,8 @@ another provider can supply the same HTTP operations and its own regional routin
 These modules are opt-in migration infrastructure. They do not alter the existing AWS workers or make Nomad the
 lab default. Apply only after reviewing a real plan with the intended account, private routing, instance quota,
 images and secrets. There are no provider credentials in an experiment, portable worker, manifest, or shared
-Kotlin execution code. Provider SDKs run only in the Mac inventory adapters, host bootstrap/interruption adapters,
-and independent cloud functions.
+Kotlin execution code. Provider SDKs run only in the Mac inventory adapters and independent cloud functions; the host
+bootstrap and interruption scripts call the providers' metadata and secret APIs with curl.
 
 ## AWS Spot
 
@@ -73,9 +73,10 @@ explicit on-demand pool for policy that requires it. The module's finite pool si
 Account Spot/on-demand vCPU quotas remain the final provider backstop, including booting/terminating overlap;
 set the shared collector's overall `maxVcpus` and pool limits consistently with them.
 
-1. Bake a Linux image with Docker, iptables, Python 3.13, host dependencies from `aws/requirements.txt`, and any
-   private network client. From this checkout, run `LAB_WORKER_IMAGE=REGISTRY/WORKER@sha256:DIGEST sudo -E bash
-   deploy/infra/common/bake.sh` on the builder, which needs curl and unzip. Build the portable worker with `deploy/nomad/worker.Dockerfile`
+1. Bake a Linux image with Docker, iptables, curl 8 or newer, jq and any private network client; the host scripts
+   need no Python or cloud SDK (`aws/bootstrap-aws.sh` signs its Secrets Manager request with `curl --aws-sigv4`
+   and the instance role's IMDSv2 credentials). From this checkout, run `LAB_WORKER_IMAGE=REGISTRY/WORKER@sha256:DIGEST sudo -E bash
+   deploy/infra/common/bake.sh` on the builder, which also needs unzip. Build the portable worker with `deploy/nomad/worker.Dockerfile`
    first. Record the base image ID, package lock, OCI digest, architecture, Nomad version and toolchain, then
    publish a new immutable AMI. Do not bake credentials or running lab state into it. This recipe installs
    checksum-pinned Nomad and pre-pulls the immutable OCI image; it does not create billable image builders.
@@ -140,6 +141,10 @@ ignoring it. Older inventory without launch metadata remains readable and cannot
 GCP renewal explicitly rejects startup actions until that provider implements the same recovery contract.
 New host images/templates arm the existing six-hour lifetime timer before secret retrieval or bootstrap
 prechecks; existing hosts need their ordinary lifecycle replacement to receive that guard.
+The host scripts are bash: images baked before that keep their Python scripts until replaced. The AWS user data
+calls `/opt/eignex-lab/bootstrap-aws.sh` either way, so the AMI can change on its own. The GCP startup script calls
+`/opt/eignex-lab/bootstrap-gcp.sh`, which older images lack: apply that template only together with an image baked
+from the same checkout.
 
 The image bootstrap checks the actual vCPU count, available memory, architecture and common SIMD flags before
 enabling the client. Templates provide an initial `attr.cpu.usablecompute` calibration. The coordinator reads
@@ -159,7 +164,8 @@ them. Configure the expiry error alarm's SNS topic and verify notification deliv
 ## Validation and live gates
 
 `python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py'` tests grant freshness, ownership, boot accounting,
-expiry ordering and bootstrap rejection. `python3 deploy/infra/validate.py` installs a checksum-pinned OpenTofu on
+expiry ordering. `bash deploy/infra/tests/test_host_scripts.sh` tests host bootstrap rejection, the rendered Nomad
+client, secret handling and interruption draining against stubs. `bash deploy/infra/validate.sh` installs a checksum-pinned OpenTofu on
 Linux amd64 and checks formatting/schema without account credentials or applying changes. Provider schemas and
 lock files are pinned. These checks cannot establish actual IAM authorization, Spot availability or time-to-delete.
 

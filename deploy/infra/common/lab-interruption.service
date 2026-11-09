@@ -2,7 +2,7 @@
 Description=Provider interruption to Nomad drain adapter
 After=nomad-client.service
 [Service]
-ExecStart=/usr/bin/python3 /opt/eignex-lab/interruption.py
+ExecStart=/opt/eignex-lab/interruption.sh
 Restart=on-failure
 RestartSec=5
 [Install]
