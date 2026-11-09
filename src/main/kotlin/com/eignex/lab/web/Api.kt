@@ -81,6 +81,8 @@ data class Health(
     val held: String? = null,
     val volumes: List<VolumeReport> = emptyList(),
     val resultJournal: ResultJournalReport? = null,
+    /** The API's own release; the runner restarts every service onto the same one when it updates. */
+    val release: RunningRelease? = null,
 )
 
 fun serveApi(config: Config, store: Store, host: HostReport) {

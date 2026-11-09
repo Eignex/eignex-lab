@@ -44,7 +44,7 @@ internal fun Route.statusRoutes(services: ApiServices) {
             val jobs = store.active(withCommands = false)
             Health(true, jobs.count { it.status == Status.QUEUED }, jobs.count { it.status == Status.RUNNING }, freeBytes(config.dataDir),
                 services.host.copy(cpu = config.cpuCapabilities, nodeTags = config.localNodeTags),
-                runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(), Volumes.report(config.paths), readResultJournalReport(config.dataDir))
+                runCatching { Volumes.hold(config.paths, config.minFreeBytes) }.getOrNull(), Volumes.report(config.paths), readResultJournalReport(config.dataDir), RunningRelease.current)
         })
     }
     // Where each active job may run and why a queued one waits ([Waiting]), by the rules the runner and the cloud
