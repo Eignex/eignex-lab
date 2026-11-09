@@ -177,26 +177,14 @@ resource "google_storage_bucket" "source" {
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 }
-data "archive_file" "functions" {
-  type        = "zip"
-  output_path = "${path.module}/functions.zip"
-  source {
-    content  = file("${path.module}/main.py")
-    filename = "main.py"
-  }
-  source {
-    content  = file("${path.module}/../common/capacity_grants.py")
-    filename = "capacity_grants.py"
-  }
-  source {
-    content  = file("${path.module}/requirements.txt")
-    filename = "requirements.txt"
-  }
+locals {
+  # Built by ./gradlew :lab-capacity:capacityFunctions: one self-contained jar, byte-for-byte reproducible for one commit.
+  functions_package = coalesce(var.functions_package, "${path.module}/../../../build/capacity-functions/gcp-capacity-functions.zip")
 }
 resource "google_storage_bucket_object" "source" {
-  name   = "functions-${data.archive_file.functions.output_sha256}.zip"
+  name   = "functions-${filesha256(local.functions_package)}.zip"
   bucket = google_storage_bucket.source.name
-  source = data.archive_file.functions.output_path
+  source = local.functions_package
 }
 resource "google_storage_bucket_iam_member" "build_read" {
   bucket = google_storage_bucket.source.name
@@ -229,8 +217,8 @@ resource "google_cloudfunctions2_function" "capacity" {
   location = var.region
   name     = "${local.name}-${each.key}"
   build_config {
-    runtime           = "python313"
-    entry_point       = each.key == "renew" ? "renew" : "expire"
+    runtime           = "java21"
+    entry_point       = each.key == "renew" ? "com.eignex.lab.cloud.gcp.GcpRenewFunction" : "com.eignex.lab.cloud.gcp.GcpExpireFunction"
     service_account   = google_service_account.roles["build"].id
     docker_repository = google_artifact_registry_repository.functions.id
     source {
@@ -241,7 +229,7 @@ resource "google_cloudfunctions2_function" "capacity" {
     }
   }
   service_config {
-    available_memory                 = "256M"
+    available_memory                 = "512M"
     timeout_seconds                  = 60
     max_instance_count               = 1
     max_instance_request_concurrency = 1

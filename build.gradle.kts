@@ -32,6 +32,8 @@ dependencies {
     implementation(project(":lab-bench"))
     // The source checkers and reference solvers, and the XCSP3 checker and Choco they alone need.
     implementation(project(":lab-solvers"))
+    // Capacity grants and the provider calls the cloud capacity functions and the capacity adapter share.
+    implementation(project(":lab-capacity"))
     implementation("io.ktor:ktor-server-core:$ktor")
     implementation("io.ktor:ktor-server-netty:$ktor")
     implementation("io.ktor:ktor-server-content-negotiation:$ktor")

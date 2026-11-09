@@ -1,6 +1,7 @@
 package com.eignex.lab
 
 import com.eignex.lab.execution.*
+import com.eignex.lab.cloud.aws.*
 
 import kotlinx.serialization.json.Json
 import java.net.URI

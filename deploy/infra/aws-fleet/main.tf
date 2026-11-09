@@ -7,6 +7,11 @@ variable "signing_secret_arn" { type = string }
 variable "nomad_servers" { type = list(string) }
 variable "adapter_role_name" { type = string }
 variable "scaler_role_name" { type = string }
+variable "functions_package" {
+  type        = string
+  default     = null
+  description = "The pools' renewal/expiry Lambda package; by default build/capacity-functions/aws-capacity-functions.zip of this checkout."
+}
 variable "max_vcpus" {
   type    = number
   default = 128
@@ -51,6 +56,7 @@ module "pool" {
   architecture          = each.value.architecture
   minimum_features      = each.value.minimum_features
   worker_image          = each.value.worker_image
+  functions_package     = var.functions_package
 }
 
 # The supervised adapter and scaler retain their separate identities. Each grant is

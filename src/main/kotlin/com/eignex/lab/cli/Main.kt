@@ -25,7 +25,8 @@ import kotlin.system.exitProcess
  * reference-solver case, as a reference arm's case command calls it. `nomad-spec` renders an operator's experimental
  * batch session without starting either service or opening the lab database. `capacity-export` writes the capacity
  * pools' contract ([CapacityContract]) the autoscaler, the provider adapters and their Terraform check themselves against.
- * `input-signer` ([InputSigner]) is the Mac's loopback signing service for the regional input store.
+ * `input-signer` ([InputSigner]) is the Mac's loopback signing service for the regional input store, and `capacity-adapter`
+ * ([CapacityAdapter]) its cloud capacity inventory and renewal service.
  */
 fun main(args: Array<String>) {
     val mode = args.firstOrNull() ?: "help"
@@ -40,6 +41,7 @@ fun main(args: Array<String>) {
         "nomad-spec" -> exitProcess(NomadSpecCli.main(args.drop(1)))
         "capacity-export" -> exitProcess(CapacityContract.main(args.drop(1)))
         "input-signer" -> exitProcess(InputSigner.main(args.drop(1)))
+        "capacity-adapter" -> exitProcess(CapacityAdapter.main(args.drop(1)))
     }
     if (mode == "password") {
         // A new password and the hash to commit as src/main/resources/lab-password; the password goes to the clients.
@@ -49,7 +51,7 @@ fun main(args: Array<String>) {
         return
     }
     if (mode !in setOf("api", "runner", "check")) {
-        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator|capacity-export|input-signer|process-supervisor")
+        System.err.println("usage: eignex-lab api|runner|check|password|campaign-evidence|docker-cleanup|reference|nomad-spec|worker-local|worker|nomad-coordinator|capacity-export|capacity-adapter|input-signer|process-supervisor")
         exitProcess(2)
     }
     // The CPU is probed once, here, and handed to everything that needs it.

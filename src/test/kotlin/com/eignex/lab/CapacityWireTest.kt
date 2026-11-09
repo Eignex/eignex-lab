@@ -20,6 +20,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class CapacityWireTest {
     @Test
@@ -43,5 +44,16 @@ class CapacityWireTest {
         val first = settings.pools.first()
         assertEquals(CapacityContract.Pool(first.id, first.nodeClass, first.maxNodes, first.vcpus, first.memoryMiB, first.market), contract.pools.first())
         assertEquals(CapacityContract.SCHEMA_VERSION, contract.schemaVersion)
+    }
+
+    @Test
+    fun `cloud hosts arm their lifetime protection before secret retrieval on both providers`() {
+        for (provider in listOf("aws", "gcp")) {
+            val text = Files.readString(Path.of("deploy/infra/$provider/user-data.sh.tftpl"))
+            val armed = text.indexOf("systemctl enable --now lab-lifetime.timer")
+            assertTrue(armed >= 0, provider)
+            assertTrue(armed < text.indexOf("mkdir -p"), provider)
+            assertTrue(armed < text.indexOf("exec "), provider)
+        }
     }
 }

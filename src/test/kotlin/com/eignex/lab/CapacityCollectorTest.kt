@@ -54,29 +54,16 @@ class CapacityCollectorTest {
     private fun sample(instances: List<CapacityInstance> = emptyList()) {
         Files.writeString(inventory, Json.encodeToString(CapacityInventory(at, setOf(pool.id), instances)))
     }
-    /** What `capacity_grants.verify` (deploy/infra/common) makes of [grant] at [nowMs]: the pool and desired size, or why not. */
-    private fun pythonVerify(grant: CapacityGrant, pool: String, maxNodes: Int, nowMs: Long): String {
-        val script = """
-            import json, sys
-            sys.path.insert(0, 'deploy/infra/common')
-            import capacity_grants
-            grant, key, pool, max_nodes, now = json.loads(sys.stdin.read())
-            try:
-                value = capacity_grants.verify(grant, key, pool, max_nodes, now)
-                print(value['pool'], value['desired'])
-            except ValueError as error:
-                print(error)
-        """.trimIndent()
-        val process = ProcessBuilder("python3", "-c", script).redirectErrorStream(true).start()
-        process.outputStream.use {
-            it.write(Json.encodeToString(buildJsonArray {
-                add(buildJsonObject { put("payload", grant.payload); put("signature", grant.signature) })
-                add(token); add(pool); add(maxNodes); add(nowMs)
-            }).toByteArray())
-        }
-        val output = process.inputStream.bufferedReader().readText().trim()
-        check(process.waitFor() == 0) { output }
-        return output
+    /**
+     * What the cloud renewal functions' verifier (lab-capacity's CapacityGrants) makes of [grant] as the coordinator
+     * serves it, at [nowMs]: the pool and desired size, or why not.
+     */
+    private fun providerVerify(grant: CapacityGrant, pool: String, maxNodes: Int, nowMs: Long): String = try {
+        val served = Json.parseToJsonElement(Json.encodeToString(grant))
+        val value = com.eignex.lab.cloud.CapacityGrants.verify(served, token, pool, maxNodes, nowMs)
+        "${value.getValue("pool").jsonPrimitive.content} ${value.getValue("desired").jsonPrimitive.int}"
+    } catch (error: com.eignex.lab.cloud.CapacityRejected) {
+        error.message!!
     }
     private fun collector() = CapacityCollector(settings, listOf(inventory), tokenFile, state, store, control, { writable }, setOf("local"), { at }, { nanos })
 
@@ -233,9 +220,9 @@ class CapacityCollectorTest {
         assertEquals(pool.maxNodes, payload.getValue("maxNodes").jsonPrimitive.int)
         assertEquals(0, payload.getValue("desired").jsonPrimitive.int)
         // The provider side's own verifier accepts the grant as the coordinator issued it, and only it.
-        assertEquals("${pool.id} 0", pythonVerify(grant, pool.id, pool.maxNodes, at))
-        assertEquals("invalid capacity signature", pythonVerify(grant.copy(signature = "0".repeat(64)), pool.id, pool.maxNodes, at))
-        assertEquals("capacity grant expired", pythonVerify(grant, pool.id, pool.maxNodes, at + CapacityWire.FRESH_MS + 1))
+        assertEquals("${pool.id} 0", providerVerify(grant, pool.id, pool.maxNodes, at))
+        assertEquals("invalid capacity signature", providerVerify(grant.copy(signature = "0".repeat(64)), pool.id, pool.maxNodes, at))
+        assertEquals("capacity grant expired", providerVerify(grant, pool.id, pool.maxNodes, at + CapacityWire.FRESH_MS + 1))
         assertFailsWith<IllegalArgumentException> { c.grant("unknown") }
         nanos += 31_000_000_000
         assertFailsWith<IllegalStateException> { c.grant(pool.id) }

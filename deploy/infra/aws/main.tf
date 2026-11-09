@@ -168,17 +168,11 @@ resource "aws_dynamodb_table" "leases" {
     enabled = true
   }
 }
-data "archive_file" "functions" {
-  type        = "zip"
-  output_path = "${path.root}/functions-${var.pool_id}.zip"
-  source {
-    content  = file("${path.module}/functions.py")
-    filename = "functions.py"
-  }
-  source {
-    content  = file("${path.module}/../common/capacity_grants.py")
-    filename = "capacity_grants.py"
-  }
+locals {
+  # Built by ./gradlew :lab-capacity:capacityFunctions, byte-for-byte reproducible for one commit.
+  functions_package = coalesce(var.functions_package, "${path.module}/../../../build/capacity-functions/aws-capacity-functions.zip")
+  # A short-lived function: the client compiler alone starts the JVM fastest.
+  functions_jvm = { JAVA_TOOL_OPTIONS = "-XX:+TieredCompilation -XX:TieredStopAtLevel=1" }
 }
 resource "aws_iam_role" "renew" {
   name               = "${local.name}-renew"
@@ -219,22 +213,24 @@ resource "aws_iam_role_policy" "expiry" {
 resource "aws_lambda_function" "renew" {
   function_name    = "${local.name}-renew"
   role             = aws_iam_role.renew.arn
-  runtime          = "python3.13"
-  handler          = "functions.renew"
-  filename         = data.archive_file.functions.output_path
-  source_code_hash = data.archive_file.functions.output_base64sha256
+  runtime          = "java21"
+  handler          = "com.eignex.lab.cloud.aws.AwsRenewHandler::handleRequest"
+  filename         = local.functions_package
+  source_code_hash = filebase64sha256(local.functions_package)
+  memory_size      = 512
   timeout          = 60
-  environment { variables = { GROUP = aws_autoscaling_group.workers.name, TABLE = aws_dynamodb_table.leases.name, POOL = var.pool_id, DEPLOYMENT = var.deployment_id, MAX_NODES = tostring(var.max_nodes), SIGNING_SECRET = var.signing_secret_arn } }
+  environment { variables = merge(local.functions_jvm, { GROUP = aws_autoscaling_group.workers.name, TABLE = aws_dynamodb_table.leases.name, POOL = var.pool_id, DEPLOYMENT = var.deployment_id, MAX_NODES = tostring(var.max_nodes), SIGNING_SECRET = var.signing_secret_arn }) }
 }
 resource "aws_lambda_function" "expiry" {
   function_name    = "${local.name}-expiry"
   role             = aws_iam_role.expiry.arn
-  runtime          = "python3.13"
-  handler          = "functions.expire"
-  filename         = data.archive_file.functions.output_path
-  source_code_hash = data.archive_file.functions.output_base64sha256
+  runtime          = "java21"
+  handler          = "com.eignex.lab.cloud.aws.AwsExpireHandler::handleRequest"
+  filename         = local.functions_package
+  source_code_hash = filebase64sha256(local.functions_package)
+  memory_size      = 512
   timeout          = 60
-  environment { variables = { GROUP = aws_autoscaling_group.workers.name, TABLE = aws_dynamodb_table.leases.name, POOL = var.pool_id, DEPLOYMENT = var.deployment_id } }
+  environment { variables = merge(local.functions_jvm, { GROUP = aws_autoscaling_group.workers.name, TABLE = aws_dynamodb_table.leases.name, POOL = var.pool_id, DEPLOYMENT = var.deployment_id }) }
 }
 resource "aws_cloudwatch_event_rule" "expiry" {
   name                = "${local.name}-expiry"

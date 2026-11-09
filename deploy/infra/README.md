@@ -15,7 +15,8 @@ direct S3-to-EC2 transfer within the same region has no data-transfer charge.
 
 `eignex-lab input-signer --config FILE` is an optional loopback-only native signing service. Its JSON configuration
 names `bucket`, `region`, `profile` and optional `port` (8093). The profile's access key is read from
-`~/.aws/credentials` or `~/.aws/config` (or its `credential_process`); roles and SSO are not supported. The signer
+`~/.aws/credentials` or `~/.aws/config` (or its `credential_process`); a `role_arn` with a `source_profile` is
+assumed through STS, and SSO or `aws login` profiles are resolved by `aws configure export-credentials`. The signer
 returns five-minute URLs, never corpus bytes, and only signs input reads or conditional writes under a SHA-256 content
 key or a corpus-pack key. It never distributes provider credentials. Configure native workers/coordinator with
 `LAB_SHARED_INPUT_SIGNER=http://127.0.0.1:8093/`. `nomad/native-services.sh` accepts an optional `inputSigner` containing
@@ -44,8 +45,22 @@ another provider can supply the same HTTP operations and its own regional routin
 These modules are opt-in migration infrastructure. They do not alter the existing AWS workers or make Nomad the
 lab default. Apply only after reviewing a real plan with the intended account, private routing, instance quota,
 images and secrets. There are no provider credentials in an experiment, portable worker, manifest, or shared
-Kotlin execution code. Provider SDKs run only in the Mac inventory adapters and independent cloud functions; the host
-bootstrap and interruption scripts call the providers' metadata and secret APIs with curl.
+Kotlin execution code. Provider APIs are called only by the Mac inventory adapters and the independent cloud
+functions, both from the `lab-capacity` module over JDK HTTP (SigV4 on AWS, OAuth on GCP), with no provider SDK; the
+host bootstrap and interruption scripts call the providers' metadata and secret APIs with curl.
+
+## Capacity functions
+
+The renewal and expiry functions are Kotlin (`lab-capacity`, `com.eignex.lab.cloud`) on the providers' `java21`
+runtimes, and verify grants with the same `CapacityGrants` code the coordinator signs them with.
+`./gradlew :lab-capacity:capacityFunctions` packages them reproducibly into `build/capacity-functions/`:
+`aws-capacity-functions.zip` (Lambda's `lib/` layout) and `gcp-capacity-functions.zip` (one self-contained jar for
+the Cloud Functions Java buildpack). Build them from the commit being applied before `tofu plan`; the modules read
+them from this checkout's `build/capacity-functions/`, or from the path in their `functions_package` variable, and
+change the functions only when the package's hash changes. Each function has 512 MB and the client compiler alone
+(`JAVA_TOOL_OPTIONS`). A cold JVM loads the code and makes its first TLS request in 0.7 seconds on a desktop; expect
+a few seconds on a 512 MB function, well inside the 60-second timeout. The Mac adapter allows a renewal invocation
+30 seconds, and its ten-second renewals keep the renewal functions warm.
 
 ## AWS Spot
 
@@ -173,8 +188,10 @@ them. Configure the expiry error alarm's SNS topic and verify notification deliv
 
 ## Validation and live gates
 
-`python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py'` tests grant freshness, ownership, boot accounting,
-expiry ordering. `bash deploy/infra/tests/test_host_scripts.sh` tests host bootstrap rejection, the rendered Nomad
+`./gradlew :lab-capacity:check` tests grant freshness, ownership, startup recovery, expiry ordering and the provider
+wire (SigV4 test-suite signatures, query/JSON/REST shapes and errors) and checks the function packages hold their
+Java 21 handlers. `python3 -m unittest discover -s deploy/infra/tests -p 'test_*.py'` tests the AWS inventory adapter's
+boot accounting. `bash deploy/infra/tests/test_host_scripts.sh` tests host bootstrap rejection, the rendered Nomad
 client, secret handling and interruption draining against stubs. `bash deploy/infra/validate.sh` installs a checksum-pinned OpenTofu on
 Linux amd64 and checks formatting/schema without account credentials or applying changes. Provider schemas and
 lock files are pinned. These checks cannot establish actual IAM authorization, Spot availability or time-to-delete.
@@ -219,8 +236,11 @@ module creates separate worker, adapter, scaler, renewal, expiry, scheduler and 
 no private service-account keys. Only host bootstrap reads the bootstrap secret; only renewal reads the separate
 capacity signing secret. Cloud Run functions require dedicated authenticated invokers, with no `allUsers` grant.
 
-Use ADC/federated identity and service-account impersonation for Mac control. Install `gcp/requirements.txt` in an
-adapter venv. Configure the adapter's `serviceAccount` from the output. For Autoscaler, generate an impersonated
+Use ADC and service-account impersonation for Mac control: run the adapter as `eignex-lab capacity-adapter gcp
+CONFIG` from `gcp/adapter.example.json`. It reads gcloud's application default credentials (an `authorized_user`, or
+an `impersonated_service_account` over one; federated `external_account` files are not supported) and impersonates
+the adapter's `serviceAccount`, which you copy from the output, for access and invoker identity tokens. With a
+`contract`, also set the pool's `MAX_NODES`. For Autoscaler, generate an impersonated
 ADC configuration for the scaler service account (for example `gcloud auth application-default login
 --impersonate-service-account=SCALER_EMAIL`) and reference that trusted private credential configuration in its
 `credentials` option; do not download a service-account key. Keep adapter and scaler identities distinct. The
