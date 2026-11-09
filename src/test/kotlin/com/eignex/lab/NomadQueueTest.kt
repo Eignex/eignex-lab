@@ -576,6 +576,38 @@ class NomadQueueTest {
         assertEquals(0, store.execution.failureCount(ordinary))
     }
 
+    @Test fun `higher priority work running on cloud workers does not hold lower priority work off the native worker`() {
+        val reference = job(ExperimentSpec("reference@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST, priority = -2))
+        store.setPriority(reference, -2)
+        val ordinary = job()
+        fun native() = NativePriority(store).allows(reference)
+        // Not admitted yet, the higher priority job may still prepare natively: it comes first.
+        assertFalse(native())
+        // The native worker is not open to it, so it prepares and then solves on cloud workers.
+        val cloudOnly = NomadQueue(config, store, backend, artifacts, settings, { true }, completed = { completions++ },
+            nativeAllowed = { it != ordinary }, source = { job, targets, _ ->
+                Experiments.arms(job.experiment!!).map { PlannedArm(it, "a".repeat(40)) } to targets.distinctBy { it.os to it.arch }.map { input(job.id, it.os, it.arch) }
+            })
+        cloudOnly.reconcile()
+        assertContains(store.execution.submission(store.execution.sessions(ordinary).single().id), "hard-quota")
+        // While it prepares on a cloud node, the reference keeps the otherwise idle native worker.
+        assertTrue(native())
+        prepare(ordinary, 3); backend.reconcile(); cloudOnly.reconcile()
+        val solves = store.execution.sessions(ordinary).filter { it.executionClass == ExecutionClass.SOLVE && it.desired == Desired.RUN }
+        assertTrue(solves.isNotEmpty() && solves.all { "hard-quota" in store.execution.submission(it.id) })
+        val solve = solves.first()
+        // Prepared, its rows wait for any worker: it comes first again, and the reference yields between rows.
+        assertFalse(native())
+        // Once a cloud worker runs its rows, the reference may use the native worker again.
+        store.execution.bind(solve.id, solveToken(solve), "cloud-allocation", "cloud-node", "release")
+        assertTrue(native())
+        // A pinned higher-priority job, which only the native worker can run, still holds it whatever else runs.
+        val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
+        assertFalse(native())
+        store.setPaused(sweep, true)
+        assertTrue(native())
+    }
+
     @Test fun `paused reserved work lets idle native capacity contribute to auto jobs`() {
         val sweep = job(ExperimentSpec("status-sweep@abc", problems = listOf(mapOf("suite" to "s")), host = Experiments.LAB_HOST))
         store.setPaused(sweep, true)

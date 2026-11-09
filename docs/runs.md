@@ -169,7 +169,9 @@ A repository recipe can set priority 100 and its regression confirmations then u
 Ordinary reference runs also use priority 0, with their confirmations at 1.
 Lower-priority local workers yield between iterations when compatible higher-priority work arrives or is
 reprioritized, whether either job is automatic or local-only. Running paired iterations finish and accepted results
-are kept when the job resumes; cloud workers continue.
+are kept when the job resumes; cloud workers continue. Higher-priority work that is preparing on a cloud node, or whose
+rows cloud workers are running, does not hold the local machine idle: lower-priority local work keeps it until that
+job waits for a worker again.
 Local-only placement, including a required `local` tag or excluded `cloud` tag, is reserved for sweeps and references.
 
 ## Repository benchmarks
