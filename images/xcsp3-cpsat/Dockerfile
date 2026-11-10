@@ -10,22 +10,26 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /build
 # OR-Tools 9.15.6755 is the release the former CPMpy image pinned (ortools==9.15.6755); protobuf-java 4.33.1 is the
 # version its Java bindings declare. The XCSP3-Java-Tools revision and archive hash are the ones
-# xcsp3-tools/build.gradle.kts builds the lab's checker from. Both native builds are fetched; the image keeps its own.
-ADD --checksum=sha256:483f27408386fd1ab718aa72244beead10756e1be6d25c7ab7fcb83eb1788d9a \
-  https://repo1.maven.org/maven2/com/google/ortools/ortools-java/9.15.6755/ortools-java-9.15.6755.jar lib/ortools-java.jar
-ADD --checksum=sha256:fd5cf3d55bc2c3ddb2a8640c9d4c69daa9a5b326fb6e05bae0e56b3f4f85e0f7 \
-  https://repo1.maven.org/maven2/com/google/protobuf/protobuf-java/4.33.1/protobuf-java-4.33.1.jar lib/protobuf-java.jar
-ADD --checksum=sha256:6f5870f5a229a6916407fbf821f1d58a1a95405aa46d79542b59845f7aa30278 \
-  https://repo1.maven.org/maven2/com/google/ortools/ortools-linux-x86-64/9.15.6755/ortools-linux-x86-64-9.15.6755.jar native-amd64.jar
-ADD --checksum=sha256:4c61daad85c14cecdab8df5097122e46ccd73a64f4acf41e5933db40eb6456cc \
-  https://repo1.maven.org/maven2/com/google/ortools/ortools-linux-aarch64/9.15.6755/ortools-linux-aarch64-9.15.6755.jar native-arm64.jar
-ADD --checksum=sha256:3fdfc37e29744a9a67dd5365e81467e26fbde0b7aa204e6f8bbe79eeaa7ae892 \
-  https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/1.13.4/junit-platform-console-standalone-1.13.4.jar junit.jar
-ADD --checksum=sha256:541624efb4ac227d0c99c7058e2e07041ff4f119070b0c996cde539fe71cc296 \
-  https://codeload.github.com/xcsp3team/XCSP3-Java-Tools/tar.gz/ca58fc79a42374d080aac4d1410874e748cf0a05 xcsp3.tar.gz
-RUN arch="$(dpkg --print-architecture)" \
- && { [ -f "native-$arch.jar" ] || { echo "no OR-Tools build for $arch" >&2; exit 1; }; } \
- && mkdir native && (cd native && jar xf "../native-$arch.jar" && mv ortools-linux-*/* . && rm -rf ortools-linux-* META-INF) \
+# xcsp3-tools/build.gradle.kts builds the lab's checker from. Only this architecture's OR-Tools native build is fetched.
+# Fetch.java checks every SHA-256; it stands in for `ADD --checksum`, which Docker's legacy builder lacks.
+COPY tools/Fetch.java tools/Fetch.java
+RUN maven=https://repo1.maven.org/maven2 \
+ && case "$(dpkg --print-architecture)" in \
+      amd64) platform=linux-x86-64; native=6f5870f5a229a6916407fbf821f1d58a1a95405aa46d79542b59845f7aa30278 ;; \
+      arm64) platform=linux-aarch64; native=4c61daad85c14cecdab8df5097122e46ccd73a64f4acf41e5933db40eb6456cc ;; \
+      *) echo "no OR-Tools build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+ && fetch() { java tools/Fetch.java "$@"; } \
+ && fetch "$maven/com/google/ortools/ortools-java/9.15.6755/ortools-java-9.15.6755.jar" lib/ortools-java.jar \
+      483f27408386fd1ab718aa72244beead10756e1be6d25c7ab7fcb83eb1788d9a \
+ && fetch "$maven/com/google/protobuf/protobuf-java/4.33.1/protobuf-java-4.33.1.jar" lib/protobuf-java.jar \
+      fd5cf3d55bc2c3ddb2a8640c9d4c69daa9a5b326fb6e05bae0e56b3f4f85e0f7 \
+ && fetch "$maven/com/google/ortools/ortools-$platform/9.15.6755/ortools-$platform-9.15.6755.jar" native.jar "$native" \
+ && fetch "$maven/org/junit/platform/junit-platform-console-standalone/1.13.4/junit-platform-console-standalone-1.13.4.jar" \
+      junit.jar 3fdfc37e29744a9a67dd5365e81467e26fbde0b7aa204e6f8bbe79eeaa7ae892 \
+ && fetch https://codeload.github.com/xcsp3team/XCSP3-Java-Tools/tar.gz/ca58fc79a42374d080aac4d1410874e748cf0a05 xcsp3.tar.gz \
+      541624efb4ac227d0c99c7058e2e07041ff4f119070b0c996cde539fe71cc296 \
+ && mkdir native && (cd native && jar xf ../native.jar && mv ortools-linux-*/* . && rm -rf ortools-linux-* META-INF) \
  && mkdir xcsp3 && tar xzf xcsp3.tar.gz --strip-components=1 -C xcsp3
 # Only the parser and the common model of XCSP3-Java-Tools: the modeler and its JSON dependency are not needed.
 RUN mkdir -p classes/xcsp3 \

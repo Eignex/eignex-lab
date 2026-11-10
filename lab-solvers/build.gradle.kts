@@ -29,8 +29,19 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.17")
 }
 
+// The XCSP3 cp-sat reference image's build context ships with the lab, so a host that lacks the image tag the release
+// asks for builds it on its first XCSP3 reference case (DockerReference.ensureBuilt).
+val xcsp3CpSatContext by tasks.registering(Zip::class) {
+    from(rootProject.file("images/xcsp3-cpsat")) { exclude("README.md") }
+    archiveFileName.set("xcsp3-cpsat.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("reference-images"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
 // The exact checkers name the hash of their own source in each verdict, so the source ships beside the classes.
 tasks.processResources {
+    from(xcsp3CpSatContext) { into("reference-images") }
     from("src/main/kotlin") {
         include("com/eignex/lab/checker/ExactMpsChecker.kt", "com/eignex/lab/checker/MpsPolicyChecks.kt", "com/eignex/lab/checker/DimacsSourceEvaluation.kt")
         into("checker-source")

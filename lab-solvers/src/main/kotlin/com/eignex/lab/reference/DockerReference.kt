@@ -40,6 +40,60 @@ class DockerReference(private val image: String, private val label: String, priv
         }
     }
 
+    @Volatile
+    private var present = false
+
+    /**
+     * Builds [image] from the build context the lab ships as the classpath zip [context] when Docker lacks the tag, so a
+     * release that asks for a new image tag runs without anyone building it on the host first. Cases on one host build it
+     * once: they queue on a host-wide lock file and check the tag again. A failed build fails this case and the next one
+     * tries again (Docker keeps the finished layers).
+     */
+    fun ensureBuilt(context: String, timeoutMillis: Long = BUILD_TIMEOUT_MS) {
+        if (present || imageAvailable()) {
+            present = true
+            return
+        }
+        val bundle = DockerReference::class.java.getResource(context) ?: error("$solver: no build context $context")
+        val name = image.replace(Regex("[^A-Za-z0-9.-]"), "_")
+        java.io.RandomAccessFile(File(System.getProperty("java.io.tmpdir"), "eignex-lab-build-$name.lock"), "rw").use { lock ->
+            lock.channel.lock().use {
+                if (imageAvailable()) {
+                    present = true
+                    return
+                }
+                val dir = java.nio.file.Files.createTempDirectory("eignex-lab-image-$name").toFile()
+                val log = File.createTempFile("eignex-lab-build-$name-", ".log")
+                try {
+                    java.util.zip.ZipInputStream(bundle.openStream()).use { zip ->
+                        generateSequence { zip.nextEntry }.filterNot { it.isDirectory }.forEach { entry ->
+                            val target = File(dir, entry.name).canonicalFile
+                            check(target.path.startsWith(dir.canonicalPath + File.separator)) { "bad entry ${entry.name}" }
+                            target.parentFile.mkdirs()
+                            target.outputStream().use { zip.copyTo(it) }
+                        }
+                    }
+                    System.err.println("$solver: building $image from the bundled $context")
+                    val process = ProcessBuilder("docker", "build", "-t", image, dir.path)
+                        .redirectErrorStream(true).redirectOutput(log).start()
+                    val finished = process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)
+                    if (!finished) {
+                        process.descendants().forEach { it.destroyForcibly() }
+                        process.destroyForcibly()
+                    }
+                    check(finished && process.exitValue() == 0 && imageAvailable()) {
+                        "$solver: building $image failed (exit=${if (finished) process.exitValue() else "timeout"}): " +
+                            log.readText().takeLast(ERROR_TAIL_CHARS)
+                    }
+                    present = true
+                } finally {
+                    dir.deleteRecursively()
+                    log.delete()
+                }
+            }
+        }
+    }
+
     fun imageAvailable(): Boolean = runCatching {
         val process = ProcessBuilder("docker", "image", "inspect", image)
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
@@ -93,6 +147,7 @@ class DockerReference(private val image: String, private val label: String, priv
 
     private companion object {
         const val MEMORY_LIMIT = "6g"
+        const val BUILD_TIMEOUT_MS = 30 * 60_000L
         const val EXIT_WAIT_MS = 5_000L
         const val ERROR_TAIL_CHARS = 200
 

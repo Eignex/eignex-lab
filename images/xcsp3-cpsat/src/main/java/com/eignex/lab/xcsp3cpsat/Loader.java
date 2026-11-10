@@ -436,11 +436,24 @@ final class Loader {
         if (positive && !starred) {
             b.model.addAllowedAssignments(xs.stream().map(b::affine).toArray(LinearArgument[]::new)).addTuples(tuples);
         } else if (positive) {
+            // Some row matches: the rows without a wildcard form one table that an enforcement literal switches on, and
+            // each wildcard row is the conjunction of its fixed coordinates.
+            List<long[]> plain = new ArrayList<>();
             List<Literal> rows = new ArrayList<>();
             for (long[] t : tuples) {
+                if (Arrays.stream(t).noneMatch(v -> v == STAR)) {
+                    plain.add(t);
+                    continue;
+                }
                 List<Literal> eqs = new ArrayList<>();
                 for (int i = 0; i < t.length; i++) if (t[i] != STAR) eqs.add(b.eq(xs.get(i), t[i]));
                 rows.add(b.and(eqs));
+            }
+            if (!plain.isEmpty()) {
+                Literal inTable = b.boolVar();
+                b.model.addAllowedAssignments(xs.stream().map(b::affine).toArray(LinearArgument[]::new))
+                    .addTuples(plain.toArray(long[][]::new)).onlyEnforceIf(inTable);
+                rows.add(inTable);
             }
             b.postOr(rows);
         } else {

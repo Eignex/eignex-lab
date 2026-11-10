@@ -27,6 +27,21 @@ class Xcsp3CpSatReferenceTest {
     }
 
     @Test
+    fun `the lab ships the image's build context, so a missing tag can be built on the host`() {
+        val bundle = requireNotNull(Xcsp3CpSatReference::class.java.getResource(Xcsp3CpSatReference.BUILD_CONTEXT))
+        val entries = java.util.zip.ZipInputStream(bundle.openStream()).use { zip ->
+            generateSequence { zip.nextEntry }.map { it.name }.toList()
+        }
+        val main = "src/main/java/com/eignex/lab/xcsp3cpsat/Main.java"
+
+        assert(listOf("Dockerfile", "tools/Fetch.java", main, "src/test/resources/smoke.xml").all { it in entries }) { "$entries" }
+        val bundled = java.util.zip.ZipInputStream(bundle.openStream()).use { zip ->
+            generateSequence { zip.nextEntry }.first { it.name == main }.let { zip.readBytes().decodeToString() }
+        }
+        assertEquals(java.io.File("images/xcsp3-cpsat/$main").readText(), bundled)
+    }
+
+    @Test
     fun `reference records should retain their importer identity`() {
         val output = "v <instantiation><list>x</list><values>5</values></instantiation>\n" +
             """{"exit":"OPTIMAL","version":"${Xcsp3CpSatReference.VERSION}","objective":5,"exactObjective":"5","maximize":true,"cpModelPresolve":true}"""

@@ -16,6 +16,9 @@ object Xcsp3CpSatReference {
     const val IMAGE = "eignex-lab-xcsp3-cpsat:source-preserving-v3"
     const val VERSION = "xcsp3-source-preserving-v3"
 
+    /** `images/xcsp3-cpsat`, bundled with the lab so a host that lacks [IMAGE] builds it before its first solve. */
+    const val BUILD_CONTEXT = "/reference-images/xcsp3-cpsat.zip"
+
     /** Label on every reference container, so stragglers can be reaped (`docker kill --filter label`). */
     const val CONTAINER_LABEL = "eignex-lab-xcsp3-ref"
 
@@ -59,6 +62,7 @@ object Xcsp3CpSatReference {
         CorpusFiles.withPlainFile(instance.model) { run(it, budget, workers, seed) }
 
     private fun run(xml: File, budget: Budget, workers: Int, seed: Long): ReferenceResult {
+        docker.ensureBuilt(BUILD_CONTEXT)
         val timeoutSec = (budget.timeoutMillis / 1000).coerceAtLeast(1)
         val name = docker.containerName()
         val cmd = docker.command(name, arguments = listOf(

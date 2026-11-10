@@ -32,8 +32,13 @@ constraints are rejected instead of being posted unreified, and a table whose tu
 XCSP3 parser drops them) is unsatisfiable for supports and void for conflicts, as CPMpy treated the kept tuples.
 
 Every build input is pinned: the Temurin base images by digest, OR-Tools 9.15.6755 (the release the CPMpy image
-pinned), protobuf-java and the XCSP3-Java-Tools revision of `xcsp3-tools/build.gradle.kts` by SHA-256. A training
-solve of `smoke.xml` at build time fills an AOT cache that later container starts map.
+pinned), protobuf-java and the XCSP3-Java-Tools revision of `xcsp3-tools/build.gradle.kts` by SHA-256, which
+`tools/Fetch.java` checks (so the Dockerfile also builds with Docker's legacy builder). A training solve of `smoke.xml`
+at build time fills an AOT cache that later container starts map.
+
+Hosts need no manual build: `lab-solvers` bundles this directory (`/reference-images/xcsp3-cpsat.zip`), and the
+first XCSP3 reference case on a host whose Docker lacks the tag builds it from that bundle under a host-wide lock
+(`DockerReference.ensureBuilt`). The bench then pins the built image by its ID in every reference row.
 
 `SolveTest` holds the cases of the former `test_solve.py` (self-authored constant and variable matrix fixtures,
 grouped conditions, axis-bound failures, weighted expression-sum, contradiction, unconstrained-variable and wide
