@@ -16,6 +16,9 @@
     --off: #888;
     --series-1: #2a78d6;
     --series-2: #eb6834;
+    --series-3: #13855b;
+    --series-4: #9654bb;
+    --series-5: #98710b;
 }
 
 a {
@@ -1439,6 +1442,9 @@ tr[data-in] td:first-child {
         --off: #888;
         --series-1: #3987e5;
         --series-2: #d95926;
+        --series-3: #41ba8b;
+        --series-4: #bc86df;
+        --series-5: #d1af4f;
     }
 }
 
@@ -1639,15 +1645,24 @@ summary { cursor: pointer; }
 .result-diagnostics { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 24px 0; }
 .result-diagnostics .scroll { max-height: 400px; overflow: auto; }
 
+#benchmark-metric { max-width: 100%; }
+#benchmark-engines span { white-space: normal; }
+#benchmark-affected { display: grid; gap: 6px; margin-top: 12px; }
+.benchmark-change { text-align: left; overflow-wrap: anywhere; white-space: normal; }
+#benchmark-detail { scroll-margin-top: 16px; }
 
-.benchmark-overview { margin-bottom: 20px; }
+#benchmark-affected details .benchmark-change { display: block; width: 100%; margin-top: 6px; }
 #benchmark-detail .legend span { white-space: normal; }
-.benchmark-counts { display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 16px 0; }
-.benchmark-counts b { display: block; font-size: 24px; }
-.benchmark-counts span { color: var(--muted); font-size: 12px; }
-.benchmark-counts b { color: var(--fg); }
-.benchmark-changes { min-width: 760px; }
-.benchmark-changes td:first-child { min-width: 230px; max-width: 540px; overflow-wrap: anywhere; }
-.benchmark-changes td:first-child small { display: block; color: var(--muted); margin-top: 4px; }
-.benchmark-changes td.num { white-space: nowrap; }
-.benchmark-overview details { margin-top: 14px; }
+
+#benchmark-timing-engines { margin-top: 12px; }
+#benchmark-engines span, #benchmark-timing-engines span { display: inline-flex; align-items: center; gap: 6px; }
+.benchmark-speeds { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-top: 16px; }
+.benchmark-speeds span { display: block; color: var(--muted); font-size: 12px; }
+.benchmark-speeds strong { display: block; font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.benchmark-cases { min-width: 840px; width: 100%; }
+.benchmark-cases td, .benchmark-cases th { padding: 8px 12px; }
+.benchmark-cases td:first-child { min-width: 230px; max-width: 440px; overflow-wrap: anywhere; }
+.benchmark-cases td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.benchmark-cases small { display: block; color: var(--muted); margin-top: 4px; }
+.benchmark-cases button.benchmark-case-link { display: inline; min-height: 0; border: 0; background: none; color: var(--link); padding: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }

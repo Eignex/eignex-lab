@@ -34,5 +34,5 @@ internal object PageScripts {
     val queue get() = common + assets.script("queue.js")
     val nodes get() = common + assets.script("nodes.js")
     val reference get() = common + assets.script("reference.js")
-    val trend get() = common + assets.script("trend.js")
+    val trend get() = common + assets.script("benchmark-history.js") + assets.script("benchmark-trend.js") + assets.script("trend.js")
 }

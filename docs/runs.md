@@ -570,24 +570,40 @@ another refresh; a new successful request still returns the complete ordinary in
 
 ## Controlled sweep migrations
 
-Opt-in `metric-v1` benchmark sweeps have benchmark trends: successful, failed,
-skipped and pending cases, and a selectable metric for each workload in its own unit.
-They do not use solver solved/proven rates or PAR-2. The latest completed run opens with a
-regression overview: every failed workload and qualified metric regression, with the worst
-regressions first, before/after values, percentage changes and per-workload confirmation status.
-Improvements and recoveries expand together below it. Workload links select the corresponding
-history chart; inspecting the full dropdown is unnecessary. A changed case set or measurement
-controls shows a new baseline rather than an apparent recovery. The run table includes benchmark
-failures, recoveries, metric changes and their paired confirmations. Timings are never
-combined across different units. Koblas also has six timing subcharts: dense and sparse
-BLAS Levels 1, 2 and 3. Each shows the mean of its workload timings, weighting workloads equally,
-only when every case in that theme succeeded and reported the metric. Historical rows are grouped
-by routine; other adapters may declare a `theme` case attribute. Failures are circled on the
-selected workload and affected theme charts; a circle on the baseline means timing is unavailable,
-not zero. Skipped and pending cases remain in the run table without being marked incorrect.
-Chart lines break across case-set or benchmark-control changes. `lab trend <schedule-name>` reads
-the plotted points as JSON. Renaming a schedule
-preserves the job history, and older cached empty benchmark points are recomputed.
+Opt-in `metric-v1` benchmark sweeps show regression counts by exact engine and absolute timings
+for one selected workload, size and storage. Every workload uses its own positive timing and slowdown
+threshold in the first complete finished run of the same case/control series as its fixed baseline.
+Counts are candidates, not statistical confirmations; missing, failed or pending measurements leave gaps.
+Unsupported arms do not enter an engine's baseline coverage. Each workload retains its own runtime/hardware
+control digest; changing it withholds that workload's comparison even if the run's set of hosts is unchanged.
+Changed cases or controls start a separate series. The absolute graph keeps the original metric unit,
+shows every measured engine together, and exposes provider/kernel attribution and speed relative to the
+fastest measured engine. It never averages unlike workloads. Historical default-only Koblas runs remain
+labeled `jvm-default`; they do not imply timings for unmeasured engines.
+
+The case table lists every planned case and engine at the selected commit, with current absolute timing,
+historical target, relative slowdown, prior run count and measurement status. Its default target is the
+linearly interpolated 5th percentile of earlier comparable run medians (95th for higher-is-better metrics).
+An alternative selects the best observed earlier value. Samples require the same metric, unit, direction,
+case/control series and per-case runtime/hardware controls; failed, skipped, pending, nonpositive and
+instrumented measurements do not set targets. Neither the selected run nor later runs contribute.
+Percentile estimates based on fewer than 20 prior runs are marked as limited history, not presented as
+confidence bounds. Targets cover only the shown history, not an all-time record. Failed and unsupported
+cases stay visible with unavailable current values; cases link to the absolute timing graph. The table's
+target selector does not change the fixed-baseline graphs or paired confirmation policy.
+
+Clicking a commit or selecting it exposes affected engine/workload buttons; a button selects that
+workload's absolute graph. Koblas has the same regression-count graphs for dense and sparse BLAS Levels
+1, 2 and 3. Rings mark failed captures; a ring on the baseline means timing is unavailable, not zero.
+A failed capture does not identify an individual failing engine unless its retained record does so.
+The run table retains case outcomes, changes and paired confirmations. Paired confirmations compare their
+recorded neighboring revisions and are labeled separately from the fixed-baseline candidates; an engine
+confirmation is attached to a baseline candidate only when workload, metric and baseline revision match.
+Skipped and pending cases are never labeled incorrect. `lab trend <schedule-name>` reads the plotted
+points as JSON. Renaming a schedule preserves its job history. Benchmark cache format 6 refreshes the
+engine attribution and workload controls without invalidating solver points.
+
+For local graph-model coverage, run `node --test src/test/js/benchmark-history.test.cjs`.
 
 Klause's `matched-source-v1` records retain effective solver/compiler seeds,
 processor/memory/deadline controls and normalized runtime/compiler identities.

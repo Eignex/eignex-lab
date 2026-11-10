@@ -55,17 +55,20 @@ class BenchmarkTrendTest {
             assertEquals(listOf(100.0, 200.0), runs.first().benchmark!!.metrics.map { it.value })
             assertEquals(BenchmarkChanges(1, 0, 1, 0), runs.last().benchmark!!.changes)
             assertEquals(first, runs.last().benchmark!!.baselineJob)
-            assertEquals(listOf(BenchmarkChange("dot-4096", "failed", "median_ns", "unconfirmed"),
+            assertEquals(listOf(BenchmarkChange("dot-4096", "failed", null, "unconfirmed"),
                 BenchmarkChange("dot-64", "regressed", "median_ns", "unconfirmed")), runs.last().benchmark!!.transitions)
-            assertEquals(listOf(BenchmarkWorkload("dot-64", "Dense Level 1", "success"),
-                BenchmarkWorkload("dot-4096", "Dense Level 1", "failed")), runs.last().benchmark!!.workloads)
+            assertEquals(listOf(Triple("dot-64", "Dense Level 1", "success"),
+                Triple("dot-4096", "Dense Level 1", "failed")), runs.last().benchmark!!.workloads.map { Triple(it.caseId, it.theme, it.status) })
         }
         TrendCache(TrendPoints.of(store)).use { cache ->
             val view = trendView(store, cache, "koblas-sweep", false)
             assertEquals(listOf(first, second), view.shown.map { it.job })
             assertEquals(0, view.computing)
             val html = trendPage(view.name, view.shown, "https://github.com/Eignex/koblas").toString()
-            assertTrue("Workload timing" in html && "Timing by theme" in html)
+            assertTrue("Absolute workload timing" in html && "Regressions by theme" in html)
+            assertTrue("Case timings" in html && "Historical target" in html && "benchmark-case-rows" in html)
+            assertTrue("Fast historical percentile" in html && "Best observed" in html)
+            assertFalse("Latest changes" in html || "benchmark-changes" in html)
             assertFalse("chart-benchmark-status" in html || "<h2>Correctness</h2>" in html)
             assertTrue("Dense Level 1" in html && "benchmark-themes" in html)
             assertTrue("1 failures, 0 recoveries; 1 metric regressions" in html)
@@ -142,7 +145,7 @@ class BenchmarkTrendTest {
         val store = Store(Files.createTempDirectory("benchmark-overview-upgrade").resolve("lab.db"))
         val benchmark = store.job(run(store, "a".repeat(40)))!!
         val solver = store.job(store.create("solver", "main", emptyList(), experiment = ExperimentSpec("solver")))!!
-        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-5", "format-4"),
+        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-6", "format-4"),
             null, System.currentTimeMillis(), null, emptySet())
         val solverPoint = TrendPoints.Point(TrendCache.version(solver), null, System.currentTimeMillis(), null, emptySet())
 
@@ -194,9 +197,53 @@ class BenchmarkTrendTest {
         val points = client.get("/trend?name=koblas-sweep").bodyAsText()
         assertTrue("\"job\":$job" in points && "median_ns" in points && "ns/op" in points)
         val page = client.get("/trend?name=koblas-sweep") { accept(ContentType.Text.Html) }.bodyAsText()
-        assertTrue("Workload timing" in page && "/jobs/$job" in page)
+        assertTrue("Absolute workload timing" in page && "/jobs/$job" in page)
         assertFalse("No run of this schedule" in page)
         assertEquals(HttpStatusCode.Accepted, client.post("/schedules/$schedule/launch").status)
         assertTrue(store.schedules.all().single().launchRequested)
+    }
+
+    @Test fun `confirmation details distinguish agreement from an unselected workload`() {
+        fun problem(id: String) = BenchRuns.problem(com.eignex.lab.bench.BenchCase(id,
+            attributes = mapOf("regressionMetric" to "time")))
+        val selected = problem("selected")
+        val omitted = problem("omitted")
+        val flips = Flips(emptyList(), emptyList(), metricLost = listOf(selected, omitted))
+        val confirmed = Flips(emptyList(), emptyList(), metricLost = listOf(selected))
+        val cases = listOf(CaseResult(0, Status.DONE, selected, "after", null, null))
+
+        val changes = BenchmarkTrends.transitions(flips, confirmed, Status.DONE, cases)
+
+        assertEquals(listOf("confirmed", "not selected"), changes.map { it.confirmation })
+        assertEquals("not confirmed", BenchmarkTrends.transitions(flips, Flips(emptyList(), emptyList()), Status.DONE, cases).first().confirmation)
+        assertEquals("pending", BenchmarkTrends.transitions(flips, null, Status.RUNNING, emptyList()).first().confirmation)
+    }
+
+    @Test fun `engine attribution keeps the requested engine separate from its measured provider`() {
+        val plan = BenchCase("paired", parameters = mapOf("row" to "dot+64+uniform"),
+            attributes = mapOf("regressionThreshold" to "0.15"))
+        val record = BenchResult(plan.id, BenchStatus.SUCCESS,
+            metrics = listOf(BenchMetric("median_ns/jvm-simd", 12.0, "ns/op", MetricDirection.LOWER)),
+            details = buildJsonObject {
+                putJsonObject("benchmarkControls") { put("cpu", "fixture") }
+                putJsonObject("metricAttribution") {
+                    putJsonObject("median_ns/jvm-simd") {
+                        put("engine", "jvm-simd"); put("provider", "scalar"); put("kernel", "scalar/dot")
+                    }
+                }
+                putJsonObject("engineStatuses") { put("jvm-simd", "success"); put("native", "unsupported") }
+            })
+        val case = CaseResult(0, Status.DONE, BenchRuns.problem(plan), "base",
+            record = BenchProtocol.json.encodeToJsonElement(record))
+
+        val summary = BenchmarkTrends.summarize(listOf(case), "Eignex/koblas")
+
+        assertEquals("jvm-simd", summary.metrics.single().engine)
+        assertEquals("scalar", summary.metrics.single().provider)
+        assertEquals("scalar/dot", summary.metrics.single().kernel)
+        assertEquals("dot+64+uniform", summary.workloads.single().workload)
+        assertEquals(0.15, summary.workloads.single().threshold)
+        assertNotNull(summary.workloads.single().controls)
+        assertEquals("unsupported", summary.workloads.single().engines["native"])
     }
 }
