@@ -487,7 +487,7 @@ class TrendCache(
 
         private const val CONFIRMATION = "confirmation-"
         /** Benchmark points include workload transitions; solver points retain their existing format. */
-        private fun pointFormat(job: Job): String = if (job.experiment.isBench) "format-5" else "format-4"
+        private fun pointFormat(job: Job): String = if (job.experiment.isBench) "format-6" else "format-4"
         private fun confirmationPart(confirmation: Job) = "$CONFIRMATION${confirmation.id}-${confirmation.status}-${confirmation.finishedAt}"
 
         private const val DEFAULT_REFERENCE_LAG_MS = 10 * 60_000L

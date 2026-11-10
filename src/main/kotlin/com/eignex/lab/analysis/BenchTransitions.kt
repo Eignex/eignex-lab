@@ -11,15 +11,16 @@ internal object BenchTransitions {
     fun flips(before: List<CaseResult>, after: List<CaseResult>): Flips {
         val failed = mutableListOf<Problem>()
         val recovered = mutableListOf<Problem>()
-        val slower = mutableListOf<Problem>()
-        val faster = mutableListOf<Problem>()
+        val slower = mutableListOf<MetricChange>()
+        val faster = mutableListOf<MetricChange>()
         val a = before.groupBy(ComparisonControls::problem)
         val b = after.groupBy(ComparisonControls::problem)
         for (key in a.keys.intersect(b.keys)) {
             val left = a.getValue(key).groupBy(ComparisonControls::block)
             val right = b.getValue(key).groupBy(ComparisonControls::block)
             val blocks = left.keys + right.keys
-            var failures = 0; var recoveries = 0; var losses = 0; var gains = 0
+            var failures = 0; var recoveries = 0
+            val losses = mutableMapOf<String, Int>(); val gains = mutableMapOf<String, Int>()
             for (block in blocks) {
                 val x = left[block]?.singleOrNull() ?: continue
                 val y = right[block]?.singleOrNull() ?: continue
@@ -30,7 +31,9 @@ internal object BenchTransitions {
                 if (cx.attributes["labInputDigest"].isNullOrBlank()) continue
                 val threshold = cx.attributes["regressionThreshold"]?.toDoubleOrNull()
                     ?.takeIf { it.isFinite() && it > 0 && it < 1 } ?: continue
-                val metric = cx.attributes["regressionMetric"] ?: continue
+                val metrics = cx.attributes["regressionMetrics"]?.split(',')?.filter { it.isNotBlank() }
+                    ?: listOfNotNull(cx.attributes["regressionMetric"])
+                if (metrics.isEmpty()) continue
                 val rx = result(x) ?: continue
                 val ry = result(y) ?: continue
                 if (rx.caseId != cx.id || ry.caseId != cy.id) continue
@@ -50,24 +53,27 @@ internal object BenchTransitions {
                 if (rx.status == BenchStatus.SUCCESS && ry.status == BenchStatus.FAILED) failures++
                 if (rx.status == BenchStatus.FAILED && ry.status == BenchStatus.SUCCESS) recoveries++
                 if (rx.status != BenchStatus.SUCCESS || ry.status != BenchStatus.SUCCESS) continue
-                val mx = rx.metrics.singleOrNull { it.name == metric } ?: continue
-                val my = ry.metrics.singleOrNull { it.name == metric } ?: continue
-                if (mx.unit != my.unit || mx.direction != my.direction || mx.direction == MetricDirection.NONE ||
-                    mx.value <= 0 || my.value <= 0) continue
-                val ratio = if (mx.direction == MetricDirection.LOWER) my.value / mx.value else mx.value / my.value
-                if (ratio > 1 + threshold) losses++
-                if (ratio < 1 / (1 + threshold)) gains++
+                for (metric in metrics.distinct()) {
+                    val mx = rx.metrics.singleOrNull { it.name == metric } ?: continue
+                    val my = ry.metrics.singleOrNull { it.name == metric } ?: continue
+                    if (mx.unit != my.unit || mx.direction != my.direction || mx.direction == MetricDirection.NONE ||
+                        !mx.value.isFinite() || !my.value.isFinite() || mx.value <= 0 || my.value <= 0) continue
+                    val ratio = if (mx.direction == MetricDirection.LOWER) my.value / mx.value else mx.value / my.value
+                    if (ratio > 1 + threshold) losses[metric] = losses.getOrDefault(metric, 0) + 1
+                    if (ratio < 1 / (1 + threshold)) gains[metric] = gains.getOrDefault(metric, 0) + 1
+                }
             }
             val problem = b.getValue(key).first().problem
             val paired = (a.getValue(key) + b.getValue(key)).mapNotNull { it.origin?.job }.distinct().size == 1
             val denominator = maxOf(blocks.size, if (paired) Confirm.REPEATS else 1)
             if (failures > denominator / 2) failed += problem
             if (recoveries > denominator / 2) recovered += problem
-            if (losses > denominator / 2) slower += problem
-            if (gains > denominator / 2) faster += problem
+            slower += losses.filterValues { it > denominator / 2 }.keys.map { MetricChange(problem, it) }
+            faster += gains.filterValues { it > denominator / 2 }.keys.map { MetricChange(problem, it) }
         }
         return Flips(emptyList(), emptyList(), benchmarkFailed = failed, benchmarkRecovered = recovered,
-            metricLost = slower, metricGained = faster)
+            metricLost = slower.map { it.problem }.distinct(), metricGained = faster.map { it.problem }.distinct(),
+            metricRegressions = slower, metricImprovements = faster)
     }
 
     private fun result(case: CaseResult): BenchResult? = case.record?.let {

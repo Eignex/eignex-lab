@@ -23,62 +23,6 @@
   // The small multiples are by theme, the groups the sweep set was drawn by.
   const themes = Array.from(new Set(runs.flatMap(function (r) { return Object.keys(r.themes || {}); }))).sort();
   const benchmarkMode = all.some(function (r) { return r.benchmark; });
-  const metricKey = function (m) { return JSON.stringify([m.caseId, m.name, m.unit, m.direction]); };
-  const metricSelect = document.getElementById('benchmark-metric');
-  if (metricSelect) {
-    const seen = new Map();
-    all.forEach(function (r) { (r.benchmark?.metrics || []).forEach(function (m) { seen.set(metricKey(m), m); }); });
-    for (const [key, metric] of seen) {
-      const option = document.createElement('option');
-      option.value = key;
-      option.textContent = metric.caseId + ' · ' + metric.name + ' (' + metric.unit + ')';
-      metricSelect.appendChild(option);
-    }
-    metricSelect.addEventListener('change', render);
-    document.querySelectorAll('[data-benchmark-case]').forEach(function (link) {
-      link.addEventListener('click', function () {
-        const option = [...metricSelect.options].find(function (option) {
-          const key = JSON.parse(option.value);
-          return key[0] === link.dataset.benchmarkCase && (!link.dataset.benchmarkMetric || key[1] === link.dataset.benchmarkMetric);
-        });
-        if (option) { metricSelect.value = option.value; render(); }
-      });
-    });
-  }
-  const benchmarkGroups = new Map();
-  all.forEach(function (r) {
-    const workloads = r.benchmark?.workloads || [];
-    workloads.forEach(function (w) {
-      if (!w.theme) return;
-      const metrics = (r.benchmark?.metrics || []).filter(function (m) { return m.caseId === w.caseId; });
-      // A theme with only failures still needs a chart on which to flag them.
-      if (!benchmarkGroups.has(w.theme)) benchmarkGroups.set(w.theme, new Map());
-      metrics.forEach(function (m) {
-        benchmarkGroups.get(w.theme).set(JSON.stringify([m.name, m.unit, m.direction]), m);
-      });
-    });
-  });
-  const groupWorkloads = function (r, theme) {
-    return (r.benchmark?.workloads || []).filter(function (w) { return w.theme === theme; });
-  };
-  function groupValue(r, theme, metric) {
-    const workloads = groupWorkloads(r, theme);
-    if (!metric || !workloads.length || workloads.some(function (w) { return w.status !== 'success'; })) return null;
-    const values = [];
-    for (const id of new Set(workloads.map(function (w) { return w.caseId; }))) {
-      const samples = (r.benchmark?.metrics || []).filter(function (m) {
-        return m.caseId === id && m.name === metric.name && m.unit === metric.unit && m.direction === metric.direction;
-      });
-      if (!samples.length) return null;
-      values.push(samples.reduce(function (sum, m) { return sum + m.value; }, 0) / samples.length);
-    }
-    return values.reduce(function (sum, value) { return sum + value; }, 0) / values.length;
-  }
-  function failures(r, theme, caseId) {
-    return (r.benchmark?.workloads || []).filter(function (w) {
-      return w.status === 'failed' && (!theme || w.theme === theme) && (!caseId || w.caseId === caseId);
-    });
-  }
   function lineKey(r) { return r.spec + (r.benchmark ? JSON.stringify(r.comparisonSeries) : ''); }
 
   function el(name, attrs, parent) {
@@ -103,7 +47,7 @@
   // series: [{name, color, value(run), band(run)?, label?}]; y: {max, ticks, fmt}
   function draw(host, series, y, opts) {
     host.innerHTML = '';
-    const W = Math.max(host.clientWidth, 240), H = opts.height;
+    const W = Math.max(host.clientWidth, benchmarkMode ? 160 : 240), H = opts.height;
     const endLabels = opts.endLabels && W >= 420;
     const labelWidth = Math.max(46, ...y.ticks.map(function (tick) { return y.fmt(tick).length * 6.5 + 10; }));
     const m = {l: labelWidth, r: endLabels ? 92 : 24, t: 10, b: 28};
@@ -167,10 +111,10 @@
       }
       const pts = order.map(function (i, k) { const v = s.value(runs[i]); return v == null ? null : [x(i), yy(v), runs[i], k]; }).filter(Boolean);
       if (pts.length > 1) {
-        const d = pts.map(function (p, k) { return (k > 0 && lineKey(pts[k - 1][2]) === lineKey(p[2]) &&
+        const d = pts.map(function (p, k) { return (k > 0 && (s.lineKey || lineKey)(pts[k - 1][2]) === (s.lineKey || lineKey)(p[2]) &&
           (!benchmarkMode || pts[k - 1][3] === p[3] - 1) ? 'L' : 'M') + p[0] + ',' + p[1]; }).join('');
         el('path', {d: d, fill: 'none', stroke: s.color,
-          'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
+          'stroke-width': 2, 'stroke-dasharray': s.dash || '', 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, svg);
       }
       for (const p of pts) {
         el('circle', {cx: p[0], cy: p[1], r: dot, fill: p[2].finished ? s.color : 'var(--bg)',
@@ -214,7 +158,7 @@
       show(runs[i], evt, opts);
     });
     hit.addEventListener('pointerleave', function () { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
-    hit.addEventListener('click', function (evt) { location.href = '/jobs/' + runs[nearest(evt)].job; });
+    hit.addEventListener('click', function (evt) { if (opts.onSelect) opts.onSelect(runs[nearest(evt)]); else location.href = '/jobs/' + runs[nearest(evt)].job; });
     hit.style.cursor = 'pointer';
   }
 
@@ -225,13 +169,7 @@
 
   function show(r, evt, opts) {
     const suite = opts.suite;
-    const metric = (r.benchmark?.metrics || []).find(function (m) { return metricKey(m) === metricSelect?.value; });
-    const rows = r.benchmark ? [
-      ['commit', r.sha.slice(0, 9)], ['when', when(r.at)], ['job', '#' + r.job],
-      ['successful', r.benchmark.succeeded], ['failed', r.benchmark.failed],
-      ['skipped', r.benchmark.skipped], ['pending', r.benchmark.pending],
-      ['selected metric', metric ? metric.value.toPrecision(5) + ' ' + metric.unit : 'unavailable'],
-    ] : [
+    const rows = opts.rows ? opts.rows(r) : [
       ['commit', r.sha.slice(0, 9)], ['when', when(r.at) + (r.finished ? '' : ' (running)')], ['job', '#' + r.job],
       ['checked points', r.checkedPoints], ['native proof claims', r.nativeProofClaims],
       ['contradicted optima', r.contradictedOptima], ['unverified scope/check', r.unverifiedOptima],
@@ -247,16 +185,6 @@
       ['confirmed objective', r.confirmedObjectiveLost == null ? '–' : '−' + r.confirmedObjectiveLost + ' +' + r.confirmedObjectiveGained],
       ['confirmed', r.confirmJob == null ? '–' : r.confirmedLost == null ? 'running' : '−' + r.confirmedLost + ' +' + r.confirmedGained],
     ];
-    if (r.benchmark) {
-      const failed = opts.failures ? opts.failures(r) : [];
-      if (opts.benchmarkTheme) {
-        const value = groupValue(r, opts.benchmarkTheme, opts.benchmarkMetric);
-        rows.push(['theme', opts.benchmarkTheme], ['workloads', groupWorkloads(r, opts.benchmarkTheme).length],
-          ['mean timing', value == null ? 'unavailable' : Number(value.toPrecision(5)) + ' ' + opts.benchmarkMetric.unit]);
-        rows.splice(rows.findIndex(function (row) { return row[0] === 'selected metric'; }), 1);
-      }
-      if (failed.length) rows.push(['failed workloads', failed.map(function (w) { return w.caseId; }).join(', ')]);
-    }
     const group = suite && (r.themes || {})[suite];
     if (group) {
       if (group.proven != null) rows.unshift([suite + ' proven', Math.round(group.proven * group.problems) + ' of ' + group.problems + ' (' + pct(group.proven) + ')']);
@@ -280,46 +208,7 @@
 
   function render() {
     if (benchmarkMode) {
-      const selected = metricSelect.value;
-      const metricOf = function (r) { return (r.benchmark?.metrics || []).find(function (m) { return metricKey(m) === selected; }); };
-      const metrics = runs.map(metricOf).filter(Boolean);
-      const host = document.getElementById('chart-benchmark-metric');
-      if (metrics.length) {
-        const top = niceMax(Math.max(...metrics.map(function (m) { return m.value; })));
-        const unit = metrics[0].unit;
-        draw(host, [{name: metrics[0].name, color: 'var(--series-1)', value: function (r) { return metricOf(r)?.value; }}],
-          {max: top, ticks: [0, top / 2, top], fmt: function (v) { return Number(v.toPrecision(4)) + ' ' + unit; }},
-          {height: 260, endLabels: false, title: metrics[0].caseId + ' ' + metrics[0].name + ' in ' + unit,
-            failures: function (r) { return failures(r, null, metrics[0].caseId); }});
-      } else {
-        // Runs with no successful metrics must still expose their failures.
-        draw(host, [], {max: 1, ticks: [], fmt: String},
-          {height: 260, endLabels: false, title: 'No successful measurements yet', failures: function (r) { return failures(r); }});
-      }
-      const grid = document.getElementById('benchmark-themes');
-      if (grid) {
-        grid.replaceChildren();
-        const cards = [];
-        for (const [theme, metricsByType] of [...benchmarkGroups].sort(function (a, b) { return a[0].localeCompare(b[0]); })) {
-          const types = metricsByType.size ? [...metricsByType.values()] : [null];
-          for (const metric of types) {
-            const card = document.createElement('div'), title = document.createElement('div'), plot = document.createElement('div');
-            card.className = 'multiple'; title.className = 'mtitle';
-            title.textContent = theme + (types.length > 1 ? ' · ' + metric.name + ' (' + metric.unit + ')' : '');
-            card.append(title, plot); grid.appendChild(card); cards.push({theme, metric, plot});
-          }
-        }
-        // Measure only once all cards are present: auto-fit columns resize as cards are added.
-        for (const {theme, metric, plot} of cards) {
-          const value = function (r) { return groupValue(r, theme, metric); };
-          const values = runs.map(value).filter(function (v) { return v != null; });
-          const top = niceMax(Math.max(0, ...values)), unit = metric?.unit || '';
-          draw(plot, [{name: 'mean', color: 'var(--series-1)', value}],
-            {max: top, ticks: values.length ? [0, top / 2, top] : [], fmt: function (v) { return Number(v.toPrecision(3)) + ' ' + unit; }},
-            {height: 160, endLabels: false, title: theme + ' mean timing' + (unit ? ' in ' + unit : ' unavailable'),
-              benchmarkTheme: theme, benchmarkMetric: metric, failures: function (r) { return failures(r, theme); }});
-        }
-      }
+      window.renderBenchmarkTrend({all, runs, draw, niceMax, when});
       return;
     }
     if (!runs.length) {
@@ -398,6 +287,14 @@
     });
   });
   let pending = null;
-  window.addEventListener('resize', function () { clearTimeout(pending); pending = setTimeout(render, 120); });
+  function resized() { clearTimeout(pending); pending = setTimeout(render, 120); }
+  window.addEventListener('resize', resized);
+  if (benchmarkMode && typeof ResizeObserver !== 'undefined') {
+    let width = null;
+    new ResizeObserver(function (entries) {
+      const next = entries[0].contentRect.width;
+      if (next !== width) { width = next; resized(); }
+    }).observe(document.getElementById('chart-benchmark-regressions'));
+  }
   render();
 })();

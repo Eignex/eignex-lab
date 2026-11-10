@@ -338,7 +338,10 @@ It repeats paired blocks three times. Invalid witnesses and exact objective/proo
 same solver-v1 interpretation. Generic metric-only suites do not claim solver regressions.
 
 Generic suites can opt into benchmark confirmations with case attributes `regressionPolicy=metric-v1`,
-`regressionMetric=<name>` and `regressionThreshold=<fraction between 0 and 1>`. Each result must retain identical
+`regressionMetric=<name>` and `regressionThreshold=<fraction between 0 and 1>`. A multi-engine workload
+may instead declare `regressionMetrics=<comma-separated names>`: each metric votes independently,
+while confirmation selection retains one workload and reruns every engine together. This requires the
+coordinator version supporting `regressionMetrics`; deploy it before migrating a schedule. Each result must retain identical
 nonempty `details.benchmarkControls` for comparable runtimes and hardware. Only equal pinned cases, input bytes,
 parameters and resource controls compare. Successful positive metrics with equal units and a LOWER/HIGHER direction
 trigger a rerun beyond the relative threshold; explicit SUCCESS/FAILED transitions trigger correctness reruns.

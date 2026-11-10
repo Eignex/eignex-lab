@@ -13,6 +13,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import java.math.BigInteger
 import java.math.BigDecimal
 
+/** One metric transition on a workload that may time several exact engines together. */
+@Serializable
+data class MetricChange(val problem: Problem, val metric: String)
+
 /** One sweep run against the run before it of the same experiment, problem by problem. */
 @Serializable
 data class Flips(
@@ -29,6 +33,8 @@ data class Flips(
     val benchmarkRecovered: List<Problem> = emptyList(),
     val metricLost: List<Problem> = emptyList(),
     val metricGained: List<Problem> = emptyList(),
+    val metricRegressions: List<MetricChange> = emptyList(),
+    val metricImprovements: List<MetricChange> = emptyList(),
 ) {
     val problems: List<Problem> get() = (lost + gained + proofLost + proofGained + objectiveLost + objectiveGained +
         benchmarkFailed + benchmarkRecovered + metricLost + metricGained).distinctBy { it.suite to it.problem }
@@ -75,7 +81,8 @@ object Confirm {
         val benchmarks = BenchTransitions.flips(before, after)
         return qualifiedFlips(guarded.take(before.size), guarded.drop(before.size)).copy(
             benchmarkFailed = benchmarks.benchmarkFailed, benchmarkRecovered = benchmarks.benchmarkRecovered,
-            metricLost = benchmarks.metricLost, metricGained = benchmarks.metricGained)
+            metricLost = benchmarks.metricLost, metricGained = benchmarks.metricGained,
+            metricRegressions = benchmarks.metricRegressions, metricImprovements = benchmarks.metricImprovements)
     }
 
     private fun qualifiedFlips(before: List<CaseResult>, after: List<CaseResult>): Flips {

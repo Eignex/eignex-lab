@@ -105,4 +105,40 @@ class BenchTransitionsTest {
         store.execution.domainCompleted(after)
         assertFalse(after in store.execution.pendingDomainCompletion())
     }
+
+    @Test fun `exact engine metrics confirm independently while retaining one paired workload`() {
+        fun engines(job: Long, repeat: Int, scalar: Double, simd: Double): CaseResult {
+            val original = case(job = job, repeat = repeat)
+            val plan = original.problem.benchCase!!.copy(attributes = original.problem.benchCase!!.attributes +
+                ("regressionMetrics" to "median_ns,median_ns/jvm-simd"))
+            val result = BenchProtocol.json.decodeFromJsonElement(BenchResult.serializer(), original.record!!)
+                .copy(metrics = listOf(BenchMetric("median_ns", scalar, "ns/op", MetricDirection.LOWER),
+                    BenchMetric("median_ns/jvm-simd", simd, "ns/op", MetricDirection.LOWER)))
+            return original.copy(problem = BenchRuns.problem(plan), record = BenchProtocol.json.encodeToJsonElement(result))
+        }
+        val before = (0..2).map { engines(1, it, 100.0, 100.0) }
+        val after = (0..2).map { engines(1, it, 80.0, if (it == 2) 105.0 else 130.0).copy(arm = Confirm.AFTER) }
+
+        val flips = Confirm.confirmed(before + after)
+        val transitions = BenchmarkTrends.transitions(flips, flips, Status.DONE, after)
+
+        assertEquals(1, flips.confirmable.size)
+        assertEquals(listOf("median_ns/jvm-simd"), flips.metricRegressions.map { it.metric })
+        assertEquals(listOf("median_ns"), flips.metricImprovements.map { it.metric })
+        assertTrue(transitions.all { it.confirmation == "confirmed" })
+        assertEquals(setOf("regressed" to "median_ns/jvm-simd", "improved" to "median_ns"),
+            transitions.map { it.kind to it.metric }.toSet())
+        assertTrue(Confirm.confirmed(before + after.take(1)).metricRegressions.isEmpty())
+    }
+
+    @Test fun `one confirmed engine never confirms another engine in the same workload`() {
+        val p = case().problem
+        val candidates = Flips(emptyList(), emptyList(), metricLost = listOf(p),
+            metricRegressions = listOf(MetricChange(p, "median_ns"), MetricChange(p, "median_ns/jvm-simd")))
+        val confirmed = candidates.copy(metricRegressions = listOf(MetricChange(p, "median_ns")))
+
+        val changes = BenchmarkTrends.transitions(candidates, confirmed, Status.DONE, listOf(case()))
+
+        assertEquals(listOf("confirmed", "not confirmed"), changes.map { it.confirmation })
+    }
 }
