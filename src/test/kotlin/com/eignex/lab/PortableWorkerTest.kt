@@ -1092,6 +1092,9 @@ class PortableWorkerTest {
             Files.writeString(release, "")
             val initial = first.get(5, java.util.concurrent.TimeUnit.SECONDS)
             assertNotEquals(Files.readString(initial.resolve("build/home")), Files.readString(second.resolve("build/home")))
+            // Releasing a home requests background accounting, which briefly pins it to measure it; a build asking
+            // in that window correctly takes the next idle home. Let accounting finish so the slot order is fixed.
+            assertTrue(cache.awaitMaintenanceIdle(), "build cache maintenance did not go idle")
             val next = build("c")
             assertEquals(Files.readString(initial.resolve("build/home")), Files.readString(next.resolve("build/home")))
             assertEquals("warm", Files.readString(next.resolve("build/state")).trim())
