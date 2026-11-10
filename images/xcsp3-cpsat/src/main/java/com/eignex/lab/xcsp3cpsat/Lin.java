@@ -70,6 +70,26 @@ final class Lin {
         return new Lin(a, l, u, c, Math.addExact(offset, o.offset));
     }
 
+    /** The sum of [xs], built in one pass (repeated [plus] would copy quadratically on long sums). */
+    static Lin sum(java.util.List<Lin> xs) {
+        int n = 0;
+        for (Lin x : xs) n += x.args.length;
+        LinearArgument[] a = new LinearArgument[n];
+        long[] l = new long[n], u = new long[n], c = new long[n];
+        long offset = 0;
+        int k = 0;
+        for (Lin x : xs) {
+            int m = x.args.length;
+            System.arraycopy(x.args, 0, a, k, m);
+            System.arraycopy(x.argLb, 0, l, k, m);
+            System.arraycopy(x.argUb, 0, u, k, m);
+            System.arraycopy(x.coefs, 0, c, k, m);
+            k += m;
+            offset = Math.addExact(offset, x.offset);
+        }
+        return new Lin(a, l, u, c, offset);
+    }
+
     Lin plus(long k) {
         return new Lin(args, argLb, argUb, coefs, Math.addExact(offset, k));
     }

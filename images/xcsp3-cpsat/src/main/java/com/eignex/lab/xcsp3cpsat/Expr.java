@@ -108,9 +108,7 @@ final class Expr {
                 return b.abs(num(n.sons[0], guards));
             }
             case ADD: {
-                Lin s = Lin.constant(0);
-                for (XNode<?> son : n.sons) s = s.plus(num(son, guards));
-                return s;
+                return Lin.sum(nums(n.sons, guards));
             }
             case SUB: {
                 arity(n, 2);

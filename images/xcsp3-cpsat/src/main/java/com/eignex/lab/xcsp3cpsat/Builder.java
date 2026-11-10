@@ -386,14 +386,12 @@ final class Builder {
     }
 
     Lin sum(List<Lin> xs) {
-        Lin s = Lin.constant(0);
-        for (Lin x : xs) s = s.plus(x);
-        return s;
+        return Lin.sum(xs);
     }
 
     Lin count(List<Literal> ls) {
-        Lin s = Lin.constant(0);
-        for (Literal l : ls) s = s.plus(lin(l));
-        return s;
+        List<Lin> terms = new ArrayList<>(ls.size());
+        for (Literal l : ls) terms.add(lin(l));
+        return Lin.sum(terms);
     }
 }

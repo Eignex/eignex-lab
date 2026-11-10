@@ -401,9 +401,9 @@ final class Loader {
     }
 
     private Lin weighted(List<Lin> xs, List<Long> coefs) {
-        Lin s = Lin.constant(0);
-        for (int i = 0; i < xs.size(); i++) s = s.plus(xs.get(i).times(coefs.get(broadcast(i, coefs.size(), xs.size()))));
-        return s;
+        List<Lin> terms = new ArrayList<>(xs.size());
+        for (int i = 0; i < xs.size(); i++) terms.add(xs.get(i).times(coefs.get(broadcast(i, coefs.size(), xs.size()))));
+        return Lin.sum(terms);
     }
 
     /** Index into a coefficient array under numpy broadcasting, which accepts one coefficient for every term. */
@@ -706,7 +706,9 @@ final class Loader {
             if (coefs.isEmpty()) s = b.sum(xs);
             else if (coefs.get(0) instanceof XVar) {
                 List<Lin> cs = vars(ch[1].value);
-                for (int i = 0; i < xs.size(); i++) s = s.plus(b.mul(cs.get(broadcast(i, cs.size(), xs.size())), xs.get(i)));
+                List<Lin> terms = new ArrayList<>(xs.size());
+                for (int i = 0; i < xs.size(); i++) terms.add(b.mul(cs.get(broadcast(i, cs.size(), xs.size())), xs.get(i)));
+                s = Lin.sum(terms);
             } else s = weighted(xs, ints(ch[1].value));
         }
         compareOrIn(s, (Condition) ch[ch.length - 1].value);
@@ -933,10 +935,10 @@ final class Loader {
         List<Lin> xs = vars(ch[0].value);
         List<Long> sizes = ints(ch[1].value);
         java.util.function.IntFunction<Lin> load = bin -> {
-            Lin s = Lin.constant(0);
+            List<Lin> terms = new ArrayList<>(xs.size());
             for (int i = 0; i < xs.size(); i++)
-                s = s.plus(b.lin(b.eq(xs.get(i), bin)).times(sizes.get(broadcast(i, sizes.size(), xs.size()))));
-            return s;
+                terms.add(b.lin(b.eq(xs.get(i), bin)).times(sizes.get(broadcast(i, sizes.size(), xs.size()))));
+            return Lin.sum(terms);
         };
         switch (ch[2].type) {
             case condition -> {
