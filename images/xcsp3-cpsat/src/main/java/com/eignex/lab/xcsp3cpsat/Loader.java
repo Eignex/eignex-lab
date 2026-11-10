@@ -437,17 +437,30 @@ final class Loader {
             b.model.addAllowedAssignments(xs.stream().map(b::affine).toArray(LinearArgument[]::new)).addTuples(tuples);
         } else if (positive) {
             // Some row matches: the rows without a wildcard form one table that an enforcement literal switches on, and
-            // each wildcard row is the conjunction of its fixed coordinates.
+            // each wildcard row is a literal that implies its fixed coordinates. The constraint is posted at the top
+            // level, so implication suffices, and a row costs one constraint however many coordinates it fixes.
             List<long[]> plain = new ArrayList<>();
             List<Literal> rows = new ArrayList<>();
+            rowLoop:
             for (long[] t : tuples) {
                 if (Arrays.stream(t).noneMatch(v -> v == STAR)) {
                     plain.add(t);
                     continue;
                 }
                 List<Literal> eqs = new ArrayList<>();
-                for (int i = 0; i < t.length; i++) if (t[i] != STAR) eqs.add(b.eq(xs.get(i), t[i]));
-                rows.add(b.and(eqs));
+                for (int i = 0; i < t.length; i++) {
+                    if (t[i] == STAR) continue;
+                    Literal eq = b.eq(xs.get(i), t[i]);
+                    if (eq == b.FALSE) continue rowLoop;
+                    if (eq != b.TRUE) eqs.add(eq);
+                }
+                if (eqs.isEmpty()) return;
+                if (eqs.size() == 1) rows.add(eqs.get(0));
+                else {
+                    Literal row = b.boolVar();
+                    b.model.addBoolAnd(eqs).onlyEnforceIf(row);
+                    rows.add(row);
+                }
             }
             if (!plain.isEmpty()) {
                 Literal inTable = b.boolVar();
