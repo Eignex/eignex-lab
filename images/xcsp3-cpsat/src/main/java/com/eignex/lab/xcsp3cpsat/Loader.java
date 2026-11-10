@@ -565,7 +565,7 @@ final class Loader {
                     for (int j = i + 1; j < lists.size(); j++) {
                         List<Literal> differ = new ArrayList<>();
                         for (int k = 0; k < lists.get(i).size(); k++)
-                            differ.add(b.rel(Builder.Rel.NE, lists.get(i).get(k), lists.get(j).get(k)));
+                            differ.add(b.implied(Builder.Rel.NE, lists.get(i).get(k), lists.get(j).get(k)));
                         b.postOr(differ);
                     }
             } else {
@@ -600,14 +600,14 @@ final class Loader {
         Domain except = Builder.values(excepting);
         for (int i = 0; i < xs.size(); i++)
             for (int j = i + 1; j < xs.size(); j++)
-                b.postOr(List.of(b.rel(Builder.Rel.NE, xs.get(i), xs.get(j)), b.inDomain(xs.get(i), except)));
+                b.postOr(List.of(b.implied(Builder.Rel.NE, xs.get(i), xs.get(j)), b.inDomain(xs.get(i), except)));
     }
 
     private void allEqualExcept(List<Lin> xs, List<Long> excepting) {
         Domain except = Builder.values(excepting);
         for (int i = 0; i < xs.size(); i++)
             for (int j = i + 1; j < xs.size(); j++)
-                b.postOr(List.of(b.inDomain(xs.get(i), except), b.rel(Builder.Rel.EQ, xs.get(i), xs.get(j)),
+                b.postOr(List.of(b.inDomain(xs.get(i), except), b.implied(Builder.Rel.EQ, xs.get(i), xs.get(j)),
                     b.inDomain(xs.get(j), except)));
     }
 
@@ -901,8 +901,8 @@ final class Loader {
                 for (int j = i + 1; j < n; j++) {
                     List<Literal> apart = new ArrayList<>();
                     for (int k = 0; k < 2; k++) {
-                        apart.add(b.rel(Builder.Rel.LE, ends.get(i).get(k), s.get(j).get(k)));
-                        apart.add(b.rel(Builder.Rel.LE, ends.get(j).get(k), s.get(i).get(k)));
+                        apart.add(b.implied(Builder.Rel.LE, ends.get(i).get(k), s.get(j).get(k)));
+                        apart.add(b.implied(Builder.Rel.LE, ends.get(j).get(k), s.get(i).get(k)));
                     }
                     b.postOr(apart);
                 }
@@ -912,8 +912,8 @@ final class Loader {
             for (int j = i + 1; j < n; j++) {
                 List<Literal> apart = new ArrayList<>();
                 for (int k = 0; k < dims; k++) {
-                    apart.add(b.rel(Builder.Rel.LE, s.get(i).get(k).plus(d.get(i).get(k)), s.get(j).get(k)));
-                    apart.add(b.rel(Builder.Rel.LE, s.get(j).get(k).plus(d.get(j).get(k)), s.get(i).get(k)));
+                    apart.add(b.implied(Builder.Rel.LE, s.get(i).get(k).plus(d.get(i).get(k)), s.get(j).get(k)));
+                    apart.add(b.implied(Builder.Rel.LE, s.get(j).get(k).plus(d.get(j).get(k)), s.get(i).get(k)));
                 }
                 b.postOr(apart);
             }

@@ -130,6 +130,31 @@ final class Builder {
         return lit;
     }
 
+    /**
+     * A literal that implies a [r] b, for a disjunct of a top-level clause: there only the implication matters, so it
+     * costs one constraint and is not shared.
+     */
+    Literal implied(Rel r, Lin a, Lin b) {
+        Lin d = a.minus(b);
+        Boolean known = decided(r, d);
+        if (known != null) return known ? TRUE : FALSE;
+        BoolVar lit = boolVar();
+        model.addLinearExpressionInDomain(d.build(), domain(r)).onlyEnforceIf(lit);
+        return lit;
+    }
+
+    /** A literal that implies a is in [values], as [implied]. */
+    Literal impliedIn(Lin a, Domain values) {
+        if (values.isEmpty()) return FALSE;
+        if (a.isConstant()) return values.contains(a.offset) ? TRUE : FALSE;
+        Domain range = new Domain(a.lb, a.ub);
+        if (range.isIncludedIn(values)) return TRUE;
+        if (!range.overlapsWith(values)) return FALSE;
+        BoolVar lit = boolVar();
+        model.addLinearExpressionInDomain(a.build(), values).onlyEnforceIf(lit);
+        return lit;
+    }
+
     void postRel(Rel r, Lin a, Lin b) {
         Lin d = a.minus(b);
         Boolean known = decided(r, d);
