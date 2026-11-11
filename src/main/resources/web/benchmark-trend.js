@@ -11,12 +11,21 @@
   const relative = value => value.toFixed(2) + '×';
   window.renderBenchmarkTrend = function (context) {
     const {all, runs, draw, niceMax, when} = context, H = window.BenchmarkHistory;
-    const history = H.history(runs), names = new Set();
+    const table = document.querySelector('.benchmark-cases'), koblas = table.dataset.koblas === 'true';
+    const names = new Set();
     for (const r of runs) for (const m of r.benchmark?.metrics || []) names.add(H.engine(m));
-    const engines = [...names].sort((a, b) => {
+    const tableEngines = [...names].sort((a, b) => {
       const rank = v => priority.includes(v) ? priority.indexOf(v) : priority.length;
       return rank(a) - rank(b) || a.localeCompare(b);
     });
+    const engines = koblas ? ['jvm-simd'] : tableEngines;
+    const history = H.history(koblas ? runs.map(r => {
+      if (!r.benchmark) return r;
+      const metrics = r.benchmark.metrics.filter(m => H.engine(m) === 'jvm-simd');
+      const cases = new Set(metrics.map(m => m.caseId));
+      return {...r, benchmark: {...r.benchmark, metrics,
+        workloads: (r.benchmark.workloads || []).filter(w => cases.has(w.caseId) || w.engines?.['jvm-simd'])}};
+    }) : runs);
     const colors = new Map(engines.map((e, i) => [e, 'var(--series-' + (i % 5 + 1) + ')']));
     const dashes = ['', '6 3', '2 3', '8 3 2 3', '3 2'];
     const latest = [...runs].reverse().find(r => r.finished && r.benchmark) || runs[runs.length - 1];
@@ -71,11 +80,16 @@
         const p = history.point(r, e, theme);
         rows.push([name(e), pointText(p, true) + (p ? ' · baseline #' + p.baseline.job : '')]);
       });
-      if (r.benchmark.failed) rows.push(['failed captures', r.benchmark.failed + ' · engine may be unknown']);
-      rows.push(['paired vs previous', (r.benchmark.transitions || []).filter(t => t.confirmation === 'confirmed').length + ' confirmed changes']);
+      const failed = failures(r, theme);
+      if (failed.length) rows.push(['failed captures', failed.length + (koblas ? ' JVM SIMD workloads' : ' · engine may be unknown')]);
+      const confirmed = (r.benchmark.transitions || []).filter(t => t.confirmation === 'confirmed' &&
+        (!koblas || r.benchmark.metrics.some(m => m.caseId === t.caseId && m.name === t.metric && H.engine(m) === 'jvm-simd')));
+      rows.push(['paired vs previous', confirmed.length + ' confirmed changes']);
       return rows;
     }
-    const failures = (r, theme) => (r.benchmark?.workloads || []).filter(w => w.status === 'failed' && (!theme || w.theme === theme));
+    const failures = (r, theme) => (r.benchmark?.workloads || []).filter(w => w.status === 'failed' && (!theme || w.theme === theme) &&
+      (!koblas || w.engines?.['jvm-simd'] === 'failed' ||
+        history.point(r, 'jvm-simd')?.baseline.benchmark.workloads.some(before => before.caseId === w.caseId)));
     const themes = [...new Set(all.flatMap(r => (r.benchmark?.workloads || []).map(w => w.theme)).filter(Boolean))].sort();
     // Share the relative scale across the overview and every theme for a direct visual comparison.
     const ratios = runs.flatMap(r => [null, ...themes].flatMap(t => engines.map(e => history.point(r, e, t)?.ratio))).filter(v => v != null);
@@ -83,11 +97,11 @@
     const high = Math.ceil((Math.max(1.1, ...ratios) + .02) * 10) / 10;
     const ratioAxis = {min: low, max: high, ticks: [low, 1, high], reference: 1, fmt: v => v.toFixed(1) + '×'};
     function performance(host, theme, height) {
-      const present = engines.filter(e => runs.some(r => history.point(r, e, theme)));
+      const present = koblas ? engines : engines.filter(e => runs.some(r => history.point(r, e, theme)));
       const series = present.map(e => ({name: name(e), color: colors.get(e), dash: dashes[engines.indexOf(e) % dashes.length],
         value: r => history.point(r, e, theme)?.ratio}));
       draw(host, series, ratioAxis, {height, endLabels: false,
-        title: (theme || 'All workloads') + ' performance relative to baseline, lower is faster',
+        title: (koblas ? 'JVM SIMD · ' : '') + (theme || 'All workloads') + ' performance relative to baseline, lower is faster',
         rows: r => regressionRows(r, theme), onSelect: choose, failures: r => failures(r, theme)});
       return present;
     }
@@ -96,7 +110,7 @@
     draw(document.getElementById('chart-benchmark-regressions'), engines.map((e, i) => ({
       name: name(e), color: colors.get(e), dash: dashes[i % dashes.length], value: r => history.point(r, e)?.count})),
     {max: top, ticks: [...new Set([0, Math.round(top / 2), top])], fmt: String},
-    {height: 230, endLabels: false, title: 'Regressed workload count by engine', rows: r => regressionRows(r),
+    {height: 230, endLabels: false, title: koblas ? 'JVM SIMD regressed workload count' : 'Regressed workload count by engine', rows: r => regressionRows(r),
       onSelect: choose, failures: r => failures(r)});
     performance(document.getElementById('chart-benchmark-performance'), null, 230);
     summary(document.getElementById('benchmark-regression-summary'), engines.map(engine => ({engine, text: pointText(history.point(selected, engine), false)})));
@@ -129,12 +143,11 @@
     jobLink.href = '/jobs/' + selected.job; jobLink.textContent = '#' + selected.job;
     tableContext.replaceChildren(document.createTextNode('Current: ' + selected.sha.slice(0, 9) + ' · '), jobLink,
       document.createTextNode('. Targets exclude this run and every later run; they do not change the graph baseline or paired confirmation policy.'));
-    const table = document.querySelector('.benchmark-cases');
     const selectedEngines = new Set((selected.benchmark?.metrics || []).map(H.engine));
     (selected.benchmark?.workloads || []).forEach(w => Object.keys(w.engines || {}).forEach(e => selectedEngines.add(e)));
-    const columns = table.dataset.koblas === 'true' ? [
+    const columns = koblas ? [
       {engine: 'jvm-simd', label: 'JVM SIMD'}, {engine: 'accelerate-jvm', label: 'Accelerate'}, {engine: 'jvm-scalar', label: 'Portable'}
-    ] : engines.map(engine => ({engine, label: name(engine)}));
+    ] : tableEngines.map(engine => ({engine, label: name(engine)}));
     for (const engine of selectedEngines) {
       if (!columns.some(column => column.engine === engine)) columns.push({engine, label: name(engine)});
     }

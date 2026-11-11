@@ -1,6 +1,43 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const H = require('../../main/resources/web/benchmark-history.js');
+const {readFileSync} = require('node:fs');
+const vm = require('node:vm');
+
+// Exercise the renderer's data and chart choices without a browser or SVG layout.
+function renderCharts(runs, koblas = true) {
+  class Element {
+    constructor(tag = 'div') {
+      this.tag = tag; this.children = []; this.dataset = {}; this.style = {};
+      this.classList = {toggle() {}, add() {}}; this.value = '';
+    }
+    set textContent(value) { this.value = String(value); this.children = []; }
+    get textContent() { return this.value + this.children.map(child => child.textContent).join(''); }
+    append(...children) {
+      for (const child of children) this.children.push(...(child.tag === 'fragment' ? child.children : [child]));
+    }
+    replaceChildren(...children) { this.value = ''; this.children = []; this.append(...children); }
+    setAttribute() {}
+    addEventListener() {}
+  }
+  const elements = new Map(), plots = [];
+  const get = id => {
+    if (!elements.has(id)) elements.set(id, new Element());
+    return elements.get(id);
+  };
+  get('table').dataset.koblas = String(koblas);
+  const document = {
+    getElementById: get, querySelector: () => get('table'), querySelectorAll: () => [],
+    createElement: tag => new Element(tag), createElementNS: (_, tag) => new Element(tag),
+    createDocumentFragment: () => new Element('fragment'),
+    createTextNode: text => { const node = new Element('text'); node.textContent = text; return node; }
+  };
+  const window = {BenchmarkHistory: H};
+  vm.runInNewContext(readFileSync(require.resolve('../../main/resources/web/benchmark-trend.js'), 'utf8'), {window, document});
+  window.renderBenchmarkTrend({all: runs, runs, when: String, niceMax: value => value || 1,
+    draw: (host, series, axis, options) => plots.push({host, series, axis, options})});
+  return {get, plots};
+}
 
 function run(job, values = [[10, 1000000], [10, 1000000]], options = {}) {
   const engines = ['jvm-scalar', 'jvm-simd'];
@@ -192,6 +229,78 @@ function threeEngines(job, simd, accelerate, portable) {
     unit: 'ns/op', direction: 'lower', value: accelerate});
   return r;
 }
+
+test('Koblas overview and themes use only JVM SIMD for baselines scales summaries and tooltips', () => {
+  const before = threeEngines(1, 10, 100, 1000), after = threeEngines(2, 12, 10000, 100000);
+  for (const r of [before, after]) {
+    // Neither an invalid metric nor a failed workload from another engine may block the SIMD baseline.
+    r.benchmark.metrics.push({caseId: 'dot', name: 'extra/jvm-scalar', engine: 'jvm-scalar',
+      value: 0, unit: 'ns/op', direction: 'lower'});
+    r.benchmark.workloads.push({caseId: 'portable-only', workload: 'portable-only', theme: 'dot',
+      status: 'failed', engines: {'jvm-scalar': 'failed'}});
+    r.benchmark.failed = 1;
+  }
+  after.benchmark.transitions = ['jvm-simd', 'jvm-scalar', 'accelerate-jvm'].map(engine =>
+    ({caseId: 'dot', metric: 'median_ns/' + engine, confirmation: 'confirmed'}));
+
+  const {get, plots} = renderCharts([before, after]);
+
+  assert.equal(get('benchmark-engines').textContent, 'JVM SIMD');
+  assert.equal(plots.length, 4);
+  for (const plot of plots) {
+    assert.deepEqual(Array.from(plot.series, series => series.name), ['JVM SIMD']);
+    assert.ok(plot.axis.max < 2);
+    assert.equal(plot.options.failures(after).length, 0);
+    const rows = plot.options.rows(after);
+    assert.ok(rows.some(([label]) => label === 'JVM SIMD'));
+    assert.ok(!rows.some(([label]) => ['Portable JVM', 'Accelerate', 'failed captures'].includes(label)));
+    assert.equal(rows.find(([label]) => label === 'paired vs previous')[1], '1 confirmed changes');
+  }
+  assert.equal(plots[0].series[0].value(after), 1);
+  assert.ok(Math.abs(plots[1].series[0].value(after) - Math.sqrt(1.2)) < 1e-12);
+  for (const id of ['benchmark-regression-summary', 'benchmark-performance-summary']) {
+    assert.equal(get(id).children.length, 1);
+    assert.match(get(id).textContent, /^JVM SIMD/);
+  }
+  assert.match(get('benchmark-case-head').textContent, /JVM SIMD.*Accelerate.*Portable/);
+  assert.match(get('benchmark-case-rows').textContent, /10,000 ns\/op/);
+});
+
+test('default-only captures leave SIMD charts unavailable while preserving their table timings', () => {
+  const selected = run(1);
+  selected.benchmark.metrics = selected.benchmark.metrics.filter(m => m.engine === 'jvm-scalar')
+    .map(m => ({...m, engine: 'jvm-default', name: 'median_ns'}));
+
+  const {get, plots} = renderCharts([selected]);
+
+  assert.ok(plots.every(plot => plot.series.length === 1 && plot.series[0].value(selected) == null));
+  assert.equal(get('benchmark-engines').textContent, 'JVM SIMD');
+  assert.match(get('benchmark-performance-summary').textContent, /No comparable baseline/);
+  for (const theme of get('benchmark-themes').children) assert.match(theme.textContent, /JVM SIMDNo comparable baseline/);
+  assert.match(get('benchmark-case-head').textContent, /JVM default/);
+  assert.match(get('benchmark-case-rows').textContent, /10 ns\/op/);
+});
+
+test('a future SIMD capture cannot change which workloads qualify an earlier baseline', () => {
+  const before = threeEngines(1, 10, 100, 1000), after = threeEngines(2, 12, 100, 1000);
+  before.benchmark.workloads.push({caseId: 'new-simd', theme: 'dot', status: 'failed', engines: {'jvm-scalar': 'failed'}});
+  after.benchmark.workloads.push({caseId: 'new-simd', theme: 'dot', status: 'success', threshold: .15,
+    controls: 'cpu-and-runtime', engines: {'jvm-simd': 'success'}});
+  after.benchmark.metrics.push({...after.benchmark.metrics[2], caseId: 'new-simd'});
+
+  const {plots} = renderCharts([before, after]);
+
+  assert.equal(plots[1].series[0].value(before), 1);
+  assert.ok(Math.abs(plots[1].series[0].value(after) - Math.sqrt(1.2)) < 1e-12);
+  assert.ok(plots[1].options.rows(after).some(([label, value]) => label === 'JVM SIMD' && value.includes('baseline #1')));
+});
+
+test('other repositories keep their engine chart series', () => {
+  const {get, plots} = renderCharts([threeEngines(1, 10, 100, 1000)], false);
+
+  assert.equal(plots[0].series.length, 3);
+  assert.match(get('benchmark-engines').textContent, /Portable JVM.*JVM SIMD.*accelerate-jvm/);
+});
 
 test('a single run shows current timings without historical targets or slowdowns', () => {
   for (const finished of [true, false]) {
