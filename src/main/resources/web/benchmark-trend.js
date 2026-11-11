@@ -19,12 +19,13 @@
       return rank(a) - rank(b) || a.localeCompare(b);
     });
     const engines = koblas ? ['jvm-simd'] : tableEngines;
-    const simdCases = new Set(runs.flatMap(r => (r.benchmark?.metrics || [])
-      .filter(m => H.engine(m) === 'jvm-simd').map(m => m.caseId)));
-    const history = H.history(koblas ? runs.map(r => ({...r, benchmark: r.benchmark && {...r.benchmark,
-      metrics: r.benchmark.metrics.filter(m => H.engine(m) === 'jvm-simd'),
-      workloads: (r.benchmark.workloads || []).filter(w => simdCases.has(w.caseId) || w.engines?.['jvm-simd'])
-    }})) : runs);
+    const history = H.history(koblas ? runs.map(r => {
+      if (!r.benchmark) return r;
+      const metrics = r.benchmark.metrics.filter(m => H.engine(m) === 'jvm-simd');
+      const cases = new Set(metrics.map(m => m.caseId));
+      return {...r, benchmark: {...r.benchmark, metrics,
+        workloads: (r.benchmark.workloads || []).filter(w => cases.has(w.caseId) || w.engines?.['jvm-simd'])}};
+    }) : runs);
     const colors = new Map(engines.map((e, i) => [e, 'var(--series-' + (i % 5 + 1) + ')']));
     const dashes = ['', '6 3', '2 3', '8 3 2 3', '3 2'];
     const latest = [...runs].reverse().find(r => r.finished && r.benchmark) || runs[runs.length - 1];
@@ -87,7 +88,8 @@
       return rows;
     }
     const failures = (r, theme) => (r.benchmark?.workloads || []).filter(w => w.status === 'failed' && (!theme || w.theme === theme) &&
-      (!koblas || simdCases.has(w.caseId) || w.engines?.['jvm-simd'] === 'failed'));
+      (!koblas || w.engines?.['jvm-simd'] === 'failed' ||
+        history.point(r, 'jvm-simd')?.baseline.benchmark.workloads.some(before => before.caseId === w.caseId)));
     const themes = [...new Set(all.flatMap(r => (r.benchmark?.workloads || []).map(w => w.theme)).filter(Boolean))].sort();
     // Share the relative scale across the overview and every theme for a direct visual comparison.
     const ratios = runs.flatMap(r => [null, ...themes].flatMap(t => engines.map(e => history.point(r, e, t)?.ratio))).filter(v => v != null);

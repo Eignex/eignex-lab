@@ -281,6 +281,20 @@ test('default-only captures leave SIMD charts unavailable while preserving their
   assert.match(get('benchmark-case-rows').textContent, /10 ns\/op/);
 });
 
+test('a future SIMD capture cannot change which workloads qualify an earlier baseline', () => {
+  const before = threeEngines(1, 10, 100, 1000), after = threeEngines(2, 12, 100, 1000);
+  before.benchmark.workloads.push({caseId: 'new-simd', theme: 'dot', status: 'failed', engines: {'jvm-scalar': 'failed'}});
+  after.benchmark.workloads.push({caseId: 'new-simd', theme: 'dot', status: 'success', threshold: .15,
+    controls: 'cpu-and-runtime', engines: {'jvm-simd': 'success'}});
+  after.benchmark.metrics.push({...after.benchmark.metrics[2], caseId: 'new-simd'});
+
+  const {plots} = renderCharts([before, after]);
+
+  assert.equal(plots[1].series[0].value(before), 1);
+  assert.ok(Math.abs(plots[1].series[0].value(after) - Math.sqrt(1.2)) < 1e-12);
+  assert.ok(plots[1].options.rows(after).some(([label, value]) => label === 'JVM SIMD' && value.includes('baseline #1')));
+});
+
 test('other repositories keep their engine chart series', () => {
   const {get, plots} = renderCharts([threeEngines(1, 10, 100, 1000)], false);
 
