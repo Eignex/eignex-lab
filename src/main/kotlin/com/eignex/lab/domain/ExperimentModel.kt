@@ -25,6 +25,8 @@ data class ExperimentSpec(
     val seeds: List<Long> = emptyList(),
     /** Runs of each (problem, configuration, seed), identical but for the machine's noise, which they measure. */
     val repeats: Int = 1,
+    /** Whether repetitions stay beside each workload or make separate passes through the full inventory. */
+    val repeatOrder: RepeatOrder = RepeatOrder.PROBLEM,
     /**
      * vCPUs dedicated to the job: each of its worker sessions runs `max(1, vcpus - 1)` cases at once (divided by a case's
      * CPUs, at least one), leaving one for the worker JVM, and its preparation builds with at least as many. Unset, the
@@ -100,6 +102,13 @@ data class ExperimentSpec(
         is Work.Analysis -> copy(analyze = work.spec, bench = null, profile = null)
         is Work.Script, Work.Recipe -> also { require(this.work == work) { "the lab no longer makes $work work" } }
     }
+}
+
+/** How repeated workload rows are ordered; every row keeps all of its arms together. */
+@Serializable
+enum class RepeatOrder {
+    @SerialName("problem") PROBLEM,
+    @SerialName("pass") PASS,
 }
 
 /**

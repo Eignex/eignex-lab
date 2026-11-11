@@ -72,7 +72,7 @@ class BenchWorkflowTest {
 
     @Test fun `confirmations preserve repository request placement and exact pinned workloads`() {
         val frozen = BenchRuns.problem(workload())
-        val spec = ExperimentSpec("sweep", repository = "Eignex/example", host = HostPlacement.CLOUD, nodeTags = NodeSelector(require = setOf("arch:x86_64")),
+        val spec = ExperimentSpec("sweep", repository = "Eignex/example", host = HostPlacement.CLOUD, repeatOrder = RepeatOrder.PASS, nodeTags = NodeSelector(require = setOf("arch:x86_64")),
             bench = BenchSpec("tools/bench.json", BenchRequest(mapOf("selection" to "small")), sourceValidation = true),
             base = mapOf("param.policy" to "selected"), grid = mapOf("param.mode" to listOf("first", "second")))
         val confirmation = Confirm.spec("sweep", spec, "a".repeat(40), "b".repeat(40), Flips(listOf(frozen), emptyList()), 7)
@@ -85,6 +85,7 @@ class BenchWorkflowTest {
         assertEquals(listOf("a".repeat(40), "b".repeat(40)), Experiments.arms(confirmation).map { it.ref })
         assertTrue(Experiments.arms(confirmation).all { it.values["param.mode"] == "first" })
         assertEquals(Confirm.REPEATS, confirmation.repeats)
+        assertEquals(RepeatOrder.PASS, confirmation.repeatOrder)
     }
 
     @Test fun `legacy solver recipes and implicit profile classpaths are refused`() {

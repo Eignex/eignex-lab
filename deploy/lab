@@ -5,6 +5,8 @@
 # The lab uses idle local capacity and adds cloud capacity with demand, respecting job priority.
 # Each workload/seed/repetition row runs all arms on the same machine in one attempt.
 # Different rows and preparation can use different machines; ordinary A/B jobs need no machine pin.
+# Experiment JSON may set repeats=3 and repeatOrder="pass" to separate repeated workload rows across
+# full inventory passes. Every workload/seed/repetition still keeps all configuration arms in one attempt.
 #   lab run [--tags expr --measurement mode] <experiment.json> queue an experiment: problems × configs × seeds, one case each
 #                                                            one per question over all its problems, never batches; follow it with lab wait, lab cases
 #   lab profile [--tags expr --timeout sec --repo Eignex/name --build task --classpath path] <main> <ref> <description> -- [arg...]
