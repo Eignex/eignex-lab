@@ -1649,7 +1649,7 @@ summary { cursor: pointer; }
 
 .benchmark-cases { min-width: 780px; width: 100%; }
 .benchmark-cases td, .benchmark-cases th { padding: 8px 12px; }
-.benchmark-cases tbody th { text-align: left; font-weight: 400; min-width: 230px; max-width: 440px; overflow-wrap: anywhere; }
+.benchmark-cases tbody th { text-align: left; font-weight: 400; min-width: 230px; max-width: 440px; white-space: normal; overflow-wrap: anywhere; }
 .benchmark-engine-cell { min-width: 150px; font-variant-numeric: tabular-nums; vertical-align: top; }
 .benchmark-engine-cell strong { display: block; font-weight: 500; }
 .benchmark-history-delta { display: block; margin-top: 4px; font-size: 12px; }
