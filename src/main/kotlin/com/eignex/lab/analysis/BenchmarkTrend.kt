@@ -75,6 +75,40 @@ internal object BenchmarkTrends {
     }
 
     fun summarize(cases: List<CaseResult>, repository: String): BenchmarkTrend {
+        val raw = summarizeCases(cases, repository)
+        if (cases.all { it.repeat == 0 }) return raw
+        val metrics = mutableListOf<TrendMetric>()
+        val workloads = mutableListOf<BenchmarkWorkload>()
+        for (group in cases.groupBy { Triple(it.problem, it.arm, it.seed) }.values) {
+            val parts = group.map { summarizeCases(listOf(it), repository) }
+            val rows = parts.flatMap { it.workloads }
+            val first = rows.first()
+            val status = listOf("pending", "failed", "skipped", "success").first { state -> rows.any { it.status == state } }
+            val controls = rows.map { it.controls }.distinct().singleOrNull()
+            val engines = rows.flatMap { it.engines.keys }.distinct().associateWith { engine ->
+                rows.map { it.engines[engine] }.distinct().singleOrNull() ?: "inconsistent"
+            }
+            val aggregateControls = controls?.let {
+                if (group.size == 1) it else ExecutionStore.digest("$it\nrepetitions=${group.size}")
+            }
+            workloads += first.copy(status = status, controls = aggregateControls, engines = engines,
+                instrumented = rows.any { it.instrumented })
+            // A partial pass or changed controls cannot set a baseline from whichever repetition finished first.
+            if (status != "success" || controls == null || group.map { it.repeat }.distinct().size != group.size) continue
+            val samples = parts.flatMap { it.metrics }.groupBy { it.copy(value = 0.0, provider = null, kernel = null) }
+            for ((identity, values) in samples) {
+                if (values.size != group.size) continue
+                val sorted = values.map { it.value }.sorted()
+                val middle = sorted.size / 2
+                val median = if (sorted.size % 2 == 1) sorted[middle] else sorted[middle - 1] / 2 + sorted[middle] / 2
+                metrics += identity.copy(value = median, provider = values.map { it.provider }.distinct().singleOrNull(),
+                    kernel = values.map { it.kernel }.distinct().singleOrNull())
+            }
+        }
+        return raw.copy(metrics = metrics, workloads = workloads)
+    }
+
+    private fun summarizeCases(cases: List<CaseResult>, repository: String): BenchmarkTrend {
         var succeeded = 0; var failed = 0; var skipped = 0; var pending = 0
         val metrics = mutableListOf<TrendMetric>()
         val workloads = mutableListOf<BenchmarkWorkload>()

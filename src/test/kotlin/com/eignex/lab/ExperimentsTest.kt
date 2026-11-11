@@ -188,6 +188,32 @@ class ExperimentsTest {
     }
 
     @Test
+    fun `pass ordering separates repetitions across the full inventory and rotates paired arms`() {
+        val cases = Experiments.cases(3, 2, listOf(7, 11), 3, RepeatOrder.PASS)
+        val rows = cases.chunked(2)
+
+        assertEquals(List(3) { listOf(0, 0, 1, 1, 2, 2) }.flatten(), rows.map { it.first().problem })
+        assertEquals(List(3) { repeat -> List(6) { repeat } }.flatten(), rows.map { it.first().repeat })
+        for (pair in rows) {
+            assertEquals(1, pair.map { Triple(it.problem, it.seed, it.repeat) }.distinct().size)
+            assertEquals(setOf(0, 1), pair.map { it.arm }.toSet())
+            assertEquals((pair.first().problem + pair.first().repeat) % 2, pair.first().arm)
+        }
+        assertEquals(36, cases.distinct().size)
+    }
+
+    @Test
+    fun `pass ordering is recorded and starts a separate measurement series`() {
+        val spec = ExperimentSpec("sweep", repeats = 3, repeatOrder = RepeatOrder.PASS)
+        val encoded = Json.encodeToString(ExperimentSpec.serializer(), spec)
+
+        assertContains(encoded, "\"repeatOrder\":\"pass\"")
+        assertEquals(spec, Json.decodeFromString<ExperimentSpec>(encoded))
+        assertNotEquals(Experiments.fingerprint(spec), Experiments.fingerprint(spec.copy(repeatOrder = RepeatOrder.PROBLEM)))
+        assertFalse("repeatOrder" in Json.encodeToString(ExperimentSpec.serializer(), spec.copy(repeatOrder = RepeatOrder.PROBLEM)))
+    }
+
+    @Test
     fun `a spec with an unknown key is refused`() {
         val error = assertFailsWith<IllegalArgumentException> {
             Experiments.validate(spec(configs = listOf(mapOf("cmd" to "rm"))), maxVcpus = 4)

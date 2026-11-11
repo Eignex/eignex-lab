@@ -128,15 +128,24 @@ object Experiments {
     }
 
     /**
-     * Every case, problem by problem. Within a problem the arms alternate: each seed and repeat runs every arm once
-     * before the next starts, so an A/B with repeats goes A, B, A, B rather than A, A, B, B, and drift on the machine
-     * lands on both arms alike. The arm order is rotated one place per problem, so drift over the run and a pause
-     * part-way spread evenly across the arms instead of favouring the arm that always goes first.
+     * Every workload, seed and repetition keeps its arms adjacent so a worker claims a complete pair.
+     * [RepeatOrder.PASS] separates repeated measurements by a full inventory pass and rotates the first
+     * arm between passes as well as workloads, so neither time within the run nor arm order favours one arm.
      */
-    fun cases(problems: Int, arms: Int, seeds: List<Long>, repeats: Int = 1): List<Case> = (0 until problems).flatMap { problem ->
-        val order = (0 until arms).map { (it + problem) % arms }
-        seeds.ifEmpty { listOf(null) }.flatMap { seed ->
-            (0 until repeats).flatMap { repeat -> order.map { arm -> Case(problem, arm, seed, repeat) } }
+    fun cases(problems: Int, arms: Int, seeds: List<Long>, repeats: Int = 1,
+              repeatOrder: RepeatOrder = RepeatOrder.PROBLEM): List<Case> {
+        fun row(problem: Int, seed: Long?, repeat: Int): List<Case> = (0 until arms).map { offset ->
+            val rotation = problem + if (repeatOrder == RepeatOrder.PASS) repeat else 0
+            Case(problem, (offset + rotation) % arms, seed, repeat)
+        }
+        val selectedSeeds = seeds.ifEmpty { listOf(null) }
+        return when (repeatOrder) {
+            RepeatOrder.PROBLEM -> (0 until problems).flatMap { problem -> selectedSeeds.flatMap { seed ->
+                (0 until repeats).flatMap { repeat -> row(problem, seed, repeat) }
+            } }
+            RepeatOrder.PASS -> (0 until repeats).flatMap { repeat -> (0 until problems).flatMap { problem ->
+                selectedSeeds.flatMap { seed -> row(problem, seed, repeat) }
+            } }
         }
     }
 

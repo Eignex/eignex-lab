@@ -152,7 +152,7 @@ class BenchmarkTrendTest {
         val store = Store(Files.createTempDirectory("benchmark-overview-upgrade").resolve("lab.db"))
         val benchmark = store.job(run(store, "a".repeat(40)))!!
         val solver = store.job(store.create("solver", "main", emptyList(), experiment = ExperimentSpec("solver")))!!
-        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-6", "format-4"),
+        val oldBenchmark = TrendPoints.Point(TrendCache.version(benchmark).replace("format-7", "format-4"),
             null, System.currentTimeMillis(), null, emptySet())
         val solverPoint = TrendPoints.Point(TrendCache.version(solver), null, System.currentTimeMillis(), null, emptySet())
 
@@ -224,6 +224,43 @@ class BenchmarkTrendTest {
         assertEquals(listOf("confirmed", "not selected"), changes.map { it.confirmation })
         assertEquals("not confirmed", BenchmarkTrends.transitions(flips, Flips(emptyList(), emptyList()), Status.DONE, cases).first().confirmation)
         assertEquals("pending", BenchmarkTrends.transitions(flips, null, Status.RUNNING, emptyList()).first().confirmation)
+    }
+
+    @Test fun `repeated workload timings use the median of independent captures`() {
+        val plan = BenchCase("dot", attributes = mapOf("regressionThreshold" to "0.15"))
+        val cases = listOf(100.0, 900.0, 110.0).mapIndexed { repeat, value ->
+            val result = BenchResult(plan.id, metrics = listOf(BenchMetric("median_ns", value, "ns/op", MetricDirection.LOWER)),
+                details = buildJsonObject { putJsonObject("benchmarkControls") { put("java", "25") } })
+            CaseResult(repeat, Status.DONE, BenchRuns.problem(plan), "base", repeat = repeat,
+                record = BenchProtocol.json.encodeToJsonElement(result))
+        }
+
+        val summary = BenchmarkTrends.summarize(cases, "Eignex/koblas")
+
+        assertEquals(3, summary.succeeded)
+        assertEquals(110.0, summary.metrics.single().value)
+        assertNotEquals(BenchmarkTrends.summarize(cases.take(1), "Eignex/koblas").workloads.single().controls,
+            summary.workloads.single().controls)
+        assertEquals("success", summary.workloads.single().status)
+        assertNotNull(summary.workloads.single().controls)
+    }
+
+    @Test fun `unfinished repetitions and mixed controls cannot establish an aggregate timing`() {
+        val plan = BenchCase("dot")
+        fun row(repeat: Int, runtime: String) = CaseResult(repeat, Status.DONE, BenchRuns.problem(plan), "base", repeat = repeat,
+            record = BenchProtocol.json.encodeToJsonElement(BenchResult(plan.id,
+                metrics = listOf(BenchMetric("median_ns", 100.0, "ns/op", MetricDirection.LOWER)),
+                details = buildJsonObject { putJsonObject("benchmarkControls") { put("java", runtime) } })))
+        val complete = row(0, "25")
+        val pending = row(1, "25").copy(status = Status.RUNNING, record = null)
+
+        val unfinished = BenchmarkTrends.summarize(listOf(complete, pending), "Eignex/koblas")
+        val changed = BenchmarkTrends.summarize(listOf(complete, row(1, "27")), "Eignex/koblas")
+
+        assertTrue(unfinished.metrics.isEmpty())
+        assertEquals("pending", unfinished.workloads.single().status)
+        assertTrue(changed.metrics.isEmpty())
+        assertNull(changed.workloads.single().controls)
     }
 
     @Test fun `engine attribution keeps the requested engine separate from its measured provider`() {

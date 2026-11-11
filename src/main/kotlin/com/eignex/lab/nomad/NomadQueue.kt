@@ -363,7 +363,7 @@ class NomadQueue(
         val selections = preparation.selections
         val problems = interleave(selections).distinctBy { it.suite to it.problem }
         require(problems.isNotEmpty()) { "the selection matched no problems the reference filter keeps" }
-        val cases = Experiments.cases(problems.size, recipe.arms.size, spec.seeds, spec.repeats).map { case ->
+        val cases = Experiments.cases(problems.size, recipe.arms.size, spec.seeds, spec.repeats, spec.repeatOrder).map { case ->
             case.copy(seed = problems[case.problem].benchCase?.attributes?.get("seed")?.toLongOrNull() ?: case.seed)
         }
         val concurrency = Experiments.caseConcurrency(job.vcpus, recipe.arms.maxOf { it.arm.cores })
