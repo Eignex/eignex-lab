@@ -377,6 +377,10 @@ then install the settings and render the Autoscaler policies with `autoscaler.sh
 The old Python inventory adapter does not publish the structured shortage signal and must be migrated to the maintained
 `eignex-lab capacity-adapter aws CONFIG` service. Verify a bounded manual request reaches an on-demand node after an
 injected shortage in an isolated inventory, then restore the real inventory, release the lease and verify idle retirement.
+The maintained adapter batches group inventory, omits scaling-activity queries for idle groups, and skips Lambda renewal
+only when a fresh, verified zero-demand grant and fresh provider inventory both show no instances or pending launches.
+Dormant fallback pools therefore do not multiply Auto Scaling calls or keep their capacity leases open. Active pools and
+unfilled launch targets still renew independently; a cached shortage retains its original timestamp across adapter restarts.
 
 Provider-side capacity expiry, private-network bootstrap and real AWS/GCP Spot canaries follow in the infrastructure
 stack. The collector/packing tests alone do not establish live provisioning, quota handling or billing expiry.

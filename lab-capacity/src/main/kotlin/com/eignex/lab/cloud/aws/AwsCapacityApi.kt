@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.time.Duration
 import java.time.Instant
+import org.w3c.dom.Element
 
 /** An Auto Scaling group member: [protectedFromScaleIn] is null when the provider did not say. */
 data class AsgMember(val id: String, val lifecycleState: String, val protectedFromScaleIn: Boolean? = null)
@@ -24,6 +25,8 @@ data class Ec2Instance(val id: String, val launchedAt: Long, val state: String, 
 interface AutoScaling {
     /** The group named [name], or null when there is none. */
     fun group(name: String): AsgGroup?
+    /** One inventory request for many groups when the provider supports it. */
+    fun groups(names: List<String>): Map<String, AsgGroup> = names.mapNotNull { name -> group(name)?.let { name to it } }.toMap()
     /** The group's latest scaling activity, or null when it has none. */
     fun latestActivity(name: String): AsgActivity?
     fun update(name: String, minSize: Int? = null, desiredCapacity: Int? = null, maxSize: Int? = null)
@@ -51,10 +54,17 @@ interface LeaseTable {
 
 /** The Auto Scaling, EC2, DynamoDB, Secrets Manager and Lambda calls, over [api]. */
 class AwsCapacityApi(private val api: AwsApi) : AutoScaling, Ec2 {
-    override fun group(name: String): AsgGroup? {
-        val result = api.query("autoscaling", "DescribeAutoScalingGroups", ASG_VERSION, mapOf("AutoScalingGroupNames.member.1" to name))
-        val group = result.child("DescribeAutoScalingGroupsResult")?.members("AutoScalingGroups")?.firstOrNull() ?: return null
-        return AsgGroup(
+    override fun group(name: String): AsgGroup? = groups(listOf(name))[name]
+
+    override fun groups(names: List<String>): Map<String, AsgGroup> = names.distinct().chunked(50).flatMap { batch ->
+        val result = api.query("autoscaling", "DescribeAutoScalingGroups", ASG_VERSION,
+            batch.mapIndexed { index, name -> "AutoScalingGroupNames.member.${index + 1}" to name }.toMap())
+        result.child("DescribeAutoScalingGroupsResult")?.members("AutoScalingGroups").orEmpty().map { group ->
+            group.text("AutoScalingGroupName")!! to parseGroup(group)
+        }
+    }.toMap()
+
+    private fun parseGroup(group: Element) = AsgGroup(
             minSize = group.text("MinSize")!!.toInt(), maxSize = group.text("MaxSize")!!.toInt(),
             desiredCapacity = group.text("DesiredCapacity")!!.toInt(),
             instances = group.members("Instances").map { member ->
@@ -62,7 +72,6 @@ class AwsCapacityApi(private val api: AwsApi) : AutoScaling, Ec2 {
             },
             tags = group.members("Tags").associate { it.text("Key")!! to (it.text("Value") ?: "") },
         )
-    }
 
     override fun latestActivity(name: String): AsgActivity? {
         val result = api.query("autoscaling", "DescribeScalingActivities", ASG_VERSION, mapOf("AutoScalingGroupName" to name, "MaxRecords" to "1"))

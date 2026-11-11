@@ -88,6 +88,23 @@ class AwsApiTest {
         assertNull(api.group("group"))
     }
 
+    @Test fun `fleet inventory batches fifty group names per provider request`() {
+        val member = group.substringAfter("<AutoScalingGroups>").substringBefore("</AutoScalingGroups>")
+        val http = RecordingHttp { _, _, body ->
+            val names = form(body).filterKeys { it.startsWith("AutoScalingGroupNames.member.") }.values
+            ok("<DescribeAutoScalingGroupsResponse><DescribeAutoScalingGroupsResult><AutoScalingGroups>" +
+                names.joinToString("") { member.replace("<AutoScalingGroupName>group</AutoScalingGroupName>", "<AutoScalingGroupName>$it</AutoScalingGroupName>") } +
+                "</AutoScalingGroups></DescribeAutoScalingGroupsResult></DescribeAutoScalingGroupsResponse>")
+        }
+        val api = AwsCapacityApi(AwsApi("eu-north-1", { example }, clock, http))
+        val names = (1..20).map { "group-$it" }
+        assertEquals(names.toSet(), api.groups(names).keys)
+        assertEquals(1, http.requests.size)
+        assertEquals(20, form(http.requests.single().third).keys.count { it.startsWith("AutoScalingGroupNames.member.") })
+        assertEquals(51, api.groups((1..51).map { "group-$it" }).size)
+        assertEquals(3, http.requests.size)
+    }
+
     @Test fun `group changes send exactly the asked fields`() {
         val http = RecordingHttp { _, _, _ -> ok("<Response/>") }
         val api = AwsCapacityApi(AwsApi("eu-north-1", { example }, clock, http))

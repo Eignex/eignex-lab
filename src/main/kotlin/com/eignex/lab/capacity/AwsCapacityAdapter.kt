@@ -3,8 +3,11 @@ package com.eignex.lab.capacity
 import com.eignex.lab.capacity.CapacityAdapter.optional
 import com.eignex.lab.capacity.CapacityAdapter.text
 import com.eignex.lab.cloud.CapacityRejected
+import com.eignex.lab.cloud.CapacityGrants
 import com.eignex.lab.cloud.ProviderError
 import com.eignex.lab.cloud.aws.AutoScaling
+import com.eignex.lab.cloud.aws.AsgGroup
+import com.eignex.lab.cloud.aws.AsgActivity
 import com.eignex.lab.cloud.aws.AwsApi
 import com.eignex.lab.cloud.aws.AwsCapacityApi
 import com.eignex.lab.cloud.aws.AwsCredentials
@@ -21,6 +24,9 @@ import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The AWS adapter (`capacity-adapter aws CONFIG`), whose role (`adapter_role_arn`) may only describe the pools' groups
@@ -95,19 +101,36 @@ object AwsCapacityAdapter {
      * independently: one pool's failure never holds another's renewal. [grant] fetches a pool's grant with the key.
      */
     fun renew(config: JsonObject, functions: Functions,
-              grant: (String, String) -> JsonElement = { pool, key -> CapacityAdapter.grant(config.text("coordinator"), pool, key) }) {
+              grant: (String, String) -> JsonElement = { pool, key -> CapacityAdapter.grant(config.text("coordinator"), pool, key) },
+              groups: Map<String, AsgGroup> = emptyMap()) {
         val pools = definitions(config)
         val key = Files.readString(Path.of(config.text("capacityTokenFile"))).trim()
         val failed = CapacityAdapter.parallel(pools) { pool ->
             val name = pool.text("pool")
             try {
-                val (error, output) = functions.invoke(pool.text("renewFunction"), grant(name, key).toString().toByteArray())
+                val authorization = grant(name, key)
+                if (!needsRenewal(groups[pool.text("group")], authorization, key, name)) return@parallel null
+                val (error, output) = functions.invoke(pool.text("renewFunction"), authorization.toString().toByteArray())
                 if (error == null) null else name to errorType(output)
             } catch (error: Exception) {
                 name to CapacityAdapter.code(error)
             }
         }.filterNotNull()
         if (failed.isNotEmpty()) throw RenewalError("capacity renewal held for " + failed.joinToString(", ") { (pool, reason) -> "$pool=$reason" })
+    }
+
+    /** Idle closed pools need no lease. Unknown observations/grants still go to the verifier; never skip a pending launch. */
+    internal fun needsRenewal(group: AsgGroup?, grant: JsonElement, key: String, pool: String, at: Long = System.currentTimeMillis()): Boolean {
+        if (group == null || group.desiredCapacity != 0 || group.instances.isNotEmpty()) return true
+        return try {
+            val envelope = grant as JsonObject
+            val raw = Base64.getUrlDecoder().decode((envelope.getValue("payload") as JsonPrimitive).content)
+            val fields = Json.parseToJsonElement(raw.toString(Charsets.UTF_8)) as JsonObject
+            val maximum = CapacityGrants.integer(fields["maxNodes"])?.takeIf { it in 1..1000 }?.toInt() ?: return true
+            if (group.minSize != 0 || group.maxSize !in setOf(0, maximum)) return true
+            val verified = CapacityGrants.verify(grant, key, pool, maximum, at)
+            CapacityGrants.integer(verified["desired"]) != 0L || CapacityGrants.startupRetirements(verified).isNotEmpty()
+        } catch (_: Exception) { true }
     }
 
     /** A failed function's `errorType`, when it is a bounded name; else `provider_error`. */
@@ -138,8 +161,35 @@ object AwsCapacityAdapter {
         val api = AwsApi(config.text("region"), credentials(config))
         val provider = AwsCapacityApi(api)
         val functions = Functions { function, payload -> provider.invoke(function, payload, INVOKE_TIMEOUT) }
+        val pools = definitions(config)
+        val observed = AtomicReference<Pair<Long, Map<String, AsgGroup>>?>()
+        val activities = ConcurrentHashMap<String, AsgActivity>()
+        // Keep the original failure timestamp across restarts; repeatedly observing an idle pool must not extend it.
+        runCatching { Json.decodeFromString<CapacityInventory>(Files.readString(Path.of(config.text("inventoryFile")))) }.getOrNull()
+            ?.capacityErrors?.forEach { (pool, error) -> pools.singleOrNull { it.text("pool") == pool }?.let {
+                if (error.code == "UnfulfillableCapacity") activities[it.text("group")] = AsgActivity("Failed", error.code, error.at)
+            } }
         return CapacityAdapter.loop("AWS", once,
-            { publish(config) { pool -> inventory(provider, pool.text("group"), pool.text("deployment"), pool.text("pool"), provider) } },
-            { renew(config, functions) }, ::describe)
+            {
+                // Lazy inside publish's freshness bound: all pool observers share one provider batch, not twenty calls.
+                val groups by lazy { provider.groups(pools.map { it.text("group") }) }
+                val batch = object : AutoScaling by provider {
+                    override fun group(name: String) = groups[name]
+                    override fun latestActivity(name: String): AsgActivity? {
+                        val group = groups[name] ?: return null
+                        if (group.desiredCapacity == 0) return activities[name]?.takeIf {
+                            it.startedAt?.let { at -> System.currentTimeMillis() - at in 0..SpotFallback.RETRY_SPOT_MS } == true
+                        }
+                        return provider.latestActivity(name).also { if (it == null) activities.remove(name) else activities[name] = it }
+                    }
+                }
+                publish(config) { pool -> inventory(batch, pool.text("group"), pool.text("deployment"), pool.text("pool"), provider) }
+                observed.set(System.nanoTime() to groups)
+            },
+            {
+                val sample = observed.get()?.takeIf { System.nanoTime() - it.first in 0..CapacityAdapter.FRESHNESS_MS * 1_000_000 }
+                    ?: throw CapacityRejected("provider inventory not fresh for renewal")
+                renew(config, functions, groups = sample.second)
+            }, ::describe)
     }
 }

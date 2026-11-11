@@ -68,6 +68,28 @@ class AwsCapacityAdapterTest {
     }
     private val tags = mapOf("lab:deployment" to "lab", "lab:pool" to "general")
 
+    private fun signed(pool: String, desired: Int = 0, at: Long = System.currentTimeMillis()) = com.eignex.lab.cloud.CapacityGrants.sign(
+        buildJsonObject { put("schemaVersion", 1); put("pool", pool); put("maxNodes", 4); put("desired", desired); put("issuedAt", at) }.toString().toByteArray(), "fixture-key-".repeat(4))
+
+    @Test fun `verified zero demand skips idle Lambda calls but never pending launches or live instances`() {
+        val empty = AsgGroup(0, 4, 0, emptyList(), tags)
+        val key = "fixture-key-".repeat(4)
+        assertFalse(AwsCapacityAdapter.needsRenewal(empty, signed("avx2"), key, "avx2"))
+        assertFalse(AwsCapacityAdapter.needsRenewal(empty.copy(maxSize = 0), signed("avx2"), key, "avx2"))
+        for (group in listOf(null, empty.copy(desiredCapacity = 1), empty.copy(instances = listOf(AsgMember("i-running", "InService", false))),
+                empty.copy(maxSize = 8), empty.copy(minSize = 1))) {
+            assertTrue(AwsCapacityAdapter.needsRenewal(group, signed("avx2"), key, "avx2"))
+        }
+        for (grant in listOf(signed("avx2", desired = 1), signed("avx2", at = 1000), signed("other"), JsonObject(emptyMap()))) {
+            assertTrue(AwsCapacityAdapter.needsRenewal(empty, grant, key, "avx2"))
+        }
+        AwsCapacityAdapter.renew(config, succeed, grant = { pool, _ -> signed(pool) }, groups = mapOf("group-avx2" to empty, "group-neon" to empty))
+        assertTrue(invoked.isEmpty(), "twenty idle fallback pools must not invoke twenty renewal functions every ten seconds")
+        AwsCapacityAdapter.renew(config, succeed, grant = { pool, _ -> signed(pool, if (pool == "avx2") 1 else 0) },
+            groups = mapOf("group-avx2" to empty, "group-neon" to empty))
+        assertEquals(listOf("renew-avx2"), invoked.toList())
+    }
+
     @Test fun `Spot shortages carry the real activity timestamp and exact code through fleet publication`() {
         val asg = Asg(AsgGroup(0, 4, 1, emptyList(), tags), AsgActivity("Failed", "Could not launch Spot Instances. UnfulfillableCapacity - unavailable", 1000))
         val value = AwsCapacityAdapter.inventory(asg, "group", "lab", "general", null) { 2000 }
