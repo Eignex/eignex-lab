@@ -1653,6 +1653,10 @@ summary { cursor: pointer; }
 .benchmark-engine-cell { min-width: 150px; font-variant-numeric: tabular-nums; vertical-align: top; }
 .benchmark-engine-cell strong { display: block; font-weight: 500; }
 .benchmark-history-delta { display: block; margin-top: 4px; font-size: 12px; }
+.benchmark-cases button.benchmark-sort-heading { display: inline-flex; gap: 6px; align-items: center; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; padding: 0; min-height: 28px; }
+.benchmark-cases button.benchmark-sort-heading:hover { color: var(--link); }
+.benchmark-cases button.benchmark-sort-heading .sort-arrow { color: var(--muted); }
+.benchmark-cases button.benchmark-sort-heading:focus-visible { outline: 2px solid var(--link); outline-offset: 3px; }
 .benchmark-cases small { display: block; color: var(--muted); margin-top: 4px; }
 
 .benchmark-overview .chart-description { min-height: 58px; }

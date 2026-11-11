@@ -245,3 +245,60 @@ test('different metric units remain separate rows within the engine comparison t
   assert.equal(rows.length, 2);
   assert.ok(rows.every(row => new Set(row.cells.filter(c => c.current != null).map(c => c.metric.unit)).size === 1));
 });
+
+
+function tableRow(id, ratios) {
+  return {workload: {caseId: id, workload: id}, identity: null,
+    cells: columns.map((column, i) => ({engine: column.engine, ratio: ratios[i] ?? null}))};
+}
+const caseNames = rows => rows.map(r => r.workload.caseId);
+
+test('default sort finds the worst own history slowdown in any engine and sorts numeric changes', () => {
+  const rows = [tableRow('dot+64', [1.9, 1, 1]), tableRow('dot+128', [1, 1, 1.25]),
+    tableRow('dot+32', [1, 11, 1]), tableRow('dot+8', [.8, .7, .9]), tableRow('dot+16', [null, null, null])];
+
+  assert.deepEqual(caseNames(H.sortCases(rows)), ['dot+32', 'dot+64', 'dot+128', 'dot+8', 'dot+16']);
+  assert.deepEqual(caseNames(rows), ['dot+64', 'dot+128', 'dot+32', 'dot+8', 'dot+16']);
+});
+
+test('each engine header sorts only its own historical changes in either direction with missing last', () => {
+  const rows = [tableRow('dot+64', [3, 1, .8]), tableRow('dot+128', [1, 3, 1]), tableRow('dot+32', [.8, .8, 3]),
+    tableRow('dot+8', [null, null, null]), tableRow('dot+16', [2, null, 1.5])];
+  const descending = [
+    ['dot+64', 'dot+16', 'dot+128', 'dot+32', 'dot+8'],
+    ['dot+128', 'dot+64', 'dot+32', 'dot+8', 'dot+16'],
+    ['dot+32', 'dot+16', 'dot+128', 'dot+64', 'dot+8']];
+  const ascending = [
+    ['dot+32', 'dot+128', 'dot+16', 'dot+64', 'dot+8'],
+    ['dot+32', 'dot+64', 'dot+128', 'dot+8', 'dot+16'],
+    ['dot+64', 'dot+128', 'dot+16', 'dot+32', 'dot+8']];
+
+  columns.forEach((column, i) => {
+    assert.deepEqual(caseNames(H.sortCases(rows, {key: 'engine:' + column.engine, direction: 'desc'})), descending[i]);
+    assert.deepEqual(caseNames(H.sortCases(rows, {key: 'engine:' + column.engine, direction: 'asc'})), ascending[i]);
+  });
+});
+
+test('equal and unavailable comparisons use stable natural case ordering', () => {
+  const rows = ['dot+4096', 'dot+128', 'dot+8', 'dot+64', 'dot+16'].map(id => tableRow(id, [1, 1, 1]));
+  const expected = ['dot+8', 'dot+16', 'dot+64', 'dot+128', 'dot+4096'];
+
+  assert.deepEqual(caseNames(H.sortCases(rows)), expected);
+  assert.deepEqual(caseNames(H.sortCases([...rows].reverse())), expected);
+  assert.deepEqual(caseNames(H.sortCases(rows, {key: 'case', direction: 'asc'})), expected);
+  assert.deepEqual(caseNames(H.sortCases(rows, {key: 'case', direction: 'desc'})), [...expected].reverse());
+  for (const row of rows) row.cells.forEach(c => {c.ratio = null;});
+  assert.deepEqual(caseNames(H.sortCases(rows)), expected);
+});
+
+test('throughput sorting ranks a decrease as a slowdown against that engines own history', () => {
+  const before = threeEngines(1, 10, 100, 1000), selected = threeEngines(2, 5, 200, 2000);
+  for (const r of [before, selected]) for (const m of r.benchmark.metrics) m.direction = 'higher';
+
+  const descending = H.caseTable([before, selected], selected, columns, 'p05', {key: 'engine:jvm-simd', direction: 'desc'});
+  const ascending = H.caseTable([before, selected], selected, columns, 'p05', {key: 'engine:jvm-simd', direction: 'asc'});
+
+  assert.deepEqual(caseNames(descending), ['dot', 'gemm']);
+  assert.deepEqual(caseNames(ascending), ['gemm', 'dot']);
+  assert.equal(descending[0].cells[0].ratio, 2);
+});

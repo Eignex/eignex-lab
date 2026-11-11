@@ -45,6 +45,7 @@ internal fun benchmarkTrendContent(runs: List<TrendRun>, repoUrl: String): Html 
 <p id="benchmark-target-description" class="muted small"></p>
 <p id="benchmark-table-context" class="muted small"></p>
 <p id="benchmark-table-coverage" class="muted small"></p>
+<div class="tools" role="group" aria-label="Case timing sort"><button type="button" id="benchmark-sort-worst" class="chip on" aria-pressed="true">Worst slowdown</button><span class="muted small">Or sort by a column heading.</span></div>
 <div class="scroll" role="region" aria-label="Case timing comparisons" tabindex="0">
 <table class="benchmark-cases" data-koblas="$koblas"><thead><tr id="benchmark-case-head"><th scope="col">Case</th></tr></thead><tbody id="benchmark-case-rows"></tbody></table>
 </div>

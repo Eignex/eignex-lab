@@ -1,6 +1,7 @@
 (function () {
   'use strict';
   let selectedJob = null, targetMethod = 'p05', listener = false;
+  let tableSort = {key: 'worst', direction: 'desc'};
   const labels = {'jvm-scalar': 'Portable JVM', 'jvm-simd': 'JVM SIMD', native: 'Native portable',
     'native-default': 'Native default', 'jvm-default': 'JVM default'};
   const priority = ['jvm-default', 'jvm-scalar', 'jvm-simd', 'native', 'native-default'];
@@ -32,6 +33,9 @@
     document.getElementById('benchmark-latest').disabled = selectedJob === latest.job;
     if (!listener) {
       document.getElementById('benchmark-latest').addEventListener('click', () => choose(latest));
+      document.getElementById('benchmark-sort-worst').addEventListener('click', () => {
+        tableSort = {key: 'worst', direction: 'desc'}; render();
+      });
       targetButtons.forEach(button => button.addEventListener('click', () => {
         targetMethod = button.dataset.benchmarkTarget; render();
       }));
@@ -124,17 +128,37 @@
     const tableContext = document.getElementById('benchmark-table-context'), jobLink = document.createElement('a');
     jobLink.href = '/jobs/' + selected.job; jobLink.textContent = '#' + selected.job;
     tableContext.replaceChildren(document.createTextNode('Current: ' + selected.sha.slice(0, 9) + ' · '), jobLink,
-      document.createTextNode('. Sorted by largest slowdown. Targets exclude this run and every later run; they do not change the graph baseline or paired confirmation policy.'));
+      document.createTextNode('. Targets exclude this run and every later run; they do not change the graph baseline or paired confirmation policy.'));
     const table = document.querySelector('.benchmark-cases');
     const selectedEngines = new Set((selected.benchmark?.metrics || []).map(H.engine));
     (selected.benchmark?.workloads || []).forEach(w => Object.keys(w.engines || {}).forEach(e => selectedEngines.add(e)));
     const columns = table.dataset.koblas === 'true' ? [
       {engine: 'jvm-simd', label: 'JVM SIMD'}, {engine: 'accelerate-jvm', label: 'Accelerate'}, {engine: 'jvm-scalar', label: 'Portable'}
     ] : engines.map(engine => ({engine, label: name(engine)}));
+    const sortLabel = tableSort.key === 'case' ? 'case name' : tableSort.key === 'worst' ? 'worst slowdown across engines' :
+      (columns.find(c => 'engine:' + c.engine === tableSort.key)?.label || 'engine') + ' change against its own history';
+    tableContext.append(document.createTextNode(' Sorted by ' + sortLabel + ', ' +
+      (tableSort.key === 'case' ? (tableSort.direction === 'asc' ? 'A–Z' : 'Z–A') :
+        tableSort.direction === 'desc' ? 'largest first' : 'smallest first') +
+      (tableSort.key === 'case' ? '.' : '. Missing comparisons stay last.')));
+    const worstButton = document.getElementById('benchmark-sort-worst'), worst = tableSort.key === 'worst';
+    worstButton.classList.toggle('on', worst); worstButton.setAttribute('aria-pressed', String(worst));
     const head = document.getElementById('benchmark-case-head'); head.replaceChildren();
-    ['Case', ...columns.map(c => c.label)].forEach((label, i) => {
-      const th = document.createElement('th'); th.scope = 'col'; th.textContent = label;
-      if (i) th.title = columns[i - 1].engine; head.append(th);
+    [{label: 'Case', key: 'case'}, ...columns.map(c => ({...c, key: 'engine:' + c.engine}))].forEach(column => {
+      const th = document.createElement('th'), button = document.createElement('button'), arrow = document.createElement('span');
+      const active = tableSort.key === column.key;
+      th.scope = 'col'; th.setAttribute('aria-sort', active ? tableSort.direction === 'asc' ? 'ascending' : 'descending' : 'none');
+      button.type = 'button'; button.className = 'benchmark-sort-heading'; button.dataset.sort = column.key;
+      button.setAttribute('aria-label', column.key === 'case' ? 'Sort cases by name' : 'Sort ' + column.label + ' by change against its own history');
+      button.append(document.createTextNode(column.label));
+      arrow.className = 'sort-arrow'; arrow.setAttribute('aria-hidden', 'true'); arrow.textContent = active ? tableSort.direction === 'asc' ? '↑' : '↓' : '↕';
+      button.append(arrow); if (column.engine) button.title = column.engine;
+      button.addEventListener('click', () => {
+        tableSort = {key: column.key, direction: active ? tableSort.direction === 'asc' ? 'desc' : 'asc' : column.key === 'case' ? 'asc' : 'desc'};
+        render();
+        [...head.querySelectorAll('button')].find(b => b.dataset.sort === column.key)?.focus({preventScroll: true});
+      });
+      th.append(button); head.append(th);
     });
     const missing = columns.filter(c => !selectedEngines.has(c.engine));
     document.getElementById('benchmark-table-coverage').textContent = missing.length ?
@@ -143,7 +167,7 @@
     const statusLabels = {measured: 'Measured', failed: 'Capture failed', pending: 'Pending', skipped: 'Skipped',
       unsupported: 'Unsupported', instrumented: 'Instrumented', unavailable: 'Not measured'};
     const fragment = document.createDocumentFragment();
-    for (const row of H.caseTable(runs, selected, columns, targetMethod)) {
+    for (const row of H.caseTable(runs, selected, columns, targetMethod, tableSort)) {
       const tr = document.createElement('tr'), caseCell = document.createElement('th'); caseCell.scope = 'row';
       const title = document.createElement('code'); title.textContent = row.workload.workload || row.workload.caseId;
       caseCell.append(title);

@@ -64,7 +64,7 @@
   }
 
   /** Pivot exact-engine comparisons without sharing samples or targets between columns. */
-  function caseTable(runs, selected, columns, method = 'p05') {
+  function caseTable(runs, selected, columns, method = 'p05', sort = {key: 'worst', direction: 'desc'}) {
     const comparisons = caseComparisons(runs, selected, method), rows = [];
     for (const w of selected.benchmark?.workloads || []) {
       const own = comparisons.filter(row => row.workload.caseId === w.caseId);
@@ -88,10 +88,27 @@
         rows.push({workload: w, identity, cells});
       }
     }
-    return rows.sort((a, b) => {
-      const worst = row => Math.max(-Infinity, ...row.cells.map(c => c.ratio ?? -Infinity));
-      return worst(b) - worst(a) || (a.workload.workload || a.workload.caseId).localeCompare(b.workload.workload || b.workload.caseId) ||
-        String(a.identity).localeCompare(String(b.identity));
+    return sortCases(rows, sort);
+  }
+
+  /** Sort numeric historical changes; unavailable comparisons stay last in either direction. */
+  function sortCases(rows, sort = {key: 'worst', direction: 'desc'}) {
+    const natural = new Intl.Collator('en', {numeric: true, sensitivity: 'base'});
+    const name = row => row.workload.workload || row.workload.caseId;
+    const tie = (a, b) => natural.compare(name(a), name(b)) ||
+      String(a.identity).localeCompare(String(b.identity), 'en') ||
+      a.workload.caseId.localeCompare(b.workload.caseId, 'en') || name(a).localeCompare(name(b), 'en');
+    const direction = sort.direction === 'asc' ? 1 : -1;
+    function value(row) {
+      const cells = sort.key === 'worst' ? row.cells : row.cells.filter(c => c.engine === sort.key.slice(7));
+      const ratios = cells.map(c => c.ratio).filter(Number.isFinite);
+      return ratios.length ? Math.max(...ratios) : null;
+    }
+    return [...rows].sort((a, b) => {
+      if (sort.key === 'case') return direction * tie(a, b);
+      const av = value(a), bv = value(b);
+      if (av == null || bv == null) return av == null && bv == null ? tie(a, b) : av == null ? 1 : -1;
+      return (av === bv ? 0 : av < bv ? -1 : 1) * direction || tie(a, b);
     });
   }
 
@@ -152,7 +169,7 @@
       }
     };
   }
-  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons, caseTable};
+  const api = {engine, key, segment, selection, workload, slowdown, history, caseComparisons, caseTable, sortCases};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.BenchmarkHistory = api;
 })(typeof window === 'object' ? window : globalThis);
