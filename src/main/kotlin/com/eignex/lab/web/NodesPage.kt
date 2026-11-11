@@ -50,6 +50,10 @@ internal fun nodesPage(local: LocalNode, host: HostReport, snapshot: CapacitySna
         append(Html("<p class=\"muted small\">Requests share the global ") + settings.maxVcpus + Html(" vCPU limit and expire automatically. Jobs can use these nodes; releasing a request lets automatic scaling retire idle capacity.</p>"))
     } else append(Html("<p class=\"muted\">Nomad capacity settings are unavailable; manual starts are disabled.</p>"))
     append(Html("</section><div id=\"node-capacity\" data-live><section id=\"cloud-pools\"><h2>Cloud pools</h2><p class=\"muted small\">Observed nodes are reported by the provider. Desired is the scaling target. The pool limit is also subject to the global vCPU limit.</p>"))
+    for ((source, target) in snapshot?.spotFallbacks.orEmpty()) {
+        append(Html("<p class=\"muted small\">") + esc(source) + Html(": Spot capacity unavailable (UnfulfillableCapacity); waiting work and node requests use ") +
+            esc(target) + Html(" at on-demand pricing. Running workers finish on their current nodes.</p>"))
+    }
     if (pools.isEmpty()) append(Html("<p class=\"muted\">No cloud pools configured.</p>"))
     else {
         append(Html("<div class=\"scroll\" role=\"region\" aria-label=\"Cloud pools\" tabindex=\"0\"><table class=\"pool-table\"><thead><tr><th scope=\"col\">Pool / class</th><th scope=\"col\">Hardware per node</th><th scope=\"col\">Architecture / SIMD</th><th scope=\"col\">Market</th><th scope=\"col\" class=\"num\">Observed</th><th scope=\"col\" class=\"num\">Desired</th><th scope=\"col\" class=\"num\">Pool limit</th><th scope=\"col\"><span class=\"sr-only\">Select pool</span></th></tr></thead><tbody>"))

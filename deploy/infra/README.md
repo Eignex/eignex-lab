@@ -93,8 +93,12 @@ must pin their corresponding image digest; all pools on the same OS/CPU architec
 
 `aws/` creates one homogeneous zero-sized Auto Scaling Group, a pinned launch template, separate worker/scaler/
 adapter identities, capacity lease storage, a renewal Lambda, and an independent expiry Lambda scheduled every
-five minutes. `market` defaults to `spot`; failure to buy Spot never falls back to on-demand. Configure a distinct
-explicit on-demand pool for policy that requires it. The module's finite pool size must fit its vCPU budget.
+five minutes. `market` defaults to `spot`. For automatic shortage recovery, provision an equivalent `on-demand` pool
+and set the Spot capacity pool's `onDemandFallback` to its ID, as described in the Nomad runbook. The fleet module
+accepts a `market` per pool; a separate fleet may use `fleet_name = "fallback"` to share the existing adapter/scaler
+roles without colliding with their managed policies. Keep its AMI, shape, node capabilities and worker image identical
+to the Spot counterpart and omit `spot_instance_types`. Every fallback pool starts at zero and shares the collector's
+global vCPU ceiling. The module's finite pool size must fit its vCPU budget.
 Account Spot/on-demand vCPU quotas remain the final provider backstop, including booting/terminating overlap;
 set the shared collector's overall `maxVcpus` and pool limits consistently with them.
 

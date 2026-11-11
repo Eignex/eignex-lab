@@ -15,7 +15,7 @@ data class AsgMember(val id: String, val lifecycleState: String, val protectedFr
 data class AsgGroup(val minSize: Int, val maxSize: Int, val desiredCapacity: Int, val instances: List<AsgMember>, val tags: Map<String, String>)
 
 /** A scaling activity's status code and message, as DescribeScalingActivities lists them. */
-data class AsgActivity(val statusCode: String, val statusMessage: String?)
+data class AsgActivity(val statusCode: String, val statusMessage: String?, val startedAt: Long? = null)
 
 /** An EC2 instance as DescribeInstances describes it, its launch time in epoch milliseconds. */
 data class Ec2Instance(val id: String, val launchedAt: Long, val state: String, val tags: Map<String, String>)
@@ -67,7 +67,8 @@ class AwsCapacityApi(private val api: AwsApi) : AutoScaling, Ec2 {
     override fun latestActivity(name: String): AsgActivity? {
         val result = api.query("autoscaling", "DescribeScalingActivities", ASG_VERSION, mapOf("AutoScalingGroupName" to name, "MaxRecords" to "1"))
         val activity = result.child("DescribeScalingActivitiesResult")?.members("Activities")?.firstOrNull() ?: return null
-        return AsgActivity(activity.text("StatusCode")!!, activity.text("StatusMessage"))
+        return AsgActivity(activity.text("StatusCode")!!, activity.text("StatusMessage"),
+            activity.text("StartTime")?.let { Instant.parse(it).toEpochMilli() })
     }
 
     override fun update(name: String, minSize: Int?, desiredCapacity: Int?, maxSize: Int?) {

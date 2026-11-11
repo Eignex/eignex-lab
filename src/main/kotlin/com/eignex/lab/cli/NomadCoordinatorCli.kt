@@ -108,7 +108,13 @@ object NomadCoordinatorCli {
         // Not fatal: such a target still runs every job, only with part of each node idle.
         cluster.memoryLimited.forEach { println("nomad queue settings: $it") }
         val capacitySettings = cluster.capacity
+        val capacity = settings.capacity?.let { integration ->
+            CapacityCollector(checkNotNull(capacitySettings), integration.inventoryFiles.map(Path::of),
+                Path.of(integration.healthTokenFile), config.dataDir.resolve("nomad/capacity-state.json"), store, client, disk::allowsWork, config.localNodeTags)
+        }
+        val spotFallback = NomadSpotFallback(cluster, { runCatching { capacity?.snapshot() }.getOrNull() }, { store.job(it)?.experiment })
         val backend = NomadBackend(store, client, artifacts, config::createJobDir, disk::allowsWork,
+            pendingPlacement = spotFallback::apply,
             changed = { admissionSignal.wake(); reconcileSignal.wake() }, solveAllowed = artifacts::allowsNewSolve,
             projectResult = { job, iteration, work -> projections.poll(job to iteration, work) != null },
             writeLog = { job, work -> logWrites.submit(job, work) }, checkCase = check@{ job, index ->
@@ -160,10 +166,6 @@ object NomadCoordinatorCli {
             val sourceJobs = active.filter { !it.paused && !it.cancelRequested }.associateBy { it.id }
             sourceWork.retainWhere { key -> sourceJobs[key.job]?.experiment == key.experiment }
             planWork.retain(active.filter { !it.setupDone }.map { it.id }.toSet())
-        }
-        val capacity = settings.capacity?.let { integration ->
-            CapacityCollector(checkNotNull(capacitySettings), integration.inventoryFiles.map(Path::of),
-                Path.of(integration.healthTokenFile), config.dataDir.resolve("nomad/capacity-state.json"), store, client, disk::allowsWork, config.localNodeTags)
         }
         // Capacity freshness must not depend on worker reconciliation, source checks or cache maintenance.
         if (capacity != null) periodic("nomad-capacity", 5_000) { capacity.collect() }

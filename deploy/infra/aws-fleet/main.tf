@@ -7,6 +7,11 @@ variable "signing_secret_arn" { type = string }
 variable "nomad_servers" { type = list(string) }
 variable "adapter_role_name" { type = string }
 variable "scaler_role_name" { type = string }
+variable "fleet_name" {
+  type        = string
+  default     = "fleet"
+  description = "Distinct policy name when another fleet shares the control roles."
+}
 variable "functions_package" {
   type        = string
   default     = null
@@ -21,6 +26,7 @@ variable "pools" {
     ami_id               = string
     instance_type        = string
     spot_instance_types  = optional(list(string), [])
+    market               = optional(string, "spot")
     vcpus                = number
     memory_mib           = number
     bootstrap_memory_mib = optional(number)
@@ -45,7 +51,7 @@ module "pool" {
   bootstrap_memory_mib  = each.value.bootstrap_memory_mib
   max_nodes             = each.value.max_nodes
   max_vcpus             = var.max_vcpus
-  market                = "spot"
+  market                = each.value.market
   subnet_ids            = var.subnet_ids
   security_group_ids    = var.security_group_ids
   control_principal_arn = var.control_principal_arn
@@ -61,11 +67,22 @@ module "pool" {
 
 # The supervised adapter and scaler retain their separate identities. Each grant is
 # exactly the module's policy for that pool; neither role receives worker credentials.
-resource "aws_iam_role_policy" "adapter" {
-  for_each = var.pools
-  name     = "eignex-lab-pool-${each.key}"
-  role     = var.adapter_role_name
-  policy   = module.pool[each.key].adapter_policy_json
+resource "aws_iam_policy" "adapter_fleet" {
+  name = "lab-${var.deployment_id}-${var.fleet_name}-adapter"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = length(var.pools) == 0 ? [] : [
+      jsondecode(values(module.pool)[0].adapter_policy_json).Statement[0],
+      merge(jsondecode(values(module.pool)[0].adapter_policy_json).Statement[1], {
+        Resource = [for pool in values(module.pool) : jsondecode(pool.adapter_policy_json).Statement[1].Resource]
+      })
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "adapter_fleet" {
+  role       = var.adapter_role_name
+  policy_arn = aws_iam_policy.adapter_fleet.arn
 }
 
 # All pools have identical scaler actions and conditions. Combine their exact ASG ARNs
@@ -77,7 +94,7 @@ locals {
 }
 
 resource "aws_iam_policy" "scaler_fleet" {
-  name = "lab-${var.deployment_id}-fleet-scaler"
+  name = "lab-${var.deployment_id}-${var.fleet_name}-scaler"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = flatten([for policy in slice(local.scaler_policies, 0, min(1, length(local.scaler_policies))) : concat(

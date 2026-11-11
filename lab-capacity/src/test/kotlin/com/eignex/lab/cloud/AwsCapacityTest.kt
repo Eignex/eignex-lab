@@ -12,6 +12,32 @@ import kotlin.test.assertTrue
 
 /** The AWS renewal and expiry functions' lease handling (the Python functions' test_aws_expiry). */
 class AwsCapacityTest {
+    @Test fun `fresh zero demand cancels an unfilled launch without waiting for a Nomad node`() {
+        asg.group = asg.group!!.copy(instances = emptyList())
+        pool().renew(grant(key, payload(desired = 0)), key)
+        assertEquals(listOf(Triple<Int?, Int?, Int?>(null, 0, null)), asg.updates)
+        assertTrue(calls.index("leases.write") < calls.index("asg.update"))
+        assertTrue(ec2.terminated.isEmpty())
+    }
+
+    @Test fun `zero demand never directly shrinks a group containing a real member`() {
+        pool().renew(grant(key, payload(desired = 0)), key)
+        assertTrue(asg.updates.isEmpty())
+        asg.group = asg.group!!.copy(instances = emptyList())
+        var reads = 0
+        asg.onGroup = { if (++reads == 2) asg.group = asg.group!!.copy(instances = listOf(com.eignex.lab.cloud.aws.AsgMember("i-new", "Pending", false))) }
+        pool().renew(grant(key, payload(desired = 0)), key)
+        assertTrue(asg.updates.isEmpty(), "a launch racing zero-demand cleanup stays with the ordinary scaler")
+    }
+
+    @Test fun `positive stale or wrong-pool grants never cancel unfilled launches`() {
+        asg.group = asg.group!!.copy(instances = emptyList())
+        pool().renew(grant(key, payload(desired = 1)), key)
+        for (invalid in listOf(payload(desired = 0, issuedAt = 900_000), payload(desired = 0, pool = "other"))) {
+            assertFailsWith<CapacityRejected> { pool().renew(grant(key, invalid), key) }
+        }
+        assertTrue(asg.updates.isEmpty())
+    }
     private val key = "capacity-key-".repeat(4)
     private val calls = Calls()
     private val asg = FakeAsg(calls)

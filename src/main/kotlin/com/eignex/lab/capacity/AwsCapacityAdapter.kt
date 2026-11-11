@@ -16,6 +16,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -59,8 +61,13 @@ object AwsCapacityAdapter {
         val value = asg.group(group) ?: throw CapacityRejected("pool group missing")
         if (value.tags["lab:deployment"] != deployment || value.tags["lab:pool"] != pool) throw CapacityRejected("pool ownership mismatch")
         val instances = value.instances.map { it.id to it.lifecycleState.startsWith("Terminating") }
-        val failure = asg.latestActivity(group)?.takeIf { it.statusCode == "Failed" }?.let { it.statusMessage?.takeIf(String::isNotEmpty) ?: "capacity unavailable" }
-        val result = CapacityAdapter.observation(pool, instances, value.desiredCapacity, failure, at())
+        val activity = asg.latestActivity(group)?.takeIf { it.statusCode == "Failed" }
+        val failure = activity?.let { it.statusMessage?.takeIf(String::isNotEmpty) ?: "capacity unavailable" }
+        val observed = CapacityAdapter.observation(pool, instances, value.desiredCapacity, failure, at())
+        val errors = if (activity?.startedAt != null && failure?.contains(Regex("\\bUnfulfillableCapacity\\b")) == true)
+            buildJsonObject { put(pool, buildJsonObject { put("code", "UnfulfillableCapacity"); put("at", activity.startedAt) }) }
+        else JsonObject(emptyMap())
+        val result = JsonObject(observed + ("capacityErrors" to errors))
         if (ec2 == null || instances.isEmpty()) return result
         // ASG membership can lag Spot termination. Filters omit vanished IDs instead of rejecting the fleet.
         val launched = instances.map { it.first }.chunked(100).flatMap { ec2.describeAmong(it) }.associate { it.id to it.launchedAt }

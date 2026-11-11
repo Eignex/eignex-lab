@@ -64,7 +64,7 @@ class AwsApiTest {
             when (form(body)["Action"]) {
                 "DescribeAutoScalingGroups" -> ok(group)
                 else -> ok("""<DescribeScalingActivitiesResponse><DescribeScalingActivitiesResult><Activities><member>
-                    <StatusCode>Failed</StatusCode><StatusMessage>We currently do not have sufficient capacity</StatusMessage>
+                    <StatusCode>Failed</StatusCode><StatusMessage>We currently do not have sufficient capacity</StatusMessage><StartTime>2026-11-11T16:37:15.702Z</StartTime>
                     </member></Activities></DescribeScalingActivitiesResult></DescribeScalingActivitiesResponse>""")
             }
         }
@@ -79,7 +79,9 @@ class AwsApiTest {
         val headers = http.headers.single()
         assertTrue(headers.getValue("authorization").startsWith("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/eu-north-1/autoscaling/aws4_request, " +
             "SignedHeaders=content-type;host;x-amz-date, "))
-        assertEquals("We currently do not have sufficient capacity", api.latestActivity("group")!!.statusMessage)
+        val activity = api.latestActivity("group")!!
+        assertEquals("We currently do not have sufficient capacity", activity.statusMessage)
+        assertEquals(Instant.parse("2026-11-11T16:37:15.702Z").toEpochMilli(), activity.startedAt)
         assertEquals(mapOf("Action" to "DescribeScalingActivities", "Version" to "2011-01-01", "AutoScalingGroupName" to "group", "MaxRecords" to "1"),
             form(http.requests.last().third))
         http.answer = { _, _, _ -> ok("<DescribeAutoScalingGroupsResponse><DescribeAutoScalingGroupsResult><AutoScalingGroups/></DescribeAutoScalingGroupsResult></DescribeAutoScalingGroupsResponse>") }

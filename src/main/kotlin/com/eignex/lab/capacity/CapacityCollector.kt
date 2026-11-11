@@ -21,11 +21,15 @@ import java.util.concurrent.atomic.AtomicReference
 @Serializable
 data class CapacityInstance(val id: String, val pool: String, val draining: Boolean = false, val countedInTarget: Boolean = true, val launchedAt: Long? = null)
 @Serializable
-data class CapacityInventory(val observedAt: Long, val pools: Set<String>, val instances: List<CapacityInstance>, val failures: Map<String, String> = emptyMap())
+data class CapacityInventory(val observedAt: Long, val pools: Set<String>, val instances: List<CapacityInstance>, val failures: Map<String, String> = emptyMap(),
+    val capacityErrors: Map<String, CapacityError> = emptyMap())
+@Serializable
+data class CapacityError(val code: String, val at: Long)
 @Serializable
 data class CapacityIntegration(val settingsFile: String, val inventoryFiles: List<String>, val healthTokenFile: String)
 @Serializable
-data class CapacitySnapshot(val generatedAt: Long, val ageMs: Long, val decision: CapacityDecision, val nodes: List<CapacityNode>, val failures: Map<String, String>, val pools: List<CapacityPool> = emptyList(), val healthy: Boolean = true)
+data class CapacitySnapshot(val generatedAt: Long, val ageMs: Long, val decision: CapacityDecision, val nodes: List<CapacityNode>, val failures: Map<String, String>, val pools: List<CapacityPool> = emptyList(), val healthy: Boolean = true,
+    val spotFallbacks: Map<String, String> = emptyMap())
 @Serializable
 data class CapacityGrant(val payload: String, val signature: String)
 @Serializable
@@ -119,7 +123,9 @@ internal object CapacityObservation {
                 !Placement.localOnly(spec, job.origin, Placement.cloudSchedule(job.origin, schedules))
         }
         return settings.pools.filter { pool -> candidates.none { job ->
-            NodeTags.market(job.experiment.nodeTags) == pool.market && NodeTags.matches(job.experiment.nodeTags, pool.capabilities)
+            (NodeTags.market(job.experiment.nodeTags) == pool.market || settings.pools.any {
+                it.onDemandFallback == pool.id && !NodeTags.spotOnly(job.experiment.nodeTags)
+            }) && NodeTags.matches(job.experiment.nodeTags, pool.capabilities)
         } }.mapTo(hashSetOf()) { it.id }
     }
 
@@ -139,7 +145,9 @@ internal object CapacityObservation {
         val pool = settings.pools.singleOrNull { it.nodeClass == placement.nodeClass } ?: return null
         val experiment = job.experiment
         require(NodeTags.market(selector) == NodeTags.market(experiment.nodeTags)) { "phase selector changed the purchasing policy" }
-        require(pool.market == NodeTags.market(experiment.nodeTags)) { "session purchasing policy differs from pool" }
+        require(pool.market == NodeTags.market(experiment.nodeTags) || settings.pools.any {
+            it.onDemandFallback == pool.id && !NodeTags.spotOnly(experiment.nodeTags) && !NodeTags.spotOnly(selector)
+        }) { "session purchasing policy differs from pool" }
         val work = when {
             session.executionClass in setOf(ExecutionClass.BUILD, ExecutionClass.PREPARE) -> CapacityWork.BUILD
             experiment.isProfile -> CapacityWork.PROFILE
@@ -247,9 +255,21 @@ class CapacityCollector(
         val inventoryAge = fresh.maxOf { (at - it.observedAt).coerceAtLeast(0) }
         check(inventoryAge + (monotonic() - started) / 1_000_000 <= FRESH_MS) { "capacity collection exceeded freshness bound" }
         val blocked = startup.failed.filterValues { it.size >= CapacityStartup.MAX_REPLACEMENTS }.keys
+        val fallbacks = SpotFallback.active(settings, fresh, at).filterValues { it !in stalePools }
         val unqueued = if (settings.pools.none { it.idleUnqueuedMs != null }) emptySet()
             else CapacityObservation.unqueued(settings, store.active(withCommands = false), store.schedules.all())
-        val evaluated = CapacityPolicy.evaluate(settings, observations, demands, store.capacityLeases.active(at), state.history, at,
+        fun ready(pool: String) = observations.count { it.pool == pool && it.state == CapacityNodeState.READY }
+        val effective = settings.copy(pools = settings.pools.map { pool -> when {
+            pool.id in fallbacks -> pool.copy(warmNodes = minOf(pool.warmNodes, ready(pool.id)))
+            pool.id in fallbacks.values -> pool.copy(warmNodes = maxOf(pool.warmNodes,
+                settings.pools.single { fallbacks[it.id] == pool.id }.let { (it.warmNodes - ready(it.id)).coerceAtLeast(0) }))
+            else -> pool
+        } })
+        val manual = store.capacityLeases.active(at).flatMap { lease -> fallbacks[lease.pool]?.let {
+            val retained = minOf(lease.nodes, ready(lease.pool))
+            listOf(lease.copy(nodes = retained), lease.copy(pool = it, nodes = lease.nodes - retained))
+        } ?: listOf(lease) }
+        val evaluated = CapacityPolicy.evaluate(effective, observations, demands, manual, state.history, at,
             growthBlocked = blocked, launched = state.desired, unqueued = unqueued)
         // A stale pool keeps what it last had: neither grown on demand it cannot see nor shrunk to nothing.
         val held = stale.flatMap { inventory -> inventory.pools.map { pool ->
@@ -263,7 +283,7 @@ class CapacityCollector(
             blocked.associateWith { "startup replacement circuit open after ${CapacityStartup.MAX_REPLACEMENTS} distinct authorizations; review startup failure or register a healthy new worker" }
         val failures = inventories.flatMap { it.failures.entries }.associate { it.toPair() } +
             stalePools.associateWith { "inventory stale: holding ${held[it]} nodes" } + startupFailures
-        val snapshot = CapacitySnapshot(at - inventoryAge, inventoryAge, decision, observations, failures, settings.pools)
+        val snapshot = CapacitySnapshot(at - inventoryAge, inventoryAge, decision, observations, failures, settings.pools, spotFallbacks = fallbacks)
         val report = stateFile.resolveSibling("capacity-report.json")
         report.writeAtomically(Json.encodeToString(snapshot), durable = false)
         latest.set(Sample(snapshot, started - inventoryAge * 1_000_000))

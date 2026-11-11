@@ -34,6 +34,7 @@ class NomadBackend(
     private val nativeNodeTags: Set<String>? = null,
     private val selectProblems: (Store, ExperimentSpec, List<List<Problem>>, () -> Unit) -> List<List<Problem>> = ::preparationSelection,
     private val solveAllowed: () -> Boolean = { true },
+    private val pendingPlacement: (JsonObject, ResourceBudget) -> JsonObject = { job, _ -> job },
 ) {
     val logs = WorkerLogs(store, jobDirectory)
     private val identities = NomadIdentity(nomad::jwks, nomad.namespace)
@@ -56,7 +57,7 @@ class NomadBackend(
         preparationAdmission.allows(template.nodeClass, template.platform == NomadPlatform.MAC, limit)
 
     private fun placement(job: JsonObject, budget: ResourceBudget): JsonObject = cpuPlacement.calibrate(
-        preparationAdmission.place(placementPolicy(PreparationAdmission.clear(job))), budget)
+        preparationAdmission.place(placementPolicy(pendingPlacement(PreparationAdmission.clear(job), budget))), budget)
 
     /** Admission is operator-only until source preparation and the canary gates are connected to normal submissions. */
     @Synchronized

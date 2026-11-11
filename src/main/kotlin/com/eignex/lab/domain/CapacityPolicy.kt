@@ -30,6 +30,8 @@ data class CapacityPool(
     val warmNodes: Int = 0,
     /** How long an empty node is kept when no active job could use the pool at all; [idleMs] when unset. */
     val idleUnqueuedMs: Long? = null,
+    /** Equivalent on-demand pool used after a provider reports unavailable Spot capacity. */
+    val onDemandFallback: String? = null,
 ) {
     init {
         require(id.matches(Regex("[a-z][a-z0-9-]{0,47}")) && nodeClass.isNotBlank())
@@ -79,7 +81,23 @@ data class CapacityWait(val request: String, val reason: String)
 data class CapacityDecision(val desired: Map<String, Int>, val placements: List<CapacityPlacement>, val waiting: List<CapacityWait>, val history: Map<String, CapacityHistory>)
 @Serializable
 data class CapacitySettings(val pools: List<CapacityPool>, val maxVcpus: Int) {
-    init { require(pools.isNotEmpty() && pools.map { it.id }.distinct().size == pools.size && pools.map { it.nodeClass }.distinct().size == pools.size); require(maxVcpus > 0) }
+    init {
+        require(pools.isNotEmpty() && pools.map { it.id }.distinct().size == pools.size && pools.map { it.nodeClass }.distinct().size == pools.size)
+        require(maxVcpus > 0)
+        for (source in pools.filter { it.onDemandFallback != null }) {
+            val fallback = requireNotNull(pools.singleOrNull { it.id == source.onDemandFallback }) { "on-demand fallback pool is missing" }
+            require(source.market == CapacityMarket.SPOT && fallback.market == CapacityMarket.ON_DEMAND && fallback.onDemandFallback == null) {
+                "fallback must go from Spot to on-demand"
+            }
+            require(source.vcpus == fallback.vcpus && source.memoryMiB == fallback.memoryMiB && source.tags == fallback.tags &&
+                source.reserveMemoryMiB == fallback.reserveMemoryMiB && source.maxNodes <= fallback.maxNodes) {
+                "on-demand fallback must preserve hardware, usable resources and pool limits"
+            }
+        }
+        require(pools.mapNotNull { it.onDemandFallback }.distinct().size == pools.count { it.onDemandFallback != null }) {
+            "on-demand fallback pools must be distinct"
+        }
+    }
 
     companion object {
         /** Settings an older lab wrote that no longer decide anything; dropped on read, so its files keep loading. */

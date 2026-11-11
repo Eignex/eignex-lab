@@ -68,6 +68,18 @@ class AwsCapacityAdapterTest {
     }
     private val tags = mapOf("lab:deployment" to "lab", "lab:pool" to "general")
 
+    @Test fun `Spot shortages carry the real activity timestamp and exact code through fleet publication`() {
+        val asg = Asg(AsgGroup(0, 4, 1, emptyList(), tags), AsgActivity("Failed", "Could not launch Spot Instances. UnfulfillableCapacity - unavailable", 1000))
+        val value = AwsCapacityAdapter.inventory(asg, "group", "lab", "general", null) { 2000 }
+        val merged = CapacityAdapter.merge(listOf(value))
+        assertEquals(CapacityError("UnfulfillableCapacity", 1000), Json.decodeFromString<CapacityInventory>(merged.toString()).capacityErrors["general"])
+        for (activity in listOf(AsgActivity("Failed", "VcpuLimitExceeded", 1000), AsgActivity("Failed", "UnfulfillableCapacity", null),
+                AsgActivity("Successful", "UnfulfillableCapacity", 1000))) {
+            asg.activity = activity
+            assertTrue(Json.decodeFromString<CapacityInventory>(AwsCapacityAdapter.inventory(asg, "group", "lab", "general", null).toString()).capacityErrors.isEmpty())
+        }
+    }
+
     @Test fun `error reports keep provider codes and never a message`() {
         assertEquals("HTTP_400", CapacityAdapter.code(ProviderError("secret response body", 400)))
         assertEquals("RuntimeException", AwsCapacityAdapter.describe(RuntimeException("secret message")))

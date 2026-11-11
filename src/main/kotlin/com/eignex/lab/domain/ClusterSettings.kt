@@ -29,6 +29,14 @@ class ClusterSettings(val queue: NomadQueueSettings, val capacity: CapacitySetti
                 "queue target ${template.nodeClass} offers tags pool ${pool.id} does not have"
             }
         }
+        for (source in capacity?.pools.orEmpty().filter { it.onDemandFallback != null }) {
+            val target = capacity!!.pools.single { it.id == source.onDemandFallback }
+            val original = requireNotNull(queue.targets.singleOrNull { it.template.nodeClass == source.nodeClass })
+            val fallback = requireNotNull(queue.targets.singleOrNull { it.template.nodeClass == target.nodeClass })
+            require(original.copy(template = original.template.copy(nodeClass = target.nodeClass), market = CapacityMarket.ON_DEMAND) == fallback) {
+                "on-demand fallback worker must preserve the Spot worker runtime and resource contract"
+            }
+        }
     }
 
     /**

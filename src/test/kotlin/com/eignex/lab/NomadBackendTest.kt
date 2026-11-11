@@ -39,6 +39,59 @@ import java.net.http.HttpResponse as JavaHttpResponse
 import kotlin.test.*
 
 class NomadBackendTest {
+    @ParameterizedTest @ValueSource(booleans = [false, true])
+    fun `a Spot shortage moves pending preparation and solves to on-demand while preserving frozen inputs`(preparation: Boolean) {
+        val policy = fallbackPolicy()
+        val fallback = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, pendingPlacement = policy.first::apply)
+        val id = setup(preparation = preparation, admitting = fallback)
+        control.allocations.clear()
+        val original = session
+        val frozen = manifest
+        val submitted = store.execution.submission(original.id)
+        fallback.reconcile()
+        assertEquals(Desired.RUN, store.execution.session(original.id)!!.desired)
+        policy.second()
+        fallback.reconcile()
+        val next = store.execution.sessions(id).single { it.desired == Desired.RUN }
+        assertEquals("on-demand", store.execution.placement(next.id).nodeClass)
+        assertEquals(frozen.copy(session = next.id), store.execution.manifest(next.id))
+        assertEquals(submitted, store.execution.submission(original.id), "original submissions remain immutable")
+        assertEquals("placement-spot-unavailable", store.execution.reports(id).single { it.session.id == original.id }.observation)
+        assertEquals(0, store.execution.failureCount(id)); assertNull(store.job(id)!!.runningSince)
+        repeat(3) { fallback.reconcile() }
+        assertEquals(2, store.execution.sessions(id).size, "fallback does not spend retries or spin sessions")
+        val replacement = store.execution.submission(next.id)
+        NomadBackend(Store(file), control, artifacts, { root.resolve("jobs/$it") }, pendingPlacement = policy.first::apply).reconcile()
+        assertEquals(replacement, store.execution.submission(next.id), "restart preserves the on-demand placement")
+    }
+
+    @Test fun `a Spot shortage never retires a bound worker or splits its paired row`() {
+        val id = setup(); register()
+        val row = backend().claim(session.id, token, "allocation")!!
+        val policy = fallbackPolicy(); policy.second()
+        val fallback = NomadBackend(store, control, artifacts, { root.resolve("jobs/$it") }, pendingPlacement = policy.first::apply)
+        repeat(3) { fallback.reconcile() }
+        assertEquals(Desired.RUN, store.execution.session(session.id)!!.desired)
+        assertEquals("fixture", store.execution.placement(session.id).nodeClass)
+        assertEquals(row, fallback.claim(session.id, token, "allocation"))
+        assertEquals(1, store.execution.sessions(id).size)
+    }
+
+    private fun fallbackPolicy(): Pair<NomadSpotFallback, () -> Unit> {
+        val spot = CapacityPool("spot", "fixture", 4, 8192, 4, setOf("arch:x86_64"), onDemandFallback = "on-demand")
+        val demand = spot.copy(id = "on-demand", nodeClass = "on-demand", market = CapacityMarket.ON_DEMAND, onDemandFallback = null)
+        val capacity = CapacitySettings(listOf(spot, demand), 16)
+        val template = NomadBatchJob("placeholder", NomadPlatform.LINUX, "fixture", NomadCpuCapacity(4000, 4), ResourceBudget(2000, 1024, 2),
+            listOf("worker"), "registry/worker@sha256:" + "d".repeat(64))
+        val original = NomadQueueTarget(template, spot.tags)
+        val queue = NomadQueueSettings("release", "https://lab.example", listOf(original,
+            original.copy(template = template.copy(nodeClass = demand.nodeClass), market = CapacityMarket.ON_DEMAND)))
+        var enabled = false
+        val snapshot = CapacitySnapshot(now(), 0, CapacityDecision(emptyMap(), emptyList(), emptyList(), emptyMap()), emptyList(), emptyMap(), capacity.pools,
+            spotFallbacks = mapOf(spot.id to demand.id))
+        return NomadSpotFallback(ClusterSettings(queue, capacity), { snapshot.takeIf { enabled } }, { store.job(it)?.experiment }) to { enabled = true }
+    }
+
     @Test fun `terminal solve workers stop the finite run clock while the last accepted projection waits`() {
         val spec = ExperimentSpec("pressure-projection", profile = ProfileMain(main = "com.eignex.Main", runTimeoutSec = 60,
             classpath = listOf("tools/lib/*")), host = HostPlacement.AUTO)
